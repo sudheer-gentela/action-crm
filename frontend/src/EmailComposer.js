@@ -36,7 +36,7 @@ function EmailComposer({ email, contacts, deals, onSubmit, onClose }) {
   // Populate form if replying/forwarding
   useEffect(() => {
     if (email) {
-      const contact = contacts.find(c => c.id === email.contact_id);
+  //    const contact = contacts.find(c => c.id === email.contact_id);
       setFormData({
         contact_id: email.contact_id || '',
         deal_id: email.deal_id || '',
