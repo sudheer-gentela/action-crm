@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import './App.css';
 import AccountsView from './AccountsView';
 import DealsView from './DealsView';
+import ContactsView from './ContactsView';
 
 // Simple authentication check
 const useAuth = () => {
@@ -196,20 +197,6 @@ function ActionsView() {
       </div>
       <div className="placeholder-message">
         <p>Actions view - Coming soon</p>
-      </div>
-    </div>
-  );
-}
-
-function ContactsView() {
-  return (
-    <div className="page-container">
-      <div className="page-header">
-        <h1>Contacts</h1>
-        <p>Manage relationships</p>
-      </div>
-      <div className="placeholder-message">
-        <p>Contacts view - Coming soon</p>
       </div>
     </div>
   );
