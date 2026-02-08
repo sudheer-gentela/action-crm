@@ -5,9 +5,6 @@ import './ActionsView.css';
 
 function ActionsView() {
   const [actions, setActions] = useState([]);
-  const [deals, setDeals] = useState([]);
-  const [contacts, setContacts] = useState([]);
-  const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('all');
   const [error, setError] = useState('');
@@ -21,26 +18,20 @@ function ActionsView() {
       setLoading(true);
       setError('');
 
-      const [actionsRes, dealsRes, contactsRes, accountsRes] = await Promise.all([
-        apiService.actions.getAll().catch(() => ({ data: { actions: mockData.actions } })),
-        apiService.deals.getAll().catch(() => ({ data: { deals: mockData.deals } })),
-        apiService.contacts.getAll().catch(() => ({ data: { contacts: mockData.contacts } })),
-        apiService.accounts.getAll().catch(() => ({ data: { accounts: mockData.accounts } }))
-      ]);
+      const actionsRes = await apiService.actions.getAll().catch(() => ({ 
+        data: { actions: mockData.actions } 
+      }));
 
       const enrichedData = enrichData({
-        accounts: accountsRes.data.accounts || accountsRes.data || [],
-        deals: dealsRes.data.deals || dealsRes.data || [],
-        contacts: contactsRes.data.contacts || contactsRes.data || [],
+        accounts: mockData.accounts,
+        deals: mockData.deals,
+        contacts: mockData.contacts,
         emails: [],
         meetings: [],
         actions: actionsRes.data.actions || actionsRes.data || []
       });
 
       setActions(enrichedData.actions);
-      setDeals(enrichedData.deals);
-      setContacts(enrichedData.contacts);
-      setAccounts(enrichedData.accounts);
 
     } catch (err) {
       console.error('Error loading actions:', err);
@@ -53,9 +44,6 @@ function ActionsView() {
       });
       
       setActions(enrichedData.actions);
-      setDeals(enrichedData.deals);
-      setContacts(enrichedData.contacts);
-      setAccounts(enrichedData.accounts);
     } finally {
       setLoading(false);
     }
