@@ -1,8 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
-import DealForm from './DealForm';
-import { apiService } from './apiService';
-import { mockData, enrichData } from './mockData';
 import AccountsView from './AccountsView';
 import DealsView from './DealsView';
 
@@ -189,11 +186,7 @@ function Dashboard({ user, onLogout }) {
   );
 }
 
-// DealsView is now imported from DealsView.js
-
-// AccountsView is imported from AccountsView.js
-
-// Other view components (placeholders for now)
+// Placeholder view components
 function ActionsView() {
   return (
     <div className="page-container">
