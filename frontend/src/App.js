@@ -2,6 +2,9 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 import DealForm from './DealForm';
+import { apiService } from './apiService';
+import AccountsView from './AccountsView';
+
 
 // API Configuration
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
@@ -462,19 +465,6 @@ function ActionsView() {
   );
 }
 
-function AccountsView() {
-  return (
-    <div className="page-container">
-      <div className="page-header">
-        <h1>Accounts</h1>
-        <p>Manage company accounts</p>
-      </div>
-      <div className="placeholder-message">
-        <p>Accounts view - Coming soon</p>
-      </div>
-    </div>
-  );
-}
 
 function ContactsView() {
   return (
