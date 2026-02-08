@@ -1,0 +1,393 @@
+/* Actions View */
+.actions-view {
+  padding: 24px 0;
+}
+
+/* Header */
+.actions-header {
+  margin-bottom: 24px;
+}
+
+.actions-header h1 {
+  font-size: 28px;
+  font-weight: 700;
+  color: #1a202c;
+  margin: 0 0 8px 0;
+}
+
+.actions-subtitle {
+  color: #718096;
+  font-size: 15px;
+  margin: 0;
+}
+
+/* Stats */
+.actions-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card.high {
+  border-left: 4px solid #e53e3e;
+}
+
+.stat-card.today {
+  border-left: 4px solid #667eea;
+}
+
+.stat-card.overdue {
+  border-left: 4px solid #d69e2e;
+}
+
+/* Filters */
+.actions-filters {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.filter-btn {
+  padding: 10px 20px;
+  border: 2px solid #e2e8f0;
+  background: white;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #4a5568;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.filter-btn:hover {
+  border-color: #cbd5e0;
+  background: #f7fafc;
+}
+
+.filter-btn.active {
+  border-color: #667eea;
+  background: #667eea;
+  color: white;
+}
+
+/* Actions Container */
+.actions-container {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+/* Actions Section */
+.actions-section {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.section-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 20px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-title.high {
+  color: #e53e3e;
+}
+
+.section-title.medium {
+  color: #d69e2e;
+}
+
+.section-title.low {
+  color: #48bb78;
+}
+
+/* Actions List */
+.actions-list {
+  display: grid;
+  gap: 16px;
+}
+
+/* Action Card */
+.action-card {
+  background: white;
+  border: 2px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 20px;
+  transition: all 0.2s;
+  position: relative;
+}
+
+.action-card:hover {
+  border-color: #cbd5e0;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  transform: translateY(-2px);
+}
+
+.action-card.priority-high {
+  border-left: 4px solid #e53e3e;
+}
+
+.action-card.priority-medium {
+  border-left: 4px solid #d69e2e;
+}
+
+.action-card.priority-low {
+  border-left: 4px solid #48bb78;
+}
+
+.action-card.overdue {
+  background: #fffaf0;
+}
+
+/* Action Card Header */
+.action-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.action-icon {
+  font-size: 28px;
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f7fafc;
+  border-radius: 10px;
+}
+
+.action-meta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.action-type {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+  background: #e2e8f0;
+  color: #4a5568;
+  width: fit-content;
+}
+
+.action-type.follow_up {
+  background: #bee3f8;
+  color: #2c5282;
+}
+
+.action-type.meeting {
+  background: #c6f6d5;
+  color: #22543d;
+}
+
+.action-type.email {
+  background: #feebc8;
+  color: #7c2d12;
+}
+
+.action-type.review {
+  background: #e9d8fd;
+  color: #553c9a;
+}
+
+.action-time {
+  font-size: 13px;
+  color: #718096;
+  font-weight: 600;
+}
+
+.action-time.overdue-text {
+  color: #d69e2e;
+}
+
+/* Action Content */
+.action-content {
+  margin-bottom: 16px;
+}
+
+.action-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: #2d3748;
+  margin: 0 0 8px 0;
+}
+
+.action-description {
+  font-size: 14px;
+  color: #718096;
+  line-height: 1.6;
+  margin: 0 0 12px 0;
+}
+
+.suggested-action {
+  background: #e6fffa;
+  border-left: 3px solid #38b2ac;
+  padding: 12px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  color: #234e52;
+  margin: 12px 0;
+}
+
+/* Action Entity */
+.action-entity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #f7fafc;
+  border-radius: 6px;
+  font-size: 14px;
+  margin-top: 12px;
+}
+
+.entity-icon {
+  font-size: 16px;
+}
+
+.entity-name {
+  font-weight: 600;
+  color: #2d3748;
+}
+
+.entity-company {
+  color: #718096;
+}
+
+/* Action Card Footer */
+.action-card-footer {
+  display: flex;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid #f7fafc;
+}
+
+.btn-complete,
+.btn-dismiss {
+  flex: 1;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-complete {
+  background: #48bb78;
+  color: white;
+}
+
+.btn-complete:hover {
+  background: #38a169;
+}
+
+.btn-dismiss {
+  background: #f7fafc;
+  color: #718096;
+  border: 1px solid #e2e8f0;
+}
+
+.btn-dismiss:hover {
+  background: #edf2f7;
+  border-color: #cbd5e0;
+}
+
+/* Empty State */
+.empty-state {
+  text-align: center;
+  padding: 80px 20px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+
+.empty-state-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.empty-state h3 {
+  font-size: 20px;
+  color: #2d3748;
+  margin: 0 0 8px 0;
+}
+
+.empty-state p {
+  color: #718096;
+  font-size: 16px;
+  margin: 0;
+}
+
+/* Loading State */
+.loading-state {
+  text-align: center;
+  padding: 80px 20px;
+}
+
+.loading-spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid #e2e8f0;
+  border-top-color: #667eea;
+  border-radius: 50%;
+  margin: 0 auto 20px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-state p {
+  color: #718096;
+  font-size: 16px;
+}
+
+/* Info Banner */
+.info-banner {
+  background: #bee3f8;
+  border: 1px solid #90cdf4;
+  color: #2c5282;
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  font-size: 14px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .actions-filters {
+    flex-direction: column;
+  }
+
+  .filter-btn {
+    width: 100%;
+  }
+
+  .actions-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .action-card-footer {
+    flex-direction: column;
+  }
+}

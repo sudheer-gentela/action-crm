@@ -4,6 +4,8 @@ import AccountsView from './AccountsView';
 import DealsView from './DealsView';
 import ContactsView from './ContactsView';
 import EmailView from './EmailView';
+import ActionsView from './ActionsView';
+import CalendarView from './CalendarView';
 
 // Simple authentication check
 const useAuth = () => {
@@ -117,7 +119,7 @@ function LoginScreen({ onLogin }) {
 
 // Main Dashboard
 function Dashboard({ user, onLogout }) {
-  const [currentTab, setCurrentTab] = useState('deals');
+  const [currentTab, setCurrentTab] = useState('actions');
   
   return (
     <div className="dashboard">
@@ -183,35 +185,6 @@ function Dashboard({ user, onLogout }) {
         {currentTab === 'contacts' && <ContactsView />}
         {currentTab === 'email' && <EmailView />}
         {currentTab === 'calendar' && <CalendarView />}
-      </div>
-    </div>
-  );
-}
-
-// Placeholder view components
-function ActionsView() {
-  return (
-    <div className="page-container">
-      <div className="page-header">
-        <h1>Your Action Feed</h1>
-        <p>8 actions need your attention today</p>
-      </div>
-      <div className="placeholder-message">
-        <p>Actions view - Coming soon</p>
-      </div>
-    </div>
-  );
-}
-
-function CalendarView() {
-  return (
-    <div className="page-container">
-      <div className="page-header">
-        <h1>Calendar</h1>
-        <p>Manage meetings</p>
-      </div>
-      <div className="placeholder-message">
-        <p>Calendar view - Coming soon</p>
       </div>
     </div>
   );
