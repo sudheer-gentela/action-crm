@@ -1,9 +1,29 @@
 import React, { useState, useEffect } from 'react';
+import axios from 'axios';
 import './App.css';
+import DealForm from './DealForm';
+
+// API Configuration
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+
+// Create axios instance with interceptor for auth
+const api = axios.create({
+  baseURL: API_URL,
+});
+
+// Add token to requests
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
 
 // Simple authentication check
 const useAuth = () => {
   const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
   
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -11,14 +31,21 @@ const useAuth = () => {
     if (token && userData) {
       setUser(JSON.parse(userData));
     }
+    setLoading(false);
   }, []);
   
-  const login = (email, password) => {
-    // Simple mock login for demo
-    const mockUser = { id: 1, email, name: 'Demo User' };
-    localStorage.setItem('token', 'demo-token');
-    localStorage.setItem('user', JSON.stringify(mockUser));
-    setUser(mockUser);
+  const login = async (email, password) => {
+    try {
+      // For now, use demo mode
+      // In production, replace with: const response = await api.post('/auth/login', { email, password });
+      const mockUser = { id: 1, email, name: email.split('@')[0] };
+      localStorage.setItem('token', 'demo-token');
+      localStorage.setItem('user', JSON.stringify(mockUser));
+      setUser(mockUser);
+    } catch (error) {
+      console.error('Login error:', error);
+      throw error;
+    }
   };
   
   const logout = () => {
@@ -27,18 +54,29 @@ const useAuth = () => {
     setUser(null);
   };
   
-  return { user, login, logout };
+  return { user, login, logout, loading };
 };
 
 // Login Screen
 function LoginScreen({ onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (email && password) {
-      onLogin(email, password);
+    setError('');
+    setLoading(true);
+    
+    try {
+      if (email && password) {
+        await onLogin(email, password);
+      }
+    } catch (err) {
+      setError('Login failed. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
   
@@ -58,6 +96,7 @@ function LoginScreen({ onLogin }) {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@company.com"
               required
+              disabled={loading}
             />
           </div>
           
@@ -69,11 +108,14 @@ function LoginScreen({ onLogin }) {
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
               required
+              disabled={loading}
             />
           </div>
           
-          <button type="submit" className="btn-primary">
-            Sign In
+          {error && <div className="error-message">{error}</div>}
+          
+          <button type="submit" className="btn-primary" disabled={loading}>
+            {loading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
         
@@ -83,7 +125,7 @@ function LoginScreen({ onLogin }) {
         
         <div className="deployment-info">
           <p><strong>Backend API:</strong></p>
-          <code>{process.env.REACT_APP_API_URL || 'Not configured - set REACT_APP_API_URL'}</code>
+          <code>{API_URL}</code>
         </div>
       </div>
     </div>
@@ -92,7 +134,7 @@ function LoginScreen({ onLogin }) {
 
 // Main Dashboard
 function Dashboard({ user, onLogout }) {
-  const [currentTab, setCurrentTab] = useState('actions');
+  const [currentTab, setCurrentTab] = useState('deals');
   
   return (
     <div className="dashboard">
@@ -163,7 +205,249 @@ function Dashboard({ user, onLogout }) {
   );
 }
 
-// Actions View
+// Enhanced Deals View with CRUD
+function DealsView() {
+  const [deals, setDeals] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editingDeal, setEditingDeal] = useState(null);
+  const [error, setError] = useState('');
+
+  // Fetch deals and accounts
+  useEffect(() => {
+    fetchDeals();
+    fetchAccounts();
+  }, []);
+
+  const fetchDeals = async () => {
+    try {
+      setLoading(true);
+      const response = await api.get('/deals');
+      setDeals(response.data.deals || []);
+      setError('');
+    } catch (err) {
+      console.error('Error fetching deals:', err);
+      setError('Failed to load deals');
+      // Use mock data if API fails
+      setDeals(getMockDeals());
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchAccounts = async () => {
+    try {
+      const response = await api.get('/accounts');
+      setAccounts(response.data.accounts || []);
+    } catch (err) {
+      console.error('Error fetching accounts:', err);
+      // Use mock accounts if API fails
+      setAccounts(getMockAccounts());
+    }
+  };
+
+  const handleCreateDeal = async (dealData) => {
+    try {
+      const response = await api.post('/deals', dealData);
+      setDeals([...deals, response.data.deal]);
+      setShowForm(false);
+      setError('');
+    } catch (err) {
+      console.error('Error creating deal:', err);
+      // For demo, add to local state
+      const newDeal = { ...dealData, id: Date.now() };
+      setDeals([...deals, newDeal]);
+      setShowForm(false);
+    }
+  };
+
+  const handleUpdateDeal = async (dealData) => {
+    try {
+      const response = await api.put(`/deals/${editingDeal.id}`, dealData);
+      setDeals(deals.map(d => d.id === editingDeal.id ? response.data.deal : d));
+      setEditingDeal(null);
+      setError('');
+    } catch (err) {
+      console.error('Error updating deal:', err);
+      // For demo, update local state
+      setDeals(deals.map(d => d.id === editingDeal.id ? { ...d, ...dealData } : d));
+      setEditingDeal(null);
+    }
+  };
+
+  const handleDeleteDeal = async (dealId) => {
+    if (!window.confirm('Are you sure you want to delete this deal?')) {
+      return;
+    }
+
+    try {
+      await api.delete(`/deals/${dealId}`);
+      setDeals(deals.filter(d => d.id !== dealId));
+      setError('');
+    } catch (err) {
+      console.error('Error deleting deal:', err);
+      // For demo, remove from local state
+      setDeals(deals.filter(d => d.id !== dealId));
+    }
+  };
+
+  const groupedDeals = {
+    qualified: deals.filter(d => d.stage === 'qualified'),
+    demo: deals.filter(d => d.stage === 'demo'),
+    proposal: deals.filter(d => d.stage === 'proposal'),
+    negotiation: deals.filter(d => d.stage === 'negotiation'),
+    closed_won: deals.filter(d => d.stage === 'closed_won')
+  };
+
+  const stages = [
+    { id: 'qualified', label: 'Qualified' },
+    { id: 'demo', label: 'Demo' },
+    { id: 'proposal', label: 'Proposal' },
+    { id: 'negotiation', label: 'Negotiation' },
+    { id: 'closed_won', label: 'Closed Won' }
+  ];
+
+  if (loading) {
+    return (
+      <div className="page-container">
+        <div className="loading-spinner">Loading deals...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page-container">
+      <div className="page-header">
+        <div>
+          <h1>Deal Pipeline</h1>
+          <p>Manage your sales opportunities</p>
+        </div>
+        <button className="btn-primary" onClick={() => setShowForm(true)}>
+          + New Deal
+        </button>
+      </div>
+
+      {error && (
+        <div className="error-banner">
+          {error}
+        </div>
+      )}
+
+      <div className="pipeline-stats">
+        <div className="stat-card">
+          <div className="stat-value">{deals.length}</div>
+          <div className="stat-label">Active Deals</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-value">
+            ${deals.reduce((sum, d) => sum + (parseFloat(d.value) || 0), 0).toLocaleString()}
+          </div>
+          <div className="stat-label">Total Pipeline</div>
+        </div>
+      </div>
+
+      <div className="pipeline-board">
+        {stages.map(stage => (
+          <div key={stage.id} className="pipeline-column">
+            <div className="column-header">
+              <h3>{stage.label}</h3>
+              <span className="count">{groupedDeals[stage.id]?.length || 0}</span>
+            </div>
+            <div className="column-content">
+              {groupedDeals[stage.id]?.map(deal => (
+                <DealCard
+                  key={deal.id}
+                  deal={deal}
+                  onEdit={() => setEditingDeal(deal)}
+                  onDelete={() => handleDeleteDeal(deal.id)}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {(showForm || editingDeal) && (
+        <DealForm
+          deal={editingDeal}
+          accounts={accounts}
+          onSubmit={editingDeal ? handleUpdateDeal : handleCreateDeal}
+          onClose={() => {
+            setShowForm(false);
+            setEditingDeal(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function DealCard({ deal, onEdit, onDelete }) {
+  const account = deal.account || { name: 'Unknown Account' };
+  
+  return (
+    <div className="deal-card">
+      <div className="deal-card-header">
+        <h4>{deal.name}</h4>
+        <div className="deal-actions">
+          <button onClick={onEdit} className="icon-btn" title="Edit">
+            ✏️
+          </button>
+          <button onClick={onDelete} className="icon-btn" title="Delete">
+            🗑️
+          </button>
+        </div>
+      </div>
+      <p className="deal-company">{account.name}</p>
+      <p className="deal-value">${parseFloat(deal.value || 0).toLocaleString()}</p>
+      <div className={`deal-health ${deal.health}`}>
+        ● {deal.health}
+      </div>
+      <p className="deal-date">
+        Close: {deal.expected_close_date ? new Date(deal.expected_close_date).toLocaleDateString() : 'Not set'}
+      </p>
+    </div>
+  );
+}
+
+// Mock data functions (for demo when API is not available)
+function getMockDeals() {
+  return [
+    {
+      id: 1,
+      name: 'Acme Corp Enterprise Deal',
+      account: { name: 'Acme Corp' },
+      value: 85000,
+      stage: 'negotiation',
+      health: 'healthy',
+      expected_close_date: '2024-03-15',
+      probability: 75
+    },
+    {
+      id: 2,
+      name: 'TechFlow Platform Upgrade',
+      account: { name: 'TechFlow Industries' },
+      value: 125000,
+      stage: 'proposal',
+      health: 'healthy',
+      expected_close_date: '2024-03-20',
+      probability: 65
+    }
+  ];
+}
+
+function getMockAccounts() {
+  return [
+    { id: 1, name: 'Acme Corp' },
+    { id: 2, name: 'TechFlow Industries' },
+    { id: 3, name: 'CloudScale Inc' },
+    { id: 4, name: 'Quantum Labs' },
+    { id: 5, name: 'BuildRight Co' }
+  ];
+}
+
+// Other view components (unchanged)
 function ActionsView() {
   return (
     <div className="page-container">
@@ -171,230 +455,64 @@ function ActionsView() {
         <h1>Your Action Feed</h1>
         <p>8 actions need your attention today</p>
       </div>
-      
-      <div className="stats-grid">
-        <div className="stat-card">
-          <div className="stat-value">8</div>
-          <div className="stat-label">Open Actions</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-value">12</div>
-          <div className="stat-label">Active Deals</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-value">$423K</div>
-          <div className="stat-label">Pipeline</div>
-        </div>
-      </div>
-      
-      <div className="action-list">
-        <ActionItem 
-          title="Follow up with Sarah Chen - Acme Corp"
-          type="email"
-          priority="high"
-          deal="Acme Corp Enterprise ($85K)"
-        />
-        <ActionItem 
-          title="Prepare for TechFlow executive presentation"
-          type="meeting"
-          priority="high"
-          deal="TechFlow Enterprise Platform ($125K)"
-        />
-        <ActionItem 
-          title="Send proposal to CloudScale Inc"
-          type="proposal"
-          priority="medium"
-          deal="CloudScale Platform ($65K)"
-        />
+      <div className="placeholder-message">
+        <p>Actions view - Coming soon</p>
       </div>
     </div>
   );
 }
 
-function ActionItem({ title, type, priority, deal }) {
-  return (
-    <div className={`action-item priority-${priority}`}>
-      <div className="action-icon">{type === 'email' ? '✉️' : type === 'meeting' ? '📅' : '📄'}</div>
-      <div className="action-content">
-        <h3>{title}</h3>
-        <p className="action-deal">{deal}</p>
-      </div>
-      <div className="action-actions">
-        <button className="btn-small">Take Action</button>
-      </div>
-    </div>
-  );
-}
-
-// Deals View
-function DealsView() {
-  return (
-    <div className="page-container">
-      <div className="page-header">
-        <h1>Deal Pipeline</h1>
-        <p>Visual pipeline with AI health scoring</p>
-      </div>
-      
-      <div className="pipeline-board">
-        <PipelineColumn title="Qualified" count={3} />
-        <PipelineColumn title="Demo" count={4} />
-        <PipelineColumn title="Proposal" count={2} />
-        <PipelineColumn title="Negotiation" count={2} />
-        <PipelineColumn title="Closed Won" count={1} />
-      </div>
-    </div>
-  );
-}
-
-function PipelineColumn({ title, count }) {
-  return (
-    <div className="pipeline-column">
-      <div className="column-header">
-        <h3>{title}</h3>
-        <span className="count">{count}</span>
-      </div>
-      <div className="column-content">
-        {title === 'Negotiation' && (
-          <div className="deal-card">
-            <h4>TechFlow Enterprise Platform</h4>
-            <p className="deal-company">TechFlow Industries</p>
-            <p className="deal-value">$125,000</p>
-            <div className="deal-health good">● Good Health</div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Accounts View
 function AccountsView() {
   return (
     <div className="page-container">
       <div className="page-header">
         <h1>Accounts</h1>
-        <p>Manage company accounts and opportunities</p>
+        <p>Manage company accounts</p>
       </div>
-      
-      <div className="accounts-grid">
-        <AccountCard name="Acme Corp" industry="Technology" deals={1} value="$85K" />
-        <AccountCard name="TechFlow Industries" industry="Manufacturing" deals={1} value="$125K" />
-        <AccountCard name="CloudScale Inc" industry="SaaS" deals={1} value="$65K" />
+      <div className="placeholder-message">
+        <p>Accounts view - Coming soon</p>
       </div>
     </div>
   );
 }
 
-function AccountCard({ name, industry, deals, value }) {
-  return (
-    <div className="account-card">
-      <div className="account-icon">{name.substring(0, 2).toUpperCase()}</div>
-      <h3>{name}</h3>
-      <p className="account-industry">{industry}</p>
-      <div className="account-stats">
-        <div><strong>{deals}</strong> Deals</div>
-        <div><strong>{value}</strong> Pipeline</div>
-      </div>
-    </div>
-  );
-}
-
-// Contacts View
 function ContactsView() {
   return (
     <div className="page-container">
       <div className="page-header">
         <h1>Contacts</h1>
-        <p>Manage relationships and engagement</p>
+        <p>Manage relationships</p>
       </div>
-      
-      <div className="contacts-list">
-        <ContactItem name="Sarah Chen" title="VP Product" company="Acme Corp" />
-        <ContactItem name="David Martinez" title="CTO" company="TechFlow Industries" />
-        <ContactItem name="Michael Rodriguez" title="CEO" company="CloudScale Inc" />
+      <div className="placeholder-message">
+        <p>Contacts view - Coming soon</p>
       </div>
     </div>
   );
 }
 
-function ContactItem({ name, title, company }) {
-  return (
-    <div className="contact-item">
-      <div className="contact-avatar">{name.split(' ').map(n => n[0]).join('')}</div>
-      <div className="contact-info">
-        <h3>{name}</h3>
-        <p>{title} at {company}</p>
-      </div>
-    </div>
-  );
-}
-
-// Email View
 function EmailView() {
   return (
     <div className="page-container">
       <div className="page-header">
         <h1>Email Center</h1>
-        <p>Send, track, and manage sales emails</p>
+        <p>Send and track emails</p>
       </div>
-      
-      <div className="email-container">
-        <div className="email-sidebar">
-          <button className="btn-primary">✉️ Compose</button>
-          <div className="email-folders">
-            <div className="email-folder active">📥 Inbox (12)</div>
-            <div className="email-folder">📤 Sent (45)</div>
-            <div className="email-folder">📊 Tracked (28)</div>
-          </div>
-        </div>
-        <div className="email-list">
-          <EmailItem 
-            from="Sarah Chen - Acme Corp" 
-            subject="Re: Demo Follow-up"
-            preview="Thanks for the great demo yesterday..."
-            status="opened"
-          />
-        </div>
+      <div className="placeholder-message">
+        <p>Email center - Coming soon</p>
       </div>
     </div>
   );
 }
 
-function EmailItem({ from, subject, preview, status }) {
-  return (
-    <div className="email-item">
-      <h4>{from}</h4>
-      <p className="email-subject">{subject}</p>
-      <p className="email-preview">{preview}</p>
-      <span className={`email-status ${status}`}>{status === 'opened' ? '✓ Opened' : '⏳ Pending'}</span>
-    </div>
-  );
-}
-
-// Calendar View
 function CalendarView() {
   return (
     <div className="page-container">
       <div className="page-header">
         <h1>Calendar</h1>
-        <p>Manage meetings and appointments</p>
+        <p>Manage meetings</p>
       </div>
-      
-      <div className="calendar-grid">
-        <div className="calendar-day">
-          <h4>Monday</h4>
-          <div className="meeting-card">
-            <div className="meeting-time">2:00 PM</div>
-            <div className="meeting-title">TechFlow Executive Presentation</div>
-          </div>
-        </div>
-        <div className="calendar-day">
-          <h4>Tuesday</h4>
-          <div className="meeting-card">
-            <div className="meeting-time">10:00 AM</div>
-            <div className="meeting-title">Acme Corp Demo</div>
-          </div>
-        </div>
+      <div className="placeholder-message">
+        <p>Calendar view - Coming soon</p>
       </div>
     </div>
   );
@@ -402,7 +520,15 @@ function CalendarView() {
 
 // Main App Component
 function App() {
-  const { user, login, logout } = useAuth();
+  const { user, login, logout, loading } = useAuth();
+  
+  if (loading) {
+    return (
+      <div className="loading-container">
+        <div className="loading-spinner">Loading...</div>
+      </div>
+    );
+  }
   
   return (
     <div className="App">

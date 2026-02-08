@@ -303,7 +303,7 @@ VALUES
      CURRENT_TIMESTAMP + INTERVAL '2 hours'),
     (1, 3, 4, 'research', 'medium', 'Research New Contact: Michael Rodriguez',
      'Get background before next call',
-     'New stakeholder added to CloudScale deal. He has been CC\'d on recent emails.',
+     'New stakeholder added to CloudScale deal. He has been CCd on recent emails.',
      CURRENT_TIMESTAMP);
 
 -- Sample emails
