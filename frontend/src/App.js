@@ -3,6 +3,7 @@ import './App.css';
 import AccountsView from './AccountsView';
 import DealsView from './DealsView';
 import ContactsView from './ContactsView';
+import EmailView from './EmailView';
 
 // Simple authentication check
 const useAuth = () => {
@@ -197,20 +198,6 @@ function ActionsView() {
       </div>
       <div className="placeholder-message">
         <p>Actions view - Coming soon</p>
-      </div>
-    </div>
-  );
-}
-
-function EmailView() {
-  return (
-    <div className="page-container">
-      <div className="page-header">
-        <h1>Email Center</h1>
-        <p>Send and track emails</p>
-      </div>
-      <div className="placeholder-message">
-        <p>Email center - Coming soon</p>
       </div>
     </div>
   );

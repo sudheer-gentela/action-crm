@@ -65,7 +65,7 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
 
 //    if (formData.phone && !formData.phone.match(/^[\d\s\-\+\(\)]+$/)) {
 //      newErrors.phone = 'Please enter a valid phone number';
-//   }
+//    }
 
     if (!formData.account_id) {
       newErrors.account_id = 'Please select an account';
