@@ -8,39 +8,7 @@ import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
 
 // Simple authentication check
-const useAuth = () => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-  
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    const userData = localStorage.getItem('user');
-    if (token && userData) {
-      setUser(JSON.parse(userData));
-    }
-    setLoading(false);
-  }, []);
-  
-  const login = async (email, password) => {
-    try {
-      const mockUser = { id: 1, email, name: email.split('@')[0] };
-      localStorage.setItem('token', 'demo-token');
-      localStorage.setItem('user', JSON.stringify(mockUser));
-      setUser(mockUser);
-    } catch (error) {
-      console.error('Login error:', error);
-      throw error;
-    }
-  };
-  
-  const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    setUser(null);
-  };
-  
-  return { user, login, logout, loading };
-};
+
 
 // Login Screen
 function LoginScreen({ onLogin }) {
@@ -63,7 +31,59 @@ function LoginScreen({ onLogin }) {
     } finally {
       setLoading(false);
     }
+  };const useAuth = () => {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    const userData = localStorage.getItem('user');
+    if (token && userData) {
+      setUser(JSON.parse(userData));
+    }
+    setLoading(false);
+  }, []);
+  
+  const login = async (email, password) => {
+    try {
+      // ✅ Call REAL backend auth endpoint
+      const response = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:3001/api'}/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email, password }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error?.message || 'Login failed');
+      }
+
+      const data = await response.json();
+      
+      // Save REAL token and user data
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('user', JSON.stringify(data.user));
+      setUser(data.user);
+      
+      console.log('✅ Logged in successfully with real token');
+      
+    } catch (error) {
+      console.error('Login error:', error);
+      throw error;
+    }
   };
+  
+  const logout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setUser(null);
+  };
+  
+  return { user, login, logout, loading };
+};
+
   
   return (
     <div className="login-container">
