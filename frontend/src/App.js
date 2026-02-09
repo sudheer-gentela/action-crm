@@ -135,6 +135,9 @@ function AuthScreen({ onLogin, onRegister }) {
           formData.password,
           formData.firstName,
           formData.lastName
+
+      console.log('Email ' +formData.email);
+
         );
       } else {
         // Login
