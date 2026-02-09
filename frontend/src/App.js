@@ -130,14 +130,14 @@ function AuthScreen({ onLogin, onRegister }) {
           throw new Error('Password must be at least 8 characters');
         }
         
+      console.log('Email ');
+      console.log(formData.email);
+
         await onRegister(
           formData.email,
           formData.password,
           formData.firstName,
           formData.lastName
-
-      console.log('Email ' +formData.email);
-
         );
       } else {
         // Login
