@@ -69,9 +69,9 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
       newErrors.email = 'Please enter a valid email address';
     }
 
-    if (formData.phone && !formData.phone.match(/^[\d\s\-\+\(\)]+$/)) {
-      newErrors.phone = 'Please enter a valid phone number';
-    }
+//    if (formData.phone && !formData.phone.match(/^[\d\s\-\+\(\)]+$/)) {
+//      newErrors.phone = 'Please enter a valid phone number';
+//    }
 
     if (!formData.accountId) {
       newErrors.accountId = 'Please select an account';
