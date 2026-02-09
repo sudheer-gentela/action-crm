@@ -68,55 +68,72 @@ function ContactsView() {
     }
   };
 
-  const handleCreateContact = async (contactData) => {
-    try {
-      const response = await apiService.contacts.create(contactData);
-      const newContact = response.data.contact || response.data;
-      
-      // Enrich the new contact
-      const account = accounts.find(a => a.id === newContact.account_id);
-      const enrichedContact = { ...newContact, account };
-      
-      setContacts([...contacts, enrichedContact]);
-      setShowForm(false);
-      setError('');
-    } catch (err) {
-      console.error('Error creating contact:', err);
-      const newContact = { 
-        ...contactData, 
-        id: Date.now(),
-        account: accounts.find(a => a.id === contactData.account_id),
-        created_at: new Date().toISOString(),
-        last_contact_date: new Date().toISOString()
-      };
-      setContacts([...contacts, newContact]);
-      setShowForm(false);
-    }
-  };
+const handleCreateContact = async (contactData) => {
+  try {
+    console.log('🔵 Creating contact with data:', contactData);
+    
+    const response = await apiService.contacts.create(contactData);
+    console.log('✅ Contact created successfully:', response.data);
+    
+    const newContact = response.data.contact || response.data;
+    
+    // Enrich the new contact
+    const account = accounts.find(a => a.id === newContact.account_id);
+    const enrichedContact = { ...newContact, account };
+    
+    setContacts([...contacts, enrichedContact]);
+    setShowForm(false);
+    setError('');
+    
+    // Show success message
+    console.log('✅ Contact added to state:', enrichedContact);
+    
+  } catch (err) {
+    console.error('❌ Error creating contact:', err);
+    console.error('❌ Error response:', err.response?.data);
+    console.error('❌ Error status:', err.response?.status);
+    
+    // Show error to user instead of silently creating temporary contact
+    setError(`Failed to create contact: ${err.response?.data?.error?.message || err.message}`);
+    
+    // DO NOT create temporary contact - let user see the error
+    // This way they know it didn't save to database
+  }
+};
 
-  const handleUpdateContact = async (contactData) => {
-    try {
-      const response = await apiService.contacts.update(editingContact.id, contactData);
-      const updatedContact = response.data.contact || response.data;
-      
-      // Enrich the updated contact
-      const account = accounts.find(a => a.id === updatedContact.account_id);
-      const enrichedContact = { ...updatedContact, account };
-      
-      setContacts(contacts.map(c => 
-        c.id === editingContact.id ? enrichedContact : c
-      ));
-      setEditingContact(null);
-      setError('');
-    } catch (err) {
-      console.error('Error updating contact:', err);
-      const account = accounts.find(a => a.id === contactData.account_id);
-      setContacts(contacts.map(c => 
-        c.id === editingContact.id ? { ...c, ...contactData, account } : c
-      ));
-      setEditingContact(null);
-    }
-  };
+// Similarly, update handleUpdateContact (replace lines 97-118):
+
+const handleUpdateContact = async (contactData) => {
+  try {
+    console.log('🔵 Updating contact:', editingContact.id, 'with data:', contactData);
+    
+    const response = await apiService.contacts.update(editingContact.id, contactData);
+    console.log('✅ Contact updated successfully:', response.data);
+    
+    const updatedContact = response.data.contact || response.data;
+    
+    // Update in state
+    const account = accounts.find(a => a.id === updatedContact.account_id);
+    const enrichedContact = { ...updatedContact, account };
+    
+    setContacts(contacts.map(c => 
+      c.id === editingContact.id ? enrichedContact : c
+    ));
+    
+    setEditingContact(null);
+    setShowForm(false);
+    setError('');
+    
+    console.log('✅ Contact updated in state:', enrichedContact);
+    
+  } catch (err) {
+    console.error('❌ Error updating contact:', err);
+    console.error('❌ Error response:', err.response?.data);
+    
+    setError(`Failed to update contact: ${err.response?.data?.error?.message || err.message}`);
+  }
+};
+
 
   const handleDeleteContact = async (contactId) => {
     if (!window.confirm('Are you sure you want to delete this contact?')) {

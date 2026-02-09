@@ -3,14 +3,17 @@ import './ContactForm.css';
 
 function ContactForm({ contact, accounts, onSubmit, onClose }) {
   const [formData, setFormData] = useState({
-    first_name: '',
-    last_name: '',
+    firstName: '',
+    lastName: '',
     email: '',
     phone: '',
     title: '',
-    account_id: '',
-    role_type: '',
-    engagement_level: 'medium'
+    accountId: '',
+    roleType: '',
+    engagementLevel: 'medium',
+    location: '',
+    linkedinUrl: '',
+    notes: ''
   });
 
   const [errors, setErrors] = useState({});
@@ -20,14 +23,17 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
   useEffect(() => {
     if (contact) {
       setFormData({
-        first_name: contact.first_name || '',
-        last_name: contact.last_name || '',
+        firstName: contact.first_name || '',
+        lastName: contact.last_name || '',
         email: contact.email || '',
         phone: contact.phone || '',
         title: contact.title || '',
-        account_id: contact.account_id || '',
-        role_type: contact.role_type || '',
-        engagement_level: contact.engagement_level || 'medium'
+        accountId: contact.account_id || '',
+        roleType: contact.role_type || '',
+        engagementLevel: contact.engagement_level || 'medium',
+        location: contact.location || '',
+        linkedinUrl: contact.linkedin_url || '',
+        notes: contact.notes || ''
       });
     }
   }, [contact]);
@@ -49,12 +55,12 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
   const validateForm = () => {
     const newErrors = {};
 
-    if (!formData.first_name.trim()) {
-      newErrors.first_name = 'First name is required';
+    if (!formData.firstName.trim()) {
+      newErrors.firstName = 'First name is required';
     }
 
-    if (!formData.last_name.trim()) {
-      newErrors.last_name = 'Last name is required';
+    if (!formData.lastName.trim()) {
+      newErrors.lastName = 'Last name is required';
     }
 
     if (!formData.email.trim()) {
@@ -63,12 +69,12 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
       newErrors.email = 'Please enter a valid email address';
     }
 
-//    if (formData.phone && !formData.phone.match(/^[\d\s\-\+\(\)]+$/)) {
-//      newErrors.phone = 'Please enter a valid phone number';
-//    }
+    if (formData.phone && !formData.phone.match(/^[\d\s\-\+\(\)]+$/)) {
+      newErrors.phone = 'Please enter a valid phone number';
+    }
 
-    if (!formData.account_id) {
-      newErrors.account_id = 'Please select an account';
+    if (!formData.accountId) {
+      newErrors.accountId = 'Please select an account';
     }
 
     setErrors(newErrors);
@@ -98,47 +104,45 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>{contact ? 'Edit Contact' : 'Create New Contact'}</h2>
-          <button className="close-button" onClick={onClose}>×</button>
+          <h2>{contact ? 'Edit Contact' : 'New Contact'}</h2>
+          <button className="btn-close" onClick={onClose}>×</button>
         </div>
 
         <form onSubmit={handleSubmit} className="contact-form">
-          {/* Name Fields */}
           <div className="form-row">
             <div className="form-group">
-              <label htmlFor="first_name">
+              <label htmlFor="firstName">
                 First Name <span className="required">*</span>
               </label>
               <input
                 type="text"
-                id="first_name"
-                name="first_name"
-                value={formData.first_name}
+                id="firstName"
+                name="firstName"
+                value={formData.firstName}
                 onChange={handleChange}
-                placeholder="John"
-                className={errors.first_name ? 'error' : ''}
+                className={errors.firstName ? 'error' : ''}
+                placeholder="Enter first name"
               />
-              {errors.first_name && <span className="error-message">{errors.first_name}</span>}
+              {errors.firstName && <span className="error-message">{errors.firstName}</span>}
             </div>
 
             <div className="form-group">
-              <label htmlFor="last_name">
+              <label htmlFor="lastName">
                 Last Name <span className="required">*</span>
               </label>
               <input
                 type="text"
-                id="last_name"
-                name="last_name"
-                value={formData.last_name}
+                id="lastName"
+                name="lastName"
+                value={formData.lastName}
                 onChange={handleChange}
-                placeholder="Doe"
-                className={errors.last_name ? 'error' : ''}
+                className={errors.lastName ? 'error' : ''}
+                placeholder="Enter last name"
               />
-              {errors.last_name && <span className="error-message">{errors.last_name}</span>}
+              {errors.lastName && <span className="error-message">{errors.lastName}</span>}
             </div>
           </div>
 
-          {/* Email and Phone */}
           <div className="form-row">
             <div className="form-group">
               <label htmlFor="email">
@@ -150,8 +154,8 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
                 name="email"
                 value={formData.email}
                 onChange={handleChange}
-                placeholder="john.doe@company.com"
                 className={errors.email ? 'error' : ''}
+                placeholder="contact@company.com"
               />
               {errors.email && <span className="error-message">{errors.email}</span>}
             </div>
@@ -164,14 +168,13 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
                 name="phone"
                 value={formData.phone}
                 onChange={handleChange}
-                placeholder="+1-555-123-4567"
                 className={errors.phone ? 'error' : ''}
+                placeholder="+1-555-123-4567"
               />
               {errors.phone && <span className="error-message">{errors.phone}</span>}
             </div>
           </div>
 
-          {/* Title and Account */}
           <div className="form-row">
             <div className="form-group">
               <label htmlFor="title">Job Title</label>
@@ -186,15 +189,15 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
             </div>
 
             <div className="form-group">
-              <label htmlFor="account_id">
+              <label htmlFor="accountId">
                 Account <span className="required">*</span>
               </label>
               <select
-                id="account_id"
-                name="account_id"
-                value={formData.account_id}
+                id="accountId"
+                name="accountId"
+                value={formData.accountId}
                 onChange={handleChange}
-                className={errors.account_id ? 'error' : ''}
+                className={errors.accountId ? 'error' : ''}
               >
                 <option value="">Select account...</option>
                 {accounts.map(account => (
@@ -203,66 +206,88 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
                   </option>
                 ))}
               </select>
-              {errors.account_id && <span className="error-message">{errors.account_id}</span>}
+              {errors.accountId && <span className="error-message">{errors.accountId}</span>}
             </div>
           </div>
 
-          {/* Role Type and Engagement */}
           <div className="form-row">
             <div className="form-group">
-              <label htmlFor="role_type">Role Type</label>
+              <label htmlFor="roleType">Role Type</label>
               <select
-                id="role_type"
-                name="role_type"
-                value={formData.role_type}
+                id="roleType"
+                name="roleType"
+                value={formData.roleType}
                 onChange={handleChange}
               >
                 <option value="">Select role...</option>
                 <option value="decision_maker">Decision Maker</option>
                 <option value="influencer">Influencer</option>
                 <option value="champion">Champion</option>
-                <option value="technical">Technical Evaluator</option>
+                <option value="blocker">Blocker</option>
                 <option value="end_user">End User</option>
               </select>
             </div>
 
             <div className="form-group">
-              <label htmlFor="engagement_level">Engagement Level</label>
+              <label htmlFor="engagementLevel">Engagement Level</label>
               <select
-                id="engagement_level"
-                name="engagement_level"
-                value={formData.engagement_level}
+                id="engagementLevel"
+                name="engagementLevel"
+                value={formData.engagementLevel}
                 onChange={handleChange}
               >
-                <option value="high">High - Very Engaged</option>
-                <option value="medium">Medium - Moderately Engaged</option>
-                <option value="low">Low - Minimal Engagement</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
               </select>
             </div>
           </div>
 
-          {/* Submit Error */}
+          <div className="form-group">
+            <label htmlFor="location">Location</label>
+            <input
+              type="text"
+              id="location"
+              name="location"
+              value={formData.location}
+              onChange={handleChange}
+              placeholder="San Francisco, CA"
+            />
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="linkedinUrl">LinkedIn URL</label>
+            <input
+              type="url"
+              id="linkedinUrl"
+              name="linkedinUrl"
+              value={formData.linkedinUrl}
+              onChange={handleChange}
+              placeholder="https://linkedin.com/in/username"
+            />
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="notes">Notes</label>
+            <textarea
+              id="notes"
+              name="notes"
+              value={formData.notes}
+              onChange={handleChange}
+              rows="3"
+              placeholder="Additional notes about this contact..."
+            />
+          </div>
+
           {errors.submit && (
-            <div className="error-banner">
-              {errors.submit}
-            </div>
+            <div className="error-message submit-error">{errors.submit}</div>
           )}
 
-          {/* Form Actions */}
           <div className="form-actions">
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={onClose}
-              disabled={isSubmitting}
-            >
+            <button type="button" onClick={onClose} className="btn-cancel">
               Cancel
             </button>
-            <button
-              type="submit"
-              className="btn-primary"
-              disabled={isSubmitting}
-            >
+            <button type="submit" className="btn-submit" disabled={isSubmitting}>
               {isSubmitting ? 'Saving...' : (contact ? 'Update Contact' : 'Create Contact')}
             </button>
           </div>
