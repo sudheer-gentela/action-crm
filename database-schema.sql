@@ -1,5 +1,6 @@
--- Action CRM Database Schema
+-- Action CRM Database Schema - UPDATED
 -- PostgreSQL Database
+-- Includes ActionsEngine support with 'source' column
 
 -- Drop existing tables if they exist
 DROP TABLE IF EXISTS conversation_starters CASCADE;
@@ -93,6 +94,7 @@ CREATE TABLE deal_contacts (
 );
 
 -- Actions (prioritized task list)
+-- *** UPDATED: Added 'source' column for ActionsEngine ***
 CREATE TABLE actions (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -108,6 +110,8 @@ CREATE TABLE actions (
     due_date TIMESTAMP,
     completed BOOLEAN DEFAULT FALSE,
     completed_at TIMESTAMP,
+    source VARCHAR(50) DEFAULT 'manual',
+    -- *** NEW: source - 'manual' (user created) or 'auto_generated' (ActionsEngine) ***
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -238,6 +242,8 @@ CREATE INDEX idx_actions_user ON actions(user_id);
 CREATE INDEX idx_actions_deal ON actions(deal_id);
 CREATE INDEX idx_actions_due_date ON actions(due_date);
 CREATE INDEX idx_actions_completed ON actions(completed);
+CREATE INDEX idx_actions_source ON actions(source);
+-- *** NEW INDEX: For filtering auto-generated vs manual actions ***
 CREATE INDEX idx_emails_contact ON emails(contact_id);
 CREATE INDEX idx_emails_deal ON emails(deal_id);
 CREATE INDEX idx_emails_sent_at ON emails(sent_at);
@@ -290,21 +296,22 @@ VALUES
     (4, 5, 'primary'),
     (5, 6, 'primary');
 
--- Sample actions
-INSERT INTO actions (user_id, deal_id, contact_id, type, priority, title, description, context, due_date)
+-- Sample actions (with source column)
+-- *** UPDATED: Sample actions now include 'source' column ***
+INSERT INTO actions (user_id, deal_id, contact_id, type, priority, title, description, context, due_date, source)
 VALUES
     (1, 1, 1, 'email', 'high', 'Follow up with Sarah Chen - Acme Corp Demo', 
      'Send follow-up email after demo', 
      'Sarah attended your demo yesterday. She expressed strong interest in the analytics module. No response to your meeting recap yet.',
-     CURRENT_TIMESTAMP),
+     CURRENT_TIMESTAMP, 'manual'),
     (1, 2, 2, 'meeting_prep', 'high', 'Prepare for Executive Meeting - TechFlow Industries',
      'Meeting with CTO and VP of Operations',
      'They want to discuss implementation timeline and integration with their existing systems.',
-     CURRENT_TIMESTAMP + INTERVAL '2 hours'),
+     CURRENT_TIMESTAMP + INTERVAL '2 hours', 'manual'),
     (1, 3, 4, 'research', 'medium', 'Research New Contact: Michael Rodriguez',
      'Get background before next call',
      'New stakeholder added to CloudScale deal. He has been CCd on recent emails.',
-     CURRENT_TIMESTAMP);
+     CURRENT_TIMESTAMP, 'manual');
 
 -- Sample emails
 INSERT INTO emails (user_id, deal_id, contact_id, direction, subject, body, to_address, from_address, sent_at, opened_at)

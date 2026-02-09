@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
+const ActionsGenerator = require('../services/actionsGenerator');
 
 router.use(authenticateToken);
 
@@ -36,6 +37,8 @@ router.post('/', async (req, res) => {
       [req.user.userId, dealId, contactId, subject, body, toAddress, req.user.email]
     );
     
+    const newEmail = result.rows[0];
+    
     if (contactId) {
       await db.query(
         `INSERT INTO contact_activities (contact_id, user_id, activity_type, description)
@@ -44,7 +47,12 @@ router.post('/', async (req, res) => {
       );
     }
     
-    res.status(201).json({ email: result.rows[0] });
+    // 🤖 AUTO-GENERATE ACTIONS (non-blocking)
+    ActionsGenerator.generateForEmail(newEmail.id).catch(err => 
+      console.error('Error auto-generating actions for email:', err)
+    );
+    
+    res.status(201).json({ email: newEmail });
   } catch (error) {
     res.status(500).json({ error: { message: 'Failed to send email' } });
   }

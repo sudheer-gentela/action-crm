@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
+const ActionsGenerator = require('../services/actionsGenerator');
 
 router.use(authenticateToken);
 
@@ -170,14 +171,21 @@ router.post('/', async (req, res) => {
       [accountId, req.user.userId, name, value, stage || 'qualified', health || 'healthy', expectedCloseDate, probability || 50, notes]
     );
     
+    const newDeal = result.rows[0];
+    
     // Log activity
     await db.query(
       `INSERT INTO deal_activities (deal_id, user_id, activity_type, description)
        VALUES ($1, $2, 'deal_created', 'Deal created')`,
-      [result.rows[0].id, req.user.userId]
+      [newDeal.id, req.user.userId]
     );
     
-    res.status(201).json({ deal: result.rows[0] });
+    // 🤖 AUTO-GENERATE ACTIONS (non-blocking)
+    ActionsGenerator.generateForDeal(newDeal.id).catch(err => 
+      console.error('Error auto-generating actions for new deal:', err)
+    );
+    
+    res.status(201).json({ deal: newDeal });
   } catch (error) {
     console.error('Create deal error:', error);
     res.status(500).json({ error: { message: 'Failed to create deal' } });
@@ -223,6 +231,11 @@ router.put('/:id', async (req, res) => {
         [req.params.id, req.user.userId, `Stage changed from ${currentDeal.rows[0].stage} to ${stage}`]
       );
     }
+    
+    // 🤖 AUTO-GENERATE ACTIONS (non-blocking)
+    ActionsGenerator.generateForDeal(req.params.id).catch(err => 
+      console.error('Error auto-generating actions for updated deal:', err)
+    );
     
     res.json({ deal: result.rows[0] });
   } catch (error) {

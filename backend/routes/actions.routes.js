@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
+const ActionsGenerator = require('../services/actionsGenerator');
 
 // All routes require authentication
 router.use(authenticateToken);
@@ -73,6 +74,36 @@ router.get('/', async (req, res) => {
   } catch (error) {
     console.error('Get actions error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch actions' } });
+  }
+});
+
+// NEW: Manual action generation endpoint
+router.post('/generate', async (req, res) => {
+  try {
+    console.log('🤖 Manual action generation triggered by user:', req.user.userId);
+    const result = await ActionsGenerator.generateAll();
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: `Generated ${result.inserted} actions`,
+        generated: result.generated,
+        inserted: result.inserted
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: 'Failed to generate actions',
+        error: result.error
+      });
+    }
+  } catch (error) {
+    console.error('Error in /generate endpoint:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
   }
 });
 
