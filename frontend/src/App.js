@@ -7,31 +7,8 @@ import EmailView from './EmailView';
 import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
 
-// Simple authentication check
-
-
-// Login Screen
-function LoginScreen({ onLogin }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    
-    try {
-      if (email && password) {
-        await onLogin(email, password);
-      }
-    } catch (err) {
-      setError('Login failed. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };const useAuth = () => {
+// Authentication hook with REAL backend integration
+const useAuth = () => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   
@@ -46,8 +23,8 @@ function LoginScreen({ onLogin }) {
   
   const login = async (email, password) => {
     try {
-      // ✅ Call REAL backend auth endpoint
-      const response = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:3001/api'}/auth/login`, {
+      const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+      const response = await fetch(`${API_URL}/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -62,7 +39,7 @@ function LoginScreen({ onLogin }) {
 
       const data = await response.json();
       
-      // Save REAL token and user data
+      // Save real token and user data
       localStorage.setItem('token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
       setUser(data.user);
@@ -75,30 +52,161 @@ function LoginScreen({ onLogin }) {
     }
   };
   
+  const register = async (email, password, firstName, lastName) => {
+    try {
+      const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+      const response = await fetch(`${API_URL}/auth/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email, password, firstName, lastName }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error?.message || 'Registration failed');
+      }
+
+      const data = await response.json();
+      
+      // Save token and user data
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('user', JSON.stringify(data.user));
+      setUser(data.user);
+      
+      console.log('✅ Registered successfully with real token');
+      
+    } catch (error) {
+      console.error('Register error:', error);
+      throw error;
+    }
+  };
+  
   const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setUser(null);
   };
   
-  return { user, login, logout, loading };
+  return { user, login, register, logout, loading };
 };
 
+// Login/Register Screen
+function AuthScreen({ onLogin, onRegister }) {
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [formData, setFormData] = useState({
+    email: '',
+    password: '',
+    firstName: '',
+    lastName: ''
+  });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }));
+  };
+  
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    
+    try {
+      if (isRegistering) {
+        // Validate registration fields
+        if (!formData.firstName.trim()) {
+          throw new Error('First name is required');
+        }
+        if (!formData.lastName.trim()) {
+          throw new Error('Last name is required');
+        }
+        if (formData.password.length < 8) {
+          throw new Error('Password must be at least 8 characters');
+        }
+        
+        await onRegister(
+          formData.email,
+          formData.password,
+          formData.firstName,
+          formData.lastName
+        );
+      } else {
+        // Login
+        await onLogin(formData.email, formData.password);
+      }
+    } catch (err) {
+      setError(err.message || 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  const toggleMode = () => {
+    setIsRegistering(!isRegistering);
+    setError('');
+    setFormData({
+      email: '',
+      password: '',
+      firstName: '',
+      lastName: ''
+    });
+  };
   
   return (
     <div className="login-container">
       <div className="login-box">
         <div className="login-logo">⚡</div>
         <h1>Action CRM</h1>
-        <p className="login-subtitle">AI-Powered Sales Pipeline</p>
+        <p className="login-subtitle">
+          {isRegistering ? 'Create Your Account' : 'AI-Powered Sales Pipeline'}
+        </p>
         
         <form onSubmit={handleSubmit} className="login-form">
+          {isRegistering && (
+            <>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>First Name</label>
+                  <input
+                    type="text"
+                    name="firstName"
+                    value={formData.firstName}
+                    onChange={handleChange}
+                    placeholder="John"
+                    required
+                    disabled={loading}
+                  />
+                </div>
+                
+                <div className="form-group">
+                  <label>Last Name</label>
+                  <input
+                    type="text"
+                    name="lastName"
+                    value={formData.lastName}
+                    onChange={handleChange}
+                    placeholder="Doe"
+                    required
+                    disabled={loading}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+          
           <div className="form-group">
             <label>Email</label>
             <input
               type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              name="email"
+              value={formData.email}
+              onChange={handleChange}
               placeholder="you@company.com"
               required
               disabled={loading}
@@ -109,24 +217,52 @@ function LoginScreen({ onLogin }) {
             <label>Password</label>
             <input
               type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
+              name="password"
+              value={formData.password}
+              onChange={handleChange}
+              placeholder={isRegistering ? 'At least 8 characters' : '••••••••'}
               required
               disabled={loading}
+              minLength={isRegistering ? 8 : undefined}
             />
+            {isRegistering && (
+              <small className="form-hint">Minimum 8 characters</small>
+            )}
           </div>
           
           {error && <div className="error-message">{error}</div>}
           
           <button type="submit" className="btn-primary" disabled={loading}>
-            {loading ? 'Signing in...' : 'Sign In'}
+            {loading ? (
+              <>
+                <span className="spinner"></span>
+                {isRegistering ? 'Creating Account...' : 'Signing In...'}
+              </>
+            ) : (
+              isRegistering ? 'Create Account' : 'Sign In'
+            )}
           </button>
         </form>
         
-        <div className="demo-info">
-          <p>🎉 <strong>Demo Mode</strong> - Use any email/password to explore</p>
+        <div className="auth-toggle">
+          <button 
+            type="button" 
+            className="btn-toggle"
+            onClick={toggleMode}
+            disabled={loading}
+          >
+            {isRegistering 
+              ? 'Already have an account? Sign In' 
+              : 'Need an account? Create One'}
+          </button>
         </div>
+        
+        {!isRegistering && (
+          <div className="demo-info">
+            <p><strong>New to Action CRM?</strong></p>
+            <p>Click "Create One" above to get started!</p>
+          </div>
+        )}
         
         <div className="deployment-info">
           <p><strong>Backend API:</strong></p>
@@ -221,7 +357,7 @@ function Dashboard({ user, onLogout }) {
             {!sidebarCollapsed && (
               <div className="user-details">
                 <span className="user-email">{user.email}</span>
-                <span className="user-name">{user.name || 'User'}</span>
+                <span className="user-name">{user.firstName} {user.lastName}</span>
               </div>
             )}
           </div>
@@ -268,12 +404,15 @@ function Dashboard({ user, onLogout }) {
 
 // Main App Component
 function App() {
-  const { user, login, logout, loading } = useAuth();
+  const { user, login, register, logout, loading } = useAuth();
   
   if (loading) {
     return (
       <div className="loading-container">
-        <div className="loading-spinner">Loading...</div>
+        <div className="loading-spinner">
+          <div className="spinner"></div>
+          <p>Loading...</p>
+        </div>
       </div>
     );
   }
@@ -281,7 +420,7 @@ function App() {
   return (
     <div className="App">
       {!user ? (
-        <LoginScreen onLogin={login} />
+        <AuthScreen onLogin={login} onRegister={register} />
       ) : (
         <Dashboard user={user} onLogout={logout} />
       )}
