@@ -7,7 +7,8 @@ import EmailView from './EmailView';
 import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
 
-// Authentication hook with REAL backend integration
+// Replace the useAuth hook in your App.js with this:
+
 const useAuth = () => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -23,8 +24,8 @@ const useAuth = () => {
   
   const login = async (email, password) => {
     try {
-      const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
-      const response = await fetch(`${API_URL}/auth/login`, {
+      // ✅ Call REAL backend auth endpoint
+      const response = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:3001/api'}/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -39,7 +40,7 @@ const useAuth = () => {
 
       const data = await response.json();
       
-      // Save real token and user data
+      // Save REAL token and user data
       localStorage.setItem('token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
       setUser(data.user);
@@ -52,6 +53,15 @@ const useAuth = () => {
     }
   };
   
+  const logout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setUser(null);
+  };
+  
+  return { user, login, logout, loading };
+};
+
   const register = async (email, password, firstName, lastName) => {
     try {
       const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
