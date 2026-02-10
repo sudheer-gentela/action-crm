@@ -13,9 +13,16 @@ app.set('trust proxy', 1);
 
 // Security middleware
 app.use(helmet());
+
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
-  credentials: true
+  origin: [
+    'http://localhost:3000',
+    'https://action-crm.vercel.app',  // ✅ Add your Vercel URL
+    process.env.CORS_ORIGIN
+  ].filter(Boolean),  // Remove undefined values
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 // Rate limiting

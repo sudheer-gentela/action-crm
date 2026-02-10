@@ -3,7 +3,7 @@
  * Triggers the ActionsEngine to generate smart actions based on data changes
  */
 
-const pool = require('../db');
+const db = require('../config/database');
 const ActionsEngine = require('./ActionsEngine');
 
 class ActionsGenerator {
