@@ -7,8 +7,7 @@ import EmailView from './EmailView';
 import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
 
-// Replace the useAuth hook in your App.js with this:
-
+// Authentication hook with REAL backend integration
 const useAuth = () => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -24,8 +23,8 @@ const useAuth = () => {
   
   const login = async (email, password) => {
     try {
-      // ✅ Call REAL backend auth endpoint
-      const response = await fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:3001/api'}/auth/login`, {
+      const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+      const response = await fetch(`${API_URL}/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -40,7 +39,6 @@ const useAuth = () => {
 
       const data = await response.json();
       
-      // Save REAL token and user data
       localStorage.setItem('token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
       setUser(data.user);
@@ -53,15 +51,6 @@ const useAuth = () => {
     }
   };
   
-  const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    setUser(null);
-  };
-  
-  return { user, login, logout, loading }
-};
-
   const register = async (email, password, firstName, lastName) => {
     try {
       const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
@@ -80,7 +69,6 @@ const useAuth = () => {
 
       const data = await response.json();
       
-      // Save token and user data
       localStorage.setItem('token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
       setUser(data.user);
@@ -129,7 +117,6 @@ function AuthScreen({ onLogin, onRegister }) {
     
     try {
       if (isRegistering) {
-        // Validate registration fields
         if (!formData.firstName.trim()) {
           throw new Error('First name is required');
         }
@@ -140,9 +127,6 @@ function AuthScreen({ onLogin, onRegister }) {
           throw new Error('Password must be at least 8 characters');
         }
         
-      console.log('Email ');
-      console.log(formData.email);
-
         await onRegister(
           formData.email,
           formData.password,
@@ -150,7 +134,6 @@ function AuthScreen({ onLogin, onRegister }) {
           formData.lastName
         );
       } else {
-        // Login
         await onLogin(formData.email, formData.password);
       }
     } catch (err) {
@@ -293,7 +276,6 @@ function Dashboard({ user, onLogout }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
   
-  // Handle window resize
   useEffect(() => {
     const handleResize = () => {
       const mobile = window.innerWidth < 768;
@@ -304,7 +286,7 @@ function Dashboard({ user, onLogout }) {
     };
     
     window.addEventListener('resize', handleResize);
-    handleResize(); // Initial check
+    handleResize();
     
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -335,9 +317,7 @@ function Dashboard({ user, onLogout }) {
   
   return (
     <div className="dashboard">
-      {/* Sidebar */}
       <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''} ${sidebarOpen ? 'open' : ''}`}>
-        {/* Sidebar Header */}
         <div className="sidebar-header">
           <div className="logo">
             <span className="logo-icon">⚡</span>
@@ -348,7 +328,6 @@ function Dashboard({ user, onLogout }) {
           </button>
         </div>
         
-        {/* Sidebar Navigation */}
         <nav className="sidebar-nav">
           {navItems.map(item => (
             <button
@@ -363,7 +342,6 @@ function Dashboard({ user, onLogout }) {
           ))}
         </nav>
         
-        {/* Sidebar Footer */}
         <div className="sidebar-footer">
           <div className="user-info">
             <span className="user-icon">👤</span>
@@ -381,14 +359,11 @@ function Dashboard({ user, onLogout }) {
         </div>
       </aside>
       
-      {/* Mobile Overlay */}
       {isMobile && sidebarOpen && (
         <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)}></div>
       )}
       
-      {/* Main Container */}
       <main className={`main-container ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-        {/* Mobile Header */}
         {isMobile && (
           <div className="mobile-header">
             <button className="hamburger-btn" onClick={() => setSidebarOpen(true)}>
@@ -401,7 +376,6 @@ function Dashboard({ user, onLogout }) {
           </div>
         )}
         
-        {/* Main Content */}
         <div className="content-area">
           {currentTab === 'actions' && <ActionsView />}
           {currentTab === 'deals' && <DealsView />}
