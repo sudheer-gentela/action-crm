@@ -59,7 +59,7 @@ const useAuth = () => {
     setUser(null);
   };
   
-  return { user, login, logout, loading };
+  return { user, login, logout, loading }
 };
 
   const register = async (email, password, firstName, lastName) => {
