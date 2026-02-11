@@ -84,4 +84,69 @@ export const apiService = {
   }
 };
 
+
+// ============================================================
+// OUTLOOK & SYNC APIs
+// ============================================================
+
+// Outlook API
+export const outlookAPI = {
+  getAuthUrl: async (userId) => {
+    const response = await fetch(`${API_BASE_URL}/api/outlook/connect?userId=${userId}`);
+    return response.json();
+  },
+
+  getStatus: async (userId) => {
+    const response = await fetch(`${API_BASE_URL}/api/outlook/status?userId=${userId}`);
+    return response.json();
+  },
+
+  disconnect: async (userId) => {
+    const response = await fetch(`${API_BASE_URL}/api/outlook/disconnect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId })
+    });
+    return response.json();
+  },
+
+  fetchEmails: async (userId, options = {}) => {
+    const params = new URLSearchParams({
+      userId,
+      top: options.top || 50,
+      skip: options.skip || 0,
+      ...(options.since && { since: options.since })
+    });
+
+    const response = await fetch(`${API_BASE_URL}/api/emails/outlook?${params}`);
+    return response.json();
+  },
+
+  processEmail: async (userId, emailId) => {
+    const response = await fetch(`${API_BASE_URL}/api/emails/process`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, emailId })
+    });
+    return response.json();
+  }
+};
+
+// Sync API
+export const syncAPI = {
+  triggerSync: async (userId) => {
+    const response = await fetch(`${API_BASE_URL}/api/sync/trigger`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId })
+    });
+    return response.json();
+  },
+
+  getStatus: async (userId) => {
+    const response = await fetch(`${API_BASE_URL}/api/sync/status?userId=${userId}`);
+    return response.json();
+  }
+};
+
 export default api;

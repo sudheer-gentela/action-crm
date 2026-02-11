@@ -1,0 +1,29 @@
+// ============================================================
+// ADD THESE LINES TO YOUR EXISTING App.js FILE
+// ============================================================
+
+// 1. ADD these imports at the top
+import OutlookConnect from './OutlookConnect';
+import OutlookEmailList from './OutlookEmailList';
+import SyncStatus from './SyncStatus';
+
+// 2. ADD 'outlook' to your navigation tabs/buttons
+// (wherever you have: 'contacts', 'deals', 'actions', etc.)
+
+// 3. ADD this view rendering logic (wherever you handle view switching)
+{activeView === 'outlook' && (
+  <div className="outlook-view">
+    <OutlookConnect userId={currentUser.id} />
+    <SyncStatus userId={currentUser.id} />
+    <OutlookEmailList userId={currentUser.id} />
+  </div>
+)}
+
+// Example: If you have a navigation like this:
+<nav>
+  <button onClick={() => setActiveView('dashboard')}>Dashboard</button>
+  <button onClick={() => setActiveView('contacts')}>Contacts</button>
+  <button onClick={() => setActiveView('deals')}>Deals</button>
+  {/* ADD THIS */}
+  <button onClick={() => setActiveView('outlook')}>Emails</button>
+</nav>

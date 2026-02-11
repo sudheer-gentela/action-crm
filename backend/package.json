@@ -8,6 +8,8 @@
     "dev": "nodemon server.js",
     "db:setup": "psql -U postgres -f database-schema.sql",
     "test": "jest"
+    "worker": "node jobs/worker.js",
+    "migrate": "node db/migrate.js"
   },
   "keywords": [
     "crm",
@@ -28,10 +30,18 @@
     "express-rate-limit": "^7.1.5",
     "morgan": "^1.10.0",
     "joi": "^17.11.0"
+    "@anthropic-ai/sdk": "^0.27.0",
+    "@azure/msal-node": "^2.6.0",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "bull": "^4.12.0",
+    "isomorphic-fetch": "^3.0.0",
+    "node-cron": "^3.0.3",
+    "redis": "^4.6.12"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",
     "jest": "^29.7.0",
     "supertest": "^6.3.3"
   }
+
 }

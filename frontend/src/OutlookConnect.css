@@ -1,0 +1,54 @@
+.outlook-connect {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.outlook-header {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  margin-bottom: 15px;
+}
+
+.outlook-icon {
+  font-size: 32px;
+}
+
+.outlook-info h3 {
+  margin: 0 0 5px 0;
+  font-size: 18px;
+}
+
+.connected-email {
+  margin: 0;
+  color: #4caf50;
+  font-size: 14px;
+}
+
+.outlook-description {
+  margin-top: 10px;
+  font-size: 14px;
+  color: #666;
+}
+
+.btn-danger {
+  background-color: #f44336;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.btn-danger:hover {
+  background-color: #da190b;
+}
+
+.outlook-connect.loading {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+}

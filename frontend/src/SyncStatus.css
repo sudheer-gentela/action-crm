@@ -1,0 +1,61 @@
+.sync-status {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 20px;
+}
+
+.sync-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.sync-header h4 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.last-sync {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sync-status-badge {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+}
+
+.sync-status-badge.success {
+  background-color: #4caf50;
+  color: white;
+}
+
+.sync-status-badge.failed {
+  background-color: #f44336;
+  color: white;
+}
+
+.sync-details {
+  flex: 1;
+}
+
+.sync-time {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+  color: #333;
+}
+
+.sync-items {
+  margin: 0;
+  font-size: 13px;
+  color: #666;
+}

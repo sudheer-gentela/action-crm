@@ -8,6 +8,11 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// 1. ADD these route imports (near your other route imports)
+const outlookRoutes = require('./routes/outlook.routes');
+const syncRoutes = require('./routes/sync.routes');
+
+
 // Trust Railway proxy
 app.set('trust proxy', 1);
 
@@ -46,6 +51,7 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// 2. ADD these route registrations (after your existing app.use() statements)
 // API Routes
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/actions', require('./routes/actions.routes'));
@@ -57,6 +63,9 @@ app.use('/api/meetings', require('./routes/meetings.routes'));
 app.use('/api/proposals', require('./routes/proposals.routes'));
 app.use('/api/calendar', require('./routes/calendar.routes'));
 app.use('/api/dashboard', require('./routes/dashboard.routes'));
+app.use('/api/outlook', outlookRoutes);
+app.use('/api/sync', syncRoutes);
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {

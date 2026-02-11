@@ -6,6 +6,9 @@ import ContactsView from './ContactsView';
 import EmailView from './EmailView';
 import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
+import OutlookConnect from './OutlookConnect';
+import OutlookEmailList from './OutlookEmailList';
+import SyncStatus from './SyncStatus';
 
 // Authentication hook with REAL backend integration
 const useAuth = () => {
@@ -312,6 +315,7 @@ function Dashboard({ user, onLogout }) {
     { id: 'accounts', label: 'Accounts', icon: '🏢' },
     { id: 'contacts', label: 'Contacts', icon: '👥' },
     { id: 'email', label: 'Email', icon: '✉️' },
+    { id: 'outlook', label: 'Outlook Emails', icon: '📧' }, // NEW - Outlook integration
     { id: 'calendar', label: 'Calendar', icon: '📅' }
   ];
   
@@ -382,6 +386,13 @@ function Dashboard({ user, onLogout }) {
           {currentTab === 'accounts' && <AccountsView />}
           {currentTab === 'contacts' && <ContactsView />}
           {currentTab === 'email' && <EmailView />}
+          {currentTab === 'outlook' && (
+            <div className="outlook-view">
+              <OutlookConnect userId={user.id} />
+              <SyncStatus userId={user.id} />
+              <OutlookEmailList userId={user.id} />
+            </div>
+          )}
           {currentTab === 'calendar' && <CalendarView />}
         </div>
       </main>
