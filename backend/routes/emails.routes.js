@@ -4,7 +4,6 @@ const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const ActionsGenerator = require('../services/actionsGenerator');
 
-**ADD these imports at the top** (if not already there):
 const { fetchEmails, fetchEmailById } = require('../services/outlookService');
 const { analyzeEmail } = require('../services/claudeService');
 const { emailQueue } = require('../jobs/emailProcessor');
