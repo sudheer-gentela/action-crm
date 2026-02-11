@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './OutlookEmailList.css';
 import { outlookAPI } from './apiService';
 
@@ -7,11 +7,7 @@ function OutlookEmailList({ userId }) {
   const [isLoading, setIsLoading] = useState(false);
   const [processingIds, setProcessingIds] = useState(new Set());
 
-  useEffect(() => {
-    fetchEmails();
-  }, [userId]);
-
-  const fetchEmails = async () => {
+  const fetchEmails = useCallback(async () => {
     try {
       setIsLoading(true);
       const result = await outlookAPI.fetchEmails(userId, { top: 20 });
@@ -22,7 +18,11 @@ function OutlookEmailList({ userId }) {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [userId]);
+
+  useEffect(() => {
+    fetchEmails();
+  }, [fetchEmails]);
 
   const handleProcessEmail = async (emailId) => {
     try {

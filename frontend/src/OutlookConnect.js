@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './OutlookConnect.css';
 import { outlookAPI } from './apiService';
 
@@ -6,6 +6,18 @@ function OutlookConnect({ userId }) {
   const [isConnected, setIsConnected] = useState(false);
   const [outlookEmail, setOutlookEmail] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  const checkStatus = useCallback(async () => {
+    try {
+      const status = await outlookAPI.getStatus(userId);
+      setIsConnected(status.connected);
+      setOutlookEmail(status.email);
+    } catch (error) {
+      console.error('Error checking Outlook status:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [userId]);
 
   useEffect(() => {
     checkStatus();
@@ -18,19 +30,7 @@ function OutlookConnect({ userId }) {
       // Clean URL
       window.history.replaceState({}, '', '/');
     }
-  }, [userId]);
-
-  const checkStatus = async () => {
-    try {
-      const status = await outlookAPI.getStatus(userId);
-      setIsConnected(status.connected);
-      setOutlookEmail(status.email);
-    } catch (error) {
-      console.error('Error checking Outlook status:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  }, [checkStatus]);
 
   const handleConnect = async () => {
     try {

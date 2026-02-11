@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './SyncStatus.css';
 import { syncAPI } from './apiService';
 
@@ -6,18 +6,18 @@ function SyncStatus({ userId }) {
   const [syncHistory, setSyncHistory] = useState([]);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  useEffect(() => {
-    fetchSyncStatus();
-  }, [userId]);
-
-  const fetchSyncStatus = async () => {
+  const fetchSyncStatus = useCallback(async () => {
     try {
       const data = await syncAPI.getStatus(userId);
       setSyncHistory(data.data);
     } catch (error) {
       console.error('Error fetching sync status:', error);
     }
-  };
+  }, [userId]);
+
+  useEffect(() => {
+    fetchSyncStatus();
+  }, [fetchSyncStatus]);
 
   const handleManualSync = async () => {
     try {
