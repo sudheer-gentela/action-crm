@@ -7,7 +7,7 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "db:setup": "psql -U postgres -f database-schema.sql",
-    "test": "jest"
+    "test": "jest",
     "worker": "node jobs/worker.js",
     "migrate": "node db/migrate.js"
   },
