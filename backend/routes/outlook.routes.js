@@ -2,15 +2,16 @@ const express = require('express');
 const router = express.Router();
 const { getAuthUrl, getTokenFromCode, getUserProfile } = require('../services/outlookService');
 const { saveUserToken, deleteUserTokens } = require('../services/tokenService');
-const { pool } = require('../config/database');
+const { db } = require('../config/database');
+const authenticateToken = require('../middleware/auth.middleware');
 
 /**
  * Initiate Outlook OAuth flow
  * GET /api/outlook/connect
  */
-router.get('/connect', async (req, res) => {
+router.get('/connect', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user?.id || req.query.userId;
+    const userId = req.user.id; // Now guaranteed to exist from authenticateToken
     
     const state = Buffer.from(JSON.stringify({
       userId: userId,
@@ -56,7 +57,7 @@ router.get('/callback', async (req, res) => {
     
     const profile = await getUserProfile(userId);
     
-    await pool.query(
+    await db.query(
       `UPDATE users 
        SET outlook_email = $1, outlook_connected = true, updated_at = NOW()
        WHERE id = $2`,
@@ -74,11 +75,11 @@ router.get('/callback', async (req, res) => {
  * Get connection status
  * GET /api/outlook/status
  */
-router.get('/status', async (req, res) => {
+router.get('/status', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user?.id || req.query.userId;
+    const userId = req.user.id; // Now guaranteed to exist from authenticateToken
     
-    const result = await pool.query(
+    const result = await db.query(
       `SELECT outlook_connected, outlook_email FROM users WHERE id = $1`,
       [userId]
     );
@@ -110,13 +111,13 @@ router.get('/status', async (req, res) => {
  * Disconnect Outlook
  * POST /api/outlook/disconnect
  */
-router.post('/disconnect', async (req, res) => {
+router.post('/disconnect', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user?.id || req.body.userId;
+    const userId = req.user.id; // Now guaranteed to exist from authenticateToken
     
     await deleteUserTokens(userId, 'outlook');
     
-    await pool.query(
+    await db.query(
       `UPDATE users 
        SET outlook_connected = false, outlook_email = NULL, updated_at = NOW()
        WHERE id = $1`,
