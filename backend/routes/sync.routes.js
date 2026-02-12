@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const { triggerSync, getSyncStatus } = require('../jobs/syncScheduler');
+const authenticateToken = require('../middleware/auth.middleware');
+
+router.use(authenticateToken);
 
 /**
  * Trigger manual email sync
