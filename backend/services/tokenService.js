@@ -1,4 +1,4 @@
-const { db } = require('../config/database');
+const { pool } = require('../config/database');
 const { ConfidentialClientApplication } = require('@azure/msal-node');
 
 const msalConfig = {
@@ -15,6 +15,9 @@ const cca = new ConfidentialClientApplication(msalConfig);
  * Save OAuth tokens to database
  */
 async function saveUserToken(userId, provider, tokenData) {
+  console.log('💾 Saving tokens for user:', userId);
+  console.log('📝 Token data keys:', Object.keys(tokenData));
+  
   const query = `
     INSERT INTO oauth_tokens (
       user_id, provider, access_token, refresh_token, 
@@ -24,7 +27,7 @@ async function saveUserToken(userId, provider, tokenData) {
     ON CONFLICT (user_id, provider) 
     DO UPDATE SET
       access_token = $3,
-      refresh_token = $4,
+      refresh_token = COALESCE($4, oauth_tokens.refresh_token),
       expires_at = $5,
       account_data = $6,
       updated_at = NOW()
@@ -33,16 +36,31 @@ async function saveUserToken(userId, provider, tokenData) {
   
   const expiresAt = new Date(tokenData.expiresOn || Date.now() + 3600000);
   
+  // Extract refresh token - check multiple possible locations
+  const refreshToken = tokenData.refreshToken || 
+                       tokenData.refresh_token || 
+                       tokenData.account?.idTokenClaims?.refresh_token || 
+                       null;
+  
+  console.log('🔑 Access token:', tokenData.accessToken ? 'Present' : 'Missing');
+  console.log('🔄 Refresh token:', refreshToken ? 'Present' : 'Missing');
+  console.log('⏰ Expires at:', expiresAt);
+  
+  if (!refreshToken) {
+    console.warn('⚠️  WARNING: No refresh token found! User will need to reconnect when token expires.');
+  }
+  
   const values = [
     userId,
     provider,
     tokenData.accessToken,
-    tokenData.refreshToken || null,
+    refreshToken,
     expiresAt,
     JSON.stringify(tokenData.account || {})
   ];
   
-  const result = await db.query(query, values);
+  const result = await pool.query(query, values);
+  console.log('✅ Tokens saved successfully');
   return result.rows[0];
 }
 
@@ -55,13 +73,17 @@ async function getTokenByUserId(userId, provider) {
     WHERE user_id = $1 AND provider = $2
   `;
   
-  const result = await db.query(query, [userId, provider]);
+  const result = await pool.query(query, [userId, provider]);
   
   if (result.rows.length === 0) {
-    throw new Error('No tokens found for user');
+    throw new Error('No tokens found for user. Please reconnect your Outlook account.');
   }
   
-  return result.rows[0];
+  const token = result.rows[0];
+  console.log('🔍 Retrieved token for user:', userId);
+  console.log('🔄 Has refresh token:', token.refresh_token ? 'Yes' : 'No');
+  
+  return token;
 }
 
 /**
@@ -71,10 +93,13 @@ async function refreshUserToken(userId, provider) {
   const currentToken = await getTokenByUserId(userId, provider);
   
   if (!currentToken.refresh_token) {
-    throw new Error('No refresh token available');
+    console.error('❌ No refresh token available for user:', userId);
+    throw new Error('No refresh token available. Please reconnect your Outlook account.');
   }
   
   try {
+    console.log('🔄 Refreshing token for user:', userId);
+    
     const refreshRequest = {
       refreshToken: currentToken.refresh_token,
       scopes: [
@@ -85,13 +110,27 @@ async function refreshUserToken(userId, provider) {
     };
     
     const response = await cca.acquireTokenByRefreshToken(refreshRequest);
+    console.log('✅ Token refreshed successfully');
     
-    // Save new tokens
-    await saveUserToken(userId, provider, response);
+    // Save new tokens (preserve refresh token if new one not provided)
+    const newTokenData = {
+      accessToken: response.accessToken,
+      refreshToken: response.refreshToken || currentToken.refresh_token,
+      expiresOn: response.expiresOn,
+      account: response.account
+    };
+    
+    await saveUserToken(userId, provider, newTokenData);
     
     return await getTokenByUserId(userId, provider);
   } catch (error) {
-    console.error('Token refresh error:', error);
+    console.error('❌ Token refresh error:', error);
+    
+    // If refresh fails, the token is invalid - user needs to reconnect
+    if (error.errorCode === 'invalid_grant' || error.message.includes('AADSTS')) {
+      throw new Error('Token expired. Please reconnect your Outlook account.');
+    }
+    
     throw new Error(`Failed to refresh token: ${error.message}`);
   }
 }
@@ -105,7 +144,8 @@ async function deleteUserTokens(userId, provider) {
     WHERE user_id = $1 AND provider = $2
   `;
   
-  await db.query(query, [userId, provider]);
+  await pool.query(query, [userId, provider]);
+  console.log('🗑️  Tokens deleted for user:', userId);
 }
 
 module.exports = {
