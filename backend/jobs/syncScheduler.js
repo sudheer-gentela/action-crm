@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const { pool } = require('../config/database');
+const { db } = require('../config/database');
 const { fetchEmails } = require('../services/outlookService');
 const { emailQueue } = require('./emailProcessor');
 
@@ -11,7 +11,7 @@ async function triggerSync(userId, type = 'email') {
     console.log(`Triggering ${type} sync for user ${userId}`);
     
     // Get last sync date
-    const lastSyncResult = await pool.query(
+    const lastSyncResult = await db.query(
       `SELECT last_sync_date FROM email_sync_history 
        WHERE user_id = $1 AND sync_type = $2 
        ORDER BY created_at DESC LIMIT 1`,
@@ -39,7 +39,7 @@ async function triggerSync(userId, type = 'email') {
     }
     
     // Record sync history
-    await pool.query(
+    await db.query(
       `INSERT INTO email_sync_history (
         user_id, sync_type, status, items_processed, last_sync_date, created_at
       ) VALUES ($1, $2, $3, $4, NOW(), NOW())`,
@@ -55,7 +55,7 @@ async function triggerSync(userId, type = 'email') {
     console.error(`Sync failed for user ${userId}:`, error);
     
     // Record failed sync
-    await pool.query(
+    await db.query(
       `INSERT INTO email_sync_history (
         user_id, sync_type, status, error_message, created_at
       ) VALUES ($1, $2, $3, $4, NOW())`,
@@ -70,7 +70,7 @@ async function triggerSync(userId, type = 'email') {
  * Get sync status for user
  */
 async function getSyncStatus(userId) {
-  const result = await pool.query(
+  const result = await db.query(
     `SELECT * FROM email_sync_history 
      WHERE user_id = $1 
      ORDER BY created_at DESC 
@@ -88,7 +88,7 @@ async function syncAllUsers() {
   try {
     console.log('Starting scheduled sync for all users...');
     
-    const usersResult = await pool.query(
+    const usersResult = await db.query(
       'SELECT id FROM users WHERE outlook_connected = true'
     );
     

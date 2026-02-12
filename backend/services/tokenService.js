@@ -1,4 +1,4 @@
-const { pool } = require('../config/database');
+const { db } = require('../config/database');
 const { ConfidentialClientApplication } = require('@azure/msal-node');
 
 const msalConfig = {
@@ -42,7 +42,7 @@ async function saveUserToken(userId, provider, tokenData) {
     JSON.stringify(tokenData.account || {})
   ];
   
-  const result = await pool.query(query, values);
+  const result = await db.query(query, values);
   return result.rows[0];
 }
 
@@ -55,7 +55,7 @@ async function getTokenByUserId(userId, provider) {
     WHERE user_id = $1 AND provider = $2
   `;
   
-  const result = await pool.query(query, [userId, provider]);
+  const result = await db.query(query, [userId, provider]);
   
   if (result.rows.length === 0) {
     throw new Error('No tokens found for user');
@@ -105,7 +105,7 @@ async function deleteUserTokens(userId, provider) {
     WHERE user_id = $1 AND provider = $2
   `;
   
-  await pool.query(query, [userId, provider]);
+  await db.query(query, [userId, provider]);
 }
 
 module.exports = {

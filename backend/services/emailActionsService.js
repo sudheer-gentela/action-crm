@@ -1,11 +1,11 @@
-const { pool } = require('../config/database');
+const { db } = require('../config/database');
 
 /**
  * Create actions from email analysis
  * Integrates with your existing actions table
  */
 async function createActionsFromEmail(userId, emailData, analysis) {
-  const client = await pool.connect();
+  const client = await db.connect();
   
   try {
     await client.query('BEGIN');

@@ -16,11 +16,11 @@ class ActionsGenerator {
       console.log('🤖 Starting ActionsEngine - Generating all actions...');
 
       // Fetch all relevant data
-      const dealsResult = await pool.query('SELECT * FROM deals WHERE deleted_at IS NULL');
-      const contactsResult = await pool.query('SELECT * FROM contacts WHERE deleted_at IS NULL');
-      const emailsResult = await pool.query('SELECT * FROM emails WHERE deleted_at IS NULL');
-      const meetingsResult = await pool.query('SELECT * FROM meetings WHERE deleted_at IS NULL');
-      const accountsResult = await pool.query('SELECT * FROM accounts WHERE deleted_at IS NULL');
+      const dealsResult = await db.query('SELECT * FROM deals WHERE deleted_at IS NULL');
+      const contactsResult = await db.query('SELECT * FROM contacts WHERE deleted_at IS NULL');
+      const emailsResult = await db.query('SELECT * FROM emails WHERE deleted_at IS NULL');
+      const meetingsResult = await db.query('SELECT * FROM meetings WHERE deleted_at IS NULL');
+      const accountsResult = await db.query('SELECT * FROM accounts WHERE deleted_at IS NULL');
 
       const deals = dealsResult.rows;
       const contacts = contactsResult.rows;
@@ -40,7 +40,7 @@ class ActionsGenerator {
       console.log(`✅ ActionsEngine generated ${generatedActions.length} actions`);
 
       // Delete old auto-generated actions to avoid duplicates
-      await pool.query(
+      await db.query(
         'DELETE FROM actions WHERE source = $1',
         ['auto_generated']
       );
@@ -49,7 +49,7 @@ class ActionsGenerator {
       let insertedCount = 0;
       for (const action of generatedActions) {
         try {
-          await pool.query(
+          await db.query(
             `INSERT INTO actions (
               title, description, action_type, priority, 
               due_date, deal_id, contact_id, account_id,
@@ -100,21 +100,21 @@ class ActionsGenerator {
       console.log(`🤖 Generating actions for deal ${dealId}...`);
 
       // Fetch deal and related data
-      const dealResult = await pool.query('SELECT * FROM deals WHERE id = $1', [dealId]);
+      const dealResult = await db.query('SELECT * FROM deals WHERE id = $1', [dealId]);
       if (dealResult.rows.length === 0) return;
 
       const deal = dealResult.rows[0];
 
       // Fetch related data
-      const contactsResult = await pool.query(
+      const contactsResult = await db.query(
         'SELECT * FROM contacts WHERE account_id = $1',
         [deal.account_id]
       );
-      const emailsResult = await pool.query(
+      const emailsResult = await db.query(
         'SELECT * FROM emails WHERE deal_id = $1',
         [dealId]
       );
-      const meetingsResult = await pool.query(
+      const meetingsResult = await db.query(
         'SELECT * FROM meetings WHERE deal_id = $1',
         [dealId]
       );
@@ -132,14 +132,14 @@ class ActionsGenerator {
       const dealActions = generatedActions.filter(a => a.deal_id === dealId);
 
       // Delete old auto-generated actions for this deal
-      await pool.query(
+      await db.query(
         'DELETE FROM actions WHERE deal_id = $1 AND source = $2',
         [dealId, 'auto_generated']
       );
 
       // Insert new actions
       for (const action of dealActions) {
-        await pool.query(
+        await db.query(
           `INSERT INTO actions (
             title, description, action_type, priority, 
             due_date, deal_id, contact_id, account_id,
@@ -177,7 +177,7 @@ class ActionsGenerator {
     try {
       console.log(`🤖 Generating actions for email ${emailId}...`);
 
-      const emailResult = await pool.query('SELECT * FROM emails WHERE id = $1', [emailId]);
+      const emailResult = await db.query('SELECT * FROM emails WHERE id = $1', [emailId]);
       if (emailResult.rows.length === 0) return;
 
       const email = emailResult.rows[0];
@@ -202,7 +202,7 @@ class ActionsGenerator {
     try {
       console.log(`🤖 Generating actions for meeting ${meetingId}...`);
 
-      const meetingResult = await pool.query('SELECT * FROM meetings WHERE id = $1', [meetingId]);
+      const meetingResult = await db.query('SELECT * FROM meetings WHERE id = $1', [meetingId]);
       if (meetingResult.rows.length === 0) return;
 
       const meeting = meetingResult.rows[0];

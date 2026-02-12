@@ -2,7 +2,7 @@ const Queue = require('bull');
 const { fetchEmailById } = require('../services/outlookService');
 const { analyzeEmail } = require('../services/claudeService');
 const { createActionsFromEmail } = require('../services/emailActionsService');
-const { pool } = require('../config/database');
+const { db } = require('../config/database');
 
 // Create queue
 const emailQueue = new Queue('email-processing', process.env.REDIS_URL, {
@@ -25,7 +25,7 @@ emailQueue.process(async (job) => {
   
   try {
     // Check if already processed
-    const existing = await pool.query(
+    const existing = await db.query(
       'SELECT id FROM actions WHERE source = $1 AND source_id = $2 AND user_id = $3',
       ['outlook_email', emailId, userId]
     );
