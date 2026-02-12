@@ -51,4 +51,5 @@ if (process.env.DATABASE_URL) {
 module.exports = {
   query: (text, params) => pool.query(text, params),
   pool,
+  db: pool,  // ✅ ADDED: This line makes db point to pool
 };
