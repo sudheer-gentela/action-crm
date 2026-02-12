@@ -11,7 +11,7 @@ const authenticateToken = require('../middleware/auth.middleware');
  */
 router.get('/connect', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.id; // Now guaranteed to exist from authenticateToken
+    const userId = req.user.userId; // Now guaranteed to exist from authenticateToken
     
     const state = Buffer.from(JSON.stringify({
       userId: userId,
@@ -77,7 +77,7 @@ router.get('/callback', async (req, res) => {
  */
 router.get('/status', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.id; // Now guaranteed to exist from authenticateToken
+    const userId = req.user.userId; // Now guaranteed to exist from authenticateToken
     
     const result = await db.query(
       `SELECT outlook_connected, outlook_email FROM users WHERE id = $1`,
@@ -113,7 +113,7 @@ router.get('/status', authenticateToken, async (req, res) => {
  */
 router.post('/disconnect', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.id; // Now guaranteed to exist from authenticateToken
+    const userId = req.user.userId; // Now guaranteed to exist from authenticateToken
     
     await deleteUserTokens(userId, 'outlook');
     

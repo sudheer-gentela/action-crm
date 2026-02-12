@@ -70,7 +70,7 @@ router.post('/', async (req, res) => {
  */
 router.get('/outlook', async (req, res) => {
   try {
-    const userId = req.user?.id || req.query.userId;
+    const userId = req.user.userId;
     const { top = 50, skip = 0, since } = req.query;
     
     const result = await fetchEmails(userId, { 
@@ -111,7 +111,7 @@ router.get('/outlook', async (req, res) => {
  */
 router.post('/analyze', async (req, res) => {
   try {
-    const userId = req.user?.id || req.body.userId;
+    const userId = req.user.userId;
     const { emailId } = req.body;
     
     if (!emailId) {
@@ -156,7 +156,7 @@ router.post('/analyze', async (req, res) => {
  */
 router.post('/process', async (req, res) => {
   try {
-    const userId = req.user?.id || req.body.userId;
+    const userId = req.user.userId;
     const { emailId } = req.body;
     
     if (!emailId) {

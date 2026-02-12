@@ -165,17 +165,16 @@ export const outlookAPI = {
 
 // Sync API
 export const syncAPI = {
-  triggerSync: async (userId) => {
+  triggerSync: async () => {
     const response = await fetch(`${API_BASE_URL}/sync/trigger`, {
       method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ userId })
+      headers: getAuthHeaders()
     });
     return response.json();
   },
 
-  getStatus: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/sync/status?userId=${userId}`, {
+  getStatus: async () => {
+    const response = await fetch(`${API_BASE_URL}/sync/status`, {
       headers: getAuthHeaders()
     });
     return response.json();

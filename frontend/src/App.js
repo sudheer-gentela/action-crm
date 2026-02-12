@@ -388,9 +388,9 @@ function Dashboard({ user, onLogout }) {
           {currentTab === 'email' && <EmailView />}
           {currentTab === 'outlook' && (
             <div className="outlook-view">
-              <OutlookConnect userId={user.id} />
-              <SyncStatus userId={user.id} />
-              <OutlookEmailList userId={user.id} />
+              <OutlookConnect />
+              <SyncStatus />
+              <OutlookEmailList />
             </div>
           )}
           {currentTab === 'calendar' && <CalendarView />}

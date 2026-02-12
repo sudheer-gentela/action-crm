@@ -8,7 +8,7 @@ const { triggerSync, getSyncStatus } = require('../jobs/syncScheduler');
  */
 router.post('/trigger', async (req, res) => {
   try {
-    const userId = req.user?.id || req.body.userId;
+    const userId = req.user.userId;
     
     const result = await triggerSync(userId, 'email');
     
@@ -32,7 +32,7 @@ router.post('/trigger', async (req, res) => {
  */
 router.get('/status', async (req, res) => {
   try {
-    const userId = req.user?.id || req.query.userId;
+    const userId = req.user.userId;
     
     const status = await getSyncStatus(userId);
     

@@ -2,20 +2,20 @@ import React, { useState, useEffect, useCallback } from 'react';
 import './SyncStatus.css';
 import { syncAPI } from './apiService';
 
-function SyncStatus({ userId }) {
+function SyncStatus() {
   const [syncHistory, setSyncHistory] = useState([]);
   const [isSyncing, setIsSyncing] = useState(false);
 
   const fetchSyncStatus = useCallback(async () => {
     try {
-      const data = await syncAPI.getStatus(userId);
+      const data = await syncAPI.getStatus();
       // ✅ Handle undefined/null data properly
       setSyncHistory(data?.data || []);
     } catch (error) {
       console.error('Error fetching sync status:', error);
       setSyncHistory([]); // ✅ Set empty array on error
     }
-  }, [userId]);
+  }, []);
 
   useEffect(() => {
     fetchSyncStatus();
@@ -24,7 +24,7 @@ function SyncStatus({ userId }) {
   const handleManualSync = async () => {
     try {
       setIsSyncing(true);
-      const result = await syncAPI.triggerSync(userId);
+      const result = await syncAPI.triggerSync();
       alert(`Found ${result.data.emailsFound} new emails`);
       await fetchSyncStatus();
     } catch (error) {

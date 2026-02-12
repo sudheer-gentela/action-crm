@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import './OutlookEmailList.css';
 import { outlookAPI } from './apiService';
 
-function OutlookEmailList({ userId }) {
+function OutlookEmailList() {
   const [emails, setEmails] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import './OutlookConnect.css';
 import { outlookAPI } from './apiService';
 
-function OutlookConnect({ userId, onConnectionChange }) {
+function OutlookConnect({ onConnectionChange }) {
   const [isConnected, setIsConnected] = useState(false);
   const [outlookEmail, setOutlookEmail] = useState(null);
   const [isLoading, setIsLoading] = useState(true);

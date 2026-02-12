@@ -8,13 +8,13 @@ import './EmailView.css';
 function EmailView() {
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const user = JSON.parse(localStorage.getItem('user'));
-  const userId = user?.id;
+  
+  
 
   // Use useCallback to memoize the function
   const checkConnection = useCallback(async () => {
     try {
-      const status = await outlookAPI.getStatus(userId);
+      const status = await outlookAPI.getStatus();
       setIsConnected(status.connected);
     } catch (error) {
       console.error('Error checking connection:', error);
@@ -22,7 +22,7 @@ function EmailView() {
     } finally {
       setIsLoading(false);
     }
-  }, [userId]); // Add userId as dependency
+  }, []);
 
   useEffect(() => {
     checkConnection();
@@ -41,15 +41,15 @@ function EmailView() {
       <div className="email-content">
         {/* Always show connection status */}
         <OutlookConnect 
-          userId={userId} 
+           
           onConnectionChange={checkConnection}
         />
 
         {/* Only show emails if connected */}
         {isConnected ? (
           <>
-            <SyncStatus userId={userId} />
-            <OutlookEmailList userId={userId} />
+            <SyncStatus  />
+            <OutlookEmailList  />
           </>
         ) : (
           <div className="not-connected-message">
