@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import './OutlookConnect.css';
 import { outlookAPI } from './apiService';
 
-function OutlookConnect({ userId }) {
+function OutlookConnect({ userId, onConnectionChange }) {
   const [isConnected, setIsConnected] = useState(false);
   const [outlookEmail, setOutlookEmail] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -12,12 +12,18 @@ function OutlookConnect({ userId }) {
       const status = await outlookAPI.getStatus(userId);
       setIsConnected(status.connected);
       setOutlookEmail(status.email);
+      
+      // Notify parent component
+      if (onConnectionChange) {
+        onConnectionChange(status.connected);
+      }
     } catch (error) {
       console.error('Error checking Outlook status:', error);
+      setIsConnected(false);
     } finally {
       setIsLoading(false);
     }
-  }, [userId]);
+  }, [userId, onConnectionChange]);
 
   useEffect(() => {
     checkStatus();
@@ -50,6 +56,11 @@ function OutlookConnect({ userId }) {
       setIsConnected(false);
       setOutlookEmail(null);
       alert('Outlook disconnected');
+      
+      // Notify parent
+      if (onConnectionChange) {
+        onConnectionChange(false);
+      }
     } catch (error) {
       alert('Failed to disconnect Outlook');
       console.error('Error:', error);

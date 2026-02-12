@@ -87,6 +87,17 @@ router.get('/outlook', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching Outlook emails:', error);
+    
+    // ✅ Handle "no tokens" error gracefully
+    if (error.message.includes('No tokens found')) {
+      return res.status(403).json({ 
+        success: false,
+        error: 'Outlook not connected',
+        message: 'Please connect your Outlook account first',
+        code: 'NOT_CONNECTED'
+      });
+    }
+    
     res.status(500).json({ 
       success: false,
       error: error.message 
@@ -122,6 +133,16 @@ router.post('/analyze', async (req, res) => {
     });
   } catch (error) {
     console.error('Error analyzing email:', error);
+    
+    // ✅ Handle "no tokens" error
+    if (error.message.includes('No tokens found')) {
+      return res.status(403).json({ 
+        success: false,
+        error: 'Outlook not connected',
+        code: 'NOT_CONNECTED'
+      });
+    }
+    
     res.status(500).json({ 
       success: false,
       error: error.message 
@@ -157,6 +178,16 @@ router.post('/process', async (req, res) => {
     });
   } catch (error) {
     console.error('Error processing email:', error);
+    
+    // ✅ Handle "no tokens" error
+    if (error.message.includes('No tokens found')) {
+      return res.status(403).json({ 
+        success: false,
+        error: 'Outlook not connected',
+        code: 'NOT_CONNECTED'
+      });
+    }
+    
     res.status(500).json({ 
       success: false,
       error: error.message 
