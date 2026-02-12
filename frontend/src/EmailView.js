@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import OutlookConnect from './OutlookConnect';
 import OutlookEmailList from './OutlookEmailList';
 import SyncStatus from './SyncStatus';
@@ -11,11 +11,8 @@ function EmailView() {
   const user = JSON.parse(localStorage.getItem('user'));
   const userId = user?.id;
 
-  useEffect(() => {
-    checkConnection();
-  }, []);
-
-  const checkConnection = async () => {
+  // Use useCallback to memoize the function
+  const checkConnection = useCallback(async () => {
     try {
       const status = await outlookAPI.getStatus(userId);
       setIsConnected(status.connected);
@@ -25,7 +22,11 @@ function EmailView() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [userId]); // Add userId as dependency
+
+  useEffect(() => {
+    checkConnection();
+  }, [checkConnection]); // Now checkConnection is properly included
 
   if (isLoading) {
     return <div className="email-view loading">Loading...</div>;
