@@ -101,39 +101,46 @@ export const apiService = {
 
 // Outlook API
 export const outlookAPI = {
-  getAuthUrl: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/outlook/connect?userId=${userId}`, {
+  getAuthUrl: async () => {
+    const response = await fetch(`${API_BASE_URL}/outlook/connect`, {
       headers: getAuthHeaders()
     });
+    if (!response.ok) {
+      throw new Error('Failed to get auth URL');
+    }
     return response.json();
   },
 
-  getStatus: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/outlook/status?userId=${userId}`, {
+  getStatus: async () => {
+    const response = await fetch(`${API_BASE_URL}/outlook/status`, {
       headers: getAuthHeaders()
     });
+    if (!response.ok) {
+      throw new Error('Failed to get status');
+    }
     return response.json();
   },
 
-  disconnect: async (userId) => {
+  disconnect: async () => {
     const response = await fetch(`${API_BASE_URL}/outlook/disconnect`, {
       method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ userId })
+      headers: getAuthHeaders()
     });
+    if (!response.ok) {
+      throw new Error('Failed to disconnect');
+    }
     return response.json();
   },
 
-  fetchEmails: async (userId, options = {}) => {
+  fetchEmails: async (options = {}) => {
     const params = new URLSearchParams({
-      userId,
       top: options.top || 50,
       skip: options.skip || 0,
       ...(options.since && { since: options.since })
     });
 
     const response = await fetch(`${API_BASE_URL}/emails/outlook?${params}`, {
-      headers: getAuthHeaders() // ✅ Added auth headers
+      headers: getAuthHeaders()
     });
     
     if (!response.ok) {
@@ -143,12 +150,15 @@ export const outlookAPI = {
     return response.json();
   },
 
-  processEmail: async (userId, emailId) => {
+  processEmail: async (emailId) => {
     const response = await fetch(`${API_BASE_URL}/emails/process`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ userId, emailId })
+      body: JSON.stringify({ emailId })
     });
+    if (!response.ok) {
+      throw new Error('Failed to process email');
+    }
     return response.json();
   }
 };

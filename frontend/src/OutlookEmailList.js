@@ -12,7 +12,7 @@ function OutlookEmailList({ userId }) {
     try {
       setIsLoading(true);
       setError(null);
-      const result = await outlookAPI.fetchEmails(userId, { top: 20 });
+      const result = await outlookAPI.fetchEmails({ top: 20 });
       // ✅ Safe access with fallback
       setEmails(result?.data || []);
     } catch (error) {
@@ -22,7 +22,7 @@ function OutlookEmailList({ userId }) {
     } finally {
       setIsLoading(false);
     }
-  }, [userId]);
+  }, []);
 
   useEffect(() => {
     fetchEmails();
@@ -31,7 +31,7 @@ function OutlookEmailList({ userId }) {
   const handleProcessEmail = async (emailId) => {
     try {
       setProcessingIds(prev => new Set(prev).add(emailId));
-      await outlookAPI.processEmail(userId, emailId);
+      await outlookAPI.processEmail(emailId);
       alert('Email queued for AI processing! Check your actions in a moment.');
     } catch (error) {
       alert('Failed to process email');

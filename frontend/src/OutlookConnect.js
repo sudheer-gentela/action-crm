@@ -9,7 +9,7 @@ function OutlookConnect({ userId, onConnectionChange }) {
 
   const checkStatus = useCallback(async () => {
     try {
-      const status = await outlookAPI.getStatus(userId);
+      const status = await outlookAPI.getStatus();
       setIsConnected(status.connected);
       setOutlookEmail(status.email);
       
@@ -23,7 +23,7 @@ function OutlookConnect({ userId, onConnectionChange }) {
     } finally {
       setIsLoading(false);
     }
-  }, [userId, onConnectionChange]);
+  }, [onConnectionChange]);
 
   useEffect(() => {
     checkStatus();
@@ -40,7 +40,7 @@ function OutlookConnect({ userId, onConnectionChange }) {
 
   const handleConnect = async () => {
     try {
-      const response = await outlookAPI.getAuthUrl(userId);
+      const response = await outlookAPI.getAuthUrl();
       window.location.href = response.authUrl;
     } catch (error) {
       alert('Failed to connect to Outlook');
@@ -52,7 +52,7 @@ function OutlookConnect({ userId, onConnectionChange }) {
     if (!window.confirm('Are you sure you want to disconnect Outlook?')) return;
 
     try {
-      await outlookAPI.disconnect(userId);
+      await outlookAPI.disconnect();
       setIsConnected(false);
       setOutlookEmail(null);
       alert('Outlook disconnected');
