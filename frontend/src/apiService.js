@@ -93,17 +93,17 @@ export const apiService = {
 // Outlook API
 export const outlookAPI = {
   getAuthUrl: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/api/outlook/connect?userId=${userId}`);
+    const response = await fetch(`${API_BASE_URL}/outlook/connect?userId=${userId}`);
     return response.json();
   },
 
   getStatus: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/api/outlook/status?userId=${userId}`);
+    const response = await fetch(`${API_BASE_URL}/outlook/status?userId=${userId}`);
     return response.json();
   },
 
   disconnect: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/api/outlook/disconnect`, {
+    const response = await fetch(`${API_BASE_URL}/outlook/disconnect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId })
@@ -119,12 +119,12 @@ export const outlookAPI = {
       ...(options.since && { since: options.since })
     });
 
-    const response = await fetch(`${API_BASE_URL}/api/emails/outlook?${params}`);
+    const response = await fetch(`${API_BASE_URL}/emails/outlook?${params}`);
     return response.json();
   },
 
   processEmail: async (userId, emailId) => {
-    const response = await fetch(`${API_BASE_URL}/api/emails/process`, {
+    const response = await fetch(`${API_BASE_URL}/emails/process`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId, emailId })
@@ -136,7 +136,7 @@ export const outlookAPI = {
 // Sync API
 export const syncAPI = {
   triggerSync: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/api/sync/trigger`, {
+    const response = await fetch(`${API_BASE_URL}/sync/trigger`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId })
@@ -145,7 +145,7 @@ export const syncAPI = {
   },
 
   getStatus: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/api/sync/status?userId=${userId}`);
+    const response = await fetch(`${API_BASE_URL}/sync/status?userId=${userId}`);
     return response.json();
   }
 };

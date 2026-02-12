@@ -9,9 +9,11 @@ function SyncStatus({ userId }) {
   const fetchSyncStatus = useCallback(async () => {
     try {
       const data = await syncAPI.getStatus(userId);
-      setSyncHistory(data.data);
+      // ✅ Handle undefined/null data properly
+      setSyncHistory(data?.data || []);
     } catch (error) {
       console.error('Error fetching sync status:', error);
+      setSyncHistory([]); // ✅ Set empty array on error
     }
   }, [userId]);
 
@@ -33,7 +35,9 @@ function SyncStatus({ userId }) {
     }
   };
 
-  const lastSync = syncHistory[0];
+  // ✅ Safe access with optional chaining
+  const lastSync = syncHistory?.[0];
+  
   const formatDate = (dateString) => {
     const date = new Date(dateString);
     return date.toLocaleString();
