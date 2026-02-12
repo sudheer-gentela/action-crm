@@ -5,16 +5,20 @@ import { outlookAPI } from './apiService';
 function OutlookEmailList({ userId }) {
   const [emails, setEmails] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
   const [processingIds, setProcessingIds] = useState(new Set());
 
   const fetchEmails = useCallback(async () => {
     try {
       setIsLoading(true);
+      setError(null);
       const result = await outlookAPI.fetchEmails(userId, { top: 20 });
-      setEmails(result.data);
+      // ✅ Safe access with fallback
+      setEmails(result?.data || []);
     } catch (error) {
-      alert('Failed to fetch emails');
-      console.error('Error:', error);
+      console.error('Error fetching emails:', error);
+      setError(error.message || 'Failed to fetch emails');
+      setEmails([]); // ✅ Set empty array on error
     } finally {
       setIsLoading(false);
     }
@@ -57,10 +61,24 @@ function OutlookEmailList({ userId }) {
     return <div className="outlook-email-list loading">Loading emails...</div>;
   }
 
-  if (emails.length === 0) {
+  if (error) {
+    return (
+      <div className="outlook-email-list error">
+        <p>❌ {error}</p>
+        <button onClick={fetchEmails} className="btn btn-small">
+          Try Again
+        </button>
+      </div>
+    );
+  }
+
+  if (!emails || emails.length === 0) {
     return (
       <div className="outlook-email-list empty">
         <p>No emails found. Try syncing your inbox.</p>
+        <button onClick={fetchEmails} className="btn btn-small">
+          Refresh
+        </button>
       </div>
     );
   }

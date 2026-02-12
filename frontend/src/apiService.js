@@ -8,6 +8,15 @@ import axios from 'axios';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 
+// Helper to get auth headers
+const getAuthHeaders = () => {
+  const token = localStorage.getItem('token');
+  return {
+    'Content-Type': 'application/json',
+    ...(token && { 'Authorization': `Bearer ${token}` })
+  };
+};
+
 // Create axios instance
 const api = axios.create({
   baseURL: API_URL,
@@ -87,25 +96,29 @@ export const apiService = {
 
 
 // ============================================================
-// OUTLOOK & SYNC APIs
+// OUTLOOK & SYNC APIs - NOW WITH AUTH
 // ============================================================
 
 // Outlook API
 export const outlookAPI = {
   getAuthUrl: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/outlook/connect?userId=${userId}`);
+    const response = await fetch(`${API_BASE_URL}/outlook/connect?userId=${userId}`, {
+      headers: getAuthHeaders()
+    });
     return response.json();
   },
 
   getStatus: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/outlook/status?userId=${userId}`);
+    const response = await fetch(`${API_BASE_URL}/outlook/status?userId=${userId}`, {
+      headers: getAuthHeaders()
+    });
     return response.json();
   },
 
   disconnect: async (userId) => {
     const response = await fetch(`${API_BASE_URL}/outlook/disconnect`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ userId })
     });
     return response.json();
@@ -119,14 +132,21 @@ export const outlookAPI = {
       ...(options.since && { since: options.since })
     });
 
-    const response = await fetch(`${API_BASE_URL}/emails/outlook?${params}`);
+    const response = await fetch(`${API_BASE_URL}/emails/outlook?${params}`, {
+      headers: getAuthHeaders() // ✅ Added auth headers
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
     return response.json();
   },
 
   processEmail: async (userId, emailId) => {
     const response = await fetch(`${API_BASE_URL}/emails/process`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ userId, emailId })
     });
     return response.json();
@@ -138,14 +158,16 @@ export const syncAPI = {
   triggerSync: async (userId) => {
     const response = await fetch(`${API_BASE_URL}/sync/trigger`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ userId })
     });
     return response.json();
   },
 
   getStatus: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/sync/status?userId=${userId}`);
+    const response = await fetch(`${API_BASE_URL}/sync/status?userId=${userId}`, {
+      headers: getAuthHeaders()
+    });
     return response.json();
   }
 };
