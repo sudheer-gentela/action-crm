@@ -1,5 +1,5 @@
 /**
- * Actions Generator Service
+ * Actions Generator Service - FIXED VERSION
  * Triggers the ActionsEngine to generate smart actions based on data changes
  */
 
@@ -28,6 +28,8 @@ class ActionsGenerator {
       const meetings = meetingsResult.rows;
       const accounts = accountsResult.rows;
 
+      console.log(`📊 Data loaded: ${deals.length} deals, ${contacts.length} contacts, ${emails.length} emails, ${meetings.length} meetings`);
+
       // Generate actions using ActionsEngine
       const generatedActions = ActionsEngine.generateActions({
         deals,
@@ -49,13 +51,32 @@ class ActionsGenerator {
       let insertedCount = 0;
       for (const action of generatedActions) {
         try {
+          // ✅ FIX: Get user_id from the deal, contact, or account
+          let userId = null;
+          
+          if (action.deal_id) {
+            const deal = deals.find(d => d.id === action.deal_id);
+            userId = deal?.owner_id;
+          } else if (action.contact_id) {
+            const contact = contacts.find(c => c.id === action.contact_id);
+            if (contact?.account_id) {
+              const account = accounts.find(a => a.id === contact.account_id);
+              userId = account?.owner_id;
+            }
+          } else if (action.account_id) {
+            const account = accounts.find(a => a.id === action.account_id);
+            userId = account?.owner_id;
+          }
+
+          // ✅ FIX: Added user_id to INSERT
           await db.query(
             `INSERT INTO actions (
-              title, description, action_type, priority, 
+              user_id, title, description, action_type, priority, 
               due_date, deal_id, contact_id, account_id,
               suggested_action, source, created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())`,
             [
+              userId,                           // ✅ ADDED user_id
               action.title,
               action.description,
               action.action_type,
@@ -69,8 +90,10 @@ class ActionsGenerator {
             ]
           );
           insertedCount++;
+          console.log(`✅ Inserted action: ${action.title} (user_id: ${userId})`);
         } catch (error) {
-          console.error('Error inserting action:', error.message);
+          console.error('❌ Error inserting action:', error.message);
+          console.error('   Action was:', action.title);
         }
       }
 
@@ -104,6 +127,7 @@ class ActionsGenerator {
       if (dealResult.rows.length === 0) return;
 
       const deal = dealResult.rows[0];
+      const userId = deal.owner_id; // ✅ Get user_id from deal
 
       // Fetch related data
       const contactsResult = await db.query(
@@ -141,11 +165,12 @@ class ActionsGenerator {
       for (const action of dealActions) {
         await db.query(
           `INSERT INTO actions (
-            title, description, action_type, priority, 
+            user_id, title, description, action_type, priority, 
             due_date, deal_id, contact_id, account_id,
             suggested_action, source, created_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())`,
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())`,
           [
+            userId,                           // ✅ ADDED user_id
             action.title,
             action.description,
             action.action_type,
