@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './OutlookConnect.css';
 import { outlookAPI } from './apiService';
 
@@ -8,7 +8,7 @@ function OutlookConnect({ userId, onConnectionChange }) {
   const [isLoading, setIsLoading] = useState(true);
 
   // ✅ Get userId from localStorage if not provided via props
-  const getValidUserId = () => {
+  const getValidUserId = useCallback(() => {
     if (userId) return userId;
     
     try {
@@ -18,29 +18,11 @@ function OutlookConnect({ userId, onConnectionChange }) {
       console.error('Error getting user from localStorage:', error);
       return null;
     }
-  };
+  }, [userId]);
 
   const effectiveUserId = getValidUserId();
 
-  useEffect(() => {
-    checkStatus();
-    
-    // Check for OAuth callback success
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('outlook_connected') === 'true') {
-      alert('✅ Outlook connected successfully!');
-      checkStatus();
-      // Clean URL
-      window.history.replaceState({}, '', window.location.pathname);
-    } else if (params.get('error')) {
-      const errorType = params.get('error');
-      const errorMessage = params.get('message');
-      alert(`❌ Failed to connect Outlook: ${errorMessage || errorType}`);
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-  }, [effectiveUserId]);
-
-  const checkStatus = async () => {
+  const checkStatus = useCallback(async () => {
     const currentUserId = getValidUserId();
     
     // ✅ Don't make request if no userId
@@ -67,7 +49,25 @@ function OutlookConnect({ userId, onConnectionChange }) {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [getValidUserId, onConnectionChange]);
+
+  useEffect(() => {
+    checkStatus();
+    
+    // Check for OAuth callback success
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('outlook_connected') === 'true') {
+      alert('✅ Outlook connected successfully!');
+      checkStatus();
+      // Clean URL
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('error')) {
+      const errorType = params.get('error');
+      const errorMessage = params.get('message');
+      alert(`❌ Failed to connect Outlook: ${errorMessage || errorType}`);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, [checkStatus, effectiveUserId]);
 
   const handleConnect = async () => {
     const currentUserId = getValidUserId();
