@@ -1,6 +1,6 @@
 /**
- * Actions Generator Service - FIXED VERSION
- * Triggers the ActionsEngine to generate smart actions based on data changes
+ * Actions Generator Service - DEBUG VERSION
+ * Added extensive logging to find the INSERT issue
  */
 
 const db = require('../config/database');
@@ -54,32 +54,51 @@ class ActionsGenerator {
           // ✅ FIX: Get user_id from the deal, contact, or account
           let userId = null;
           
+          console.log('🔍 Processing action:', action.title);
+          console.log('   deal_id:', action.deal_id);
+          console.log('   contact_id:', action.contact_id);
+          console.log('   account_id:', action.account_id);
+          
           if (action.deal_id) {
             const deal = deals.find(d => d.id === action.deal_id);
             userId = deal?.owner_id;
+            console.log('   Found deal, owner_id:', userId);
           } else if (action.contact_id) {
             const contact = contacts.find(c => c.id === action.contact_id);
+            console.log('   Found contact, account_id:', contact?.account_id);
             if (contact?.account_id) {
               const account = accounts.find(a => a.id === contact.account_id);
               userId = account?.owner_id;
+              console.log('   Found account, owner_id:', userId);
             }
           } else if (action.account_id) {
             const account = accounts.find(a => a.id === action.account_id);
             userId = account?.owner_id;
+            console.log('   Found account, owner_id:', userId);
+          }
+
+          console.log('   Final userId:', userId, 'type:', typeof userId);
+
+          if (!userId) {
+            console.error('❌ SKIPPING: No userId found for action:', action.title);
+            continue;
           }
 
           // ✅ FIX: Added user_id to INSERT
-          await db.query(
+          console.log('   Attempting INSERT...');
+          const result = await db.query(
             `INSERT INTO actions (
-              user_id, title, description, action_type, priority, 
+              user_id, type, title, description, action_type, priority, 
               due_date, deal_id, contact_id, account_id,
               suggested_action, source, created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+            RETURNING id`,
             [
-              userId,                           // ✅ ADDED user_id
+              userId,                           
+              action.action_type,               // ✅ ADDED: Set 'type' column
               action.title,
               action.description,
-              action.action_type,
+              action.action_type,               // Keep action_type too
               action.priority,
               action.due_date,
               action.deal_id || null,
@@ -89,11 +108,13 @@ class ActionsGenerator {
               'auto_generated'
             ]
           );
+          
           insertedCount++;
-          console.log(`✅ Inserted action: ${action.title} (user_id: ${userId})`);
+          console.log(`✅ Inserted action ID ${result.rows[0].id}: ${action.title} (user_id: ${userId})`);
         } catch (error) {
           console.error('❌ Error inserting action:', error.message);
-          console.error('   Action was:', action.title);
+          console.error('   Full error:', error);
+          console.error('   Action was:', JSON.stringify(action, null, 2));
         }
       }
 
@@ -127,7 +148,7 @@ class ActionsGenerator {
       if (dealResult.rows.length === 0) return;
 
       const deal = dealResult.rows[0];
-      const userId = deal.owner_id; // ✅ Get user_id from deal
+      const userId = deal.owner_id;
 
       // Fetch related data
       const contactsResult = await db.query(
@@ -165,15 +186,16 @@ class ActionsGenerator {
       for (const action of dealActions) {
         await db.query(
           `INSERT INTO actions (
-            user_id, title, description, action_type, priority, 
+            user_id, type, title, description, action_type, priority, 
             due_date, deal_id, contact_id, account_id,
             suggested_action, source, created_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())`,
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())`,
           [
-            userId,                           // ✅ ADDED user_id
+            userId,
+            action.action_type,               // ✅ ADDED: Set 'type' column
             action.title,
             action.description,
-            action.action_type,
+            action.action_type,               // Keep action_type too
             action.priority,
             action.due_date,
             action.deal_id || null,
