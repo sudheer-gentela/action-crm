@@ -7,22 +7,29 @@ const { pool } = require('../config/database');
 /**
  * Initiate Outlook OAuth flow
  * GET /api/outlook/connect
+ * NO AUTH MIDDLEWARE - uses query param userId
  */
 router.get('/connect', async (req, res) => {
   try {
-    const userId = req.user?.id || req.query.userId;
+    // ✅ Only use query param since no auth middleware
+    const userId = req.query.userId;
     
-    if (!userId) {
+    console.log('🔐 OAuth Connect Request:');
+    console.log('   userId from query:', req.query.userId);
+    console.log('   Final userId:', userId);
+    
+    if (!userId || userId === 'undefined' || userId === 'null') {
+      console.error('❌ Invalid userId:', userId);
       return res.status(400).json({
         success: false,
         error: 'userId is required'
       });
     }
     
-    console.log('🔐 Starting OAuth flow for user:', userId);
+    console.log('✅ Starting OAuth flow for user:', userId);
     
     const state = Buffer.from(JSON.stringify({
-      userId: userId,
+      userId: parseInt(userId),
       timestamp: Date.now()
     })).toString('base64');
     
@@ -38,7 +45,8 @@ router.get('/connect', async (req, res) => {
     console.error('❌ Error generating auth URL:', error);
     res.status(500).json({ 
       success: false,
-      error: 'Failed to generate authorization URL' 
+      error: 'Failed to generate authorization URL',
+      message: error.message
     });
   }
 });
@@ -56,11 +64,9 @@ router.get('/callback', async (req, res) => {
     console.log('   State:', state ? 'Present' : 'Missing');
     console.log('   Error:', oauthError || 'None');
     
-    // Get frontend URL from environment
     const frontendUrl = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://action-crm.vercel.app';
     console.log('   Frontend URL:', frontendUrl);
     
-    // Handle OAuth errors
     if (oauthError) {
       console.error('❌ OAuth error:', oauthError, error_description);
       return res.redirect(`${frontendUrl}/?error=${oauthError}&message=${encodeURIComponent(error_description || 'OAuth failed')}`);
@@ -76,7 +82,6 @@ router.get('/callback', async (req, res) => {
       return res.redirect(`${frontendUrl}/?error=no_state`);
     }
     
-    // Decode state
     let stateData;
     try {
       stateData = JSON.parse(Buffer.from(state, 'base64').toString());
@@ -95,19 +100,15 @@ router.get('/callback', async (req, res) => {
     
     console.log('🔄 Processing OAuth for user:', userId);
     
-    // Exchange code for tokens
     const tokenResponse = await getTokenFromCode(code);
     console.log('✅ Token exchange successful');
     
-    // Save tokens
     await saveUserToken(userId, 'outlook', tokenResponse);
     console.log('✅ Tokens saved');
     
-    // Get user profile
     const profile = await getUserProfile(userId);
     console.log('✅ User profile retrieved:', profile.mail || profile.userPrincipalName);
     
-    // Update user record
     await pool.query(
       `UPDATE users 
        SET outlook_email = $1, outlook_connected = true, updated_at = NOW()
@@ -116,7 +117,6 @@ router.get('/callback', async (req, res) => {
     );
     console.log('✅ User record updated');
     
-    // Redirect to frontend with success
     console.log('🔀 Redirecting to:', `${frontendUrl}/?outlook_connected=true`);
     res.redirect(`${frontendUrl}/?outlook_connected=true`);
     
@@ -130,15 +130,24 @@ router.get('/callback', async (req, res) => {
 /**
  * Get connection status
  * GET /api/outlook/status
+ * NO AUTH MIDDLEWARE - uses query param userId
  */
 router.get('/status', async (req, res) => {
   try {
-    const userId = req.user?.id || req.query.userId;
+    // ✅ Only use query param since no auth middleware
+    const userId = req.query.userId;
     
-    if (!userId) {
-      return res.status(400).json({
-        success: false,
-        error: 'userId is required'
+    console.log('📊 Status check:');
+    console.log('   userId from query:', req.query.userId);
+    console.log('   Final userId:', userId);
+    
+    // ✅ Return graceful response instead of 400 error
+    if (!userId || userId === 'undefined' || userId === 'null') {
+      console.log('⚠️  No valid userId, returning not connected');
+      return res.json({
+        success: true,
+        connected: false,
+        email: null
       });
     }
     
@@ -148,13 +157,20 @@ router.get('/status', async (req, res) => {
     );
     
     if (result.rows.length === 0) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'User not found' 
+      console.log('⚠️  User not found, returning not connected');
+      return res.json({ 
+        success: true,
+        connected: false,
+        email: null
       });
     }
     
     const user = result.rows[0];
+    
+    console.log('✅ Status check result:', {
+      connected: user.outlook_connected,
+      email: user.outlook_email
+    });
     
     res.json({
       success: true,
@@ -163,9 +179,12 @@ router.get('/status', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Error checking status:', error);
-    res.status(500).json({ 
-      success: false,
-      error: 'Failed to check connection status' 
+    // ✅ Return graceful response on error
+    res.json({ 
+      success: true,
+      connected: false,
+      email: null,
+      error: error.message
     });
   }
 });
@@ -173,12 +192,14 @@ router.get('/status', async (req, res) => {
 /**
  * Disconnect Outlook
  * POST /api/outlook/disconnect
+ * NO AUTH MIDDLEWARE - uses body param userId
  */
 router.post('/disconnect', async (req, res) => {
   try {
-    const userId = req.user?.id || req.body.userId;
+    // ✅ Only use body param since no auth middleware
+    const userId = req.body.userId;
     
-    if (!userId) {
+    if (!userId || userId === 'undefined' || userId === 'null') {
       return res.status(400).json({
         success: false,
         error: 'userId is required'
