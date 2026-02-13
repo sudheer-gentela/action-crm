@@ -1,8 +1,11 @@
+/* Outlook Email List Styles */
+
 .outlook-email-list {
   background: white;
-  border: 1px solid #e0e0e0;
   border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   padding: 20px;
+  margin-top: 20px;
 }
 
 .email-list-header {
@@ -10,108 +13,321 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
+  padding-bottom: 15px;
+  border-bottom: 2px solid #f0f0f0;
 }
 
 .email-list-header h3 {
   margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #1a1a1a;
 }
 
+/* Email Items Container */
 .email-items {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
+/* Individual Email Item */
 .email-item {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  padding: 15px;
-  border: 1px solid #e0e0e0;
-  border-radius: 6px;
-  transition: all 0.2s;
+  gap: 15px;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: white;
+  transition: all 0.2s ease;
+  cursor: pointer;
 }
 
 .email-item:hover {
-  border-color: #2196f3;
-  box-shadow: 0 2px 8px rgba(33, 150, 243, 0.1);
+  border-color: #3b82f6;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.1);
+  transform: translateY(-1px);
 }
 
 .email-item.unread {
-  background-color: #f5f9ff;
-  border-color: #2196f3;
+  background: #f8fafc;
+  border-left: 3px solid #3b82f6;
 }
 
-.email-content {
+.email-item.read {
+  opacity: 0.85;
+}
+
+/* Email Main Content */
+.email-main {
   flex: 1;
-  min-width: 0;
+  min-width: 0; /* Important for text truncation */
 }
 
-.email-meta {
+.email-header-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
-  font-size: 13px;
+  gap: 10px;
 }
 
-.email-from {
+.email-sender {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.sender-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-weight: 600;
-  color: #333;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.sender-name {
+  font-weight: 600;
+  font-size: 15px;
+  color: #1a1a1a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .email-date {
-  color: #999;
+  font-size: 13px;
+  color: #6b7280;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .email-subject {
   margin: 0 0 8px 0;
   font-size: 15px;
   font-weight: 600;
-  color: #333;
+  color: #374151;
+  line-height: 1.4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.email-item.unread .email-subject {
-  color: #2196f3;
+.unread-dot {
+  color: #3b82f6;
+  font-size: 12px;
+  flex-shrink: 0;
 }
 
 .email-preview {
   margin: 0;
   font-size: 14px;
-  color: #666;
-  line-height: 1.4;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: #6b7280;
+  line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Email Actions */
+.email-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.email-actions .btn {
+  white-space: nowrap;
+}
+
+/* Button Styles */
+.btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .btn-small {
-  padding: 8px 16px;
+  padding: 6px 12px;
   font-size: 13px;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
 }
 
 .btn-primary {
-  background-color: #2196f3;
+  background: #3b82f6;
   color: white;
 }
 
-.btn-primary:hover {
-  background-color: #1976d2;
+.btn-primary:hover:not(:disabled) {
+  background: #2563eb;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
 }
 
 .btn-primary:disabled {
-  background-color: #ccc;
+  background: #93c5fd;
   cursor: not-allowed;
+  opacity: 0.7;
 }
 
-.outlook-email-list.loading,
+.btn-outline {
+  background: white;
+  color: #3b82f6;
+  border: 1px solid #3b82f6;
+}
+
+.btn-outline:hover {
+  background: #eff6ff;
+}
+
+/* Loading States */
+.outlook-email-list.loading {
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-spinner {
+  text-align: center;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 12px;
+  border: 3px solid #f3f4f6;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.spinner-small {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #ffffff;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Error State */
+.outlook-email-list.error {
+  min-height: 150px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.error-box {
+  text-align: center;
+  padding: 30px;
+  background: #fef2f2;
+  border-radius: 8px;
+  border: 1px solid #fecaca;
+}
+
+.error-box p {
+  color: #991b1b;
+  margin: 0 0 15px 0;
+  font-size: 15px;
+}
+
+/* Empty State */
 .outlook-email-list.empty {
+  min-height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.empty-state {
   text-align: center;
   padding: 40px;
-  color: #999;
+}
+
+.empty-state p {
+  font-size: 16px;
+  color: #6b7280;
+  margin: 0 0 8px 0;
+}
+
+.empty-subtitle {
+  font-size: 14px;
+  color: #9ca3af;
+  margin-bottom: 20px !important;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .email-item {
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .email-actions {
+    width: 100%;
+  }
+  
+  .email-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+  
+  .email-header-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  
+  .email-date {
+    font-size: 12px;
+  }
+  
+  .sender-name {
+    font-size: 14px;
+  }
+  
+  .email-subject {
+    font-size: 14px;
+  }
+  
+  .email-preview {
+    font-size: 13px;
+  }
+}
+
+/* High contrast for accessibility */
+@media (prefers-contrast: high) {
+  .email-item {
+    border-width: 2px;
+  }
+  
+  .email-item.unread {
+    border-left-width: 4px;
+  }
 }

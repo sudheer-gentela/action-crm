@@ -9,13 +9,25 @@ function EmailView() {
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   
-  // ✅ Get user from localStorage properly
+  // ✅ Get user from localStorage and ensure userId is a NUMBER
   const getUserId = () => {
     try {
       const user = JSON.parse(localStorage.getItem('user'));
       console.log('📝 User from localStorage:', user);
-      console.log('📝 userId:', user?.id);
-      return user?.id;
+      console.log('📝 user?.id:', user?.id);
+      console.log('📝 type:', typeof user?.id);
+      
+      // ✅ Ensure it's a number
+      const id = user?.id;
+      if (id === null || id === undefined) {
+        return null;
+      }
+      
+      // Convert to number if it's a string
+      const userId = typeof id === 'number' ? id : parseInt(id, 10);
+      console.log('📝 Final userId:', userId, 'type:', typeof userId);
+      
+      return userId;
     } catch (error) {
       console.error('Error getting user from localStorage:', error);
       return null;
@@ -79,13 +91,13 @@ function EmailView() {
       </div>
 
       <div className="email-content">
-        {/* Always show connection status */}
+        {/* Always show connection status - pass userId as number */}
         <OutlookConnect 
           userId={userId} 
           onConnectionChange={checkConnection}
         />
 
-        {/* Only show emails if connected */}
+        {/* Only show emails if connected - pass userId as number */}
         {isConnected ? (
           <>
             <SyncStatus userId={userId} />
