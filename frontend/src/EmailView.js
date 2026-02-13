@@ -9,12 +9,33 @@ function EmailView() {
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   
-  
+  // ✅ Get user from localStorage properly
+  const getUserId = () => {
+    try {
+      const user = JSON.parse(localStorage.getItem('user'));
+      console.log('📝 User from localStorage:', user);
+      console.log('📝 userId:', user?.id);
+      return user?.id;
+    } catch (error) {
+      console.error('Error getting user from localStorage:', error);
+      return null;
+    }
+  };
+
+  const userId = getUserId();
 
   // Use useCallback to memoize the function
   const checkConnection = useCallback(async () => {
+    // ✅ Don't check if no userId
+    if (!userId) {
+      console.warn('⚠️  No userId available in EmailView');
+      setIsConnected(false);
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      const status = await outlookAPI.getStatus();
+      const status = await outlookAPI.getStatus(userId);
       setIsConnected(status.connected);
     } catch (error) {
       console.error('Error checking connection:', error);
@@ -22,14 +43,33 @@ function EmailView() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     checkConnection();
-  }, [checkConnection]); // Now checkConnection is properly included
+  }, [checkConnection]);
 
   if (isLoading) {
     return <div className="email-view loading">Loading...</div>;
+  }
+
+  // ✅ Show error if no userId
+  if (!userId) {
+    return (
+      <div className="email-view">
+        <div className="email-header">
+          <h2>📧 Email Management</h2>
+        </div>
+        <div className="email-content">
+          <div className="error-message">
+            <p>⚠️ Unable to load user session. Please refresh the page.</p>
+            <button onClick={() => window.location.reload()} className="btn btn-primary">
+              Refresh Page
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -41,15 +81,15 @@ function EmailView() {
       <div className="email-content">
         {/* Always show connection status */}
         <OutlookConnect 
-           
+          userId={userId} 
           onConnectionChange={checkConnection}
         />
 
         {/* Only show emails if connected */}
         {isConnected ? (
           <>
-            <SyncStatus  />
-            <OutlookEmailList  />
+            <SyncStatus userId={userId} />
+            <OutlookEmailList userId={userId} />
           </>
         ) : (
           <div className="not-connected-message">
