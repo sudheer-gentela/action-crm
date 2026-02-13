@@ -96,49 +96,77 @@ export const apiService = {
 
 
 // ============================================================
-// OUTLOOK & SYNC APIs - NOW WITH AUTH
+// OUTLOOK & SYNC APIs - WITHOUT AUTH HEADERS
 // ============================================================
 
-// Outlook API
+// Outlook API - NO AUTH (uses userId in query/body params)
 export const outlookAPI = {
-  getAuthUrl: async () => {
-    const response = await fetch(`${API_BASE_URL}/outlook/connect`, {
-      headers: getAuthHeaders()
+  getAuthUrl: async (userId) => {
+    console.log('📤 Calling getAuthUrl with userId:', userId);
+    
+    // ✅ NO AUTH HEADERS - just query param
+    const url = `${API_BASE_URL}/outlook/connect?userId=${userId}`;
+    console.log('📤 Request URL:', url);
+    
+    const response = await fetch(url, {
+      headers: {
+        'Content-Type': 'application/json'
+        // ✅ NO Authorization header
+      }
     });
+    
+    console.log('📥 Response status:', response.status);
+    
     if (!response.ok) {
-      throw new Error('Failed to get auth URL');
+      const errorData = await response.json().catch(() => ({}));
+      console.error('❌ Error response:', errorData);
+      throw new Error(errorData.error || 'Failed to get auth URL');
     }
+    
     return response.json();
   },
 
-  getStatus: async () => {
-    const response = await fetch(`${API_BASE_URL}/outlook/status`, {
-      headers: getAuthHeaders()
+  getStatus: async (userId) => {
+    // ✅ NO AUTH HEADERS
+    const response = await fetch(`${API_BASE_URL}/outlook/status?userId=${userId}`, {
+      headers: {
+        'Content-Type': 'application/json'
+      }
     });
+    
     if (!response.ok) {
       throw new Error('Failed to get status');
     }
+    
     return response.json();
   },
 
-  disconnect: async () => {
+  disconnect: async (userId) => {
+    // ✅ NO AUTH HEADERS
     const response = await fetch(`${API_BASE_URL}/outlook/disconnect`, {
       method: 'POST',
-      headers: getAuthHeaders()
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ userId })
     });
+    
     if (!response.ok) {
       throw new Error('Failed to disconnect');
     }
+    
     return response.json();
   },
 
-  fetchEmails: async (options = {}) => {
+  fetchEmails: async (userId, options = {}) => {
     const params = new URLSearchParams({
+      userId,
       top: options.top || 50,
       skip: options.skip || 0,
       ...(options.since && { since: options.since })
     });
 
+    // ✅ Uses auth headers (this endpoint has authenticateToken middleware)
     const response = await fetch(`${API_BASE_URL}/emails/outlook?${params}`, {
       headers: getAuthHeaders()
     });
@@ -150,33 +178,49 @@ export const outlookAPI = {
     return response.json();
   },
 
-  processEmail: async (emailId) => {
+  processEmail: async (userId, emailId) => {
+    // ✅ Uses auth headers (this endpoint has authenticateToken middleware)
     const response = await fetch(`${API_BASE_URL}/emails/process`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ emailId })
+      body: JSON.stringify({ userId, emailId })
     });
+    
     if (!response.ok) {
       throw new Error('Failed to process email');
     }
+    
     return response.json();
   }
 };
 
-// Sync API
+// Sync API - NO AUTH (uses userId in body params)
 export const syncAPI = {
-  triggerSync: async () => {
+  triggerSync: async (userId) => {
+    // ✅ Uses auth headers (this endpoint has authenticateToken middleware)
     const response = await fetch(`${API_BASE_URL}/sync/trigger`, {
       method: 'POST',
-      headers: getAuthHeaders()
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ userId })
     });
+    
+    if (!response.ok) {
+      throw new Error('Failed to trigger sync');
+    }
+    
     return response.json();
   },
 
-  getStatus: async () => {
-    const response = await fetch(`${API_BASE_URL}/sync/status`, {
+  getStatus: async (userId) => {
+    // ✅ Uses auth headers (this endpoint has authenticateToken middleware)
+    const response = await fetch(`${API_BASE_URL}/sync/status?userId=${userId}`, {
       headers: getAuthHeaders()
     });
+    
+    if (!response.ok) {
+      throw new Error('Failed to get sync status');
+    }
+    
     return response.json();
   }
 };
