@@ -2,73 +2,152 @@ import React, { useState, useEffect, useCallback } from 'react';
 import './OutlookConnect.css';
 import { outlookAPI } from './apiService';
 
-function OutlookConnect({ onConnectionChange }) {
+function OutlookConnect({ userId, onConnectionChange }) {
   const [isConnected, setIsConnected] = useState(false);
   const [outlookEmail, setOutlookEmail] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   const checkStatus = useCallback(async () => {
+    // ✅ Safety check: Don't make request if no userId
+    if (!userId) {
+      console.warn('OutlookConnect: No userId provided, skipping status check');
+      setIsConnected(false);
+      setOutlookEmail(null);
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      const status = await outlookAPI.getStatus();
-      setIsConnected(status.connected);
-      setOutlookEmail(status.email);
+      setError(null);
+      const status = await outlookAPI.getStatus(userId);
       
-      // Notify parent component
+      // ✅ Handle response gracefully
+      if (status && status.success !== false) {
+        setIsConnected(status.connected || false);
+        setOutlookEmail(status.email || null);
+      } else {
+        // API returned error
+        setIsConnected(false);
+        setOutlookEmail(null);
+      }
+      
+      // Notify parent component of connection change
       if (onConnectionChange) {
-        onConnectionChange(status.connected);
+        onConnectionChange();
       }
     } catch (error) {
       console.error('Error checking Outlook status:', error);
+      // ✅ Graceful fallback - assume not connected
       setIsConnected(false);
+      setOutlookEmail(null);
+      setError('Failed to check connection status');
     } finally {
       setIsLoading(false);
     }
-  }, [onConnectionChange]);
+  }, [userId, onConnectionChange]);
 
   useEffect(() => {
     checkStatus();
     
-    // Check for OAuth callback success
+    // ✅ Check for OAuth callback success/error
     const params = new URLSearchParams(window.location.search);
+    
     if (params.get('outlook_connected') === 'true') {
-      alert('Outlook connected successfully!');
+      // Success!
+      setError(null);
+      alert('✅ Outlook connected successfully!');
       checkStatus();
       // Clean URL
-      window.history.replaceState({}, '', '/');
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('error')) {
+      // OAuth error
+      const errorType = params.get('error');
+      const errorMessage = params.get('message');
+      
+      let userMessage = '❌ Failed to connect Outlook. ';
+      
+      if (errorType === 'no_code') {
+        userMessage += 'Authorization code not received.';
+      } else if (errorType === 'invalid_state') {
+        userMessage += 'Invalid session state.';
+      } else if (errorType === 'auth_failed') {
+        userMessage += errorMessage || 'Authentication failed.';
+      } else {
+        userMessage += 'Please try again.';
+      }
+      
+      setError(userMessage);
+      alert(userMessage);
+      
+      // Clean URL
+      window.history.replaceState({}, '', window.location.pathname);
     }
   }, [checkStatus]);
 
   const handleConnect = async () => {
+    // ✅ Validate userId before attempting connection
+    if (!userId) {
+      setError('Unable to connect: User session not found. Please refresh and try again.');
+      alert('Please refresh the page and try again.');
+      return;
+    }
+
     try {
-      const response = await outlookAPI.getAuthUrl();
-      window.location.href = response.authUrl;
+      setError(null);
+      const response = await outlookAPI.getAuthUrl(userId);
+      
+      if (response && response.authUrl) {
+        // Redirect to Microsoft OAuth
+        window.location.href = response.authUrl;
+      } else {
+        throw new Error('Invalid response from server');
+      }
     } catch (error) {
-      alert('Failed to connect to Outlook');
-      console.error('Error:', error);
+      const errorMessage = 'Failed to connect to Outlook. Please try again.';
+      setError(errorMessage);
+      alert(errorMessage);
+      console.error('Error connecting to Outlook:', error);
     }
   };
 
   const handleDisconnect = async () => {
-    if (!window.confirm('Are you sure you want to disconnect Outlook?')) return;
+    if (!window.confirm('Are you sure you want to disconnect Outlook?')) {
+      return;
+    }
+
+    // ✅ Validate userId
+    if (!userId) {
+      setError('Unable to disconnect: User session not found.');
+      return;
+    }
 
     try {
-      await outlookAPI.disconnect();
+      setError(null);
+      await outlookAPI.disconnect(userId);
       setIsConnected(false);
       setOutlookEmail(null);
-      alert('Outlook disconnected');
+      alert('✅ Outlook disconnected successfully');
       
-      // Notify parent
+      // Notify parent component
       if (onConnectionChange) {
-        onConnectionChange(false);
+        onConnectionChange();
       }
     } catch (error) {
-      alert('Failed to disconnect Outlook');
-      console.error('Error:', error);
+      const errorMessage = 'Failed to disconnect Outlook. Please try again.';
+      setError(errorMessage);
+      alert(errorMessage);
+      console.error('Error disconnecting Outlook:', error);
     }
   };
 
   if (isLoading) {
-    return <div className="outlook-connect loading">Loading...</div>;
+    return (
+      <div className="outlook-connect loading">
+        <div className="spinner"></div>
+        <p>Loading connection status...</p>
+      </div>
+    );
   }
 
   return (
@@ -80,13 +159,27 @@ function OutlookConnect({ onConnectionChange }) {
           {isConnected && outlookEmail && (
             <p className="connected-email">✓ Connected as {outlookEmail}</p>
           )}
+          {!isConnected && !error && (
+            <p className="not-connected">Not connected</p>
+          )}
         </div>
       </div>
+
+      {/* ✅ Show error message if any */}
+      {error && (
+        <div className="outlook-error">
+          <p>⚠️ {error}</p>
+          <button onClick={checkStatus} className="btn btn-small">
+            Retry
+          </button>
+        </div>
+      )}
 
       {isConnected ? (
         <button 
           onClick={handleDisconnect}
           className="btn btn-danger"
+          disabled={!userId}
         >
           Disconnect Outlook
         </button>
@@ -95,6 +188,7 @@ function OutlookConnect({ onConnectionChange }) {
           <button 
             onClick={handleConnect}
             className="btn btn-primary"
+            disabled={!userId}
           >
             Connect Outlook
           </button>
