@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import DealForm from './DealForm';
+import AIAnalyzeButton from './AIAnalyzeButton'; // ✅ ADDED: AI button import
 import './DealsView.css';
 
 function DealsView() {
@@ -220,19 +221,19 @@ function DealsView() {
 
       {/* Deals Container with Pipeline and Detail Panel */}
       <div className={`deals-container ${selectedDeal ? 'with-panel' : ''}`}>
-        {/* Pipeline Board */}
+        {/* Pipeline View */}
         <div className="pipeline-board">
           {stages.map(stage => (
-            <div key={stage.id} className="pipeline-column">
-              <div className="column-header">
+            <div key={stage.id} className="pipeline-stage">
+              <div className="stage-header">
                 <h3>{stage.label}</h3>
-                <span className="count">{groupedDeals[stage.id]?.length || 0}</span>
+                <span className="stage-count">{groupedDeals[stage.id].length}</span>
               </div>
-              <div className="column-content">
-                {groupedDeals[stage.id]?.length === 0 ? (
-                  <div className="empty-column">No deals</div>
+              <div className="stage-content">
+                {groupedDeals[stage.id].length === 0 ? (
+                  <div className="empty-stage">No deals</div>
                 ) : (
-                  groupedDeals[stage.id]?.map(deal => (
+                  groupedDeals[stage.id].map(deal => (
                     <DealCard
                       key={deal.id}
                       deal={deal}
@@ -396,6 +397,14 @@ function DealsView() {
                   >
                     🗑️ Delete Deal
                   </button>
+                  {/* ✅ ADDED: AI Analyze Button in Quick Actions */}
+                  <AIAnalyzeButton 
+                    type="deal" 
+                    id={selectedDeal.id}
+                    onSuccess={() => {
+                      alert('🎉 AI analysis complete! Check the Actions tab to see intelligent recommendations.');
+                    }}
+                  />
                 </div>
               </div>
             </div>
