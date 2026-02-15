@@ -74,6 +74,13 @@ Based on the COMPLETE CONTEXT above (entire email thread, meetings, deal history
 
 # OUTPUT FORMAT (JSON only, no markdown)
 
+**CRITICAL INSTRUCTIONS:**
+- Return ONLY the JSON array below
+- Do NOT include any explanatory text before or after the JSON
+- Do NOT wrap in markdown code blocks
+- Start your response with [ and end with ]
+- If data is missing or insufficient, still return valid JSON with available information
+
 [
   {
     "title": "Specific action based on full context",
@@ -143,6 +150,13 @@ Analyze:
 Generate 2-4 strategic actions to move this deal forward or address risks.
 
 # OUTPUT FORMAT (JSON only)
+
+**CRITICAL INSTRUCTIONS:**
+- Return ONLY the JSON array below
+- Do NOT include any explanatory text before or after the JSON
+- Do NOT wrap in markdown code blocks
+- Start your response with [ and end with ]
+- If data is missing or insufficient, still return valid JSON with available information
 
 [
   {

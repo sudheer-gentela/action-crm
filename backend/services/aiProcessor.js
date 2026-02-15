@@ -162,39 +162,36 @@ class AIProcessor {
   static renderTemplate(template, data) {
     let rendered = template;
     
-    // Simple template replacement (you can use Handlebars for production)
+    // ✅ FIXED: Handle PLACEHOLDER syntax from aiPrompts-FIXED.js
     const replacements = {
-      '{{deal.name}}': data.context?.deal?.name || 'Unknown',
-      '{{deal.stage}}': data.context?.deal?.stage || 'Unknown',
-      '{{deal.value}}': data.context?.deal?.value || '0',
-      '{{deal.expected_close_date}}': data.context?.deal?.expected_close_date || 'Not set',
-      '{{deal.health}}': data.context?.deal?.health || 'Unknown',
-      '{{contact.first_name}}': data.context?.contact?.first_name || '',
-      '{{contact.last_name}}': data.context?.contact?.last_name || '',
-      '{{contact.title}}': data.context?.contact?.title || '',
-      '{{contact.role_type}}': data.context?.contact?.role_type || '',
-      '{{account.name}}': data.context?.account?.name || '',
-      '{{account.industry}}': data.context?.account?.industry || '',
-      '{{email_thread_count}}': data.context?.emailThread?.length || 0,
-      '{{meetings_count}}': data.context?.meetings?.length || 0,
-      '{{current_email.subject}}': data.email?.subject || '',
-      '{{current_email.from}}': data.email?.from_address || '',
-      '{{current_email.body}}': data.email?.body || data.email?.body_preview || '',
-      '{{email_thread}}': this.formatEmailThread(data.context?.emailThread || []),
-      '{{meetings}}': this.formatMeetings(data.context?.meetings || []),
-      '{{deal_history}}': this.formatDealHistory(data.context?.dealHistory || []),
-      '{{playbook_goal}}': data.playbook?.deal_stages?.[data.context?.deal?.stage]?.goal || '',
-      '{{playbook_next_step}}': data.playbook?.deal_stages?.[data.context?.deal?.stage]?.next_step || '',
-      '{{playbook_timeline}}': data.playbook?.deal_stages?.[data.context?.deal?.stage]?.timeline || ''
+      'DEAL_NAME_PLACEHOLDER': data.context?.deal?.name || 'No active deal',
+      'DEAL_STAGE_PLACEHOLDER': data.context?.deal?.stage || 'unknown',
+      'DEAL_VALUE_PLACEHOLDER': data.context?.deal?.value || '0',
+      'DEAL_CLOSE_DATE_PLACEHOLDER': data.context?.deal?.expected_close_date || 'Not set',
+      'DEAL_HEALTH_PLACEHOLDER': data.context?.deal?.health || 'Unknown',
+      'CONTACT_NAME_PLACEHOLDER': `${data.context?.contact?.first_name || ''} ${data.context?.contact?.last_name || ''}`.trim() || 'Unknown contact',
+      'CONTACT_TITLE_PLACEHOLDER': data.context?.contact?.title || 'Unknown',
+      'CONTACT_ROLE_PLACEHOLDER': data.context?.contact?.role_type || 'Unknown',
+      'ACCOUNT_NAME_PLACEHOLDER': data.context?.account?.name || 'Unknown company',
+      'ACCOUNT_INDUSTRY_PLACEHOLDER': data.context?.account?.industry || 'Unknown',
+      'EMAIL_THREAD_PLACEHOLDER': this.formatEmailThread(data.context?.emailThread || []) || 'No previous emails',
+      'MEETINGS_PLACEHOLDER': this.formatMeetings(data.context?.meetings || []) || 'No previous meetings',
+      'DEAL_HISTORY_PLACEHOLDER': this.formatDealHistory(data.context?.dealHistory || []) || 'No deal history',
+      'CURRENT_EMAIL_SUBJECT_PLACEHOLDER': data.email?.subject || 'No subject',
+      'CURRENT_EMAIL_FROM_PLACEHOLDER': data.email?.from_address || 'Unknown sender',
+      'CURRENT_EMAIL_BODY_PLACEHOLDER': data.email?.body || data.email?.body_preview || 'No content',
+      'PLAYBOOK_GOAL_PLACEHOLDER': data.playbook?.deal_stages?.[data.context?.deal?.stage]?.goal || 'Move deal forward',
+      'PLAYBOOK_NEXT_STEP_PLACEHOLDER': data.playbook?.deal_stages?.[data.context?.deal?.stage]?.next_step || 'Follow up',
+      'PLAYBOOK_TIMELINE_PLACEHOLDER': data.playbook?.deal_stages?.[data.context?.deal?.stage]?.timeline || 'ASAP',
+      'DAYS_IN_STAGE_PLACEHOLDER': data.context?.deal?.updated_at 
+        ? Math.floor((Date.now() - new Date(data.context.deal.updated_at)) / (1000 * 60 * 60 * 24))
+        : 0
     };
     
+    // Replace all placeholders
     Object.keys(replacements).forEach(key => {
-      rendered = rendered.replace(new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), replacements[key]);
-    });
-    
-    // Remove template conditionals (simple version)
-    rendered = rendered.replace(/{{#if \w+}}[\s\S]*?{{\/if}}/g, match => {
-      return match.includes('{{#if deal}}') && data.context?.deal ? match.replace(/{{#if deal}}|{{\/if}}/g, '') : '';
+      const value = String(replacements[key]);
+      rendered = rendered.split(key).join(value);
     });
     
     return rendered;
@@ -227,12 +224,36 @@ class AIProcessor {
     });
     
     const response = message.content[0].text;
-    const cleaned = response.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    // ✅ ENHANCED: Better JSON extraction
+    let cleaned = response.trim();
+    
+    // Remove any markdown code fences
+    cleaned = cleaned.replace(/```json\n?/gi, '');
+    cleaned = cleaned.replace(/```\n?/g, '');
+    
+    // ✅ NEW: Find the JSON array specifically
+    const jsonMatch = cleaned.match(/\[\s*\{[\s\S]*\}\s*\]/);
+    if (jsonMatch) {
+      cleaned = jsonMatch[0];
+    } else {
+      // Try to extract from after any preamble
+      const arrayStart = cleaned.indexOf('[');
+      const arrayEnd = cleaned.lastIndexOf(']');
+      if (arrayStart !== -1 && arrayEnd !== -1) {
+        cleaned = cleaned.substring(arrayStart, arrayEnd + 1);
+      }
+    }
+    
+    cleaned = cleaned.trim();
     
     try {
-      return JSON.parse(cleaned);
+      const parsed = JSON.parse(cleaned);
+      return Array.isArray(parsed) ? parsed : [];
     } catch (error) {
-      console.error('Failed to parse AI response:', response);
+      console.error('Failed to parse AI response:', error);
+      console.error('Cleaned response:', cleaned);
+      console.error('Original response:', response);
       return [];
     }
   }
