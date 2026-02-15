@@ -1,12 +1,12 @@
 /**
- * Playbook API Routes
+ * Playbook API Routes - FIXED
  * Allows users to view and edit their sales playbook via UI
  */
 
 const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
-const { authenticateToken } = require('../middleware/auth');
+const authenticateToken = require('../middleware/auth.middleware'); // ✅ FIXED: Correct import for your setup
 
 // Get user's playbook (or default)
 router.get('/', authenticateToken, async (req, res) => {
