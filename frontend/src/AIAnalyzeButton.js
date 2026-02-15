@@ -7,12 +7,10 @@ import './AIAnalyzeButton.css';
  */
 function AIAnalyzeButton({ type, id, onSuccess }) {
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
 
   const handleAnalyze = async () => {
     try {
       setLoading(true);
-      setError(null);
 
       const token = localStorage.getItem('token');
       const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
@@ -49,7 +47,6 @@ function AIAnalyzeButton({ type, id, onSuccess }) {
 
     } catch (err) {
       console.error('AI analysis error:', err);
-      setError(err.message);
       alert(`❌ AI analysis failed: ${err.message}`);
     } finally {
       setLoading(false);
