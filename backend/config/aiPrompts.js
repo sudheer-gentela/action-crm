@@ -1,74 +1,65 @@
 /**
- * AI PROMPT TEMPLATES
+ * AI PROMPT TEMPLATES - FIXED
  * Customize how Claude analyzes emails and deals
- * Edit via UI at /prompts route
  */
 
 const AI_PROMPTS = {
   
   // ============================================================
   // EMAIL ANALYSIS PROMPT
+  // Template variables will be replaced by aiProcessor.js
   // ============================================================
   email_analysis: `You are an AI sales assistant analyzing a sales conversation with FULL CONTEXT.
 
 # SALES PLAYBOOK CONTEXT
 
-{{#if deal}}
 ## Deal Information
-- **Deal Name:** {{deal.name}}
-- **Stage:** {{deal.stage}}
-- **Value:** ${{deal.value}}
-- **Expected Close:** {{deal.expected_close_date}}
-- **Health:** {{deal.health}}
-- **Days in Stage:** {{days_in_stage}}
+- **Deal Name:** DEAL_NAME_PLACEHOLDER
+- **Stage:** DEAL_STAGE_PLACEHOLDER
+- **Value:** $DEAL_VALUE_PLACEHOLDER
+- **Expected Close:** DEAL_CLOSE_DATE_PLACEHOLDER
+- **Health:** DEAL_HEALTH_PLACEHOLDER
 
-### Playbook for {{deal.stage}} stage:
-- **Goal:** {{playbook_goal}}
-- **Next Step:** {{playbook_next_step}}
-- **Timeline:** {{playbook_timeline}}
-{{/if}}
+### Playbook for this stage:
+- **Goal:** PLAYBOOK_GOAL_PLACEHOLDER
+- **Next Step:** PLAYBOOK_NEXT_STEP_PLACEHOLDER
+- **Timeline:** PLAYBOOK_TIMELINE_PLACEHOLDER
 
-{{#if contact}}
 ## Contact Information
-- **Name:** {{contact.first_name}} {{contact.last_name}}
-- **Title:** {{contact.title}}
-- **Role Type:** {{contact.role_type}}
-- **Engagement Level:** {{contact.engagement_level}}
-{{/if}}
+- **Name:** CONTACT_NAME_PLACEHOLDER
+- **Title:** CONTACT_TITLE_PLACEHOLDER
+- **Role Type:** CONTACT_ROLE_PLACEHOLDER
 
-{{#if account}}
 ## Account Information
-- **Company:** {{account.name}}
-- **Industry:** {{account.industry}}
-- **Size:** {{account.size}}
-{{/if}}
+- **Company:** ACCOUNT_NAME_PLACEHOLDER
+- **Industry:** ACCOUNT_INDUSTRY_PLACEHOLDER
 
 ---
 
-# COMPLETE EMAIL CONVERSATION ({{email_thread_count}} messages)
+# COMPLETE EMAIL CONVERSATION
 
-{{email_thread}}
+EMAIL_THREAD_PLACEHOLDER
 
 ---
 
-# RECENT MEETINGS ({{meetings_count}})
+# RECENT MEETINGS
 
-{{meetings}}
+MEETINGS_PLACEHOLDER
 
 ---
 
 # DEAL PROGRESSION HISTORY
 
-{{deal_history}}
+DEAL_HISTORY_PLACEHOLDER
 
 ---
 
 # CURRENT EMAIL (Just received)
 
-**Subject:** {{current_email.subject}}
-**From:** {{current_email.from}}
+**Subject:** CURRENT_EMAIL_SUBJECT_PLACEHOLDER
+**From:** CURRENT_EMAIL_FROM_PLACEHOLDER
 **Body:**
-{{current_email.body}}
+CURRENT_EMAIL_BODY_PLACEHOLDER
 
 ---
 
@@ -102,8 +93,9 @@ Based on the COMPLETE CONTEXT above (entire email thread, meetings, deal history
 ✅ GOOD (Shows full context awareness):
 {
   "title": "Address HIPAA concerns raised in 3 separate emails",
-  "description": "Sarah asked about HIPAA on Jan 5, mentioned it again in meeting on Jan 12, and just asked for docs again today",
-  "context": "Repeated concern across email thread (3 mentions) and 1 meeting - critical blocker"
+  "description": "Customer asked about HIPAA on Jan 5, mentioned it again in meeting on Jan 12, and just asked for docs again today",
+  "context": "Repeated concern across email thread (3 mentions) and 1 meeting - critical blocker",
+  "confidence": 0.95
 }
 
 ❌ BAD (Ignores context):
@@ -121,22 +113,21 @@ Now analyze and generate intelligent actions based on the FULL CONTEXT.`,
 
 # DEAL OVERVIEW
 
-- **Deal Name:** {{deal.name}}
-- **Stage:** {{deal.stage}}
-- **Value:** ${{deal.value}}
-- **Days in Stage:** {{days_in_stage}}
-- **Last Activity:** {{last_activity_date}}
+- **Deal Name:** DEAL_NAME_PLACEHOLDER
+- **Stage:** DEAL_STAGE_PLACEHOLDER
+- **Value:** $DEAL_VALUE_PLACEHOLDER
+- **Days in Stage:** DAYS_IN_STAGE_PLACEHOLDER
 
 # COMPLETE CONTEXT
 
-## Email Thread ({{email_thread_count}} messages)
-{{email_thread}}
+## Email Thread
+EMAIL_THREAD_PLACEHOLDER
 
-## Meetings ({{meetings_count}})
-{{meetings}}
+## Meetings
+MEETINGS_PLACEHOLDER
 
 ## Deal History
-{{deal_history}}
+DEAL_HISTORY_PLACEHOLDER
 
 ---
 
@@ -167,7 +158,7 @@ Generate 2-4 strategic actions to move this deal forward or address risks.
 ]`,
 
   // ============================================================
-  // SYSTEM INSTRUCTIONS (Don't edit unless you know what you're doing)
+  // SYSTEM INSTRUCTIONS
   // ============================================================
   system_instructions: {
     model: "claude-sonnet-4-20250514",
