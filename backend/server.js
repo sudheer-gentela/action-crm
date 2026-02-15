@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 3001;
 // 1. ADD these route imports (near your other route imports)
 const outlookRoutes = require('./routes/outlook.routes');
 const syncRoutes = require('./routes/sync.routes');
+const playbookRoutes = require('./routes/playbook.routes');
 
 
 // Trust Railway proxy
@@ -65,6 +66,7 @@ app.use('/api/calendar', require('./routes/calendar.routes'));
 app.use('/api/dashboard', require('./routes/dashboard.routes'));
 app.use('/api/outlook', outlookRoutes);
 app.use('/api/sync', syncRoutes);
+app.use('/api/playbook', playbookRoutes);
 
 
 // Error handling middleware
