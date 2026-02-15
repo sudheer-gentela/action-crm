@@ -5,6 +5,7 @@ function ActionsView() {
   const [actions, setActions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [filterType, setFilterType] = useState('all'); // ✅ ADDED: Filter state
 
   useEffect(() => {
     fetchActions();
@@ -38,10 +39,7 @@ function ActionsView() {
   };
 
   const formatActionType = (type) => {
-    // ✅ SAFE: Handle undefined/null
     if (!type) return 'task';
-    
-    // Convert snake_case to Title Case
     return type
       .replace(/_/g, ' ')
       .replace(/\b\w/g, c => c.toUpperCase());
@@ -118,8 +116,20 @@ function ActionsView() {
     );
   }
 
-  const openActions = actions.filter(a => !a.completed);
+  // ✅ ADDED: Filter actions based on type
+  const openActions = actions.filter(a => {
+    if (a.completed) return false;
+    if (filterType === 'all') return true;
+    if (filterType === 'ai') return a.source === 'ai_generated';
+    if (filterType === 'rules') return a.source === 'auto_generated';
+    return true;
+  });
+  
   const completedActions = actions.filter(a => a.completed);
+
+  // ✅ ADDED: Count AI actions
+  const aiCount = actions.filter(a => !a.completed && a.source === 'ai_generated').length;
+  const rulesCount = actions.filter(a => !a.completed && a.source === 'auto_generated').length;
 
   return (
     <div className="actions-view">
@@ -127,6 +137,28 @@ function ActionsView() {
         <h2>⚡ Actions ({openActions.length} open)</h2>
         <button onClick={handleGenerateActions} className="btn btn-primary">
           Generate Actions
+        </button>
+      </div>
+
+      {/* ✅ ADDED: Filter buttons */}
+      <div className="actions-filters">
+        <button 
+          className={`filter-btn ${filterType === 'all' ? 'active' : ''}`}
+          onClick={() => setFilterType('all')}
+        >
+          All ({actions.filter(a => !a.completed).length})
+        </button>
+        <button 
+          className={`filter-btn ${filterType === 'ai' ? 'active' : ''}`}
+          onClick={() => setFilterType('ai')}
+        >
+          🤖 AI Generated ({aiCount})
+        </button>
+        <button 
+          className={`filter-btn ${filterType === 'rules' ? 'active' : ''}`}
+          onClick={() => setFilterType('rules')}
+        >
+          ⚙️ Rule-Based ({rulesCount})
         </button>
       </div>
 
@@ -152,6 +184,17 @@ function ActionsView() {
               >
                 {formatActionType(action.type || action.actionType || action.action_type)}
               </span>
+              
+              {/* ✅ ADDED: AI Badge */}
+              {action.source === 'ai_generated' && (
+                <span 
+                  className="ai-badge"
+                  title={`AI Confidence: ${action.metadata?.confidence ? Math.round(action.metadata.confidence * 100) + '%' : 'N/A'}`}
+                >
+                  🤖 AI
+                </span>
+              )}
+              
               <span 
                 className="action-priority"
                 style={{ color: getPriorityColor(action.priority) }}
@@ -166,9 +209,17 @@ function ActionsView() {
               <p className="action-description">{action.description}</p>
             )}
 
+            {/* ✅ ADDED: Show AI Context (why this action was created) */}
+            {action.context && action.source === 'ai_generated' && (
+              <div className="ai-context">
+                <strong>💡 AI Insight:</strong> {action.context}
+              </div>
+            )}
+
+            {/* ✅ ENHANCED: Better styling for suggested action */}
             {action.suggestedAction && (
               <div className="suggested-action">
-                <strong>💡 Suggestion:</strong> {action.suggestedAction}
+                <strong>📋 {action.source === 'ai_generated' ? 'AI Recommendation:' : 'Suggestion:'}</strong> {action.suggestedAction}
               </div>
             )}
 
@@ -181,6 +232,13 @@ function ActionsView() {
             {action.contact && (
               <div className="action-context">
                 👤 {action.contact.firstName} {action.contact.lastName}
+              </div>
+            )}
+
+            {/* ✅ ADDED: Show confidence score for AI actions */}
+            {action.metadata?.confidence && action.source === 'ai_generated' && (
+              <div className="ai-confidence">
+                Confidence: {Math.round(action.metadata.confidence * 100)}%
               </div>
             )}
 
