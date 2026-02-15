@@ -12,6 +12,7 @@ const PORT = process.env.PORT || 3001;
 const outlookRoutes = require('./routes/outlook.routes');
 const syncRoutes = require('./routes/sync.routes');
 const playbookRoutes = require('./routes/playbook.routes');
+const aiRoutes = require('./routes/ai.routes');
 
 
 // Trust Railway proxy
@@ -67,6 +68,7 @@ app.use('/api/dashboard', require('./routes/dashboard.routes'));
 app.use('/api/outlook', outlookRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/playbook', playbookRoutes);
+app.use('/api/ai', aiRoutes);
 
 
 // Error handling middleware
