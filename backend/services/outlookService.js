@@ -14,6 +14,7 @@ const cca = new ConfidentialClientApplication(msalConfig);
 
 const SCOPES = [
   'https://graph.microsoft.com/Mail.Read',
+  'https://graph.microsoft.com/Calendars.Read',  // ✅ Added for calendar access
   'https://graph.microsoft.com/User.Read',
   'offline_access'
 ];
