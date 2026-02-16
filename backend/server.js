@@ -104,6 +104,16 @@ app.listen(PORT, () => {
 ║     Environment: ${process.env.NODE_ENV || 'development'}      ║
 ╚═══════════════════════════════════════╝
   `);
+  
+  // ✅ Start Bull queue worker after server is running
+  console.log('🚀 Starting Bull queue worker...');
+  try {
+    require('./jobs/worker');
+    console.log('✅ Bull queue worker initialized');
+  } catch (error) {
+    console.error('❌ Failed to start Bull worker:', error.message);
+    console.error('   Queue processing will not work!');
+  }
 });
 
 module.exports = app;
