@@ -19,18 +19,24 @@ const promptsRoutes = require('./routes/prompts.routes');
 // Trust Railway proxy
 app.set('trust proxy', 1);
 
-// Security middleware
-app.use(helmet());
+// Security middleware - Configure helmet to allow CORS
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" }
+}));
 
+// CORS configuration - MUST be after helmet
 app.use(cors({
   origin: [
     'http://localhost:3000',
-    'https://action-crm.vercel.app',  // ✅ Add your Vercel URL
+    'https://action-crm.vercel.app',
     process.env.CORS_ORIGIN
-  ].filter(Boolean),  // Remove undefined values
+  ].filter(Boolean),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  maxAge: 600 // Cache preflight for 10 minutes
 }));
 
 // Rate limiting

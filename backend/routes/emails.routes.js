@@ -5,7 +5,7 @@ const authenticateToken = require('../middleware/auth.middleware');
 const ActionsGenerator = require('../services/actionsGenerator');
 
 const { fetchEmails, fetchEmailById } = require('../services/outlookService');
-const { analyzeEmail } = require('../services/claudeService');
+const AIProcessor = require('../services/aiProcessor');
 const { emailQueue } = require('../jobs/emailProcessor');
 
 
@@ -122,7 +122,7 @@ router.post('/analyze', async (req, res) => {
     }
     
     const email = await fetchEmailById(userId, emailId);
-    const analysis = await analyzeEmail(email);
+    const analysis = await AIProcessor.analyzeEmailSimple(email);
     
     res.json({
       success: true,
