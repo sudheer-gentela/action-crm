@@ -96,22 +96,20 @@ export const apiService = {
 
 
 // ============================================================
-// OUTLOOK & SYNC APIs - WITHOUT AUTH HEADERS
+// OUTLOOK & SYNC APIs
 // ============================================================
 
-// Outlook API - NO AUTH (uses userId in query/body params)
+// Outlook API
 export const outlookAPI = {
   getAuthUrl: async (userId) => {
     console.log('📤 Calling getAuthUrl with userId:', userId);
     
-    // ✅ NO AUTH HEADERS - just query param
     const url = `${API_BASE_URL}/outlook/connect?userId=${userId}`;
     console.log('📤 Request URL:', url);
     
     const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json'
-        // ✅ NO Authorization header
       }
     });
     
@@ -127,7 +125,6 @@ export const outlookAPI = {
   },
 
   getStatus: async (userId) => {
-    // ✅ NO AUTH HEADERS
     const response = await fetch(`${API_BASE_URL}/outlook/status?userId=${userId}`, {
       headers: {
         'Content-Type': 'application/json'
@@ -142,7 +139,6 @@ export const outlookAPI = {
   },
 
   disconnect: async (userId) => {
-    // ✅ NO AUTH HEADERS
     const response = await fetch(`${API_BASE_URL}/outlook/disconnect`, {
       method: 'POST',
       headers: {
@@ -160,7 +156,6 @@ export const outlookAPI = {
 
   fetchEmails: async (userId, options = {}) => {
     const params = new URLSearchParams({
-      userId,
       top: options.top || 50,
       skip: options.skip || 0,
       ...(options.since && { since: options.since })
@@ -194,31 +189,44 @@ export const outlookAPI = {
   }
 };
 
-// Sync API - NO AUTH (uses userId in body params)
+// Sync API - ✅ FIXED: Use correct endpoints from sync.routes.js
 export const syncAPI = {
+  // ✅ FIXED: Changed from /sync/trigger to /sync/emails
   triggerSync: async (userId) => {
-    // ✅ Uses auth headers (this endpoint has authenticateToken middleware)
-    const response = await fetch(`${API_BASE_URL}/sync/trigger`, {
+    const response = await fetch(`${API_BASE_URL}/sync/emails`, {
       method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ userId })
+      headers: getAuthHeaders()
     });
     
     if (!response.ok) {
-      throw new Error('Failed to trigger sync');
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || 'Failed to trigger sync');
     }
     
     return response.json();
   },
 
+  // ✅ FIXED: Changed from /sync/status to /sync/emails/status
   getStatus: async (userId) => {
-    // ✅ Uses auth headers (this endpoint has authenticateToken middleware)
-    const response = await fetch(`${API_BASE_URL}/sync/status?userId=${userId}`, {
+    const response = await fetch(`${API_BASE_URL}/sync/emails/status`, {
       headers: getAuthHeaders()
     });
     
     if (!response.ok) {
       throw new Error('Failed to get sync status');
+    }
+    
+    return response.json();
+  },
+
+  // ✅ NEW: Get sync configuration
+  getConfig: async () => {
+    const response = await fetch(`${API_BASE_URL}/sync/config`, {
+      headers: getAuthHeaders()
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to get sync config');
     }
     
     return response.json();

@@ -25,7 +25,8 @@ async function getAuthUrl(state) {
   const authCodeUrlParameters = {
     scopes: SCOPES,
     redirectUri: process.env.MICROSOFT_REDIRECT_URI,
-    state: state
+    state: state,
+    prompt: 'consent'  // ✅ Forces consent screen to ensure refresh token is issued
   };
   
   return await cca.getAuthCodeUrl(authCodeUrlParameters);
