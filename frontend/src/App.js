@@ -10,6 +10,7 @@ import OutlookConnect from './OutlookConnect';
 import OutlookEmailList from './OutlookEmailList';
 import SyncStatus from './SyncStatus';
 import PlaybookEditor from './PlaybookEditor';
+import PromptEditor from './PromptEditor';
 
 // Authentication hook with REAL backend integration
 const useAuth = () => {
@@ -318,7 +319,8 @@ function Dashboard({ user, onLogout }) {
     { id: 'email', label: 'Email', icon: '✉️' },
     { id: 'outlook', label: 'Outlook Emails', icon: '📧' },
     { id: 'calendar', label: 'Calendar', icon: '📅' },
-    { id: 'playbook', label: 'Sales Playbook', icon: '📘' }
+    { id: 'playbook', label: 'Sales Playbook', icon: '📘' },
+    { id: 'prompts', label: 'AI Prompts', icon: '🤖' }
   ];
   
   return (
@@ -397,6 +399,7 @@ function Dashboard({ user, onLogout }) {
           )}
           {currentTab === 'calendar' && <CalendarView />}
           {currentTab === 'playbook' && <PlaybookEditor />}
+          {currentTab === 'prompts' && <PromptEditor />}
         </div>
       </main>
     </div>
