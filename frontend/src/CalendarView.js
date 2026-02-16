@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import MeetingForm from './MeetingForm';
+import CalendarSyncStatus from './CalendarSyncStatus';
 import './CalendarView.css';
 
 function CalendarView() {
@@ -13,6 +14,9 @@ function CalendarView() {
   const [editingMeeting, setEditingMeeting] = useState(null);
   const [selectedMeeting, setSelectedMeeting] = useState(null);
   const [error, setError] = useState('');
+  
+  // Get user ID from localStorage
+  const userId = JSON.parse(localStorage.getItem('user') || '{}').id;
 
   useEffect(() => {
     loadMeetings();
@@ -184,9 +188,12 @@ function CalendarView() {
             {meetings.length} meeting{meetings.length !== 1 ? 's' : ''} scheduled
           </p>
         </div>
-        <button className="btn-primary" onClick={() => setShowForm(true)}>
-          📅 Schedule Meeting
-        </button>
+        <div className="calendar-actions">
+          <CalendarSyncStatus userId={userId} />
+          <button className="btn-primary" onClick={() => setShowForm(true)}>
+            📅 Schedule Meeting
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -424,6 +431,11 @@ function MeetingCard({ meeting, attendees, onEdit, onDelete, onSelect, isSelecte
           <span className={`meeting-type ${meeting.meeting_type}`}>
             {meeting.meeting_type}
           </span>
+          {meeting.source && meeting.source !== 'manual' && (
+            <span className={`meeting-source-badge ${meeting.source}`}>
+              {meeting.source === 'outlook' ? '📧 Outlook' : '📅 ' + meeting.source}
+            </span>
+          )}
           {meeting.location && (
             <span className="meeting-location">📍 {meeting.location}</span>
           )}
