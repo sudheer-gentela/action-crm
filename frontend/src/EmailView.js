@@ -5,28 +5,27 @@ import SyncStatus from './SyncStatus';
 import { outlookAPI } from './apiService';
 import './EmailView.css';
 
+/**
+ * CONSOLIDATED Email View
+ * Combines Outlook integration, sync status, and email list in one place
+ * Replaces both "Email" and "Outlook Emails" tabs
+ */
 function EmailView() {
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   
-  // ✅ Get user from localStorage and ensure userId is a NUMBER
+  // Get user from localStorage and ensure userId is a NUMBER
   const getUserId = () => {
     try {
       const user = JSON.parse(localStorage.getItem('user'));
-      console.log('📝 User from localStorage:', user);
-      console.log('📝 user?.id:', user?.id);
-      console.log('📝 type:', typeof user?.id);
-      
-      // ✅ Ensure it's a number
       const id = user?.id;
+      
       if (id === null || id === undefined) {
         return null;
       }
       
       // Convert to number if it's a string
       const userId = typeof id === 'number' ? id : parseInt(id, 10);
-      console.log('📝 Final userId:', userId, 'type:', typeof userId);
-      
       return userId;
     } catch (error) {
       console.error('Error getting user from localStorage:', error);
@@ -36,9 +35,9 @@ function EmailView() {
 
   const userId = getUserId();
 
-  // Use useCallback to memoize the function
+  // Check Outlook connection status
   const checkConnection = useCallback(async () => {
-    // ✅ Don't check if no userId
+    // Don't check if no userId
     if (!userId) {
       console.warn('⚠️  No userId available in EmailView');
       setIsConnected(false);
@@ -62,15 +61,25 @@ function EmailView() {
   }, [checkConnection]);
 
   if (isLoading) {
-    return <div className="email-view loading">Loading...</div>;
+    return (
+      <div className="email-view loading">
+        <div className="loading-spinner">
+          <div className="spinner"></div>
+          <p>Loading...</p>
+        </div>
+      </div>
+    );
   }
 
-  // ✅ Show error if no userId
+  // Show error if no userId
   if (!userId) {
     return (
       <div className="email-view">
         <div className="email-header">
-          <h2>📧 Email Management</h2>
+          <div>
+            <h2>📧 Email Management</h2>
+            <p className="email-subtitle">Sync and manage your Outlook emails</p>
+          </div>
         </div>
         <div className="email-content">
           <div className="error-message">
@@ -86,26 +95,69 @@ function EmailView() {
 
   return (
     <div className="email-view">
+      {/* Header */}
       <div className="email-header">
-        <h2>📧 Email Management</h2>
+        <div>
+          <h2>📧 Email Management</h2>
+          <p className="email-subtitle">
+            {isConnected 
+              ? 'Your Outlook account is connected and syncing' 
+              : 'Connect your Outlook account to get started'}
+          </p>
+        </div>
       </div>
 
       <div className="email-content">
-        {/* Always show connection status - pass userId as number */}
+        {/* Step 1: Connect Outlook */}
         <OutlookConnect 
           userId={userId} 
           onConnectionChange={checkConnection}
         />
 
-        {/* Only show emails if connected - pass userId as number */}
+        {/* Step 2: Show sync status and emails only when connected */}
         {isConnected ? (
           <>
+            {/* Sync Status & Controls */}
             <SyncStatus userId={userId} />
+            
+            {/* Email List with AI Analysis Button */}
             <OutlookEmailList userId={userId} />
+            
+            {/* Help Text */}
+            <div className="email-help-section">
+              <h3>💡 How it works</h3>
+              <div className="help-cards">
+                <div className="help-card">
+                  <div className="help-icon">⚙️</div>
+                  <h4>1. Sync Emails</h4>
+                  <p>Click "Sync Emails" to import your Outlook inbox. Rule-based actions are created automatically.</p>
+                </div>
+                <div className="help-card">
+                  <div className="help-icon">🤖</div>
+                  <h4>2. AI Analysis</h4>
+                  <p>Click "🤖 AI Analyze" on any email for context-aware action recommendations powered by Claude.</p>
+                </div>
+                <div className="help-card">
+                  <div className="help-icon">🎯</div>
+                  <h4>3. Take Action</h4>
+                  <p>View all generated actions in the Actions tab. Filter by rule-based (⚙️) or AI-powered (🤖).</p>
+                </div>
+              </div>
+            </div>
           </>
         ) : (
           <div className="not-connected-message">
-            <p>👆 Connect your Outlook account above to view and sync emails</p>
+            <div className="connect-prompt">
+              <div className="connect-icon">🔌</div>
+              <h3>Connect to Get Started</h3>
+              <p>Connect your Outlook account above to:</p>
+              <ul>
+                <li>✅ Sync emails to your CRM</li>
+                <li>✅ Auto-generate follow-up actions</li>
+                <li>✅ Get AI-powered recommendations</li>
+                <li>✅ Link emails to deals and contacts</li>
+              </ul>
+            </div>
           </div>
         )}
       </div>

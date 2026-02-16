@@ -6,9 +6,6 @@ import ContactsView from './ContactsView';
 import EmailView from './EmailView';
 import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
-import OutlookConnect from './OutlookConnect';
-import OutlookEmailList from './OutlookEmailList';
-import SyncStatus from './SyncStatus';
 import PlaybookEditor from './PlaybookEditor';
 import PromptEditor from './PromptEditor';
 
@@ -311,13 +308,13 @@ function Dashboard({ user, onLogout }) {
     }
   };
   
+  // ✅ CONSOLIDATED: Removed duplicate "outlook" tab
   const navItems = [
     { id: 'actions', label: 'Actions', icon: '🎯' },
     { id: 'deals', label: 'Deals', icon: '💼' },
     { id: 'accounts', label: 'Accounts', icon: '🏢' },
     { id: 'contacts', label: 'Contacts', icon: '👥' },
-    { id: 'email', label: 'Email', icon: '✉️' },
-    { id: 'outlook', label: 'Outlook Emails', icon: '📧' },
+    { id: 'emails', label: 'Emails', icon: '📧' }, // ✅ Single unified email tab
     { id: 'calendar', label: 'Calendar', icon: '📅' },
     { id: 'playbook', label: 'Sales Playbook', icon: '📘' },
     { id: 'prompts', label: 'AI Prompts', icon: '🤖' }
@@ -389,14 +386,8 @@ function Dashboard({ user, onLogout }) {
           {currentTab === 'deals' && <DealsView />}
           {currentTab === 'accounts' && <AccountsView />}
           {currentTab === 'contacts' && <ContactsView />}
-          {currentTab === 'email' && <EmailView />}
-          {currentTab === 'outlook' && (
-            <div className="outlook-view">
-              <OutlookConnect />
-              <SyncStatus />
-              <OutlookEmailList />
-            </div>
-          )}
+          {/* ✅ CONSOLIDATED: Single email tab uses EmailView */}
+          {currentTab === 'emails' && <EmailView />}
           {currentTab === 'calendar' && <CalendarView />}
           {currentTab === 'playbook' && <PlaybookEditor />}
           {currentTab === 'prompts' && <PromptEditor />}
