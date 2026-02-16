@@ -27,7 +27,9 @@ async function getAuthUrl(state) {
     scopes: SCOPES,
     redirectUri: process.env.MICROSOFT_REDIRECT_URI,
     state: state,
-    prompt: 'consent'  // ✅ Forces consent screen to ensure refresh token is issued
+    prompt: 'consent',      // ✅ Forces consent screen to ensure refresh token
+    responseMode: 'query',  // ✅ Ensures code is in query string
+    responseType: 'code'    // ✅ Explicitly request authorization code flow
   };
   
   return await cca.getAuthCodeUrl(authCodeUrlParameters);

@@ -17,6 +17,7 @@ const cca = new ConfidentialClientApplication(msalConfig);
 async function saveUserToken(userId, provider, tokenData) {
   console.log('💾 Saving tokens for user:', userId);
   console.log('📝 Token data keys:', Object.keys(tokenData));
+  console.log('📝 Full token structure:', JSON.stringify(tokenData, null, 2));
   
   const query = `
     INSERT INTO oauth_tokens (
@@ -42,12 +43,14 @@ async function saveUserToken(userId, provider, tokenData) {
                        tokenData.account?.idTokenClaims?.refresh_token || 
                        null;
   
-  console.log('🔑 Access token:', tokenData.accessToken ? 'Present' : 'Missing');
-  console.log('🔄 Refresh token:', refreshToken ? 'Present' : 'Missing');
+  console.log('🔑 Access token:', tokenData.accessToken ? 'Present ✓' : 'Missing ✗');
+  console.log('🔄 Refresh token:', refreshToken ? 'Present ✓' : 'Missing ✗');
   console.log('⏰ Expires at:', expiresAt);
   
   if (!refreshToken) {
-    console.warn('⚠️  WARNING: No refresh token found! User will need to reconnect when token expires.');
+    console.error('❌ WARNING: No refresh token found in response!');
+    console.error('❌ This means token will expire and user will need to reconnect');
+    console.error('❌ Token response structure:', JSON.stringify(tokenData, null, 2));
   }
   
   const values = [
@@ -60,7 +63,13 @@ async function saveUserToken(userId, provider, tokenData) {
   ];
   
   const result = await pool.query(query, values);
-  console.log('✅ Tokens saved successfully');
+  
+  if (result.rows[0].refresh_token) {
+    console.log('✅ SUCCESS: Refresh token saved to database');
+  } else {
+    console.log('❌ FAILED: No refresh token in database');
+  }
+  
   return result.rows[0];
 }
 
@@ -104,6 +113,7 @@ async function refreshUserToken(userId, provider) {
       refreshToken: currentToken.refresh_token,
       scopes: [
         'https://graph.microsoft.com/Mail.Read',
+        'https://graph.microsoft.com/Calendars.Read',  // ✅ Include calendar scope
         'https://graph.microsoft.com/User.Read',
         'offline_access'
       ]
