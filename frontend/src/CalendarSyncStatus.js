@@ -4,7 +4,6 @@ import './CalendarSyncStatus.css';
 function CalendarSyncStatus({ userId }) {
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
-  const [syncHistory, setSyncHistory] = useState([]);
 
   useEffect(() => {
     if (userId) {
@@ -27,11 +26,8 @@ function CalendarSyncStatus({ userId }) {
 
       if (response.ok) {
         const result = await response.json();
-        if (result.success && result.data.lastSyncs) {
-          setSyncHistory(result.data.lastSyncs);
-          if (result.data.lastSyncs.length > 0) {
-            setLastSync(result.data.lastSyncs[0]);
-          }
+        if (result.success && result.data.lastSyncs && result.data.lastSyncs.length > 0) {
+          setLastSync(result.data.lastSyncs[0]);
         }
       }
     } catch (error) {
