@@ -9,7 +9,7 @@ module.exports = {
    */
   emailSync: {
     // Enable/disable email sync to database
-    enabled: process.env.EMAIL_SYNC_ENABLED === 'true',
+    enabled: process.env.EMAIL_SYNC_ENABLED === 'true' || false,
     
     // Sync frequency options: 'manual', 'scheduled', 'realtime'
     // - manual: Only sync when user triggers
