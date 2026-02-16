@@ -290,15 +290,18 @@ async function triggerSync(userId, type = 'email') {
     await client.query('ROLLBACK');
     console.error(`❌ Sync failed for user ${userId}:`, error);
     
-    // Record failed sync
+    // ✅ FIXED: Record failed sync using subquery instead of ORDER BY/LIMIT
     try {
       await client.query(
         `UPDATE email_sync_history 
          SET status = 'failed',
              error_message = $2
-         WHERE user_id = $1 
-         ORDER BY created_at DESC 
-         LIMIT 1`,
+         WHERE id = (
+           SELECT id FROM email_sync_history
+           WHERE user_id = $1
+           ORDER BY created_at DESC
+           LIMIT 1
+         )`,
         [userId, error.message]
       );
     } catch (updateError) {
