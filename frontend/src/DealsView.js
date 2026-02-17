@@ -6,7 +6,6 @@ import AIAnalyzeButton from './AIAnalyzeButton';
 import TranscriptUpload from './TranscriptUpload';
 import TranscriptAnalysis from './TranscriptAnalysis';
 import DealHealthScore from './DealHealthScore';
-import DealHealthConfig from './DealHealthConfig';
 import './DealsView.css';
 
 function DealsView() {
@@ -22,7 +21,6 @@ function DealsView() {
   const [error, setError] = useState('');
   const [showTranscriptUpload, setShowTranscriptUpload] = useState(false);
   const [viewingTranscriptId, setViewingTranscriptId] = useState(null);
-  const [showHealthConfig, setShowHealthConfig] = useState(false);
   const [scoringDealId, setScoringDealId] = useState(null);
 
   useEffect(() => {
@@ -440,12 +438,6 @@ function DealsView() {
                       alert('🎉 AI analysis complete! Check the Actions tab to see intelligent recommendations.');
                     }}
                   />
-                  <button
-                    className="btn-action"
-                    onClick={() => setShowHealthConfig(true)}
-                  >
-                    ⚙️ Health Config
-                  </button>
                 </div>
               </div>
 
@@ -546,10 +538,7 @@ function DealsView() {
         />
       )}
 
-      {/* Health Config Modal */}
-      {showHealthConfig && (
-        <DealHealthConfig onClose={() => setShowHealthConfig(false)} />
-      )}
+      {/* Health Config moved to Settings → Deal Health */}
     </div>
   );
 }

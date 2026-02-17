@@ -6,8 +6,10 @@ import ContactsView from './ContactsView';
 import EmailView from './EmailView';
 import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
-import PlaybookEditor from './PlaybookEditor';
-import PromptEditor from './PromptEditor';
+import OutlookConnect from './OutlookConnect';
+import OutlookEmailList from './OutlookEmailList';
+import SyncStatus from './SyncStatus';
+import SettingsView from './SettingsView';
 
 // Authentication hook with REAL backend integration
 const useAuth = () => {
@@ -308,16 +310,15 @@ function Dashboard({ user, onLogout }) {
     }
   };
   
-  // ✅ CONSOLIDATED: Removed duplicate "outlook" tab
   const navItems = [
-    { id: 'actions', label: 'Actions', icon: '🎯' },
-    { id: 'deals', label: 'Deals', icon: '💼' },
-    { id: 'accounts', label: 'Accounts', icon: '🏢' },
-    { id: 'contacts', label: 'Contacts', icon: '👥' },
-    { id: 'emails', label: 'Emails', icon: '📧' }, // ✅ Single unified email tab
-    { id: 'calendar', label: 'Calendar', icon: '📅' },
-    { id: 'playbook', label: 'Sales Playbook', icon: '📘' },
-    { id: 'prompts', label: 'AI Prompts', icon: '🤖' }
+    { id: 'actions',  label: 'Actions',        icon: '🎯' },
+    { id: 'deals',    label: 'Deals',          icon: '💼' },
+    { id: 'accounts', label: 'Accounts',       icon: '🏢' },
+    { id: 'contacts', label: 'Contacts',       icon: '👥' },
+    { id: 'email',    label: 'Email',          icon: '✉️' },
+    { id: 'outlook',  label: 'Outlook Emails', icon: '📧' },
+    { id: 'calendar', label: 'Calendar',       icon: '📅' },
+    { id: 'settings', label: 'Settings',       icon: '⚙️' },
   ];
   
   return (
@@ -382,15 +383,20 @@ function Dashboard({ user, onLogout }) {
         )}
         
         <div className="content-area">
-          {currentTab === 'actions' && <ActionsView />}
-          {currentTab === 'deals' && <DealsView />}
+          {currentTab === 'actions'  && <ActionsView />}
+          {currentTab === 'deals'    && <DealsView />}
           {currentTab === 'accounts' && <AccountsView />}
           {currentTab === 'contacts' && <ContactsView />}
-          {/* ✅ CONSOLIDATED: Single email tab uses EmailView */}
-          {currentTab === 'emails' && <EmailView />}
+          {currentTab === 'email'    && <EmailView />}
+          {currentTab === 'outlook'  && (
+            <div className="outlook-view">
+              <OutlookConnect />
+              <SyncStatus />
+              <OutlookEmailList />
+            </div>
+          )}
           {currentTab === 'calendar' && <CalendarView />}
-          {currentTab === 'playbook' && <PlaybookEditor />}
-          {currentTab === 'prompts' && <PromptEditor />}
+          {currentTab === 'settings' && <SettingsView />}
         </div>
       </main>
     </div>

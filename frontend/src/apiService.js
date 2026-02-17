@@ -128,6 +128,19 @@ export const apiService = {
     update: (id, data)  => api.put(`/competitors/${id}`, data),
     delete: (id)        => api.delete(`/competitors/${id}`),
   },
+
+  // Sales Playbook
+  playbook: {
+    get:  ()     => api.get('/playbook'),
+    save: (data) => api.put('/playbook', data),
+  },
+
+  // AI Prompts
+  prompts: {
+    get:        ()    => api.get('/prompts'),
+    save:       (data) => api.put('/prompts', data),
+    reset:      (key) => api.delete(`/prompts/${key}`),
+  },
 };
 
 
