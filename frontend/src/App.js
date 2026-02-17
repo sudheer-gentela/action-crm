@@ -311,14 +311,13 @@ function Dashboard({ user, onLogout }) {
   };
   
   const navItems = [
-    { id: 'actions',  label: 'Actions',        icon: '🎯' },
-    { id: 'deals',    label: 'Deals',          icon: '💼' },
-    { id: 'accounts', label: 'Accounts',       icon: '🏢' },
-    { id: 'contacts', label: 'Contacts',       icon: '👥' },
-    { id: 'email',    label: 'Email',          icon: '✉️' },
-    { id: 'outlook',  label: 'Outlook Emails', icon: '📧' },
-    { id: 'calendar', label: 'Calendar',       icon: '📅' },
-    { id: 'settings', label: 'Settings',       icon: '⚙️' },
+    { id: 'actions',  label: 'Actions',  icon: '🎯' },
+    { id: 'deals',    label: 'Deals',    icon: '💼' },
+    { id: 'accounts', label: 'Accounts', icon: '🏢' },
+    { id: 'contacts', label: 'Contacts', icon: '👥' },
+    { id: 'email',    label: 'Email',    icon: '✉️' },
+    { id: 'calendar', label: 'Calendar', icon: '📅' },
+    { id: 'settings', label: 'Settings', icon: '⚙️' },
   ];
   
   return (

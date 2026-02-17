@@ -495,6 +495,35 @@ function PlaybookSettings() {
     finally { setSaving(false); }
   };
 
+  // deal_stages can be either an array OR a keyed object — normalise to array
+  const stagesArray = playbook?.deal_stages
+    ? Array.isArray(playbook.deal_stages)
+      ? playbook.deal_stages
+      : Object.entries(playbook.deal_stages).map(([id, val]) => ({ id, ...val }))
+    : [];
+
+  // Update a stage field, writing back to whatever shape the original was
+  const updateStageField = (stageId, fieldKey, value) => {
+    if (Array.isArray(playbook.deal_stages)) {
+      const stages = playbook.deal_stages.map(s =>
+        (s.id === stageId || s.name === stageId) ? { ...s, [fieldKey]: value } : s
+      );
+      setPlaybook({ ...playbook, deal_stages: stages });
+    } else {
+      setPlaybook({
+        ...playbook,
+        deal_stages: {
+          ...playbook.deal_stages,
+          [stageId]: { ...playbook.deal_stages[stageId], [fieldKey]: value }
+        }
+      });
+    }
+  };
+
+  // Company info — API may return it as playbook.company or playbook.company_context
+  const companyData = playbook?.company || playbook?.company_context || null;
+  const companyKey  = playbook?.company ? 'company' : 'company_context';
+
   if (loading) return <div className="sv-loading">Loading playbook...</div>;
 
   return (
@@ -517,73 +546,114 @@ function PlaybookSettings() {
           <div className="sv-empty">No playbook data found.</div>
         ) : (
           <>
-            {/* Company / Deal basics */}
-            {playbook.company_context && (
+            {/* Company / context block */}
+            {companyData && typeof companyData === 'object' && (
               <div className="sv-card">
                 <h3>Company Context</h3>
                 <div className="sv-form-grid">
-                  {Object.entries(playbook.company_context).map(([key, val]) => (
-                    <div key={key} className="sv-form-row">
-                      <label>{key.replace(/_/g, ' ')}</label>
-                      <input
-                        value={val || ''}
-                        onChange={e => setPlaybook({ ...playbook, company_context: { ...playbook.company_context, [key]: e.target.value } })}
-                      />
-                    </div>
-                  ))}
+                  {Object.entries(companyData).map(([key, val]) =>
+                    typeof val === 'string' ? (
+                      <div key={key} className="sv-form-row">
+                        <label>{key.replace(/_/g, ' ')}</label>
+                        <input
+                          value={val}
+                          onChange={e => setPlaybook({
+                            ...playbook,
+                            [companyKey]: { ...companyData, [key]: e.target.value }
+                          })}
+                        />
+                      </div>
+                    ) : null
+                  )}
                 </div>
               </div>
             )}
 
             {/* Deal stages */}
-            {playbook.deal_stages && (
+            {stagesArray.length > 0 && (
               <div className="sv-card">
                 <h3>Deal Stages</h3>
                 <div className="sv-stages-list">
-                  {playbook.deal_stages.map((stage, i) => (
-                    <div key={i} className="sv-stage-row">
-                      <div className="sv-stage-header" onClick={() => setEditingStage(editingStage === i ? null : i)}>
-                        <span className="sv-stage-num">{i + 1}</span>
-                        <span className="sv-stage-name">{stage.name || stage.id}</span>
-                        <span className="sv-hint">{stage.goal?.substring(0, 60)}{stage.goal?.length > 60 ? '…' : ''}</span>
-                        <span className="sv-expand-btn">{editingStage === i ? '▲' : '▼'}</span>
-                      </div>
-                      {editingStage === i && (
-                        <div className="sv-stage-detail">
-                          {Object.entries(stage).map(([key, val]) => (
-                            typeof val === 'string' && (
-                              <div key={key} className="sv-form-row">
-                                <label>{key.replace(/_/g, ' ')}</label>
-                                <textarea
-                                  rows={val.length > 100 ? 3 : 1}
-                                  value={val}
-                                  onChange={e => {
-                                    const stages = [...playbook.deal_stages];
-                                    stages[i] = { ...stages[i], [key]: e.target.value };
-                                    setPlaybook({ ...playbook, deal_stages: stages });
-                                  }}
-                                />
-                              </div>
-                            )
-                          ))}
+                  {stagesArray.map((stage, i) => {
+                    const stageId = stage.id || stage.name || String(i);
+                    return (
+                      <div key={stageId} className="sv-stage-row">
+                        <div className="sv-stage-header" onClick={() => setEditingStage(editingStage === stageId ? null : stageId)}>
+                          <span className="sv-stage-num">{i + 1}</span>
+                          <span className="sv-stage-name">{stage.name || stageId}</span>
+                          <span className="sv-hint sv-stage-goal">
+                            {stage.goal?.substring(0, 60)}{stage.goal?.length > 60 ? '…' : ''}
+                          </span>
+                          <span className="sv-expand-btn">{editingStage === stageId ? '▲' : '▼'}</span>
                         </div>
-                      )}
-                    </div>
-                  ))}
+                        {editingStage === stageId && (
+                          <div className="sv-stage-detail">
+                            {Object.entries(stage)
+                              .filter(([k]) => k !== 'id' && k !== 'key_actions' && k !== 'success_criteria')
+                              .map(([key, val]) =>
+                                typeof val === 'string' ? (
+                                  <div key={key} className="sv-form-row">
+                                    <label>{key.replace(/_/g, ' ')}</label>
+                                    <textarea
+                                      rows={val.length > 80 ? 3 : 1}
+                                      value={val}
+                                      onChange={e => updateStageField(stageId, key, e.target.value)}
+                                    />
+                                  </div>
+                                ) : null
+                              )
+                            }
+                            {/* key_actions list */}
+                            {Array.isArray(stage.key_actions) && (
+                              <div className="sv-form-row">
+                                <label>key actions</label>
+                                <div style={{ flex: 1 }}>
+                                  {stage.key_actions.map((action, ai) => (
+                                    <div key={ai} style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+                                      <input
+                                        value={action}
+                                        style={{ flex: 1 }}
+                                        onChange={e => {
+                                          const actions = [...stage.key_actions];
+                                          actions[ai] = e.target.value;
+                                          updateStageField(stageId, 'key_actions', actions);
+                                        }}
+                                      />
+                                      <button className="sv-icon-btn" onClick={() => {
+                                        const actions = stage.key_actions.filter((_, idx) => idx !== ai);
+                                        updateStageField(stageId, 'key_actions', actions);
+                                      }}>×</button>
+                                    </div>
+                                  ))}
+                                  <button className="sv-add-tag" onClick={() =>
+                                    updateStageField(stageId, 'key_actions', [...stage.key_actions, ''])
+                                  }>+ Add action</button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
 
-            {/* Raw JSON fallback for other fields */}
-            {playbook.typical_deal_size && (
+            {/* Typical deal size if present */}
+            {playbook.typical_deal_size && typeof playbook.typical_deal_size === 'object' && (
               <div className="sv-card">
                 <h3>Deal Size Benchmarks</h3>
                 <div className="sv-form-grid">
                   {Object.entries(playbook.typical_deal_size).map(([key, val]) => (
                     <div key={key} className="sv-form-row">
                       <label>{key.replace(/_/g, ' ')}</label>
-                      <input type="number" value={val || 0}
-                        onChange={e => setPlaybook({ ...playbook, typical_deal_size: { ...playbook.typical_deal_size, [key]: Number(e.target.value) } })}
+                      <input
+                        value={val || ''}
+                        onChange={e => setPlaybook({
+                          ...playbook,
+                          typical_deal_size: { ...playbook.typical_deal_size, [key]: e.target.value }
+                        })}
                       />
                     </div>
                   ))}

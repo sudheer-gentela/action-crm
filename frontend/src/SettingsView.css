@@ -269,3 +269,5 @@
 .sv-btn-secondary:hover { background: #f7fafc; border-color: #cbd5e0; }
 .sv-icon-btn { background: none; border: none; cursor: pointer; font-size: 16px; padding: 4px; border-radius: 4px; }
 .sv-icon-btn:hover { background: #f7fafc; }
+
+.sv-stage-goal { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
