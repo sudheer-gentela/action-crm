@@ -55,25 +55,28 @@ router.get('/', async (req, res) => {
     res.json({
       deals: result.rows.map(row => ({
         id: row.id,
+        user_id: row.owner_id, // ✅ Added for frontend compatibility
+        account_id: row.account_id, // ✅ Keep original field
         name: row.name,
         value: parseFloat(row.value),
         stage: row.stage,
         health: row.health,
-        expectedCloseDate: row.expected_close_date,
+        expected_close_date: row.expected_close_date, // ✅ Use snake_case
         probability: row.probability,
         notes: row.notes,
-        account: {
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        // ✅ Add account object for frontend
+        account: row.account_name ? {
           id: row.account_id,
           name: row.account_name,
           domain: row.account_domain
-        },
+        } : null,
         owner: {
-          firstName: row.owner_first_name,
-          lastName: row.owner_last_name
+          first_name: row.owner_first_name,
+          last_name: row.owner_last_name
         },
-        contacts: row.contacts || [],
-        createdAt: row.created_at,
-        updatedAt: row.updated_at
+        contacts: row.contacts || []
       }))
     });
   } catch (error) {
@@ -129,28 +132,31 @@ router.get('/:id', async (req, res) => {
     res.json({
       deal: {
         id: deal.id,
+        user_id: deal.owner_id, // ✅ Added for consistency
+        account_id: deal.account_id, // ✅ Keep original field
         name: deal.name,
         value: parseFloat(deal.value),
         stage: deal.stage,
         health: deal.health,
-        expectedCloseDate: deal.expected_close_date,
+        expected_close_date: deal.expected_close_date, // ✅ Use snake_case
         probability: deal.probability,
         notes: deal.notes,
-        account: {
+        created_at: deal.created_at,
+        updated_at: deal.updated_at,
+        // ✅ Add account object
+        account: deal.account_name ? {
           id: deal.account_id,
           name: deal.account_name,
           domain: deal.account_domain,
           industry: deal.account_industry,
           size: deal.account_size
-        },
+        } : null,
         owner: {
-          firstName: deal.owner_first_name,
-          lastName: deal.owner_last_name
+          first_name: deal.owner_first_name,
+          last_name: deal.owner_last_name
         },
         contacts: contactsQuery.rows,
-        activities: activitiesQuery.rows,
-        createdAt: deal.created_at,
-        updatedAt: deal.updated_at
+        activities: activitiesQuery.rows
       }
     });
   } catch (error) {
