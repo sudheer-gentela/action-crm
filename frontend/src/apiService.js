@@ -91,6 +91,21 @@ export const apiService = {
     update: (id, data) => api.put(`/actions/${id}`, data),
     complete: (id) => api.patch(`/actions/${id}`, { completed: true }),
     delete: (id) => api.delete(`/actions/${id}`)
+  },
+
+  // Transcripts
+  transcripts: {
+    getAll: () => api.get('/transcripts'),
+    getById: (id) => api.get(`/transcripts/${id}`),
+    upload: (formData) => {
+      return axios.post(`${API_URL}/transcripts/upload`, formData, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+    },
+    analyze: (id) => api.post(`/transcripts/${id}/analyze`),
+    delete: (id) => api.delete(`/transcripts/${id}`)
   }
 };
 
