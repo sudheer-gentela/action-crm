@@ -104,3 +104,19 @@
   font-size: 0.75rem; color: #92400e; background: #fef3c7;
   padding: 0.125rem 0.5rem; border-radius: 999px; display: inline-block; margin-top: 0.1rem;
 }
+
+/* Evidence snippets */
+.dhs-evidence {
+  display: flex; align-items: flex-start; gap: 6px;
+  margin-top: 6px; padding: 7px 10px;
+  background: #f8f9fa; border-left: 3px solid #dee2e6;
+  border-radius: 0 6px 6px 0;
+}
+.dhs-param-row.confirmed .dhs-evidence  { background: #f0fdf4; border-left-color: #86efac; }
+.dhs-param-row.confirmed.dhs-negative .dhs-evidence,
+.dhs-param-row.confirmed .dhs-evidence:has(.dhs-evidence-icon:first-child) {
+  /* negatives get amber styling — applied via JS class below */
+}
+.dhs-evidence-negative { background: #fff7ed; border-left-color: #fdba74; }
+.dhs-evidence-icon  { font-size: 12px; flex-shrink: 0; margin-top: 1px; }
+.dhs-evidence-text  { font-size: 12px; color: #4b5563; line-height: 1.5; font-style: italic; }

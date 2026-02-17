@@ -144,6 +144,16 @@ export default function DealHealthScore({ deal, onScoreDeal, scoring }) {
                     {param.ratio && <span className="dhs-param-detail">{param.ratio}× segment avg</span>}
                     {param.competitors?.length > 0 && <span className="dhs-param-detail">{param.competitors.map(c => c.name).join(', ')}</span>}
                     {param.execContacts?.length > 0 && <span className="dhs-param-detail">{param.execContacts.join(', ')}</span>}
+
+                    {/* Evidence snippet */}
+                    {param.evidence && (
+                      <div className={`dhs-evidence ${isNegative ? 'dhs-evidence-negative' : ''}`}>
+                        <span className="dhs-evidence-icon">
+                          {state === 'confirmed' && !isNegative ? '📌' : state === 'confirmed' && isNegative ? '⚠️' : '💬'}
+                        </span>
+                        <span className="dhs-evidence-text">{param.evidence}</span>
+                      </div>
+                    )}
                   </div>
                   <div className={`dhs-param-impact ${isPositive ? 'pos' : isNegative ? 'neg' : 'neutral'}`}>
                     {isNeutral ? '—' : `${isPositive ? '+' : ''}${param.impact}`}

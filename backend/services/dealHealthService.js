@@ -134,6 +134,7 @@ function scoreCloseDateCredibility(deal, config, bd) {
     params['1a'] = { label: 'Buyer-confirmed close date', state, value: confirmed,
       ai: aiSig, user: deal.close_date_user_confirmed, source: deal.close_date_ai_source,
       aiSuppressed: !aiOn && deal.close_date_ai_confirmed,
+      evidence: aiSig ? deal.close_date_ai_evidence : null,
       impact: state === 'confirmed' ? W['1a_close_confirmed'] : 0 };
   }
 
@@ -141,10 +142,13 @@ function scoreCloseDateCredibility(deal, config, bd) {
   if (enabled('1b_close_slipped')) {
     const count   = deal.close_date_push_count || 0;
     const slipped = count > 0;
-    const penalty = W['1b_close_slipped'] * Math.min(count, 3); // already negative weight
+    const penalty = W['1b_close_slipped'] * Math.min(count, 3);
     scored.push({ w: slipped ? penalty : 0, state: slipped ? 'confirmed' : 'absent' });
     params['1b'] = { label: 'Close date slipped', state: slipped ? 'confirmed' : 'absent',
-      value: slipped, pushCount: count, auto: true, impact: slipped ? penalty : 0 };
+      value: slipped, pushCount: count, auto: true, impact: slipped ? penalty : 0,
+      evidence: slipped
+        ? `Close date has been pushed out ${count} time${count !== 1 ? 's' : ''}. Each slip reduces close date credibility.`
+        : null };
   }
 
   // 1c: Close date tied to buyer event — POSITIVE, NON-AUTO
@@ -158,6 +162,8 @@ function scoreCloseDateCredibility(deal, config, bd) {
     params['1c'] = { label: 'Close date tied to buyer event', state, value: confirmed,
       ai: aiSig, user: deal.buyer_event_user_confirmed, description: deal.buyer_event_description,
       aiSuppressed: !aiOn && deal.buyer_event_ai_confirmed,
+      evidence: aiSig ? deal.buyer_event_ai_evidence
+              : deal.buyer_event_description ? `Buyer event: ${deal.buyer_event_description}` : null,
       impact: state === 'confirmed' ? W['1c_buyer_event'] : 0 };
   }
 
@@ -179,11 +185,18 @@ function scoreBuyerEngagement(deal, config, contacts, meetings, bd) {
   if (enabled('2a_economic_buyer')) {
     const found = deal.economic_buyer_contact_id !== null ||
       contacts.some(c => c.role_type === 'economic_buyer' || c.role_type === 'decision_maker');
-    // if contacts exist but none tagged → absent; no contacts yet → unknown
     const state = found ? 'confirmed' : contacts.length > 0 ? 'absent' : 'unknown';
+    const ecoBuyer = contacts.find(c =>
+      c.id === deal.economic_buyer_contact_id ||
+      c.role_type === 'economic_buyer' || c.role_type === 'decision_maker'
+    );
     scored.push({ w: W['2a_economic_buyer'], state });
     params['2a'] = { label: 'Economic buyer identified', state, value: found,
       contact: contacts.find(c => c.id === deal.economic_buyer_contact_id),
+      evidence: found && ecoBuyer
+        ? `${ecoBuyer.first_name} ${ecoBuyer.last_name}${ecoBuyer.title ? ` (${ecoBuyer.title})` : ''} tagged as economic buyer / decision maker.`
+        : state === 'absent' ? `${contacts.length} contact${contacts.length !== 1 ? 's' : ''} on this deal — none tagged as economic buyer or decision maker.`
+        : null,
       impact: state === 'confirmed' ? W['2a_economic_buyer'] : 0 };
   }
 
@@ -197,9 +210,15 @@ function scoreBuyerEngagement(deal, config, contacts, meetings, bd) {
     const held  = execContacts.length > 0 &&
       meetings.some(m => m.status === 'completed' || new Date(m.start_time) < new Date());
     const state = held ? 'confirmed' : 'absent';
+    const execNames = execContacts.map(c => `${c.first_name} ${c.last_name}${c.title ? ` (${c.title})` : ''}`);
     scored.push({ w: W['2b_exec_meeting'], state });
     params['2b'] = { label: 'Exec meeting held', state, value: held, auto: true,
-      execContacts: execContacts.map(c => `${c.first_name} ${c.last_name} (${c.title})`),
+      execContacts: execNames,
+      evidence: held
+        ? `Meeting held with exec-level contact${execNames.length > 1 ? 's' : ''}: ${execNames.slice(0,2).join(', ')}.`
+        : execContacts.length > 0
+          ? `Executive contact${execNames.length > 1 ? 's' : ''} on deal (${execNames[0]}) but no completed meeting recorded.`
+          : 'No executive-level contacts found on this deal.',
       impact: held ? W['2b_exec_meeting'] : 0 };
   }
 
@@ -207,12 +226,15 @@ function scoreBuyerEngagement(deal, config, contacts, meetings, bd) {
   if (enabled('2c_multi_threaded')) {
     const min    = config.multi_thread_min_contacts || 2;
     const roles  = ['decision_maker','champion','influencer','economic_buyer','executive'];
-    const count  = contacts.filter(c => roles.includes(c.role_type)).length;
-    const met    = count >= min;
+    const stks   = contacts.filter(c => roles.includes(c.role_type));
+    const met    = stks.length >= min;
     const state  = met ? 'confirmed' : 'absent';
     scored.push({ w: W['2c_multi_threaded'], state });
     params['2c'] = { label: `Multi-threaded (≥${min} stakeholders)`, state, value: met,
-      auto: true, count,
+      auto: true, count: stks.length,
+      evidence: met
+        ? `${stks.length} stakeholder${stks.length !== 1 ? 's' : ''} with meaningful roles: ${stks.slice(0,3).map(c => `${c.first_name} ${c.last_name}`).join(', ')}${stks.length > 3 ? '…' : ''}.`
+        : `Only ${stks.length} stakeholder${stks.length !== 1 ? 's' : ''} with a meaningful role — need at least ${min} for multi-threaded.`,
       impact: met ? W['2c_multi_threaded'] : 0 };
   }
 
@@ -250,6 +272,8 @@ function scoreProcessCompletion(deal, config, contacts, meetings, bd) {
       ai: aiOn ? deal.legal_engaged_ai : false, user: deal.legal_engaged_user,
       aiSuppressed: !aiOn && deal.legal_engaged_ai, source: deal.legal_engaged_source,
       contacts: legalCs.map(c => `${c.first_name} ${c.last_name}`),
+      evidence: deal.legal_engaged_evidence ||
+        (legalCs.length > 0 ? `Legal/procurement contact on deal: ${legalCs.map(c=>`${c.first_name} ${c.last_name}`).join(', ')}.` : null),
       impact: state === 'confirmed' ? W['3a_legal_engaged'] : 0 };
   }
 
@@ -271,6 +295,8 @@ function scoreProcessCompletion(deal, config, contacts, meetings, bd) {
       ai: aiOn ? deal.security_review_ai : false, user: deal.security_review_user,
       aiSuppressed: !aiOn && deal.security_review_ai, source: deal.security_review_source,
       contacts: secCs.map(c => `${c.first_name} ${c.last_name}`),
+      evidence: deal.security_review_evidence ||
+        (secCs.length > 0 ? `Security/IT contact on deal: ${secCs.map(c=>`${c.first_name} ${c.last_name}`).join(', ')}.` : null),
       impact: state === 'confirmed' ? W['3b_security_review'] : 0 };
   }
 
@@ -296,21 +322,28 @@ function scoreDealSizeRealism(deal, config, valueHistory, bd) {
     if (dealValue < 10000)      segAvg = config.segment_avg_smb;
     else if (dealValue > 50000) segAvg = config.segment_avg_enterprise;
     const oversized  = dealValue > (segAvg * mult);
+    const ratio      = segAvg > 0 ? (dealValue / segAvg).toFixed(1) : 0;
     scored.push({ w: oversized ? W['4a_value_vs_segment'] : 0, state: oversized ? 'confirmed' : 'absent' });
     params['4a'] = { label: `Deal value >${mult}× segment avg`, state: oversized ? 'confirmed' : 'absent',
-      value: oversized, auto: true, dealValue, segmentAvg: segAvg,
-      ratio: segAvg > 0 ? (dealValue / segAvg).toFixed(1) : 0,
+      value: oversized, auto: true, dealValue, segmentAvg: segAvg, ratio,
+      evidence: oversized
+        ? `Deal value $${dealValue.toLocaleString()} is ${ratio}× the segment average of $${segAvg.toLocaleString()} — significantly above the ${mult}× threshold.`
+        : null,
       impact: oversized ? W['4a_value_vs_segment'] : 0 };
   }
 
   // 4b: Deal expanded — POSITIVE, AUTO
   if (enabled('4b_deal_expanded')) {
     const cutoff  = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const expanded = valueHistory.some(h => new Date(h.changed_at) > cutoff && h.new_value > h.old_value);
+    const recentH = valueHistory.filter(h => new Date(h.changed_at) > cutoff && h.new_value > h.old_value);
+    const expanded = recentH.length > 0;
     const state   = expanded ? 'confirmed' : 'absent';
     scored.push({ w: W['4b_deal_expanded'], state });
     params['4b'] = { label: 'Deal expanded in last 30 days', state, value: expanded,
       auto: true, history: valueHistory.slice(0, 3),
+      evidence: expanded
+        ? `Deal value increased from $${Number(recentH[0].old_value).toLocaleString()} to $${Number(recentH[0].new_value).toLocaleString()} on ${new Date(recentH[0].changed_at).toLocaleDateString()}.`
+        : null,
       impact: expanded ? W['4b_deal_expanded'] : 0 };
   }
 
@@ -326,6 +359,7 @@ function scoreDealSizeRealism(deal, config, valueHistory, bd) {
       ai: aiSig, user: deal.scope_approved_user,
       aiSuppressed: !config._aiOn && deal.scope_approved_ai,
       source: deal.scope_approved_source,
+      evidence: deal.scope_approved_evidence || null,
       impact: state === 'confirmed' ? W['4c_scope_approved'] : 0 };
   }
 
@@ -347,12 +381,18 @@ function scoreCompetitiveRisk(deal, config, bd) {
 
   if (enabled('5a_competitive')) {
     const val   = deal.competitive_deal_user || (aiOn && deal.competitive_deal_ai);
+    const comps = deal.competitive_competitors
+      ? (typeof deal.competitive_competitors === 'string'
+          ? JSON.parse(deal.competitive_competitors) : deal.competitive_competitors)
+      : [];
     const state = val ? 'confirmed' : 'absent';
     scored.push({ w: val ? W['5a_competitive'] : 0, state });
     params['5a'] = { label: 'Competitive deal', state, value: val,
       ai: aiOn ? deal.competitive_deal_ai : false, user: deal.competitive_deal_user,
       aiSuppressed: !aiOn && deal.competitive_deal_ai,
-      competitors: deal.competitive_competitors || [],
+      competitors: comps,
+      evidence: deal.competitive_evidence ||
+        (comps.length > 0 ? `Competing against: ${comps.map(c=>c.name).join(', ')}.` : null),
       impact: val ? W['5a_competitive'] : 0 };
   }
 
@@ -363,6 +403,7 @@ function scoreCompetitiveRisk(deal, config, bd) {
     params['5b'] = { label: 'Price sensitivity flagged', state, value: val,
       ai: aiOn ? deal.price_sensitivity_ai : false, user: deal.price_sensitivity_user,
       aiSuppressed: !aiOn && deal.price_sensitivity_ai, source: deal.price_sensitivity_source,
+      evidence: deal.price_sensitivity_evidence || null,
       impact: val ? W['5b_price_sensitivity'] : 0 };
   }
 
@@ -373,6 +414,7 @@ function scoreCompetitiveRisk(deal, config, bd) {
     params['5c'] = { label: 'Discount approval pending', state, value: val,
       ai: aiOn ? deal.discount_pending_ai : false, user: deal.discount_pending_user,
       aiSuppressed: !aiOn && deal.discount_pending_ai,
+      evidence: deal.discount_pending_evidence || null,
       impact: val ? W['5c_discount_pending'] : 0 };
   }
 
@@ -392,7 +434,6 @@ function scoreMomentum(deal, config, meetings, emails, bd) {
   const scored  = [];
 
   // 6a: No recent meeting — NEGATIVE, AUTO
-  // Only fires if meetings exist but are stale (brand-new deal with no meetings stays neutral)
   if (enabled('6a_no_meeting_14d')) {
     const days       = config.no_meeting_days || 14;
     const cutoff     = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -406,6 +447,9 @@ function scoreMomentum(deal, config, meetings, emails, bd) {
     params['6a'] = { label: `No buyer meeting in last ${days} days`,
       state: penalise ? 'confirmed' : 'absent', value: !hasRecent,
       auto: true, daysSinceLastMeeting: daysSince,
+      evidence: penalise
+        ? `Last meeting was ${daysSince} days ago${lastMeet?.title ? ` ("${lastMeet.title}")` : ''} — exceeds the ${days}-day threshold.`
+        : meetings.length === 0 ? 'No meetings recorded yet — new deal.' : null,
       impact: penalise ? W['6a_no_meeting_14d'] : 0 };
   }
 
@@ -417,6 +461,9 @@ function scoreMomentum(deal, config, meetings, emails, bd) {
     params['6b'] = { label: 'Avg response time > historical norm',
       state: slow.isSlow ? 'confirmed' : 'absent', value: slow.isSlow,
       auto: true, avgHours: slow.avgHours, normHours: slow.normHours,
+      evidence: slow.isSlow
+        ? `Average reply time is ${slow.avgHours}h — ${(slow.avgHours / slow.normHours).toFixed(1)}× the historical norm of ${slow.normHours}h for this deal.`
+        : null,
       impact: slow.isSlow ? W['6b_slow_response'] : 0 };
   }
 
@@ -514,6 +561,33 @@ async function getValueHistory(client, dealId) {
 
 // ── AI Signal Detection ──────────────────────────────────────
 
+// Extract up to `maxSentences` sentences from `text` that match `regex`.
+// Returns a short readable snippet, or null if nothing matches.
+function extractEvidence(text, regex, maxSentences = 2) {
+  // Split on sentence boundaries (. ! ? followed by space or end)
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length > 10 && s.length < 400);
+
+  const hits = sentences.filter(s => regex.test(s));
+  if (hits.length === 0) return null;
+
+  // Return first 1-2 matching sentences, trimmed to 200 chars each
+  return hits
+    .slice(0, maxSentences)
+    .map(s => s.length > 200 ? s.substring(0, 197) + '…' : s)
+    .join(' … ');
+}
+
+// Extract the sentence surrounding a keyword match from raw text
+function extractSurroundingSentence(text, keyword) {
+  const sentences = text.split(/(?<=[.!?])\s+/).map(s => s.trim());
+  const hit = sentences.find(s => s.toLowerCase().includes(keyword.toLowerCase()));
+  if (!hit) return null;
+  return hit.length > 200 ? hit.substring(0, 197) + '…' : hit;
+}
+
 async function applyAISignals(dealId, analysisResult, sourceType, userId) {
   // Respect AI enabled setting — bail out immediately if AI is off
   if (userId) {
@@ -525,48 +599,79 @@ async function applyAISignals(dealId, analysisResult, sourceType, userId) {
   }
 
   const signals = {};
-  const text = JSON.stringify(analysisResult).toLowerCase();
+  // Use the raw stringified result for regex matching
+  const text = typeof analysisResult === 'string'
+    ? analysisResult
+    : JSON.stringify(analysisResult);
 
   // 1a: Close date confirmed
-  if (/confirmed.*close|close.*date.*agreed|target.*date.*confirmed|committed.*by/i.test(text)) {
-    signals.close_date_ai_confirmed = true;
-    signals.close_date_ai_source = sourceType;
-    signals.close_date_ai_confidence = 0.8;
+  {
+    const re = /confirmed.*close|close.*date.*agreed|target.*date.*confirmed|committed.*by/i;
+    if (re.test(text)) {
+      signals.close_date_ai_confirmed  = true;
+      signals.close_date_ai_source     = sourceType;
+      signals.close_date_ai_confidence = 0.8;
+      signals.close_date_ai_evidence   = extractEvidence(text, re);
+    }
   }
 
   // 1c: Buyer event
-  if (/budget.*cycle|board.*meeting|fiscal.*year|quarter.*end|procurement.*cycle/i.test(text)) {
-    signals.buyer_event_ai_confirmed = true;
-    signals.buyer_event_ai_source = sourceType;
+  {
+    const re = /budget.*cycle|board.*meeting|fiscal.*year|quarter.*end|procurement.*cycle/i;
+    if (re.test(text)) {
+      signals.buyer_event_ai_confirmed = true;
+      signals.buyer_event_ai_source    = sourceType;
+      signals.buyer_event_ai_evidence  = extractEvidence(text, re);
+    }
   }
 
   // 3a: Legal/procurement
-  if (/legal.*review|procurement|contract.*redline|msa|nda|sow|vendor.*approval|legal.*team/i.test(text)) {
-    signals.legal_engaged_ai = true;
-    signals.legal_engaged_source = sourceType;
+  {
+    const re = /legal.*review|procurement|contract.*redline|msa|nda|sow|vendor.*approval|legal.*team/i;
+    if (re.test(text)) {
+      signals.legal_engaged_ai       = true;
+      signals.legal_engaged_source   = sourceType;
+      signals.legal_engaged_evidence = extractEvidence(text, re);
+    }
   }
 
   // 3b: Security/IT
-  if (/security.*review|soc2|penetration.*test|it.*review|information.*security|security.*questionnaire|compliance.*review/i.test(text)) {
-    signals.security_review_ai = true;
-    signals.security_review_source = sourceType;
+  {
+    const re = /security.*review|soc2|penetration.*test|it.*review|information.*security|security.*questionnaire|compliance.*review/i;
+    if (re.test(text)) {
+      signals.security_review_ai       = true;
+      signals.security_review_source   = sourceType;
+      signals.security_review_evidence = extractEvidence(text, re);
+    }
   }
 
   // 4c: Scope approved
-  if (/scope.*approved|agreed.*on.*scope|proposal.*accepted|confirmed.*the.*plan|approved.*the.*proposal/i.test(text)) {
-    signals.scope_approved_ai = true;
-    signals.scope_approved_source = sourceType;
+  {
+    const re = /scope.*approved|agreed.*on.*scope|proposal.*accepted|confirmed.*the.*plan|approved.*the.*proposal/i;
+    if (re.test(text)) {
+      signals.scope_approved_ai       = true;
+      signals.scope_approved_source   = sourceType;
+      signals.scope_approved_evidence = extractEvidence(text, re);
+    }
   }
 
   // 5b: Price sensitivity
-  if (/budget.*constraint|too.*expensive|price.*concern|can.*you.*do.*better|need.*to.*justify.*cost|checking.*with.*finance/i.test(text)) {
-    signals.price_sensitivity_ai = true;
-    signals.price_sensitivity_source = sourceType;
+  {
+    const re = /budget.*constraint|too.*expensive|price.*concern|can.*you.*do.*better|need.*to.*justify.*cost|checking.*with.*finance/i;
+    if (re.test(text)) {
+      signals.price_sensitivity_ai       = true;
+      signals.price_sensitivity_source   = sourceType;
+      signals.price_sensitivity_evidence = extractEvidence(text, re);
+    }
   }
 
   // 5c: Discount pending
-  if (/discount.*request|pricing.*exception|approval.*needed.*discount|special.*pricing/i.test(text)) {
-    signals.discount_pending_ai = true;
+  {
+    const re = /discount.*request|pricing.*exception|approval.*needed.*discount|special.*pricing/i;
+    if (re.test(text)) {
+      signals.discount_pending_ai       = true;
+      signals.discount_pending_evidence = extractEvidence(text, re);
+    }
   }
 
   if (Object.keys(signals).length > 0) {
@@ -600,17 +705,27 @@ async function detectCompetitors(dealId, userId, text) {
     competitors.forEach(comp => {
       const names = [comp.name, ...(comp.aliases || [])];
       const hit = names.find(n => text.toLowerCase().includes(n.toLowerCase()));
-      if (hit) found.push({ id: comp.id, name: comp.name, matched: hit });
+      if (hit) {
+        const snippet = extractSurroundingSentence(text, hit);
+        found.push({ id: comp.id, name: comp.name, matched: hit, snippet });
+      }
     });
 
     if (found.length > 0) {
+      // Build a readable evidence string: "Salesforce: '…sentence…'"
+      const evidence = found
+        .filter(f => f.snippet)
+        .map(f => `${f.name}: "${f.snippet}"`)
+        .join(' | ');
+
       await client.query(
         `UPDATE deals
          SET competitive_deal_ai = true,
              competitive_competitors = $1,
+             competitive_evidence = $2,
              updated_at = NOW()
-         WHERE id = $2`,
-        [JSON.stringify(found), dealId]
+         WHERE id = $3`,
+        [JSON.stringify(found), evidence || null, dealId]
       );
     }
 
