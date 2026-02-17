@@ -171,8 +171,8 @@ router.post('/', async (req, res) => {
     const { accountId, name, value, stage, health, expectedCloseDate, probability, notes } = req.body;
     
     const result = await db.query(
-      `INSERT INTO deals (account_id, owner_id, name, value, stage, health, expected_close_date, probability, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO deals (account_id, owner_id, name, value, stage, health, expected_close_date, original_close_date, probability, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9)
        RETURNING *`,
       [accountId, req.user.userId, name, value, stage || 'qualified', health || 'healthy', expectedCloseDate, probability || 50, notes]
     );
@@ -205,12 +205,22 @@ router.put('/:id', async (req, res) => {
     
     // Get current deal to check for stage change
     const currentDeal = await db.query(
-      'SELECT stage FROM deals WHERE id = $1 AND owner_id = $2',
+      'SELECT stage, value, expected_close_date, close_date_push_count, original_close_date FROM deals WHERE id = $1 AND owner_id = $2',
       [req.params.id, req.user.userId]
     );
     
     if (currentDeal.rows.length === 0) {
       return res.status(404).json({ error: { message: 'Deal not found' } });
+    }
+
+    const current = currentDeal.rows[0];
+
+    // Detect close date push (new date is later than current)
+    let closeDatePushIncrement = 0;
+    if (expectedCloseDate && current.expected_close_date) {
+      const newDate = new Date(expectedCloseDate);
+      const oldDate = new Date(current.expected_close_date);
+      if (newDate > oldDate) closeDatePushIncrement = 1;
     }
     
     const result = await db.query(
@@ -222,19 +232,39 @@ router.put('/:id', async (req, res) => {
            expected_close_date = COALESCE($5, expected_close_date),
            probability = COALESCE($6, probability),
            notes = COALESCE($7, notes),
+           close_date_push_count = close_date_push_count + $10,
            updated_at = CURRENT_TIMESTAMP,
            closed_at = CASE WHEN $3 IN ('closed_won', 'closed_lost') THEN CURRENT_TIMESTAMP ELSE closed_at END
        WHERE id = $8 AND owner_id = $9
        RETURNING *`,
-      [name, value, stage, health, expectedCloseDate, probability, notes, req.params.id, req.user.userId]
+      [name, value, stage, health, expectedCloseDate, probability, notes, req.params.id, req.user.userId, closeDatePushIncrement]
     );
     
-    // Log stage change if applicable
-    if (stage && stage !== currentDeal.rows[0].stage) {
+    // Log stage change
+    if (stage && stage !== current.stage) {
       await db.query(
         `INSERT INTO deal_activities (deal_id, user_id, activity_type, description)
          VALUES ($1, $2, 'stage_change', $3)`,
-        [req.params.id, req.user.userId, `Stage changed from ${currentDeal.rows[0].stage} to ${stage}`]
+        [req.params.id, req.user.userId, `Stage changed from ${current.stage} to ${stage}`]
+      );
+    }
+
+    // Log close date push
+    if (closeDatePushIncrement > 0) {
+      await db.query(
+        `INSERT INTO deal_activities (deal_id, user_id, activity_type, description)
+         VALUES ($1, $2, 'close_date_pushed', $3)`,
+        [req.params.id, req.user.userId,
+         `Close date pushed from ${new Date(current.expected_close_date).toLocaleDateString()} to ${new Date(expectedCloseDate).toLocaleDateString()} (push #${(current.close_date_push_count || 0) + 1})`]
+      );
+    }
+
+    // Log value change to deal_value_history
+    if (value !== undefined && value !== null && parseFloat(value) !== parseFloat(current.value)) {
+      await db.query(
+        `INSERT INTO deal_value_history (deal_id, user_id, old_value, new_value)
+         VALUES ($1, $2, $3, $4)`,
+        [req.params.id, req.user.userId, current.value, value]
       );
     }
     

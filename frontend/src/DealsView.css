@@ -554,3 +554,57 @@
 .deal-detail-panel::-webkit-scrollbar-thumb:hover {
   background: #a0aec0;
 }
+
+/* ── Deal Health Signal Grid ─────────────────────────────────
+   Append these styles to your existing DealsView.css
+   ──────────────────────────────────────────────────────────── */
+
+.signal-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.signal-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  cursor: pointer;
+  padding: 0.375rem 0.5rem;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.signal-row:hover {
+  background: #f3f4f6;
+}
+
+.signal-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #3b82f6;
+}
+
+.signal-row span {
+  font-size: 0.875rem;
+  color: #374151;
+  font-family: monospace;
+}
+
+.signal-text-input {
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  color: #111827;
+  box-sizing: border-box;
+}
+
+.signal-text-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+}

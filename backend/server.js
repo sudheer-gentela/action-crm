@@ -14,6 +14,8 @@ const syncRoutes = require('./routes/sync.routes');
 const playbookRoutes = require('./routes/playbook.routes');
 const aiRoutes = require('./routes/ai.routes');
 const promptsRoutes = require('./routes/prompts.routes');
+// Place alongside your other route registrations
+const dealHealthRoutes = require('./routes/dealHealth.routes');
 
 
 // Trust Railway proxy
@@ -77,6 +79,22 @@ app.use('/api/sync', syncRoutes);
 app.use('/api/playbook', playbookRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/prompts', promptsRoutes);
+// Register under /api (covers /api/health-config, /api/competitors, /api/deals/:id/score)
+app.use('/api', dealHealthRoutes);
+
+
+// ── That's it. All these endpoints are now live: ─────────────
+//
+// GET    /api/health-config              ← load config
+// PUT    /api/health-config              ← save config
+// GET    /api/competitors                ← list competitors
+// POST   /api/competitors                ← add competitor
+// PUT    /api/competitors/:id            ← edit competitor
+// DELETE /api/competitors/:id            ← delete competitor
+// POST   /api/deals/:id/score            ← score one deal
+// POST   /api/deals/score-all            ← score all open deals
+// PATCH  /api/deals/:id/signals          ← update manual signals
+
 
 
 // Error handling middleware

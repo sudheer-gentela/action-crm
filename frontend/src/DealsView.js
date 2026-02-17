@@ -5,6 +5,8 @@ import DealForm from './DealForm';
 import AIAnalyzeButton from './AIAnalyzeButton';
 import TranscriptUpload from './TranscriptUpload';
 import TranscriptAnalysis from './TranscriptAnalysis';
+import DealHealthScore from './DealHealthScore';
+import DealHealthConfig from './DealHealthConfig';
 import './DealsView.css';
 
 function DealsView() {
@@ -20,6 +22,8 @@ function DealsView() {
   const [error, setError] = useState('');
   const [showTranscriptUpload, setShowTranscriptUpload] = useState(false);
   const [viewingTranscriptId, setViewingTranscriptId] = useState(null);
+  const [showHealthConfig, setShowHealthConfig] = useState(false);
+  const [scoringDealId, setScoringDealId] = useState(null);
 
   useEffect(() => {
     fetchDeals();
@@ -136,6 +140,34 @@ function DealsView() {
       if (selectedDeal?.id === dealId) {
         setSelectedDeal(null);
       }
+    }
+  };
+
+  const handleScoreDeal = async (dealId) => {
+    try {
+      setScoringDealId(dealId);
+      const response = await apiService.health.scoreDeal(dealId);
+      const { score, health, breakdown } = response.data.result;
+      // Update the deal in state with new score
+      const update = { health, health_score: score, health_score_breakdown: breakdown, health_score_updated_at: new Date().toISOString() };
+      setDeals(deals.map(d => d.id === dealId ? { ...d, ...update } : d));
+      if (selectedDeal?.id === dealId) setSelectedDeal(prev => ({ ...prev, ...update }));
+    } catch (err) {
+      console.error('Score deal error:', err);
+    } finally {
+      setScoringDealId(null);
+    }
+  };
+
+  const handleUpdateSignal = async (dealId, signals) => {
+    try {
+      const response = await apiService.health.updateSignals(dealId, signals);
+      const { scored } = response.data;
+      const update = { health: scored.health, health_score: scored.score, health_score_breakdown: scored.breakdown, health_score_updated_at: new Date().toISOString(), ...signals };
+      setDeals(deals.map(d => d.id === dealId ? { ...d, ...update } : d));
+      if (selectedDeal?.id === dealId) setSelectedDeal(prev => ({ ...prev, ...update }));
+    } catch (err) {
+      console.error('Update signal error:', err);
     }
   };
 
@@ -408,7 +440,59 @@ function DealsView() {
                       alert('🎉 AI analysis complete! Check the Actions tab to see intelligent recommendations.');
                     }}
                   />
+                  <button
+                    className="btn-action"
+                    onClick={() => setShowHealthConfig(true)}
+                  >
+                    ⚙️ Health Config
+                  </button>
                 </div>
+              </div>
+
+              {/* Deal Health Score */}
+              <div className="detail-section">
+                <h3>🏥 Deal Health Score</h3>
+                <DealHealthScore
+                  deal={selectedDeal}
+                  scoring={scoringDealId === selectedDeal.id}
+                  onScoreDeal={() => handleScoreDeal(selectedDeal.id)}
+                />
+              </div>
+
+              {/* Manual Health Signals */}
+              <div className="detail-section">
+                <h3>📋 Health Signals</h3>
+                <p className="section-description">Your assessment of key deal signals — shown alongside AI detection.</p>
+                <div className="signal-grid">
+                  {[
+                    { key: 'close_date_user_confirmed', label: '1a  Buyer confirmed close date' },
+                    { key: 'buyer_event_user_confirmed', label: '1c  Close date tied to buyer event' },
+                    { key: 'legal_engaged_user',         label: '3a  Legal/procurement engaged' },
+                    { key: 'security_review_user',       label: '3b  Security/IT review started' },
+                    { key: 'scope_approved_user',        label: '4c  Buyer approved scope' },
+                    { key: 'competitive_deal_user',      label: '5a  Competitive deal' },
+                    { key: 'price_sensitivity_user',     label: '5b  Price sensitivity flagged' },
+                    { key: 'discount_pending_user',      label: '5c  Discount approval pending' },
+                  ].map(({ key, label }) => (
+                    <label key={key} className="signal-row">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedDeal[key]}
+                        onChange={e => handleUpdateSignal(selectedDeal.id, { [key]: e.target.checked })}
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
+                {selectedDeal.buyer_event_user_confirmed && (
+                  <input
+                    className="signal-text-input"
+                    placeholder="Describe the buyer event..."
+                    value={selectedDeal.buyer_event_description || ''}
+                    onBlur={e => handleUpdateSignal(selectedDeal.id, { buyer_event_description: e.target.value })}
+                    onChange={e => setSelectedDeal(prev => ({ ...prev, buyer_event_description: e.target.value }))}
+                  />
+                )}
               </div>
 
               {/* Meeting Intelligence */}
@@ -460,6 +544,11 @@ function DealsView() {
           transcriptId={viewingTranscriptId}
           onClose={() => setViewingTranscriptId(null)}
         />
+      )}
+
+      {/* Health Config Modal */}
+      {showHealthConfig && (
+        <DealHealthConfig onClose={() => setShowHealthConfig(false)} />
       )}
     </div>
   );

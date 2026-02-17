@@ -106,7 +106,28 @@ export const apiService = {
     },
     analyze: (id) => api.post(`/transcripts/${id}/analyze`),
     delete: (id) => api.delete(`/transcripts/${id}`)
-  }
+  },
+
+  // Deal Health
+  health: {
+    scoreDeal:     (id)           => api.post(`/deals/${id}/score`),
+    scoreAll:      ()             => api.post('/deals/score-all'),
+    updateSignals: (id, signals)  => api.patch(`/deals/${id}/signals`, signals),
+  },
+
+  // Health Config
+  healthConfig: {
+    get:  ()     => api.get('/health-config'),
+    save: (data) => api.put('/health-config', data),
+  },
+
+  // Competitors
+  competitors: {
+    getAll: ()          => api.get('/competitors'),
+    create: (data)      => api.post('/competitors', data),
+    update: (id, data)  => api.put(`/competitors/${id}`, data),
+    delete: (id)        => api.delete(`/competitors/${id}`),
+  },
 };
 
 
