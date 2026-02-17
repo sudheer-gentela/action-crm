@@ -166,8 +166,7 @@ export default function DealHealthConfig({ onClose }) {
   const [success, setSuccess] = useState('');
 
   // AI Usage
-  const [aiEnabled, setAiEnabled]         = useState(true);
-  const [aiEnabledNote, setAiEnabledNote] = useState('');
+  const [aiEnabled, setAiEnabled] = useState(true);
 
   // Parameters
   const [paramsEnabled, setParamsEnabled] = useState(DEFAULT_ENABLED);
