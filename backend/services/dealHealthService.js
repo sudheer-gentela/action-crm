@@ -75,300 +75,355 @@ async function scoreDeal(dealId, userId) {
   }
 }
 
+// ── Scoring model ────────────────────────────────────────────
+//
+// EARN-POINTS HYBRID MODEL
+//
+// For categories that have positive params (1-4):
+//   score = (positivePointsEarned / maxPossiblePositive) * 100 - negativePenalties
+//
+// For pure-risk categories (5, 6 — all negative params):
+//   score = 100 - negativePenalties
+//
+// Parameter states:
+//   confirmed → contributes its full weight (positive adds, negative deducts)
+//   unknown   → earns nothing (no bonus, no penalty — deal must prove itself)
+//   absent    → earns nothing (explicitly not applicable)
+//
+// Result: empty deal scores ~30 (Risk). Must earn its way to Healthy.
+//
+// Helper — score one category given an array of {w, state} param descriptors
+function scoreCategory(params) {
+  const maxPositive    = params.filter(p => p.w > 0).reduce((s, p) => s + p.w, 0);
+  let positiveEarned   = 0;
+  let negativePenalty  = 0;
+
+  for (const p of params) {
+    if (p.state === 'confirmed') {
+      if (p.w > 0) positiveEarned += p.w;
+      else         negativePenalty += Math.abs(p.w);
+    }
+  }
+
+  if (maxPositive === 0) {
+    // Pure-risk category — starts at 100, only negatives can fire
+    return Math.max(0, 100 - negativePenalty);
+  }
+
+  const earnedPct = Math.round((positiveEarned / maxPositive) * 100);
+  return Math.max(0, Math.min(100, earnedPct - negativePenalty));
+}
+
 // ── Category 1: Close Date Credibility ──────────────────────
 
 function scoreCloseDateCredibility(deal, config, bd) {
-  const weights  = config.param_weights;
-  const enabled  = config._isEnabled;
-  const aiOn     = config._aiOn;
-  let score = 100;
+  const W      = config.param_weights;
+  const enabled = config._isEnabled;
+  const aiOn   = config._aiOn;
   const params = {};
+  const scored = [];
 
-  // 1a: Buyer-confirmed close date
+  // 1a: Buyer-confirmed close date — POSITIVE, NON-AUTO
   if (enabled('1a_close_confirmed')) {
-    const aiSignal  = aiOn && deal.close_date_ai_confirmed;
-    const confirmed = aiSignal || deal.close_date_user_confirmed;
-    params['1a'] = {
-      label: 'Buyer-confirmed close date', value: confirmed,
-      ai: aiSignal, user: deal.close_date_user_confirmed,
-      source: deal.close_date_ai_source,
+    const aiSig   = aiOn && deal.close_date_ai_confirmed;
+    const confirmed = Boolean(aiSig) || Boolean(deal.close_date_user_confirmed);
+    const state   = confirmed ? 'confirmed'
+                  : deal.close_date_user_confirmed === false ? 'absent'
+                  : 'unknown';
+    scored.push({ w: W['1a_close_confirmed'], state });
+    params['1a'] = { label: 'Buyer-confirmed close date', state, value: confirmed,
+      ai: aiSig, user: deal.close_date_user_confirmed, source: deal.close_date_ai_source,
       aiSuppressed: !aiOn && deal.close_date_ai_confirmed,
-      impact: confirmed ? weights['1a_close_confirmed'] : 0
-    };
-    if (confirmed) score += weights['1a_close_confirmed'];
+      impact: state === 'confirmed' ? W['1a_close_confirmed'] : 0 };
   }
 
-  // 1b: Close date slipped (fully auto — no AI needed)
+  // 1b: Close date slipped — NEGATIVE, AUTO
   if (enabled('1b_close_slipped')) {
-    const slipped     = deal.close_date_push_count > 0;
-    const pushPenalty = weights['1b_close_slipped'] * Math.min(deal.close_date_push_count, 3);
-    params['1b'] = {
-      label: 'Close date slipped', value: slipped,
-      pushCount: deal.close_date_push_count, auto: true,
-      impact: slipped ? pushPenalty : 0
-    };
-    if (slipped) score += pushPenalty;
+    const count   = deal.close_date_push_count || 0;
+    const slipped = count > 0;
+    const penalty = W['1b_close_slipped'] * Math.min(count, 3); // already negative weight
+    scored.push({ w: slipped ? penalty : 0, state: slipped ? 'confirmed' : 'absent' });
+    params['1b'] = { label: 'Close date slipped', state: slipped ? 'confirmed' : 'absent',
+      value: slipped, pushCount: count, auto: true, impact: slipped ? penalty : 0 };
   }
 
-  // 1c: Close date tied to buyer event
+  // 1c: Close date tied to buyer event — POSITIVE, NON-AUTO
   if (enabled('1c_buyer_event')) {
-    const aiSignal  = aiOn && deal.buyer_event_ai_confirmed;
-    const buyerEvent = aiSignal || deal.buyer_event_user_confirmed;
-    params['1c'] = {
-      label: 'Close date tied to buyer event', value: buyerEvent,
-      ai: aiSignal, user: deal.buyer_event_user_confirmed,
-      description: deal.buyer_event_description,
+    const aiSig    = aiOn && deal.buyer_event_ai_confirmed;
+    const confirmed = Boolean(aiSig) || Boolean(deal.buyer_event_user_confirmed);
+    const state    = confirmed ? 'confirmed'
+                   : deal.buyer_event_user_confirmed === false ? 'absent'
+                   : 'unknown';
+    scored.push({ w: W['1c_buyer_event'], state });
+    params['1c'] = { label: 'Close date tied to buyer event', state, value: confirmed,
+      ai: aiSig, user: deal.buyer_event_user_confirmed, description: deal.buyer_event_description,
       aiSuppressed: !aiOn && deal.buyer_event_ai_confirmed,
-      impact: buyerEvent ? weights['1c_buyer_event'] : 0
-    };
-    if (buyerEvent) score += weights['1c_buyer_event'];
+      impact: state === 'confirmed' ? W['1c_buyer_event'] : 0 };
   }
 
-  bd.categories['1'] = { label: 'Close Date Credibility', score: Math.max(0, Math.min(100, score)) };
+  const catScore = scoreCategory(scored);
+  bd.categories['1'] = { label: 'Close Date Credibility', score: catScore };
   bd.params = { ...bd.params, ...params };
-  return Math.max(0, Math.min(100, score));
+  return catScore;
 }
 
 // ── Category 2: Buyer Engagement & Power ────────────────────
 
 function scoreBuyerEngagement(deal, config, contacts, meetings, bd) {
-  const weights = config.param_weights;
+  const W       = config.param_weights;
   const enabled = config._isEnabled;
-  let score = 100;
-  const params = {};
+  const params  = {};
+  const scored  = [];
 
+  // 2a: Economic buyer — POSITIVE, NON-AUTO (manual tagging)
   if (enabled('2a_economic_buyer')) {
-    const hasEcoBuyer = deal.economic_buyer_contact_id !== null ||
+    const found = deal.economic_buyer_contact_id !== null ||
       contacts.some(c => c.role_type === 'economic_buyer' || c.role_type === 'decision_maker');
-    params['2a'] = {
-      label: 'Economic buyer identified', value: hasEcoBuyer,
+    // if contacts exist but none tagged → absent; no contacts yet → unknown
+    const state = found ? 'confirmed' : contacts.length > 0 ? 'absent' : 'unknown';
+    scored.push({ w: W['2a_economic_buyer'], state });
+    params['2a'] = { label: 'Economic buyer identified', state, value: found,
       contact: contacts.find(c => c.id === deal.economic_buyer_contact_id),
-      impact: hasEcoBuyer ? weights['2a_economic_buyer'] : 0
-    };
-    if (hasEcoBuyer) score += weights['2a_economic_buyer'];
+      impact: state === 'confirmed' ? W['2a_economic_buyer'] : 0 };
   }
 
+  // 2b: Exec meeting — POSITIVE, AUTO
   if (enabled('2b_exec_meeting')) {
-    const execTitles   = config.exec_titles || [];
+    const execTitles  = config.exec_titles || [];
     const execContacts = contacts.filter(c =>
       c.role_type === 'executive' ||
       execTitles.some(t => (c.title || '').toLowerCase().includes(t.toLowerCase()))
     );
-    const execMeetingHeld = execContacts.length > 0 &&
+    const held  = execContacts.length > 0 &&
       meetings.some(m => m.status === 'completed' || new Date(m.start_time) < new Date());
-    params['2b'] = {
-      label: 'Exec meeting held', value: execMeetingHeld, auto: true,
+    const state = held ? 'confirmed' : 'absent';
+    scored.push({ w: W['2b_exec_meeting'], state });
+    params['2b'] = { label: 'Exec meeting held', state, value: held, auto: true,
       execContacts: execContacts.map(c => `${c.first_name} ${c.last_name} (${c.title})`),
-      impact: execMeetingHeld ? weights['2b_exec_meeting'] : 0
-    };
-    if (execMeetingHeld) score += weights['2b_exec_meeting'];
+      impact: held ? W['2b_exec_meeting'] : 0 };
   }
 
+  // 2c: Multi-threaded — POSITIVE, AUTO
   if (enabled('2c_multi_threaded')) {
-    const minContacts    = config.multi_thread_min_contacts || 2;
-    const meaningfulRoles = ['decision_maker','champion','influencer','economic_buyer','executive'];
-    const stakeholders   = contacts.filter(c => meaningfulRoles.includes(c.role_type));
-    const multiThreaded  = stakeholders.length >= minContacts;
-    params['2c'] = {
-      label: `Multi-threaded (≥${minContacts} stakeholders)`, value: multiThreaded, auto: true,
-      count: stakeholders.length,
-      impact: multiThreaded ? weights['2c_multi_threaded'] : 0
-    };
-    if (multiThreaded) score += weights['2c_multi_threaded'];
+    const min    = config.multi_thread_min_contacts || 2;
+    const roles  = ['decision_maker','champion','influencer','economic_buyer','executive'];
+    const count  = contacts.filter(c => roles.includes(c.role_type)).length;
+    const met    = count >= min;
+    const state  = met ? 'confirmed' : 'absent';
+    scored.push({ w: W['2c_multi_threaded'], state });
+    params['2c'] = { label: `Multi-threaded (≥${min} stakeholders)`, state, value: met,
+      auto: true, count,
+      impact: met ? W['2c_multi_threaded'] : 0 };
   }
 
-  bd.categories['2'] = { label: 'Buyer Engagement & Power', score: Math.max(0, Math.min(100, score)) };
+  const catScore = scoreCategory(scored);
+  bd.categories['2'] = { label: 'Buyer Engagement & Power', score: catScore };
   bd.params = { ...bd.params, ...params };
-  return Math.max(0, Math.min(100, score));
+  return catScore;
 }
 
-// ── Categories 3-6 with isEnabled + aiOn guards ──────────────
+// ── Category 3: Process Completion ──────────────────────────
 
 function scoreProcessCompletion(deal, config, contacts, meetings, bd) {
-  const weights = config.param_weights;
+  const W       = config.param_weights;
   const enabled = config._isEnabled;
   const aiOn    = config._aiOn;
-  let score = 100;
-  const params = {};
+  const params  = {};
+  const scored  = [];
 
+  // 3a: Legal/procurement — POSITIVE, NON-AUTO
   if (enabled('3a_legal_engaged')) {
-    const legalTitles   = config.legal_titles || [];
-    const procTitles    = config.procurement_titles || [];
-    const legalContacts = contacts.filter(c =>
+    const legalTitles = config.legal_titles || [];
+    const procTitles  = config.procurement_titles || [];
+    const legalCs     = contacts.filter(c =>
       ['legal','procurement'].includes(c.role_type) ||
-      [...legalTitles, ...procTitles].some(t => (c.title || '').toLowerCase().includes(t.toLowerCase()))
+      [...legalTitles, ...procTitles].some(t => (c.title||'').toLowerCase().includes(t.toLowerCase()))
     );
-    const legalEngaged = deal.legal_engaged_user ||
-      (aiOn && deal.legal_engaged_ai) ||
-      legalContacts.some(() => meetings.some(m => new Date(m.start_time) < new Date()));
-    params['3a'] = {
-      label: 'Legal/procurement engaged', value: legalEngaged,
+    const confirmed = Boolean(deal.legal_engaged_user) ||
+      (aiOn && Boolean(deal.legal_engaged_ai)) ||
+      legalCs.some(() => meetings.some(m => new Date(m.start_time) < new Date()));
+    const state = confirmed ? 'confirmed'
+                : deal.legal_engaged_user === false ? 'absent'
+                : 'unknown';
+    scored.push({ w: W['3a_legal_engaged'], state });
+    params['3a'] = { label: 'Legal/procurement engaged', state, value: confirmed,
       ai: aiOn ? deal.legal_engaged_ai : false, user: deal.legal_engaged_user,
       aiSuppressed: !aiOn && deal.legal_engaged_ai, source: deal.legal_engaged_source,
-      contacts: legalContacts.map(c => `${c.first_name} ${c.last_name}`),
-      impact: legalEngaged ? weights['3a_legal_engaged'] : 0
-    };
-    if (legalEngaged) score += weights['3a_legal_engaged'];
+      contacts: legalCs.map(c => `${c.first_name} ${c.last_name}`),
+      impact: state === 'confirmed' ? W['3a_legal_engaged'] : 0 };
   }
 
+  // 3b: Security/IT review — POSITIVE, NON-AUTO
   if (enabled('3b_security_review')) {
-    const secTitles   = config.security_titles || [];
-    const secContacts = contacts.filter(c =>
+    const secTitles = config.security_titles || [];
+    const secCs     = contacts.filter(c =>
       ['security','it'].includes(c.role_type) ||
-      secTitles.some(t => (c.title || '').toLowerCase().includes(t.toLowerCase()))
+      secTitles.some(t => (c.title||'').toLowerCase().includes(t.toLowerCase()))
     );
-    const secReview = deal.security_review_user ||
-      (aiOn && deal.security_review_ai) ||
-      secContacts.some(() => meetings.some(m => new Date(m.start_time) < new Date()));
-    params['3b'] = {
-      label: 'Security/IT review started', value: secReview,
+    const confirmed = Boolean(deal.security_review_user) ||
+      (aiOn && Boolean(deal.security_review_ai)) ||
+      secCs.some(() => meetings.some(m => new Date(m.start_time) < new Date()));
+    const state = confirmed ? 'confirmed'
+                : deal.security_review_user === false ? 'absent'
+                : 'unknown';
+    scored.push({ w: W['3b_security_review'], state });
+    params['3b'] = { label: 'Security/IT review started', state, value: confirmed,
       ai: aiOn ? deal.security_review_ai : false, user: deal.security_review_user,
       aiSuppressed: !aiOn && deal.security_review_ai, source: deal.security_review_source,
-      contacts: secContacts.map(c => `${c.first_name} ${c.last_name}`),
-      impact: secReview ? weights['3b_security_review'] : 0
-    };
-    if (secReview) score += weights['3b_security_review'];
+      contacts: secCs.map(c => `${c.first_name} ${c.last_name}`),
+      impact: state === 'confirmed' ? W['3b_security_review'] : 0 };
   }
 
-  bd.categories['3'] = { label: 'Process Completion', score: Math.max(0, Math.min(100, score)) };
+  const catScore = scoreCategory(scored);
+  bd.categories['3'] = { label: 'Process Completion', score: catScore };
   bd.params = { ...bd.params, ...params };
-  return Math.max(0, Math.min(100, score));
+  return catScore;
 }
+
+// ── Category 4: Deal Size Realism ───────────────────────────
 
 function scoreDealSizeRealism(deal, config, valueHistory, bd) {
-  const weights = config.param_weights;
+  const W       = config.param_weights;
   const enabled = config._isEnabled;
-  let score = 100;
-  const params = {};
+  const params  = {};
+  const scored  = [];
 
+  // 4a: Oversized — NEGATIVE, AUTO
   if (enabled('4a_value_vs_segment')) {
     const dealValue  = parseFloat(deal.value) || 0;
-    const multiplier = config.segment_size_multiplier || 2.0;
-    let segmentAvg   = config.segment_avg_midmarket;
-    if (dealValue < 10000)      segmentAvg = config.segment_avg_smb;
-    else if (dealValue > 50000) segmentAvg = config.segment_avg_enterprise;
-    const oversized = dealValue > (segmentAvg * multiplier);
-    params['4a'] = {
-      label: `Deal value >${multiplier}× segment avg`, value: oversized, auto: true,
-      dealValue, segmentAvg, ratio: segmentAvg > 0 ? (dealValue / segmentAvg).toFixed(1) : 0,
-      impact: oversized ? weights['4a_value_vs_segment'] : 0
-    };
-    if (oversized) score += weights['4a_value_vs_segment'];
+    const mult       = config.segment_size_multiplier || 2.0;
+    let segAvg       = config.segment_avg_midmarket;
+    if (dealValue < 10000)      segAvg = config.segment_avg_smb;
+    else if (dealValue > 50000) segAvg = config.segment_avg_enterprise;
+    const oversized  = dealValue > (segAvg * mult);
+    scored.push({ w: oversized ? W['4a_value_vs_segment'] : 0, state: oversized ? 'confirmed' : 'absent' });
+    params['4a'] = { label: `Deal value >${mult}× segment avg`, state: oversized ? 'confirmed' : 'absent',
+      value: oversized, auto: true, dealValue, segmentAvg: segAvg,
+      ratio: segAvg > 0 ? (dealValue / segAvg).toFixed(1) : 0,
+      impact: oversized ? W['4a_value_vs_segment'] : 0 };
   }
 
+  // 4b: Deal expanded — POSITIVE, AUTO
   if (enabled('4b_deal_expanded')) {
-    const thirtyDaysAgo   = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const recentExpansion = valueHistory.some(h =>
-      new Date(h.changed_at) > thirtyDaysAgo && h.new_value > h.old_value
-    );
-    params['4b'] = {
-      label: 'Deal expanded in last 30 days', value: recentExpansion, auto: true,
-      history: valueHistory.slice(0, 3),
-      impact: recentExpansion ? weights['4b_deal_expanded'] : 0
-    };
-    if (recentExpansion) score += weights['4b_deal_expanded'];
+    const cutoff  = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const expanded = valueHistory.some(h => new Date(h.changed_at) > cutoff && h.new_value > h.old_value);
+    const state   = expanded ? 'confirmed' : 'absent';
+    scored.push({ w: W['4b_deal_expanded'], state });
+    params['4b'] = { label: 'Deal expanded in last 30 days', state, value: expanded,
+      auto: true, history: valueHistory.slice(0, 3),
+      impact: expanded ? W['4b_deal_expanded'] : 0 };
   }
 
+  // 4c: Scope approved — POSITIVE, NON-AUTO
   if (enabled('4c_scope_approved')) {
-    const aiSignal      = config._aiOn && deal.scope_approved_ai;
-    const scopeApproved = deal.scope_approved_user || aiSignal;
-    params['4c'] = {
-      label: 'Buyer explicitly approved scope', value: scopeApproved,
-      ai: aiSignal, user: deal.scope_approved_user,
+    const aiSig    = config._aiOn && deal.scope_approved_ai;
+    const confirmed = Boolean(deal.scope_approved_user) || Boolean(aiSig);
+    const state    = confirmed ? 'confirmed'
+                   : deal.scope_approved_user === false ? 'absent'
+                   : 'unknown';
+    scored.push({ w: W['4c_scope_approved'], state });
+    params['4c'] = { label: 'Buyer explicitly approved scope', state, value: confirmed,
+      ai: aiSig, user: deal.scope_approved_user,
       aiSuppressed: !config._aiOn && deal.scope_approved_ai,
       source: deal.scope_approved_source,
-      impact: scopeApproved ? weights['4c_scope_approved'] : 0
-    };
-    if (scopeApproved) score += weights['4c_scope_approved'];
+      impact: state === 'confirmed' ? W['4c_scope_approved'] : 0 };
   }
 
-  bd.categories['4'] = { label: 'Deal Size Realism', score: Math.max(0, Math.min(100, score)) };
+  const catScore = scoreCategory(scored);
+  bd.categories['4'] = { label: 'Deal Size Realism', score: catScore };
   bd.params = { ...bd.params, ...params };
-  return Math.max(0, Math.min(100, score));
+  return catScore;
 }
 
+// ── Category 5: Competitive & Pricing Risk ───────────────────
+// Pure-risk category — starts at 100, only negatives fire
+
 function scoreCompetitiveRisk(deal, config, bd) {
-  const weights = config.param_weights;
+  const W       = config.param_weights;
   const enabled = config._isEnabled;
   const aiOn    = config._aiOn;
-  let score = 100;
-  const params = {};
+  const params  = {};
+  const scored  = [];
 
   if (enabled('5a_competitive')) {
-    const competitive = deal.competitive_deal_user || (aiOn && deal.competitive_deal_ai);
-    params['5a'] = {
-      label: 'Competitive deal', value: competitive,
+    const val   = deal.competitive_deal_user || (aiOn && deal.competitive_deal_ai);
+    const state = val ? 'confirmed' : 'absent';
+    scored.push({ w: val ? W['5a_competitive'] : 0, state });
+    params['5a'] = { label: 'Competitive deal', state, value: val,
       ai: aiOn ? deal.competitive_deal_ai : false, user: deal.competitive_deal_user,
       aiSuppressed: !aiOn && deal.competitive_deal_ai,
       competitors: deal.competitive_competitors || [],
-      impact: competitive ? weights['5a_competitive'] : 0
-    };
-    if (competitive) score += weights['5a_competitive'];
+      impact: val ? W['5a_competitive'] : 0 };
   }
 
   if (enabled('5b_price_sensitivity')) {
-    const priceSensitive = deal.price_sensitivity_user || (aiOn && deal.price_sensitivity_ai);
-    params['5b'] = {
-      label: 'Price sensitivity flagged', value: priceSensitive,
+    const val   = deal.price_sensitivity_user || (aiOn && deal.price_sensitivity_ai);
+    const state = val ? 'confirmed' : 'absent';
+    scored.push({ w: val ? W['5b_price_sensitivity'] : 0, state });
+    params['5b'] = { label: 'Price sensitivity flagged', state, value: val,
       ai: aiOn ? deal.price_sensitivity_ai : false, user: deal.price_sensitivity_user,
       aiSuppressed: !aiOn && deal.price_sensitivity_ai, source: deal.price_sensitivity_source,
-      impact: priceSensitive ? weights['5b_price_sensitivity'] : 0
-    };
-    if (priceSensitive) score += weights['5b_price_sensitivity'];
+      impact: val ? W['5b_price_sensitivity'] : 0 };
   }
 
   if (enabled('5c_discount_pending')) {
-    const discountPending = deal.discount_pending_user || (aiOn && deal.discount_pending_ai);
-    params['5c'] = {
-      label: 'Discount approval pending', value: discountPending,
+    const val   = deal.discount_pending_user || (aiOn && deal.discount_pending_ai);
+    const state = val ? 'confirmed' : 'absent';
+    scored.push({ w: val ? W['5c_discount_pending'] : 0, state });
+    params['5c'] = { label: 'Discount approval pending', state, value: val,
       ai: aiOn ? deal.discount_pending_ai : false, user: deal.discount_pending_user,
       aiSuppressed: !aiOn && deal.discount_pending_ai,
-      impact: discountPending ? weights['5c_discount_pending'] : 0
-    };
-    if (discountPending) score += weights['5c_discount_pending'];
+      impact: val ? W['5c_discount_pending'] : 0 };
   }
 
-  bd.categories['5'] = { label: 'Competitive & Pricing Risk', score: Math.max(0, Math.min(100, score)) };
+  const catScore = scoreCategory(scored);
+  bd.categories['5'] = { label: 'Competitive & Pricing Risk', score: catScore };
   bd.params = { ...bd.params, ...params };
-  return Math.max(0, Math.min(100, score));
+  return catScore;
 }
 
-function scoreMomentum(deal, config, meetings, emails, bd) {
-  const weights = config.param_weights;
-  const enabled = config._isEnabled;
-  let score = 100;
-  const params = {};
+// ── Category 6: Momentum & Activity ─────────────────────────
+// Pure-risk category — starts at 100, only negatives fire (on real evidence)
 
+function scoreMomentum(deal, config, meetings, emails, bd) {
+  const W       = config.param_weights;
+  const enabled = config._isEnabled;
+  const params  = {};
+  const scored  = [];
+
+  // 6a: No recent meeting — NEGATIVE, AUTO
+  // Only fires if meetings exist but are stale (brand-new deal with no meetings stays neutral)
   if (enabled('6a_no_meeting_14d')) {
-    const noMeetingDays = config.no_meeting_days || 14;
-    const cutoff        = new Date(Date.now() - noMeetingDays * 24 * 60 * 60 * 1000);
-    const recentMeeting = meetings.some(m => new Date(m.start_time) > cutoff);
-    const lastMeeting   = meetings.length > 0
+    const days       = config.no_meeting_days || 14;
+    const cutoff     = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const hasRecent  = meetings.some(m => new Date(m.start_time) > cutoff);
+    const lastMeet   = meetings.length > 0
       ? meetings.reduce((a, b) => new Date(a.start_time) > new Date(b.start_time) ? a : b)
       : null;
-    const daysSince = lastMeeting ? Math.floor((Date.now() - new Date(lastMeeting.start_time)) / 86400000) : null;
-    params['6a'] = {
-      label: `No buyer meeting in last ${noMeetingDays} days`, value: !recentMeeting, auto: true,
-      daysSinceLastMeeting: daysSince,
-      impact: (!recentMeeting && meetings.length > 0) ? weights['6a_no_meeting_14d'] : 0
-    };
-    if (!recentMeeting && meetings.length > 0) score += weights['6a_no_meeting_14d'];
+    const daysSince  = lastMeet ? Math.floor((Date.now() - new Date(lastMeet.start_time)) / 86400000) : null;
+    const penalise   = !hasRecent && meetings.length > 0;
+    scored.push({ w: penalise ? W['6a_no_meeting_14d'] : 0, state: penalise ? 'confirmed' : 'absent' });
+    params['6a'] = { label: `No buyer meeting in last ${days} days`,
+      state: penalise ? 'confirmed' : 'absent', value: !hasRecent,
+      auto: true, daysSinceLastMeeting: daysSince,
+      impact: penalise ? W['6a_no_meeting_14d'] : 0 };
   }
 
+  // 6b: Slow response — NEGATIVE, AUTO
   if (enabled('6b_slow_response')) {
-    const multiplier   = config.response_time_multiplier || 1.5;
-    const slowResponse = calculateSlowResponse(emails, multiplier);
-    params['6b'] = {
-      label: 'Avg response time > historical norm', value: slowResponse.isSlow, auto: true,
-      avgHours: slowResponse.avgHours, normHours: slowResponse.normHours,
-      impact: slowResponse.isSlow ? weights['6b_slow_response'] : 0
-    };
-    if (slowResponse.isSlow) score += weights['6b_slow_response'];
+    const mult   = config.response_time_multiplier || 1.5;
+    const slow   = calculateSlowResponse(emails, mult);
+    scored.push({ w: slow.isSlow ? W['6b_slow_response'] : 0, state: slow.isSlow ? 'confirmed' : 'absent' });
+    params['6b'] = { label: 'Avg response time > historical norm',
+      state: slow.isSlow ? 'confirmed' : 'absent', value: slow.isSlow,
+      auto: true, avgHours: slow.avgHours, normHours: slow.normHours,
+      impact: slow.isSlow ? W['6b_slow_response'] : 0 };
   }
 
-  bd.categories['6'] = { label: 'Momentum & Activity', score: Math.max(0, Math.min(100, score)) };
+  const catScore = scoreCategory(scored);
+  bd.categories['6'] = { label: 'Momentum & Activity', score: catScore };
   bd.params = { ...bd.params, ...params };
-  return Math.max(0, Math.min(100, score));
+  return catScore;
 }
 
 // ── Helpers ──────────────────────────────────────────────────

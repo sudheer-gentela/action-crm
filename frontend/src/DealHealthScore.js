@@ -101,18 +101,23 @@ export default function DealHealthScore({ deal, onScoreDeal, scoring }) {
               const isPositive = (param.impact || 0) > 0;
               const isNegative = (param.impact || 0) < 0;
               const isNeutral  = (param.impact || 0) === 0;
+              const state      = param.state || (param.value ? 'confirmed' : 'absent');
+
+              const indicator = state === 'confirmed'
+                ? (isNegative ? '🔴' : '✅')
+                : state === 'unknown' ? '❓'
+                : (isPositive ? '⬜' : '➖');
 
               return (
-                <div key={key} className={`dhs-param-row ${param.value ? 'active' : 'inactive'}`}>
-                  <div className="dhs-param-indicator">
-                    {param.value
-                      ? (isNegative ? '🔴' : '✅')
-                      : (isPositive ? '⬜' : '➖')}
-                  </div>
+                <div key={key} className={`dhs-param-row ${state}`}>
+                  <div className="dhs-param-indicator">{indicator}</div>
                   <div className="dhs-param-info">
                     <span className="dhs-param-label">{param.label}</span>
 
-                    {/* Dual signal display */}
+                    {state === 'unknown' && (
+                      <span className="dhs-param-unknown">Not yet confirmed — no points earned</span>
+                    )}
+
                     {param.ai !== undefined && (
                       <div className="dhs-param-signals">
                         <span className={`dhs-signal ${param.ai ? 'active' : ''}`}>
@@ -131,38 +136,21 @@ export default function DealHealthScore({ deal, onScoreDeal, scoring }) {
                       </div>
                     )}
 
-                    {/* Auto params - show evidence */}
-                    {param.auto && (
-                      <span className="dhs-param-auto">⚡ Auto-detected</span>
-                    )}
-                    {param.pushCount > 0 && (
-                      <span className="dhs-param-detail">Pushed {param.pushCount}×</span>
-                    )}
-                    {param.daysSinceLastMeeting !== null && param.daysSinceLastMeeting !== undefined && (
-                      <span className="dhs-param-detail">Last meeting: {param.daysSinceLastMeeting} days ago</span>
-                    )}
-                    {param.avgHours && (
-                      <span className="dhs-param-detail">Avg response: {param.avgHours}h (norm: {param.normHours}h)</span>
-                    )}
-                    {param.count !== undefined && (
-                      <span className="dhs-param-detail">{param.count} stakeholder{param.count !== 1 ? 's' : ''}</span>
-                    )}
-                    {param.ratio && (
-                      <span className="dhs-param-detail">{param.ratio}× segment avg</span>
-                    )}
-                    {param.competitors?.length > 0 && (
-                      <span className="dhs-param-detail">
-                        {param.competitors.map(c => c.name).join(', ')}
-                      </span>
-                    )}
-                    {param.execContacts?.length > 0 && (
-                      <span className="dhs-param-detail">{param.execContacts.join(', ')}</span>
-                    )}
+                    {param.auto && <span className="dhs-param-auto">⚡ Auto-detected</span>}
+                    {param.pushCount > 0 && <span className="dhs-param-detail">Pushed {param.pushCount}×</span>}
+                    {param.daysSinceLastMeeting != null && <span className="dhs-param-detail">Last meeting: {param.daysSinceLastMeeting} days ago</span>}
+                    {param.avgHours && <span className="dhs-param-detail">Avg response: {param.avgHours}h (norm: {param.normHours}h)</span>}
+                    {param.count !== undefined && <span className="dhs-param-detail">{param.count} stakeholder{param.count !== 1 ? 's' : ''}</span>}
+                    {param.ratio && <span className="dhs-param-detail">{param.ratio}× segment avg</span>}
+                    {param.competitors?.length > 0 && <span className="dhs-param-detail">{param.competitors.map(c => c.name).join(', ')}</span>}
+                    {param.execContacts?.length > 0 && <span className="dhs-param-detail">{param.execContacts.join(', ')}</span>}
                   </div>
                   <div className={`dhs-param-impact ${isPositive ? 'pos' : isNegative ? 'neg' : 'neutral'}`}>
-                    {isNeutral ? '–' : `${isPositive ? '+' : ''}${param.impact}`}
+                    {isNeutral ? '—' : `${isPositive ? '+' : ''}${param.impact}`}
                   </div>
                 </div>
+              );
+            })}
               );
             })}
           </div>
