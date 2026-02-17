@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import './TranscriptAnalysis.css';
 
@@ -7,23 +7,8 @@ function TranscriptAnalysis({ transcriptId, onClose }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    if (transcriptId) {
-      fetchTranscript();
-      // Poll for analysis completion if pending
-      const interval = setInterval(() => {
-        if (transcript?.analysis_status === 'analyzing' || transcript?.analysis_status === 'pending') {
-          fetchTranscript();
-        }
-      }, 3000);
-
-      return () => clearInterval(interval);
-    }
-  }, [transcriptId]);
-
-  const fetchTranscript = async () => {
+  const fetchTranscript = useCallback(async () => {
     try {
-      // Use apiService instead of fetch
       const response = await apiService.transcripts.getById(transcriptId);
       setTranscript(response.data.transcript);
       setLoading(false);
@@ -32,7 +17,25 @@ function TranscriptAnalysis({ transcriptId, onClose }) {
       setError(err.response?.data?.error?.message || err.message || 'Failed to fetch transcript');
       setLoading(false);
     }
-  };
+  }, [transcriptId]);
+
+  useEffect(() => {
+    if (transcriptId) {
+      fetchTranscript();
+    }
+  }, [transcriptId, fetchTranscript]);
+
+  // Separate polling effect that depends on analysis status
+  useEffect(() => {
+    if (!transcriptId) return;
+    if (transcript?.analysis_status !== 'analyzing' && transcript?.analysis_status !== 'pending') return;
+
+    const interval = setInterval(() => {
+      fetchTranscript();
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [transcriptId, transcript?.analysis_status, fetchTranscript]);
 
   if (loading) {
     return (
