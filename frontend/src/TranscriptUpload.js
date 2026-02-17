@@ -3,7 +3,7 @@ import { apiService } from './apiService';
 import './TranscriptUpload.css';
 
 function TranscriptUpload({ dealId, onSuccess, onClose }) {
-  const [uploadMethod, setUploadMethod] = useState('paste'); // 'paste' or 'file'
+  const [uploadMethod, setUploadMethod] = useState('paste');
   const [transcriptText, setTranscriptText] = useState('');
   const [file, setFile] = useState(null);
   const [meetingDate, setMeetingDate] = useState('');
@@ -27,7 +27,6 @@ function TranscriptUpload({ dealId, onSuccess, onClose }) {
       setUploading(true);
       setError('');
 
-      // Validate
       if (uploadMethod === 'paste' && !transcriptText.trim()) {
         setError('Please enter a transcript');
         setUploading(false);
@@ -48,15 +47,9 @@ function TranscriptUpload({ dealId, onSuccess, onClose }) {
         formData.append('text', transcriptText);
       }
 
-      if (dealId) {
-        formData.append('dealId', dealId);
-      }
+      if (dealId) formData.append('dealId', dealId);
+      if (meetingDate) formData.append('meetingDate', meetingDate);
 
-      if (meetingDate) {
-        formData.append('meetingDate', meetingDate);
-      }
-
-      // Use apiService instead of fetch
       const response = await apiService.transcripts.upload(formData);
       const result = response.data;
 
@@ -64,12 +57,8 @@ function TranscriptUpload({ dealId, onSuccess, onClose }) {
         throw new Error(result.message || 'Upload failed');
       }
 
-      // Success!
-      if (onSuccess) {
-        onSuccess(result);
-      }
+      if (onSuccess) onSuccess(result);
 
-      // Reset form
       setTranscriptText('');
       setFile(null);
       setMeetingDate('');
@@ -84,84 +73,75 @@ function TranscriptUpload({ dealId, onSuccess, onClose }) {
 
   return (
     <div className="transcript-upload-modal">
-      <div className="modal-overlay" onClick={onClose}></div>
-      
-      <div className="modal-content">
-        <div className="modal-header">
+      <div className="tu-overlay" onClick={onClose}></div>
+
+      <div className="tu-content">
+        <div className="tu-header">
           <h2>📝 Upload Meeting Transcript</h2>
-          <button className="close-btn" onClick={onClose}>×</button>
+          <button className="tu-close-btn" onClick={onClose}>×</button>
         </div>
 
-        <div className="modal-body">
-          {/* Upload Method Selector */}
-          <div className="upload-method-selector">
+        <div className="tu-body">
+          {/* Method Selector */}
+          <div className="tu-method-selector">
             <button
-              className={`method-btn ${uploadMethod === 'paste' ? 'active' : ''}`}
+              className={`tu-method-btn ${uploadMethod === 'paste' ? 'active' : ''}`}
               onClick={() => setUploadMethod('paste')}
             >
               ✍️ Paste Text
             </button>
             <button
-              className={`method-btn ${uploadMethod === 'file' ? 'active' : ''}`}
+              className={`tu-method-btn ${uploadMethod === 'file' ? 'active' : ''}`}
               onClick={() => setUploadMethod('file')}
             >
               📄 Upload File
             </button>
           </div>
 
-          {/* Paste Text Method */}
+          {/* Paste Text */}
           {uploadMethod === 'paste' && (
-            <div className="upload-section">
+            <div className="tu-section">
               <label>Meeting Transcript</label>
               <textarea
-                className="transcript-textarea"
+                className="tu-textarea"
                 value={transcriptText}
                 onChange={(e) => setTranscriptText(e.target.value)}
-                placeholder="Paste your meeting transcript here...
-
-Example:
-[00:00] John: Thanks for joining. Let's discuss the proposal.
-[00:15] Sarah: Yes, we're interested but have budget concerns.
-[01:30] John: We can offer a phased approach...
-[03:00] Sarah: That could work. Can you send details by Friday?
-[03:15] John: Absolutely. I'll email the revised proposal."
+                placeholder={`Paste your meeting transcript here...\n\nExample:\n[00:00] John: Thanks for joining. Let's discuss the proposal.\n[00:15] Sarah: Yes, we're interested but have budget concerns.\n[01:30] John: We can offer a phased approach...`}
                 rows={15}
               />
-              <div className="char-count">
+              <div className="tu-char-count">
                 {transcriptText.length} characters
                 {transcriptText.length > 0 && transcriptText.length < 50 && (
-                  <span className="warning"> (minimum 50 required)</span>
+                  <span className="tu-warning"> (minimum 50 required)</span>
                 )}
               </div>
             </div>
           )}
 
-          {/* File Upload Method */}
+          {/* File Upload */}
           {uploadMethod === 'file' && (
-            <div className="upload-section">
+            <div className="tu-section">
               <label>Select .txt File</label>
-              <div className="file-upload-area">
+              <div className="tu-file-area">
                 <input
                   type="file"
                   accept=".txt"
                   onChange={handleFileChange}
                   id="transcript-file"
-                  className="file-input"
+                  className="tu-file-input"
                 />
-                <label htmlFor="transcript-file" className="file-upload-label">
+                <label htmlFor="transcript-file" className="tu-file-label">
                   {file ? (
                     <>
-                      <span className="file-icon">📄</span>
-                      <span className="file-name">{file.name}</span>
-                      <span className="file-size">
-                        ({(file.size / 1024).toFixed(1)} KB)
-                      </span>
+                      <span className="tu-file-icon">📄</span>
+                      <span className="tu-file-name">{file.name}</span>
+                      <span className="tu-file-size">({(file.size / 1024).toFixed(1)} KB)</span>
                     </>
                   ) : (
                     <>
-                      <span className="upload-icon">📁</span>
+                      <span className="tu-upload-icon">📁</span>
                       <span>Click to select .txt file or drag here</span>
-                      <span className="upload-hint">Maximum size: 5MB</span>
+                      <span className="tu-upload-hint">Maximum size: 5MB</span>
                     </>
                   )}
                 </label>
@@ -169,21 +149,21 @@ Example:
             </div>
           )}
 
-          {/* Optional: Meeting Date */}
-          <div className="upload-section">
+          {/* Meeting Date */}
+          <div className="tu-section">
             <label>Meeting Date (Optional)</label>
             <input
               type="date"
               value={meetingDate}
               onChange={(e) => setMeetingDate(e.target.value)}
-              className="date-input"
+              className="tu-date-input"
             />
           </div>
 
-          {/* AI Processing Info */}
-          <div className="info-box">
-            <span className="info-icon">🤖</span>
-            <div className="info-content">
+          {/* Info Box */}
+          <div className="tu-info-box">
+            <span className="tu-info-icon">🤖</span>
+            <div className="tu-info-content">
               <strong>AI will extract:</strong>
               <ul>
                 <li>Key discussion points</li>
@@ -196,36 +176,24 @@ Example:
             </div>
           </div>
 
-          {/* Error Message */}
+          {/* Error */}
           {error && (
-            <div className="error-message">
-              ⚠️ {error}
-            </div>
+            <div className="tu-error">⚠️ {error}</div>
           )}
         </div>
 
-        <div className="modal-footer">
-          <button
-            className="btn-secondary"
-            onClick={onClose}
-            disabled={uploading}
-          >
+        <div className="tu-footer">
+          <button className="tu-btn-secondary" onClick={onClose} disabled={uploading}>
             Cancel
           </button>
-          <button
-            className="btn-primary"
-            onClick={handleUpload}
-            disabled={uploading}
-          >
+          <button className="tu-btn-primary" onClick={handleUpload} disabled={uploading}>
             {uploading ? (
               <>
-                <span className="spinner"></span>
+                <span className="tu-spinner"></span>
                 Uploading & Analyzing...
               </>
             ) : (
-              <>
-                🚀 Upload & Analyze
-              </>
+              <>🚀 Upload & Analyze</>
             )}
           </button>
         </div>
