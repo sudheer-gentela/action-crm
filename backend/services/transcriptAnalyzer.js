@@ -86,8 +86,8 @@ async function analyzeTranscript(transcriptId, userId) {
     }
     
     // Update deal health if provided
-    if (transcript.deal_id && analysis.dealHealthUpdate) {
-      await updateDealHealth(client, transcript.deal_id, analysis.dealHealthUpdate);
+    if (transcript.deal_id && analysis.dealHealthSignals) {
+      await updateDealHealth(client, transcript.deal_id, analysis.dealHealthSignals);
     }
     
     return analysis;
@@ -223,9 +223,10 @@ async function createActionsFromInsights(client, userId, dealId, actionItems) {
     if (item.owner !== 'us') continue;
     
     try {
-      const dueDate = item.dueDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // Default: 7 days
+      const dueDate = item.dueDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       const priorityMap = { low: 'low', medium: 'medium', high: 'high' };
       const priority = priorityMap[item.priority] || 'medium';
+      const actionType = inferActionType(item.description);
       
       await client.query(
         `INSERT INTO actions (
@@ -236,19 +237,34 @@ async function createActionsFromInsights(client, userId, dealId, actionItems) {
           userId,
           dealId,
           item.description,
-          'follow_up', // Default type
+          actionType,
           priority,
           dueDate,
           'pending',
-          'meeting_transcript' // Mark source as transcript-generated
+          'meeting_transcript'
         ]
       );
       
-      console.log(`   ✅ Created action: ${item.description}`);
+      console.log(`   ✅ Created action [${actionType}]: ${item.description}`);
     } catch (error) {
       console.error(`   ❌ Failed to create action:`, error.message);
     }
   }
+}
+
+/**
+ * Infer action type from description keywords
+ */
+function inferActionType(description) {
+  const text = description.toLowerCase();
+
+  if (/\b(send|email|write|draft|reply|respond)\b/.test(text))   return 'email';
+  if (/\b(call|phone|ring|dial)\b/.test(text))                   return 'call';
+  if (/\b(meet|meeting|schedule|book|arrange|demo|presentation)\b/.test(text)) return 'meeting';
+  if (/\b(proposal|quote|pricing|offer|contract|agreement)\b/.test(text))      return 'proposal';
+  if (/\b(research|review|analyse|analyze|check|investigate)\b/.test(text))    return 'research';
+
+  return 'follow_up'; // default
 }
 
 /**
