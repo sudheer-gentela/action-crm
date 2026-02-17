@@ -2,7 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import DealForm from './DealForm';
-import AIAnalyzeButton from './AIAnalyzeButton'; // ✅ ADDED: AI button import
+import AIAnalyzeButton from './AIAnalyzeButton';
+import TranscriptUpload from './TranscriptUpload';
+import TranscriptAnalysis from './TranscriptAnalysis';
 import './DealsView.css';
 
 function DealsView() {
@@ -16,6 +18,8 @@ function DealsView() {
   const [editingDeal, setEditingDeal] = useState(null);
   const [selectedDeal, setSelectedDeal] = useState(null);
   const [error, setError] = useState('');
+  const [showTranscriptUpload, setShowTranscriptUpload] = useState(false);
+  const [viewingTranscriptId, setViewingTranscriptId] = useState(null);
 
   useEffect(() => {
     fetchDeals();
@@ -397,7 +401,6 @@ function DealsView() {
                   >
                     🗑️ Delete Deal
                   </button>
-                  {/* ✅ ADDED: AI Analyze Button in Quick Actions */}
                   <AIAnalyzeButton 
                     type="deal" 
                     id={selectedDeal.id}
@@ -406,6 +409,20 @@ function DealsView() {
                     }}
                   />
                 </div>
+              </div>
+
+              {/* Meeting Intelligence */}
+              <div className="detail-section">
+                <h3>🤖 Meeting Intelligence</h3>
+                <p className="section-description">
+                  Upload a meeting transcript to extract insights, action items and deal health signals automatically.
+                </p>
+                <button
+                  className="btn-action"
+                  onClick={() => setShowTranscriptUpload(true)}
+                >
+                  📝 Upload Meeting Transcript
+                </button>
               </div>
             </div>
           </div>
@@ -422,6 +439,26 @@ function DealsView() {
             setShowForm(false);
             setEditingDeal(null);
           }}
+        />
+      )}
+
+      {/* Transcript Upload Modal */}
+      {showTranscriptUpload && (
+        <TranscriptUpload
+          dealId={selectedDeal?.id}
+          onSuccess={(result) => {
+            setShowTranscriptUpload(false);
+            setViewingTranscriptId(result.transcriptId);
+          }}
+          onClose={() => setShowTranscriptUpload(false)}
+        />
+      )}
+
+      {/* Transcript Analysis Modal */}
+      {viewingTranscriptId && (
+        <TranscriptAnalysis
+          transcriptId={viewingTranscriptId}
+          onClose={() => setViewingTranscriptId(null)}
         />
       )}
     </div>
