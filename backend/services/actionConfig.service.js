@@ -10,20 +10,35 @@ class ActionConfigService {
    * Get user's action configuration
    */
   static async getConfig(userId) {
+    console.log('🔧 ActionConfigService.getConfig called for userId:', userId);
+    
     try {
+      console.log('🔍 Querying action_config table...');
       const result = await db.query(
         'SELECT * FROM action_config WHERE user_id = $1',
         [userId]
       );
       
+      console.log('📊 Query result:', result.rows.length, 'rows found');
+      
       if (result.rows.length === 0) {
         // Create default config for user
+        console.log('⚠️ No config found for user', userId, '- creating default');
         return this.createDefaultConfig(userId);
       }
       
+      console.log('✅ Returning existing config');
       return result.rows[0];
     } catch (error) {
-      console.error('Error getting action config:', error);
+      console.error('❌ Error in getConfig:', error.message);
+      console.error('Full error:', error);
+      
+      // If table doesn't exist, return default config without trying to insert
+      if (error.message && error.message.includes('does not exist')) {
+        console.error('⚠️ action_config table does not exist. Please run the migration.');
+        return this.getDefaults();
+      }
+      
       throw error;
     }
   }
@@ -32,6 +47,8 @@ class ActionConfigService {
    * Create default configuration for a user
    */
   static async createDefaultConfig(userId) {
+    console.log('🆕 Creating default config for user:', userId);
+    
     try {
       const result = await db.query(
         `INSERT INTO action_config (
@@ -47,9 +64,11 @@ class ActionConfigService {
         [userId, 'playbook', 'hybrid', 70, 95]
       );
       
+      console.log('✅ Default config created successfully');
       return result.rows[0];
     } catch (error) {
-      console.error('Error creating default config:', error);
+      console.error('❌ Error creating default config:', error.message);
+      console.error('Full error:', error);
       throw error;
     }
   }
