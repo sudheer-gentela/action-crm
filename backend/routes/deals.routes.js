@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const ActionsGenerator = require('../services/actionsGenerator');
+const ActionConfigService = require('../services/actionConfig.service');
 
 router.use(authenticateToken);
 
@@ -247,6 +248,22 @@ router.put('/:id', async (req, res) => {
          VALUES ($1, $2, 'stage_change', $3)`,
         [req.params.id, req.user.userId, `Stage changed from ${current.stage} to ${stage}`]
       );
+      
+      // ✨ NEW: Generate playbook actions on stage change
+      try {
+        const config = await ActionConfigService.getConfig(req.user.userId);
+        if (config.generate_on_stage_change) {
+          await ActionsGenerator.generateForStageChange(
+            req.params.id,
+            stage,
+            req.user.userId
+          );
+          console.log(`📘 Generated playbook actions for stage: ${stage}`);
+        }
+      } catch (err) {
+        console.error('Error generating playbook actions on stage change:', err);
+        // Don't fail the deal update if action generation fails
+      }
     }
 
     // Log close date push

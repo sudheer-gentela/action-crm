@@ -5,6 +5,8 @@
 
 const db = require('../config/database');
 const ActionsEngine = require('./ActionsEngine');
+const PlaybookService = require('./playbook.service');
+const ActionConfigService = require('./actionConfig.service');
 
 class ActionsGenerator {
   /**
@@ -264,6 +266,114 @@ class ActionsGenerator {
     } catch (error) {
       console.error('Error generating actions for meeting:', error);
       return false;
+    }
+  }
+
+  /**
+   * Generate actions when deal stage changes (PLAYBOOK-DRIVEN)
+   * This is the NEW playbook integration method
+   */
+  static async generateForStageChange(dealId, newStage, userId) {
+    try {
+      console.log(`📘 Generating playbook actions for deal ${dealId}, stage: ${newStage}`);
+      
+      // Get user's action config
+      const config = await ActionConfigService.getConfig(userId);
+      
+      // Check if generation is enabled
+      if (config.generation_mode === 'manual') {
+        console.log('Action generation disabled (manual mode)');
+        return [];
+      }
+      
+      // Use playbook or rules engine based on config
+      if (config.generation_mode === 'playbook') {
+        return this.generateFromPlaybook(dealId, newStage, userId, config);
+      }
+      
+      if (config.generation_mode === 'rules') {
+        // Fall back to existing ActionsEngine
+        return this.generateForDeal(dealId);
+      }
+      
+      return [];
+      
+    } catch (error) {
+      console.error('Error generating actions for stage change:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Generate actions from Sales Playbook
+   */
+  static async generateFromPlaybook(dealId, newStage, userId, config) {
+    try {
+      // Get playbook key_actions for this stage
+      const keyActions = await PlaybookService.getStageActions(userId, newStage);
+      
+      if (keyActions.length === 0) {
+        console.log(`No playbook actions defined for stage: ${newStage}`);
+        return [];
+      }
+      
+      // Get deal details
+      const dealResult = await db.query('SELECT * FROM deals WHERE id = $1', [dealId]);
+      const deal = dealResult.rows[0];
+      
+      if (!deal) {
+        console.error(`Deal ${dealId} not found`);
+        return [];
+      }
+      
+      const actions = [];
+      
+      for (const actionText of keyActions) {
+        // Classify the action
+        const actionType = PlaybookService.classifyActionType(actionText);
+        const keywords = PlaybookService.extractKeywords(actionText);
+        const requiresExternal = PlaybookService.requiresExternalEvidence(actionType, actionText);
+        const priority = PlaybookService.suggestPriority(newStage, actionType);
+        const dueDays = PlaybookService.suggestDueDays(newStage, actionType);
+        
+        // Calculate due date
+        const dueDate = new Date();
+        dueDate.setDate(dueDate.getDate() + dueDays);
+        
+        // Insert action into database
+        const result = await db.query(
+          `INSERT INTO actions (
+            user_id, deal_id, type, title, description, priority,
+            action_type, keywords, deal_stage, requires_external_evidence,
+            source, due_date, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+          RETURNING *`,
+          [
+            userId,
+            dealId,
+            actionType,
+            actionText,
+            `Generated from Sales Playbook for ${newStage} stage`,
+            priority,
+            actionType,
+            keywords,
+            newStage,
+            requiresExternal,
+            'playbook',
+            dueDate
+          ]
+        );
+        
+        actions.push(result.rows[0]);
+        console.log(`✅ Created playbook action: ${actionText}`);
+      }
+      
+      console.log(`📘 Generated ${actions.length} actions from playbook`);
+      return actions;
+      
+    } catch (error) {
+      console.error('Error generating from playbook:', error);
+      return [];
     }
   }
 }

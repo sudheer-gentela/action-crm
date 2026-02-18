@@ -3,6 +3,8 @@ const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const ActionsGenerator = require('../services/actionsGenerator');
+const ActionConfigService = require('../services/actionConfig.service');
+const ActionCompletionDetector = require('../services/actionCompletionDetector.service');
 
 // All routes require authentication
 router.use(authenticateToken);
@@ -252,6 +254,68 @@ router.patch('/:id/complete', async (req, res) => {
   } catch (error) {
     console.error('Complete action error:', error);
     res.status(500).json({ error: { message: 'Failed to complete action' } });
+  }
+});
+
+// ========== NEW: ACTION CONFIGURATION ENDPOINTS ==========
+
+// Get user's action configuration
+router.get('/config', async (req, res) => {
+  try {
+    const config = await ActionConfigService.getConfig(req.user.userId);
+    res.json({ config });
+  } catch (error) {
+    console.error('Get action config error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch config' } });
+  }
+});
+
+// Update user's action configuration
+router.put('/config', async (req, res) => {
+  try {
+    const config = await ActionConfigService.updateConfig(req.user.userId, req.body);
+    res.json({ config });
+  } catch (error) {
+    console.error('Update action config error:', error);
+    res.status(500).json({ error: { message: 'Failed to update config' } });
+  }
+});
+
+// Get suggestions for an action
+router.get('/:id/suggestions', async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT * FROM action_suggestions 
+       WHERE action_id = $1 AND user_id = $2 AND status = 'pending'
+       ORDER BY confidence DESC`,
+      [req.params.id, req.user.userId]
+    );
+    res.json({ suggestions: result.rows });
+  } catch (error) {
+    console.error('Get suggestions error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch suggestions' } });
+  }
+});
+
+// Accept a suggestion (mark action as complete)
+router.post('/suggestions/:id/accept', async (req, res) => {
+  try {
+    await ActionCompletionDetector.acceptSuggestion(req.params.id, req.user.userId);
+    res.json({ success: true, message: 'Suggestion accepted and action completed' });
+  } catch (error) {
+    console.error('Accept suggestion error:', error);
+    res.status(500).json({ error: { message: 'Failed to accept suggestion' } });
+  }
+});
+
+// Dismiss a suggestion
+router.post('/suggestions/:id/dismiss', async (req, res) => {
+  try {
+    await ActionCompletionDetector.dismissSuggestion(req.params.id, req.user.userId);
+    res.json({ success: true, message: 'Suggestion dismissed' });
+  } catch (error) {
+    console.error('Dismiss suggestion error:', error);
+    res.status(500).json({ error: { message: 'Failed to dismiss suggestion' } });
   }
 });
 

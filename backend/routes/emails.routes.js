@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const ActionsGenerator = require('../services/actionsGenerator');
+const ActionCompletionDetector = require('../services/actionCompletionDetector.service');
 
 const { fetchEmails, fetchEmailById } = require('../services/outlookService');
 const AIProcessor = require('../services/aiProcessor');
@@ -55,6 +56,11 @@ router.post('/', async (req, res) => {
     // 🤖 AUTO-GENERATE ACTIONS (non-blocking)
     ActionsGenerator.generateForEmail(newEmail.id).catch(err => 
       console.error('Error auto-generating actions for email:', err)
+    );
+    
+    // ✨ NEW: AUTO-DETECT ACTION COMPLETIONS (non-blocking)
+    ActionCompletionDetector.detectFromEmail(newEmail.id, req.user.userId).catch(err =>
+      console.error('Error detecting action completion from email:', err)
     );
     
     res.status(201).json({ email: newEmail });
