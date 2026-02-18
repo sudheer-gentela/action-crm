@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
+import ActionsSettings from './ActionsSettings';
 import './SettingsView.css';
 
 // ── Sub-imports for existing editors ────────────────────────
@@ -44,6 +45,7 @@ const SETTINGS_TABS = [
   { id: 'health',    label: 'Deal Health',   icon: '🏥' },
   { id: 'playbook',  label: 'Sales Playbook',icon: '📘' },
   { id: 'prompts',   label: 'AI Prompts',    icon: '🤖' },
+  { id: 'actions',   label: 'Actions',       icon: '🎯' },
 ];
 
 // ── Deal Health inner tabs ───────────────────────────────────
@@ -89,6 +91,7 @@ export default function SettingsView() {
         {settingsTab === 'health'   && <DealHealthSettings />}
         {settingsTab === 'playbook' && <PlaybookSettings />}
         {settingsTab === 'prompts'  && <PromptsSettings />}
+        {settingsTab === 'actions'  && <ActionsSettings />}
       </div>
     </div>
   );

@@ -90,7 +90,14 @@ export const apiService = {
     create: (data) => api.post('/actions', data),
     update: (id, data) => api.put(`/actions/${id}`, data),
     complete: (id) => api.patch(`/actions/${id}`, { completed: true }),
-    delete: (id) => api.delete(`/actions/${id}`)
+    delete: (id) => api.delete(`/actions/${id}`),
+    // NEW: Configuration endpoints
+    getConfig: () => api.get('/actions/config'),
+    updateConfig: (data) => api.put('/actions/config', data),
+    // NEW: Suggestion endpoints
+    getSuggestions: (actionId) => api.get(`/actions/${actionId}/suggestions`),
+    acceptSuggestion: (suggestionId) => api.post(`/actions/suggestions/${suggestionId}/accept`),
+    dismissSuggestion: (suggestionId) => api.post(`/actions/suggestions/${suggestionId}/dismiss`)
   },
 
   // Transcripts
