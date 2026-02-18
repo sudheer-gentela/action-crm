@@ -109,7 +109,47 @@ router.post('/generate', async (req, res) => {
   }
 });
 
-// Get single action
+// ========== NEW: ACTION CONFIGURATION ENDPOINTS (MUST BE BEFORE /:id) ==========
+
+// Get user's action configuration
+router.get('/config', async (req, res) => {
+  try {
+    console.log('📋 GET /config called for user:', req.user.userId);
+    
+    if (!req.user || !req.user.userId) {
+      console.error('❌ No user ID in request');
+      return res.status(401).json({ error: { message: 'User not authenticated' } });
+    }
+    
+    console.log('📋 Fetching config from ActionConfigService...');
+    const config = await ActionConfigService.getConfig(req.user.userId);
+    
+    console.log('✅ Config fetched successfully:', config ? 'Found' : 'Not found');
+    res.json({ config });
+  } catch (error) {
+    console.error('❌ Get action config error:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      error: { 
+        message: 'Failed to fetch config',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      } 
+    });
+  }
+});
+
+// Update user's action configuration
+router.put('/config', async (req, res) => {
+  try {
+    const config = await ActionConfigService.updateConfig(req.user.userId, req.body);
+    res.json({ config });
+  } catch (error) {
+    console.error('Update action config error:', error);
+    res.status(500).json({ error: { message: 'Failed to update config' } });
+  }
+});
+
+// Get single action (MUST BE AFTER SPECIFIC ROUTES LIKE /config)
 router.get('/:id', async (req, res) => {
   try {
     const result = await db.query(
@@ -254,46 +294,6 @@ router.patch('/:id/complete', async (req, res) => {
   } catch (error) {
     console.error('Complete action error:', error);
     res.status(500).json({ error: { message: 'Failed to complete action' } });
-  }
-});
-
-// ========== NEW: ACTION CONFIGURATION ENDPOINTS ==========
-
-// Get user's action configuration
-router.get('/config', async (req, res) => {
-  try {
-    console.log('📋 GET /config called for user:', req.user.userId);
-    
-    if (!req.user || !req.user.userId) {
-      console.error('❌ No user ID in request');
-      return res.status(401).json({ error: { message: 'User not authenticated' } });
-    }
-    
-    console.log('📋 Fetching config from ActionConfigService...');
-    const config = await ActionConfigService.getConfig(req.user.userId);
-    
-    console.log('✅ Config fetched successfully:', config ? 'Found' : 'Not found');
-    res.json({ config });
-  } catch (error) {
-    console.error('❌ Get action config error:', error);
-    console.error('Error stack:', error.stack);
-    res.status(500).json({ 
-      error: { 
-        message: 'Failed to fetch config',
-        details: process.env.NODE_ENV === 'development' ? error.message : undefined
-      } 
-    });
-  }
-});
-
-// Update user's action configuration
-router.put('/config', async (req, res) => {
-  try {
-    const config = await ActionConfigService.updateConfig(req.user.userId, req.body);
-    res.json({ config });
-  } catch (error) {
-    console.error('Update action config error:', error);
-    res.status(500).json({ error: { message: 'Failed to update config' } });
   }
 });
 
