@@ -144,7 +144,16 @@ function CalendarView() {
 
   const groupMeetingsByDate = () => {
     const grouped = {};
-    meetings.forEach(meeting => {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0); // Start of today
+    
+    // Filter to only include meetings from today onwards
+    const upcomingMeetings = meetings.filter(meeting => {
+      const meetingDate = new Date(meeting.start_time);
+      return meetingDate >= now;
+    });
+    
+    upcomingMeetings.forEach(meeting => {
       const date = new Date(meeting.start_time).toDateString();
       if (!grouped[date]) {
         grouped[date] = [];
@@ -166,6 +175,9 @@ function CalendarView() {
   const sortedDates = Object.keys(groupedMeetings).sort((a, b) => 
     new Date(a) - new Date(b)
   );
+  
+  // Calculate upcoming meetings count
+  const upcomingMeetingsCount = Object.values(groupedMeetings).reduce((sum, dayMeetings) => sum + dayMeetings.length, 0);
 
   if (loading) {
     return (
@@ -185,7 +197,7 @@ function CalendarView() {
         <div>
           <h1>Calendar</h1>
           <p className="calendar-subtitle">
-            {meetings.length} meeting{meetings.length !== 1 ? 's' : ''} scheduled
+            {upcomingMeetingsCount} upcoming meeting{upcomingMeetingsCount !== 1 ? 's' : ''}
           </p>
         </div>
         <div className="calendar-actions">
