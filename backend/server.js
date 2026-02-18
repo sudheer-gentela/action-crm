@@ -44,9 +44,39 @@ app.use(cors({
 // Rate limiting
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({
+      success: false,
+      error: {
+        message: 'Too many requests. Please try again later.',
+        code: 'RATE_LIMIT_EXCEEDED'
+      }
+    });
+  }
 });
+
+// More permissive rate limit for auth endpoints (to allow multiple login attempts)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // 20 requests per window per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({
+      success: false,
+      error: {
+        message: 'Too many login attempts. Please try again in 15 minutes.',
+        code: 'AUTH_RATE_LIMIT_EXCEEDED'
+      }
+    });
+  }
+});
+
 app.use('/api/', limiter);
+app.use('/api/auth/', authLimiter); // Apply stricter limit to auth routes
 
 // Body parsing middleware
 app.use(express.json());

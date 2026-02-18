@@ -37,7 +37,23 @@ const useAuth = () => {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        let errorData;
+        const contentType = response.headers.get('content-type');
+        
+        // Handle JSON error responses
+        if (contentType && contentType.includes('application/json')) {
+          errorData = await response.json();
+        } else {
+          // Handle plain text error responses (like rate limit text)
+          const text = await response.text();
+          errorData = { error: { message: text || 'Login failed' } };
+        }
+        
+        // Handle rate limiting specifically
+        if (response.status === 429) {
+          throw new Error(errorData.error?.message || 'Too many login attempts. Please try again later.');
+        }
+        
         throw new Error(errorData.error?.message || 'Login failed');
       }
 
@@ -67,7 +83,20 @@ const useAuth = () => {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        let errorData;
+        const contentType = response.headers.get('content-type');
+        
+        if (contentType && contentType.includes('application/json')) {
+          errorData = await response.json();
+        } else {
+          const text = await response.text();
+          errorData = { error: { message: text || 'Registration failed' } };
+        }
+        
+        if (response.status === 429) {
+          throw new Error(errorData.error?.message || 'Too many registration attempts. Please try again later.');
+        }
+        
         throw new Error(errorData.error?.message || 'Registration failed');
       }
 
