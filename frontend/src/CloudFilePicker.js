@@ -63,11 +63,7 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
   const currentFolder = folderStack[folderStack.length - 1];
 
   // ── Load all providers + their connection status on mount ─────────────────
-  useEffect(() => {
-    loadProviders();
-  }, []);
-
-  async function loadProviders() {
+  const loadProviders = useCallback(async () => {
     try {
       const res = await apiFetch('/api/storage/providers');
       setProviders(res.providers);
@@ -87,7 +83,11 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
     } finally {
       setLoadingProviders(false);
     }
-  }
+  }, [loadFiles]);
+
+  useEffect(() => {
+    loadProviders();
+  }, [loadProviders]);
 
   // ── Switch provider tab ────────────────────────────────────────────────────
   function switchProvider(providerId) {
