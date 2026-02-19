@@ -29,16 +29,22 @@ function listProviders() {
 }
 
 async function checkAllConnections(userId) {
+  const providers = Object.values(REGISTERED_PROVIDERS);
   const results = await Promise.allSettled(
-    Object.values(REGISTERED_PROVIDERS).map(async (provider) => {
+    providers.map(async (provider) => {
       const status = await provider.checkConnection(userId);
       return { id: provider.providerId, displayName: provider.displayName, ...status };
     })
   );
-  return results.map((r) =>
+  return results.map((r, i) =>
     r.status === 'fulfilled'
       ? r.value
-      : { connected: false, message: r.reason && r.reason.message }
+      : {
+          id: providers[i].providerId,
+          displayName: providers[i].displayName,
+          connected: false,
+          message: r.reason && r.reason.message,
+        }
   );
 }
 
