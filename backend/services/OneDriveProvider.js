@@ -1,20 +1,12 @@
 /**
  * OneDriveProvider.js
- *
  * Microsoft OneDrive implementation of StorageProviderBase.
  * Reuses existing Outlook OAuth tokens (provider = 'outlook' in oauth_tokens).
- *
- * web_url: The Graph API returns webUrl on every item — the direct link to
- * open the file in OneDrive/Office Online without downloading it.
  */
 
 const axios = require('axios');
-const StorageProviderBase = require('./StorageProviderBase');
-const {
-  resolveCategory,
-  assertSizeAllowed,
-  extractTextFromBuffer,
-} = require('./contentExtractor');
+const StorageProviderBase  = require('./StorageProviderBase');
+const { resolveCategory, assertSizeAllowed, extractTextFromBuffer } = require('./contentExtractor');
 const { getTokenByUserId, refreshUserToken } = require('./tokenService');
 
 const MICROSOFT_PROVIDER = 'outlook';
@@ -25,13 +17,11 @@ class OneDriveProvider extends StorageProviderBase {
     super('onedrive', 'OneDrive');
   }
 
-  // ── Connection ─────────────────────────────────────────────────────────────
-
   async checkConnection(userId) {
     try {
-      await this._getAccessToken(userId);
+      const accessToken = await this._getAccessToken(userId);
       await axios.get(`${GRAPH_BASE}/me/drive`, {
-        headers: { Authorization: `Bearer ${await this._getAccessToken(userId)}` },
+        headers: { Authorization: `Bearer ${accessToken}` },
         params: { $select: 'id' },
       });
       return { connected: true, message: 'OneDrive accessible via your Microsoft account.' };
@@ -60,8 +50,6 @@ class OneDriveProvider extends StorageProviderBase {
     return '/api/auth/outlook/reauth';
   }
 
-  // ── File browsing ──────────────────────────────────────────────────────────
-
   async listFiles(userId, folderId = null) {
     const accessToken = await this._getAccessToken(userId);
     const url = folderId
@@ -71,13 +59,11 @@ class OneDriveProvider extends StorageProviderBase {
     const response = await axios.get(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
       params: {
-        // webUrl included so list view can surface the open link immediately
         $select: 'id,name,size,lastModifiedDateTime,file,folder,parentReference,webUrl',
         $top: 100,
         $orderby: 'lastModifiedDateTime desc',
       },
     });
-
     return response.data.value.map((item) => this._normalize(item));
   }
 
@@ -107,15 +93,12 @@ class OneDriveProvider extends StorageProviderBase {
     return this._normalize(response.data);
   }
 
-  // ── Content extraction ─────────────────────────────────────────────────────
-
   async extractFileContent(userId, fileId) {
     const meta = await this.getFileMetadata(userId, fileId);
 
     if (!meta.mimeType) {
       throw new Error(`File "${meta.name}" has no recognized MIME type.`);
     }
-
     assertSizeAllowed(meta.size, meta.name);
 
     const accessToken = await this._getAccessToken(userId);
@@ -124,37 +107,34 @@ class OneDriveProvider extends StorageProviderBase {
       { headers: { Authorization: `Bearer ${accessToken}` }, responseType: 'arraybuffer' }
     );
 
-    const buffer = Buffer.from(downloadResponse.data);
+    const buffer  = Buffer.from(downloadResponse.data);
     const rawText = await extractTextFromBuffer(buffer, meta.mimeType, meta.name);
 
     return {
-      fileId: meta.id,
-      fileName: meta.name,
-      fileType: meta.mimeType,
-      category: meta.category,
+      fileId:         meta.id,
+      fileName:       meta.name,
+      fileType:       meta.mimeType,
+      category:       meta.category,
       rawText,
       characterCount: rawText.length,
-      provider: this.providerId,
-      // fileRef is persisted to storage_files — the file itself stays in OneDrive
+      provider:       this.providerId,
       fileRef: {
-        provider:          this.providerId,
-        provider_file_id:  meta.id,
-        web_url:           meta.webUrl,       // opens file in OneDrive/Office Online
-        file_name:         meta.name,
-        file_size:         meta.size,
-        mime_type:         meta.mimeType,
-        category:          meta.category,
-        last_modified_at:  meta.lastModified,
+        provider:         this.providerId,
+        provider_file_id: meta.id,
+        web_url:          meta.webUrl,
+        file_name:        meta.name,
+        file_size:        meta.size,
+        mime_type:        meta.mimeType,
+        category:         meta.category,
+        last_modified_at: meta.lastModified,
       },
       metadata: {
-        size: meta.size,
+        size:         meta.size,
         lastModified: meta.lastModified,
         parentFolder: meta.parentFolder,
       },
     };
   }
-
-  // ── Private ────────────────────────────────────────────────────────────────
 
   async _getAccessToken(userId) {
     let tokenData = await getTokenByUserId(userId, MICROSOFT_PROVIDER);
@@ -167,17 +147,17 @@ class OneDriveProvider extends StorageProviderBase {
   _normalize(item) {
     const mimeType = item.file ? item.file.mimeType : null;
     return {
-      id: item.id,
-      name: item.name,
-      size: item.size || 0,
+      id:           item.id,
+      name:         item.name,
+      size:         item.size || 0,
       lastModified: item.lastModifiedDateTime,
       mimeType,
-      isFolder: !!item.folder,
-      childCount: (item.folder && item.folder.childCount) || 0,
+      isFolder:     !!item.folder,
+      childCount:   (item.folder && item.folder.childCount) || 0,
       parentFolder: (item.parentReference && item.parentReference.name) || null,
-      webUrl: item.webUrl || null,   // direct link to open in browser
-      category: item.folder ? 'folder' : resolveCategory(mimeType),
-      provider: this.providerId,
+      webUrl:       item.webUrl || null,
+      category:     item.folder ? 'folder' : resolveCategory(mimeType),
+      provider:     this.providerId,
     };
   }
 }
