@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import ActionsSettings from './ActionsSettings';
+import OutlookConnect from './OutlookConnect';
 import './SettingsView.css';
 
 // ── Sub-imports for existing editors ────────────────────────
@@ -42,10 +43,11 @@ const DEFAULT_ENABLED  = Object.fromEntries(PARAMS.map(p => [p.key, true]));
 // ── Top-level Settings Tabs ──────────────────────────────────
 
 const SETTINGS_TABS = [
-  { id: 'health',    label: 'Deal Health',   icon: '🏥' },
-  { id: 'playbook',  label: 'Sales Playbook',icon: '📘' },
-  { id: 'prompts',   label: 'AI Prompts',    icon: '🤖' },
-  { id: 'actions',   label: 'Actions',       icon: '🎯' },
+  { id: 'integrations', label: 'Integrations',  icon: '🔌' },
+  { id: 'health',       label: 'Deal Health',   icon: '🏥' },
+  { id: 'playbook',     label: 'Sales Playbook',icon: '📘' },
+  { id: 'prompts',      label: 'AI Prompts',    icon: '🤖' },
+  { id: 'actions',      label: 'Actions',       icon: '🎯' },
 ];
 
 // ── Deal Health inner tabs ───────────────────────────────────
@@ -63,8 +65,8 @@ const HEALTH_TABS = [
 // SETTINGS VIEW
 // ════════════════════════════════════════════════════════════
 
-export default function SettingsView() {
-  const [settingsTab, setSettingsTab] = useState('health');
+export default function SettingsView({ initialTab }) {
+  const [settingsTab, setSettingsTab] = useState(initialTab || 'integrations');
 
   return (
     <div className="settings-view">
@@ -88,10 +90,11 @@ export default function SettingsView() {
       </div>
 
       <div className="settings-body">
-        {settingsTab === 'health'   && <DealHealthSettings />}
-        {settingsTab === 'playbook' && <PlaybookSettings />}
-        {settingsTab === 'prompts'  && <PromptsSettings />}
-        {settingsTab === 'actions'  && <ActionsSettings />}
+        {settingsTab === 'integrations' && <IntegrationsSettings />}
+        {settingsTab === 'health'       && <DealHealthSettings />}
+        {settingsTab === 'playbook'     && <PlaybookSettings />}
+        {settingsTab === 'prompts'      && <PromptsSettings />}
+        {settingsTab === 'actions'      && <ActionsSettings />}
       </div>
     </div>
   );
@@ -770,6 +773,67 @@ function PromptsSettings() {
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════
+// INTEGRATIONS SETTINGS
+// ════════════════════════════════════════════════════════════
+
+function IntegrationsSettings() {
+  const userId = JSON.parse(localStorage.getItem('user') || '{}').id;
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>🔌 Integrations</h2>
+          <p className="sv-panel-desc">Connect external accounts to sync emails, calendar, and cloud files.</p>
+        </div>
+      </div>
+
+      <div className="sv-panel-body">
+        {/* Microsoft / Outlook */}
+        <div className="sv-section">
+          <div className="sv-card sv-integration-card">
+            <div className="sv-integration-header">
+              <div className="sv-integration-logo">📧</div>
+              <div>
+                <h3>Microsoft Account</h3>
+                <p className="sv-hint">
+                  Connects Outlook email, calendar sync, and OneDrive file import — all with a single sign-in.
+                </p>
+              </div>
+            </div>
+
+            <OutlookConnect userId={userId} />
+
+            <div className="sv-integration-scopes">
+              <p className="sv-hint"><strong>Permissions requested:</strong></p>
+              <ul className="sv-scope-list">
+                <li>📧 <strong>Mail.Read</strong> — read your Outlook inbox</li>
+                <li>📅 <strong>Calendars.Read</strong> — sync calendar events</li>
+                <li>☁️ <strong>Files.Read</strong> — browse and import OneDrive files</li>
+                <li>👤 <strong>User.Read</strong> — identify your account</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        {/* Google Drive — coming soon */}
+        <div className="sv-section">
+          <div className="sv-card sv-integration-card sv-integration-card--disabled">
+            <div className="sv-integration-header">
+              <div className="sv-integration-logo">🟢</div>
+              <div>
+                <h3>Google Drive <span className="sv-badge-soon">Coming soon</span></h3>
+                <p className="sv-hint">Browse and import files from Google Drive into your deals.</p>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );

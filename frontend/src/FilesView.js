@@ -192,7 +192,7 @@ export default function FilesView() {
       {connectionStatus && !connectionStatus.anyConnected && (
         <div className="files-banner files-banner--warn">
           <span>⚠️ No cloud storage connected.</span>
-          <span>Connect your Microsoft account via <strong>Settings → Outlook</strong> to import files from OneDrive.</span>
+          <span>Connect your Microsoft account via <strong>Settings → Integrations</strong> to import files from OneDrive.</span>
         </div>
       )}
 
@@ -403,7 +403,7 @@ function EmptyState({ hasFiles, isFiltered, connected, onImport, onClearFilters 
         </>
       ) : (
         <>
-          <p>Connect your Microsoft account in <strong>Settings</strong> to get started</p>
+          <p>Connect your Microsoft account in <strong>Settings → Integrations</strong> to get started</p>
         </>
       )}
     </div>

@@ -7,9 +7,6 @@ import EmailView from './EmailView';
 import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
 import FilesView from './FilesView';
-import OutlookConnect from './OutlookConnect';
-import OutlookEmailList from './OutlookEmailList';
-import SyncStatus from './SyncStatus';
 import SettingsView from './SettingsView';
 
 // Authentication hook with REAL backend integration
@@ -339,6 +336,13 @@ function Dashboard({ user, onLogout }) {
       setSidebarOpen(false);
     }
   };
+
+  // Allow child views to navigate programmatically via custom event
+  useEffect(() => {
+    const handleNavigate = (e) => handleNavClick(e.detail);
+    window.addEventListener('navigate', handleNavigate);
+    return () => window.removeEventListener('navigate', handleNavigate);
+  }, [isMobile]); // eslint-disable-line react-hooks/exhaustive-deps
   
   const navItems = [
     { id: 'actions',  label: 'Actions',  icon: '🎯' },
@@ -419,13 +423,6 @@ function Dashboard({ user, onLogout }) {
           {currentTab === 'contacts' && <ContactsView />}
           {currentTab === 'email'    && <EmailView />}
           {currentTab === 'files'    && <FilesView />}
-          {currentTab === 'outlook'  && (
-            <div className="outlook-view">
-              <OutlookConnect />
-              <SyncStatus />
-              <OutlookEmailList />
-            </div>
-          )}
           {currentTab === 'calendar' && <CalendarView />}
           {currentTab === 'settings' && <SettingsView />}
         </div>

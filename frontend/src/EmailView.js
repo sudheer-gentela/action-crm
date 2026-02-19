@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import OutlookConnect from './OutlookConnect';
 import OutlookEmailList from './OutlookEmailList';
 import SyncStatus from './SyncStatus';
 import { outlookAPI } from './apiService';
@@ -108,13 +107,6 @@ function EmailView() {
       </div>
 
       <div className="email-content">
-        {/* Step 1: Connect Outlook */}
-        <OutlookConnect 
-          userId={userId} 
-          onConnectionChange={checkConnection}
-        />
-
-        {/* Step 2: Show sync status and emails only when connected */}
         {isConnected ? (
           <>
             {/* Sync Status & Controls */}
@@ -149,14 +141,21 @@ function EmailView() {
           <div className="not-connected-message">
             <div className="connect-prompt">
               <div className="connect-icon">🔌</div>
-              <h3>Connect to Get Started</h3>
-              <p>Connect your Outlook account above to:</p>
+              <h3>Outlook Not Connected</h3>
+              <p>Connect your Microsoft account to start syncing emails.</p>
               <ul>
                 <li>✅ Sync emails to your CRM</li>
                 <li>✅ Auto-generate follow-up actions</li>
                 <li>✅ Get AI-powered recommendations</li>
                 <li>✅ Link emails to deals and contacts</li>
               </ul>
+              <a
+                href="#settings"
+                className="btn btn-primary"
+                onClick={e => { e.preventDefault(); window.dispatchEvent(new CustomEvent('navigate', { detail: 'settings' })); }}
+              >
+                ⚙️ Go to Settings → Integrations
+              </a>
             </div>
           </div>
         )}
