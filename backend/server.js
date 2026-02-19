@@ -17,6 +17,7 @@ const promptsRoutes = require('./routes/prompts.routes');
 // Place alongside your other route registrations
 const dealHealthRoutes = require('./routes/dealHealth.routes');
 
+const storageRoutes = require('./routes/storage.routes');
 
 // Trust Railway proxy
 app.set('trust proxy', 1);
@@ -111,6 +112,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/prompts', promptsRoutes);
 // Register under /api (covers /api/health-config, /api/competitors, /api/deals/:id/score)
 app.use('/api', dealHealthRoutes);
+app.use('/api/storage', storageRoutes);
 
 
 // ── That's it. All these endpoints are now live: ─────────────

@@ -16,7 +16,8 @@ const SCOPES = [
   'https://graph.microsoft.com/Mail.Read',
   'https://graph.microsoft.com/Calendars.Read',  // ✅ Added for calendar access
   'https://graph.microsoft.com/User.Read',
-  'offline_access'
+  'offline_access',
+  'Files.Read'                                    // Added for OneDrive storage integration
 ];
 
 /**
