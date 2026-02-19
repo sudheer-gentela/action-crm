@@ -62,6 +62,21 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
 
   const currentFolder = folderStack[folderStack.length - 1];
 
+  // ── Load files (defined first — used by loadProviders and switchProvider) ──
+  const loadFiles = useCallback(async (providerId, folderId) => {
+    setLoadingFiles(true);
+    setError(null);
+    try {
+      const params = folderId ? `?folderId=${folderId}` : '';
+      const res = await apiFetch(`/api/storage/${providerId}/files${params}`);
+      setFiles(res.files || []);
+    } catch (e) {
+      setError('Failed to load files: ' + e.message);
+    } finally {
+      setLoadingFiles(false);
+    }
+  }, []);
+
   // ── Load all providers + their connection status on mount ─────────────────
   const loadProviders = useCallback(async () => {
     try {
@@ -70,7 +85,6 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
       const statuses = {};
       res.providers.forEach((p) => { statuses[p.id] = p; });
       setProviderStatuses(statuses);
-      // Auto-select first connected provider
       const first = res.providers.find((p) => p.connected);
       if (first) {
         setActiveProvider(first.id);
@@ -104,21 +118,6 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
       loadFiles(providerId, null);
     }
   }
-
-  // ── Load files ─────────────────────────────────────────────────────────────
-  const loadFiles = useCallback(async (providerId, folderId) => {
-    setLoadingFiles(true);
-    setError(null);
-    try {
-      const params = folderId ? `?folderId=${folderId}` : '';
-      const res = await apiFetch(`/api/storage/${providerId}/files${params}`);
-      setFiles(res.files || []);
-    } catch (e) {
-      setError('Failed to load files: ' + e.message);
-    } finally {
-      setLoadingFiles(false);
-    }
-  }, []);
 
   // ── Search ─────────────────────────────────────────────────────────────────
   async function handleSearch(e) {
