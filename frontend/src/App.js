@@ -6,6 +6,7 @@ import ContactsView from './ContactsView';
 import EmailView from './EmailView';
 import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
+import FilesView from './FilesView';
 import OutlookConnect from './OutlookConnect';
 import OutlookEmailList from './OutlookEmailList';
 import SyncStatus from './SyncStatus';
@@ -345,6 +346,7 @@ function Dashboard({ user, onLogout }) {
     { id: 'accounts', label: 'Accounts', icon: '🏢' },
     { id: 'contacts', label: 'Contacts', icon: '👥' },
     { id: 'email',    label: 'Email',    icon: '✉️' },
+    { id: 'files',    label: 'Files',    icon: '☁️' },
     { id: 'calendar', label: 'Calendar', icon: '📅' },
     { id: 'settings', label: 'Settings', icon: '⚙️' },
   ];
@@ -416,6 +418,7 @@ function Dashboard({ user, onLogout }) {
           {currentTab === 'accounts' && <AccountsView />}
           {currentTab === 'contacts' && <ContactsView />}
           {currentTab === 'email'    && <EmailView />}
+          {currentTab === 'files'    && <FilesView />}
           {currentTab === 'outlook'  && (
             <div className="outlook-view">
               <OutlookConnect />

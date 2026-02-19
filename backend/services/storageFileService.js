@@ -160,7 +160,36 @@ async function deleteImportRecord(recordId, userId) {
   return result.rows[0];
 }
 
+async function getAllFilesForUser(userId) {
+  const result = await pool.query(
+    `SELECT
+       sf.id,
+       sf.user_id,
+       sf.deal_id,
+       sf.contact_id,
+       sf.provider,
+       sf.source_label,
+       sf.provider_file_id,
+       sf.file_name,
+       sf.file_size,
+       sf.mime_type,
+       sf.category,
+       sf.web_url,
+       sf.last_modified_at,
+       sf.created_at         AS imported_at,
+       sf.processing_status,
+       d.name                AS deal_name
+     FROM storage_files sf
+     LEFT JOIN deals d ON d.id = sf.deal_id AND d.user_id = $1
+     WHERE sf.user_id = $1
+     ORDER BY sf.created_at DESC`,
+    [userId]
+  );
+  return result.rows;
+}
+
 module.exports = {
   buildSourceLabel, checkDuplicate, createImportRecord,
-  markProcessed, markFailed, getFilesForDeal, getFilesForContact, deleteImportRecord,
+  markProcessed, markFailed, getFilesForDeal, getFilesForContact,
+  getAllFilesForUser, deleteImportRecord,
 };

@@ -13,7 +13,7 @@ const authenticateToken = require('../middleware/auth.middleware');
 const { getProvider, checkAllConnections } = require('../services/StorageProviderFactory');
 const { processStorageFile }               = require('../services/storageProcessor.service');
 const {
-  getFilesForDeal, getFilesForContact,
+  getFilesForDeal, getFilesForContact, getAllFilesForUser,
   checkDuplicate, deleteImportRecord,
 } = require('../services/storageFileService');
 
@@ -150,6 +150,16 @@ router.post('/:provider/files/batch-process', async (req, res) => {
 });
 
 // ── Imported file queries ──────────────────────────────────────────────────
+
+// NEW: All files for the current user across all deals
+router.get('/imported/all', async (req, res) => {
+  try {
+    const files = await getAllFilesForUser(req.user.userId);
+    res.json({ files, count: files.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.get('/imported/deal/:dealId', async (req, res) => {
   try {
