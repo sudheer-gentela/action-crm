@@ -445,9 +445,9 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 async function apiFetch(path, options = {}) {
-  // FIX: App.js saves JWT under 'token', not 'authToken'
   const token = localStorage.getItem('token');
-  const res = await fetch(`${path.startsWith('http') ? '' : ''}${path}`, {
+  const url = path.startsWith('http') ? path : `${API_BASE}${path.replace(/^\/api/, '')}`;
+  const res = await fetch(url, {
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
