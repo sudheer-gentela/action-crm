@@ -1,5 +1,6 @@
 const { pool } = require('../config/database');
 const { ConfidentialClientApplication } = require('@azure/msal-node');
+const axios = require('axios');
 
 const msalConfig = {
   auth: {
@@ -96,51 +97,67 @@ async function getTokenByUserId(userId, provider) {
 }
 
 /**
- * Refresh expired token
+ * Refresh expired token.
+ * Uses direct HTTP POST instead of MSAL acquireTokenByRefreshToken,
+ * because MSAL does not reliably expose the new refresh_token in its response.
  */
 async function refreshUserToken(userId, provider) {
   const currentToken = await getTokenByUserId(userId, provider);
-  
+
   if (!currentToken.refresh_token) {
     console.error('❌ No refresh token available for user:', userId);
     throw new Error('No refresh token available. Please reconnect your Outlook account.');
   }
-  
+
   try {
     console.log('🔄 Refreshing token for user:', userId);
-    
-    const refreshRequest = {
-      refreshToken: currentToken.refresh_token,
-      scopes: [
-        'https://graph.microsoft.com/Mail.Read',
-        'https://graph.microsoft.com/Calendars.Read',  // ✅ Include calendar scope
-        'https://graph.microsoft.com/User.Read',
-        'offline_access'
-      ]
-    };
-    
-    const response = await cca.acquireTokenByRefreshToken(refreshRequest);
+
+    const tenantId = process.env.MICROSOFT_TENANT_ID;
+    const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+
+    const scopes = [
+      'https://graph.microsoft.com/Mail.Read',
+      'https://graph.microsoft.com/Calendars.Read',
+      'https://graph.microsoft.com/User.Read',
+      'https://graph.microsoft.com/Files.Read',
+      'offline_access',
+    ].join(' ');
+
+    const params = new URLSearchParams({
+      client_id:     process.env.MICROSOFT_CLIENT_ID,
+      client_secret: process.env.MICROSOFT_CLIENT_SECRET,
+      refresh_token: currentToken.refresh_token,
+      grant_type:    'refresh_token',
+      scope:         scopes,
+    });
+
+    const response = await axios.post(tokenUrl, params.toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
+
+    const data = response.data;
     console.log('✅ Token refreshed successfully');
-    
-    // Save new tokens (preserve refresh token if new one not provided)
+    console.log('🔄 New refresh_token present:', !!data.refresh_token);
+
     const newTokenData = {
-      accessToken: response.accessToken,
-      refreshToken: response.refreshToken || currentToken.refresh_token,
-      expiresOn: response.expiresOn,
-      account: response.account
+      accessToken:  data.access_token,
+      // Microsoft may rotate the refresh token; preserve the old one if no new one returned
+      refreshToken: data.refresh_token || currentToken.refresh_token,
+      expiresOn:    new Date(Date.now() + data.expires_in * 1000),
+      account:      null,
     };
-    
+
     await saveUserToken(userId, provider, newTokenData);
-    
     return await getTokenByUserId(userId, provider);
+
   } catch (error) {
-    console.error('❌ Token refresh error:', error);
-    
-    // If refresh fails, the token is invalid - user needs to reconnect
-    if (error.errorCode === 'invalid_grant' || error.message.includes('AADSTS')) {
+    console.error('❌ Token refresh error:', error.response?.data || error.message);
+
+    const errData = error.response?.data || {};
+    if (errData.error === 'invalid_grant' || (error.message && error.message.includes('AADSTS'))) {
       throw new Error('Token expired. Please reconnect your Outlook account.');
     }
-    
+
     throw new Error(`Failed to refresh token: ${error.message}`);
   }
 }
