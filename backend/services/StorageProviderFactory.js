@@ -7,41 +7,38 @@
 const OneDriveProvider = require('./OneDriveProvider');
 // const GoogleDriveProvider = require('./GoogleDriveProvider'); // uncomment when ready
 
-const REGISTERED_PROVIDERS = {
-  onedrive: new OneDriveProvider(),
-  // googledrive: new GoogleDriveProvider(),
-};
+// Explicit metadata array — id/displayName never depend on base class property assignment
+const REGISTERED_PROVIDERS = [
+  { id: 'onedrive', displayName: 'OneDrive', instance: new OneDriveProvider() },
+  // { id: 'googledrive', displayName: 'Google Drive', instance: new GoogleDriveProvider() },
+];
 
 function getProvider(providerId) {
-  const provider = REGISTERED_PROVIDERS[providerId];
-  if (!provider) {
-    const available = Object.keys(REGISTERED_PROVIDERS).join(', ');
+  const entry = REGISTERED_PROVIDERS.find((p) => p.id === providerId);
+  if (!entry) {
+    const available = REGISTERED_PROVIDERS.map((p) => p.id).join(', ');
     throw new Error(`Unknown storage provider "${providerId}". Available: ${available}`);
   }
-  return provider;
+  return entry.instance;
 }
 
 function listProviders() {
-  return Object.values(REGISTERED_PROVIDERS).map((p) => ({
-    id: p.providerId,
-    displayName: p.displayName,
-  }));
+  return REGISTERED_PROVIDERS.map(({ id, displayName }) => ({ id, displayName }));
 }
 
 async function checkAllConnections(userId) {
-  const providers = Object.values(REGISTERED_PROVIDERS);
   const results = await Promise.allSettled(
-    providers.map(async (provider) => {
-      const status = await provider.checkConnection(userId);
-      return { id: provider.providerId, displayName: provider.displayName, ...status };
+    REGISTERED_PROVIDERS.map(async ({ id, displayName, instance }) => {
+      const status = await instance.checkConnection(userId);
+      return { id, displayName, ...status };
     })
   );
   return results.map((r, i) =>
     r.status === 'fulfilled'
       ? r.value
       : {
-          id: providers[i].providerId,
-          displayName: providers[i].displayName,
+          id: REGISTERED_PROVIDERS[i].id,
+          displayName: REGISTERED_PROVIDERS[i].displayName,
           connected: false,
           message: r.reason && r.reason.message,
         }
