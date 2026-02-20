@@ -231,8 +231,8 @@ async function createActionsFromInsights(client, userId, dealId, actionItems) {
       await client.query(
         `INSERT INTO actions (
           user_id, deal_id, description, action_type, priority,
-          due_date, status, source, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+          due_date, source, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
         [
           userId,
           dealId,
@@ -240,7 +240,6 @@ async function createActionsFromInsights(client, userId, dealId, actionItems) {
           actionType,
           priority,
           dueDate,
-          'pending',
           'meeting_transcript'
         ]
       );
