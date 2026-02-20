@@ -188,7 +188,9 @@ class ActionsGenerator {
 
       console.log(`📊 Loaded: ${deals.length} deals, ${contacts.length} contacts, ${emails.length} emails, ${meetings.length} meetings, ${files.length} files`);
 
-      await db.query("DELETE FROM actions WHERE source IN ('auto_generated', 'ai_generated')");
+      await db.query(
+        "DELETE FROM actions WHERE source IN ('auto_generated', 'ai_generated') AND status IN ('yet_to_start', 'in_progress')"
+      );
 
       let totalGenerated = 0;
       let totalInserted  = 0;
@@ -267,7 +269,7 @@ class ActionsGenerator {
       const allActions   = [...rulesActions, ...aiActions];
 
       await db.query(
-        "DELETE FROM actions WHERE deal_id = $1 AND source IN ('auto_generated', 'ai_generated')",
+        "DELETE FROM actions WHERE deal_id = $1 AND source IN ('auto_generated', 'ai_generated') AND status IN ('yet_to_start', 'in_progress')",
         [dealId]
       );
 

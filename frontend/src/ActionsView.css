@@ -292,3 +292,162 @@
   .av-filter-select { width: 100%; }
   .av-filter-dates { width: 100%; }
 }
+
+/* ── Action Context Banner (EmailComposer) ─────────────────────────────────── */
+
+.ec-action-banner {
+  margin: 0 24px 0;
+  padding: 12px 16px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.ec-action-banner-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #3b82f6;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.ec-action-banner-title {
+  font-weight: 600;
+  color: #1e3a5f;
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+
+.ec-action-banner-hint {
+  color: #475569;
+  line-height: 1.5;
+}
+
+.ec-action-banner-hint-label {
+  font-weight: 600;
+  color: #64748b;
+  margin-right: 6px;
+}
+
+/* ── Outlook Send Result Banner ────────────────────────────────────────────── */
+
+.ec-send-result {
+  margin: 0 24px 12px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.ec-send-result--ok   { background: #dcfce7; border: 1px solid #86efac; color: #14532d; }
+.ec-send-result--warn { background: #fefce8; border: 1px solid #fde047; color: #713f12; }
+
+/* ── Manual Log Modal ──────────────────────────────────────────────────────── */
+
+.av-log-modal {
+  max-width: 560px !important;
+  width: 90% !important;
+}
+
+.av-log-modal-body {
+  padding: 20px 24px;
+}
+
+.av-log-action-title {
+  font-weight: 600;
+  font-size: 15px;
+  color: #1e293b;
+  margin-bottom: 12px;
+  line-height: 1.4;
+}
+
+.av-log-suggested {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+
+.av-log-suggested-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
+.av-log-suggested p {
+  margin: 0;
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.6;
+}
+
+.av-log-modal-body .form-group label {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+  color: #374151;
+  margin-bottom: 6px;
+}
+
+.av-log-modal-body textarea {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  line-height: 1.6;
+  color: #1e293b;
+  box-sizing: border-box;
+}
+
+.av-log-modal-body textarea:focus {
+  outline: none;
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.av-log-modal-footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 16px 24px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.av-log-btn-progress {
+  padding: 9px 18px;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.av-log-btn-progress:hover { background: #e2e8f0; color: #334155; }
+
+.av-log-btn-done {
+  padding: 9px 20px;
+  background: #10b981;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.av-log-btn-done:hover:not(:disabled) { background: #059669; }
+.av-log-btn-done:disabled { opacity: 0.6; cursor: not-allowed; }

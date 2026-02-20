@@ -1,93 +1,232 @@
 /**
  * Action Completion Detector
- * Analyzes emails and meetings to detect action completions
- * Supports rules-only, AI-only, and hybrid modes
+ * Analyzes emails and meetings to detect action completions.
+ * Supports rules-only, AI-only, and hybrid modes.
+ *
+ * NEW: detectFromEmailForAction(emailId, userId, actionId)
+ *   Targeted check for a specific action triggered from the email composer.
+ *   Per product spec:
+ *   - Runs AI semantic check to verify email contains what suggested_action said
+ *   - If AI confirms content matches → auto-complete
+ *   - If AI is unsure or content doesn't match → leave in_progress, flag for manual review
+ *   - This is ONLY called for next_step=email|follow_up actions
  */
 
 const db = require('../config/database');
 const ActionConfigService = require('./actionConfig.service');
 
+// Lazy-load Anthropic to avoid crash if API key not set
+let anthropic = null;
+function getAnthropic() {
+  if (!anthropic) {
+    const { Anthropic } = require('@anthropic-ai/sdk');
+    anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  }
+  return anthropic;
+}
+
 class ActionCompletionDetector {
-  /**
-   * Detect completion from a sent/received email
-   */
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PUBLIC: Broad scan — checks all open actions for a deal
+  // Called after any email send when no actionId is known
+  // ─────────────────────────────────────────────────────────────────────────
+
   static async detectFromEmail(emailId, userId) {
     const config = await ActionConfigService.getConfig(userId);
-    
-    // Check if email detection is enabled
-    if (config.detection_mode === 'manual' || !config.detect_from_emails) {
-      return;
-    }
-    
-    // Using db.query instead of pool
+    if (config.detection_mode === 'manual' || !config.detect_from_emails) return;
+
     try {
-      // Get email details
-      const emailResult = await db.query(
-        'SELECT * FROM emails WHERE id = $1',
-        [emailId]
-      );
-      
+      const emailResult = await db.query('SELECT * FROM emails WHERE id = $1', [emailId]);
       if (emailResult.rows.length === 0) return;
       const email = emailResult.rows[0];
-      
-      if (!email.deal_id) return; // Email not linked to deal
-      
-      // Get open actions for this deal
+      if (!email.deal_id) return;
+
       const actionsResult = await db.query(
-        `SELECT * FROM actions 
+        `SELECT * FROM actions
          WHERE deal_id = $1 AND completed = false AND user_id = $2`,
         [email.deal_id, userId]
       );
-      
+
       for (const action of actionsResult.rows) {
         const result = await this.analyze(action, email, 'email', config);
-        
         if (result && result.confidence >= config.confidence_threshold) {
           if (result.confidence >= config.auto_complete_threshold) {
-            // Auto-complete without suggestion
             await this.completeAction(action.id, result);
           } else {
-            // Create suggestion for user review
             await this.createSuggestion(action.id, email.id, 'email', result, userId);
           }
         }
       }
-    } finally {
-      
+    } catch (err) {
+      console.error('detectFromEmail error:', err.message);
     }
   }
-  
-  /**
-   * Detect completion from a scheduled/completed meeting
-   */
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PUBLIC: Targeted check — called when email was sent FROM an action card
+  //
+  // Logic per spec:
+  //   1. Get the action's suggested_action text (what the email was supposed to say)
+  //   2. Run AI semantic check: does the sent email actually contain that intent?
+  //   3. High confidence match  → auto-complete (status = completed)
+  //   4. Low/medium confidence  → leave as in_progress, create suggestion for manual review
+  //   5. AI disabled in config  → auto-complete (user clicked Send, that's enough)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  static async detectFromEmailForAction(emailId, userId, actionId) {
+    try {
+      const config = await ActionConfigService.getConfig(userId);
+
+      // Fetch email and action in parallel
+      const [emailRes, actionRes] = await Promise.all([
+        db.query('SELECT * FROM emails WHERE id = $1', [emailId]),
+        db.query('SELECT * FROM actions WHERE id = $1 AND user_id = $2', [actionId, userId]),
+      ]);
+
+      if (emailRes.rows.length === 0 || actionRes.rows.length === 0) return;
+      const email  = emailRes.rows[0];
+      const action = actionRes.rows[0];
+
+      // If AI detection is disabled → sending the email is sufficient, auto-complete
+      if (config.detection_mode === 'manual' || !config.detect_from_emails) {
+        await this._markCompleteManual(actionId, email, userId);
+        return;
+      }
+
+      // Run AI content check
+      const result = await this._checkEmailContentMatchesAction(email, action);
+
+      if (result.confidence >= 75) {
+        // AI is confident the email addressed what it was supposed to → auto-complete
+        await this.completeAction(actionId, {
+          ...result,
+          detection_source: 'ai_content_check',
+        });
+        console.log(`✅ Email content verified — auto-completed action ${actionId} (${result.confidence}%)`);
+      } else {
+        // Email sent but content didn't clearly match — leave in_progress, surface for review
+        await this.createSuggestion(actionId, email.id, 'email', {
+          ...result,
+          reasoning: `Email sent but content match was ${result.confidence}% — please confirm this completes the action.`,
+        }, userId);
+        console.log(`💡 Email sent but content uncertain (${result.confidence}%) — suggestion created for action ${actionId}`);
+      }
+
+    } catch (err) {
+      console.error(`detectFromEmailForAction error (action ${actionId}):`, err.message);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PRIVATE: AI semantic content check
+  // Compares the sent email body against the action's suggested_action text
+  // Returns { confidence: 0-100, reasoning, evidence }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  static async _checkEmailContentMatchesAction(email, action) {
+    // Fast path: no suggested_action to check against → assume match
+    if (!action.suggested_action) {
+      return { confidence: 80, reasoning: 'No specific content requirement — email sent is sufficient.', evidence: email.subject };
+    }
+
+    try {
+      const client = getAnthropic();
+      const prompt = `You are evaluating whether a sent email fulfils a specific sales action.
+
+ACTION TITLE: ${action.title}
+ACTION INTENT (what the email was supposed to achieve):
+"${action.suggested_action}"
+
+SENT EMAIL:
+Subject: ${email.subject || '(no subject)'}
+Body:
+${(email.body || '').substring(0, 1500)}
+
+---
+Does this email meaningfully address the intent of the action?
+
+Reply ONLY with valid JSON (no markdown):
+{
+  "confidence": <0-100>,
+  "match": <true|false>,
+  "reasoning": "<one sentence explaining your score>"
+}
+
+Scoring guide:
+- 90-100: Email clearly and specifically addresses the action intent
+- 70-89:  Email broadly addresses the intent but may be missing specifics
+- 40-69:  Email is related but doesn't clearly fulfil the action
+- 0-39:   Email does not address the action intent`;
+
+      const message = await client.messages.create({
+        model:      'claude-haiku-4-5-20251001',
+        max_tokens: 200,
+        messages:   [{ role: 'user', content: prompt }],
+      });
+
+      const text    = message.content[0]?.text || '{}';
+      const cleaned = text.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim();
+      const parsed  = JSON.parse(cleaned);
+
+      return {
+        confidence: Math.max(0, Math.min(100, parseInt(parsed.confidence) || 0)),
+        reasoning:  parsed.reasoning || 'AI content check completed',
+        evidence:   `${email.subject} — ${(email.body || '').substring(0, 100)}`,
+      };
+
+    } catch (err) {
+      console.error('AI content check failed, defaulting to 70%:', err.message);
+      // On AI failure, give benefit of the doubt — user did send the email
+      return { confidence: 70, reasoning: 'AI check unavailable — email send accepted as completion signal.', evidence: email.subject };
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PRIVATE: Manual-style complete (used when AI disabled)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  static async _markCompleteManual(actionId, email, userId) {
+    await db.query(
+      `UPDATE actions
+       SET completed    = true,
+           status       = 'completed',
+           auto_completed = false,
+           completed_by = $1,
+           completion_evidence = $2,
+           completed_at = CURRENT_TIMESTAMP,
+           updated_at   = CURRENT_TIMESTAMP
+       WHERE id = $3`,
+      [
+        userId,
+        JSON.stringify({ source: 'email_sent', subject: email.subject, email_id: email.id }),
+        actionId,
+      ]
+    );
+    console.log(`✅ Action ${actionId} marked complete (email sent, AI detection off)`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // PUBLIC: Meeting-based detection (unchanged)
+  // ─────────────────────────────────────────────────────────────────────────
+
   static async detectFromMeeting(meetingId, userId) {
     const config = await ActionConfigService.getConfig(userId);
-    
-    if (config.detection_mode === 'manual' || !config.detect_from_meetings) {
-      return;
-    }
-    
-    // Using db.query instead of pool
+    if (config.detection_mode === 'manual' || !config.detect_from_meetings) return;
+
     try {
-      const meetingResult = await db.query(
-        'SELECT * FROM meetings WHERE id = $1',
-        [meetingId]
-      );
-      
+      const meetingResult = await db.query('SELECT * FROM meetings WHERE id = $1', [meetingId]);
       if (meetingResult.rows.length === 0) return;
       const meeting = meetingResult.rows[0];
-      
       if (!meeting.deal_id) return;
-      
+
       const actionsResult = await db.query(
-        `SELECT * FROM actions 
-         WHERE deal_id = $1 AND completed = false AND user_id = $2`,
+        `SELECT * FROM actions WHERE deal_id = $1 AND completed = false AND user_id = $2`,
         [meeting.deal_id, userId]
       );
-      
+
       for (const action of actionsResult.rows) {
         const result = await this.analyze(action, meeting, 'meeting', config);
-        
         if (result && result.confidence >= config.confidence_threshold) {
           if (result.confidence >= config.auto_complete_threshold) {
             await this.completeAction(action.id, result);
@@ -96,294 +235,164 @@ class ActionCompletionDetector {
           }
         }
       }
-    } finally {
-      
+    } catch (err) {
+      console.error('detectFromMeeting error:', err.message);
     }
   }
-  
-  /**
-   * Analyze whether evidence completes an action
-   */
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Analyze (hybrid/rules/ai routing)
+  // ─────────────────────────────────────────────────────────────────────────
+
   static async analyze(action, evidence, evidenceType, config) {
     const mode = config.detection_mode;
-    
-    if (mode === 'rules_only') {
-      return this.analyzeWithRules(action, evidence, evidenceType);
-    }
-    
-    if (mode === 'ai_only') {
-      return this.analyzeWithAI(action, evidence, evidenceType);
-    }
-    
+    if (mode === 'rules_only') return this.analyzeWithRules(action, evidence, evidenceType);
+    if (mode === 'ai_only')    return this.analyzeWithAI(action, evidence, evidenceType);
     if (mode === 'hybrid') {
-      // Try rules first
       const rulesResult = this.analyzeWithRules(action, evidence, evidenceType);
-      
-      // If confidence is very low or very high, trust rules
       if (rulesResult.confidence < 40 || rulesResult.confidence > 90) {
         rulesResult.detection_source = 'rules';
         return rulesResult;
       }
-      
-      // Ambiguous case - use AI
       const aiResult = await this.analyzeWithAI(action, evidence, evidenceType);
       aiResult.detection_source = 'ai';
       return aiResult;
     }
-    
     return null;
   }
-  
-  /**
-   * Rules-based analysis (fast, no AI cost)
-   */
+
   static analyzeWithRules(action, evidence, evidenceType) {
     let score = 0;
-    const weights = {
-      keyword_match: 30,
-      attachment_type: 20,
-      external_recipient: 20,
-      type_match: 15,
-      timing: 10,
-      no_negation: 5
-    };
-    
+    const weights = { keyword_match: 30, attachment_type: 20, external_recipient: 20, type_match: 15, timing: 10, no_negation: 5 };
     const flags = [];
-    
-    // Build searchable text
+
     let searchText = '';
-    if (evidenceType === 'email') {
-      searchText = `${evidence.subject || ''} ${evidence.body || ''}`.toLowerCase();
-    } else if (evidenceType === 'meeting') {
-      searchText = `${evidence.title || ''} ${evidence.description || ''}`.toLowerCase();
-    }
-    
-    // 1. Keyword matching
-    if (action.keywords && action.keywords.length > 0) {
-      const matches = action.keywords.filter(kw => 
-        searchText.includes(kw.toLowerCase())
-      );
+    if (evidenceType === 'email')   searchText = `${evidence.subject || ''} ${evidence.body || ''}`.toLowerCase();
+    if (evidenceType === 'meeting') searchText = `${evidence.title || ''} ${evidence.description || ''}`.toLowerCase();
+
+    if (action.keywords?.length > 0) {
+      const matches = action.keywords.filter(kw => searchText.includes(kw.toLowerCase()));
       score += weights.keyword_match * (matches.length / action.keywords.length);
     }
-    
-    // 2. Attachment type (for email actions)
-    if (evidenceType === 'email' && action.action_type === 'email_send') {
-      // Check if email has attachments
-      if (evidence.has_attachments) {
-        score += weights.attachment_type;
-      }
+
+    if (evidenceType === 'email' && action.action_type === 'email_send' && evidence.has_attachments) {
+      score += weights.attachment_type;
     }
-    
-    // 3. External recipient check (for actions requiring external evidence)
+
     if (action.requires_external_evidence && evidenceType === 'email') {
-      // Check if email was sent externally
-      const direction = evidence.direction;
-      if (direction === 'sent') {
-        score += weights.external_recipient;
-      } else {
-        flags.push('internal_only');
-        score -= 20; // Big penalty for internal emails on external actions
-      }
+      if (evidence.direction === 'sent') score += weights.external_recipient;
+      else { flags.push('internal_only'); score -= 20; }
     }
-    
-    // 4. Action type alignment
-    if (action.action_type === 'email_send' && evidenceType === 'email') {
-      score += weights.type_match;
-    } else if (action.action_type === 'meeting_schedule' && evidenceType === 'meeting') {
-      score += weights.type_match;
-    }
-    
-    // 5. Negation detection
+
+    if (action.action_type === 'email_send' && evidenceType === 'email')        score += weights.type_match;
+    if (action.action_type === 'meeting_schedule' && evidenceType === 'meeting') score += weights.type_match;
+
     const negationWords = ['discuss', 'planning', 'thinking about', 'considering', 'not yet', 'prepare to'];
-    const hasNegation = negationWords.some(word => searchText.includes(word));
-    
-    if (hasNegation) {
-      flags.push('negation_detected');
-      score -= 15;
-    } else {
-      score += weights.no_negation;
-    }
-    
+    if (negationWords.some(w => searchText.includes(w))) { flags.push('negation_detected'); score -= 15; }
+    else score += weights.no_negation;
+
     const confidence = Math.max(0, Math.min(100, Math.round(score)));
-    
     return {
-      completes_action: confidence >= 60,
+      completes_action:  confidence >= 60,
       confidence,
-      reasoning: `Rules-based analysis: ${confidence}% confidence`,
-      evidence: this.extractEvidence(evidence, evidenceType),
+      reasoning:         `Rules-based analysis: ${confidence}% confidence`,
+      evidence:          this.extractEvidence(evidence, evidenceType),
       flags,
-      detection_source: 'rules'
+      detection_source:  'rules',
     };
   }
-  
-  /**
-   * AI-based analysis (uses Claude API via prompt)
-   * NOTE: This requires Anthropic API integration - placeholder for now
-   */
+
   static async analyzeWithAI(action, evidence, evidenceType) {
-    // TODO: Implement AI analysis using Anthropic API
-    // For now, fall back to rules
-    console.log('⚠️ AI analysis not yet implemented, using rules fallback');
+    // Falls back to rules until full AI implementation is wired
+    console.log('⚠️ analyzeWithAI: using rules fallback');
     return this.analyzeWithRules(action, evidence, evidenceType);
-    
-    /* FUTURE IMPLEMENTATION:
-    const prompt = await this.buildPrompt(action, evidence, evidenceType);
-    const response = await callAnthropicAPI(prompt);
-    return JSON.parse(response);
-    */
   }
-  
-  /**
-   * Extract evidence snippet from email or meeting
-   */
+
   static extractEvidence(evidence, evidenceType) {
     if (evidenceType === 'email') {
-      const subject = evidence.subject || '';
       const snippet = evidence.body ? evidence.body.substring(0, 100) : '';
-      return `${subject} - ${snippet}${snippet.length === 100 ? '...' : ''}`;
-    } else if (evidenceType === 'meeting') {
-      return evidence.title || '';
+      return `${evidence.subject || ''} — ${snippet}${snippet.length === 100 ? '...' : ''}`;
     }
+    if (evidenceType === 'meeting') return evidence.title || '';
     return '';
   }
-  
-  /**
-   * Complete an action with evidence
-   */
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // DB helpers
+  // ─────────────────────────────────────────────────────────────────────────
+
   static async completeAction(actionId, analysis) {
     await db.query(
-      `UPDATE actions 
-       SET completed = true,
-           auto_completed = true,
+      `UPDATE actions
+       SET completed            = true,
+           status               = 'completed',
+           auto_completed       = true,
            completion_confidence = $1,
-           completion_evidence = $2,
-           completed_at = CURRENT_TIMESTAMP
+           completion_evidence  = $2,
+           completed_at         = CURRENT_TIMESTAMP,
+           updated_at           = CURRENT_TIMESTAMP
        WHERE id = $3`,
       [
         analysis.confidence,
-        JSON.stringify({
-          reasoning: analysis.reasoning,
-          evidence: analysis.evidence,
-          flags: analysis.flags,
-          source: analysis.detection_source
-        }),
-        actionId
+        JSON.stringify({ reasoning: analysis.reasoning, evidence: analysis.evidence, flags: analysis.flags, source: analysis.detection_source }),
+        actionId,
       ]
     );
-    
-    console.log(`✅ Auto-completed action ${actionId} with ${analysis.confidence}% confidence`);
+    console.log(`✅ Auto-completed action ${actionId} (${analysis.confidence}%)`);
   }
-  
-  /**
-   * Create a suggestion for user to review
-   */
+
   static async createSuggestion(actionId, evidenceId, evidenceType, analysis, userId) {
     await db.query(
-      `INSERT INTO action_suggestions (
-        action_id, user_id, evidence_type, evidence_id, 
-        evidence_snippet, confidence, reasoning, detection_source
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [
-        actionId,
-        userId,
-        evidenceType,
-        evidenceId,
-        analysis.evidence,
-        analysis.confidence,
-        analysis.reasoning,
-        analysis.detection_source
-      ]
+      `INSERT INTO action_suggestions
+         (action_id, user_id, evidence_type, evidence_id, evidence_snippet, confidence, reasoning, detection_source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [actionId, userId, evidenceType, evidenceId, analysis.evidence, analysis.confidence, analysis.reasoning, analysis.detection_source]
     );
-    
-    // Add to pending_suggestions array on action
+
     await db.query(
-      `UPDATE actions 
+      `UPDATE actions
        SET pending_suggestions = COALESCE(pending_suggestions, '{}') || $1::jsonb
        WHERE id = $2`,
+      [JSON.stringify({ id: evidenceId, type: evidenceType, confidence: analysis.confidence, snippet: analysis.evidence }), actionId]
+    );
+
+    console.log(`💡 Suggestion created for action ${actionId} (${analysis.confidence}%)`);
+  }
+
+  static async acceptSuggestion(suggestionId, userId) {
+    const suggResult = await db.query(
+      'SELECT * FROM action_suggestions WHERE id = $1 AND user_id = $2',
+      [suggestionId, userId]
+    );
+    if (suggResult.rows.length === 0) throw new Error('Suggestion not found');
+    const suggestion = suggResult.rows[0];
+
+    await db.query(
+      `UPDATE actions
+       SET completed = true, status = 'completed', auto_completed = false,
+           completion_confidence = $1, completion_evidence = $2,
+           completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3`,
       [
-        JSON.stringify({
-          id: evidenceId,
-          type: evidenceType,
-          confidence: analysis.confidence,
-          snippet: analysis.evidence
-        }),
-        actionId
+        suggestion.confidence,
+        JSON.stringify({ type: suggestion.evidence_type, id: suggestion.evidence_id, snippet: suggestion.evidence_snippet, source: 'user_accepted_suggestion' }),
+        suggestion.action_id,
       ]
     );
-    
-    console.log(`💡 Created suggestion for action ${actionId} with ${analysis.confidence}% confidence`);
+
+    await db.query(
+      `UPDATE action_suggestions SET status = 'accepted', resolved_at = CURRENT_TIMESTAMP WHERE id = $1`,
+      [suggestionId]
+    );
+    console.log(`✅ Suggestion ${suggestionId} accepted — action ${suggestion.action_id} completed`);
   }
-  
-  /**
-   * Accept a suggestion (user confirms it completes the action)
-   */
-  static async acceptSuggestion(suggestionId, userId) {
-    // Using db.query instead of pool
-    try {
-      // Get suggestion
-      const suggResult = await db.query(
-        'SELECT * FROM action_suggestions WHERE id = $1 AND user_id = $2',
-        [suggestionId, userId]
-      );
-      
-      if (suggResult.rows.length === 0) {
-        throw new Error('Suggestion not found');
-      }
-      
-      const suggestion = suggResult.rows[0];
-      
-      // Complete the action
-      await db.query(
-        `UPDATE actions 
-         SET completed = true,
-             auto_completed = false,
-             completion_confidence = $1,
-             completion_evidence = $2,
-             completed_at = CURRENT_TIMESTAMP
-         WHERE id = $3`,
-        [
-          suggestion.confidence,
-          JSON.stringify({
-            type: suggestion.evidence_type,
-            id: suggestion.evidence_id,
-            snippet: suggestion.evidence_snippet,
-            source: 'user_accepted_suggestion'
-          }),
-          suggestion.action_id
-        ]
-      );
-      
-      // Mark suggestion as accepted
-      await db.query(
-        `UPDATE action_suggestions 
-         SET status = 'accepted', resolved_at = CURRENT_TIMESTAMP
-         WHERE id = $1`,
-        [suggestionId]
-      );
-      
-      console.log(`✅ User accepted suggestion ${suggestionId} for action ${suggestion.action_id}`);
-    } finally {
-      
-    }
-  }
-  
-  /**
-   * Dismiss a suggestion (user says it doesn't complete the action)
-   */
+
   static async dismissSuggestion(suggestionId, userId) {
-    // Using db.query instead of pool
-    try {
-      await db.query(
-        `UPDATE action_suggestions 
-         SET status = 'dismissed', resolved_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND user_id = $2`,
-        [suggestionId, userId]
-      );
-      
-      console.log(`❌ User dismissed suggestion ${suggestionId}`);
-    } finally {
-      
-    }
+    await db.query(
+      `UPDATE action_suggestions SET status = 'dismissed', resolved_at = CURRENT_TIMESTAMP WHERE id = $1 AND user_id = $2`,
+      [suggestionId, userId]
+    );
+    console.log(`❌ Suggestion ${suggestionId} dismissed`);
   }
 }
 

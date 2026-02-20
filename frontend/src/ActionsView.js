@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import './ActionsView.css';
+import EmailComposer from './EmailComposer';
+import EmailComposer from './EmailComposer';
 
 const API = process.env.REACT_APP_API_URL || '';
 
@@ -66,6 +68,22 @@ function apiFetch(path, options = {}) {
     if (!r.ok) return r.json().then(e => Promise.reject(new Error(e?.error?.message || r.statusText)));
     return r.json();
   });
+}
+
+// Returns the full response body (including outlookSent / outlookError)
+async function apiFetchRaw(path, options = {}) {
+  const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const res = await fetch(`${API}${path}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      ...(options.headers || {}),
+    },
+    ...options,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error?.message || res.statusText);
+  return data;
 }
 
 function formatDate(iso) {
@@ -166,14 +184,95 @@ function EvidencePanel({ action }) {
   );
 }
 
+
+// ── Manual Log Modal ──────────────────────────────────────────────────────────
+// Shown for next_step = call | whatsapp | linkedin | slack | document | internal_task
+// User logs what they did, then marks the action done or leaves in_progress
+
+const MANUAL_LOG_CONFIG = {
+  call:          { icon: '📞', label: 'Log Call',             placeholder: 'Who did you speak to? What was discussed? Any follow-up agreed?' },
+  whatsapp:      { icon: '💬', label: 'Log WhatsApp Message', placeholder: 'What did you send? Any reply received?' },
+  linkedin:      { icon: '🔗', label: 'Log LinkedIn Message', placeholder: 'What did you send? Any connection or reply?' },
+  slack:         { icon: '💬', label: 'Log Slack Message',    placeholder: 'Who did you message? What was the outcome?' },
+  document:      { icon: '📄', label: 'Log Document Work',    placeholder: 'What did you create or update? Where is it saved?' },
+  internal_task: { icon: '🔧', label: 'Log Internal Task',    placeholder: 'What did you complete? Any notes?' },
+};
+
+function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
+  const [notes, setNotes]   = useState('');
+  const [saving, setSaving] = useState(false);
+  const cfg = MANUAL_LOG_CONFIG[action.nextStep] || MANUAL_LOG_CONFIG.internal_task;
+
+  async function handleDone() {
+    setSaving(true);
+    try { await onComplete(notes); } finally { setSaving(false); }
+  }
+
+  async function handleInProgress() {
+    setSaving(true);
+    try { await onInProgress(notes); } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content av-log-modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{cfg.icon} {cfg.label}</h2>
+          <button className="close-button" onClick={onClose}>×</button>
+        </div>
+
+        <div className="av-log-modal-body">
+          <div className="av-log-action-title">{action.title}</div>
+
+          {action.suggestedAction && (
+            <div className="av-log-suggested">
+              <span className="av-log-suggested-label">Suggested approach</span>
+              <p>{action.suggestedAction}</p>
+            </div>
+          )}
+
+          <div className="form-group">
+            <label htmlFor="log-notes">Notes (optional)</label>
+            <textarea
+              id="log-notes"
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder={cfg.placeholder}
+              rows="5"
+            />
+          </div>
+        </div>
+
+        <div className="av-log-modal-footer">
+          <button className="btn-secondary" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          <button className="av-log-btn-progress" onClick={handleInProgress} disabled={saving}>
+            {saving ? '…' : '◑ Still in Progress'}
+          </button>
+          <button className="av-log-btn-done" onClick={handleDone} disabled={saving}>
+            {saving ? '…' : '✓ Mark Done'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Status Stepper ────────────────────────────────────────────────────────────
 
-function StatusStepper({ action, onStatusChange }) {
+function StatusStepper({ action, onStatusChange, onStart }) {
   const [updating, setUpdating] = useState(false);
   const cfg = STATUS_CONFIG[action.status] || STATUS_CONFIG.yet_to_start;
 
   async function advance() {
     if (!cfg.next || updating) return;
+
+    // "Start" button — route to the right artifact instead of just advancing status
+    if (cfg.next === 'in_progress') {
+      if (onStart) { onStart(action); return; }
+    }
+
     setUpdating(true);
     try {
       await onStatusChange(action.id, cfg.next);
@@ -205,7 +304,7 @@ function StatusStepper({ action, onStatusChange }) {
           onClick={advance}
           disabled={updating}
         >
-          {updating ? '…' : cfg.next === 'in_progress' ? 'Start' : 'Complete ✓'}
+          {updating ? '…' : cfg.next === 'in_progress' ? `${nextStepLabel(action.nextStep)} →` : 'Complete ✓'}
         </button>
       )}
       {action.status === 'completed' && (
@@ -219,7 +318,7 @@ function StatusStepper({ action, onStatusChange }) {
 
 // ── Action Card ───────────────────────────────────────────────────────────────
 
-function ActionCard({ action, onStatusChange }) {
+function ActionCard({ action, onStatusChange, onStart }) {
   const dueInfo = formatDate(action.dueDate);
   const pColor  = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
   const isCompleted = action.status === 'completed';
@@ -279,7 +378,7 @@ function ActionCard({ action, onStatusChange }) {
       <EvidencePanel action={action} />
 
       {/* Status stepper */}
-      <StatusStepper action={action} onStatusChange={onStatusChange} />
+      <StatusStepper action={action} onStatusChange={onStatusChange} onStart={onStart} />
     </div>
   );
 }
@@ -450,11 +549,25 @@ export default function ActionsView() {
   const [filters, setFilters]     = useState(DEFAULT_FILTERS);
   const [filterOptions, setFilterOptions] = useState({ deals: [], accounts: [], owners: [] });
 
+  // Email composer state (for email/follow_up next_step)
+  const [composerAction, setComposerAction] = useState(null);  // action that triggered compose
+  const [contacts,       setContacts]       = useState([]);
+  const [deals,          setDeals]          = useState([]);
+
+  // Manual log modal state (for call/whatsapp/linkedin/slack/document/internal_task)
+  const [logAction, setLogAction] = useState(null);
+
   // Load filter options once
   useEffect(() => {
     apiFetch('/actions/filter-options')
       .then(data => setFilterOptions(data))
       .catch(() => {});
+  }, []);
+
+  // Load contacts and deals for the email composer (loaded once on mount)
+  useEffect(() => {
+    apiFetch('/contacts').then(d => setContacts(d.contacts || [])).catch(() => {});
+    apiFetch('/deals').then(d => setDeals(d.deals || [])).catch(() => {});
   }, []);
 
   const fetchActions = useCallback(async (activeFilters) => {
@@ -544,6 +657,86 @@ export default function ActionsView() {
     }
   }
 
+  // ── Start button routing ──────────────────────────────────────────────────
+  // Called when user clicks the Start button on an action card.
+  // Routes to email composer or manual log modal based on next_step.
+
+  function handleStart(action) {
+    const emailNextSteps = ['email', 'follow_up'];
+    if (emailNextSteps.includes(action.nextStep)) {
+      setComposerAction(action);
+    } else {
+      // call, whatsapp, linkedin, slack, document, internal_task → manual log
+      setLogAction(action);
+    }
+  }
+
+  // Called after email is composed and sent
+  async function handleEmailSent(emailData) {
+    try {
+      const result = await apiFetchRaw('/emails', {
+        method: 'POST',
+        body: JSON.stringify({
+          dealId:    emailData.deal_id    || composerAction?.deal?.id || null,
+          contactId: emailData.contact_id || null,
+          subject:   emailData.subject,
+          body:      emailData.body,
+          toAddress: emailData.toAddress,
+          actionId:  emailData.actionId  || null,
+        }),
+      });
+
+      // Refresh the action card in state (status may have changed)
+      if (emailData.actionId) {
+        setActions(prev => prev.map(a =>
+          a.id === emailData.actionId
+            ? { ...a, status: a.status === 'yet_to_start' ? 'in_progress' : a.status }
+            : a
+        ));
+      }
+
+      setComposerAction(null);
+      return result; // pass outlookSent/outlookError back to composer for banner
+    } catch (err) {
+      console.error('Email send failed:', err);
+      throw err;
+    }
+  }
+
+  // Called from ManualLogModal when user clicks "Mark Done"
+  async function handleManualComplete(action, notes) {
+    try {
+      await apiFetch(`/actions/${action.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'completed', notes }),
+      });
+      setActions(prev => prev
+        .map(a => a.id === action.id ? { ...a, status: 'completed', completed: true } : a)
+        .filter(a => !(!filters.status && a.id === action.id && a.status === 'completed'))
+      );
+      setLogAction(null);
+    } catch (err) {
+      console.error('Manual complete failed:', err);
+      alert('Failed to mark action complete: ' + err.message);
+    }
+  }
+
+  // Called from ManualLogModal when user clicks "Still in Progress"
+  async function handleManualInProgress(action, notes) {
+    try {
+      await apiFetch(`/actions/${action.id}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'in_progress', notes }),
+      });
+      setActions(prev => prev.map(a =>
+        a.id === action.id ? { ...a, status: 'in_progress' } : a
+      ));
+      setLogAction(null);
+    } catch (err) {
+      console.error('Status update failed:', err);
+    }
+  }
+
   async function handleGenerateActions() {
     setGenerating(true);
     try {
@@ -618,10 +811,46 @@ export default function ActionsView() {
               key={action.id}
               action={action}
               onStatusChange={handleStatusChange}
+              onStart={handleStart}
             />
           ))}
         </div>
       )}
     </div>
+
+    {/* Email Composer Modal */}
+    {composerAction && (
+      <EmailComposer
+        contacts={contacts}
+        deals={deals}
+        prefill={{
+          contactId: composerAction.contact && composerAction.contact.id   ? composerAction.contact.id   : null,
+          dealId:    composerAction.deal    && composerAction.deal.id       ? composerAction.deal.id       : null,
+          subject:   composerAction.title,
+          body:      composerAction.suggestedAction
+                     ? 'Hi,\n\n' + composerAction.suggestedAction + '\n\nBest regards,'
+                     : '',
+          toAddress: composerAction.contact && composerAction.contact.email ? composerAction.contact.email : '',
+        }}
+        actionId={composerAction.id}
+        actionContext={{
+          title:           composerAction.title,
+          suggestedAction: composerAction.suggestedAction,
+          nextStep:        composerAction.nextStep,
+        }}
+        onSubmit={handleEmailSent}
+        onClose={() => setComposerAction(null)}
+      />
+    )}
+
+    {/* Manual Log Modal */}
+    {logAction && (
+      <ManualLogModal
+        action={logAction}
+        onComplete={notes => handleManualComplete(logAction, notes)}
+        onInProgress={notes => handleManualInProgress(logAction, notes)}
+        onClose={() => setLogAction(null)}
+      />
+    )}
   );
 }
