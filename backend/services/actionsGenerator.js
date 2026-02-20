@@ -1,191 +1,273 @@
 /**
- * actionsGenerator.js
- *
- * Orchestrates the full action generation pipeline for a user's deals.
- *
- * Pipeline (per deal):
- *   1. DealContextBuilder  — gather all 8 inputs in one DB round-trip
- *   2. ActionsRulesEngine  — fast, zero-cost rules covering all inputs
- *   3. ActionsAIEnhancer   — Claude (Haiku), only for risk/watch deals
- *   4. DB upsert           — smart deduplication, preserve manual actions
- *
- * Key changes from previous version:
- *   - Scoped to userId (never crosses users)
- *   - No blind DELETE — upserts by source_rule so manual/completed actions preserved
- *   - Playbook actions saved with source='playbook'
- *   - AI actions saved with source='ai_generated'
+ * Actions Generator Service
+ * Generates actions for all deals, contacts, emails, meetings.
+ * Now sets: source_rule, health_param, is_internal on each inserted action.
  */
 
-const db                  = require('../config/database');
-const DealContextBuilder  = require('./DealContextBuilder');
-const ActionsRulesEngine  = require('./ActionsRulesEngine');
-const ActionsAIEnhancer   = require('./ActionsAIEnhancer');
+const db = require('../config/database');
+const ActionsEngine = require('./ActionsEngine');
+const PlaybookService = require('./playbook.service');
 const ActionConfigService = require('./actionConfig.service');
+
+// Rules that produce internal actions (no direct customer contact required)
+const INTERNAL_RULES = new Set([
+  'stagnant_deal',
+  'champion_nurture',
+  'at_risk_deal',
+  'no_files',
+  'no_proposal_doc',
+  'internal_strategy',
+  'high_value_no_meeting',
+  'no_meeting_14d',
+  'close_date_review',
+]);
+
+// Types that are always internal regardless of rule
+const INTERNAL_TYPES = new Set(['review', 'document_prep', 'meeting_prep']);
+
+// Types that are always external (customer-facing)
+const EXTERNAL_TYPES = new Set(['email_send', 'email', 'meeting_schedule', 'meeting']);
+
+function isInternalAction(action) {
+  if (EXTERNAL_TYPES.has(action.action_type)) return false;
+  if (INTERNAL_TYPES.has(action.action_type)) return true;
+  if (action.source_rule && INTERNAL_RULES.has(action.source_rule)) return true;
+  return false;
+}
 
 class ActionsGenerator {
 
-  // ── Public API ────────────────────────────────────────────────────────────
+  static async generateAll() {
+    try {
+      console.log('🤖 Starting ActionsEngine - Generating all actions...');
 
-  static async generateAll(userId) {
-    console.log('🤖 ActionsGenerator.generateAll — userId:', userId);
+      const [dealsRes, contactsRes, emailsRes, meetingsRes, accountsRes] = await Promise.all([
+        db.query('SELECT * FROM deals WHERE deleted_at IS NULL'),
+        db.query('SELECT * FROM contacts WHERE deleted_at IS NULL'),
+        db.query('SELECT * FROM emails WHERE deleted_at IS NULL'),
+        db.query('SELECT * FROM meetings WHERE deleted_at IS NULL'),
+        db.query('SELECT * FROM accounts WHERE deleted_at IS NULL'),
+      ]);
 
-    const config = await ActionConfigService.getConfig(userId);
-    if (config.generation_mode === 'manual') {
-      return { success: true, generated: 0, inserted: 0, skipped: 0 };
-    }
+      const deals    = dealsRes.rows;
+      const contacts = contactsRes.rows;
+      const emails   = emailsRes.rows;
+      const meetings = meetingsRes.rows;
+      const accounts = accountsRes.rows;
 
-    const dealsResult = await db.query(
-      `SELECT id FROM deals
-       WHERE owner_id = $1
-         AND deleted_at IS NULL
-         AND stage NOT IN ('closed_won', 'closed_lost')
-       ORDER BY health_score ASC NULLS LAST`,
-      [userId]
-    );
+      console.log(`📊 Data loaded: ${deals.length} deals, ${contacts.length} contacts, ${emails.length} emails, ${meetings.length} meetings`);
 
-    const dealIds = dealsResult.rows.map(r => r.id);
-    console.log('📊 Processing', dealIds.length, 'active deals');
+      const generatedActions = ActionsEngine.generateActions({ deals, contacts, emails, meetings, accounts });
+      console.log(`✅ ActionsEngine generated ${generatedActions.length} actions`);
 
-    let totalInserted = 0, totalGenerated = 0, skipped = 0;
+      // Delete old auto-generated actions (re-generated fresh each run)
+      await db.query("DELETE FROM actions WHERE source = 'auto_generated'");
 
-    for (const dealId of dealIds) {
-      try {
-        const { generated, inserted } = await this._processDeal(dealId, userId, config);
-        totalGenerated += generated;
-        totalInserted  += inserted;
-      } catch (err) {
-        console.error('❌ Error processing deal', dealId, ':', err.message);
-        skipped++;
+      let insertedCount = 0;
+      for (const action of generatedActions) {
+        try {
+          let userId = null;
+          if (action.deal_id) {
+            const deal = deals.find(d => d.id === action.deal_id);
+            userId = deal?.owner_id;
+          } else if (action.contact_id) {
+            const contact = contacts.find(c => c.id === action.contact_id);
+            if (contact?.account_id) {
+              const account = accounts.find(a => a.id === contact.account_id);
+              userId = account?.owner_id;
+            }
+          } else if (action.account_id) {
+            const account = accounts.find(a => a.id === action.account_id);
+            userId = account?.owner_id;
+          }
+
+          if (!userId) {
+            console.error('❌ SKIPPING: No userId found for action:', action.title);
+            continue;
+          }
+
+          const internal = isInternalAction(action);
+
+          await db.query(
+            `INSERT INTO actions (
+               user_id, type, title, description, action_type, priority,
+               due_date, deal_id, contact_id, account_id,
+               suggested_action, source, source_rule, health_param,
+               is_internal, status, created_at
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'yet_to_start',NOW())
+             RETURNING id`,
+            [
+              userId,
+              action.action_type,
+              action.title,
+              action.description,
+              action.action_type,
+              action.priority,
+              action.due_date,
+              action.deal_id    || null,
+              action.contact_id || null,
+              action.account_id || null,
+              action.suggested_action || null,
+              'auto_generated',
+              action.source_rule  || null,
+              action.health_param || null,
+              internal,
+            ]
+          );
+          insertedCount++;
+        } catch (error) {
+          console.error('❌ Error inserting action:', error.message, action.title);
+        }
       }
-    }
 
-    console.log('✅ generateAll complete — generated:', totalGenerated, 'inserted:', totalInserted, 'skipped:', skipped);
-    return { success: true, generated: totalGenerated, inserted: totalInserted, skipped };
+      console.log(`✅ generateAll complete — generated: ${generatedActions.length} inserted: ${insertedCount} skipped: 0`);
+      return { success: true, generated: generatedActions.length, inserted: insertedCount };
+
+    } catch (error) {
+      console.error('❌ Error generating actions:', error);
+      return { success: false, error: error.message };
+    }
   }
 
-  static async generateForDeal(dealId, userId) {
-    const config = await ActionConfigService.getConfig(userId);
-    if (config.generation_mode === 'manual') return { generated: 0, inserted: 0 };
-    return this._processDeal(dealId, userId, config);
+  static async generateForDeal(dealId) {
+    try {
+      console.log(`🤖 Generating actions for deal ${dealId}...`);
+
+      const dealResult = await db.query('SELECT * FROM deals WHERE id = $1', [dealId]);
+      if (dealResult.rows.length === 0) return 0;
+
+      const deal   = dealResult.rows[0];
+      const userId = deal.owner_id;
+
+      const [contactsRes, emailsRes, meetingsRes] = await Promise.all([
+        db.query('SELECT * FROM contacts WHERE account_id = $1', [deal.account_id]),
+        db.query('SELECT * FROM emails WHERE deal_id = $1', [dealId]),
+        db.query('SELECT * FROM meetings WHERE deal_id = $1', [dealId]),
+      ]);
+
+      const generatedActions = ActionsEngine.generateActions({
+        deals:    [deal],
+        contacts: contactsRes.rows,
+        emails:   emailsRes.rows,
+        meetings: meetingsRes.rows,
+        accounts: [],
+      });
+
+      const dealActions = generatedActions.filter(a => a.deal_id === dealId);
+
+      await db.query(
+        "DELETE FROM actions WHERE deal_id = $1 AND source = 'auto_generated'",
+        [dealId]
+      );
+
+      for (const action of dealActions) {
+        const internal = isInternalAction(action);
+        await db.query(
+          `INSERT INTO actions (
+             user_id, type, title, description, action_type, priority,
+             due_date, deal_id, contact_id, account_id,
+             suggested_action, source, source_rule, health_param,
+             is_internal, status, created_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'yet_to_start',NOW())`,
+          [
+            userId, action.action_type, action.title, action.description,
+            action.action_type, action.priority, action.due_date,
+            action.deal_id||null, action.contact_id||null, action.account_id||null,
+            action.suggested_action||null, 'auto_generated',
+            action.source_rule||null, action.health_param||null, internal,
+          ]
+        );
+      }
+
+      console.log(`✅ Generated ${dealActions.length} actions for deal ${dealId}`);
+      return dealActions.length;
+
+    } catch (error) {
+      console.error('Error generating actions for deal:', error);
+      return 0;
+    }
+  }
+
+  static async generateForEmail(emailId) {
+    try {
+      const emailResult = await db.query('SELECT * FROM emails WHERE id = $1', [emailId]);
+      if (emailResult.rows.length === 0) return false;
+      const email = emailResult.rows[0];
+      if (email.deal_id) await this.generateForDeal(email.deal_id);
+      return true;
+    } catch (error) {
+      console.error('Error generating actions for email:', error);
+      return false;
+    }
+  }
+
+  static async generateForMeeting(meetingId) {
+    try {
+      const meetingResult = await db.query('SELECT * FROM meetings WHERE id = $1', [meetingId]);
+      if (meetingResult.rows.length === 0) return false;
+      const meeting = meetingResult.rows[0];
+      if (meeting.deal_id) await this.generateForDeal(meeting.deal_id);
+      return true;
+    } catch (error) {
+      console.error('Error generating actions for meeting:', error);
+      return false;
+    }
   }
 
   static async generateForStageChange(dealId, newStage, userId) {
-    console.log('📘 Stage change: deal', dealId, '→', newStage);
-    // Remove stale stage actions (keep manual + ai + completed)
-    await db.query(
-      `DELETE FROM actions
-       WHERE deal_id = $1 AND user_id = $2
-         AND source IN ('auto_generated', 'playbook')
-         AND completed = false`,
-      [dealId, userId]
-    );
-    return this.generateForDeal(dealId, userId);
+    try {
+      const config = await ActionConfigService.getConfig(userId);
+      if (config.generation_mode === 'manual') return [];
+      if (config.generation_mode === 'playbook') return this.generateFromPlaybook(dealId, newStage, userId, config);
+      if (config.generation_mode === 'rules') return this.generateForDeal(dealId);
+      return [];
+    } catch (error) {
+      console.error('Error generating actions for stage change:', error);
+      return [];
+    }
   }
 
-  static async generateForEmail(emailId, userId) {
-    const r = await db.query('SELECT deal_id FROM emails WHERE id = $1', [emailId]);
-    if (!r.rows[0]?.deal_id) return;
-    return this.generateForDeal(r.rows[0].deal_id, userId);
-  }
+  static async generateFromPlaybook(dealId, newStage, userId, config) {
+    try {
+      const keyActions = await PlaybookService.getStageActions(userId, newStage);
+      if (keyActions.length === 0) return [];
 
-  static async generateForMeeting(meetingId, userId) {
-    const r = await db.query('SELECT deal_id FROM meetings WHERE id = $1', [meetingId]);
-    if (!r.rows[0]?.deal_id) return;
-    return this.generateForDeal(r.rows[0].deal_id, userId);
-  }
+      const dealResult = await db.query('SELECT * FROM deals WHERE id = $1', [dealId]);
+      const deal = dealResult.rows[0];
+      if (!deal) return [];
 
-  static async generateForFile(storageFileId, userId) {
-    const r = await db.query('SELECT deal_id FROM storage_files WHERE id = $1', [storageFileId]);
-    if (!r.rows[0]?.deal_id) return;
-    return this.generateForDeal(r.rows[0].deal_id, userId);
-  }
+      const actions = [];
+      for (const actionText of keyActions) {
+        const actionType     = PlaybookService.classifyActionType(actionText);
+        const keywords       = PlaybookService.extractKeywords(actionText);
+        const requiresExt    = PlaybookService.requiresExternalEvidence(actionType, actionText);
+        const priority       = PlaybookService.suggestPriority(newStage, actionType);
+        const dueDays        = PlaybookService.suggestDueDays(newStage, actionType);
+        const dueDate        = new Date();
+        dueDate.setDate(dueDate.getDate() + dueDays);
+        const internal = isInternalAction({ action_type: actionType });
 
-  // ── Core pipeline ─────────────────────────────────────────────────────────
-
-  static async _processDeal(dealId, userId, config) {
-    const context      = await DealContextBuilder.build(dealId, userId);
-    const rulesActions = ActionsRulesEngine.generate(context);
-    console.log('  📏 Rules:', rulesActions.length, 'actions for deal', dealId, '(' + context.deal.name + ')');
-
-    const aiActions = await ActionsAIEnhancer.enhance(context, rulesActions, config);
-    console.log('  🤖 AI:', aiActions.length, 'additional actions for deal', dealId);
-
-    const inserted = await this._upsertActions([...rulesActions, ...aiActions], userId, context);
-    return { generated: rulesActions.length + aiActions.length, inserted };
-  }
-
-  // ── DB upsert with deduplication ──────────────────────────────────────────
-
-  static async _upsertActions(actions, userId, context) {
-    if (actions.length === 0) return 0;
-
-    const existing = await db.query(
-      `SELECT source_rule, title FROM actions
-       WHERE deal_id = $1 AND user_id = $2
-         AND completed = false
-         AND source IN ('auto_generated', 'playbook', 'ai_generated')`,
-      [context.deal.id, userId]
-    );
-
-    const existingRules  = new Set(existing.rows.map(r => r.source_rule).filter(Boolean));
-    const existingTitles = new Set(existing.rows.map(r => r.title.toLowerCase().trim()));
-
-    let inserted = 0;
-
-    for (const action of actions) {
-      try {
-        if (action.source_rule && existingRules.has(action.source_rule)) continue;
-        if (existingTitles.has(action.title.toLowerCase().trim())) continue;
-
-        await db.query(
+        const result = await db.query(
           `INSERT INTO actions (
-            user_id, deal_id, contact_id, account_id,
-            type, action_type, title, description,
-            priority, due_date,
-            suggested_action, context,
-            keywords, deal_stage, requires_external_evidence,
-            health_param, source, source_rule, metadata,
-            completed, created_at
-          ) VALUES (
-            $1,$2,$3,$4, $5,$6,$7,$8, $9,$10,
-            $11,$12, $13,$14,$15, $16,$17,$18,$19,
-            false, NOW()
-          )`,
+             user_id, deal_id, type, title, description, priority,
+             action_type, keywords, deal_stage, requires_external_evidence,
+             source, due_date, is_internal, status, created_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'yet_to_start',NOW())
+           RETURNING *`,
           [
-            userId,
-            action.deal_id || null,
-            action.contact_id || null,
-            action.account_id || null,
-            action.type || action.action_type,
-            action.action_type,
-            action.title,
-            action.description || null,
-            action.priority || 'medium',
-            action.due_date,
-            action.suggested_action || null,
-            action.context || null,
-            action.keywords ? JSON.stringify(action.keywords) : null,
-            action.deal_stage || context.deal.stage || null,
-            action.requires_external_evidence || false,
-            action.health_param || null,
-            action.source || 'auto_generated',
-            action.source_rule || null,
-            action.metadata || null,
+            userId, dealId, actionType, actionText,
+            `Generated from Sales Playbook for ${newStage} stage`,
+            priority, actionType, keywords, newStage, requiresExt,
+            'playbook', dueDate, internal,
           ]
         );
-
-        inserted++;
-        existingRules.add(action.source_rule);
-        existingTitles.add(action.title.toLowerCase().trim());
-
-      } catch (err) {
-        if (err.code !== '23505') {
-          console.error('❌ Failed to insert action "' + action.title + '":', err.message);
-        }
+        actions.push(result.rows[0]);
       }
+      return actions;
+    } catch (error) {
+      console.error('Error generating from playbook:', error);
+      return [];
     }
-
-    return inserted;
   }
 }
 
