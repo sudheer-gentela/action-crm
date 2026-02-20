@@ -15,6 +15,17 @@ const ACTION_TYPE_OPTIONS = [
   { value: 'internal',    label: '🏠 Internal' },
 ];
 
+const NEXT_STEP_OPTIONS = [
+  { value: '',              label: 'All Channels' },
+  { value: 'email',         label: '✉️ Email' },
+  { value: 'call',          label: '📞 Call' },
+  { value: 'whatsapp',      label: '💬 WhatsApp' },
+  { value: 'linkedin',      label: '🔗 LinkedIn' },
+  { value: 'slack',         label: '💬 Slack' },
+  { value: 'document',      label: '📄 Document' },
+  { value: 'internal_task', label: '🔧 Internal Task' },
+];
+
 const PRIORITY_COLORS = {
   critical: '#dc2626',
   high:     '#ef4444',
@@ -68,19 +79,17 @@ function formatDate(iso) {
   return { text: `Due ${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` };
 }
 
-function typeLabel(type) {
+function nextStepLabel(nextStep) {
   const map = {
-    meeting:       '📅 Meeting',
-    meeting_schedule: '📅 Meeting',
-    follow_up:     '🔄 Follow Up',
     email:         '✉️ Email',
-    email_send:    '✉️ Email',
-    document_prep: '📄 Document',
+    call:          '📞 Call',
+    whatsapp:      '💬 WhatsApp',
+    linkedin:      '🔗 LinkedIn',
+    slack:         '💬 Slack',
     document:      '📄 Document',
-    review:        '📋 Review',
-    meeting_prep:  '📋 Meeting Prep',
+    internal_task: '🔧 Internal Task',
   };
-  return map[type] || (type ? type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Task');
+  return map[nextStep] || '✉️ Email';
 }
 
 // ── Evidence Panel ────────────────────────────────────────────────────────────
@@ -221,7 +230,7 @@ function ActionCard({ action, onStatusChange }) {
       {/* Card header */}
       <div className="av-card-header">
         <span className="av-type-badge" style={{ background: pColor + '18', color: pColor }}>
-          {typeLabel(action.type)}
+          {nextStepLabel(action.nextStep)}
         </span>
 
         <div className="av-card-badges">
@@ -325,6 +334,17 @@ function FilterBar({ filters, onChange, options }) {
         ))}
       </select>
 
+      {/* Next Step / Channel filter */}
+      <select
+        className="av-filter-select"
+        value={filters.nextStep}
+        onChange={e => onChange('nextStep', e.target.value)}
+      >
+        {NEXT_STEP_OPTIONS.map(o => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+
       {/* Deal */}
       <select
         className="av-filter-select"
@@ -413,6 +433,7 @@ const DEFAULT_FILTERS = {
   source:     'all',
   isInternal: '',
   actionType: '',
+  nextStep:   '',
   dealId:     '',
   accountId:  '',
   ownerId:    '',
@@ -458,6 +479,7 @@ export default function ActionsView() {
       if (activeFilters.ownerId)    params.set('ownerId',     activeFilters.ownerId);
       if (activeFilters.actionType) params.set('actionType', activeFilters.actionType);
       if (activeFilters.isInternal) params.set('isInternal', activeFilters.isInternal);
+      if (activeFilters.nextStep)   params.set('nextStep',   activeFilters.nextStep);
       if (activeFilters.dueAfter)   params.set('dueAfter',   activeFilters.dueAfter);
       if (activeFilters.dueBefore)  params.set('dueBefore',  activeFilters.dueBefore);
       if (activeFilters.status)     params.set('status',     activeFilters.status);
@@ -468,6 +490,9 @@ export default function ActionsView() {
       // Client-side source filter (fast, no extra API call)
       if (activeFilters.source === 'ai')    rows = rows.filter(a => a.source === 'ai_generated');
       if (activeFilters.source === 'rules') rows = rows.filter(a => a.source === 'auto_generated');
+
+      // Client-side nextStep filter (already sent to API but belt-and-suspenders)
+      if (activeFilters.nextStep) rows = rows.filter(a => a.nextStep === activeFilters.nextStep);
 
       // If no status filter selected, hide completed
       if (!activeFilters.status) {

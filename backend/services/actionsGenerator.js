@@ -1,11 +1,12 @@
 /**
  * Actions Generator Service
- * Builds deal context and calls ActionsRulesEngine for each deal.
- * Sets: source_rule, health_param, is_internal, status on every inserted action.
+ * Builds deal context, runs ActionsRulesEngine, optionally runs ActionsAIEnhancer.
+ * Inserts next_step as a first-class column on every action.
  */
 
 const db = require('../config/database');
 const ActionsRulesEngine  = require('./ActionsRulesEngine');
+const ActionsAIEnhancer   = require('./ActionsAIEnhancer');
 const PlaybookService     = require('./playbook.service');
 const ActionConfigService = require('./actionConfig.service');
 
@@ -27,6 +28,8 @@ function isInternalAction(action) {
   if (EXTERNAL_TYPES.has(action.action_type)) return false;
   if (INTERNAL_TYPES.has(action.action_type)) return true;
   if (action.source_rule && INTERNAL_SOURCE_RULES.has(action.source_rule)) return true;
+  // internal_task and document next_steps are always internal
+  if (['internal_task', 'document', 'slack'].includes(action.next_step)) return true;
   return false;
 }
 
@@ -34,7 +37,6 @@ function isInternalAction(action) {
 
 function buildDerived(deal, contacts, emails, meetings, files) {
   const now = Date.now();
-
   const daysSince = (date) => date ? Math.floor((now - new Date(date)) / 86400000) : 999;
   const daysUntil = (date) => date ? Math.ceil((new Date(date) - now) / 86400000) : null;
 
@@ -56,9 +58,8 @@ function buildDerived(deal, contacts, emails, meetings, files) {
 
   const daysSinceLastMeeting = lastMeeting ? daysSince(lastMeeting.start_time) : 999;
   const daysSinceLastEmail   = lastEmail   ? daysSince(lastEmail.sent_at)      : 999;
-
-  const daysUntilClose = deal.close_date ? daysUntil(deal.close_date) : null;
-  const daysInStage    = daysSince(deal.stage_changed_at || deal.updated_at);
+  const daysUntilClose       = deal.close_date ? daysUntil(deal.close_date)    : null;
+  const daysInStage          = daysSince(deal.stage_changed_at || deal.updated_at);
 
   const decisionMakers = contacts.filter(c =>
     ['decision_maker', 'economic_buyer', 'executive'].includes(c.role_type)
@@ -67,9 +68,7 @@ function buildDerived(deal, contacts, emails, meetings, files) {
 
   const unansweredEmails = dealEmails.filter(e => {
     if (e.direction !== 'sent') return false;
-    const daysSinceSent = daysSince(e.sent_at);
-    if (daysSinceSent < 3) return false;
-    // No received email after this sent email
+    if (daysSince(e.sent_at) < 3) return false;
     return !dealEmails.some(r =>
       r.direction === 'received' && new Date(r.sent_at) > new Date(e.sent_at)
     );
@@ -78,16 +77,11 @@ function buildDerived(deal, contacts, emails, meetings, files) {
   const failedFiles = dealFiles.filter(f => f.processing_status === 'failed');
 
   return {
-    completedMeetings,
-    upcomingMeetings,
-    daysSinceLastMeeting,
-    daysSinceLastEmail,
-    daysUntilClose,
-    daysInStage,
-    decisionMakers,
-    champions,
-    unansweredEmails,
-    failedFiles,
+    completedMeetings, upcomingMeetings,
+    daysSinceLastMeeting, daysSinceLastEmail,
+    daysUntilClose, daysInStage,
+    decisionMakers, champions,
+    unansweredEmails, failedFiles,
     isHighValue:       parseFloat(deal.value || 0) > 100000,
     isStagnant:        daysInStage > 30 && !['closed_won', 'closed_lost'].includes(deal.stage),
     closingImminently: daysUntilClose !== null && daysUntilClose >= 0 && daysUntilClose <= 7,
@@ -100,31 +94,24 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
   const emails   = allEmails.filter(e => e.deal_id === deal.id);
   const meetings = allMeetings.filter(m => m.deal_id === deal.id);
   const files    = allFiles.filter(f => f.deal_id === deal.id);
+  const derived  = buildDerived(deal, contacts, emails, meetings, files);
 
-  const derived = buildDerived(deal, contacts, emails, meetings, files);
-
-  // Health breakdown from deal JSON column (populated by dealHealthService)
   let healthBreakdown = null;
   if (deal.health_score_breakdown) {
     try {
       healthBreakdown = typeof deal.health_score_breakdown === 'string'
         ? JSON.parse(deal.health_score_breakdown)
         : deal.health_score_breakdown;
-    } catch (_) { /* malformed JSON — skip */ }
+    } catch (_) {}
   }
 
-  // Playbook actions for this deal's stage
   let playbookStageActions = [];
   try {
     playbookStageActions = await PlaybookService.getStageActions(userId, deal.stage);
-  } catch (_) { /* no playbook configured — fine */ }
+  } catch (_) {}
 
   return {
-    deal,
-    contacts,
-    emails,
-    meetings,
-    files,
+    deal, contacts, emails, meetings, files,
     healthBreakdown,
     healthStatus:        deal.health || null,
     derived,
@@ -135,8 +122,9 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
 // ── DB insert helper ──────────────────────────────────────────────────────────
 
 async function insertAction(action, userId) {
-  const internal = isInternalAction(action);
-  const source   = action.source || 'auto_generated';
+  const internal  = isInternalAction(action);
+  const source    = action.source || 'auto_generated';
+  const next_step = action.next_step || 'email';
 
   await db.query(
     `INSERT INTO actions (
@@ -144,12 +132,12 @@ async function insertAction(action, userId) {
        due_date, deal_id, contact_id, account_id,
        suggested_action, context, source, source_rule, health_param,
        keywords, deal_stage, requires_external_evidence,
-       is_internal, status, created_at
+       is_internal, next_step, status, created_at
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
        $11,$12,$13,$14,$15,
        $16,$17,$18,
-       $19,'yet_to_start',NOW()
+       $19,$20,'yet_to_start',NOW()
      )`,
     [
       userId,
@@ -162,15 +150,16 @@ async function insertAction(action, userId) {
       action.deal_id    || null,
       action.contact_id || null,
       action.account_id || null,
-      action.suggested_action              || null,
-      action.context                       || null,
+      action.suggested_action           || null,
+      action.context                    || null,
       source,
-      action.source_rule                   || null,
-      action.health_param                  || null,
-      action.keywords                      || null,
-      action.deal_stage                    || null,
-      action.requires_external_evidence    || false,
+      action.source_rule                || null,
+      action.health_param               || null,
+      action.keywords                   || null,
+      action.deal_stage                 || null,
+      action.requires_external_evidence || false,
       internal,
+      next_step,
     ]
   );
 }
@@ -199,8 +188,7 @@ class ActionsGenerator {
 
       console.log(`📊 Loaded: ${deals.length} deals, ${contacts.length} contacts, ${emails.length} emails, ${meetings.length} meetings, ${files.length} files`);
 
-      // Delete and regenerate all auto-generated actions
-      await db.query("DELETE FROM actions WHERE source = 'auto_generated'");
+      await db.query("DELETE FROM actions WHERE source IN ('auto_generated', 'ai_generated')");
 
       let totalGenerated = 0;
       let totalInserted  = 0;
@@ -215,13 +203,24 @@ class ActionsGenerator {
         }
 
         try {
-          const context = await buildContext(deal, contacts, emails, meetings, files, userId);
-          const actions = ActionsRulesEngine.generate(context);
+          // Resolve action config for this deal's owner (for AI gate)
+          const actionConfig = await ActionConfigService.getConfig(userId);
 
-          console.log(`  📏 Rules: ${actions.length} actions for deal ${deal.id} (${deal.name})`);
-          totalGenerated += actions.length;
+          const context      = await buildContext(deal, contacts, emails, meetings, files, userId);
+          const rulesActions = ActionsRulesEngine.generate(context);
 
-          for (const action of actions) {
+          console.log(`  📏 Rules: ${rulesActions.length} actions for deal ${deal.id} (${deal.name})`);
+
+          // Run AI enhancer if enabled
+          const aiActions = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
+          if (aiActions.length) {
+            console.log(`  🤖 AI: ${aiActions.length} additional actions for deal ${deal.id}`);
+          }
+
+          const allActions = [...rulesActions, ...aiActions];
+          totalGenerated += allActions.length;
+
+          for (const action of allActions) {
             try {
               await insertAction(action, userId);
               totalInserted++;
@@ -234,7 +233,7 @@ class ActionsGenerator {
         }
       }
 
-      console.log(`✅ generateAll complete — generated: ${totalGenerated} inserted: ${totalInserted} skipped: 0`);
+      console.log(`✅ generateAll complete — generated: ${totalGenerated} inserted: ${totalInserted}`);
       return { success: true, generated: totalGenerated, inserted: totalInserted };
 
     } catch (error) {
@@ -261,24 +260,19 @@ class ActionsGenerator {
         db.query("SELECT * FROM storage_files WHERE deal_id = $1 AND processing_status = 'completed'", [dealId]),
       ]);
 
-      const context = await buildContext(
-        deal,
-        contactsRes.rows,
-        emailsRes.rows,
-        meetingsRes.rows,
-        filesRes.rows,
-        userId
-      );
-
-      const actions = ActionsRulesEngine.generate(context);
+      const actionConfig = await ActionConfigService.getConfig(userId);
+      const context      = await buildContext(deal, contactsRes.rows, emailsRes.rows, meetingsRes.rows, filesRes.rows, userId);
+      const rulesActions = ActionsRulesEngine.generate(context);
+      const aiActions    = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
+      const allActions   = [...rulesActions, ...aiActions];
 
       await db.query(
-        "DELETE FROM actions WHERE deal_id = $1 AND source = 'auto_generated'",
+        "DELETE FROM actions WHERE deal_id = $1 AND source IN ('auto_generated', 'ai_generated')",
         [dealId]
       );
 
       let inserted = 0;
-      for (const action of actions) {
+      for (const action of allActions) {
         try {
           await insertAction(action, userId);
           inserted++;
@@ -302,10 +296,7 @@ class ActionsGenerator {
       if (res.rows.length === 0) return false;
       if (res.rows[0].deal_id) await this.generateForDeal(res.rows[0].deal_id);
       return true;
-    } catch (error) {
-      console.error('Error generating actions for email:', error);
-      return false;
-    }
+    } catch (error) { return false; }
   }
 
   static async generateForMeeting(meetingId) {
@@ -314,10 +305,7 @@ class ActionsGenerator {
       if (res.rows.length === 0) return false;
       if (res.rows[0].deal_id) await this.generateForDeal(res.rows[0].deal_id);
       return true;
-    } catch (error) {
-      console.error('Error generating actions for meeting:', error);
-      return false;
-    }
+    } catch (error) { return false; }
   }
 
   static async generateForStageChange(dealId, newStage, userId) {
@@ -325,10 +313,7 @@ class ActionsGenerator {
       const config = await ActionConfigService.getConfig(userId);
       if (config.generation_mode === 'manual') return [];
       return this.generateForDeal(dealId);
-    } catch (error) {
-      console.error('Error generating actions for stage change:', error);
-      return [];
-    }
+    } catch (error) { return []; }
   }
 }
 

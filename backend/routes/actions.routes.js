@@ -23,6 +23,7 @@ function mapActionRow(row) {
     healthParam:             row.health_param,
     source:                  row.source,
     sourceId:                row.source_id,
+    nextStep:                row.next_step || 'email',
     isInternal:              row.is_internal || false,
     status:                  row.status || (row.completed ? 'completed' : 'yet_to_start'),
     completed:               row.completed,
@@ -104,6 +105,7 @@ router.get('/', async (req, res) => {
       ownerId,
       actionType,       // UI category: 'meeting'|'follow_up'|'email_send'|'document_prep'|'internal'|'meeting_prep'
       isInternal,       // 'true'|'false'
+      nextStep,         // 'email'|'call'|'whatsapp'|'linkedin'|'slack'|'document'|'internal_task'
       dueBefore,        // ISO date string
       dueAfter,         // ISO date string
     } = req.query;
@@ -162,6 +164,11 @@ router.get('/', async (req, res) => {
     if (isInternal !== undefined) {
       query += ` AND a.is_internal = $${params.length + 1}`;
       params.push(isInternal === 'true');
+    }
+
+    if (nextStep) {
+      query += ` AND a.next_step = $${params.length + 1}`;
+      params.push(nextStep);
     }
 
     if (dueAfter) {
