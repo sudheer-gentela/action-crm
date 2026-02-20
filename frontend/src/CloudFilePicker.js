@@ -65,26 +65,29 @@ export default function CloudFilePicker({ dealId: dealIdProp, contactId, onCompl
 
   const currentFolder = folderStack[folderStack.length - 1];
 
-  // ── Load all providers + their connection status on mount ─────────────────
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    loadProviders();
-    // Only fetch deals list if no dealId was passed in as a prop
-    if (!dealIdProp) {
-      apiFetch('/api/deals')
-        .then((res) => setDeals(res.deals || res || []))
-        .catch(() => setDeals([]));
+  // ── Load files ─────────────────────────────────────────────────────────────
+  const loadFiles = useCallback(async (providerId, folderId) => {
+    setLoadingFiles(true);
+    setError(null);
+    try {
+      const params = folderId ? `?folderId=${folderId}` : '';
+      const res = await apiFetch(`/api/storage/${providerId}/files${params}`);
+      setFiles(res.files || []);
+    } catch (e) {
+      setError('Failed to load files: ' + e.message);
+    } finally {
+      setLoadingFiles(false);
     }
-  }, []); // intentionally empty — runs once on mount only
+  }, []);
 
-  async function loadProviders() {
+  // ── Load providers ─────────────────────────────────────────────────────────
+  const loadProviders = useCallback(async () => {
     try {
       const res = await apiFetch('/api/storage/providers');
       setProviders(res.providers);
       const statuses = {};
       res.providers.forEach((p) => { statuses[p.id] = p; });
       setProviderStatuses(statuses);
-      // Auto-select first connected provider
       const first = res.providers.find((p) => p.connected);
       if (first) {
         setActiveProvider(first.id);
@@ -97,7 +100,17 @@ export default function CloudFilePicker({ dealId: dealIdProp, contactId, onCompl
     } finally {
       setLoadingProviders(false);
     }
-  }
+  }, [loadFiles]);
+
+  // ── On mount: load providers + deals list ─────────────────────────────────
+  useEffect(() => {
+    loadProviders();
+    if (!dealIdProp) {
+      apiFetch('/api/deals')
+        .then((res) => setDeals(res.deals || res || []))
+        .catch(() => setDeals([]));
+    }
+  }, [loadProviders, dealIdProp]);
 
   // ── Switch provider tab ────────────────────────────────────────────────────
   function switchProvider(providerId) {
@@ -114,21 +127,6 @@ export default function CloudFilePicker({ dealId: dealIdProp, contactId, onCompl
       loadFiles(providerId, null);
     }
   }
-
-  // ── Load files ─────────────────────────────────────────────────────────────
-  const loadFiles = useCallback(async (providerId, folderId) => {
-    setLoadingFiles(true);
-    setError(null);
-    try {
-      const params = folderId ? `?folderId=${folderId}` : '';
-      const res = await apiFetch(`/api/storage/${providerId}/files${params}`);
-      setFiles(res.files || []);
-    } catch (e) {
-      setError('Failed to load files: ' + e.message);
-    } finally {
-      setLoadingFiles(false);
-    }
-  }, []);
 
   // ── Search ─────────────────────────────────────────────────────────────────
   async function handleSearch(e) {
