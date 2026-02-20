@@ -66,6 +66,7 @@ export default function CloudFilePicker({ dealId: dealIdProp, contactId, onCompl
   const currentFolder = folderStack[folderStack.length - 1];
 
   // ── Load all providers + their connection status on mount ─────────────────
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     loadProviders();
     // Only fetch deals list if no dealId was passed in as a prop
@@ -74,7 +75,7 @@ export default function CloudFilePicker({ dealId: dealIdProp, contactId, onCompl
         .then((res) => setDeals(res.deals || res || []))
         .catch(() => setDeals([]));
     }
-  }, []);
+  }, []); // intentionally empty — runs once on mount only
 
   async function loadProviders() {
     try {
