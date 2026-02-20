@@ -411,3 +411,56 @@
 .cfp-result-detail strong { color: #111; }
 .cfp-result-pipelines { color: #555; }
 .cfp-result-error    { color: #c53030; }
+
+/* Deal selector — shown in global Files view when no dealId prop passed */
+.cfp-deal-selector {
+  padding: 12px 20px;
+  background: #f8f9fc;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cfp-deal-selector-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  white-space: nowrap;
+}
+
+.cfp-deal-optional {
+  font-weight: 400;
+  color: #9ca3af;
+}
+
+.cfp-deal-select {
+  flex: 1;
+  min-width: 200px;
+  padding: 7px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #111827;
+  background: white;
+  cursor: pointer;
+}
+
+.cfp-deal-select:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+.cfp-deal-linked {
+  font-size: 12px;
+  color: #059669;
+  white-space: nowrap;
+}
+
+.cfp-deal-unlinked {
+  font-size: 12px;
+  color: #d97706;
+  white-space: nowrap;
+}

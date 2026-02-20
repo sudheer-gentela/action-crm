@@ -12,9 +12,9 @@
 //   onClose     {function}
 
 import React, { useState, useEffect, useCallback } from 'react';
-import './CloudFilePicker.css'; // CloudFilePicker.css lives in frontend/src/ alongside this file
+import './CloudFilePicker.css';
 
-const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+const API_BASE = process.env.REACT_APP_API_URL || '';
 
 const PROVIDER_ICONS = {
   onedrive:    '☁️',
@@ -26,9 +26,6 @@ const FILE_ICONS = {
   document:   '📄',
   email:      '📧',
   folder:     '📁',
-  pdf:        '📕',
-  spreadsheet:'📊',
-  image:      '🖼️',
 };
 
 const PIPELINE_LABELS = {
@@ -38,7 +35,7 @@ const PIPELINE_LABELS = {
   dealHealth:         'Deal Health Score',
 };
 
-export default function CloudFilePicker({ dealId, contactId, onComplete, onClose }) {
+export default function CloudFilePicker({ dealId: dealIdProp, contactId, onComplete, onClose }) {
   const [providers, setProviders]             = useState([]);
   const [activeProvider, setActiveProvider]   = useState(null);
   const [providerStatuses, setProviderStatuses] = useState({});
@@ -49,11 +46,17 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
   const [searchQuery, setSearchQuery]         = useState('');
   const [isSearching, setIsSearching]         = useState(false);
   const [selectedFiles, setSelectedFiles]     = useState(new Set());
+
+  // Deal selector — used when no dealId prop is passed (e.g. global Files view)
+  const [deals, setDeals]                     = useState([]);
+  const [selectedDealId, setSelectedDealId]   = useState(dealIdProp || '');
+  const dealId = dealIdProp || selectedDealId || undefined;
+
   const [pipelines, setPipelines]             = useState({
     aiAnalysis: true,
     rulesEngine: true,
     transcriptAnalyzer: true,
-    dealHealth: !!dealId,
+    dealHealth: !!dealIdProp,
   });
   const [loadingFiles, setLoadingFiles]       = useState(false);
   const [processing, setProcessing]           = useState(false);
@@ -62,29 +65,25 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
 
   const currentFolder = folderStack[folderStack.length - 1];
 
-  // ── Load files (defined first — used by loadProviders and switchProvider) ──
-  const loadFiles = useCallback(async (providerId, folderId) => {
-    setLoadingFiles(true);
-    setError(null);
-    try {
-      const params = folderId ? `?folderId=${folderId}` : '';
-      const res = await apiFetch(`/api/storage/${providerId}/files${params}`);
-      setFiles(res.files || []);
-    } catch (e) {
-      setError('Failed to load files: ' + e.message);
-    } finally {
-      setLoadingFiles(false);
+  // ── Load all providers + their connection status on mount ─────────────────
+  useEffect(() => {
+    loadProviders();
+    // Only fetch deals list if no dealId was passed in as a prop
+    if (!dealIdProp) {
+      apiFetch('/api/deals')
+        .then((res) => setDeals(res.deals || res || []))
+        .catch(() => setDeals([]));
     }
   }, []);
 
-  // ── Load all providers + their connection status on mount ─────────────────
-  const loadProviders = useCallback(async () => {
+  async function loadProviders() {
     try {
       const res = await apiFetch('/api/storage/providers');
       setProviders(res.providers);
       const statuses = {};
       res.providers.forEach((p) => { statuses[p.id] = p; });
       setProviderStatuses(statuses);
+      // Auto-select first connected provider
       const first = res.providers.find((p) => p.connected);
       if (first) {
         setActiveProvider(first.id);
@@ -97,11 +96,7 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
     } finally {
       setLoadingProviders(false);
     }
-  }, [loadFiles]);
-
-  useEffect(() => {
-    loadProviders();
-  }, [loadProviders]);
+  }
 
   // ── Switch provider tab ────────────────────────────────────────────────────
   function switchProvider(providerId) {
@@ -118,6 +113,21 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
       loadFiles(providerId, null);
     }
   }
+
+  // ── Load files ─────────────────────────────────────────────────────────────
+  const loadFiles = useCallback(async (providerId, folderId) => {
+    setLoadingFiles(true);
+    setError(null);
+    try {
+      const params = folderId ? `?folderId=${folderId}` : '';
+      const res = await apiFetch(`/api/storage/${providerId}/files${params}`);
+      setFiles(res.files || []);
+    } catch (e) {
+      setError('Failed to load files: ' + e.message);
+    } finally {
+      setLoadingFiles(false);
+    }
+  }, []);
 
   // ── Search ─────────────────────────────────────────────────────────────────
   async function handleSearch(e) {
@@ -222,41 +232,30 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
     );
   }
 
-  // ── Render: processing results ─────────────────────────────────────────────
+  // ── Render: results ────────────────────────────────────────────────────────
   if (processingResults) {
     return (
       <div className="cfp-overlay">
         <div className="cfp-modal cfp-modal--results">
-          <div className="cfp-header">
-            <h2>Import Complete</h2>
-            <button className="cfp-close" onClick={onClose}>✕</button>
-          </div>
-          <div className="cfp-results">
-            <div className="cfp-results-summary">
-              <div className="cfp-result-stat cfp-result-stat--ok">
-                <strong>{processingResults.processed}</strong> processed
-              </div>
-              {processingResults.duplicates > 0 && (
-                <div className="cfp-result-stat cfp-result-stat--warn">
-                  <strong>{processingResults.duplicates}</strong> duplicates skipped
+          <button className="cfp-close" onClick={onClose}>✕</button>
+          <h2>Processing Complete</h2>
+          <p className="cfp-results-summary">
+            {processingResults.processed} of {processingResults.total} file
+            {processingResults.total !== 1 ? 's' : ''} processed successfully.
+          </p>
+          <div className="cfp-results-list">
+            {processingResults.results.map((r) => (
+              <div key={r.fileId} className={`cfp-result-item cfp-result-item--${r.status}`}>
+                <span className="cfp-result-icon">{r.status === 'fulfilled' ? '✅' : '❌'}</span>
+                <div className="cfp-result-detail">
+                  <strong>{r.result?.file?.name || r.fileId}</strong>
+                  {r.result?.pipelinesRun && (
+                    <span className="cfp-result-pipelines">
+                      Ran: {r.result.pipelinesRun.map((p) => PIPELINE_LABELS[p] || p).join(', ')}
+                    </span>
+                  )}
+                  {r.error && <span className="cfp-result-error">{r.error}</span>}
                 </div>
-              )}
-              {processingResults.failed > 0 && (
-                <div className="cfp-result-stat cfp-result-stat--err">
-                  <strong>{processingResults.failed}</strong> failed
-                </div>
-              )}
-            </div>
-            {processingResults.results?.map((r, i) => (
-              <div key={i} className={`cfp-result-row cfp-result-row--${r.status}`}>
-                <span className="cfp-result-status">
-                  {r.status === 'fulfilled' ? '✅' : r.status === 'duplicate' ? '⚠️' : '❌'}
-                </span>
-                <span className="cfp-result-name">
-                  {r.result?.fileName || r.fileId}
-                </span>
-                {r.status === 'duplicate' && <span className="cfp-result-note">{r.message}</span>}
-                {r.status === 'failed'    && <span className="cfp-result-note">{r.error}</span>}
               </div>
             ))}
           </div>
@@ -280,6 +279,37 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
           </div>
           <button className="cfp-close" onClick={onClose}>✕</button>
         </div>
+
+        {/* Deal selector — only shown when opened from global Files view */}
+        {!dealIdProp && (
+          <div className="cfp-deal-selector">
+            <label className="cfp-deal-selector-label" htmlFor="cfp-deal-select">
+              Link to deal <span className="cfp-deal-optional">(optional)</span>
+            </label>
+            <select
+              id="cfp-deal-select"
+              className="cfp-deal-select"
+              value={selectedDealId}
+              onChange={(e) => {
+                setSelectedDealId(e.target.value);
+                setPipelines((prev) => ({ ...prev, dealHealth: !!e.target.value }));
+              }}
+            >
+              <option value="">— No deal (unlinked) —</option>
+              {deals.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name} {d.stage ? `(${d.stage})` : ''}
+                </option>
+              ))}
+            </select>
+            {selectedDealId && (
+              <span className="cfp-deal-linked">✅ Files will be linked to this deal on import</span>
+            )}
+            {!selectedDealId && (
+              <span className="cfp-deal-unlinked">⚠️ Files imported without a deal will not generate actions</span>
+            )}
+          </div>
+        )}
 
         {/* Provider tabs */}
         <div className="cfp-providers">
@@ -387,7 +417,9 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
                         <span className="cfp-file-meta">
                           {file.isFolder
                             ? `${file.childCount ?? '—'} items`
-                            : `${formatFileSize(file.size)} · ${formatDate(file.lastModified)}`
+                            : file.isGoogleNative
+                              ? `Google ${file.category} · ${formatDate(file.lastModified)}`
+                              : `${formatFileSize(file.size)} · ${formatDate(file.lastModified)}`
                           }
                         </span>
                       </div>
@@ -445,9 +477,8 @@ export default function CloudFilePicker({ dealId, contactId, onComplete, onClose
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 async function apiFetch(path, options = {}) {
-  const token = localStorage.getItem('token');
-  const url = path.startsWith('http') ? path : `${API_BASE}${path.replace(/^\/api/, '')}`;
-  const res = await fetch(url, {
+  const token = localStorage.getItem('authToken');
+  const res = await fetch(`${API_BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
