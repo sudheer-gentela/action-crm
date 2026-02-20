@@ -188,7 +188,7 @@ router.post('/', async (req, res) => {
     );
     
     // 🤖 AUTO-GENERATE ACTIONS (non-blocking)
-    ActionsGenerator.generateForDeal(newDeal.id).catch(err => 
+    ActionsGenerator.generateForDeal(newDeal.id, req.user.userId).catch(err =>
       console.error('Error auto-generating actions for new deal:', err)
     );
     
@@ -286,7 +286,7 @@ router.put('/:id', async (req, res) => {
     }
     
     // 🤖 AUTO-GENERATE ACTIONS (non-blocking)
-    ActionsGenerator.generateForDeal(req.params.id).catch(err => 
+    ActionsGenerator.generateForDeal(req.params.id, req.user.userId).catch(err =>
       console.error('Error auto-generating actions for updated deal:', err)
     );
     

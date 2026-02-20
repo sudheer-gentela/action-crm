@@ -79,33 +79,35 @@ router.get('/', async (req, res) => {
   }
 });
 
-// NEW: Manual action generation endpoint
+// Manual action generation — regenerates for all of this user's active deals
 router.post('/generate', async (req, res) => {
   try {
-    console.log('🤖 Manual action generation triggered by user:', req.user.userId);
-    const result = await ActionsGenerator.generateAll();
-    
-    if (result.success) {
-      res.json({
-        success: true,
-        message: `Generated ${result.inserted} actions`,
-        generated: result.generated,
-        inserted: result.inserted
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        message: 'Failed to generate actions',
-        error: result.error
-      });
-    }
+    const userId = req.user.userId;
+    console.log('🤖 Manual action generation triggered by user:', userId);
+    const result = await ActionsGenerator.generateAll(userId);
+    res.json({
+      success: true,
+      message: `Generated ${result.inserted} new actions across ${result.generated} candidates`,
+      generated: result.generated,
+      inserted:  result.inserted,
+      skipped:   result.skipped || 0,
+    });
   } catch (error) {
     console.error('Error in /generate endpoint:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
+  }
+});
+
+// Generate actions for a single deal (call after stage change, file upload, etc.)
+router.post('/generate/deal/:dealId', async (req, res) => {
+  try {
+    const result = await ActionsGenerator.generateForDeal(
+      parseInt(req.params.dealId),
+      req.user.userId
+    );
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
