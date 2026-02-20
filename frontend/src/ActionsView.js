@@ -436,7 +436,7 @@ export default function ActionsView() {
       .catch(() => {});
   }, []);
 
-  const fetchActions = useCallback(async (activeFilters = filters) => {
+  const fetchActions = useCallback(async (activeFilters) => {
     setLoading(true);
     setError(null);
     try {
