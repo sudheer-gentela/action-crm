@@ -431,7 +431,7 @@ export default function ActionsView() {
 
   // Load filter options once
   useEffect(() => {
-    apiFetch('/api/actions/filter-options')
+    apiFetch('/actions/filter-options')
       .then(data => setFilterOptions(data))
       .catch(() => {});
   }, []);
@@ -462,7 +462,7 @@ export default function ActionsView() {
       if (activeFilters.dueBefore)  params.set('dueBefore',  activeFilters.dueBefore);
       if (activeFilters.status)     params.set('status',     activeFilters.status);
 
-      const data = await apiFetch(`/api/actions?${params.toString()}`);
+      const data = await apiFetch(`/actions?${params.toString()}`);
       let rows = data.actions || [];
 
       // Client-side source filter (fast, no extra API call)
@@ -497,7 +497,7 @@ export default function ActionsView() {
 
   async function handleStatusChange(actionId, newStatus) {
     try {
-      await apiFetch(`/api/actions/${actionId}/status`, {
+      await apiFetch(`/actions/${actionId}/status`, {
         method: 'PATCH',
         body: JSON.stringify({ status: newStatus }),
       });
@@ -522,7 +522,7 @@ export default function ActionsView() {
   async function handleGenerateActions() {
     setGenerating(true);
     try {
-      const result = await apiFetch('/api/actions/generate', { method: 'POST' });
+      const result = await apiFetch('/actions/generate', { method: 'POST' });
       await fetchActions(filters);
       alert(`✅ Generated ${result.generated} actions, inserted ${result.inserted} new.`);
     } catch (err) {
