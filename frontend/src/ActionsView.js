@@ -481,11 +481,11 @@ export default function ActionsView() {
     } finally {
       setLoading(false);
     }
-  }, [filters]);
+  }, []); // no deps — always called with explicit activeFilters argument
 
   useEffect(() => {
     fetchActions(filters);
-  }, [filters]); // re-fetch whenever filters change
+  }, [filters, fetchActions]);
 
   function handleFilterChange(key, value) {
     if (key === '__reset__') {
