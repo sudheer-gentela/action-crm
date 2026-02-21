@@ -135,11 +135,11 @@ router.get('/orgs/:orgId', async (req, res) => {
 
       pool.query(`
         SELECT ou.user_id, ou.role, ou.is_active, ou.joined_at,
-               u.email, u.name
+               u.email, u.first_name || ' ' || u.last_name AS name
         FROM   org_users ou
         JOIN   users u ON u.id = ou.user_id
         WHERE  ou.org_id = $1
-        ORDER  BY ou.role, u.name
+        ORDER  BY ou.role, u.first_name
       `, [orgId]),
 
       pool.query(`
@@ -383,7 +383,7 @@ router.get('/admins', async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT sa.id, sa.user_id, sa.granted_at, sa.revoked_at, sa.notes,
-             u.email, u.name,
+             u.email, u.first_name || ' ' || u.last_name AS name,
              g.email AS granted_by_email
       FROM   super_admins sa
       JOIN   users u  ON u.id  = sa.user_id
@@ -454,7 +454,7 @@ router.get('/audit', async (req, res) => {
     const where = conditions.join(' AND ');
 
     const result = await pool.query(`
-      SELECT sal.*, u.email AS admin_email, u.name AS admin_name
+      SELECT sal.*, u.email AS admin_email, u.first_name || ' ' || u.last_name AS admin_name
       FROM   super_admin_audit_log sal
       JOIN   users u ON u.id = sal.super_admin_id
       WHERE  ${where}

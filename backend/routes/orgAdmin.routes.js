@@ -1,12 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // orgAdmin.routes.js
-//
-// Org-level admin operations. Only org owners and admins can access these.
-//
-// Mount in server.js:
-//   app.use('/api/org/admin', require('./routes/orgAdmin.routes'));
-//
-// Stack: authenticateToken → orgContext → requireRole('owner','admin')
 // ─────────────────────────────────────────────────────────────────────────────
 
 const express = require('express');
@@ -15,15 +8,11 @@ const { pool } = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
 
-// Apply auth + org context to all routes
 router.use(authenticateToken, orgContext);
 
-// ── Helper: check the caller has admin/owner role ────────────────────────────
 const adminOnly = requireRole('owner', 'admin');
 
-// ═════════════════════════════════════════════════════════════════════════════
-// ORG PROFILE — admins can update their own org details
-// ═════════════════════════════════════════════════════════════════════════════
+// ── Org Profile ───────────────────────────────────────────────────────────────
 
 router.get('/profile', adminOnly, async (req, res) => {
   try {
@@ -40,11 +29,9 @@ router.get('/profile', adminOnly, async (req, res) => {
 router.patch('/profile', adminOnly, async (req, res) => {
   try {
     const { name } = req.body;
-    // Org admins can only update name — plan/status/seats are super-admin only
     if (!name?.trim()) {
       return res.status(400).json({ error: { message: 'Name is required' } });
     }
-
     const result = await pool.query(
       `UPDATE organizations SET name = $1 WHERE id = $2 RETURNING id, name`,
       [name.trim(), req.orgId]
@@ -55,22 +42,21 @@ router.patch('/profile', adminOnly, async (req, res) => {
   }
 });
 
-// ═════════════════════════════════════════════════════════════════════════════
-// MEMBER MANAGEMENT
-// ═════════════════════════════════════════════════════════════════════════════
+// ── Members ───────────────────────────────────────────────────────────────────
 
-// List all members in this org
 router.get('/members', adminOnly, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
         ou.user_id, ou.role, ou.is_active, ou.joined_at,
-        u.email, u.name,
-        (SELECT COUNT(*) FROM actions a WHERE a.user_id = ou.user_id AND a.org_id = ou.org_id) AS action_count
+        u.email,
+        u.first_name || ' ' || u.last_name AS name,
+        (SELECT COUNT(*) FROM actions a
+         WHERE a.user_id = ou.user_id AND a.org_id = ou.org_id) AS action_count
       FROM org_users ou
       JOIN users u ON u.id = ou.user_id
       WHERE ou.org_id = $1
-      ORDER BY ou.role, u.name
+      ORDER BY ou.role, u.first_name
     `, [req.orgId]);
 
     res.json({ members: result.rows });
@@ -79,7 +65,6 @@ router.get('/members', adminOnly, async (req, res) => {
   }
 });
 
-// Update a member's role
 router.patch('/members/:userId', adminOnly, async (req, res) => {
   try {
     const { userId } = req.params;
@@ -90,7 +75,6 @@ router.patch('/members/:userId', adminOnly, async (req, res) => {
       return res.status(400).json({ error: { message: `Role must be one of: ${VALID_ROLES.join(', ')}` } });
     }
 
-    // Only owners can promote/demote owners
     if (role === 'owner') {
       const callerRole = await pool.query(
         `SELECT role FROM org_users WHERE org_id = $1 AND user_id = $2`,
@@ -101,7 +85,6 @@ router.patch('/members/:userId', adminOnly, async (req, res) => {
       }
     }
 
-    // Protect the last owner
     const currentRole = await pool.query(
       `SELECT role FROM org_users WHERE org_id = $1 AND user_id = $2`,
       [req.orgId, userId]
@@ -131,7 +114,6 @@ router.patch('/members/:userId', adminOnly, async (req, res) => {
   }
 });
 
-// Deactivate a member
 router.delete('/members/:userId', adminOnly, async (req, res) => {
   try {
     const { userId } = req.params;
@@ -140,7 +122,6 @@ router.delete('/members/:userId', adminOnly, async (req, res) => {
       return res.status(400).json({ error: { message: 'You cannot remove yourself' } });
     }
 
-    // Guard last owner
     const targetRole = await pool.query(
       `SELECT role FROM org_users WHERE org_id = $1 AND user_id = $2 AND is_active = TRUE`,
       [req.orgId, userId]
@@ -165,9 +146,7 @@ router.delete('/members/:userId', adminOnly, async (req, res) => {
   }
 });
 
-// ═════════════════════════════════════════════════════════════════════════════
-// INVITATIONS
-// ═════════════════════════════════════════════════════════════════════════════
+// ── Invitations ───────────────────────────────────────────────────────────────
 
 router.get('/invitations', adminOnly, async (req, res) => {
   try {
@@ -192,7 +171,6 @@ router.post('/invitations', adminOnly, async (req, res) => {
       return res.status(400).json({ error: { message: 'Email is required' } });
     }
 
-    // Check not already a member
     const existing = await pool.query(`
       SELECT ou.user_id FROM org_users ou
       JOIN users u ON u.id = ou.user_id
@@ -203,7 +181,6 @@ router.post('/invitations', adminOnly, async (req, res) => {
       return res.status(400).json({ error: { message: 'This person is already a member of your org' } });
     }
 
-    // Check seat limit
     const [countRow, orgRow] = await Promise.all([
       pool.query(`SELECT COUNT(*) FROM org_users WHERE org_id = $1 AND is_active = TRUE`, [req.orgId]),
       pool.query(`SELECT max_users FROM organizations WHERE id = $1`, [req.orgId]),
@@ -213,7 +190,7 @@ router.post('/invitations', adminOnly, async (req, res) => {
     }
 
     const token   = require('crypto').randomBytes(32).toString('hex');
-    const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+    const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
     const result = await pool.query(`
       INSERT INTO org_invitations
@@ -221,9 +198,6 @@ router.post('/invitations', adminOnly, async (req, res) => {
       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
       RETURNING *
     `, [req.orgId, req.userId, email.trim(), role, message, token, expires]);
-
-    // TODO: Send invitation email via your email service
-    // await sendInvitationEmail({ to: email, token, orgName, inviterName });
 
     res.status(201).json({ invitation: result.rows[0], token });
   } catch (err) {
@@ -243,9 +217,7 @@ router.delete('/invitations/:id', adminOnly, async (req, res) => {
   }
 });
 
-// ═════════════════════════════════════════════════════════════════════════════
-// ORG STATS (for org admin dashboard header)
-// ═════════════════════════════════════════════════════════════════════════════
+// ── Stats ─────────────────────────────────────────────────────────────────────
 
 router.get('/stats', adminOnly, async (req, res) => {
   try {
