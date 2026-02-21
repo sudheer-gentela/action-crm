@@ -272,20 +272,25 @@ function AuthScreen({ onLogin, onRegister }) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// RoleSwitcher — sidebar footer component
-// Shows available roles as selectable pills.
-// Collapsed sidebar: shows current role icon only.
-// Expanded sidebar: shows full switcher with all role options.
+// RoleSwitcher — collapsible sidebar footer component
+//
+// Default state: CLOSED — shows only the current role as a
+// compact single-line chip with a chevron toggle.
+// When opened: expands downward to reveal all role pills.
+// Collapsed sidebar: shows current role icon only (no toggle).
 // ─────────────────────────────────────────────────────────────
 function RoleSwitcher({ availableRoles, activeRole, onSwitch, collapsed }) {
+  const [open, setOpen] = useState(false);
+
   // Only render if the user has more than one role
   if (availableRoles.length <= 1) return null;
 
   const current = ROLE_CONFIG[activeRole];
 
+  // Collapsed sidebar — icon only, no toggle needed
   if (collapsed) {
     return (
-      <div className="role-switcher-collapsed" title={`Active: ${current.label} — click to expand sidebar to switch`}>
+      <div className="role-switcher-collapsed" title={`Active: ${current.label} — expand sidebar to switch role`}>
         <span className="role-switcher-icon" style={{ color: current.color }}>
           {current.icon}
         </span>
@@ -295,26 +300,43 @@ function RoleSwitcher({ availableRoles, activeRole, onSwitch, collapsed }) {
 
   return (
     <div className="role-switcher">
-      <div className="role-switcher-label">Active context</div>
-      <div className="role-switcher-pills">
-        {availableRoles.map(role => {
-          const cfg     = ROLE_CONFIG[role];
-          const isActive = role === activeRole;
-          return (
-            <button
-              key={role}
-              className={`role-pill ${isActive ? 'role-pill--active' : ''}`}
-              style={isActive ? { borderColor: cfg.color, color: cfg.color, background: `${cfg.color}18` } : {}}
-              onClick={() => onSwitch(role)}
-              title={cfg.desc}
-            >
-              <span className="role-pill-icon">{cfg.icon}</span>
-              <span className="role-pill-label">{cfg.label}</span>
-              {isActive && <span className="role-pill-dot" style={{ background: cfg.color }} />}
-            </button>
-          );
-        })}
-      </div>
+      {/* Toggle row — always visible, shows current role */}
+      <button
+        className="role-switcher-toggle"
+        onClick={() => setOpen(o => !o)}
+        title={open ? 'Hide role switcher' : 'Switch context'}
+      >
+        <span className="role-switcher-toggle-icon" style={{ color: current.color }}>
+          {current.icon}
+        </span>
+        <span className="role-switcher-toggle-label" style={{ color: current.color }}>
+          {current.label}
+        </span>
+        <span className={`role-switcher-chevron ${open ? 'open' : ''}`}>›</span>
+      </button>
+
+      {/* Expandable pill list */}
+      {open && (
+        <div className="role-switcher-pills">
+          {availableRoles.map(role => {
+            const cfg      = ROLE_CONFIG[role];
+            const isActive = role === activeRole;
+            return (
+              <button
+                key={role}
+                className={`role-pill ${isActive ? 'role-pill--active' : ''}`}
+                style={isActive ? { borderColor: cfg.color, color: cfg.color, background: `${cfg.color}18` } : {}}
+                onClick={() => { onSwitch(role); setOpen(false); }}
+                title={cfg.desc}
+              >
+                <span className="role-pill-icon">{cfg.icon}</span>
+                <span className="role-pill-label">{cfg.label}</span>
+                {isActive && <span className="role-pill-dot" style={{ background: cfg.color }} />}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -412,16 +434,6 @@ function Dashboard({ user, onLogout }) {
             {isMobile ? '✕' : (sidebarCollapsed ? '→' : '←')}
           </button>
         </div>
-
-        {/* Role context banner — shows which context is active */}
-        {!sidebarCollapsed && availableRoles.length > 1 && (
-          <div className="role-context-banner" style={{ background: `${activeRoleCfg.color}22`, borderColor: `${activeRoleCfg.color}44` }}>
-            <span>{activeRoleCfg.icon}</span>
-            <span className="role-context-label" style={{ color: activeRoleCfg.color }}>
-              {activeRoleCfg.desc}
-            </span>
-          </div>
-        )}
 
         <nav className="sidebar-nav">
           {navItems.map(item => (
