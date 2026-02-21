@@ -265,13 +265,10 @@ router.post('/generate', async (req, res) => {
 });
 
 // ── GET /config ───────────────────────────────────────────────
-// NOTE: ActionConfigService.getConfig() currently only takes
-// userId. Once actionConfig.service.js is updated, change to:
-//   ActionConfigService.getConfig(req.user.userId, req.orgId)
 router.get('/config', async (req, res) => {
   try {
     if (!req.user?.userId) return res.status(401).json({ error: { message: 'User not authenticated' } });
-    const config = await ActionConfigService.getConfig(req.user.userId);
+    const config = await ActionConfigService.getConfig(req.user.userId, req.orgId);
     res.json({ config });
   } catch (error) {
     console.error('Get action config error:', error);
@@ -280,10 +277,9 @@ router.get('/config', async (req, res) => {
 });
 
 // ── PUT /config ───────────────────────────────────────────────
-// NOTE: Same as above — update signature after service migration
 router.put('/config', async (req, res) => {
   try {
-    const config = await ActionConfigService.updateConfig(req.user.userId, req.body);
+    const config = await ActionConfigService.updateConfig(req.user.userId, req.orgId, req.body);
     res.json({ config });
   } catch (error) {
     console.error('Update action config error:', error);
