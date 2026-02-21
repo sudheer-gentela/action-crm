@@ -484,6 +484,7 @@ function PlaybookSettings() {
   const [editingStage, setEditingStage] = useState(null);
   const [creating, setCreating]         = useState(false);
   const [deleting, setDeleting]         = useState(false);
+  const [showCompany, setShowCompany]   = useState(false);
 
   const activeRole = sessionStorage.getItem('activeRole') || 'member';
   const canEdit    = activeRole === 'org-admin' || activeRole === 'super-admin';
@@ -699,37 +700,32 @@ function PlaybookSettings() {
                 </div>
               )}
 
-              {playbook.content && (() => {
-                const co = playbook.content?.company || {};
-                const hasAny = co.name || co.industry || co.product;
-                const [showCompany, setShowCompany] = playbook._showCompany !== undefined
-                  ? [playbook._showCompany, v => setPlaybook({ ...playbook, _showCompany: v })]
-                  : [false,                v => setPlaybook({ ...playbook, _showCompany: v })];
-                return (
-                  <div className="sv-card" style={{ marginBottom: 20 }}>
-                    <div className="pb-company-header" onClick={() => setPlaybook({ ...playbook, _showCompany: !showCompany })}>
-                      <span>🏢 Company Context</span>
-                      {hasAny && !showCompany && (
-                        <span className="pb-company-summary">
-                          {[co.name, co.industry, co.product].filter(Boolean).join(' · ')}
-                        </span>
-                      )}
-                      <span className="sv-expand-btn" style={{ marginLeft: 'auto' }}>{showCompany ? '▲' : '▼'}</span>
-                    </div>
-                    {showCompany && (
-                      <div style={{ marginTop: 14 }}>
-                        {['name', 'industry', 'product'].map(field => (
-                          <div key={field} className="sv-field" style={{ marginBottom: 12 }}>
-                            <label style={{ textTransform: 'capitalize' }}>{field}</label>
-                            <input className="sv-input" value={co[field] || ''} disabled={!canEdit}
-                              onChange={e => setPlaybook({ ...playbook, content: { ...playbook.content, company: { ...co, [field]: e.target.value } } })} />
-                          </div>
-                        ))}
-                      </div>
+              {playbook.content && (
+                <div className="sv-card" style={{ marginBottom: 20 }}>
+                  <div className="pb-company-header" onClick={() => setShowCompany(v => !v)}>
+                    <span>🏢 Company Context</span>
+                    {!showCompany && (playbook.content?.company?.name || playbook.content?.company?.industry || playbook.content?.company?.product) && (
+                      <span className="pb-company-summary">
+                        {[playbook.content.company.name, playbook.content.company.industry, playbook.content.company.product].filter(Boolean).join(' · ')}
+                      </span>
                     )}
+                    <span className="sv-expand-btn" style={{ marginLeft: 'auto' }}>{showCompany ? '▲' : '▼'}</span>
                   </div>
-                );
-              })()}
+                  {showCompany && (
+                    <div style={{ marginTop: 14 }}>
+                      {['name', 'industry', 'product'].map(field => (
+                        <div key={field} className="sv-field" style={{ marginBottom: 12 }}>
+                          <label style={{ textTransform: 'capitalize' }}>{field}</label>
+                          <input className="sv-input"
+                            value={playbook.content?.company?.[field] || ''}
+                            disabled={!canEdit}
+                            onChange={e => setPlaybook({ ...playbook, content: { ...playbook.content, company: { ...playbook.content.company, [field]: e.target.value } } })} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {stagesArray.length > 0 && (
                 <div className="sv-card">
