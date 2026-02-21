@@ -136,10 +136,21 @@ export const apiService = {
     delete: (id)        => api.delete(`/competitors/${id}`),
   },
 
-  // Sales Playbook
+  // Sales Playbook (single, legacy)
   playbook: {
     get:  ()     => api.get('/playbook'),
     save: (data) => api.put('/playbook', data),
+  },
+
+  // Playbooks (multi-playbook per org)
+  playbooks: {
+    getAll:     ()         => api.get('/playbooks'),
+    getDefault: ()         => api.get('/playbooks/default'),
+    getById:    (id)       => api.get(`/playbooks/${id}`),
+    create:     (data)     => api.post('/playbooks', data),
+    update:     (id, data) => api.put(`/playbooks/${id}`, data),
+    setDefault: (id)       => api.post(`/playbooks/${id}/set-default`),
+    delete:     (id)       => api.delete(`/playbooks/${id}`),
   },
 
   // AI Prompts

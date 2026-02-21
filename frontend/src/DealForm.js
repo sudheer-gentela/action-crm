@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './DealForm.css';
-import apiService from './services/apiService';
+import { apiService } from './apiService';
 
 function DealForm({ deal, onSubmit, onClose, accounts }) {
   const [formData, setFormData] = useState({
@@ -15,9 +15,9 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
     playbook_id: ''
   });
 
-  const [errors, setErrors]           = useState({});
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [playbooks, setPlaybooks]     = useState([]);
+  const [errors, setErrors]                     = useState({});
+  const [isSubmitting, setIsSubmitting]         = useState(false);
+  const [playbooks, setPlaybooks]               = useState([]);
   const [playbooksLoading, setPlaybooksLoading] = useState(true);
 
   // Populate form if editing existing deal
@@ -37,14 +37,13 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
     }
   }, [deal]);
 
-  // Load playbooks for the dropdown
+  // Load playbooks for dropdown
   useEffect(() => {
     (async () => {
       try {
         const r = await apiService.playbooks.getAll();
         setPlaybooks(r.data.playbooks || []);
       } catch {
-        // Non-fatal — dropdown just won't show options
         setPlaybooks([]);
       } finally {
         setPlaybooksLoading(false);
@@ -273,7 +272,7 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
           <div className="form-group">
             <label htmlFor="playbook_id">
               Sales Playbook
-              <span className="field-hint"> — determines which playbook guides AI actions for this deal</span>
+              <span className="field-hint"> — guides AI actions for this deal</span>
             </label>
             <select
               id="playbook_id"
@@ -285,8 +284,7 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
               <option value="">Use org default playbook</option>
               {playbooks.map(pb => (
                 <option key={pb.id} value={pb.id}>
-                  {pb.is_default ? '★ ' : ''}{pb.name}
-                  {pb.type !== 'custom' ? ` (${pb.type})` : ''}
+                  {pb.is_default ? '★ ' : ''}{pb.name}{pb.type !== 'custom' ? ` (${pb.type})` : ''}
                 </option>
               ))}
             </select>
