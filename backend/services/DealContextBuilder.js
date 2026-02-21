@@ -13,9 +13,21 @@
  *
  * Returns a single `context` object consumed by ActionsRulesEngine and ActionsAIEnhancer.
  * Called once per deal — all downstream services receive this context, no extra DB calls.
+ *
+ * MULTI-ORG changes:
+ *   - build(dealId, userId, orgId) — orgId is now required
+ *   - _getFiles(dealId, userId, orgId) — queries storage_files with org_id guard
+ *   - _getPlaybook(userId, orgId)       — delegates to PlaybookService.getPlaybook(userId, orgId)
+ *   - _getHealthConfig(userId, orgId)   — queries deal_health_config with (user_id, org_id)
+ *   - _getPlaybookStageActions uses getStageActions(userId, orgId, stageName)
+ *
+ * All _deriveSignals logic and the other DB fetchers (_getDeal, _getAccount,
+ * _getContacts, _getMeetings, _getEmails) are unchanged — they operate on
+ * already-org-isolated parent records (deals, meetings, emails are already
+ * scoped by dealId which belongs to one org).
  */
 
-const db        = require('../config/database');
+const db            = require('../config/database');
 const PlaybookService = require('./playbook.service');
 
 class DealContextBuilder {
@@ -24,9 +36,10 @@ class DealContextBuilder {
    * Build full context for a deal.
    * @param {number} dealId
    * @param {number} userId
+   * @param {number} orgId
    * @returns {Promise<DealContext>}
    */
-  static async build(dealId, userId) {
+  static async build(dealId, userId, orgId) {
     const [
       deal,
       account,
@@ -42,9 +55,9 @@ class DealContextBuilder {
       this._getContacts(dealId),
       this._getMeetings(dealId),
       this._getEmails(dealId),
-      this._getFiles(dealId, userId),
-      this._getPlaybook(userId),
-      this._getHealthConfig(userId),
+      this._getFiles(dealId, userId, orgId),
+      this._getPlaybook(userId, orgId),
+      this._getHealthConfig(userId, orgId),
     ]);
 
     if (!deal) throw new Error(`Deal ${dealId} not found`);
@@ -58,7 +71,7 @@ class DealContextBuilder {
 
     // Get playbook stage actions for the deal's current stage
     const playbookStageActions = deal.stage
-      ? await PlaybookService.getStageActions(userId, deal.stage).catch(() => [])
+      ? await PlaybookService.getStageActions(userId, orgId, deal.stage).catch(() => [])
       : [];
 
     // Pre-compute derived signals useful to rules engine
@@ -75,22 +88,24 @@ class DealContextBuilder {
       playbookStageActions,
       healthConfig,
       healthBreakdown,
-      healthScore:  deal.health_score  ?? null,
-      healthStatus: deal.health        || 'unknown',
+      healthScore:  deal.health_score ?? null,
+      healthStatus: deal.health       || 'unknown',
       userId,
+      orgId,
       derived,
     };
   }
 
   // ── Derived signal helpers ────────────────────────────────────────────────
+  // Unchanged — operates entirely on already-fetched in-memory data.
 
   static _deriveSignals(deal, contacts, meetings, emails, files) {
     const now = Date.now();
 
     // Meetings
-    const completedMeetings   = meetings.filter(m => m.status === 'completed' || new Date(m.start_time) < new Date());
-    const upcomingMeetings    = meetings.filter(m => m.status === 'scheduled' && new Date(m.start_time) > new Date());
-    const lastMeeting         = completedMeetings.sort((a, b) => new Date(b.start_time) - new Date(a.start_time))[0] || null;
+    const completedMeetings    = meetings.filter(m => m.status === 'completed' || new Date(m.start_time) < new Date());
+    const upcomingMeetings     = meetings.filter(m => m.status === 'scheduled'  && new Date(m.start_time) > new Date());
+    const lastMeeting          = completedMeetings.sort((a, b) => new Date(b.start_time) - new Date(a.start_time))[0] || null;
     const daysSinceLastMeeting = lastMeeting
       ? Math.floor((now - new Date(lastMeeting.start_time)) / 86400000)
       : null;
@@ -109,14 +124,14 @@ class DealContextBuilder {
     });
 
     // Contacts by role
-    const decisionMakers  = contacts.filter(c => ['decision_maker', 'economic_buyer'].includes(c.role_type));
-    const champions       = contacts.filter(c => c.role_type === 'champion');
-    const stakeholders    = contacts.filter(c => ['decision_maker','champion','influencer','economic_buyer','executive'].includes(c.role_type));
+    const decisionMakers = contacts.filter(c => ['decision_maker', 'economic_buyer'].includes(c.role_type));
+    const champions      = contacts.filter(c => c.role_type === 'champion');
+    const stakeholders   = contacts.filter(c => ['decision_maker','champion','influencer','economic_buyer','executive'].includes(c.role_type));
 
     // Files
-    const processedFiles  = files.filter(f => f.processing_status === 'completed');
-    const pendingFiles    = files.filter(f => f.processing_status === 'processing');
-    const failedFiles     = files.filter(f => f.processing_status === 'failed');
+    const processedFiles = files.filter(f => f.processing_status === 'completed');
+    const pendingFiles   = files.filter(f => f.processing_status === 'processing');
+    const failedFiles    = files.filter(f => f.processing_status === 'failed');
 
     // Deal timing
     const daysInStage = deal.updated_at
@@ -125,8 +140,8 @@ class DealContextBuilder {
     const daysUntilClose = deal.close_date
       ? Math.ceil((new Date(deal.close_date) - now) / 86400000)
       : null;
-    const isPastClose = daysUntilClose !== null && daysUntilClose < 0;
-    const closingImminently = daysUntilClose !== null && daysUntilClose >= 0 && daysUntilClose <= 7;
+    const isPastClose        = daysUntilClose !== null && daysUntilClose < 0;
+    const closingImminently  = daysUntilClose !== null && daysUntilClose >= 0 && daysUntilClose <= 7;
 
     return {
       completedMeetings,
@@ -154,6 +169,8 @@ class DealContextBuilder {
   }
 
   // ── DB fetchers ───────────────────────────────────────────────────────────
+
+  // dealId is already org-scoped so no explicit org guard needed on these four.
 
   static async _getDeal(dealId) {
     const r = await db.query('SELECT * FROM deals WHERE id = $1', [dealId]);
@@ -197,29 +214,30 @@ class DealContextBuilder {
     return r.rows;
   }
 
-  static async _getFiles(dealId, userId) {
+  // storage_files needs explicit org_id guard — a file has both user_id and org_id.
+  static async _getFiles(dealId, userId, orgId) {
     const r = await db.query(
       `SELECT * FROM storage_files
-       WHERE deal_id = $1 AND user_id = $2
+       WHERE deal_id = $1 AND user_id = $2 AND org_id = $3
        ORDER BY imported_at DESC`,
-      [dealId, userId]
+      [dealId, userId, orgId]
     );
     return r.rows;
   }
 
-  static async _getPlaybook(userId) {
+  static async _getPlaybook(userId, orgId) {
     try {
-      return await PlaybookService.getPlaybook(userId);
+      return await PlaybookService.getPlaybook(userId, orgId);
     } catch {
       return null;
     }
   }
 
-  static async _getHealthConfig(userId) {
+  static async _getHealthConfig(userId, orgId) {
     try {
       const r = await db.query(
-        'SELECT * FROM deal_health_config WHERE user_id = $1',
-        [userId]
+        'SELECT * FROM deal_health_config WHERE user_id = $1 AND org_id = $2',
+        [userId, orgId]
       );
       return r.rows[0] || null;
     } catch {

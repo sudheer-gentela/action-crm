@@ -1,7 +1,12 @@
 /**
  * storageFileService.js
  * Manages the storage_files table.
- * All requires point to sibling files in services/ (flat structure).
+ *
+ * MULTI-ORG: Every function now accepts orgId and includes it in all
+ * WHERE / INSERT clauses. The ON CONFLICT key for storage_files is
+ * UNIQUE(user_id, provider, provider_file_id, deal_id) — org_id is
+ * added to INSERT but not to the conflict key (a file imported by two
+ * different users in different orgs is a legitimate separate record).
  */
 
 const { pool } = require('../config/database');
@@ -16,14 +21,15 @@ function buildSourceLabel(provider, fileName) {
   return `${providerName}: ${fileName}`;
 }
 
-async function checkDuplicate(userId, provider, providerFileId, dealId) {
+async function checkDuplicate(userId, provider, providerFileId, dealId, orgId) {
   const result = await pool.query(
     `SELECT id, file_name, source_label, processing_status, imported_at, processed_at,
             health_score_after, health_status_after
      FROM storage_files
-     WHERE user_id = $1 AND provider = $2 AND provider_file_id = $3
-       AND deal_id IS NOT DISTINCT FROM $4`,
-    [userId, provider, providerFileId, dealId || null]
+     WHERE user_id = $1 AND org_id = $2 AND provider = $3
+       AND provider_file_id = $4
+       AND deal_id IS NOT DISTINCT FROM $5`,
+    [userId, orgId, provider, providerFileId, dealId || null]
   );
   if (result.rows.length === 0) return { exists: false };
   return {
@@ -35,16 +41,16 @@ async function checkDuplicate(userId, provider, providerFileId, dealId) {
   };
 }
 
-async function createImportRecord(fileRef, userId, dealId = null, contactId = null, force = false) {
+async function createImportRecord(fileRef, userId, orgId, dealId = null, contactId = null, force = false) {
   const sourceLabel = buildSourceLabel(fileRef.provider, fileRef.file_name);
 
   if (force) {
     const result = await pool.query(
       `INSERT INTO storage_files (
-        user_id, deal_id, contact_id, provider, provider_file_id, web_url,
+        org_id, user_id, deal_id, contact_id, provider, provider_file_id, web_url,
         file_name, file_size, mime_type, category, last_modified_at,
         source_label, processing_status, imported_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'processing',NOW())
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'processing',NOW())
       ON CONFLICT (user_id, provider, provider_file_id, deal_id)
       DO UPDATE SET
         processing_status = 'processing', imported_at = NOW(),
@@ -55,7 +61,7 @@ async function createImportRecord(fileRef, userId, dealId = null, contactId = nu
         deal_health_signals = NULL, competitors_found = NULL,
         health_score_after = NULL, health_status_after = NULL, actions_generated = 0
       RETURNING *`,
-      [userId, dealId || null, contactId || null,
+      [orgId, userId, dealId || null, contactId || null,
        fileRef.provider, fileRef.provider_file_id, fileRef.web_url || null,
        fileRef.file_name, fileRef.file_size || 0, fileRef.mime_type || null,
        fileRef.category || null, fileRef.last_modified_at || null, sourceLabel]
@@ -66,12 +72,12 @@ async function createImportRecord(fileRef, userId, dealId = null, contactId = nu
   try {
     const result = await pool.query(
       `INSERT INTO storage_files (
-        user_id, deal_id, contact_id, provider, provider_file_id, web_url,
+        org_id, user_id, deal_id, contact_id, provider, provider_file_id, web_url,
         file_name, file_size, mime_type, category, last_modified_at,
         source_label, processing_status
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'processing')
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'processing')
       RETURNING *`,
-      [userId, dealId || null, contactId || null,
+      [orgId, userId, dealId || null, contactId || null,
        fileRef.provider, fileRef.provider_file_id, fileRef.web_url || null,
        fileRef.file_name, fileRef.file_size || 0, fileRef.mime_type || null,
        fileRef.category || null, fileRef.last_modified_at || null, sourceLabel]
@@ -79,7 +85,7 @@ async function createImportRecord(fileRef, userId, dealId = null, contactId = nu
     return result.rows[0];
   } catch (err) {
     if (err.code === '23505') {
-      const dup = await checkDuplicate(userId, fileRef.provider, fileRef.provider_file_id, dealId);
+      const dup = await checkDuplicate(userId, fileRef.provider, fileRef.provider_file_id, dealId, orgId);
       const error = new Error(
         `"${fileRef.file_name}" has already been imported for this deal. Pass force: true to re-import.`
       );
@@ -91,6 +97,7 @@ async function createImportRecord(fileRef, userId, dealId = null, contactId = nu
   }
 }
 
+// markProcessed and markFailed operate by primary key (recordId) — no org scoping needed
 async function markProcessed(recordId, insights) {
   await pool.query(
     `UPDATE storage_files SET
@@ -121,7 +128,7 @@ async function markFailed(recordId, errorMessage) {
   );
 }
 
-async function getFilesForDeal(dealId, userId) {
+async function getFilesForDeal(dealId, userId, orgId) {
   const result = await pool.query(
     `SELECT id, provider, file_name, file_size, mime_type, category, web_url, source_label,
             imported_at, processed_at, processing_status, processing_error,
@@ -129,30 +136,30 @@ async function getFilesForDeal(dealId, userId) {
             deal_health_signals, competitors_found, health_score_after, health_status_after,
             actions_generated, pipelines_run
      FROM storage_files
-     WHERE deal_id = $1 AND user_id = $2
+     WHERE deal_id = $1 AND user_id = $2 AND org_id = $3
      ORDER BY imported_at DESC`,
-    [dealId, userId]
+    [dealId, userId, orgId]
   );
   return result.rows;
 }
 
-async function getFilesForContact(contactId, userId) {
+async function getFilesForContact(contactId, userId, orgId) {
   const result = await pool.query(
     `SELECT id, provider, file_name, file_size, mime_type, category, web_url, source_label,
             imported_at, processed_at, processing_status, ai_summary, ai_action_items,
             ai_sentiment, actions_generated, pipelines_run
      FROM storage_files
-     WHERE contact_id = $1 AND user_id = $2
+     WHERE contact_id = $1 AND user_id = $2 AND org_id = $3
      ORDER BY imported_at DESC`,
-    [contactId, userId]
+    [contactId, userId, orgId]
   );
   return result.rows;
 }
 
-async function deleteImportRecord(recordId, userId) {
+async function deleteImportRecord(recordId, userId, orgId) {
   const result = await pool.query(
-    'DELETE FROM storage_files WHERE id = $1 AND user_id = $2 RETURNING id, file_name',
-    [recordId, userId]
+    'DELETE FROM storage_files WHERE id = $1 AND user_id = $2 AND org_id = $3 RETURNING id, file_name',
+    [recordId, userId, orgId]
   );
   if (result.rows.length === 0) {
     throw new Error('Import record not found or you do not have permission to delete it.');
@@ -160,10 +167,11 @@ async function deleteImportRecord(recordId, userId) {
   return result.rows[0];
 }
 
-async function getAllFilesForUser(userId) {
+async function getAllFilesForUser(userId, orgId) {
   const result = await pool.query(
     `SELECT
        sf.id,
+       sf.org_id,
        sf.user_id,
        sf.deal_id,
        sf.contact_id,
@@ -178,12 +186,12 @@ async function getAllFilesForUser(userId) {
        sf.last_modified_at,
        sf.imported_at,
        sf.processing_status,
-       d.name                AS deal_name
+       d.name AS deal_name
      FROM storage_files sf
-     LEFT JOIN deals d ON d.id = sf.deal_id AND d.user_id = $1
-     WHERE sf.user_id = $1
+     LEFT JOIN deals d ON d.id = sf.deal_id AND d.org_id = $2
+     WHERE sf.user_id = $1 AND sf.org_id = $2
      ORDER BY sf.imported_at DESC`,
-    [userId]
+    [userId, orgId]
   );
   return result.rows;
 }

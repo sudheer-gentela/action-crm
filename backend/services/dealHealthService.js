@@ -2,38 +2,45 @@
  * Deal Health Scoring Service
  * Evaluates all 16 atomic parameters across 6 categories
  * Phases 1 (auto), 2 (manual signals), 3 (AI signals)
+ *
+ * MULTI-ORG changes:
+ *   - scoreDeal(dealId, userId, orgId)  — orgId passed to getConfig
+ *   - getConfig(client, userId, orgId)  — queries by (user_id, org_id); inserts with org_id
+ *   - applyAISignals(dealId, analysisResult, sourceType, userId, orgId)
+ *   - detectCompetitors(dealId, userId, orgId, text)
+ *
+ * All scoring logic (scoreCategory, score* functions, calculateSlowResponse,
+ * extract*, parse*, getDeal, getContacts, getMeetings, getEmails,
+ * getValueHistory) is completely unchanged.
  */
 
 const { pool } = require('../config/database');
 
 // ── Main scoring entry point ─────────────────────────────────
 
-async function scoreDeal(dealId, userId) {
+async function scoreDeal(dealId, userId, orgId) {
   const client = await pool.connect();
   try {
     const [deal, config, contacts, meetings, emails, valueHistory] =
       await Promise.all([
         getDeal(client, dealId, userId),
-        getConfig(client, userId),
+        getConfig(client, userId, orgId),
         getContacts(client, dealId),
         getMeetings(client, dealId),
         getEmails(client, dealId),
-        getValueHistory(client, dealId)
+        getValueHistory(client, dealId),
       ]);
 
     if (!deal) throw new Error(`Deal ${dealId} not found`);
 
-    // Resolve enabled map — default all true if not set
     const enabled = config.params_enabled || {};
     const isEnabled = key => enabled[key] !== false;
 
-    // Expose to category scorers via config
     config._isEnabled = isEnabled;
     config._aiOn      = config.ai_enabled !== false;
 
     const breakdown = { categories: {}, params: {}, signals: {} };
 
-    // ── 6 Category scores ────────────────────────────────────
     const cat1 = scoreCloseDateCredibility(deal, config, breakdown);
     const cat2 = scoreBuyerEngagement(deal, config, contacts, meetings, breakdown);
     const cat3 = scoreProcessCompletion(deal, config, contacts, meetings, breakdown);
@@ -41,22 +48,20 @@ async function scoreDeal(dealId, userId) {
     const cat5 = scoreCompetitiveRisk(deal, config, breakdown);
     const cat6 = scoreMomentum(deal, config, meetings, emails, breakdown);
 
-    // Weighted total
     const total = Math.round(
-      (cat1 * config.weight_close_date / 100) +
-      (cat2 * config.weight_buyer_engagement / 100) +
-      (cat3 * config.weight_process / 100) +
-      (cat4 * config.weight_deal_size / 100) +
-      (cat5 * config.weight_competitive / 100) +
-      (cat6 * config.weight_momentum / 100)
+      (cat1 * config.weight_close_date         / 100) +
+      (cat2 * config.weight_buyer_engagement   / 100) +
+      (cat3 * config.weight_process            / 100) +
+      (cat4 * config.weight_deal_size          / 100) +
+      (cat5 * config.weight_competitive        / 100) +
+      (cat6 * config.weight_momentum           / 100)
     );
 
-    const score   = Math.max(0, Math.min(100, total));
-    const health  = score >= config.threshold_healthy ? 'healthy'
-                  : score >= config.threshold_watch   ? 'watch'
-                  : 'risk';
+    const score  = Math.max(0, Math.min(100, total));
+    const health = score >= config.threshold_healthy ? 'healthy'
+                 : score >= config.threshold_watch   ? 'watch'
+                 : 'risk';
 
-    // Persist
     await client.query(
       `UPDATE deals
        SET health = $1,
@@ -76,27 +81,11 @@ async function scoreDeal(dealId, userId) {
 }
 
 // ── Scoring model ────────────────────────────────────────────
-//
-// EARN-POINTS HYBRID MODEL
-//
-// For categories that have positive params (1-4):
-//   score = (positivePointsEarned / maxPossiblePositive) * 100 - negativePenalties
-//
-// For pure-risk categories (5, 6 — all negative params):
-//   score = 100 - negativePenalties
-//
-// Parameter states:
-//   confirmed → contributes its full weight (positive adds, negative deducts)
-//   unknown   → earns nothing (no bonus, no penalty — deal must prove itself)
-//   absent    → earns nothing (explicitly not applicable)
-//
-// Result: empty deal scores ~30 (Risk). Must earn its way to Healthy.
-//
-// Helper — score one category given an array of {w, state} param descriptors
+
 function scoreCategory(params) {
-  const maxPositive    = params.filter(p => p.w > 0).reduce((s, p) => s + p.w, 0);
-  let positiveEarned   = 0;
-  let negativePenalty  = 0;
+  const maxPositive   = params.filter(p => p.w > 0).reduce((s, p) => s + p.w, 0);
+  let positiveEarned  = 0;
+  let negativePenalty = 0;
 
   for (const p of params) {
     if (p.state === 'confirmed') {
@@ -106,7 +95,6 @@ function scoreCategory(params) {
   }
 
   if (maxPositive === 0) {
-    // Pure-risk category — starts at 100, only negatives can fire
     return Math.max(0, 100 - negativePenalty);
   }
 
@@ -117,19 +105,18 @@ function scoreCategory(params) {
 // ── Category 1: Close Date Credibility ──────────────────────
 
 function scoreCloseDateCredibility(deal, config, bd) {
-  const W      = config.param_weights;
+  const W       = config.param_weights;
   const enabled = config._isEnabled;
-  const aiOn   = config._aiOn;
-  const params = {};
-  const scored = [];
+  const aiOn    = config._aiOn;
+  const params  = {};
+  const scored  = [];
 
-  // 1a: Buyer-confirmed close date — POSITIVE, NON-AUTO
   if (enabled('1a_close_confirmed')) {
-    const aiSig   = aiOn && deal.close_date_ai_confirmed;
+    const aiSig    = aiOn && deal.close_date_ai_confirmed;
     const confirmed = Boolean(aiSig) || Boolean(deal.close_date_user_confirmed);
-    const state   = confirmed ? 'confirmed'
-                  : deal.close_date_user_confirmed === false ? 'absent'
-                  : 'unknown';
+    const state    = confirmed ? 'confirmed'
+                   : deal.close_date_user_confirmed === false ? 'absent'
+                   : 'unknown';
     scored.push({ w: W['1a_close_confirmed'], state });
     params['1a'] = { label: 'Buyer-confirmed close date', state, value: confirmed,
       ai: aiSig, user: deal.close_date_user_confirmed, source: deal.close_date_ai_source,
@@ -138,7 +125,6 @@ function scoreCloseDateCredibility(deal, config, bd) {
       impact: state === 'confirmed' ? W['1a_close_confirmed'] : 0 };
   }
 
-  // 1b: Close date slipped — NEGATIVE, AUTO
   if (enabled('1b_close_slipped')) {
     const count   = deal.close_date_push_count || 0;
     const slipped = count > 0;
@@ -151,7 +137,6 @@ function scoreCloseDateCredibility(deal, config, bd) {
         : null };
   }
 
-  // 1c: Close date tied to buyer event — POSITIVE, NON-AUTO
   if (enabled('1c_buyer_event')) {
     const aiSig    = aiOn && deal.buyer_event_ai_confirmed;
     const confirmed = Boolean(aiSig) || Boolean(deal.buyer_event_user_confirmed);
@@ -181,7 +166,6 @@ function scoreBuyerEngagement(deal, config, contacts, meetings, bd) {
   const params  = {};
   const scored  = [];
 
-  // 2a: Economic buyer — POSITIVE, NON-AUTO (manual tagging)
   if (enabled('2a_economic_buyer')) {
     const found = deal.economic_buyer_contact_id !== null ||
       contacts.some(c => c.role_type === 'economic_buyer' || c.role_type === 'decision_maker');
@@ -200,9 +184,8 @@ function scoreBuyerEngagement(deal, config, contacts, meetings, bd) {
       impact: state === 'confirmed' ? W['2a_economic_buyer'] : 0 };
   }
 
-  // 2b: Exec meeting — POSITIVE, AUTO
   if (enabled('2b_exec_meeting')) {
-    const execTitles  = config.exec_titles || [];
+    const execTitles   = config.exec_titles || [];
     const execContacts = contacts.filter(c =>
       c.role_type === 'executive' ||
       execTitles.some(t => (c.title || '').toLowerCase().includes(t.toLowerCase()))
@@ -222,13 +205,12 @@ function scoreBuyerEngagement(deal, config, contacts, meetings, bd) {
       impact: held ? W['2b_exec_meeting'] : 0 };
   }
 
-  // 2c: Multi-threaded — POSITIVE, AUTO
   if (enabled('2c_multi_threaded')) {
-    const min    = config.multi_thread_min_contacts || 2;
-    const roles  = ['decision_maker','champion','influencer','economic_buyer','executive'];
-    const stks   = contacts.filter(c => roles.includes(c.role_type));
-    const met    = stks.length >= min;
-    const state  = met ? 'confirmed' : 'absent';
+    const min   = config.multi_thread_min_contacts || 2;
+    const roles = ['decision_maker','champion','influencer','economic_buyer','executive'];
+    const stks  = contacts.filter(c => roles.includes(c.role_type));
+    const met   = stks.length >= min;
+    const state = met ? 'confirmed' : 'absent';
     scored.push({ w: W['2c_multi_threaded'], state });
     params['2c'] = { label: `Multi-threaded (≥${min} stakeholders)`, state, value: met,
       auto: true, count: stks.length,
@@ -253,7 +235,6 @@ function scoreProcessCompletion(deal, config, contacts, meetings, bd) {
   const params  = {};
   const scored  = [];
 
-  // 3a: Legal/procurement — POSITIVE, NON-AUTO
   if (enabled('3a_legal_engaged')) {
     const legalTitles = config.legal_titles || [];
     const procTitles  = config.procurement_titles || [];
@@ -277,7 +258,6 @@ function scoreProcessCompletion(deal, config, contacts, meetings, bd) {
       impact: state === 'confirmed' ? W['3a_legal_engaged'] : 0 };
   }
 
-  // 3b: Security/IT review — POSITIVE, NON-AUTO
   if (enabled('3b_security_review')) {
     const secTitles = config.security_titles || [];
     const secCs     = contacts.filter(c =>
@@ -314,15 +294,14 @@ function scoreDealSizeRealism(deal, config, valueHistory, bd) {
   const params  = {};
   const scored  = [];
 
-  // 4a: Oversized — NEGATIVE, AUTO
   if (enabled('4a_value_vs_segment')) {
-    const dealValue  = parseFloat(deal.value) || 0;
-    const mult       = config.segment_size_multiplier || 2.0;
-    let segAvg       = config.segment_avg_midmarket;
+    const dealValue = parseFloat(deal.value) || 0;
+    const mult      = config.segment_size_multiplier || 2.0;
+    let segAvg      = config.segment_avg_midmarket;
     if (dealValue < 10000)      segAvg = config.segment_avg_smb;
     else if (dealValue > 50000) segAvg = config.segment_avg_enterprise;
-    const oversized  = dealValue > (segAvg * mult);
-    const ratio      = segAvg > 0 ? (dealValue / segAvg).toFixed(1) : 0;
+    const oversized = dealValue > (segAvg * mult);
+    const ratio     = segAvg > 0 ? (dealValue / segAvg).toFixed(1) : 0;
     scored.push({ w: oversized ? W['4a_value_vs_segment'] : 0, state: oversized ? 'confirmed' : 'absent' });
     params['4a'] = { label: `Deal value >${mult}× segment avg`, state: oversized ? 'confirmed' : 'absent',
       value: oversized, auto: true, dealValue, segmentAvg: segAvg, ratio,
@@ -332,12 +311,11 @@ function scoreDealSizeRealism(deal, config, valueHistory, bd) {
       impact: oversized ? W['4a_value_vs_segment'] : 0 };
   }
 
-  // 4b: Deal expanded — POSITIVE, AUTO
   if (enabled('4b_deal_expanded')) {
-    const cutoff  = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const recentH = valueHistory.filter(h => new Date(h.changed_at) > cutoff && h.new_value > h.old_value);
+    const cutoff   = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const recentH  = valueHistory.filter(h => new Date(h.changed_at) > cutoff && h.new_value > h.old_value);
     const expanded = recentH.length > 0;
-    const state   = expanded ? 'confirmed' : 'absent';
+    const state    = expanded ? 'confirmed' : 'absent';
     scored.push({ w: W['4b_deal_expanded'], state });
     params['4b'] = { label: 'Deal expanded in last 30 days', state, value: expanded,
       auto: true, history: valueHistory.slice(0, 3),
@@ -347,7 +325,6 @@ function scoreDealSizeRealism(deal, config, valueHistory, bd) {
       impact: expanded ? W['4b_deal_expanded'] : 0 };
   }
 
-  // 4c: Scope approved — POSITIVE, NON-AUTO
   if (enabled('4c_scope_approved')) {
     const aiSig    = config._aiOn && deal.scope_approved_ai;
     const confirmed = Boolean(deal.scope_approved_user) || Boolean(aiSig);
@@ -370,7 +347,6 @@ function scoreDealSizeRealism(deal, config, valueHistory, bd) {
 }
 
 // ── Category 5: Competitive & Pricing Risk ───────────────────
-// Pure-risk category — starts at 100, only negatives fire
 
 function scoreCompetitiveRisk(deal, config, bd) {
   const W       = config.param_weights;
@@ -380,7 +356,7 @@ function scoreCompetitiveRisk(deal, config, bd) {
   const scored  = [];
 
   if (enabled('5a_competitive')) {
-    const val   = deal.competitive_deal_user || (aiOn && deal.competitive_deal_ai);
+    const val  = deal.competitive_deal_user || (aiOn && deal.competitive_deal_ai);
     const comps = deal.competitive_competitors
       ? (typeof deal.competitive_competitors === 'string'
           ? JSON.parse(deal.competitive_competitors) : deal.competitive_competitors)
@@ -425,7 +401,6 @@ function scoreCompetitiveRisk(deal, config, bd) {
 }
 
 // ── Category 6: Momentum & Activity ─────────────────────────
-// Pure-risk category — starts at 100, only negatives fire (on real evidence)
 
 function scoreMomentum(deal, config, meetings, emails, bd) {
   const W       = config.param_weights;
@@ -433,16 +408,15 @@ function scoreMomentum(deal, config, meetings, emails, bd) {
   const params  = {};
   const scored  = [];
 
-  // 6a: No recent meeting — NEGATIVE, AUTO
   if (enabled('6a_no_meeting_14d')) {
-    const days       = config.no_meeting_days || 14;
-    const cutoff     = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const hasRecent  = meetings.some(m => new Date(m.start_time) > cutoff);
-    const lastMeet   = meetings.length > 0
+    const days      = config.no_meeting_days || 14;
+    const cutoff    = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const hasRecent = meetings.some(m => new Date(m.start_time) > cutoff);
+    const lastMeet  = meetings.length > 0
       ? meetings.reduce((a, b) => new Date(a.start_time) > new Date(b.start_time) ? a : b)
       : null;
-    const daysSince  = lastMeet ? Math.floor((Date.now() - new Date(lastMeet.start_time)) / 86400000) : null;
-    const penalise   = !hasRecent && meetings.length > 0;
+    const daysSince = lastMeet ? Math.floor((Date.now() - new Date(lastMeet.start_time)) / 86400000) : null;
+    const penalise  = !hasRecent && meetings.length > 0;
     scored.push({ w: penalise ? W['6a_no_meeting_14d'] : 0, state: penalise ? 'confirmed' : 'absent' });
     params['6a'] = { label: `No buyer meeting in last ${days} days`,
       state: penalise ? 'confirmed' : 'absent', value: !hasRecent,
@@ -453,10 +427,9 @@ function scoreMomentum(deal, config, meetings, emails, bd) {
       impact: penalise ? W['6a_no_meeting_14d'] : 0 };
   }
 
-  // 6b: Slow response — NEGATIVE, AUTO
   if (enabled('6b_slow_response')) {
-    const mult   = config.response_time_multiplier || 1.5;
-    const slow   = calculateSlowResponse(emails, mult);
+    const mult = config.response_time_multiplier || 1.5;
+    const slow = calculateSlowResponse(emails, mult);
     scored.push({ w: slow.isSlow ? W['6b_slow_response'] : 0, state: slow.isSlow ? 'confirmed' : 'absent' });
     params['6b'] = { label: 'Avg response time > historical norm',
       state: slow.isSlow ? 'confirmed' : 'absent', value: slow.isSlow,
@@ -484,7 +457,7 @@ function calculateSlowResponse(emails, multiplier) {
     const reply = recv.find(r => new Date(r.sent_at) > new Date(s.sent_at));
     if (reply) {
       const hours = (new Date(reply.sent_at) - new Date(s.sent_at)) / 3600000;
-      if (hours < 720) pairs.push(hours); // ignore >30 day gaps
+      if (hours < 720) pairs.push(hours);
     }
   });
 
@@ -501,14 +474,15 @@ async function getDeal(client, dealId, userId) {
   return r.rows[0] || null;
 }
 
-async function getConfig(client, userId) {
+async function getConfig(client, userId, orgId) {
   const r = await client.query(
-    'SELECT * FROM deal_health_config WHERE user_id = $1', [userId]
+    'SELECT * FROM deal_health_config WHERE user_id = $1 AND org_id = $2',
+    [userId, orgId]
   );
   if (r.rows.length === 0) {
-    // Insert defaults and return
     const ins = await client.query(
-      'INSERT INTO deal_health_config (user_id) VALUES ($1) RETURNING *', [userId]
+      'INSERT INTO deal_health_config (user_id, org_id) VALUES ($1, $2) RETURNING *',
+      [userId, orgId]
     );
     return parseConfig(ins.rows[0]);
   }
@@ -561,10 +535,7 @@ async function getValueHistory(client, dealId) {
 
 // ── AI Signal Detection ──────────────────────────────────────
 
-// Extract up to `maxSentences` sentences from `text` that match `regex`.
-// Returns a short readable snippet, or null if nothing matches.
 function extractEvidence(text, regex, maxSentences = 2) {
-  // Split on sentence boundaries (. ! ? followed by space or end)
   const sentences = text
     .split(/(?<=[.!?])\s+/)
     .map(s => s.trim())
@@ -573,14 +544,12 @@ function extractEvidence(text, regex, maxSentences = 2) {
   const hits = sentences.filter(s => regex.test(s));
   if (hits.length === 0) return null;
 
-  // Return first 1-2 matching sentences, trimmed to 200 chars each
   return hits
     .slice(0, maxSentences)
     .map(s => s.length > 200 ? s.substring(0, 197) + '…' : s)
     .join(' … ');
 }
 
-// Extract the sentence surrounding a keyword match from raw text
 function extractSurroundingSentence(text, keyword) {
   const sentences = text.split(/(?<=[.!?])\s+/).map(s => s.trim());
   const hit = sentences.find(s => s.toLowerCase().includes(keyword.toLowerCase()));
@@ -588,10 +557,12 @@ function extractSurroundingSentence(text, keyword) {
   return hit.length > 200 ? hit.substring(0, 197) + '…' : hit;
 }
 
-async function applyAISignals(dealId, analysisResult, sourceType, userId) {
-  // Respect AI enabled setting — bail out immediately if AI is off
-  if (userId) {
-    const cfg = await pool.query('SELECT ai_enabled FROM deal_health_config WHERE user_id = $1', [userId]);
+async function applyAISignals(dealId, analysisResult, sourceType, userId, orgId) {
+  if (userId && orgId) {
+    const cfg = await pool.query(
+      'SELECT ai_enabled FROM deal_health_config WHERE user_id = $1 AND org_id = $2',
+      [userId, orgId]
+    );
     if (cfg.rows.length > 0 && cfg.rows[0].ai_enabled === false) {
       console.log(`AI signals skipped for deal ${dealId} — AI disabled by user`);
       return {};
@@ -599,80 +570,30 @@ async function applyAISignals(dealId, analysisResult, sourceType, userId) {
   }
 
   const signals = {};
-  // Use the raw stringified result for regex matching
   const text = typeof analysisResult === 'string'
     ? analysisResult
     : JSON.stringify(analysisResult);
 
-  // 1a: Close date confirmed
-  {
-    const re = /confirmed.*close|close.*date.*agreed|target.*date.*confirmed|committed.*by/i;
-    if (re.test(text)) {
-      signals.close_date_ai_confirmed  = true;
-      signals.close_date_ai_source     = sourceType;
-      signals.close_date_ai_confidence = 0.8;
-      signals.close_date_ai_evidence   = extractEvidence(text, re);
-    }
-  }
+  { const re = /confirmed.*close|close.*date.*agreed|target.*date.*confirmed|committed.*by/i;
+    if (re.test(text)) { signals.close_date_ai_confirmed = true; signals.close_date_ai_source = sourceType; signals.close_date_ai_confidence = 0.8; signals.close_date_ai_evidence = extractEvidence(text, re); } }
 
-  // 1c: Buyer event
-  {
-    const re = /budget.*cycle|board.*meeting|fiscal.*year|quarter.*end|procurement.*cycle/i;
-    if (re.test(text)) {
-      signals.buyer_event_ai_confirmed = true;
-      signals.buyer_event_ai_source    = sourceType;
-      signals.buyer_event_ai_evidence  = extractEvidence(text, re);
-    }
-  }
+  { const re = /budget.*cycle|board.*meeting|fiscal.*year|quarter.*end|procurement.*cycle/i;
+    if (re.test(text)) { signals.buyer_event_ai_confirmed = true; signals.buyer_event_ai_source = sourceType; signals.buyer_event_ai_evidence = extractEvidence(text, re); } }
 
-  // 3a: Legal/procurement
-  {
-    const re = /legal.*review|procurement|contract.*redline|msa|nda|sow|vendor.*approval|legal.*team/i;
-    if (re.test(text)) {
-      signals.legal_engaged_ai       = true;
-      signals.legal_engaged_source   = sourceType;
-      signals.legal_engaged_evidence = extractEvidence(text, re);
-    }
-  }
+  { const re = /legal.*review|procurement|contract.*redline|msa|nda|sow|vendor.*approval|legal.*team/i;
+    if (re.test(text)) { signals.legal_engaged_ai = true; signals.legal_engaged_source = sourceType; signals.legal_engaged_evidence = extractEvidence(text, re); } }
 
-  // 3b: Security/IT
-  {
-    const re = /security.*review|soc2|penetration.*test|it.*review|information.*security|security.*questionnaire|compliance.*review/i;
-    if (re.test(text)) {
-      signals.security_review_ai       = true;
-      signals.security_review_source   = sourceType;
-      signals.security_review_evidence = extractEvidence(text, re);
-    }
-  }
+  { const re = /security.*review|soc2|penetration.*test|it.*review|information.*security|security.*questionnaire|compliance.*review/i;
+    if (re.test(text)) { signals.security_review_ai = true; signals.security_review_source = sourceType; signals.security_review_evidence = extractEvidence(text, re); } }
 
-  // 4c: Scope approved
-  {
-    const re = /scope.*approved|agreed.*on.*scope|proposal.*accepted|confirmed.*the.*plan|approved.*the.*proposal/i;
-    if (re.test(text)) {
-      signals.scope_approved_ai       = true;
-      signals.scope_approved_source   = sourceType;
-      signals.scope_approved_evidence = extractEvidence(text, re);
-    }
-  }
+  { const re = /scope.*approved|agreed.*on.*scope|proposal.*accepted|confirmed.*the.*plan|approved.*the.*proposal/i;
+    if (re.test(text)) { signals.scope_approved_ai = true; signals.scope_approved_source = sourceType; signals.scope_approved_evidence = extractEvidence(text, re); } }
 
-  // 5b: Price sensitivity
-  {
-    const re = /budget.*constraint|too.*expensive|price.*concern|can.*you.*do.*better|need.*to.*justify.*cost|checking.*with.*finance/i;
-    if (re.test(text)) {
-      signals.price_sensitivity_ai       = true;
-      signals.price_sensitivity_source   = sourceType;
-      signals.price_sensitivity_evidence = extractEvidence(text, re);
-    }
-  }
+  { const re = /budget.*constraint|too.*expensive|price.*concern|can.*you.*do.*better|need.*to.*justify.*cost|checking.*with.*finance/i;
+    if (re.test(text)) { signals.price_sensitivity_ai = true; signals.price_sensitivity_source = sourceType; signals.price_sensitivity_evidence = extractEvidence(text, re); } }
 
-  // 5c: Discount pending
-  {
-    const re = /discount.*request|pricing.*exception|approval.*needed.*discount|special.*pricing/i;
-    if (re.test(text)) {
-      signals.discount_pending_ai       = true;
-      signals.discount_pending_evidence = extractEvidence(text, re);
-    }
-  }
+  { const re = /discount.*request|pricing.*exception|approval.*needed.*discount|special.*pricing/i;
+    if (re.test(text)) { signals.discount_pending_ai = true; signals.discount_pending_evidence = extractEvidence(text, re); } }
 
   if (Object.keys(signals).length > 0) {
     const setClauses = Object.keys(signals).map((k, i) => `${k} = $${i + 2}`).join(', ');
@@ -687,17 +608,20 @@ async function applyAISignals(dealId, analysisResult, sourceType, userId) {
 
 // ── Competitor Detection ─────────────────────────────────────
 
-async function detectCompetitors(dealId, userId, text) {
+async function detectCompetitors(dealId, userId, orgId, text) {
   const client = await pool.connect();
   try {
-    // Check AI enabled
-    const cfgCheck = await client.query('SELECT ai_enabled FROM deal_health_config WHERE user_id = $1', [userId]);
+    const cfgCheck = await client.query(
+      'SELECT ai_enabled FROM deal_health_config WHERE user_id = $1 AND org_id = $2',
+      [userId, orgId]
+    );
     if (cfgCheck.rows.length > 0 && cfgCheck.rows[0].ai_enabled === false) {
       return [];
     }
 
     const r = await client.query(
-      'SELECT * FROM competitors WHERE user_id = $1', [userId]
+      'SELECT * FROM competitors WHERE user_id = $1 AND org_id = $2',
+      [userId, orgId]
     );
     const competitors = r.rows;
     const found = [];
@@ -712,7 +636,6 @@ async function detectCompetitors(dealId, userId, text) {
     });
 
     if (found.length > 0) {
-      // Build a readable evidence string: "Salesforce: '…sentence…'"
       const evidence = found
         .filter(f => f.snippet)
         .map(f => `${f.name}: "${f.snippet}"`)

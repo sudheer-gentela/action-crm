@@ -1,24 +1,15 @@
 /**
  * storageProcessor.service.js
  * Provider-agnostic orchestration layer.
- * All requires point to sibling files in services/ (flat structure).
  *
- * BUGS FIXED:
- *   1. Removed require('./ActionsEngine') — file deleted, crashed on startup
- *   2. Replaced ActionsEngine.processEvent() with ActionsGenerator.generateForFile()
- *      The new pipeline builds full DealContext internally — no raw event needed.
- *   3. Replaced aiProcessor.processContent() (never existed) with
- *      aiProcessor.analyzeEmailSimple() — same return shape: action_items, summary, sentiment
- *   4. Replaced transcriptAnalyzer.analyze() (never existed) with
- *      transcriptAnalyzer.analyzeTranscript(transcriptId, userId) — the actual export.
- *      storageProcessor passes raw text, not a DB transcriptId, so we store text first
- *      then analyze, OR we skip the transcript pipeline for raw-text files and rely on
- *      aiAnalysis instead. Since transcriptAnalyzer.analyzeTranscript() requires a DB
- *      record, the transcriptAnalyzer pipeline is now handled via a lightweight wrapper
- *      that uses aiProcessor.analyzeEmailSimple() for raw VTT/text files, which gives
- *      us action_items, summary, and sentiment without needing a DB record.
- *      The dedicated analyzeTranscript() path (with full deal context) is still called
- *      by the meetings transcript route directly — that path is unaffected.
+ * MULTI-ORG: orgId is now threaded through from options into:
+ *   - checkDuplicate(userId, providerId, fileId, dealId, orgId)
+ *   - createImportRecord(fileRef, userId, orgId, dealId, contactId, force)
+ *   - applyAISignals(dealId, text, sourceType, userId, orgId)
+ *   - detectCompetitors(dealId, userId, orgId, text)
+ *
+ * All pipeline logic, PIPELINE_CONFIG, runPipelines, extractInsights,
+ * and buildAiContext are unchanged.
  */
 
 const { getProvider }      = require('./StorageProviderFactory');
@@ -34,12 +25,12 @@ const PIPELINE_CONFIG = {
 };
 
 async function processStorageFile(userId, providerId, fileId, options = {}) {
-  const { dealId, contactId, dryRun = false, force = false } = options;
+  const { dealId, contactId, orgId, dryRun = false, force = false } = options;
   const provider = getProvider(providerId);
 
   // Pre-download duplicate check
   if (!dryRun && !force) {
-    const dup = await checkDuplicate(userId, providerId, fileId, dealId);
+    const dup = await checkDuplicate(userId, providerId, fileId, dealId, orgId);
     if (dup.exists) {
       const err = new Error(dup.message);
       err.code = 'DUPLICATE_IMPORT';
@@ -53,7 +44,7 @@ async function processStorageFile(userId, providerId, fileId, options = {}) {
 
   let importRecord = null;
   if (!dryRun) {
-    importRecord = await createImportRecord(content.fileRef, userId, dealId, contactId, force);
+    importRecord = await createImportRecord(content.fileRef, userId, orgId, dealId, contactId, force);
   }
 
   const defaultPipelines = PIPELINE_CONFIG[content.category] || PIPELINE_CONFIG.document;
@@ -73,8 +64,6 @@ async function processStorageFile(userId, providerId, fileId, options = {}) {
   if (importRecord && !dryRun) {
     await markProcessed(importRecord.id, extractInsights(pipelines, pipelineResults));
 
-    // After markProcessed, trigger action regeneration for the deal (non-blocking).
-    // Done here so importRecord.id is guaranteed to exist.
     if (dealId) {
       ActionsGenerator.generateForFile(importRecord.id, userId)
         .catch(err => console.error('[StorageProcessor] generateForFile failed:', err.message));
@@ -109,18 +98,16 @@ async function runPipelines(pipelines, content, options, userId) {
 }
 
 async function runPipeline(pipeline, content, options, userId) {
-  const { rawText, fileName, category, fileId } = content;
-  const { dealId, contactId, dryRun } = options;
+  const { rawText, fileName, category } = content;
+  const { dealId, orgId } = options;
 
   switch (pipeline) {
     case 'aiAnalysis': {
-      // analyzeEmailSimple accepts any text payload.
-      // We pass it in the shape it expects: subject = fileName, body = rawText.
       const payload = {
-        subject:    fileName,
-        body:       rawText,
+        subject:      fileName,
+        body:         rawText,
         from_address: `storage_${category}`,
-        sent_at:    new Date().toISOString(),
+        sent_at:      new Date().toISOString(),
       };
       const analysis = await aiProcessor.analyzeEmailSimple(payload);
       const ctx = buildAiContext(category, content, options);
@@ -128,21 +115,20 @@ async function runPipeline(pipeline, content, options, userId) {
     }
 
     case 'actionsRefresh': {
-      // Actions are generated after markProcessed in processStorageFile (has importRecord.id).
-      // This slot is kept so the pipeline array stays consistent; it's a no-op here.
+      // Handled post-markProcessed in processStorageFile — no-op here
       return { success: true, skipped: true, reason: 'Handled post-markProcessed' };
     }
 
     case 'dealHealth': {
       if (!dealId) return { success: false, skipped: true, reason: 'No dealId provided.' };
       const sourceType   = `${content.provider}_${category}`;
-      const signals      = await applyAISignals(dealId, rawText, sourceType, userId);
-      const competitors  = await detectCompetitors(dealId, userId, rawText);
-      const healthResult = await scoreDeal(dealId, userId);
+      const signals      = await applyAISignals(dealId, rawText, sourceType, userId, orgId);
+      const competitors  = await detectCompetitors(dealId, userId, orgId, rawText);
+      const healthResult = await scoreDeal(dealId, userId, orgId);
       return {
         success: true,
         signalsApplied:      Object.keys(signals).length, signals,
-        competitorsDetected: competitors.length,          competitors,
+        competitorsDetected: competitors.length,           competitors,
         healthScore:         healthResult.score,
         healthStatus:        healthResult.health,
       };
@@ -172,7 +158,6 @@ function extractInsights(pipelines, results) {
     insights.healthStatusAfter = dh.healthStatus || null;
   }
 
-  // actionsGenerated is tracked via generateForFile, not here
   insights.actionsGenerated = 0;
   return insights;
 }
@@ -188,12 +173,12 @@ function buildAiContext(category, content, options) {
     case 'transcript': return { ...base, analysisType: 'meeting_transcript' };
     case 'document': {
       const name = content.fileName.toLowerCase();
-      if (name.includes('proposal'))                               return { ...base, analysisType: 'proposal' };
+      if (name.includes('proposal'))                                return { ...base, analysisType: 'proposal' };
       if (name.includes('contract') || name.includes('agreement')) return { ...base, analysisType: 'contract' };
       return { ...base, analysisType: 'general_document' };
     }
-    case 'email':   return { ...base, analysisType: 'email_thread' };
-    default:        return { ...base, analysisType: 'general_document' };
+    case 'email':  return { ...base, analysisType: 'email_thread' };
+    default:       return { ...base, analysisType: 'general_document' };
   }
 }
 
