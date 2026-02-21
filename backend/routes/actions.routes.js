@@ -2,13 +2,18 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
+const { orgContext } = require('../middleware/orgContext.middleware');
 const ActionsGenerator = require('../services/actionsGenerator');
 const ActionConfigService = require('../services/actionConfig.service');
 const ActionCompletionDetector = require('../services/actionCompletionDetector.service');
 
+// ── Auth + org context on every route in this file ───────────
+// authenticateToken  → validates JWT, sets req.userId + req.user
+// orgContext         → resolves org_id from JWT/DB, sets req.orgId
 router.use(authenticateToken);
+router.use(orgContext);
 
-// ── Shared row mapper ────────────────────────────────────────────────────────
+// ── Shared row mapper (unchanged) ────────────────────────────
 function mapActionRow(row) {
   return {
     id:                      row.id,
@@ -36,12 +41,12 @@ function mapActionRow(row) {
     createdAt:               row.created_at,
     updatedAt:               row.updated_at,
     deal: row.deal_id ? {
-      id:      row.deal_id,
-      name:    row.deal_name,
-      value:   parseFloat(row.deal_value) || 0,
-      stage:   row.deal_stage,
-      account: row.account_name,
-      ownerId: row.deal_owner_id,
+      id:        row.deal_id,
+      name:      row.deal_name,
+      value:     parseFloat(row.deal_value) || 0,
+      stage:     row.deal_stage,
+      account:   row.account_name,
+      ownerId:   row.deal_owner_id,
       ownerName: row.deal_owner_name,
     } : null,
     contact: row.contact_id ? {
@@ -50,7 +55,6 @@ function mapActionRow(row) {
       lastName:  row.contact_last_name,
       email:     row.contact_email,
     } : null,
-    // Evidence: triggering email snippet if source_id links to an email
     evidenceEmail: row.evidence_subject ? {
       subject:   row.evidence_subject,
       snippet:   row.evidence_snippet,
@@ -60,7 +64,12 @@ function mapActionRow(row) {
   };
 }
 
-// ── Shared base query ────────────────────────────────────────────────────────
+// ── Shared base query ─────────────────────────────────────────
+// org_id filter is on `a` (actions). The joined tables
+// (deals, contacts, accounts, emails) are implicitly org-scoped
+// because they FK through actions — but we also guard deals and
+// emails explicitly to prevent cross-org data leaking through
+// the LEFT JOINs.
 const BASE_QUERY = `
   SELECT
     a.*,
@@ -73,17 +82,16 @@ const BASE_QUERY = `
     c.last_name     AS contact_last_name,
     c.email         AS contact_email,
     acc.name        AS account_name,
-    -- Evidence: pull triggering email subject + snippet when source_id is set
     ev.subject      AS evidence_subject,
     LEFT(ev.body, 300) AS evidence_snippet,
     ev.direction    AS evidence_direction,
     ev.sent_at      AS evidence_sent_at
   FROM actions a
-  LEFT JOIN deals d      ON a.deal_id    = d.id
+  LEFT JOIN deals d      ON a.deal_id    = d.id    AND d.org_id   = a.org_id
   LEFT JOIN users u      ON d.owner_id   = u.id
-  LEFT JOIN contacts c   ON a.contact_id = c.id
-  LEFT JOIN accounts acc ON d.account_id = acc.id
-  LEFT JOIN emails ev    ON a.source_id  = ev.id::varchar
+  LEFT JOIN contacts c   ON a.contact_id = c.id    AND c.org_id   = a.org_id
+  LEFT JOIN accounts acc ON d.account_id = acc.id  AND acc.org_id = a.org_id
+  LEFT JOIN emails ev    ON a.source_id  = ev.id::varchar AND ev.org_id = a.org_id
 `;
 
 const ORDER_CLAUSE = `
@@ -93,32 +101,32 @@ const ORDER_CLAUSE = `
     a.due_date ASC NULLS LAST
 `;
 
-// ── GET /  — list actions with full filter support ──────────────────────────
+// ── GET /  — list actions with full filter support ────────────
 router.get('/', async (req, res) => {
   try {
     const {
-      completed,        // legacy: 'true'|'false'
-      status,           // 'yet_to_start'|'in_progress'|'completed'
-      priority,         // 'high'|'medium'|'low'
+      completed,
+      status,
+      priority,
       dealId,
       accountId,
       ownerId,
-      actionType,       // UI category: 'meeting'|'follow_up'|'email_send'|'document_prep'|'internal'|'meeting_prep'
-      isInternal,       // 'true'|'false'
-      nextStep,         // 'email'|'call'|'whatsapp'|'linkedin'|'slack'|'document'|'internal_task'
-      dueBefore,        // ISO date string
-      dueAfter,         // ISO date string
+      actionType,
+      isInternal,
+      nextStep,
+      dueBefore,
+      dueAfter,
     } = req.query;
 
-    let query = BASE_QUERY + ' WHERE a.user_id = $1';
-    const params = [req.user.userId];
+    // org_id is the primary isolation filter — always first
+    // user_id scopes to this rep's own actions within the org
+    let query = BASE_QUERY + ' WHERE a.org_id = $1 AND a.user_id = $2';
+    const params = [req.orgId, req.user.userId];
 
-    // Status / completed filter
     if (status) {
       query += ` AND a.status = $${params.length + 1}`;
       params.push(status);
     } else if (completed !== undefined) {
-      // legacy support
       query += ` AND a.completed = $${params.length + 1}`;
       params.push(completed === 'true');
     }
@@ -143,15 +151,14 @@ router.get('/', async (req, res) => {
       params.push(parseInt(ownerId));
     }
 
-    // Action type filter — map UI categories to DB type values
     if (actionType) {
       const TYPE_MAP = {
-        meeting:      ['meeting', 'meeting_schedule'],
-        follow_up:    ['follow_up'],
-        email_send:   ['email', 'email_send'],
-        document_prep:['document_prep', 'document'],
-        meeting_prep: ['meeting_prep', 'review'],
-        internal:     null, // handled by is_internal flag
+        meeting:       ['meeting', 'meeting_schedule'],
+        follow_up:     ['follow_up'],
+        email_send:    ['email', 'email_send'],
+        document_prep: ['document_prep', 'document'],
+        meeting_prep:  ['meeting_prep', 'review'],
+        internal:      null,
       };
       if (actionType === 'internal') {
         query += ` AND a.is_internal = true`;
@@ -192,30 +199,33 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ── GET /filter-options — deals, accounts, owners for filter dropdowns ───────
+// ── GET /filter-options ───────────────────────────────────────
 router.get('/filter-options', async (req, res) => {
   try {
     const [dealsRes, accountsRes, ownersRes] = await Promise.all([
       db.query(
         `SELECT DISTINCT d.id, d.name FROM deals d
          INNER JOIN actions a ON a.deal_id = d.id
-         WHERE a.user_id = $1 ORDER BY d.name`,
-        [req.user.userId]
+         WHERE a.org_id = $1 AND a.user_id = $2
+         ORDER BY d.name`,
+        [req.orgId, req.user.userId]
       ),
       db.query(
         `SELECT DISTINCT acc.id, acc.name FROM accounts acc
-         INNER JOIN deals d ON d.account_id = acc.id
-         INNER JOIN actions a ON a.deal_id = d.id
-         WHERE a.user_id = $1 ORDER BY acc.name`,
-        [req.user.userId]
+         INNER JOIN deals d   ON d.account_id = acc.id
+         INNER JOIN actions a ON a.deal_id    = d.id
+         WHERE a.org_id = $1 AND a.user_id = $2
+         ORDER BY acc.name`,
+        [req.orgId, req.user.userId]
       ),
       db.query(
         `SELECT DISTINCT u.id, u.first_name || ' ' || u.last_name AS name
          FROM users u
-         INNER JOIN deals d ON d.owner_id = u.id
-         INNER JOIN actions a ON a.deal_id = d.id
-         WHERE a.user_id = $1 ORDER BY name`,
-        [req.user.userId]
+         INNER JOIN deals d   ON d.owner_id = u.id
+         INNER JOIN actions a ON a.deal_id  = d.id
+         WHERE a.org_id = $1 AND a.user_id = $2
+         ORDER BY name`,
+        [req.orgId, req.user.userId]
       ),
     ]);
     res.json({
@@ -229,17 +239,21 @@ router.get('/filter-options', async (req, res) => {
   }
 });
 
-// ── POST /generate ───────────────────────────────────────────────────────────
+// ── POST /generate ────────────────────────────────────────────
+// NOTE: ActionsGenerator.generateAll() currently has no org
+// awareness. Once actionsGenerator.js is updated (next service
+// file to migrate), change this call to:
+//   ActionsGenerator.generateAll({ orgId: req.orgId, userId: req.user.userId })
 router.post('/generate', async (req, res) => {
   try {
-    console.log('🤖 Manual action generation triggered by user:', req.user.userId);
+    console.log('🤖 Manual action generation triggered — user:', req.user.userId, 'org:', req.orgId);
     const result = await ActionsGenerator.generateAll();
     if (result.success) {
       res.json({
-        success: true,
-        message: `Generated ${result.inserted} actions`,
+        success:   true,
+        message:   `Generated ${result.inserted} actions`,
         generated: result.generated,
-        inserted: result.inserted,
+        inserted:  result.inserted,
       });
     } else {
       res.status(500).json({ success: false, message: 'Failed to generate actions', error: result.error });
@@ -250,7 +264,10 @@ router.post('/generate', async (req, res) => {
   }
 });
 
-// ── GET /config ──────────────────────────────────────────────────────────────
+// ── GET /config ───────────────────────────────────────────────
+// NOTE: ActionConfigService.getConfig() currently only takes
+// userId. Once actionConfig.service.js is updated, change to:
+//   ActionConfigService.getConfig(req.user.userId, req.orgId)
 router.get('/config', async (req, res) => {
   try {
     if (!req.user?.userId) return res.status(401).json({ error: { message: 'User not authenticated' } });
@@ -262,7 +279,8 @@ router.get('/config', async (req, res) => {
   }
 });
 
-// ── PUT /config ──────────────────────────────────────────────────────────────
+// ── PUT /config ───────────────────────────────────────────────
+// NOTE: Same as above — update signature after service migration
 router.put('/config', async (req, res) => {
   try {
     const config = await ActionConfigService.updateConfig(req.user.userId, req.body);
@@ -273,12 +291,12 @@ router.put('/config', async (req, res) => {
   }
 });
 
-// ── GET /:id ─────────────────────────────────────────────────────────────────
+// ── GET /:id ──────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {
     const result = await db.query(
-      BASE_QUERY + ' WHERE a.id = $1 AND a.user_id = $2',
-      [req.params.id, req.user.userId]
+      BASE_QUERY + ' WHERE a.id = $1 AND a.org_id = $2 AND a.user_id = $3',
+      [req.params.id, req.orgId, req.user.userId]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: { message: 'Action not found' } });
     res.json({ action: mapActionRow(result.rows[0]) });
@@ -288,16 +306,29 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// ── POST / — create manual action ────────────────────────────────────────────
+// ── POST / — create manual action ────────────────────────────
 router.post('/', async (req, res) => {
   try {
     const { dealId, contactId, type, priority, title, description, context, dueDate, isInternal } = req.body;
     const result = await db.query(
       `INSERT INTO actions
-         (user_id, deal_id, contact_id, type, action_type, priority, title, description, context, due_date, is_internal, status, source)
-       VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,'yet_to_start','manual')
+         (org_id, user_id, deal_id, contact_id, type, action_type, priority,
+          title, description, context, due_date, is_internal, status, source)
+       VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,'yet_to_start','manual')
        RETURNING *`,
-      [req.user.userId, dealId||null, contactId||null, type||'follow_up', priority||'medium', title, description||null, context||null, dueDate||null, !!isInternal]
+      [
+        req.orgId,
+        req.user.userId,
+        dealId    || null,
+        contactId || null,
+        type      || 'follow_up',
+        priority  || 'medium',
+        title,
+        description || null,
+        context     || null,
+        dueDate     || null,
+        !!isInternal,
+      ]
     );
     res.status(201).json({ action: result.rows[0] });
   } catch (error) {
@@ -306,11 +337,10 @@ router.post('/', async (req, res) => {
   }
 });
 
-// ── PUT /:id — update action ─────────────────────────────────────────────────
+// ── PUT /:id — update action ──────────────────────────────────
 router.put('/:id', async (req, res) => {
   try {
     const { priority, title, description, context, dueDate, completed } = req.body;
-    // Legacy completed boolean support — sync to status
     const statusFromCompleted = completed === true ? 'completed' : undefined;
 
     const result = await db.query(
@@ -324,9 +354,10 @@ router.put('/:id', async (req, res) => {
            status      = COALESCE($7, status),
            completed_at= CASE WHEN $6 = true THEN CURRENT_TIMESTAMP ELSE completed_at END,
            updated_at  = CURRENT_TIMESTAMP
-       WHERE id = $8 AND user_id = $9
+       WHERE id = $8 AND org_id = $9 AND user_id = $10
        RETURNING *`,
-      [priority, title, description, context, dueDate, completed, statusFromCompleted, req.params.id, req.user.userId]
+      [priority, title, description, context, dueDate, completed,
+       statusFromCompleted, req.params.id, req.orgId, req.user.userId]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: { message: 'Action not found' } });
     res.json({ action: result.rows[0] });
@@ -336,7 +367,7 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// ── PATCH /:id/status — advance status (yet_to_start → in_progress → completed)
+// ── PATCH /:id/status ─────────────────────────────────────────
 router.patch('/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
@@ -354,9 +385,9 @@ router.patch('/:id/status', async (req, res) => {
            completed_at = CASE WHEN $2 = true THEN CURRENT_TIMESTAMP ELSE completed_at END,
            completed_by = CASE WHEN $2 = true THEN $3 ELSE completed_by END,
            updated_at   = CURRENT_TIMESTAMP
-       WHERE id = $4 AND user_id = $3
+       WHERE id = $4 AND org_id = $5 AND user_id = $3
        RETURNING *`,
-      [status, isCompleting, req.user.userId, req.params.id]
+      [status, isCompleting, req.user.userId, req.params.id, req.orgId]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: { message: 'Action not found' } });
     res.json({ action: result.rows[0] });
@@ -366,7 +397,7 @@ router.patch('/:id/status', async (req, res) => {
   }
 });
 
-// ── PATCH /:id/complete — legacy complete endpoint (kept for backward compat) ─
+// ── PATCH /:id/complete — legacy endpoint (backward compat) ──
 router.patch('/:id/complete', async (req, res) => {
   try {
     const result = await db.query(
@@ -376,9 +407,9 @@ router.patch('/:id/complete', async (req, res) => {
            completed_at = CURRENT_TIMESTAMP,
            completed_by = $1,
            updated_at   = CURRENT_TIMESTAMP
-       WHERE id = $2 AND user_id = $1
+       WHERE id = $2 AND org_id = $3 AND user_id = $1
        RETURNING *`,
-      [req.user.userId, req.params.id]
+      [req.user.userId, req.params.id, req.orgId]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: { message: 'Action not found' } });
     res.json({ action: result.rows[0] });
@@ -388,12 +419,12 @@ router.patch('/:id/complete', async (req, res) => {
   }
 });
 
-// ── DELETE /:id ───────────────────────────────────────────────────────────────
+// ── DELETE /:id ───────────────────────────────────────────────
 router.delete('/:id', async (req, res) => {
   try {
     const result = await db.query(
-      'DELETE FROM actions WHERE id = $1 AND user_id = $2 RETURNING id',
-      [req.params.id, req.user.userId]
+      'DELETE FROM actions WHERE id = $1 AND org_id = $2 AND user_id = $3 RETURNING id',
+      [req.params.id, req.orgId, req.user.userId]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: { message: 'Action not found' } });
     res.json({ message: 'Action deleted successfully' });
@@ -403,12 +434,14 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// ── Suggestion routes (unchanged) ─────────────────────────────────────────────
+// ── GET /:id/suggestions ──────────────────────────────────────
 router.get('/:id/suggestions', async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT * FROM action_suggestions WHERE action_id = $1 AND user_id = $2 AND status = 'pending' ORDER BY confidence DESC`,
-      [req.params.id, req.user.userId]
+      `SELECT * FROM action_suggestions
+       WHERE action_id = $1 AND org_id = $2 AND user_id = $3 AND status = 'pending'
+       ORDER BY confidence DESC`,
+      [req.params.id, req.orgId, req.user.userId]
     );
     res.json({ suggestions: result.rows });
   } catch (error) {
@@ -416,6 +449,10 @@ router.get('/:id/suggestions', async (req, res) => {
   }
 });
 
+// ── POST /suggestions/:id/accept ─────────────────────────────
+// NOTE: ActionCompletionDetector.acceptSuggestion() currently
+// only takes (suggestionId, userId). Once the service is updated
+// add orgId: ActionCompletionDetector.acceptSuggestion(id, userId, orgId)
 router.post('/suggestions/:id/accept', async (req, res) => {
   try {
     await ActionCompletionDetector.acceptSuggestion(req.params.id, req.user.userId);
@@ -425,10 +462,11 @@ router.post('/suggestions/:id/accept', async (req, res) => {
   }
 });
 
+// ── POST /suggestions/:id/dismiss ────────────────────────────
 router.post('/suggestions/:id/dismiss', async (req, res) => {
   try {
     await ActionCompletionDetector.dismissSuggestion(req.params.id, req.user.userId);
-    res.json({ success: true, message: 'Suggestion dismissed' });
+    res.json({ success: true, message: 'Failed to dismiss suggestion' });
   } catch (error) {
     res.status(500).json({ error: { message: 'Failed to dismiss suggestion' } });
   }
