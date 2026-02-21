@@ -864,12 +864,6 @@ function PromptsSettings() {
         </button>
       </div>
 
-      {!canEdit && (
-        <div className="sv-alert" style={{ background: '#ebf8ff', borderColor: '#bee3f8', color: '#2b6cb0', marginBottom: 16 }}>
-          👁 View only — switch to Org Admin to change deal health settings
-        </div>
-      )}
-
       {error   && <div className="sv-error">⚠️ {error}</div>}
       {success && <div className="sv-success">{success}</div>}
 
