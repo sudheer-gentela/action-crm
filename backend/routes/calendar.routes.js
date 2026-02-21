@@ -34,7 +34,7 @@ router.post('/sync', async (req, res) => {
     const { startDate, endDate, top } = req.body;
     console.log(`📅 Manual calendar sync triggered for user ${req.user.userId} org ${req.orgId}`);
 
-    const result = await triggerCalendarSync(req.user.userId, { startDate, endDate, top });
+    const result = await triggerCalendarSync(req.user.userId, { startDate, endDate, top, orgId: req.orgId });
 
     if (!result.success) {
       return res.status(200).json({ success: false, message: result.message || 'Calendar sync failed' });
@@ -60,7 +60,7 @@ router.post('/sync', async (req, res) => {
 // ── GET /sync/status ──────────────────────────────────────────
 router.get('/sync/status', async (req, res) => {
   try {
-    const history = await getCalendarSyncStatus(req.user.userId);
+    const history = await getCalendarSyncStatus(req.user.userId, req.orgId);
     res.json({ success: true, data: { lastSyncs: history } });
   } catch (error) {
     console.error('❌ Error fetching calendar sync status:', error);

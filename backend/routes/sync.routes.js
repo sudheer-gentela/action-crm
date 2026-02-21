@@ -15,7 +15,7 @@ router.post('/emails', async (req, res) => {
   try {
     console.log(`📧 Manual email sync triggered for user ${req.user.userId} org ${req.orgId}`);
 
-    const result = await triggerSync(req.user.userId, 'email');
+    const result = await triggerSync(req.user.userId, req.orgId, 'email');
 
     if (!result.success) {
       return res.status(200).json({ success: false, message: result.message });
@@ -180,7 +180,7 @@ router.get('/emails/:emailId/analysis', async (req, res) => {
 // ── GET /emails/status ────────────────────────────────────────
 router.get('/emails/status', async (req, res) => {
   try {
-    const history = await getSyncStatus(req.user.userId);
+    const history = await getSyncStatus(req.user.userId, req.orgId);
     res.json({
       success: true,
       data: {
