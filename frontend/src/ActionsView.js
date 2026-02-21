@@ -833,11 +833,7 @@ export default function ActionsView() {
             dealId:    composerAction.deal    ? composerAction.deal.id    : null,
             subject:   composerAction.title,
             body:      composerAction.suggestedAction
-                       ? 'Hi,
-
-' + composerAction.suggestedAction + '
-
-Best regards,'
+                       ? 'Hi,\n\n' + composerAction.suggestedAction + '\n\nBest regards,'
                        : '',
             toAddress: composerAction.contact ? composerAction.contact.email : '',
           }}
