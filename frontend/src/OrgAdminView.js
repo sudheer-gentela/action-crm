@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import './OrgAdminView.css';
+import DealHealthSettings from './DealHealthSettings';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -13,6 +14,7 @@ const ORG_ADMIN_TABS = [
   { id: 'members',     label: 'Members',      icon: '👥' },
   { id: 'invitations', label: 'Invitations',  icon: '✉️' },
   { id: 'playbooks',   label: 'Playbooks',    icon: '📘' },
+  { id: 'health',      label: 'Deal Health',  icon: '🏥' },
   { id: 'settings',    label: 'Org Settings', icon: '⚙️' },
 ];
 
@@ -83,6 +85,7 @@ export default function OrgAdminView() {
         {tab === 'members'     && <OAMembers currentUserId={currentUser.id} />}
         {tab === 'invitations' && <OAInvitations />}
         {tab === 'playbooks'   && <OAPlaybooks />}
+        {tab === 'health'      && <DealHealthSettings />}
         {tab === 'settings'    && <OASettings />}
       </div>
     </div>
