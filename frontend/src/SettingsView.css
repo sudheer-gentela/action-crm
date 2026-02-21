@@ -460,3 +460,63 @@
 @media (max-width: 600px) {
   .sv-form-grid { grid-template-columns: 1fr; }
 }
+
+/* ── Company Context collapsible header ──────────────────────── */
+.pb-company-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  color: #2d3748;
+  user-select: none;
+}
+.pb-company-header:hover { color: #1a202c; }
+.pb-company-summary {
+  font-size: 13px;
+  font-weight: 400;
+  color: #718096;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Key action rows ─────────────────────────────────────────── */
+.pb-action-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.pb-action-num {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  background: #edf2f7;
+  color: #4a5568;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 8px;
+}
+.pb-action-text {
+  flex: 1;
+  font-size: 14px;
+  color: #2d3748;
+  line-height: 1.5;
+  padding: 6px 0;
+  white-space: normal;
+  word-break: break-word;
+}
+.pb-action-textarea {
+  flex: 1;
+  resize: none;
+  line-height: 1.5;
+  min-height: 36px;
+  overflow: hidden;
+}

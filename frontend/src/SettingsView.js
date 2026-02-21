@@ -699,18 +699,37 @@ function PlaybookSettings() {
                 </div>
               )}
 
-              {playbook.content && (
-                <div className="sv-card" style={{ marginBottom: 20 }}>
-                  <h4 style={{ marginTop: 0, marginBottom: 16, fontSize: 15 }}>🏢 Company Context</h4>
-                  {['name', 'industry', 'product'].map(field => (
-                    <div key={field} className="sv-field" style={{ marginBottom: 12 }}>
-                      <label style={{ textTransform: 'capitalize' }}>{field}</label>
-                      <input className="sv-input" value={playbook.content?.company?.[field] || ''} disabled={!canEdit}
-                        onChange={e => setPlaybook({ ...playbook, content: { ...playbook.content, company: { ...playbook.content.company, [field]: e.target.value } } })} />
+              {playbook.content && (() => {
+                const co = playbook.content?.company || {};
+                const hasAny = co.name || co.industry || co.product;
+                const [showCompany, setShowCompany] = playbook._showCompany !== undefined
+                  ? [playbook._showCompany, v => setPlaybook({ ...playbook, _showCompany: v })]
+                  : [false,                v => setPlaybook({ ...playbook, _showCompany: v })];
+                return (
+                  <div className="sv-card" style={{ marginBottom: 20 }}>
+                    <div className="pb-company-header" onClick={() => setPlaybook({ ...playbook, _showCompany: !showCompany })}>
+                      <span>🏢 Company Context</span>
+                      {hasAny && !showCompany && (
+                        <span className="pb-company-summary">
+                          {[co.name, co.industry, co.product].filter(Boolean).join(' · ')}
+                        </span>
+                      )}
+                      <span className="sv-expand-btn" style={{ marginLeft: 'auto' }}>{showCompany ? '▲' : '▼'}</span>
                     </div>
-                  ))}
-                </div>
-              )}
+                    {showCompany && (
+                      <div style={{ marginTop: 14 }}>
+                        {['name', 'industry', 'product'].map(field => (
+                          <div key={field} className="sv-field" style={{ marginBottom: 12 }}>
+                            <label style={{ textTransform: 'capitalize' }}>{field}</label>
+                            <input className="sv-input" value={co[field] || ''} disabled={!canEdit}
+                              onChange={e => setPlaybook({ ...playbook, content: { ...playbook.content, company: { ...co, [field]: e.target.value } } })} />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {stagesArray.length > 0 && (
                 <div className="sv-card">
@@ -738,9 +757,18 @@ function PlaybookSettings() {
                                 <div className="sv-field" style={{ marginTop: 8 }}>
                                   <label>Key Actions</label>
                                   {stage.key_actions.map((action, ai) => (
-                                    <div key={ai} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
-                                      <input className="sv-input" value={action} disabled={!canEdit}
-                                        onChange={e => { const a = [...stage.key_actions]; a[ai] = e.target.value; updateStageField(stageId, 'key_actions', a); }} />
+                                    <div key={ai} className="pb-action-row">
+                                      <span className="pb-action-num">{ai + 1}</span>
+                                      {canEdit ? (
+                                        <textarea
+                                          className="sv-input pb-action-textarea"
+                                          value={action}
+                                          rows={Math.max(1, Math.ceil(action.length / 60))}
+                                          onChange={e => { const a = [...stage.key_actions]; a[ai] = e.target.value; updateStageField(stageId, 'key_actions', a); }}
+                                        />
+                                      ) : (
+                                        <span className="pb-action-text">{action}</span>
+                                      )}
                                     </div>
                                   ))}
                                 </div>
