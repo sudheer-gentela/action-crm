@@ -69,8 +69,9 @@ router.get('/', async (req, res) => {
           name:   row.account_name,
           domain: row.account_domain
         } : null,
-        owner:    { first_name: row.owner_first_name, last_name: row.owner_last_name },
-        contacts: row.contacts || []
+        owner:      { first_name: row.owner_first_name, last_name: row.owner_last_name },
+        contacts:   row.contacts || [],
+        playbook_id: row.playbook_id || null
       }))
     });
   } catch (error) {
@@ -177,9 +178,10 @@ router.get('/:id', async (req, res) => {
           industry: deal.account_industry,
           size:     deal.account_size
         } : null,
-        owner:      { first_name: deal.owner_first_name, last_name: deal.owner_last_name },
-        contacts:   contactsQuery.rows,
-        activities: activitiesQuery.rows
+        owner:       { first_name: deal.owner_first_name, last_name: deal.owner_last_name },
+        contacts:    contactsQuery.rows,
+        activities:  activitiesQuery.rows,
+        playbook_id: deal.playbook_id || null
       }
     });
   } catch (error) {
@@ -191,17 +193,27 @@ router.get('/:id', async (req, res) => {
 // ── POST / ────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const { accountId, name, value, stage, health, expectedCloseDate, probability, notes } = req.body;
+    const { accountId, name, value, stage, health, expectedCloseDate, probability, notes, playbookId } = req.body;
+
+    // Resolve playbook: use the provided one, or fall back to the org default
+    let resolvedPlaybookId = playbookId || null;
+    if (!resolvedPlaybookId) {
+      const defaultPb = await db.query(
+        `SELECT id FROM playbooks WHERE org_id = $1 AND is_default = TRUE LIMIT 1`,
+        [req.orgId]
+      );
+      resolvedPlaybookId = defaultPb.rows[0]?.id || null;
+    }
 
     const result = await db.query(
       `INSERT INTO deals
          (org_id, account_id, owner_id, name, value, stage, health,
-          expected_close_date, original_close_date, probability, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10)
+          expected_close_date, original_close_date, probability, notes, playbook_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11)
        RETURNING *`,
       [req.orgId, accountId, req.user.userId, name, value,
        stage || 'qualified', health || 'healthy',
-       expectedCloseDate, probability || 50, notes]
+       expectedCloseDate, probability || 50, notes, resolvedPlaybookId]
     );
 
     const newDeal = result.rows[0];
@@ -226,7 +238,7 @@ router.post('/', async (req, res) => {
 // ── PUT /:id ──────────────────────────────────────────────────
 router.put('/:id', async (req, res) => {
   try {
-    const { name, value, stage, health, expectedCloseDate, probability, notes } = req.body;
+    const { name, value, stage, health, expectedCloseDate, probability, notes, playbookId } = req.body;
 
     const currentDeal = await db.query(
       'SELECT stage, value, expected_close_date, close_date_push_count, original_close_date FROM deals WHERE id = $1 AND org_id = $2 AND owner_id = $3',
@@ -255,13 +267,15 @@ router.put('/:id', async (req, res) => {
            expected_close_date = COALESCE($5, expected_close_date),
            probability         = COALESCE($6, probability),
            notes               = COALESCE($7, notes),
+           playbook_id         = COALESCE($12, playbook_id),
            close_date_push_count = close_date_push_count + $10,
            updated_at          = CURRENT_TIMESTAMP,
            closed_at           = CASE WHEN $3 IN ('closed_won', 'closed_lost') THEN CURRENT_TIMESTAMP ELSE closed_at END
        WHERE id = $8 AND org_id = $9 AND owner_id = $11
        RETURNING *`,
       [name, value, stage, health, expectedCloseDate, probability, notes,
-       req.params.id, req.orgId, closeDatePushIncrement, req.user.userId]
+       req.params.id, req.orgId, closeDatePushIncrement, req.user.userId,
+       playbookId || null]
     );
 
     if (result.rows.length === 0) {

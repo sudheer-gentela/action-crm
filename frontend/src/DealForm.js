@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './DealForm.css';
+import apiService from './services/apiService';
 
 function DealForm({ deal, onSubmit, onClose, accounts }) {
   const [formData, setFormData] = useState({
@@ -10,11 +11,14 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
     health: 'healthy',
     expected_close_date: '',
     probability: 50,
-    notes: ''
+    notes: '',
+    playbook_id: ''
   });
 
-  const [errors, setErrors] = useState({});
+  const [errors, setErrors]           = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [playbooks, setPlaybooks]     = useState([]);
+  const [playbooksLoading, setPlaybooksLoading] = useState(true);
 
   // Populate form if editing existing deal
   useEffect(() => {
@@ -27,10 +31,26 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
         health: deal.health || 'healthy',
         expected_close_date: deal.expected_close_date ? deal.expected_close_date.split('T')[0] : '',
         probability: deal.probability || 50,
-        notes: deal.notes || ''
+        notes: deal.notes || '',
+        playbook_id: deal.playbook_id || ''
       });
     }
   }, [deal]);
+
+  // Load playbooks for the dropdown
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await apiService.playbooks.getAll();
+        setPlaybooks(r.data.playbooks || []);
+      } catch {
+        // Non-fatal — dropdown just won't show options
+        setPlaybooks([]);
+      } finally {
+        setPlaybooksLoading(false);
+      }
+    })();
+  }, []);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -94,8 +114,9 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
       // Prepare data for submission
       const submitData = {
         ...formData,
-        value: parseFloat(formData.value),
-        probability: parseInt(formData.probability)
+        value:       parseFloat(formData.value),
+        probability: parseInt(formData.probability),
+        playbookId:  formData.playbook_id ? parseInt(formData.playbook_id) : null
       };
 
       await onSubmit(submitData);
@@ -246,6 +267,30 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
             {errors.expected_close_date && (
               <span className="error-message">{errors.expected_close_date}</span>
             )}
+          </div>
+
+          {/* Playbook */}
+          <div className="form-group">
+            <label htmlFor="playbook_id">
+              Sales Playbook
+              <span className="field-hint"> — determines which playbook guides AI actions for this deal</span>
+            </label>
+            <select
+              id="playbook_id"
+              name="playbook_id"
+              value={formData.playbook_id}
+              onChange={handleChange}
+              disabled={playbooksLoading}
+            >
+              <option value="">Use org default playbook</option>
+              {playbooks.map(pb => (
+                <option key={pb.id} value={pb.id}>
+                  {pb.is_default ? '★ ' : ''}{pb.name}
+                  {pb.type !== 'custom' ? ` (${pb.type})` : ''}
+                </option>
+              ))}
+            </select>
+            {playbooksLoading && <span className="field-hint">Loading playbooks...</span>}
           </div>
 
           {/* Notes */}

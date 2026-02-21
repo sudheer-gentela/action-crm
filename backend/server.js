@@ -18,8 +18,9 @@ const aiRoutes         = require('./routes/ai.routes');
 const promptsRoutes    = require('./routes/prompts.routes');
 const dealHealthRoutes = require('./routes/dealHealth.routes');
 const storageRoutes    = require('./routes/storage.routes');
-const superAdminRoutes = require('./routes/superAdmin.routes');
-const orgAdminRoutes   = require('./routes/orgAdmin.routes');
+const superAdminRoutes  = require('./routes/superAdmin.routes');
+const orgAdminRoutes    = require('./routes/orgAdmin.routes');
+const playbooksRoutes   = require('./routes/playbooks.routes');
 
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
@@ -154,8 +155,9 @@ app.use('/api/ai',        aiRoutes);
 app.use('/api/prompts',   promptsRoutes);
 app.use('/api',           dealHealthRoutes);
 app.use('/api/storage',   storageRoutes);
-app.use('/api/super',     superAdminRoutes);
-app.use('/api/org/admin', orgAdminRoutes);
+app.use('/api/super',      superAdminRoutes);
+app.use('/api/org/admin',  orgAdminRoutes);
+app.use('/api/playbooks',  playbooksRoutes);
 
 // ─────────────────────────────────────────────────────────────
 // Error handling
