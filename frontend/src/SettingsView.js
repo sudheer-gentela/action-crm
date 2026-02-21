@@ -484,7 +484,13 @@ function PlaybookSettings() {
     const load = async () => {
       try {
         const r = await apiService.playbook.get();
-        setPlaybook(r.data.playbook || r.data);
+        const raw = r.data.playbook || r.data;
+        // API may return 'stages' or 'deal_stages' — normalise to deal_stages
+        if (raw && raw.stages && !raw.deal_stages) {
+          raw.deal_stages = raw.stages;
+          delete raw.stages;
+        }
+        setPlaybook(raw);
       } catch { setError('Failed to load playbook'); }
       finally { setLoading(false); }
     };
@@ -502,10 +508,12 @@ function PlaybookSettings() {
   };
 
   // deal_stages can be either an array OR a keyed object — normalise to array
-  const stagesArray = playbook?.deal_stages
-    ? Array.isArray(playbook.deal_stages)
-      ? playbook.deal_stages
-      : Object.entries(playbook.deal_stages).map(([id, val]) => ({ id, ...val }))
+  // Also handles API returning 'stages' instead of 'deal_stages'
+  const _stagesSource = playbook?.deal_stages || playbook?.stages;
+  const stagesArray = _stagesSource
+    ? Array.isArray(_stagesSource)
+      ? _stagesSource
+      : Object.entries(_stagesSource).map(([id, val]) => ({ id, ...val }))
     : [];
 
   // Update a stage field, writing back to whatever shape the original was
