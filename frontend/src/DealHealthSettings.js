@@ -35,16 +35,6 @@ const PARAMS = [
 const DEFAULT_WEIGHTS  = Object.fromEntries(PARAMS.map(p => [p.key, p.defaultWeight]));
 const DEFAULT_ENABLED  = Object.fromEntries(PARAMS.map(p => [p.key, true]));
 
-// ── Top-level Settings Tabs ──────────────────────────────────
-
-const SETTINGS_TABS = [
-  { id: 'integrations', label: 'Integrations',  icon: '🔌' },
-  { id: 'health',       label: 'Deal Health',   icon: '🏥' },
-  { id: 'playbook',     label: 'Sales Playbook',icon: '📘' },
-  { id: 'prompts',      label: 'AI Prompts',    icon: '🤖' },
-  { id: 'actions',      label: 'Actions',       icon: '🎯' },
-];
-
 // ── Deal Health inner tabs ───────────────────────────────────
 
 const HEALTH_TABS = [

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { apiService } from './apiService';
 import ActionsSettings from './ActionsSettings';
 import OutlookConnect from './OutlookConnect';
@@ -7,39 +7,6 @@ import DealHealthSettings from './DealHealthSettings';
 
 // ── Sub-imports for existing editors ────────────────────────
 // SettingsView hosts the content directly — no modal wrappers needed
-
-// ── Deal Health parameter definitions ───────────────────────
-
-const CATEGORIES = [
-  { id: 1, label: 'Close Date Credibility',     icon: '📅' },
-  { id: 2, label: 'Buyer Engagement & Power',   icon: '👥' },
-  { id: 3, label: 'Process Completion',         icon: '⚙️' },
-  { id: 4, label: 'Deal Size Realism',          icon: '💰' },
-  { id: 5, label: 'Competitive & Pricing Risk', icon: '🥊' },
-  { id: 6, label: 'Momentum & Activity',        icon: '⚡' },
-];
-
-const PARAMS = [
-  { key: '1a_close_confirmed',   cat: 1, label: 'Buyer-confirmed close date',          defaultWeight:  15, direction: 'positive', requiresAI: true,  auto: false, description: 'Close date has been explicitly confirmed by the buyer.', captureMethod: 'AI detected from transcript/email + manual checkbox' },
-  { key: '1b_close_slipped',     cat: 1, label: 'Close date slipped',                  defaultWeight: -20, direction: 'negative', requiresAI: false, auto: true,  description: 'The expected close date has been pushed out at least once.', captureMethod: 'Automatic — tracked from deal history on every date change' },
-  { key: '1c_buyer_event',       cat: 1, label: 'Close date tied to buyer event',      defaultWeight:  10, direction: 'positive', requiresAI: true,  auto: false, description: 'Close date is linked to a specific buyer-side event (e.g. board meeting, budget cycle).', captureMethod: 'AI detected from transcript/email + manual checkbox' },
-  { key: '2a_economic_buyer',    cat: 2, label: 'Economic buyer identified',           defaultWeight:  20, direction: 'positive', requiresAI: false, auto: false, description: 'The person with budget authority has been identified and tagged as a contact.', captureMethod: 'User tags a contact as Economic Buyer. Falls back to Decision Maker role.' },
-  { key: '2b_exec_meeting',      cat: 2, label: 'Exec meeting held',                   defaultWeight:  15, direction: 'positive', requiresAI: false, auto: true,  description: 'At least one meeting has been held with an executive-level contact.', captureMethod: 'Automatic — matches contact titles against exec title keyword list + calendar' },
-  { key: '2c_multi_threaded',    cat: 2, label: 'Multi-threaded (>2 stakeholders)',    defaultWeight:  10, direction: 'positive', requiresAI: false, auto: true,  description: 'More than 2 meaningful stakeholders are engaged with the deal.', captureMethod: 'Automatic — counts contacts with meaningful roles' },
-  { key: '3a_legal_engaged',     cat: 3, label: 'Legal / procurement engaged',         defaultWeight:  25, direction: 'positive', requiresAI: true,  auto: false, description: 'Legal or procurement team from the buyer side is actively involved.', captureMethod: 'Contact role tag + title keyword match + AI detection + manual flag' },
-  { key: '3b_security_review',   cat: 3, label: 'Security / IT review started',        defaultWeight:  20, direction: 'positive', requiresAI: true,  auto: false, description: 'Security or IT team has initiated a review of the solution.', captureMethod: 'Contact role tag + title keyword match + AI detection + manual flag' },
-  { key: '4a_value_vs_segment',  cat: 4, label: 'Deal value >2× segment average',     defaultWeight: -15, direction: 'negative', requiresAI: false, auto: true,  description: 'Deal value significantly exceeds typical segment size — may indicate unrealistic sizing.', captureMethod: 'Automatic — compares deal value against segment averages' },
-  { key: '4b_deal_expanded',     cat: 4, label: 'Deal expanded in last 30 days',       defaultWeight:  15, direction: 'positive', requiresAI: false, auto: true,  description: 'The deal value has increased in the last 30 days — positive signal of growing scope.', captureMethod: 'Automatic — tracked from deal value history' },
-  { key: '4c_scope_approved',    cat: 4, label: 'Buyer explicitly approved scope',     defaultWeight:  20, direction: 'positive', requiresAI: true,  auto: false, description: 'The buyer has explicitly agreed to the proposed scope.', captureMethod: 'AI detected from transcript/email + manual checkbox' },
-  { key: '5a_competitive',       cat: 5, label: 'Competitive deal',                   defaultWeight: -20, direction: 'negative', requiresAI: true,  auto: true,  description: 'A known competitor is involved in this deal evaluation.', captureMethod: 'Automatic — AI scans emails/transcripts for competitor names from registry' },
-  { key: '5b_price_sensitivity', cat: 5, label: 'Price sensitivity flagged',          defaultWeight: -15, direction: 'negative', requiresAI: true,  auto: false, description: 'The buyer has expressed concern about pricing or budget.', captureMethod: 'AI detected from transcript/email + manual checkbox' },
-  { key: '5c_discount_pending',  cat: 5, label: 'Discount approval pending',          defaultWeight: -10, direction: 'negative', requiresAI: true,  auto: false, description: 'A discount request is in progress and awaiting internal approval.', captureMethod: 'AI detected from internal email + manual checkbox' },
-  { key: '6a_no_meeting_14d',    cat: 6, label: 'No buyer meeting in last 14 days',   defaultWeight: -25, direction: 'negative', requiresAI: false, auto: true,  description: 'No meeting has been held with the buyer in the configured number of days.', captureMethod: 'Automatic — calculated from calendar meetings linked to the deal' },
-  { key: '6b_slow_response',     cat: 6, label: 'Avg response time > historical norm',defaultWeight: -15, direction: 'negative', requiresAI: false, auto: true,  description: 'Email response times are slower than the historical average — may signal disengagement.', captureMethod: 'Automatic — calculated from email thread timestamps' },
-];
-
-const DEFAULT_WEIGHTS  = Object.fromEntries(PARAMS.map(p => [p.key, p.defaultWeight]));
-const DEFAULT_ENABLED  = Object.fromEntries(PARAMS.map(p => [p.key, true]));
 
 // ── Top-level Settings Tabs ──────────────────────────────────
 
@@ -51,16 +18,6 @@ const SETTINGS_TABS = [
   { id: 'actions',      label: 'Actions',       icon: '🎯' },
 ];
 
-// ── Deal Health inner tabs ───────────────────────────────────
-
-const HEALTH_TABS = [
-  { id: 'ai',          label: '🤖 AI Usage'        },
-  { id: 'parameters',  label: '📋 Parameters'      },
-  { id: 'weights',     label: '⚖️ Weights'         },
-  { id: 'titles',      label: '🏷️ Title Keywords'  },
-  { id: 'segments',    label: '📊 Segments'        },
-  { id: 'competitors', label: '🥊 Competitors'     },
-];
 
 // ════════════════════════════════════════════════════════════
 // SETTINGS VIEW
