@@ -10,8 +10,9 @@ import './OrgAdminView.css';
 // ═══════════════════════════════════════════════════════════════════
 
 const ORG_ADMIN_TABS = [
-  { id: 'members',     label: 'Members',     icon: '👥' },
-  { id: 'invitations', label: 'Invitations', icon: '✉️' },
+  { id: 'members',     label: 'Members',      icon: '👥' },
+  { id: 'invitations', label: 'Invitations',  icon: '✉️' },
+  { id: 'playbooks',   label: 'Playbooks',    icon: '📘' },
   { id: 'settings',    label: 'Org Settings', icon: '⚙️' },
 ];
 
@@ -81,6 +82,7 @@ export default function OrgAdminView() {
       <div className="settings-body">
         {tab === 'members'     && <OAMembers currentUserId={currentUser.id} />}
         {tab === 'invitations' && <OAInvitations />}
+        {tab === 'playbooks'   && <OAPlaybooks />}
         {tab === 'settings'    && <OASettings />}
       </div>
     </div>
@@ -409,6 +411,346 @@ function OAInvitations() {
 // ─────────────────────────────────────────────────────────────────
 // ORG SETTINGS TAB
 // ─────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────
+// OAPlaybooks — full playbook management for org admins
+// ─────────────────────────────────────────────────────────────
+function OAPlaybooks() {
+  const [playbooks, setPlaybooks]       = useState([]);
+  const [selectedId, setSelectedId]     = useState(null);
+  const [playbook, setPlaybook]         = useState(null);
+  const [loading, setLoading]           = useState(true);
+  const [saving, setSaving]             = useState(false);
+  const [error, setError]               = useState('');
+  const [success, setSuccess]           = useState('');
+  const [showNewForm, setShowNewForm]   = useState(false);
+  const [newPbData, setNewPbData]       = useState({ name: '', type: 'custom', description: '' });
+  const [editingStage, setEditingStage] = useState(null);
+  const [creating, setCreating]         = useState(false);
+  const [deleting, setDeleting]         = useState(false);
+  const [showCompany, setShowCompany]   = useState(false);
+
+  const flash = (type, msg) => {
+    if (type === 'success') { setSuccess(msg); setError(''); }
+    else                    { setError(msg);   setSuccess(''); }
+    setTimeout(() => { setSuccess(''); setError(''); }, 3500);
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r    = await apiService.playbooks.getAll();
+        const list = r.data.playbooks || [];
+        setPlaybooks(list);
+        const def = list.find(p => p.is_default) || list[0];
+        if (def) setSelectedId(def.id);
+      } catch { setError('Failed to load playbooks'); }
+      finally  { setLoading(false); }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    setPlaybook(null);
+    setEditingStage(null);
+    setShowCompany(false);
+    (async () => {
+      try {
+        const r   = await apiService.playbooks.getById(selectedId);
+        const raw = r.data.playbook;
+        if (raw?.content?.stages && !raw.content.deal_stages) {
+          raw.content.deal_stages = raw.content.stages;
+          delete raw.content.stages;
+        }
+        setPlaybook(raw);
+      } catch { setError('Failed to load playbook content'); }
+    })();
+  }, [selectedId]);
+
+  const handleSave = async () => {
+    if (!playbook) return;
+    setSaving(true);
+    try {
+      await apiService.playbooks.update(selectedId, {
+        name:        playbook.name,
+        description: playbook.description,
+        content:     playbook.content
+      });
+      setPlaybooks(prev => prev.map(p => p.id === selectedId ? { ...p, name: playbook.name, description: playbook.description } : p));
+      flash('success', 'Playbook saved ✓');
+    } catch { flash('error', 'Failed to save playbook'); }
+    finally  { setSaving(false); }
+  };
+
+  const handleSetDefault = async (id) => {
+    try {
+      await apiService.playbooks.setDefault(id);
+      setPlaybooks(prev => prev.map(p => ({ ...p, is_default: p.id === id })));
+      if (playbook && playbook.id === id) setPlaybook({ ...playbook, is_default: true });
+      flash('success', 'Default playbook updated ✓');
+    } catch { flash('error', 'Failed to set default'); }
+  };
+
+  const handleCreate = async () => {
+    if (!newPbData.name.trim()) { flash('error', 'Name is required'); return; }
+    setCreating(true);
+    try {
+      const r  = await apiService.playbooks.create({ ...newPbData, content: { deal_stages: {}, company: {} } });
+      const nb = r.data.playbook;
+      setPlaybooks(prev => [...prev, nb]);
+      setSelectedId(nb.id);
+      setShowNewForm(false);
+      setNewPbData({ name: '', type: 'custom', description: '' });
+      flash('success', 'Playbook created ✓');
+    } catch { flash('error', 'Failed to create playbook'); }
+    finally  { setCreating(false); }
+  };
+
+  const handleDelete = async (id) => {
+    const pb = playbooks.find(p => p.id === id);
+    if (pb?.is_default) { flash('error', 'Set another playbook as default before deleting this one'); return; }
+    if (!window.confirm(`Delete "${pb?.name}"? This cannot be undone.`)) return;
+    setDeleting(true);
+    try {
+      await apiService.playbooks.delete(id);
+      const remaining = playbooks.filter(p => p.id !== id);
+      setPlaybooks(remaining);
+      if (selectedId === id) setSelectedId(remaining[0]?.id || null);
+      flash('success', 'Playbook deleted');
+    } catch (e) { flash('error', e?.response?.data?.error?.message || 'Failed to delete playbook'); }
+    finally     { setDeleting(false); }
+  };
+
+  const stagesSource = playbook?.content?.deal_stages || playbook?.content?.stages;
+  const stagesArray  = stagesSource
+    ? Array.isArray(stagesSource)
+      ? stagesSource
+      : Object.entries(stagesSource).map(([id, val]) => ({ id, ...val }))
+    : [];
+
+  const updateStageField = (stageId, fieldKey, value) => {
+    const ds = playbook.content.deal_stages || playbook.content.stages || {};
+    if (Array.isArray(ds)) {
+      setPlaybook({ ...playbook, content: { ...playbook.content, deal_stages: ds.map(s => (s.id === stageId || s.name === stageId) ? { ...s, [fieldKey]: value } : s) } });
+    } else {
+      setPlaybook({ ...playbook, content: { ...playbook.content, deal_stages: { ...ds, [stageId]: { ...ds[stageId], [fieldKey]: value } } } });
+    }
+  };
+
+  const TYPE_LABELS = { market: '🌍 Market', product: '📦 Product', custom: '⚙️ Custom' };
+  const TYPE_COLORS = { market: '#3182ce', product: '#38a169', custom: '#718096' };
+
+  if (loading) return <div className="sv-loading">Loading playbooks...</div>;
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>📘 Sales Playbooks</h2>
+          <p className="sv-panel-desc">Create and manage playbooks per market or product. Each deal can use a specific playbook; the default is used when none is selected.</p>
+        </div>
+        <button className="sv-btn-primary" onClick={() => setShowNewForm(true)}>+ New Playbook</button>
+      </div>
+
+      {error   && <div className="sv-alert sv-alert-error">{error}</div>}
+      {success && <div className="sv-alert sv-alert-success">{success}</div>}
+
+      {showNewForm && (
+        <div className="sv-card oa-pb-new-form">
+          <h4 style={{ marginTop: 0, marginBottom: 16 }}>New Playbook</h4>
+          <div className="oa-pb-form-grid">
+            <div className="sv-field">
+              <label>Name</label>
+              <input className="sv-input" placeholder="e.g. EMEA Enterprise"
+                value={newPbData.name} onChange={e => setNewPbData(p => ({ ...p, name: e.target.value }))} />
+            </div>
+            <div className="sv-field">
+              <label>Type</label>
+              <select className="sv-input" value={newPbData.type} onChange={e => setNewPbData(p => ({ ...p, type: e.target.value }))}>
+                <option value="market">🌍 Market</option>
+                <option value="product">📦 Product</option>
+                <option value="custom">⚙️ Custom</option>
+              </select>
+            </div>
+          </div>
+          <div className="sv-field" style={{ marginTop: 12 }}>
+            <label>Description (optional)</label>
+            <input className="sv-input" placeholder="e.g. For deals in EMEA region"
+              value={newPbData.description} onChange={e => setNewPbData(p => ({ ...p, description: e.target.value }))} />
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+            <button className="sv-btn-primary" onClick={handleCreate} disabled={creating}>
+              {creating ? 'Creating...' : 'Create Playbook'}
+            </button>
+            <button className="sv-btn sv-btn-secondary" onClick={() => setShowNewForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div className="oa-pb-layout">
+        {/* Sidebar */}
+        <div className="oa-pb-sidebar">
+          {playbooks.length === 0
+            ? <div className="sv-empty">No playbooks yet. Create one above.</div>
+            : playbooks.map(pb => (
+              <div key={pb.id}
+                className={`oa-pb-list-item ${selectedId === pb.id ? 'active' : ''}`}
+                onClick={() => setSelectedId(pb.id)}>
+                <div className="oa-pb-list-main">
+                  <span className="oa-pb-list-name">{pb.name}</span>
+                  {pb.is_default && <span className="oa-pb-star" title="Default">★</span>}
+                </div>
+                <span style={{ fontSize: 11, color: TYPE_COLORS[pb.type], fontWeight: 600 }}>{TYPE_LABELS[pb.type]}</span>
+                {selectedId === pb.id && (
+                  <div className="oa-pb-item-actions">
+                    {!pb.is_default && (
+                      <button className="oa-pb-link" onClick={e => { e.stopPropagation(); handleSetDefault(pb.id); }}>
+                        Set default
+                      </button>
+                    )}
+                    {!pb.is_default && (
+                      <button className="oa-pb-link oa-pb-link--danger" onClick={e => { e.stopPropagation(); handleDelete(pb.id); }} disabled={deleting}>
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))
+          }
+        </div>
+
+        {/* Editor */}
+        <div className="oa-pb-editor">
+          {!playbook ? (
+            <div className="sv-loading">Select a playbook to edit</div>
+          ) : (
+            <>
+              {/* Header row with name/desc editable inline */}
+              <div className="oa-pb-editor-header">
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    <input
+                      className="oa-pb-name-input"
+                      value={playbook.name}
+                      onChange={e => setPlaybook({ ...playbook, name: e.target.value })}
+                      placeholder="Playbook name"
+                    />
+                    {playbook.is_default && <span className="oa-pb-default-badge">Default</span>}
+                    <span style={{ fontSize: 12, fontWeight: 600, color: TYPE_COLORS[playbook.type] }}>{TYPE_LABELS[playbook.type]}</span>
+                  </div>
+                  <input
+                    className="oa-pb-desc-input"
+                    value={playbook.description || ''}
+                    onChange={e => setPlaybook({ ...playbook, description: e.target.value })}
+                    placeholder="Description (optional)"
+                  />
+                </div>
+                <button className="sv-btn-primary" onClick={handleSave} disabled={saving} style={{ flexShrink: 0 }}>
+                  {saving ? '⏳ Saving...' : '💾 Save'}
+                </button>
+              </div>
+
+              {/* Company context — collapsible */}
+              {playbook.content && (
+                <div className="sv-card" style={{ marginBottom: 16 }}>
+                  <div className="oa-pb-section-header" onClick={() => setShowCompany(v => !v)}>
+                    <span>🏢 Company Context</span>
+                    {!showCompany && (playbook.content?.company?.name || playbook.content?.company?.industry || playbook.content?.company?.product) && (
+                      <span className="oa-pb-summary">
+                        {[playbook.content.company.name, playbook.content.company.industry, playbook.content.company.product].filter(Boolean).join(' · ')}
+                      </span>
+                    )}
+                    <span style={{ marginLeft: 'auto', color: '#a0aec0' }}>{showCompany ? '▲' : '▼'}</span>
+                  </div>
+                  {showCompany && (
+                    <div style={{ marginTop: 14 }}>
+                      {['name', 'industry', 'product'].map(field => (
+                        <div key={field} className="sv-field" style={{ marginBottom: 12 }}>
+                          <label style={{ textTransform: 'capitalize' }}>{field}</label>
+                          <input className="sv-input"
+                            value={playbook.content?.company?.[field] || ''}
+                            onChange={e => setPlaybook({ ...playbook, content: { ...playbook.content, company: { ...playbook.content.company, [field]: e.target.value } } })} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Deal stages */}
+              <div className="sv-card">
+                <h4 style={{ marginTop: 0, marginBottom: 16, fontSize: 15 }}>📋 Deal Stages</h4>
+                {stagesArray.length === 0 ? (
+                  <div className="sv-empty">No stages in this playbook yet. Save after adding content.</div>
+                ) : (
+                  <div className="sv-stages-list">
+                    {stagesArray.map((stage, i) => {
+                      const stageId = stage.id || stage.name || String(i);
+                      return (
+                        <div key={stageId} className="sv-stage-row">
+                          <div className="sv-stage-header"
+                            onClick={() => setEditingStage(editingStage === stageId ? null : stageId)}>
+                            <span className="sv-stage-num">{i + 1}</span>
+                            <span className="sv-stage-name">{stage.name || stageId}</span>
+                            <span className="sv-hint sv-stage-goal">
+                              {stage.goal?.substring(0, 60)}{stage.goal?.length > 60 ? '…' : ''}
+                            </span>
+                            <span className="sv-expand-btn">{editingStage === stageId ? '▲' : '▼'}</span>
+                          </div>
+                          {editingStage === stageId && (
+                            <div className="sv-stage-detail">
+                              {Object.entries(stage)
+                                .filter(([k]) => k !== 'id' && k !== 'key_actions' && k !== 'success_criteria')
+                                .map(([key, val]) => (
+                                  <div key={key} className="sv-field" style={{ marginBottom: 10 }}>
+                                    <label style={{ textTransform: 'capitalize' }}>{key.replace(/_/g, ' ')}</label>
+                                    <input className="sv-input" value={val || ''}
+                                      onChange={e => updateStageField(stageId, key, e.target.value)} />
+                                  </div>
+                                ))}
+                              {Array.isArray(stage.key_actions) && (
+                                <div className="sv-field" style={{ marginTop: 8 }}>
+                                  <label>Key Actions</label>
+                                  {stage.key_actions.map((action, ai) => (
+                                    <div key={ai} className="oa-pb-action-row">
+                                      <span className="oa-pb-action-num">{ai + 1}</span>
+                                      <textarea
+                                        className="sv-input oa-pb-action-textarea"
+                                        value={action}
+                                        rows={Math.max(1, Math.ceil(action.length / 60))}
+                                        onChange={e => {
+                                          const a = [...stage.key_actions];
+                                          a[ai] = e.target.value;
+                                          updateStageField(stageId, 'key_actions', a);
+                                        }}
+                                      />
+                                      <button className="oa-pb-action-remove"
+                                        onClick={() => updateStageField(stageId, 'key_actions', stage.key_actions.filter((_, idx) => idx !== ai))}
+                                        title="Remove action">×</button>
+                                    </div>
+                                  ))}
+                                  <button className="oa-pb-add-action"
+                                    onClick={() => updateStageField(stageId, 'key_actions', [...stage.key_actions, ''])}>
+                                    + Add action
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function OASettings() {
   const [org, setOrg]       = useState(null);

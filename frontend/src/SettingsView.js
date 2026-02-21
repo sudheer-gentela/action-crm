@@ -111,6 +111,9 @@ function DealHealthSettings() {
   const [error, setError]         = useState('');
   const [success, setSuccess]     = useState('');
 
+  const activeRole = sessionStorage.getItem('activeRole') || 'member';
+  const canEdit    = activeRole === 'org-admin' || activeRole === 'super-admin';
+
   // State
   const [aiEnabled, setAiEnabled]         = useState(true);
   const [paramsEnabled, setParamsEnabled] = useState(DEFAULT_ENABLED);
@@ -194,7 +197,7 @@ function DealHealthSettings() {
           <h2>🏥 Deal Health Scoring</h2>
           <p className="sv-panel-desc">Define the 16 parameters used to score every deal in your pipeline. Changes apply to all deals immediately on next score.</p>
         </div>
-        {healthTab !== 'competitors' && (
+        {healthTab !== 'competitors' && canEdit && (
           <button className="sv-btn-primary" onClick={handleSave} disabled={saving}>
             {saving ? '⏳ Saving...' : '💾 Save Changes'}
           </button>
@@ -209,6 +212,12 @@ function DealHealthSettings() {
           </button>
         ))}
       </div>
+
+      {!canEdit && (
+        <div className="sv-alert" style={{ background: '#ebf8ff', borderColor: '#bee3f8', color: '#2b6cb0', marginBottom: 16 }}>
+          👁 View only — switch to Org Admin to change deal health settings
+        </div>
+      )}
 
       {error   && <div className="sv-error">⚠️ {error}</div>}
       {success && <div className="sv-success">{success}</div>}
@@ -229,7 +238,7 @@ function DealHealthSettings() {
                 {aiEnabled && <div className="sv-ai-cost">💡 Estimated cost: ~$0.04 per transcript · ~$0.02 per email scan</div>}
               </div>
               <div className="sv-ai-master-right">
-                <button className={`sv-toggle ${aiEnabled ? 'on' : 'off'}`} onClick={() => setAiEnabled(!aiEnabled)}>
+                <button className={`sv-toggle ${aiEnabled ? 'on' : 'off'}`} onClick={() => canEdit && setAiEnabled(!aiEnabled)} disabled={!canEdit}>
                   <span className="sv-toggle-knob" />
                 </button>
                 <span className="sv-toggle-label">{aiEnabled ? 'ON' : 'OFF'}</span>
@@ -282,7 +291,7 @@ function DealHealthSettings() {
                     <div key={p.key} className={`sv-param-card ${enabled ? '' : 'inactive'}`}>
                       <div className="sv-param-card-top">
                         <label className="sv-param-toggle">
-                          <input type="checkbox" checked={enabled} onChange={e => setParamsEnabled({ ...paramsEnabled, [p.key]: e.target.checked })} />
+                          <input type="checkbox" checked={enabled} disabled={!canEdit} onChange={e => canEdit && setParamsEnabled({ ...paramsEnabled, [p.key]: e.target.checked })} />
                           <span className="sv-param-slider" />
                         </label>
                         <div className="sv-param-card-info" onClick={() => setExpandedParam(expanded ? null : p.key)}>
@@ -305,7 +314,7 @@ function DealHealthSettings() {
                             <div className="sv-meta-row">
                               <span className="sv-meta-label">Weight (points)</span>
                               <div className="sv-weight-inline">
-                                <input type="number" min="-100" max="100" value={paramWeights[p.key] ?? p.defaultWeight} onChange={e => setParamWeights({ ...paramWeights, [p.key]: Number(e.target.value) })} />
+                                <input type="number" min="-100" max="100" value={paramWeights[p.key] ?? p.defaultWeight} disabled={!canEdit} onChange={e => canEdit && setParamWeights({ ...paramWeights, [p.key]: Number(e.target.value) })} />
                                 <span className="sv-hint">pts</span>
                               </div>
                             </div>
@@ -335,7 +344,7 @@ function DealHealthSettings() {
                       <span>{cat.icon}</span>
                       <label>{cat.label}</label>
                       <div className="sv-weight-input">
-                        <input type="number" min="0" max="100" value={catWeights[key]} onChange={e => setCatWeights({ ...catWeights, [key]: Number(e.target.value) })} />
+                        <input type="number" min="0" max="100" value={catWeights[key]} disabled={!canEdit} onChange={e => canEdit && setCatWeights({ ...catWeights, [key]: Number(e.target.value) })} />
                         <span>%</span>
                       </div>
                     </div>
@@ -350,7 +359,7 @@ function DealHealthSettings() {
                   <div key={key} className="sv-threshold-row">
                     <span className={`sv-health-dot ${dot}`} />
                     <label>{label}</label>
-                    <input type="number" min="1" max="100" value={thresholds[key]} onChange={e => setThresholds({ ...thresholds, [key]: Number(e.target.value) })} />
+                    <input type="number" min="1" max="100" value={thresholds[key]} disabled={!canEdit} onChange={e => canEdit && setThresholds({ ...thresholds, [key]: Number(e.target.value) })} />
                   </div>
                 ))}
                 <div className="sv-threshold-row"><span className="sv-health-dot risk" /><label className="sv-hint">Risk &lt; {thresholds.watch}</label></div>
@@ -375,11 +384,11 @@ function DealHealthSettings() {
                 <div className="sv-tags">
                   {titleKws[key].map((kw, i) => (
                     <div key={i} className="sv-tag">
-                      <input value={kw} onChange={e => updateTitleKw(key, i, e.target.value)} />
-                      <button onClick={() => removeTitleKw(key, i)}>×</button>
+                      <input value={kw} disabled={!canEdit} onChange={e => canEdit && updateTitleKw(key, i, e.target.value)} />
+                      {canEdit && <button onClick={() => removeTitleKw(key, i)}>×</button>}
                     </div>
                   ))}
-                  <button className="sv-add-tag" onClick={() => addTitleKw(key)}>+ Add keyword</button>
+                  {canEdit && <button className="sv-add-tag" onClick={() => addTitleKw(key)}>+ Add keyword</button>}
                 </div>
               </div>
             ))}
@@ -396,7 +405,7 @@ function DealHealthSettings() {
                 {[{ key:'smb', label:'SMB average deal ($)', hint:'Deals under $10K' }, { key:'midmarket', label:'Mid-Market average deal ($)', hint:'Deals $10K–$50K' }, { key:'enterprise', label:'Enterprise average deal ($)', hint:'Deals over $50K' }, { key:'multiplier', label:'Oversize multiplier', hint:'Flag if value > avg × this' }].map(({ key, label, hint }) => (
                   <div key={key} className="sv-seg-row">
                     <div><label>{label}</label><p className="sv-hint">{hint}</p></div>
-                    <input type="number" step={key === 'multiplier' ? '0.1' : '1000'} value={segments[key]} onChange={e => setSegments({ ...segments, [key]: Number(e.target.value) })} />
+                    <input type="number" step={key === 'multiplier' ? '0.1' : '1000'} value={segments[key]} disabled={!canEdit} onChange={e => canEdit && setSegments({ ...segments, [key]: Number(e.target.value) })} />
                   </div>
                 ))}
               </div>
@@ -407,7 +416,7 @@ function DealHealthSettings() {
                 {[{ key:'noMeetingDays', label:'No-meeting alert (days)', hint:'Parameter 6a — flag if no meeting in X days' }, { key:'responseMultiplier', label:'Slow response multiplier', hint:'Parameter 6b — flag if avg response > norm × X' }, { key:'multiThreadMin', label:'Multi-thread min contacts', hint:'Parameter 2c — minimum stakeholder count' }].map(({ key, label, hint }) => (
                   <div key={key} className="sv-seg-row">
                     <div><label>{label}</label><p className="sv-hint">{hint}</p></div>
-                    <input type="number" step={key === 'responseMultiplier' ? '0.1' : '1'} value={segments[key]} onChange={e => setSegments({ ...segments, [key]: Number(e.target.value) })} />
+                    <input type="number" step={key === 'responseMultiplier' ? '0.1' : '1'} value={segments[key]} disabled={!canEdit} onChange={e => canEdit && setSegments({ ...segments, [key]: Number(e.target.value) })} />
                   </div>
                 ))}
               </div>
@@ -425,10 +434,10 @@ function DealHealthSettings() {
             <div className="sv-card">
               <h3>Add Competitor</h3>
               <div className="sv-comp-form">
-                <input placeholder="Name *" value={newComp.name} onChange={e => setNewComp({ ...newComp, name: e.target.value })} />
-                <input placeholder="Aliases (comma-separated, e.g. SFDC, Force.com)" value={newComp.aliases} onChange={e => setNewComp({ ...newComp, aliases: e.target.value })} />
-                <input placeholder="Website (optional)" value={newComp.website} onChange={e => setNewComp({ ...newComp, website: e.target.value })} />
-                <button className="sv-btn-primary" onClick={handleAddCompetitor}>+ Add</button>
+                <input placeholder="Name *" value={newComp.name} disabled={!canEdit} onChange={e => canEdit && setNewComp({ ...newComp, name: e.target.value })} />
+                <input placeholder="Aliases (comma-separated, e.g. SFDC, Force.com)" value={newComp.aliases} disabled={!canEdit} onChange={e => canEdit && setNewComp({ ...newComp, aliases: e.target.value })} />
+                <input placeholder="Website (optional)" value={newComp.website} disabled={!canEdit} onChange={e => canEdit && setNewComp({ ...newComp, website: e.target.value })} />
+                {canEdit && <button className="sv-btn-primary" onClick={handleAddCompetitor}>+ Add</button>}
               </div>
             </div>
             <div className="sv-comp-list">
@@ -453,8 +462,8 @@ function DealHealthSettings() {
                         {comp.website && <span className="sv-comp-website">{comp.website}</span>}
                       </div>
                       <div className="sv-comp-actions">
-                        <button className="sv-icon-btn" onClick={() => setEditComp({ ...comp, aliases: Array.isArray(comp.aliases) ? comp.aliases.join(', ') : '' })}>✏️</button>
-                        <button className="sv-icon-btn" onClick={() => handleDeleteCompetitor(comp.id)}>🗑️</button>
+                        {canEdit && <button className="sv-icon-btn" onClick={() => setEditComp({ ...comp, aliases: Array.isArray(comp.aliases) ? comp.aliases.join(', ') : '' })}>✏️</button>}
+                        {canEdit && <button className="sv-icon-btn" onClick={() => handleDeleteCompetitor(comp.id)}>🗑️</button>}
                       </div>
                     </>
                   )}
@@ -854,6 +863,12 @@ function PromptsSettings() {
           {saving ? '⏳ Saving...' : '💾 Save Prompts'}
         </button>
       </div>
+
+      {!canEdit && (
+        <div className="sv-alert" style={{ background: '#ebf8ff', borderColor: '#bee3f8', color: '#2b6cb0', marginBottom: 16 }}>
+          👁 View only — switch to Org Admin to change deal health settings
+        </div>
+      )}
 
       {error   && <div className="sv-error">⚠️ {error}</div>}
       {success && <div className="sv-success">{success}</div>}
