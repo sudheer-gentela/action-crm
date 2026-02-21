@@ -41,6 +41,20 @@ async function getOrgPayload(userId) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Helper: check if user has active super admin access.
+// Returns boolean — used to include is_super_admin in login
+// response so the frontend can gate the Platform Admin nav item
+// without an extra round-trip.
+// ─────────────────────────────────────────────────────────────
+async function isSuperAdmin(userId) {
+  const result = await db.query(
+    `SELECT 1 FROM super_admins WHERE user_id = $1 AND revoked_at IS NULL`,
+    [userId]
+  );
+  return result.rows.length > 0;
+}
+
+// ─────────────────────────────────────────────────────────────
 // POST /api/auth/register
 // ─────────────────────────────────────────────────────────────
 router.post('/register', async (req, res) => {
@@ -83,6 +97,7 @@ router.post('/register', async (req, res) => {
 
     // Build JWT payload with org context
     const orgPayload = await getOrgPayload(user.id);
+    const superAdmin = await isSuperAdmin(user.id);
 
     const token = jwt.sign(
       {
@@ -97,12 +112,14 @@ router.post('/register', async (req, res) => {
 
     res.status(201).json({
       user: {
-        id:        user.id,
-        email:     user.email,
-        firstName: user.first_name,
-        lastName:  user.last_name,
-        role:      user.role,
-        org_id:    orgPayload.org_id,
+        id:             user.id,
+        email:          user.email,
+        firstName:      user.first_name,
+        lastName:       user.last_name,
+        role:           user.role,
+        org_id:         orgPayload.org_id,
+        org_role:       orgPayload.role,
+        is_super_admin: superAdmin,
       },
       token
     });
@@ -142,6 +159,7 @@ router.post('/login', async (req, res) => {
 
     // Get org membership
     const orgPayload = await getOrgPayload(user.id);
+    const superAdmin = await isSuperAdmin(user.id);
 
     // Build JWT — org_id now included
     const token = jwt.sign(
@@ -157,12 +175,14 @@ router.post('/login', async (req, res) => {
 
     res.json({
       user: {
-        id:        user.id,
-        email:     user.email,
-        firstName: user.first_name,
-        lastName:  user.last_name,
-        role:      user.role,
-        org_id:    orgPayload.org_id,
+        id:             user.id,
+        email:          user.email,
+        firstName:      user.first_name,
+        lastName:       user.last_name,
+        role:           user.role,
+        org_id:         orgPayload.org_id,
+        org_role:       orgPayload.role,
+        is_super_admin: superAdmin,
       },
       token
     });
@@ -198,15 +218,18 @@ router.get('/verify', async (req, res) => {
     // Always do a fresh DB lookup for org — handles cases where
     // the JWT is old and doesn't carry org_id yet
     const orgPayload = await getOrgPayload(user.id);
+    const superAdmin = await isSuperAdmin(user.id);
 
     res.json({
       user: {
-        id:        user.id,
-        email:     user.email,
-        firstName: user.first_name,
-        lastName:  user.last_name,
-        role:      user.role,
-        org_id:    orgPayload.org_id,
+        id:             user.id,
+        email:          user.email,
+        firstName:      user.first_name,
+        lastName:       user.last_name,
+        role:           user.role,
+        org_id:         orgPayload.org_id,
+        org_role:       orgPayload.role,
+        is_super_admin: superAdmin,
       }
     });
   } catch (error) {

@@ -1,0 +1,211 @@
+/* ═══════════════════════════════════════════════════════════════
+   OrgAdminView.css
+   Extends SettingsView design system (.settings-* / .sv-*)
+   Org admin namespace: .oa-*
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Layout ───────────────────────────────────────────────────── */
+.oa-view {
+  padding: 24px 0;
+  max-width: 960px;
+}
+.oa-header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  margin-bottom: 20px;
+}
+.oa-header h1 {
+  font-size: 28px; font-weight: 700; color: #1a202c; margin: 0 0 6px;
+}
+.oa-subtitle { color: #718096; font-size: 15px; margin: 0; }
+
+/* ── Stats strip ──────────────────────────────────────────────── */
+.oa-stats-strip {
+  display: flex; align-items: center; gap: 0;
+  background: white; border: 1px solid #e2e8f0; border-radius: 12px;
+  padding: 16px 24px; margin-bottom: 24px; flex-wrap: wrap;
+}
+.oa-stat {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 2px; padding: 0 24px;
+}
+.oa-stat-value { font-size: 26px; font-weight: 700; color: #1a202c; line-height: 1; }
+.oa-stat-label { font-size: 12px; color: #718096; font-weight: 500; }
+.oa-stat-divider { width: 1px; height: 40px; background: #e2e8f0; }
+
+/* ── Role legend ──────────────────────────────────────────────── */
+.oa-role-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
+.oa-role-card {
+  padding: 12px 14px; background: #f9fafb;
+  border: 1px solid #e2e8f0; border-radius: 8px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.oa-role-card-header { margin-bottom: 2px; }
+
+/* ── Role badges ──────────────────────────────────────────────── */
+.oa-role-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  white-space: nowrap;
+}
+.oa-role-badge--purple { background: #f5f3ff; color: #6d28d9; border: 1px solid #ddd6fe; }
+.oa-role-badge--blue   { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.oa-role-badge--green  { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+.oa-role-badge--grey   { background: #f7fafc; color: #718096; border: 1px solid #e2e8f0; }
+
+/* ── Search ───────────────────────────────────────────────────── */
+.oa-search {
+  width: 100%; padding: 10px 14px;
+  border: 1px solid #e2e8f0; border-radius: 8px;
+  font-size: 14px; background: white; color: #1a202c;
+  transition: border-color 0.15s;
+}
+.oa-search:focus { outline: none; border-color: #667eea; }
+
+/* ── Member table ─────────────────────────────────────────────── */
+.oa-member-table { display: flex; flex-direction: column; gap: 8px; }
+
+.oa-member-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px; background: white;
+  border: 1px solid #e2e8f0; border-radius: 10px;
+  transition: box-shadow 0.15s;
+}
+.oa-member-row:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.oa-member-row--inactive { opacity: 0.45; }
+
+.oa-member-avatar {
+  width: 40px; height: 40px; border-radius: 50%;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white; font-size: 16px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.oa-member-info { flex: 1; min-width: 0; }
+.oa-member-name {
+  font-size: 14px; font-weight: 600; color: #1a202c;
+  display: flex; align-items: center; gap: 8px;
+}
+.oa-member-email { font-size: 13px; color: #718096; margin-top: 1px; }
+.oa-member-meta  { font-size: 12px; color: #a0aec0; margin-top: 2px; }
+
+.oa-you-tag {
+  font-size: 11px; background: #667eea; color: white;
+  padding: 1px 7px; border-radius: 999px; font-weight: 600;
+}
+
+.oa-member-role { flex-shrink: 0; }
+
+.oa-role-select {
+  padding: 7px 10px; border: 1px solid #e2e8f0; border-radius: 6px;
+  font-size: 13px; background: white; cursor: pointer; color: #1a202c;
+}
+.oa-role-select:focus { outline: none; border-color: #667eea; }
+
+.oa-member-actions { flex-shrink: 0; }
+
+.oa-btn-remove {
+  padding: 6px 12px; background: white; color: #c53030;
+  border: 1px solid #fed7d7; border-radius: 6px;
+  font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s;
+}
+.oa-btn-remove:hover { background: #fff5f5; border-color: #fc8181; }
+
+/* ── Invite form ──────────────────────────────────────────────── */
+.oa-invite-form {
+  background: #f0f9ff !important;
+  border-color: #bfdbfe !important;
+}
+.oa-invite-actions {
+  display: flex; justify-content: space-between; align-items: flex-end;
+  gap: 12px; flex-wrap: wrap; margin-top: 4px;
+}
+
+/* Reuse sa-form-grid from SuperAdminView styles — import that CSS too,
+   or duplicate here: */
+.sa-form-grid        { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.sa-form-field       { display: flex; flex-direction: column; gap: 6px; }
+.sa-form-field--full { grid-column: 1 / -1; }
+.sa-form-field label { font-size: 13px; font-weight: 600; color: #374151; }
+.sa-form-field input,
+.sa-form-field select,
+.sa-form-field textarea {
+  padding: 9px 12px; border: 1px solid #e2e8f0; border-radius: 8px;
+  font-size: 14px; color: #1a202c; background: white;
+  transition: border-color 0.15s; font-family: inherit; resize: vertical;
+}
+.sa-form-field input:focus,
+.sa-form-field select:focus,
+.sa-form-field textarea:focus { outline: none; border-color: #667eea; }
+
+/* ── Invitation list ──────────────────────────────────────────── */
+.oa-invite-list { display: flex; flex-direction: column; gap: 8px; }
+.oa-invite-row {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 14px 16px; background: white;
+  border: 1px solid #e2e8f0; border-radius: 10px;
+}
+.oa-invite-info { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.oa-invite-message {
+  font-size: 13px; color: #4a5568; font-style: italic;
+  background: #f9fafb; padding: 6px 10px; border-radius: 6px; margin-top: 4px;
+}
+.oa-invite-status {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0;
+}
+
+/* Pull in shared badge styles if not already imported via SuperAdminView.css */
+.sa-badge-status {
+  display: inline-flex; align-items: center; padding: 3px 10px;
+  border-radius: 999px; font-size: 12px; font-weight: 600;
+}
+.sa-badge-status--green  { background: #f0fff4; color: #276749; border: 1px solid #c6f6d5; }
+.sa-badge-status--amber  { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+.sa-badge-status--grey   { background: #f7fafc; color: #718096; border: 1px solid #e2e8f0; }
+.sa-badge-status--red    { background: #fff5f5; color: #c53030; border: 1px solid #fed7d7; }
+
+/* ── Org Settings tab ─────────────────────────────────────────── */
+.oa-name-row {
+  display: flex; gap: 10px; align-items: center;
+}
+.oa-input {
+  flex: 1; padding: 10px 14px; border: 1px solid #e2e8f0; border-radius: 8px;
+  font-size: 15px; color: #1a202c; background: white;
+  transition: border-color 0.15s;
+}
+.oa-input:focus { outline: none; border-color: #667eea; }
+
+.oa-plan-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.oa-plan-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 12px; background: #f9fafb; border-radius: 6px;
+  font-size: 14px;
+}
+.oa-plan-label { color: #718096; }
+.oa-plan-value { font-weight: 600; color: #1a202c; }
+
+.sa-plan-pill {
+  display: inline-block; padding: 2px 8px;
+  background: #eef2ff; color: #4338ca;
+  border-radius: 6px; font-size: 12px; font-weight: 600; text-transform: capitalize;
+}
+
+.oa-danger-card {
+  background: #fffbeb !important;
+  border-color: #fde68a !important;
+}
+.oa-danger-card h3 { color: #92400e !important; }
+
+/* ── Shared button styles (mirror SettingsView) ───────────────── */
+.sv-btn-primary {
+  padding: 10px 18px; background: #667eea; color: white;
+  border: none; border-radius: 8px; font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: background 0.15s; white-space: nowrap;
+}
+.sv-btn-primary:hover    { background: #5a67d8; }
+.sv-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }

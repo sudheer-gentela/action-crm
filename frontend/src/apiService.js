@@ -148,6 +148,37 @@ export const apiService = {
     save:       (data) => api.put('/prompts', data),
     reset:      (key) => api.delete(`/prompts/${key}`),
   },
+
+  // ── Super Admin (platform-level) ─────────────────────────────
+  superAdmin: {
+    getStats:          ()                        => api.get('/super/stats'),
+    getOrgs:           (params = {})             => api.get('/super/orgs', { params }),
+    getOrg:            (orgId)                   => api.get(`/super/orgs/${orgId}`),
+    createOrg:         (data)                    => api.post('/super/orgs', data),
+    updateOrg:         (orgId, data)             => api.patch(`/super/orgs/${orgId}`, data),
+    suspendOrg:        (orgId, data)             => api.post(`/super/orgs/${orgId}/suspend`, data),
+    impersonateOrg:    (orgId)                   => api.post(`/super/orgs/${orgId}/impersonate`),
+    addUserToOrg:      (orgId, data)             => api.post(`/super/orgs/${orgId}/users`, data),
+    updateUserInOrg:   (orgId, userId, data)     => api.patch(`/super/orgs/${orgId}/users/${userId}`, data),
+    removeUserFromOrg: (orgId, userId)           => api.delete(`/super/orgs/${orgId}/users/${userId}`),
+    getAdmins:         ()                        => api.get('/super/admins'),
+    grantAdmin:        (data)                    => api.post('/super/admins', data),
+    revokeAdmin:       (userId)                  => api.delete(`/super/admins/${userId}`),
+    getAuditLog:       (params = {})             => api.get('/super/audit', { params }),
+  },
+
+  // ── Org Admin (org-level) ─────────────────────────────────────
+  orgAdmin: {
+    getProfile:      ()               => api.get('/org/admin/profile'),
+    updateProfile:   (data)           => api.patch('/org/admin/profile', data),
+    getStats:        ()               => api.get('/org/admin/stats'),
+    getMembers:      ()               => api.get('/org/admin/members'),
+    updateMember:    (userId, data)   => api.patch(`/org/admin/members/${userId}`, data),
+    removeMember:    (userId)         => api.delete(`/org/admin/members/${userId}`),
+    getInvitations:  ()               => api.get('/org/admin/invitations'),
+    sendInvitation:  (data)           => api.post('/org/admin/invitations', data),
+    cancelInvitation:(id)             => api.delete(`/org/admin/invitations/${id}`),
+  },
 };
 
 

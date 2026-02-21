@@ -8,6 +8,8 @@ import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
 import FilesView from './FilesView';
 import SettingsView from './SettingsView';
+import SuperAdminView from './SuperAdminView';
+import OrgAdminView from './OrgAdminView';
 
 // Authentication hook with REAL backend integration
 const useAuth = () => {
@@ -62,6 +64,7 @@ const useAuth = () => {
       setUser(data.user);
       
       console.log('✅ Logged in successfully with real token');
+      console.log('   Super admin:', data.user.is_super_admin, '| Org role:', data.user.org_role);
       
     } catch (error) {
       console.error('Login error:', error);
@@ -306,6 +309,11 @@ function Dashboard({ user, onLogout }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  // Derive admin access from stored user object
+  const isSuperAdmin = user?.is_super_admin === true;
+  const orgRole      = user?.org_role || user?.role || 'member';
+  const isOrgAdmin   = orgRole === 'owner' || orgRole === 'admin';
   
   useEffect(() => {
     const handleResize = () => {
@@ -354,6 +362,13 @@ function Dashboard({ user, onLogout }) {
     { id: 'calendar', label: 'Calendar', icon: '📅' },
     { id: 'settings', label: 'Settings', icon: '⚙️' },
   ];
+
+  // Admin nav items — only shown when the user has the appropriate role.
+  // Rendered as a separate section below a divider in the sidebar.
+  const adminNavItems = [
+    ...(isOrgAdmin   ? [{ id: 'org-admin',   label: 'Org Admin',      icon: '🔑' }] : []),
+    ...(isSuperAdmin ? [{ id: 'super-admin', label: 'Platform Admin', icon: '⚡' }] : []),
+  ];
   
   return (
     <div className="dashboard">
@@ -380,6 +395,27 @@ function Dashboard({ user, onLogout }) {
               {!sidebarCollapsed && <span className="nav-text">{item.label}</span>}
             </button>
           ))}
+
+          {/* Admin section — only visible to admins/owners/super admins */}
+          {adminNavItems.length > 0 && (
+            <>
+              {!sidebarCollapsed && (
+                <div className="nav-section-label">Admin</div>
+              )}
+              {sidebarCollapsed && <div className="nav-divider" />}
+              {adminNavItems.map(item => (
+                <button
+                  key={item.id}
+                  className={`nav-item nav-item--admin ${currentTab === item.id ? 'active' : ''}`}
+                  onClick={() => handleNavClick(item.id)}
+                  title={sidebarCollapsed ? item.label : ''}
+                >
+                  <span className="nav-icon">{item.icon}</span>
+                  {!sidebarCollapsed && <span className="nav-text">{item.label}</span>}
+                </button>
+              ))}
+            </>
+          )}
         </nav>
         
         <div className="sidebar-footer">
@@ -417,14 +453,16 @@ function Dashboard({ user, onLogout }) {
         )}
         
         <div className="content-area">
-          {currentTab === 'actions'  && <ActionsView />}
-          {currentTab === 'deals'    && <DealsView />}
-          {currentTab === 'accounts' && <AccountsView />}
-          {currentTab === 'contacts' && <ContactsView />}
-          {currentTab === 'email'    && <EmailView />}
-          {currentTab === 'files'    && <FilesView />}
-          {currentTab === 'calendar' && <CalendarView />}
-          {currentTab === 'settings' && <SettingsView />}
+          {currentTab === 'actions'      && <ActionsView />}
+          {currentTab === 'deals'        && <DealsView />}
+          {currentTab === 'accounts'     && <AccountsView />}
+          {currentTab === 'contacts'     && <ContactsView />}
+          {currentTab === 'email'        && <EmailView />}
+          {currentTab === 'files'        && <FilesView />}
+          {currentTab === 'calendar'     && <CalendarView />}
+          {currentTab === 'settings'     && <SettingsView />}
+          {currentTab === 'org-admin'    && isOrgAdmin   && <OrgAdminView />}
+          {currentTab === 'super-admin'  && isSuperAdmin && <SuperAdminView />}
         </div>
       </main>
     </div>
