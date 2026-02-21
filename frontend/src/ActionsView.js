@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import './ActionsView.css';
 import EmailComposer from './EmailComposer';
-import EmailComposer from './EmailComposer';
 
 const API = process.env.REACT_APP_API_URL || '';
 
