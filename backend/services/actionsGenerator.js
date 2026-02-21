@@ -1,7 +1,9 @@
 /**
  * Actions Generator Service
  * Builds deal context, runs ActionsRulesEngine, optionally runs ActionsAIEnhancer.
- * Inserts next_step as a first-class column on every action.
+ *
+ * MULTI-ORG: All queries now include org_id. org_id is always derived from
+ * deal.org_id — never trusted from the caller — so it can't be spoofed.
  */
 
 const db = require('../config/database');
@@ -10,7 +12,7 @@ const ActionsAIEnhancer   = require('./ActionsAIEnhancer');
 const PlaybookService     = require('./playbook.service');
 const ActionConfigService = require('./actionConfig.service');
 
-// ── Internal classification ───────────────────────────────────────────────────
+// ── Internal classification (unchanged) ──────────────────────────────────────
 
 const INTERNAL_SOURCE_RULES = new Set([
   'stagnant_deal', 'champion_nurture', 'at_risk_deal',
@@ -28,12 +30,11 @@ function isInternalAction(action) {
   if (EXTERNAL_TYPES.has(action.action_type)) return false;
   if (INTERNAL_TYPES.has(action.action_type)) return true;
   if (action.source_rule && INTERNAL_SOURCE_RULES.has(action.source_rule)) return true;
-  // internal_task and document next_steps are always internal
   if (['internal_task', 'document', 'slack'].includes(action.next_step)) return true;
   return false;
 }
 
-// ── Derived context builder ───────────────────────────────────────────────────
+// ── Derived context builder (unchanged) ──────────────────────────────────────
 
 function buildDerived(deal, contacts, emails, meetings, files) {
   const now = Date.now();
@@ -120,26 +121,28 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
 }
 
 // ── DB insert helper ──────────────────────────────────────────────────────────
+// org_id is now the first column — always sourced from the deal, never the caller
 
-async function insertAction(action, userId) {
+async function insertAction(action, userId, orgId) {
   const internal  = isInternalAction(action);
   const source    = action.source || 'auto_generated';
   const next_step = action.next_step || 'email';
 
   await db.query(
     `INSERT INTO actions (
-       user_id, type, title, description, action_type, priority,
+       org_id, user_id, type, title, description, action_type, priority,
        due_date, deal_id, contact_id, account_id,
        suggested_action, context, source, source_rule, health_param,
        keywords, deal_stage, requires_external_evidence,
        is_internal, next_step, status, created_at
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-       $11,$12,$13,$14,$15,
-       $16,$17,$18,
-       $19,$20,'yet_to_start',NOW()
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+       $12,$13,$14,$15,$16,
+       $17,$18,$19,
+       $20,$21,'yet_to_start',NOW()
      )`,
     [
+      orgId,
       userId,
       action.type || action.action_type,
       action.title,
@@ -167,6 +170,10 @@ async function insertAction(action, userId) {
 // ── Main class ────────────────────────────────────────────────────────────────
 
 class ActionsGenerator {
+
+  // ── generateAll ─────────────────────────────────────────────────────────────
+  // Scoped to all orgs — runs for every active deal in every org.
+  // Each deal carries its own org_id so no cross-org contamination is possible.
 
   static async generateAll() {
     try {
@@ -199,32 +206,35 @@ class ActionsGenerator {
         if (['closed_won', 'closed_lost'].includes(deal.stage)) continue;
 
         const userId = deal.owner_id;
+        const orgId  = deal.org_id;         // ← always from the deal row
+
         if (!userId) {
           console.warn(`⚠️  No owner_id on deal ${deal.id} (${deal.name}) — skipping`);
           continue;
         }
+        if (!orgId) {
+          console.warn(`⚠️  No org_id on deal ${deal.id} (${deal.name}) — skipping`);
+          continue;
+        }
 
         try {
-          // Resolve action config for this deal's owner (for AI gate)
-          const actionConfig = await ActionConfigService.getConfig(userId);
-
+          const actionConfig = await ActionConfigService.getConfig(userId, orgId);
           const context      = await buildContext(deal, contacts, emails, meetings, files, userId);
           const rulesActions = ActionsRulesEngine.generate(context);
 
           console.log(`  📏 Rules: ${rulesActions.length} actions for deal ${deal.id} (${deal.name})`);
 
-          // Run AI enhancer if enabled
-          const aiActions = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
+          const aiActions  = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
           if (aiActions.length) {
             console.log(`  🤖 AI: ${aiActions.length} additional actions for deal ${deal.id}`);
           }
 
           const allActions = [...rulesActions, ...aiActions];
-          totalGenerated += allActions.length;
+          totalGenerated  += allActions.length;
 
           for (const action of allActions) {
             try {
-              await insertAction(action, userId);
+              await insertAction(action, userId, orgId);
               totalInserted++;
             } catch (err) {
               console.error(`  ❌ Insert failed for "${action.title}":`, err.message);
@@ -244,6 +254,9 @@ class ActionsGenerator {
     }
   }
 
+  // ── generateForDeal ─────────────────────────────────────────────────────────
+  // org_id is always derived from the deal row — never passed by the caller.
+
   static async generateForDeal(dealId) {
     try {
       console.log(`🤖 Generating actions for deal ${dealId}...`);
@@ -253,30 +266,32 @@ class ActionsGenerator {
 
       const deal   = dealResult.rows[0];
       const userId = deal.owner_id;
-      if (!userId) return 0;
+      const orgId  = deal.org_id;
+
+      if (!userId || !orgId) return 0;
 
       const [contactsRes, emailsRes, meetingsRes, filesRes] = await Promise.all([
-        db.query('SELECT * FROM contacts      WHERE account_id = $1',                         [deal.account_id]),
-        db.query('SELECT * FROM emails        WHERE deal_id = $1',                            [dealId]),
-        db.query('SELECT * FROM meetings      WHERE deal_id = $1',                            [dealId]),
-        db.query("SELECT * FROM storage_files WHERE deal_id = $1 AND processing_status = 'completed'", [dealId]),
+        db.query('SELECT * FROM contacts      WHERE account_id = $1 AND org_id = $2',                       [deal.account_id, orgId]),
+        db.query('SELECT * FROM emails        WHERE deal_id = $1    AND org_id = $2',                       [dealId, orgId]),
+        db.query('SELECT * FROM meetings      WHERE deal_id = $1    AND org_id = $2',                       [dealId, orgId]),
+        db.query("SELECT * FROM storage_files WHERE deal_id = $1    AND org_id = $2 AND processing_status = 'completed'", [dealId, orgId]),
       ]);
 
-      const actionConfig = await ActionConfigService.getConfig(userId);
+      const actionConfig = await ActionConfigService.getConfig(userId, orgId);
       const context      = await buildContext(deal, contactsRes.rows, emailsRes.rows, meetingsRes.rows, filesRes.rows, userId);
       const rulesActions = ActionsRulesEngine.generate(context);
       const aiActions    = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
       const allActions   = [...rulesActions, ...aiActions];
 
       await db.query(
-        "DELETE FROM actions WHERE deal_id = $1 AND source IN ('auto_generated', 'ai_generated') AND status IN ('yet_to_start', 'in_progress')",
-        [dealId]
+        "DELETE FROM actions WHERE deal_id = $1 AND org_id = $2 AND source IN ('auto_generated', 'ai_generated') AND status IN ('yet_to_start', 'in_progress')",
+        [dealId, orgId]
       );
 
       let inserted = 0;
       for (const action of allActions) {
         try {
-          await insertAction(action, userId);
+          await insertAction(action, userId, orgId);
           inserted++;
         } catch (err) {
           console.error(`  ❌ Insert failed for "${action.title}":`, err.message);
@@ -292,27 +307,40 @@ class ActionsGenerator {
     }
   }
 
+  // ── generateForEmail ────────────────────────────────────────────────────────
+
   static async generateForEmail(emailId) {
     try {
-      const res = await db.query('SELECT * FROM emails WHERE id = $1', [emailId]);
+      const res = await db.query('SELECT deal_id FROM emails WHERE id = $1', [emailId]);
       if (res.rows.length === 0) return false;
       if (res.rows[0].deal_id) await this.generateForDeal(res.rows[0].deal_id);
       return true;
     } catch (error) { return false; }
   }
+
+  // ── generateForMeeting ──────────────────────────────────────────────────────
 
   static async generateForMeeting(meetingId) {
     try {
-      const res = await db.query('SELECT * FROM meetings WHERE id = $1', [meetingId]);
+      const res = await db.query('SELECT deal_id FROM meetings WHERE id = $1', [meetingId]);
       if (res.rows.length === 0) return false;
       if (res.rows[0].deal_id) await this.generateForDeal(res.rows[0].deal_id);
       return true;
     } catch (error) { return false; }
   }
 
+  // ── generateForStageChange ──────────────────────────────────────────────────
+  // userId is still accepted here (kept for backward compat) but orgId is
+  // derived from the deal inside generateForDeal — no need to pass it.
+
   static async generateForStageChange(dealId, newStage, userId) {
     try {
-      const config = await ActionConfigService.getConfig(userId);
+      // Look up orgId from the deal so we can gate on config
+      const dealRes = await db.query('SELECT org_id FROM deals WHERE id = $1', [dealId]);
+      if (dealRes.rows.length === 0) return [];
+      const orgId = dealRes.rows[0].org_id;
+
+      const config = await ActionConfigService.getConfig(userId, orgId);
       if (config.generation_mode === 'manual') return [];
       return this.generateForDeal(dealId);
     } catch (error) { return []; }

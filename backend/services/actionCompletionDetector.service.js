@@ -1,21 +1,14 @@
 /**
  * Action Completion Detector
  * Analyzes emails and meetings to detect action completions.
- * Supports rules-only, AI-only, and hybrid modes.
- *
- * NEW: detectFromEmailForAction(emailId, userId, actionId)
- *   Targeted check for a specific action triggered from the email composer.
- *   Per product spec:
- *   - Runs AI semantic check to verify email contains what suggested_action said
- *   - If AI confirms content matches → auto-complete
- *   - If AI is unsure or content doesn't match → leave in_progress, flag for manual review
- *   - This is ONLY called for next_step=email|follow_up actions
+ * 
+ * MULTI-ORG: All public methods now accept orgId. Every DB query
+ * includes org_id to prevent cross-org data access.
  */
 
 const db = require('../config/database');
 const ActionConfigService = require('./actionConfig.service');
 
-// Lazy-load Anthropic to avoid crash if API key not set
 let anthropic = null;
 function getAnthropic() {
   if (!anthropic) {
@@ -28,33 +21,35 @@ function getAnthropic() {
 class ActionCompletionDetector {
 
   // ─────────────────────────────────────────────────────────────────────────
-  // PUBLIC: Broad scan — checks all open actions for a deal
-  // Called after any email send when no actionId is known
+  // PUBLIC: Broad scan — all open actions for a deal
   // ─────────────────────────────────────────────────────────────────────────
 
-  static async detectFromEmail(emailId, userId) {
-    const config = await ActionConfigService.getConfig(userId);
+  static async detectFromEmail(emailId, userId, orgId) {
+    const config = await ActionConfigService.getConfig(userId, orgId);
     if (config.detection_mode === 'manual' || !config.detect_from_emails) return;
 
     try {
-      const emailResult = await db.query('SELECT * FROM emails WHERE id = $1', [emailId]);
+      const emailResult = await db.query(
+        'SELECT * FROM emails WHERE id = $1 AND org_id = $2',
+        [emailId, orgId]
+      );
       if (emailResult.rows.length === 0) return;
       const email = emailResult.rows[0];
       if (!email.deal_id) return;
 
       const actionsResult = await db.query(
         `SELECT * FROM actions
-         WHERE deal_id = $1 AND completed = false AND user_id = $2`,
-        [email.deal_id, userId]
+         WHERE deal_id = $1 AND org_id = $2 AND completed = false AND user_id = $3`,
+        [email.deal_id, orgId, userId]
       );
 
       for (const action of actionsResult.rows) {
         const result = await this.analyze(action, email, 'email', config);
         if (result && result.confidence >= config.confidence_threshold) {
           if (result.confidence >= config.auto_complete_threshold) {
-            await this.completeAction(action.id, result);
+            await this.completeAction(action.id, orgId, result);
           } else {
-            await this.createSuggestion(action.id, email.id, 'email', result, userId);
+            await this.createSuggestion(action.id, email.id, 'email', result, userId, orgId);
           }
         }
       }
@@ -65,51 +60,39 @@ class ActionCompletionDetector {
 
   // ─────────────────────────────────────────────────────────────────────────
   // PUBLIC: Targeted check — called when email was sent FROM an action card
-  //
-  // Logic per spec:
-  //   1. Get the action's suggested_action text (what the email was supposed to say)
-  //   2. Run AI semantic check: does the sent email actually contain that intent?
-  //   3. High confidence match  → auto-complete (status = completed)
-  //   4. Low/medium confidence  → leave as in_progress, create suggestion for manual review
-  //   5. AI disabled in config  → auto-complete (user clicked Send, that's enough)
   // ─────────────────────────────────────────────────────────────────────────
 
-  static async detectFromEmailForAction(emailId, userId, actionId) {
+  static async detectFromEmailForAction(emailId, userId, actionId, orgId) {
     try {
-      const config = await ActionConfigService.getConfig(userId);
+      const config = await ActionConfigService.getConfig(userId, orgId);
 
-      // Fetch email and action in parallel
       const [emailRes, actionRes] = await Promise.all([
-        db.query('SELECT * FROM emails WHERE id = $1', [emailId]),
-        db.query('SELECT * FROM actions WHERE id = $1 AND user_id = $2', [actionId, userId]),
+        db.query('SELECT * FROM emails  WHERE id = $1 AND org_id = $2', [emailId, orgId]),
+        db.query('SELECT * FROM actions WHERE id = $1 AND org_id = $2 AND user_id = $3', [actionId, orgId, userId]),
       ]);
 
       if (emailRes.rows.length === 0 || actionRes.rows.length === 0) return;
       const email  = emailRes.rows[0];
       const action = actionRes.rows[0];
 
-      // If AI detection is disabled → sending the email is sufficient, auto-complete
       if (config.detection_mode === 'manual' || !config.detect_from_emails) {
-        await this._markCompleteManual(actionId, email, userId);
+        await this._markCompleteManual(actionId, orgId, email, userId);
         return;
       }
 
-      // Run AI content check
       const result = await this._checkEmailContentMatchesAction(email, action);
 
       if (result.confidence >= 75) {
-        // AI is confident the email addressed what it was supposed to → auto-complete
-        await this.completeAction(actionId, {
+        await this.completeAction(actionId, orgId, {
           ...result,
           detection_source: 'ai_content_check',
         });
         console.log(`✅ Email content verified — auto-completed action ${actionId} (${result.confidence}%)`);
       } else {
-        // Email sent but content didn't clearly match — leave in_progress, surface for review
         await this.createSuggestion(actionId, email.id, 'email', {
           ...result,
           reasoning: `Email sent but content match was ${result.confidence}% — please confirm this completes the action.`,
-        }, userId);
+        }, userId, orgId);
         console.log(`💡 Email sent but content uncertain (${result.confidence}%) — suggestion created for action ${actionId}`);
       }
 
@@ -120,12 +103,9 @@ class ActionCompletionDetector {
 
   // ─────────────────────────────────────────────────────────────────────────
   // PRIVATE: AI semantic content check
-  // Compares the sent email body against the action's suggested_action text
-  // Returns { confidence: 0-100, reasoning, evidence }
   // ─────────────────────────────────────────────────────────────────────────
 
   static async _checkEmailContentMatchesAction(email, action) {
-    // Fast path: no suggested_action to check against → assume match
     if (!action.suggested_action) {
       return { confidence: 80, reasoning: 'No specific content requirement — email sent is sufficient.', evidence: email.subject };
     }
@@ -177,7 +157,6 @@ Scoring guide:
 
     } catch (err) {
       console.error('AI content check failed, defaulting to 70%:', err.message);
-      // On AI failure, give benefit of the doubt — user did send the email
       return { confidence: 70, reasoning: 'AI check unavailable — email send accepted as completion signal.', evidence: email.subject };
     }
   }
@@ -186,7 +165,7 @@ Scoring guide:
   // PRIVATE: Manual-style complete (used when AI disabled)
   // ─────────────────────────────────────────────────────────────────────────
 
-  static async _markCompleteManual(actionId, email, userId) {
+  static async _markCompleteManual(actionId, orgId, email, userId) {
     await db.query(
       `UPDATE actions
        SET completed    = true,
@@ -196,42 +175,47 @@ Scoring guide:
            completion_evidence = $2,
            completed_at = CURRENT_TIMESTAMP,
            updated_at   = CURRENT_TIMESTAMP
-       WHERE id = $3`,
+       WHERE id = $3 AND org_id = $4`,
       [
         userId,
         JSON.stringify({ source: 'email_sent', subject: email.subject, email_id: email.id }),
         actionId,
+        orgId,
       ]
     );
     console.log(`✅ Action ${actionId} marked complete (email sent, AI detection off)`);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // PUBLIC: Meeting-based detection (unchanged)
+  // PUBLIC: Meeting-based detection
   // ─────────────────────────────────────────────────────────────────────────
 
-  static async detectFromMeeting(meetingId, userId) {
-    const config = await ActionConfigService.getConfig(userId);
+  static async detectFromMeeting(meetingId, userId, orgId) {
+    const config = await ActionConfigService.getConfig(userId, orgId);
     if (config.detection_mode === 'manual' || !config.detect_from_meetings) return;
 
     try {
-      const meetingResult = await db.query('SELECT * FROM meetings WHERE id = $1', [meetingId]);
+      const meetingResult = await db.query(
+        'SELECT * FROM meetings WHERE id = $1 AND org_id = $2',
+        [meetingId, orgId]
+      );
       if (meetingResult.rows.length === 0) return;
       const meeting = meetingResult.rows[0];
       if (!meeting.deal_id) return;
 
       const actionsResult = await db.query(
-        `SELECT * FROM actions WHERE deal_id = $1 AND completed = false AND user_id = $2`,
-        [meeting.deal_id, userId]
+        `SELECT * FROM actions
+         WHERE deal_id = $1 AND org_id = $2 AND completed = false AND user_id = $3`,
+        [meeting.deal_id, orgId, userId]
       );
 
       for (const action of actionsResult.rows) {
         const result = await this.analyze(action, meeting, 'meeting', config);
         if (result && result.confidence >= config.confidence_threshold) {
           if (result.confidence >= config.auto_complete_threshold) {
-            await this.completeAction(action.id, result);
+            await this.completeAction(action.id, orgId, result);
           } else {
-            await this.createSuggestion(action.id, meeting.id, 'meeting', result, userId);
+            await this.createSuggestion(action.id, meeting.id, 'meeting', result, userId, orgId);
           }
         }
       }
@@ -241,7 +225,7 @@ Scoring guide:
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Analyze (hybrid/rules/ai routing)
+  // Analyze (hybrid/rules/ai routing) — unchanged
   // ─────────────────────────────────────────────────────────────────────────
 
   static async analyze(action, evidence, evidenceType, config) {
@@ -284,8 +268,8 @@ Scoring guide:
       else { flags.push('internal_only'); score -= 20; }
     }
 
-    if (action.action_type === 'email_send' && evidenceType === 'email')        score += weights.type_match;
-    if (action.action_type === 'meeting_schedule' && evidenceType === 'meeting') score += weights.type_match;
+    if (action.action_type === 'email_send' && evidenceType === 'email')         score += weights.type_match;
+    if (action.action_type === 'meeting_schedule' && evidenceType === 'meeting')  score += weights.type_match;
 
     const negationWords = ['discuss', 'planning', 'thinking about', 'considering', 'not yet', 'prepare to'];
     if (negationWords.some(w => searchText.includes(w))) { flags.push('negation_detected'); score -= 15; }
@@ -303,7 +287,6 @@ Scoring guide:
   }
 
   static async analyzeWithAI(action, evidence, evidenceType) {
-    // Falls back to rules until full AI implementation is wired
     console.log('⚠️ analyzeWithAI: using rules fallback');
     return this.analyzeWithRules(action, evidence, evidenceType);
   }
@@ -318,51 +301,52 @@ Scoring guide:
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // DB helpers
+  // DB helpers — all now include org_id guard
   // ─────────────────────────────────────────────────────────────────────────
 
-  static async completeAction(actionId, analysis) {
+  static async completeAction(actionId, orgId, analysis) {
     await db.query(
       `UPDATE actions
-       SET completed            = true,
-           status               = 'completed',
-           auto_completed       = true,
+       SET completed             = true,
+           status                = 'completed',
+           auto_completed        = true,
            completion_confidence = $1,
-           completion_evidence  = $2,
-           completed_at         = CURRENT_TIMESTAMP,
-           updated_at           = CURRENT_TIMESTAMP
-       WHERE id = $3`,
+           completion_evidence   = $2,
+           completed_at          = CURRENT_TIMESTAMP,
+           updated_at            = CURRENT_TIMESTAMP
+       WHERE id = $3 AND org_id = $4`,
       [
         analysis.confidence,
         JSON.stringify({ reasoning: analysis.reasoning, evidence: analysis.evidence, flags: analysis.flags, source: analysis.detection_source }),
         actionId,
+        orgId,
       ]
     );
     console.log(`✅ Auto-completed action ${actionId} (${analysis.confidence}%)`);
   }
 
-  static async createSuggestion(actionId, evidenceId, evidenceType, analysis, userId) {
+  static async createSuggestion(actionId, evidenceId, evidenceType, analysis, userId, orgId) {
     await db.query(
       `INSERT INTO action_suggestions
-         (action_id, user_id, evidence_type, evidence_id, evidence_snippet, confidence, reasoning, detection_source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [actionId, userId, evidenceType, evidenceId, analysis.evidence, analysis.confidence, analysis.reasoning, analysis.detection_source]
+         (action_id, user_id, org_id, evidence_type, evidence_id, evidence_snippet, confidence, reasoning, detection_source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [actionId, userId, orgId, evidenceType, evidenceId, analysis.evidence, analysis.confidence, analysis.reasoning, analysis.detection_source]
     );
 
     await db.query(
       `UPDATE actions
        SET pending_suggestions = COALESCE(pending_suggestions, '{}') || $1::jsonb
-       WHERE id = $2`,
-      [JSON.stringify({ id: evidenceId, type: evidenceType, confidence: analysis.confidence, snippet: analysis.evidence }), actionId]
+       WHERE id = $2 AND org_id = $3`,
+      [JSON.stringify({ id: evidenceId, type: evidenceType, confidence: analysis.confidence, snippet: analysis.evidence }), actionId, orgId]
     );
 
     console.log(`💡 Suggestion created for action ${actionId} (${analysis.confidence}%)`);
   }
 
-  static async acceptSuggestion(suggestionId, userId) {
+  static async acceptSuggestion(suggestionId, userId, orgId) {
     const suggResult = await db.query(
-      'SELECT * FROM action_suggestions WHERE id = $1 AND user_id = $2',
-      [suggestionId, userId]
+      'SELECT * FROM action_suggestions WHERE id = $1 AND user_id = $2 AND org_id = $3',
+      [suggestionId, userId, orgId]
     );
     if (suggResult.rows.length === 0) throw new Error('Suggestion not found');
     const suggestion = suggResult.rows[0];
@@ -372,11 +356,12 @@ Scoring guide:
        SET completed = true, status = 'completed', auto_completed = false,
            completion_confidence = $1, completion_evidence = $2,
            completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $3`,
+       WHERE id = $3 AND org_id = $4`,
       [
         suggestion.confidence,
         JSON.stringify({ type: suggestion.evidence_type, id: suggestion.evidence_id, snippet: suggestion.evidence_snippet, source: 'user_accepted_suggestion' }),
         suggestion.action_id,
+        orgId,
       ]
     );
 
@@ -387,10 +372,12 @@ Scoring guide:
     console.log(`✅ Suggestion ${suggestionId} accepted — action ${suggestion.action_id} completed`);
   }
 
-  static async dismissSuggestion(suggestionId, userId) {
+  static async dismissSuggestion(suggestionId, userId, orgId) {
     await db.query(
-      `UPDATE action_suggestions SET status = 'dismissed', resolved_at = CURRENT_TIMESTAMP WHERE id = $1 AND user_id = $2`,
-      [suggestionId, userId]
+      `UPDATE action_suggestions
+       SET status = 'dismissed', resolved_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND user_id = $2 AND org_id = $3`,
+      [suggestionId, userId, orgId]
     );
     console.log(`❌ Suggestion ${suggestionId} dismissed`);
   }

@@ -3,42 +3,42 @@
  * GET/PUT /api/health-config
  * GET/POST/PUT/DELETE /api/competitors
  * POST /api/deals/:id/score
+ * PATCH /api/deals/:id/signals
  */
 
 const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const auth = require('../middleware/auth.middleware');
+const { orgContext } = require('../middleware/orgContext.middleware');
 const { scoreDeal } = require('../services/dealHealthService');
 
 router.use(auth);
+router.use(orgContext);
 
-// ── Health Config ────────────────────────────────────────────
+// ── Health Config ─────────────────────────────────────────────
 
-// GET current user's health config
 router.get('/health-config', async (req, res) => {
   try {
     let r = await db.query(
-      'SELECT * FROM deal_health_config WHERE user_id = $1',
-      [req.user.userId]
+      'SELECT * FROM deal_health_config WHERE user_id = $1 AND org_id = $2',
+      [req.user.userId, req.orgId]
     );
 
     if (r.rows.length === 0) {
       r = await db.query(
-        'INSERT INTO deal_health_config (user_id) VALUES ($1) RETURNING *',
-        [req.user.userId]
+        'INSERT INTO deal_health_config (user_id, org_id) VALUES ($1, $2) RETURNING *',
+        [req.user.userId, req.orgId]
       );
     }
 
-    const row = r.rows[0];
-    res.json({ config: parseConfig(row) });
+    res.json({ config: parseConfig(r.rows[0]) });
   } catch (err) {
     console.error('Get health config error:', err);
     res.status(500).json({ error: { message: 'Failed to fetch config' } });
   }
 });
 
-// PUT update health config
 router.put('/health-config', async (req, res) => {
   try {
     const {
@@ -53,7 +53,6 @@ router.put('/health-config', async (req, res) => {
       multiThreadMinContacts
     } = req.body;
 
-    // Validate category weights sum to 100
     const total = (weightCloseDate || 0) + (weightBuyerEngagement || 0) +
                   (weightProcess || 0) + (weightDealSize || 0) +
                   (weightCompetitive || 0) + (weightMomentum || 0);
@@ -63,7 +62,7 @@ router.put('/health-config', async (req, res) => {
 
     const r = await db.query(
       `INSERT INTO deal_health_config (
-        user_id,
+        user_id, org_id,
         ai_enabled, params_enabled,
         weight_close_date, weight_buyer_engagement, weight_process,
         weight_deal_size, weight_competitive, weight_momentum,
@@ -72,8 +71,8 @@ router.put('/health-config', async (req, res) => {
         segment_avg_smb, segment_avg_midmarket, segment_avg_enterprise,
         segment_size_multiplier, no_meeting_days, response_time_multiplier,
         multi_thread_min_contacts, updated_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,NOW())
-      ON CONFLICT (user_id) DO UPDATE SET
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,NOW())
+      ON CONFLICT (user_id, org_id) DO UPDATE SET
         ai_enabled               = EXCLUDED.ai_enabled,
         params_enabled           = EXCLUDED.params_enabled,
         weight_close_date        = EXCLUDED.weight_close_date,
@@ -100,7 +99,7 @@ router.put('/health-config', async (req, res) => {
         updated_at               = NOW()
       RETURNING *`,
       [
-        req.user.userId,
+        req.user.userId, req.orgId,
         aiEnabled !== false,
         JSON.stringify(paramsEnabled || {}),
         weightCloseDate, weightBuyerEngagement, weightProcess,
@@ -122,14 +121,13 @@ router.put('/health-config', async (req, res) => {
   }
 });
 
-// ── Competitors ──────────────────────────────────────────────
+// ── Competitors ───────────────────────────────────────────────
 
-// GET all competitors
 router.get('/competitors', async (req, res) => {
   try {
     const r = await db.query(
-      'SELECT * FROM competitors WHERE user_id = $1 ORDER BY name ASC',
-      [req.user.userId]
+      'SELECT * FROM competitors WHERE org_id = $1 AND user_id = $2 ORDER BY name ASC',
+      [req.orgId, req.user.userId]
     );
     res.json({ competitors: r.rows.map(parseCompetitor) });
   } catch (err) {
@@ -137,16 +135,15 @@ router.get('/competitors', async (req, res) => {
   }
 });
 
-// POST create competitor
 router.post('/competitors', async (req, res) => {
   try {
     const { name, aliases, website, notes } = req.body;
     if (!name) return res.status(400).json({ error: { message: 'Name required' } });
 
     const r = await db.query(
-      `INSERT INTO competitors (user_id, name, aliases, website, notes)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [req.user.userId, name, JSON.stringify(aliases || []), website, notes]
+      `INSERT INTO competitors (org_id, user_id, name, aliases, website, notes)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [req.orgId, req.user.userId, name, JSON.stringify(aliases || []), website, notes]
     );
     res.status(201).json({ competitor: parseCompetitor(r.rows[0]) });
   } catch (err) {
@@ -154,15 +151,14 @@ router.post('/competitors', async (req, res) => {
   }
 });
 
-// PUT update competitor
 router.put('/competitors/:id', async (req, res) => {
   try {
     const { name, aliases, website, notes } = req.body;
     const r = await db.query(
       `UPDATE competitors
        SET name=$1, aliases=$2, website=$3, notes=$4, updated_at=NOW()
-       WHERE id=$5 AND user_id=$6 RETURNING *`,
-      [name, JSON.stringify(aliases || []), website, notes, req.params.id, req.user.userId]
+       WHERE id=$5 AND org_id=$6 AND user_id=$7 RETURNING *`,
+      [name, JSON.stringify(aliases || []), website, notes, req.params.id, req.orgId, req.user.userId]
     );
     if (r.rows.length === 0) return res.status(404).json({ error: { message: 'Not found' } });
     res.json({ competitor: parseCompetitor(r.rows[0]) });
@@ -171,12 +167,11 @@ router.put('/competitors/:id', async (req, res) => {
   }
 });
 
-// DELETE competitor
 router.delete('/competitors/:id', async (req, res) => {
   try {
     await db.query(
-      'DELETE FROM competitors WHERE id=$1 AND user_id=$2',
-      [req.params.id, req.user.userId]
+      'DELETE FROM competitors WHERE id=$1 AND org_id=$2 AND user_id=$3',
+      [req.params.id, req.orgId, req.user.userId]
     );
     res.json({ message: 'Deleted' });
   } catch (err) {
@@ -184,9 +179,8 @@ router.delete('/competitors/:id', async (req, res) => {
   }
 });
 
-// ── Deal Scoring ─────────────────────────────────────────────
+// ── Deal Scoring ──────────────────────────────────────────────
 
-// POST score a specific deal
 router.post('/deals/:id/score', async (req, res) => {
   try {
     const result = await scoreDeal(req.params.id, req.user.userId);
@@ -197,12 +191,12 @@ router.post('/deals/:id/score', async (req, res) => {
   }
 });
 
-// POST score all deals for user
 router.post('/deals/score-all', async (req, res) => {
   try {
     const deals = await db.query(
-      'SELECT id FROM deals WHERE owner_id = $1 AND stage NOT IN ($2,$3)',
-      [req.user.userId, 'closed_won', 'closed_lost']
+      `SELECT id FROM deals
+       WHERE org_id = $1 AND owner_id = $2 AND stage NOT IN ($3,$4)`,
+      [req.orgId, req.user.userId, 'closed_won', 'closed_lost']
     );
 
     const results = [];
@@ -221,7 +215,13 @@ router.post('/deals/score-all', async (req, res) => {
   }
 });
 
-// ── Deal signal flags (manual) ───────────────────────────────
+// ── Deal signal flags (manual) ────────────────────────────────
+//
+// BUG FIX: The original used string interpolation to embed the
+// userId param position: `owner_id = ${Object.keys(updates).length + 2}`
+// This produced SQL like `WHERE id = $1 AND owner_id = 4`
+// treating 4 as a literal number, not a bound parameter.
+// Fixed: userId is always the last bound value.
 
 router.patch('/deals/:id/signals', async (req, res) => {
   try {
@@ -236,20 +236,31 @@ router.patch('/deals/:id/signals', async (req, res) => {
     const updates = {};
     allowed.forEach(f => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
 
-    if (Object.keys(updates).length === 0)
+    if (Object.keys(updates).length === 0) {
       return res.status(400).json({ error: { message: 'No valid fields' } });
+    }
 
-    const setClauses = Object.keys(updates).map((k, i) => `${k} = $${i + 2}`).join(', ');
+    // Build parameterised SET clauses starting at $1
+    const setClauses = Object.keys(updates).map((k, i) => `${k} = $${i + 1}`).join(', ');
+    const values     = Object.values(updates);
+
+    // $N+1 = dealId, $N+2 = orgId, $N+3 = userId — all properly bound
+    const dealParamIdx = values.length + 1;
+    const orgParamIdx  = values.length + 2;
+    const userParamIdx = values.length + 3;
+
+    values.push(req.params.id, req.orgId, req.user.userId);
+
     const r = await db.query(
-      `UPDATE deals SET ${setClauses}, updated_at = NOW()
-       WHERE id = $1 AND owner_id = ${Object.keys(updates).length + 2}
+      `UPDATE deals
+       SET ${setClauses}, updated_at = NOW()
+       WHERE id = $${dealParamIdx} AND org_id = $${orgParamIdx} AND owner_id = $${userParamIdx}
        RETURNING id, health, health_score, ${Object.keys(updates).join(', ')}`,
-      [req.params.id, ...Object.values(updates), req.user.userId]
+      values
     );
 
     if (r.rows.length === 0) return res.status(404).json({ error: { message: 'Deal not found' } });
 
-    // Re-score after signal change
     const scored = await scoreDeal(req.params.id, req.user.userId);
     res.json({ deal: r.rows[0], scored });
   } catch (err) {
@@ -258,18 +269,18 @@ router.patch('/deals/:id/signals', async (req, res) => {
   }
 });
 
-// ── Helpers ──────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────
 
 function parseConfig(row) {
   const parse = v => typeof v === 'string' ? JSON.parse(v) : v;
   return {
     ...row,
-    param_weights:       parse(row.param_weights),
-    params_enabled:      parse(row.params_enabled),
-    exec_titles:         parse(row.exec_titles),
-    legal_titles:        parse(row.legal_titles),
-    procurement_titles:  parse(row.procurement_titles),
-    security_titles:     parse(row.security_titles),
+    param_weights:      parse(row.param_weights),
+    params_enabled:     parse(row.params_enabled),
+    exec_titles:        parse(row.exec_titles),
+    legal_titles:       parse(row.legal_titles),
+    procurement_titles: parse(row.procurement_titles),
+    security_titles:    parse(row.security_titles),
   };
 }
 

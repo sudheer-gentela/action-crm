@@ -1,8 +1,9 @@
 const express = require('express');
 const router  = express.Router();
 const db      = require('../config/database');
-const authenticateToken       = require('../middleware/auth.middleware');
-const ActionsGenerator        = require('../services/actionsGenerator');
+const authenticateToken        = require('../middleware/auth.middleware');
+const { orgContext }           = require('../middleware/orgContext.middleware');
+const ActionsGenerator         = require('../services/actionsGenerator');
 const ActionCompletionDetector = require('../services/actionCompletionDetector.service');
 
 const { fetchEmails, fetchEmailById, sendEmail } = require('../services/outlookService');
@@ -10,19 +11,20 @@ const AIProcessor  = require('../services/aiProcessor');
 const { emailQueue } = require('../jobs/emailProcessor');
 
 router.use(authenticateToken);
+router.use(orgContext);
 
-// ── GET / — list emails ───────────────────────────────────────────────────────
+// ── GET / ─────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
     const { dealId, contactId } = req.query;
-    let query  = 'SELECT * FROM emails WHERE user_id = $1';
-    const params = [req.user.userId];
+    let query    = 'SELECT * FROM emails WHERE org_id = $1 AND user_id = $2';
+    const params = [req.orgId, req.user.userId];
 
     if (dealId) {
-      query += ' AND deal_id = $2';
+      query += ` AND deal_id = $${params.length + 1}`;
       params.push(dealId);
     } else if (contactId) {
-      query += ' AND contact_id = $2';
+      query += ` AND contact_id = $${params.length + 1}`;
       params.push(contactId);
     }
 
@@ -34,30 +36,15 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ── POST / — compose and send email ──────────────────────────────────────────
-//
-// Body:
-//   dealId      {number}   — deal to link this email to
-//   contactId   {number}   — contact (recipient)
-//   subject     {string}
-//   body        {string}   — plain text
-//   toAddress   {string}   — recipient email address
-//   actionId    {number?}  — action that triggered this email (optional)
-//   replyToId   {string?}  — Outlook message ID to reply to (optional)
-//
-// Flow:
-//   1. Attempt to send via Outlook (Graph API)
-//   2. Save to local DB regardless of provider result
-//   3. If actionId supplied → run targeted completion check
-//      Otherwise → run broad completion scan for the deal
-//
+// ── POST / — compose and send email ──────────────────────────
 router.post('/', async (req, res) => {
   try {
     const { dealId, contactId, subject, body, toAddress, actionId, replyToId } = req.body;
     const userId = req.user.userId;
+    const orgId  = req.orgId;
 
-    // ── 1. Send via Outlook if connected ─────────────────────────────────────
-    let outlookSent = false;
+    // ── 1. Send via Outlook if connected ─────────────────────
+    let outlookSent  = false;
     let outlookError = null;
 
     try {
@@ -70,68 +57,60 @@ router.post('/', async (req, res) => {
       });
       outlookSent = true;
     } catch (err) {
-      // Outlook send failed (not connected, token expired, etc.)
-      // We still save to DB so the action flow works — but surface the error to the client
       outlookError = err.message;
       console.warn('⚠️  Outlook send failed, saving to DB only:', err.message);
     }
 
-    // ── 2. Save to DB ─────────────────────────────────────────────────────────
+    // ── 2. Save to DB with org_id ─────────────────────────────
     const result = await db.query(
       `INSERT INTO emails
-         (user_id, deal_id, contact_id, direction, subject, body,
+         (org_id, user_id, deal_id, contact_id, direction, subject, body,
           to_address, from_address, sent_at)
-       VALUES ($1, $2, $3, 'sent', $4, $5, $6, $7, CURRENT_TIMESTAMP)
+       VALUES ($1, $2, $3, $4, 'sent', $5, $6, $7, $8, CURRENT_TIMESTAMP)
        RETURNING *`,
-      [userId, dealId || null, contactId || null, subject, body, toAddress, req.user.email]
+      [orgId, userId, dealId || null, contactId || null,
+       subject, body, toAddress, req.user.email]
     );
 
     const newEmail = result.rows[0];
 
-    // ── 3. Contact activity log ───────────────────────────────────────────────
+    // ── 3. Contact activity log ───────────────────────────────
     if (contactId) {
-      await db.query(
+      db.query(
         `INSERT INTO contact_activities (contact_id, user_id, activity_type, description)
          VALUES ($1, $2, 'email_sent', $3)`,
         [contactId, userId, subject]
       ).catch(err => console.error('Contact activity log error:', err));
     }
 
-    // ── 4. Advance action to in_progress if it was yet_to_start ──────────────
+    // ── 4. Advance action to in_progress ─────────────────────
     if (actionId) {
-      await db.query(
+      db.query(
         `UPDATE actions
          SET status = CASE WHEN status = 'yet_to_start' THEN 'in_progress' ELSE status END,
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND user_id = $2`,
-        [actionId, userId]
+         WHERE id = $1 AND org_id = $2 AND user_id = $3`,
+        [actionId, orgId, userId]
       ).catch(err => console.error('Action status update error:', err));
     }
 
-    // ── 5. Completion detection (non-blocking) ────────────────────────────────
+    // ── 5. Completion detection (non-blocking) ────────────────
     if (actionId) {
-      // Targeted: check whether THIS email completes THIS specific action
       ActionCompletionDetector
-        .detectFromEmailForAction(newEmail.id, userId, parseInt(actionId))
+        .detectFromEmailForAction(newEmail.id, userId, parseInt(actionId), orgId)
         .catch(err => console.error('Targeted completion detection error:', err));
     } else {
-      // Broad: scan all open actions for this deal
       ActionCompletionDetector
-        .detectFromEmail(newEmail.id, userId)
+        .detectFromEmail(newEmail.id, userId, orgId)
         .catch(err => console.error('Broad completion detection error:', err));
     }
 
-    // ── 6. Regenerate actions (non-blocking) ──────────────────────────────────
+    // ── 6. Regenerate actions (non-blocking) ──────────────────
     ActionsGenerator
       .generateForEmail(newEmail.id)
       .catch(err => console.error('Action generation error:', err));
 
-    // ── 7. Respond ────────────────────────────────────────────────────────────
-    res.status(201).json({
-      email:       newEmail,
-      outlookSent,
-      outlookError,  // null if sent OK; error message if Outlook failed
-    });
+    res.status(201).json({ email: newEmail, outlookSent, outlookError });
 
   } catch (error) {
     console.error('Send email error:', error);
@@ -139,7 +118,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-// ── GET /outlook — fetch from Outlook inbox ───────────────────────────────────
+// ── GET /outlook — fetch from Outlook inbox ───────────────────
 router.get('/outlook', async (req, res) => {
   try {
     const { top = 50, skip = 0, since } = req.query;
@@ -157,7 +136,7 @@ router.get('/outlook', async (req, res) => {
   }
 });
 
-// ── POST /analyze — AI analysis of a single email ────────────────────────────
+// ── POST /analyze ─────────────────────────────────────────────
 router.post('/analyze', async (req, res) => {
   try {
     const { emailId } = req.body;
@@ -174,7 +153,7 @@ router.post('/analyze', async (req, res) => {
   }
 });
 
-// ── POST /process — queue email for full AI processing ───────────────────────
+// ── POST /process ─────────────────────────────────────────────
 router.post('/process', async (req, res) => {
   try {
     const { emailId } = req.body;

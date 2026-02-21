@@ -1,35 +1,24 @@
-/**
- * AI Processing Routes
- */
-
 const express = require('express');
 const router = express.Router();
 const authenticateToken = require('../middleware/auth.middleware');
+const { orgContext } = require('../middleware/orgContext.middleware');
 const AIProcessor = require('../services/aiProcessor');
 
-// Process single email with AI
-router.post('/email/:emailId', authenticateToken, async (req, res) => {
+// ── POST /email/:emailId ──────────────────────────────────────
+router.post('/email/:emailId', authenticateToken, orgContext, async (req, res) => {
   try {
-    const userId = req.user.userId;
-    const { emailId } = req.params;
-    
-    const result = await AIProcessor.processEmail(userId, emailId);
+    const result = await AIProcessor.processEmail(req.user.userId, req.params.emailId, req.orgId);
     res.json(result);
-    
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Analyze deal health
-router.post('/deal/:dealId', authenticateToken, async (req, res) => {
+// ── POST /deal/:dealId ────────────────────────────────────────
+router.post('/deal/:dealId', authenticateToken, orgContext, async (req, res) => {
   try {
-    const userId = req.user.userId;
-    const { dealId } = req.params;
-    
-    const result = await AIProcessor.analyzeDeal(dealId, userId);
+    const result = await AIProcessor.analyzeDeal(req.params.dealId, req.user.userId, req.orgId);
     res.json(result);
-    
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
