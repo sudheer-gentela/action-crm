@@ -755,101 +755,112 @@ export default function ActionsView() {
   const completed   = actions.filter(a => a.status === 'completed').length;
 
   return (
-    <div className="av-root">
-      {/* Header */}
-      <div className="av-header">
-        <div className="av-header-left">
-          <h2 className="av-title">⚡ Actions</h2>
-          <div className="av-header-counts">
-            <span className="av-count av-count--open">{yetToStart} to start</span>
-            {inProgress > 0 && <span className="av-count av-count--progress">{inProgress} in progress</span>}
-            {completed  > 0 && <span className="av-count av-count--done">{completed} completed</span>}
+    <>
+      <div className="av-root">
+
+        {/* Header */}
+        <div className="av-header">
+          <div className="av-header-left">
+            <h2 className="av-title">⚡ Actions</h2>
+            <div className="av-header-counts">
+              <span className="av-count av-count--open">{yetToStart} to start</span>
+              {inProgress > 0 && <span className="av-count av-count--progress">{inProgress} in progress</span>}
+              {completed  > 0 && <span className="av-count av-count--done">{completed} completed</span>}
+            </div>
           </div>
-        </div>
-        <button
-          className="av-generate-btn"
-          onClick={handleGenerateActions}
-          disabled={generating || loading}
-        >
-          {generating ? '⏳ Generating…' : '⚡ Generate Actions'}
-        </button>
-      </div>
-
-      {/* Filters */}
-      <FilterBar filters={filters} onChange={handleFilterChange} options={filterOptions} />
-
-      {/* Content */}
-      {loading && (
-        <div className="av-loading">
-          <div className="av-spinner" />
-          <span>Loading actions…</span>
-        </div>
-      )}
-
-      {error && (
-        <div className="av-error">
-          <p>{error}</p>
-          <button onClick={() => fetchActions(filters)}>Retry</button>
-        </div>
-      )}
-
-      {!loading && !error && actions.length === 0 && (
-        <div className="av-empty">
-          <div className="av-empty-icon">🎯</div>
-          <p>No actions match the current filters.</p>
-          <button className="av-generate-btn" onClick={handleGenerateActions} disabled={generating}>
-            Generate Actions
+          <button
+            className="av-generate-btn"
+            onClick={handleGenerateActions}
+            disabled={generating || loading}
+          >
+            {generating ? '⏳ Generating…' : '⚡ Generate Actions'}
           </button>
         </div>
+
+        {/* Filters */}
+        <FilterBar filters={filters} onChange={handleFilterChange} options={filterOptions} />
+
+        {/* Loading */}
+        {loading && (
+          <div className="av-loading">
+            <div className="av-spinner"></div>
+            <span>Loading actions…</span>
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <div className="av-error">
+            <p>{error}</p>
+            <button onClick={() => fetchActions(filters)}>Retry</button>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {!loading && !error && actions.length === 0 && (
+          <div className="av-empty">
+            <div className="av-empty-icon">🎯</div>
+            <p>No actions match the current filters.</p>
+            <button className="av-generate-btn" onClick={handleGenerateActions} disabled={generating}>
+              Generate Actions
+            </button>
+          </div>
+        )}
+
+        {/* Action grid */}
+        {!loading && !error && actions.length > 0 && (
+          <div className="av-grid">
+            {actions.map(action => (
+              <ActionCard
+                key={action.id}
+                action={action}
+                onStatusChange={handleStatusChange}
+                onStart={handleStart}
+              />
+            ))}
+          </div>
+        )}
+
+      </div>
+
+      {/* Email Composer Modal */}
+      {composerAction && (
+        <EmailComposer
+          contacts={contacts}
+          deals={deals}
+          prefill={{
+            contactId: composerAction.contact ? composerAction.contact.id : null,
+            dealId:    composerAction.deal    ? composerAction.deal.id    : null,
+            subject:   composerAction.title,
+            body:      composerAction.suggestedAction
+                       ? 'Hi,
+
+' + composerAction.suggestedAction + '
+
+Best regards,'
+                       : '',
+            toAddress: composerAction.contact ? composerAction.contact.email : '',
+          }}
+          actionId={composerAction.id}
+          actionContext={{
+            title:           composerAction.title,
+            suggestedAction: composerAction.suggestedAction,
+            nextStep:        composerAction.nextStep,
+          }}
+          onSubmit={handleEmailSent}
+          onClose={() => setComposerAction(null)}
+        />
       )}
 
-      {!loading && !error && actions.length > 0 && (
-        <div className="av-grid">
-          {actions.map(action => (
-            <ActionCard
-              key={action.id}
-              action={action}
-              onStatusChange={handleStatusChange}
-              onStart={handleStart}
-            />
-          ))}
-        </div>
+      {/* Manual Log Modal */}
+      {logAction && (
+        <ManualLogModal
+          action={logAction}
+          onComplete={notes => handleManualComplete(logAction, notes)}
+          onInProgress={notes => handleManualInProgress(logAction, notes)}
+          onClose={() => setLogAction(null)}
+        />
       )}
-    </div>
-
-    {/* Email Composer Modal */}
-    {composerAction && (
-      <EmailComposer
-        contacts={contacts}
-        deals={deals}
-        prefill={{
-          contactId: composerAction.contact && composerAction.contact.id   ? composerAction.contact.id   : null,
-          dealId:    composerAction.deal    && composerAction.deal.id       ? composerAction.deal.id       : null,
-          subject:   composerAction.title,
-          body:      composerAction.suggestedAction
-                     ? 'Hi,\n\n' + composerAction.suggestedAction + '\n\nBest regards,'
-                     : '',
-          toAddress: composerAction.contact && composerAction.contact.email ? composerAction.contact.email : '',
-        }}
-        actionId={composerAction.id}
-        actionContext={{
-          title:           composerAction.title,
-          suggestedAction: composerAction.suggestedAction,
-          nextStep:        composerAction.nextStep,
-        }}
-        onSubmit={handleEmailSent}
-        onClose={() => setComposerAction(null)}
-      />
-    )}
-
-    {/* Manual Log Modal */}
-    {logAction && (
-      <ManualLogModal
-        action={logAction}
-        onComplete={notes => handleManualComplete(logAction, notes)}
-        onInProgress={notes => handleManualInProgress(logAction, notes)}
-        onClose={() => setLogAction(null)}
-      />
-    )}
+    </>
   );
 }
