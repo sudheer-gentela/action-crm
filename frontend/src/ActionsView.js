@@ -274,22 +274,18 @@ function ResumeButton({ action }) {
     try {
       const target = await resolveResumeTarget(action);
 
-      // If we're going to email with a deal context, signal App.js
-      if (target.tab === 'email' && target.dealId) {
-        window.dispatchEvent(new CustomEvent('resumeToEmail', {
-          detail: { dealId: target.dealId },
-        }));
-      }
-
-      // If we're going to deals and want a specific deal open
-      if (target.tab === 'deals' && target.dealId) {
-        window.dispatchEvent(new CustomEvent('resumeToDeal', {
-          detail: { dealId: target.dealId },
-        }));
-      }
-
-      // Navigate to the tab
-      window.dispatchEvent(new CustomEvent('navigate', { detail: target.tab }));
+      // Single enriched navigate event — carries tab AND dealId together so
+      // App.js can set pendingEmailDealId/pendingDealId BEFORE switching the
+      // tab. This prevents the race condition where EmailView mounted with
+      // dealId=null because the two separate events (resumeToEmail + navigate)
+      // triggered separate async React state updates.
+      window.dispatchEvent(new CustomEvent('navigate', {
+        detail: {
+          tab:    target.tab,
+          dealId: target.dealId || null,
+          resume: true,
+        },
+      }));
     } catch (err) {
       console.error('Resume navigation failed:', err);
     } finally {

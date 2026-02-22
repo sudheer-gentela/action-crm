@@ -412,7 +412,29 @@ function Dashboard({ user, onLogout }) {
 
   // Allow child views to navigate programmatically
   useEffect(() => {
-    const handleNavigate = (e) => handleNavClick(e.detail);
+    const handleNavigate = (e) => {
+      const detail = e.detail;
+
+      // Legacy: some callers pass a plain string tab id (e.g. 'email', 'deals')
+      if (typeof detail === 'string') {
+        handleNavClick(detail);
+        return;
+      }
+
+      // Enriched: Resume button passes { tab, dealId, resume: true }
+      // Set any pending context BEFORE switching the tab so the mounting view
+      // receives the prop on its very first render — no race condition.
+      if (detail?.resume && detail?.dealId) {
+        const { tab, dealId } = detail;
+        if (tab === 'email') {
+          setPendingEmailDealId(dealId);
+        } else if (tab === 'deals') {
+          setPendingDealId(dealId);
+        }
+      }
+
+      handleNavClick(detail?.tab || detail);
+    };
     window.addEventListener('navigate', handleNavigate);
     return () => window.removeEventListener('navigate', handleNavigate);
   }, [isMobile]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -436,26 +458,9 @@ function Dashboard({ user, onLogout }) {
     return () => window.removeEventListener('actionContext', handleActionContext);
   }, []);
 
-  // Listen for 'resumeToEmail' from ActionsView ResumeButton
-  // Sets pendingEmailDealId so EmailView can filter to the right deal's thread
-  useEffect(() => {
-    const handleResumeToEmail = (e) => {
-      const { dealId } = e.detail || {};
-      if (dealId) setPendingEmailDealId(dealId);
-    };
-    window.addEventListener('resumeToEmail', handleResumeToEmail);
-    return () => window.removeEventListener('resumeToEmail', handleResumeToEmail);
-  }, []);
-
-  // Listen for 'resumeToDeal' from ActionsView ResumeButton
-  useEffect(() => {
-    const handleResumeToDeal = (e) => {
-      const { dealId } = e.detail || {};
-      if (dealId) setPendingDealId(dealId);
-    };
-    window.addEventListener('resumeToDeal', handleResumeToDeal);
-    return () => window.removeEventListener('resumeToDeal', handleResumeToDeal);
-  }, []);
+  // Note: resumeToEmail and resumeToDeal are handled directly inside the
+  // 'navigate' event listener above (enriched detail object with resume:true).
+  // This avoids the race condition of two separate setState calls.
 
   // Mobile title — check all role nav sets
   const allNavItems = Object.values(NAV_ITEMS_BY_ROLE).flat();
