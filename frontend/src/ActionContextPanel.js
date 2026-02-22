@@ -37,20 +37,58 @@ function apiFetch(path, options = {}) {
 }
 
 // ── Action type → destination mapping ──────────────────────────
+// Priority order: action_type/type FIRST (structural intent),
+// then next_step (channel hint), then fallbacks.
+// This prevents next_step:'email' on a meeting_schedule from routing
+// to the Email tab — the type always wins.
 function resolveDestination(action) {
-  const type     = action.actionType || action.type || '';
-  const nextStep = action.nextStep || 'email';
+  // Normalise — backend returns camelCase from mapActionRow on getAll,
+  // but PATCH /status returns snake_case. Handle both defensively.
+  const type     = (action.actionType || action.action_type || action.type || '').toLowerCase();
+  const nextStep = (action.nextStep   || action.next_step   || '').toLowerCase();
+  const dealId   = action.deal?.id   || action.dealId   || action.deal_id   || null;
+  const contactId= action.contact?.id|| action.contactId|| action.contact_id|| null;
 
-  if (type.includes('email') || nextStep === 'email')                   return { tab: 'email',    label: 'Open Email',       icon: '✉️' };
-  if (type.includes('meeting_schedule') || type === 'meeting')          return { tab: 'calendar', label: 'Open Calendar',    icon: '📅' };
-  if (type.includes('meeting_prep') || type.includes('review'))         return { tab: 'deals',    label: 'Open Deal',        icon: '💼' };
-  if (type.includes('document') || nextStep === 'document')             return { tab: 'files',    label: 'Open Files',       icon: '📁' };
-  if (nextStep === 'call')                                               return { tab: 'deals',    label: 'Open Deal',        icon: '📞' };
-  if (nextStep === 'whatsapp')                                           return { tab: 'deals',    label: 'Open Deal',        icon: '💬' };
-  if (nextStep === 'linkedin')                                           return { tab: 'contacts', label: 'Open Contacts',    icon: '🔗' };
-  if (nextStep === 'slack')                                              return { tab: 'deals',    label: 'Open Deal',        icon: '💼' };
-  if (action.deal?.id)                                                   return { tab: 'deals',    label: 'Open Deal',        icon: '💼' };
-  if (action.contact?.id)                                                return { tab: 'contacts', label: 'Open Contacts',    icon: '👥' };
+  // ── Type-first routing (structural intent wins) ──────────────
+  // Meeting scheduling → Calendar
+  if (type === 'meeting_schedule' || type === 'meeting')
+    return { tab: 'calendar', label: 'Schedule Meeting', icon: '📅' };
+
+  // Meeting prep / review → Deal detail (to review meeting notes)
+  if (type === 'meeting_prep' || type === 'review')
+    return { tab: 'deals', label: 'Open Deal', icon: '💼' };
+
+  // Document prep → Files
+  if (type === 'document_prep' || type === 'document')
+    return { tab: 'files', label: 'Open Files', icon: '📁' };
+
+  // Email send → Email compose
+  if (type === 'email_send' || type === 'email')
+    return { tab: 'email', label: 'Open Email', icon: '✉️' };
+
+  // Follow-up: use next_step channel to decide
+  if (type === 'follow_up') {
+    if (nextStep === 'linkedin') return { tab: 'contacts', label: 'Open Contacts', icon: '🔗' };
+    if (nextStep === 'email')    return { tab: 'email',    label: 'Open Email',    icon: '✉️' };
+    // call / whatsapp / slack → Deal (no separate tab yet)
+    if (dealId)  return { tab: 'deals', label: 'Open Deal', icon: '📞' };
+    if (contactId) return { tab: 'contacts', label: 'Open Contacts', icon: '👥' };
+    return { tab: 'deals', label: 'Open Deal', icon: '💼' };
+  }
+
+  // Task / internal → Deal if we have one, else Actions
+  if (type === 'task_complete' || type === 'task' || type === 'internal_task')
+    return dealId ? { tab: 'deals', label: 'Open Deal', icon: '💼' }
+                  : { tab: 'actions', label: 'Open Actions', icon: '🎯' };
+
+  // ── next_step fallback for unknown types ─────────────────────
+  if (nextStep === 'email')    return { tab: 'email',    label: 'Open Email',    icon: '✉️' };
+  if (nextStep === 'linkedin') return { tab: 'contacts', label: 'Open Contacts', icon: '🔗' };
+  if (nextStep === 'document') return { tab: 'files',    label: 'Open Files',    icon: '📁' };
+
+  // ── Final fallback ───────────────────────────────────────────
+  if (dealId)    return { tab: 'deals',    label: 'Open Deal',     icon: '💼' };
+  if (contactId) return { tab: 'contacts', label: 'Open Contacts', icon: '👥' };
   return { tab: 'deals', label: 'Open Deal', icon: '💼' };
 }
 
@@ -301,7 +339,21 @@ export default function ActionContextPanel({ action, onClose, onNavigate }) {
   const [isMinimised,     setIsMinimised]     = useState(false);
   const panelRef = useRef(null);
 
-  const destination = resolveDestination(action);
+  // Normalise action fields — backend returns camelCase from getAll but
+  // snake_case from PATCH /status. Support both defensively throughout.
+  const dealId    = action.deal?.id    || action.dealId    || action.deal_id    || null;
+  const contactId = action.contact?.id || action.contactId || action.contact_id || null;
+  const dealName  = action.deal?.name  || action.dealName  || null;
+  const dealStage = action.deal?.stage || null;
+  const dealValue = action.deal?.value || null;
+  const dealAcct  = action.deal?.account || null;
+  const actionType= action.actionType  || action.action_type || action.type || '';
+  const nextStep  = action.nextStep    || action.next_step   || 'email';
+
+  // Enrich the action object with normalised fields for resolveDestination + AI fetch
+  const normAction = { ...action, actionType, nextStep, dealId, contactId };
+
+  const destination = resolveDestination(normAction);
   const colors      = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
 
   // ── Load AI suggestion on mount ────────────────────────────
@@ -311,9 +363,11 @@ export default function ActionContextPanel({ action, onClose, onNavigate }) {
     setSuggestion(null);
 
     try {
+      // Send normalised action so the backend always gets dealId regardless
+      // of whether the original was camelCase or snake_case
       const result = await apiFetch('/ai/context-suggest', {
         method: 'POST',
-        body:   JSON.stringify({ action }),
+        body:   JSON.stringify({ action: normAction }),
       });
       setSuggestion(result.suggestion);
       setContextInfo(result.context);
@@ -334,7 +388,7 @@ export default function ActionContextPanel({ action, onClose, onNavigate }) {
     onNavigate(destination.tab);
     // Dispatch custom event so Dashboard can pass context to the target view
     window.dispatchEvent(new CustomEvent('actionContext', {
-      detail: { action, tab: destination.tab }
+      detail: { action: normAction, tab: destination.tab }
     }));
   };
 
@@ -408,15 +462,17 @@ export default function ActionContextPanel({ action, onClose, onNavigate }) {
             {/* ── Context section ─────────────────────────────── */}
             <div className="acp-context-section">
               {/* Deal info */}
-              {action.deal && (
+              {(dealName || dealId) && (
                 <div className="acp-context-deal">
                   <span className="acp-context-icon">💼</span>
                   <div>
-                    <div className="acp-context-deal-name">{action.deal.name}</div>
-                    {action.deal.account && (
+                    <div className="acp-context-deal-name">
+                      {dealName || `Deal #${dealId}`}
+                    </div>
+                    {(dealAcct || dealStage) && (
                       <div className="acp-context-deal-meta">
-                        {action.deal.account} · {action.deal.stage}
-                        {action.deal.value && ` · $${parseFloat(action.deal.value).toLocaleString()}`}
+                        {[dealAcct, dealStage, dealValue ? `$${parseFloat(dealValue).toLocaleString()}` : null]
+                          .filter(Boolean).join(' · ')}
                       </div>
                     )}
                   </div>
@@ -424,14 +480,16 @@ export default function ActionContextPanel({ action, onClose, onNavigate }) {
               )}
 
               {/* Contact info */}
-              {action.contact && (
+              {(action.contact || contactId) && (
                 <div className="acp-context-contact">
                   <span className="acp-context-icon">👤</span>
                   <div>
                     <div className="acp-context-contact-name">
-                      {action.contact.firstName} {action.contact.lastName}
+                      {action.contact?.firstName || action.contact?.first_name || `Contact #${contactId}`}
+                      {' '}
+                      {action.contact?.lastName  || action.contact?.last_name  || ''}
                     </div>
-                    {action.contact.email && (
+                    {action.contact?.email && (
                       <div className="acp-context-contact-meta">{action.contact.email}</div>
                     )}
                   </div>

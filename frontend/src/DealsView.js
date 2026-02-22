@@ -9,7 +9,7 @@ import DealHealthScore from './DealHealthScore';
 import DealActionsPanel from './DealActionsPanel';
 import './DealsView.css';
 
-function DealsView() {
+function DealsView({ openDealId = null, onDealOpened = null }) {
   const [deals, setDeals] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [contacts, setContacts] = useState([]);
@@ -27,6 +27,18 @@ function DealsView() {
   useEffect(() => {
     fetchDeals();
   }, []);
+
+  // When App.js passes an openDealId (from "Go there" in ActionContextPanel),
+  // find that deal in state and open its detail panel automatically
+  useEffect(() => {
+    if (!openDealId || deals.length === 0) return;
+    const target = deals.find(d => d.id === openDealId || d.id === parseInt(openDealId));
+    if (target) {
+      setSelectedDeal(target);
+      // Tell App.js we've consumed this so it doesn't re-trigger on re-renders
+      if (onDealOpened) onDealOpened();
+    }
+  }, [openDealId, deals]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchDeals = async () => {
     try {

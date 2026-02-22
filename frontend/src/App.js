@@ -348,6 +348,7 @@ function RoleSwitcher({ availableRoles, activeRole, onSwitch, collapsed }) {
 function Dashboard({ user, onLogout }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeContextAction, setActiveContextAction] = useState(null); // floating panel
+  const [pendingDealId, setPendingDealId]               = useState(null); // tell DealsView which deal to open
   const [sidebarOpen, setSidebarOpen]           = useState(false);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
 
@@ -420,6 +421,18 @@ function Dashboard({ user, onLogout }) {
     const handleStartAction = (e) => setActiveContextAction(e.detail);
     window.addEventListener('startAction', handleStartAction);
     return () => window.removeEventListener('startAction', handleStartAction);
+  }, []);
+
+  // Listen for 'actionContext' from ActionContextPanel's "Go there" button
+  // Sets pendingDealId so DealsView knows which deal to auto-open
+  useEffect(() => {
+    const handleActionContext = (e) => {
+      const { action, tab } = e.detail || {};
+      const dealId = action?.dealId || action?.deal?.id || action?.deal_id || null;
+      if (dealId) setPendingDealId(dealId);
+    };
+    window.addEventListener('actionContext', handleActionContext);
+    return () => window.removeEventListener('actionContext', handleActionContext);
   }, []);
 
   // Mobile title — check all role nav sets
@@ -512,7 +525,12 @@ function Dashboard({ user, onLogout }) {
         <div className="content-area">
           {/* Member views */}
           {currentTab === 'actions'      && <ActionsView />}
-          {currentTab === 'deals'        && <DealsView />}
+          {currentTab === 'deals'        && (
+            <DealsView
+              openDealId={pendingDealId}
+              onDealOpened={() => setPendingDealId(null)}
+            />
+          )}
           {currentTab === 'accounts'     && <AccountsView />}
           {currentTab === 'contacts'     && <ContactsView />}
           {currentTab === 'email'        && <EmailView />}
