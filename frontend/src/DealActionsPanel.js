@@ -19,13 +19,6 @@ function apiFetch(path, options = {}) {
   });
 }
 
-const STATUS_LABELS = {
-  yet_to_start: { label: 'Yet to Start', color: '#6b7280' },
-  in_progress:  { label: 'In Progress',  color: '#3b82f6' },
-  completed:    { label: 'Completed',    color: '#10b981' },
-  snoozed:      { label: 'Snoozed',      color: '#f59e0b' },
-};
-
 const PRIORITY_COLORS = {
   critical: '#dc2626',
   high:     '#ef4444',
@@ -47,7 +40,6 @@ function DealActionRow({ action, onStatusChange, onSnoozeClick, onUnsnooze, onDe
   const isSnoozed   = action.status === 'snoozed';
   const isCompleted = action.status === 'completed';
   const pColor      = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
-  const [expanding, setExpanding] = useState(false);
 
   return (
     <div className={`dap-action-row ${isSnoozed ? 'dap-action-row--snoozed' : ''} ${isCompleted ? 'dap-action-row--completed' : ''}`}>
@@ -70,6 +62,9 @@ function DealActionRow({ action, onStatusChange, onSnoozeClick, onUnsnooze, onDe
         {isSnoozed && (
           <div className="dap-action-row__snooze-info">
             💬 {action.snoozeReason}
+            {action.snoozeDuration && (
+              <> · {SNOOZE_DURATION_LABELS[action.snoozeDuration] || action.snoozeDuration}</>
+            )}
             {action.snoozedUntil && (
               <> · until {new Date(action.snoozedUntil).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</>
             )}
