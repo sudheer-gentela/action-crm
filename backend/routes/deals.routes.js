@@ -377,4 +377,77 @@ router.post('/:id/contacts', async (req, res) => {
   }
 });
 
+// ── PATCH /:id/signal-override ────────────────────────────────
+// Writes a user or manager override on a health signal.
+// Body: { signalKey: 'legal_engaged_user', value: true, managerOverride: false }
+// signalKey must be one of the *_user columns that exists on deals.
+router.patch('/:id/signal-override', async (req, res) => {
+  try {
+    const { signalKey, value, managerOverride } = req.body;
+
+    // Whitelist of overrideable signal columns — must match deals table *_user columns
+    const OVERRIDEABLE_SIGNALS = [
+      'close_date_user_confirmed',
+      'buyer_event_user_confirmed',
+      'legal_engaged_user',
+      'security_review_user',
+      'scope_approved_user',
+      'competitive_deal_user',
+      'price_sensitivity_user',
+      'discount_pending_user',
+    ];
+
+    if (!OVERRIDEABLE_SIGNALS.includes(signalKey)) {
+      return res.status(400).json({ error: { message: `Invalid signal key: ${signalKey}` } });
+    }
+
+    // Verify deal belongs to this user/org
+    const checkResult = await db.query(
+      'SELECT id, signal_overrides FROM deals WHERE id = $1 AND org_id = $2 AND owner_id = $3',
+      [req.params.id, req.orgId, req.user.userId]
+    );
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Deal not found' } });
+    }
+
+    const currentOverrides = checkResult.rows[0].signal_overrides || {};
+
+    // Build updated override metadata for this signal
+    const updatedOverrides = {
+      ...currentOverrides,
+      [signalKey]: {
+        overridden_by:    req.user.userId,
+        overridden_at:    new Date().toISOString(),
+        manager_override: !!managerOverride,
+      },
+    };
+
+    // Update the signal column + override metadata atomically
+    const result = await db.query(
+      `UPDATE deals
+       SET ${signalKey}       = $1,
+           signal_overrides   = $2,
+           updated_at         = CURRENT_TIMESTAMP
+       WHERE id = $3 AND org_id = $4 AND owner_id = $5
+       RETURNING id, ${signalKey} AS signal_value, signal_overrides, health, health_score`,
+      [value, JSON.stringify(updatedOverrides), req.params.id, req.orgId, req.user.userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Deal not found' } });
+    }
+
+    const row = result.rows[0];
+    res.json({
+      dealId:          parseInt(req.params.id),
+      signalKey,
+      value:           row.signal_value,
+      signalOverrides: row.signal_overrides,
+    });
+  } catch (error) {
+    console.error('Signal override error:', error);
+    res.status(500).json({ error: { message: 'Failed to update signal override' } });
+  }
+});
+
 module.exports = router;

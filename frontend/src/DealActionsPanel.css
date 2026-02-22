@@ -1,0 +1,295 @@
+/* ============================================================================
+   DealActionsPanel.css
+   Namespace: dap-*  (deal actions panel)
+   Used by: DealActionsPanel.js, rendered inside DealsView detail panel
+   ============================================================================ */
+
+/* ── Loading / Error ─────────────────────────────────────────── */
+.dap-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 0;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.dap-loading-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #e5e7eb;
+  border-top-color: #4f46e5;
+  border-radius: 50%;
+  animation: dap-spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes dap-spin { to { transform: rotate(360deg); } }
+
+.dap-error {
+  padding: 12px 14px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  color: #991b1b;
+  font-size: 13px;
+}
+
+.dap-error button {
+  margin-top: 8px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: none;
+  background: #ef4444;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ── Root ────────────────────────────────────────────────────── */
+.dap-root {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ── Header row ──────────────────────────────────────────────── */
+.dap-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.dap-header__counts {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.dap-count {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 10px;
+}
+
+.dap-count--active  { background: #fef3c7; color: #92400e; }
+.dap-count--snoozed { background: #fff3cd; color: #856404; }
+.dap-count--done    { background: #d1fae5; color: #065f46; }
+
+.dap-header__btns {
+  display: flex;
+  gap: 6px;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+.dap-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+
+.dap-btn:hover:not(:disabled) {
+  border-color: #d1d5db;
+  background: #f9fafb;
+}
+
+.dap-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.dap-btn--generate {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #166534;
+  font-weight: 600;
+}
+.dap-btn--generate:hover:not(:disabled) { background: #dcfce7; border-color: #86efac; }
+
+.dap-btn--add {
+  background: #4f46e5;
+  border-color: #4f46e5;
+  color: #fff;
+  font-weight: 600;
+}
+.dap-btn--add:hover:not(:disabled) { background: #4338ca; border-color: #4338ca; }
+
+.dap-btn--start    { background: #eff6ff; border-color: #bfdbfe; color: #1d4ed8; }
+.dap-btn--complete { background: #f0fdf4; border-color: #bbf7d0; color: #166534; font-weight: 600; }
+.dap-btn--snooze   { padding: 4px 8px; font-size: 14px; border-color: transparent; background: transparent; color: #9ca3af; }
+.dap-btn--snooze:hover:not(:disabled) { color: #f59e0b; background: #fffbeb; border-color: #fde68a; }
+.dap-btn--unsnooze { background: #fffbeb; border-color: #fde68a; color: #92400e; }
+.dap-btn--unsnooze:hover:not(:disabled) { background: #fef3c7; }
+.dap-btn--delete   { padding: 4px 8px; background: transparent; border-color: transparent; color: #d1d5db; font-size: 12px; }
+.dap-btn--delete:hover:not(:disabled)   { color: #ef4444; background: #fef2f2; border-color: #fecaca; }
+
+.dap-btn--add-save   { background: #4f46e5; border-color: #4f46e5; color: #fff; font-weight: 600; }
+.dap-btn--add-save:hover:not(:disabled) { background: #4338ca; }
+.dap-btn--add-cancel { color: #6b7280; }
+
+/* ── Empty state ─────────────────────────────────────────────── */
+.dap-empty {
+  padding: 12px 0;
+  color: #9ca3af;
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ── Action row ──────────────────────────────────────────────── */
+.dap-action-row {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+  transition: box-shadow 0.12s;
+}
+
+.dap-action-row:hover { box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+
+.dap-action-row--snoozed  { opacity: 0.7; background: #fafafa; }
+.dap-action-row--completed { opacity: 0.5; }
+
+.dap-action-row__priority-bar {
+  width: 4px;
+  flex-shrink: 0;
+}
+
+.dap-action-row__body {
+  flex: 1;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dap-action-row__title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dap-action-row__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+  line-height: 1.4;
+  flex: 1;
+  min-width: 0;
+}
+
+.dap-action-row__badges {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.dap-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+.dap-badge--snoozed { background: #fff3cd; color: #856404; }
+.dap-badge--ai      { background: #ede9fe; color: #6d28d9; }
+.dap-badge--manual  { background: #f0fdf4; color: #166534; }
+
+.dap-action-row__snooze-info {
+  font-size: 11px;
+  color: #9ca3af;
+  line-height: 1.4;
+}
+
+.dap-action-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+/* ── Snoozed section ─────────────────────────────────────────── */
+.dap-snoozed-section {
+  margin-top: 6px;
+}
+
+.dap-snoozed-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 10px;
+  background: #fffbeb;
+  border: 1px dashed #fde68a;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #92400e;
+  cursor: pointer;
+  transition: background 0.12s;
+  margin-bottom: 6px;
+}
+
+.dap-snoozed-toggle:hover { background: #fef3c7; }
+
+.dap-snoozed-toggle__chevron { font-size: 10px; color: #b45309; }
+
+/* ── Add action form ─────────────────────────────────────────── */
+.dap-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin-bottom: 4px;
+}
+
+.dap-add-form__input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #111827;
+  box-sizing: border-box;
+  transition: border-color 0.12s;
+}
+
+.dap-add-form__input:focus {
+  outline: none;
+  border-color: #4f46e5;
+}
+
+.dap-add-form__priority {
+  padding: 6px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  font-size: 12px;
+  color: #374151;
+  background: #fff;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.dap-add-form__error {
+  font-size: 12px;
+  color: #ef4444;
+}
+
+.dap-add-form__btns {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}

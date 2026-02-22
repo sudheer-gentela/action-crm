@@ -1,19 +1,20 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import './ActionsView.css';
 import EmailComposer from './EmailComposer';
+import SnoozeModal from './SnoozeModal';
 
 const API = process.env.REACT_APP_API_URL || '';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const ACTION_TYPE_OPTIONS = [
-  { value: '',             label: 'All Types' },
-  { value: 'meeting',      label: '📅 Meeting' },
-  { value: 'follow_up',   label: '🔄 Follow Up' },
-  { value: 'email_send',  label: '✉️ Email to Send' },
+  { value: '',              label: 'All Types' },
+  { value: 'meeting',       label: '📅 Meeting' },
+  { value: 'follow_up',     label: '🔄 Follow Up' },
+  { value: 'email_send',    label: '✉️ Email to Send' },
   { value: 'document_prep', label: '📄 Document Prep' },
-  { value: 'meeting_prep', label: '📋 Meeting Prep' },
-  { value: 'internal',    label: '🏠 Internal' },
+  { value: 'meeting_prep',  label: '📋 Meeting Prep' },
+  { value: 'internal',      label: '🏠 Internal' },
 ];
 
 const NEXT_STEP_OPTIONS = [
@@ -35,9 +36,17 @@ const PRIORITY_COLORS = {
 };
 
 const STATUS_CONFIG = {
-  yet_to_start: { label: 'Yet to Start', icon: '○',  color: '#6b7280', next: 'in_progress' },
-  in_progress:  { label: 'In Progress',  icon: '◑',  color: '#3b82f6', next: 'completed'   },
-  completed:    { label: 'Completed',    icon: '●',  color: '#10b981', next: null           },
+  yet_to_start: { label: 'Yet to Start', icon: '○', color: '#6b7280', next: 'in_progress' },
+  in_progress:  { label: 'In Progress',  icon: '◑', color: '#3b82f6', next: 'completed'  },
+  completed:    { label: 'Completed',    icon: '●', color: '#10b981', next: null          },
+};
+
+const SNOOZE_DURATION_LABELS = {
+  '1_week':      '1 week',
+  '2_weeks':     '2 weeks',
+  '1_month':     '1 month',
+  'stage_change':'until stage changes',
+  'indefinite':  'indefinitely',
 };
 
 const SOURCE_RULE_LABELS = {
@@ -50,6 +59,15 @@ const SOURCE_RULE_LABELS = {
   champion_nurture:          'Champion Nurture',
   no_files:                  'No Files Uploaded',
   ai_enhancer:               'AI Enhancement',
+};
+
+const MANUAL_LOG_CONFIG = {
+  call:          { icon: '📞', label: 'Log Call',          placeholder: 'What was discussed? Any next steps agreed?' },
+  whatsapp:      { icon: '💬', label: 'Log WhatsApp',      placeholder: 'What was the outcome of the conversation?' },
+  linkedin:      { icon: '🔗', label: 'Log LinkedIn',      placeholder: 'What message did you send / receive?' },
+  slack:         { icon: '💬', label: 'Log Slack Message', placeholder: 'What was the key point of the exchange?' },
+  document:      { icon: '📄', label: 'Log Document Sent', placeholder: 'Which document? Any response from the prospect?' },
+  internal_task: { icon: '🔧', label: 'Log Internal Task', placeholder: 'What did you complete or decide?' },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -69,7 +87,6 @@ function apiFetch(path, options = {}) {
   });
 }
 
-// Returns the full response body (including outlookSent / outlookError)
 async function apiFetchRaw(path, options = {}) {
   const token = localStorage.getItem('token') || localStorage.getItem('authToken');
   const res = await fetch(`${API}${path}`, {
@@ -90,7 +107,7 @@ function formatDate(iso) {
   const d = new Date(iso);
   const now = new Date();
   const diffDays = Math.ceil((d - now) / (1000 * 60 * 60 * 24));
-  if (diffDays < 0)  return { text: `${Math.abs(diffDays)}d overdue`, overdue: true };
+  if (diffDays < 0)   return { text: `${Math.abs(diffDays)}d overdue`, overdue: true };
   if (diffDays === 0) return { text: 'Due today', today: true };
   if (diffDays === 1) return { text: 'Due tomorrow' };
   return { text: `Due ${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` };
@@ -113,48 +130,39 @@ function nextStepLabel(nextStep) {
 
 function EvidencePanel({ action }) {
   const [open, setOpen] = useState(false);
-
   const hasEvidence = action.description || action.context || action.suggestedAction || action.evidenceEmail;
   if (!hasEvidence) return null;
 
   const ruleLabel = action.sourceRule
-    ? (SOURCE_RULE_LABELS[action.sourceRule] || action.sourceRule.replace(/_/g, ' '))
+    ? (SOURCE_RULE_LABELS[action.sourceRule] || action.sourceRule)
     : null;
 
   return (
     <div className="av-evidence">
       <button className="av-evidence-toggle" onClick={() => setOpen(o => !o)}>
-        <span>💡 Why this action?</span>
+        <span>Why this action?</span>
         <span className="av-evidence-chevron">{open ? '▲' : '▼'}</span>
       </button>
-
       {open && (
         <div className="av-evidence-body">
-          {/* Rule that fired */}
           {ruleLabel && (
             <div className="av-evidence-row">
               <span className="av-evidence-label">Rule</span>
               <span className="av-evidence-value av-evidence-rule">{ruleLabel}</span>
             </div>
           )}
-
-          {/* Description = rule's direct evidence text */}
           {action.description && (
             <div className="av-evidence-row">
               <span className="av-evidence-label">Signal</span>
               <span className="av-evidence-value">{action.description}</span>
             </div>
           )}
-
-          {/* AI context */}
-          {action.context && action.source === 'ai_generated' && (
+          {action.context && (
             <div className="av-evidence-row">
               <span className="av-evidence-label">AI Insight</span>
               <span className="av-evidence-value av-evidence-ai">{action.context}</span>
             </div>
           )}
-
-          {/* Triggering email snippet */}
           {action.evidenceEmail && (
             <div className="av-evidence-email">
               <div className="av-evidence-email-header">
@@ -169,8 +177,6 @@ function EvidencePanel({ action }) {
               )}
             </div>
           )}
-
-          {/* Suggested action */}
           {action.suggestedAction && (
             <div className="av-evidence-row av-evidence-suggested">
               <span className="av-evidence-label">Suggested</span>
@@ -183,19 +189,7 @@ function EvidencePanel({ action }) {
   );
 }
 
-
 // ── Manual Log Modal ──────────────────────────────────────────────────────────
-// Shown for next_step = call | whatsapp | linkedin | slack | document | internal_task
-// User logs what they did, then marks the action done or leaves in_progress
-
-const MANUAL_LOG_CONFIG = {
-  call:          { icon: '📞', label: 'Log Call',             placeholder: 'Who did you speak to? What was discussed? Any follow-up agreed?' },
-  whatsapp:      { icon: '💬', label: 'Log WhatsApp Message', placeholder: 'What did you send? Any reply received?' },
-  linkedin:      { icon: '🔗', label: 'Log LinkedIn Message', placeholder: 'What did you send? Any connection or reply?' },
-  slack:         { icon: '💬', label: 'Log Slack Message',    placeholder: 'Who did you message? What was the outcome?' },
-  document:      { icon: '📄', label: 'Log Document Work',    placeholder: 'What did you create or update? Where is it saved?' },
-  internal_task: { icon: '🔧', label: 'Log Internal Task',    placeholder: 'What did you complete? Any notes?' },
-};
 
 function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
   const [notes, setNotes]   = useState('');
@@ -219,17 +213,14 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
           <h2>{cfg.icon} {cfg.label}</h2>
           <button className="close-button" onClick={onClose}>×</button>
         </div>
-
         <div className="av-log-modal-body">
           <div className="av-log-action-title">{action.title}</div>
-
           {action.suggestedAction && (
             <div className="av-log-suggested">
               <span className="av-log-suggested-label">Suggested approach</span>
               <p>{action.suggestedAction}</p>
             </div>
           )}
-
           <div className="form-group">
             <label htmlFor="log-notes">Notes (optional)</label>
             <textarea
@@ -241,11 +232,8 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
             />
           </div>
         </div>
-
         <div className="av-log-modal-footer">
-          <button className="btn-secondary" onClick={onClose} disabled={saving}>
-            Cancel
-          </button>
+          <button className="btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="av-log-btn-progress" onClick={handleInProgress} disabled={saving}>
             {saving ? '…' : '◑ Still in Progress'}
           </button>
@@ -266,19 +254,16 @@ function StatusStepper({ action, onStatusChange, onStart }) {
 
   async function advance() {
     if (!cfg.next || updating) return;
-
-    // "Start" button — route to the right artifact instead of just advancing status
     if (cfg.next === 'in_progress') {
       if (onStart) { onStart(action); return; }
     }
-
     setUpdating(true);
-    try {
-      await onStatusChange(action.id, cfg.next);
-    } finally {
-      setUpdating(false);
-    }
+    try { await onStatusChange(action.id, cfg.next); }
+    finally { setUpdating(false); }
   }
+
+  // Snoozed actions don't show the stepper
+  if (action.status === 'snoozed') return null;
 
   return (
     <div className="av-status">
@@ -303,12 +288,16 @@ function StatusStepper({ action, onStatusChange, onStart }) {
           onClick={advance}
           disabled={updating}
         >
-          {updating ? '…' : cfg.next === 'in_progress' ? `${nextStepLabel(action.nextStep)} →` : 'Complete ✓'}
+          {updating ? '…' : cfg.next === 'in_progress'
+            ? `${nextStepLabel(action.nextStep)} →`
+            : 'Complete ✓'}
         </button>
       )}
       {action.status === 'completed' && (
         <span className="av-status-completed-by">
-          {action.autoCompleted ? '🤖 Auto-completed' : `✓ Marked done${action.completedAt ? ` · ${new Date(action.completedAt).toLocaleDateString()}` : ''}`}
+          {action.autoCompleted
+            ? '🤖 Auto-completed'
+            : `✓ Marked done${action.completedAt ? ` · ${new Date(action.completedAt).toLocaleDateString()}` : ''}`}
         </span>
       )}
     </div>
@@ -317,21 +306,28 @@ function StatusStepper({ action, onStatusChange, onStart }) {
 
 // ── Action Card ───────────────────────────────────────────────────────────────
 
-function ActionCard({ action, onStatusChange, onStart }) {
-  const dueInfo = formatDate(action.dueDate);
-  const pColor  = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
+function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze }) {
+  const dueInfo    = formatDate(action.dueDate);
+  const pColor     = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
   const isCompleted = action.status === 'completed';
+  const isSnoozed   = action.status === 'snoozed';
 
   return (
-    <div className={`av-card av-card--${action.priority} ${isCompleted ? 'av-card--completed' : ''} ${action.isInternal ? 'av-card--internal' : ''}`}>
+    <div className={`
+      av-card
+      av-card--${action.priority}
+      ${isCompleted ? 'av-card--completed' : ''}
+      ${isSnoozed   ? 'av-card--snoozed'   : ''}
+      ${action.isInternal ? 'av-card--internal' : ''}
+    `.trim().replace(/\s+/g, ' ')}>
 
       {/* Card header */}
       <div className="av-card-header">
         <span className="av-type-badge" style={{ background: pColor + '18', color: pColor }}>
           {nextStepLabel(action.nextStep)}
         </span>
-
         <div className="av-card-badges">
+          {isSnoozed && <span className="av-badge av-badge--snoozed">😴 Snoozed</span>}
           {action.isInternal && <span className="av-badge av-badge--internal">🏠 Internal</span>}
           {action.source === 'ai_generated' && (
             <span className="av-badge av-badge--ai" title={
@@ -367,17 +363,48 @@ function ActionCard({ action, onStatusChange, onStart }) {
       )}
 
       {/* Due date */}
-      {dueInfo && (
+      {dueInfo && !isSnoozed && (
         <div className={`av-due ${dueInfo.overdue ? 'av-due--overdue' : dueInfo.today ? 'av-due--today' : ''}`}>
           🗓 {dueInfo.text}
         </div>
       )}
 
-      {/* Evidence panel */}
-      <EvidencePanel action={action} />
+      {/* Snooze info banner */}
+      {isSnoozed && (
+        <div className="av-snooze-info">
+          <div className="av-snooze-info__reason">
+            💬 {action.snoozeReason}
+          </div>
+          <div className="av-snooze-info__meta">
+            Snoozed {SNOOZE_DURATION_LABELS[action.snoozeDuration] || action.snoozeDuration}
+            {action.snoozedUntil && (
+              <> · wakes {new Date(action.snoozedUntil).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</>
+            )}
+          </div>
+          <button className="av-snooze-info__unsnooze" onClick={() => onUnsnooze(action.id)}>
+            ↑ Unsnooze
+          </button>
+        </div>
+      )}
 
-      {/* Status stepper */}
-      <StatusStepper action={action} onStatusChange={onStatusChange} onStart={onStart} />
+      {/* Evidence panel — hide on snoozed */}
+      {!isSnoozed && <EvidencePanel action={action} />}
+
+      {/* Footer row: status stepper + snooze button */}
+      {!isSnoozed && (
+        <div className="av-card-footer">
+          <StatusStepper action={action} onStatusChange={onStatusChange} onStart={onStart} />
+          {!isCompleted && (
+            <button
+              className="av-snooze-btn"
+              onClick={() => onSnoozeClick(action)}
+              title="Snooze this action"
+            >
+              😴
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -407,9 +434,9 @@ function FilterBar({ filters, onChange, options }) {
       {/* Internal / External */}
       <div className="av-filter-group av-filter-group--internal">
         {[
-          { value: '',       label: 'All' },
-          { value: 'false',  label: '🌐 External' },
-          { value: 'true',   label: '🏠 Internal' },
+          { value: '',      label: 'All' },
+          { value: 'false', label: '🌐 External' },
+          { value: 'true',  label: '🏠 Internal' },
         ].map(opt => (
           <button
             key={opt.value}
@@ -432,7 +459,7 @@ function FilterBar({ filters, onChange, options }) {
         ))}
       </select>
 
-      {/* Next Step / Channel filter */}
+      {/* Next Step / Channel */}
       <select
         className="av-filter-select"
         value={filters.nextStep}
@@ -486,7 +513,6 @@ function FilterBar({ filters, onChange, options }) {
           className="av-filter-date"
           value={filters.dueAfter}
           onChange={e => onChange('dueAfter', e.target.value)}
-          placeholder="From"
           title="Due after"
         />
         <span className="av-filter-date-sep">→</span>
@@ -495,17 +521,17 @@ function FilterBar({ filters, onChange, options }) {
           className="av-filter-date"
           value={filters.dueBefore}
           onChange={e => onChange('dueBefore', e.target.value)}
-          placeholder="To"
           title="Due before"
         />
       </div>
 
-      {/* Status tabs */}
+      {/* Status tabs — now includes Snoozed */}
       <div className="av-filter-group av-filter-group--status">
         {[
-          { value: '',              label: 'Open' },
-          { value: 'in_progress',   label: '◑ In Progress' },
-          { value: 'completed',     label: '● Completed' },
+          { value: '',            label: 'Open' },
+          { value: 'in_progress', label: '◑ In Progress' },
+          { value: 'snoozed',     label: '😴 Snoozed' },
+          { value: 'completed',   label: '● Completed' },
         ].map(opt => (
           <button
             key={opt.value}
@@ -525,7 +551,7 @@ function FilterBar({ filters, onChange, options }) {
   );
 }
 
-// ── Main Component ────────────────────────────────────────────────────────────
+// ── Default filters ───────────────────────────────────────────────────────────
 
 const DEFAULT_FILTERS = {
   source:     'all',
@@ -540,31 +566,25 @@ const DEFAULT_FILTERS = {
   status:     '',
 };
 
+// ── Main Component ────────────────────────────────────────────────────────────
+
 export default function ActionsView() {
-  const [actions, setActions]     = useState([]);
-  const [loading, setLoading]     = useState(true);
-  const [generating, setGenerating] = useState(false);
-  const [error, setError]         = useState(null);
-  const [filters, setFilters]     = useState(DEFAULT_FILTERS);
+  const [actions,       setActions]       = useState([]);
+  const [loading,       setLoading]       = useState(true);
+  const [generating,    setGenerating]    = useState(false);
+  const [error,         setError]         = useState(null);
+  const [filters,       setFilters]       = useState(DEFAULT_FILTERS);
   const [filterOptions, setFilterOptions] = useState({ deals: [], accounts: [], owners: [] });
+  const [contacts,      setContacts]      = useState([]);
+  const [deals,         setDeals]         = useState([]);
 
-  // Email composer state (for email/follow_up next_step)
-  const [composerAction, setComposerAction] = useState(null);  // action that triggered compose
-  const [contacts,       setContacts]       = useState([]);
-  const [deals,          setDeals]          = useState([]);
+  // Modal states
+  const [composerAction, setComposerAction] = useState(null);
+  const [logAction,      setLogAction]      = useState(null);
+  const [snoozeAction,   setSnoozeAction]   = useState(null);
 
-  // Manual log modal state (for call/whatsapp/linkedin/slack/document/internal_task)
-  const [logAction, setLogAction] = useState(null);
-
-  // Load filter options once
   useEffect(() => {
-    apiFetch('/actions/filter-options')
-      .then(data => setFilterOptions(data))
-      .catch(() => {});
-  }, []);
-
-  // Load contacts and deals for the email composer (loaded once on mount)
-  useEffect(() => {
+    apiFetch('/actions/filter-options').then(data => setFilterOptions(data)).catch(() => {});
     apiFetch('/contacts').then(d => setContacts(d.contacts || [])).catch(() => {});
     apiFetch('/deals').then(d => setDeals(d.deals || [])).catch(() => {});
   }, []);
@@ -575,17 +595,9 @@ export default function ActionsView() {
     try {
       const params = new URLSearchParams();
 
-      // Status
       if (activeFilters.status) {
         params.set('status', activeFilters.status);
-      } else {
-        // default: show only non-completed
-        params.set('status', 'yet_to_start');
-        // We'll also fetch in_progress — two calls merged, or we omit status filter
-        // Actually: no status filter = show all non-completed (API filters on FE)
-        params.delete('status');
       }
-
       if (activeFilters.dealId)     params.set('dealId',     activeFilters.dealId);
       if (activeFilters.accountId)  params.set('accountId',  activeFilters.accountId);
       if (activeFilters.ownerId)    params.set('ownerId',     activeFilters.ownerId);
@@ -594,21 +606,17 @@ export default function ActionsView() {
       if (activeFilters.nextStep)   params.set('nextStep',   activeFilters.nextStep);
       if (activeFilters.dueAfter)   params.set('dueAfter',   activeFilters.dueAfter);
       if (activeFilters.dueBefore)  params.set('dueBefore',  activeFilters.dueBefore);
-      if (activeFilters.status)     params.set('status',     activeFilters.status);
 
       const data = await apiFetch(`/actions?${params.toString()}`);
       let rows = data.actions || [];
 
-      // Client-side source filter (fast, no extra API call)
+      // Client-side source filter
       if (activeFilters.source === 'ai')    rows = rows.filter(a => a.source === 'ai_generated');
       if (activeFilters.source === 'rules') rows = rows.filter(a => a.source === 'auto_generated');
 
-      // Client-side nextStep filter (already sent to API but belt-and-suspenders)
-      if (activeFilters.nextStep) rows = rows.filter(a => a.nextStep === activeFilters.nextStep);
-
-      // If no status filter selected, hide completed
+      // Default view: hide completed and snoozed
       if (!activeFilters.status) {
-        rows = rows.filter(a => a.status !== 'completed');
+        rows = rows.filter(a => a.status !== 'completed' && a.status !== 'snoozed');
       }
 
       setActions(rows);
@@ -618,17 +626,14 @@ export default function ActionsView() {
     } finally {
       setLoading(false);
     }
-  }, []); // no deps — always called with explicit activeFilters argument
+  }, []);
 
   useEffect(() => {
     fetchActions(filters);
   }, [filters, fetchActions]);
 
   function handleFilterChange(key, value) {
-    if (key === '__reset__') {
-      setFilters(DEFAULT_FILTERS);
-      return;
-    }
+    if (key === '__reset__') { setFilters(DEFAULT_FILTERS); return; }
     setFilters(prev => ({ ...prev, [key]: value }));
   }
 
@@ -638,14 +643,11 @@ export default function ActionsView() {
         method: 'PATCH',
         body: JSON.stringify({ status: newStatus }),
       });
-      // Optimistic update
       setActions(prev =>
-        prev.map(a =>
-          a.id === actionId
-            ? { ...a, status: newStatus, completed: newStatus === 'completed' }
-            : a
+        prev.map(a => a.id === actionId
+          ? { ...a, status: newStatus, completed: newStatus === 'completed' }
+          : a
         ).filter(a => {
-          // If we're on the default (open) view, hide newly-completed
           if (!filters.status && a.id === actionId && newStatus === 'completed') return false;
           return true;
         })
@@ -656,21 +658,15 @@ export default function ActionsView() {
     }
   }
 
-  // ── Start button routing ──────────────────────────────────────────────────
-  // Called when user clicks the Start button on an action card.
-  // Routes to email composer or manual log modal based on next_step.
-
   function handleStart(action) {
     const emailNextSteps = ['email', 'follow_up'];
     if (emailNextSteps.includes(action.nextStep)) {
       setComposerAction(action);
     } else {
-      // call, whatsapp, linkedin, slack, document, internal_task → manual log
       setLogAction(action);
     }
   }
 
-  // Called after email is composed and sent
   async function handleEmailSent(emailData) {
     try {
       const result = await apiFetchRaw('/emails', {
@@ -684,8 +680,6 @@ export default function ActionsView() {
           actionId:  emailData.actionId  || null,
         }),
       });
-
-      // Refresh the action card in state (status may have changed)
       if (emailData.actionId) {
         setActions(prev => prev.map(a =>
           a.id === emailData.actionId
@@ -693,16 +687,14 @@ export default function ActionsView() {
             : a
         ));
       }
-
       setComposerAction(null);
-      return result; // pass outlookSent/outlookError back to composer for banner
+      return result;
     } catch (err) {
       console.error('Email send failed:', err);
       throw err;
     }
   }
 
-  // Called from ManualLogModal when user clicks "Mark Done"
   async function handleManualComplete(action, notes) {
     try {
       await apiFetch(`/actions/${action.id}/status`, {
@@ -711,7 +703,7 @@ export default function ActionsView() {
       });
       setActions(prev => prev
         .map(a => a.id === action.id ? { ...a, status: 'completed', completed: true } : a)
-        .filter(a => !(!filters.status && a.id === action.id && a.status === 'completed'))
+        .filter(a => !(!filters.status && a.id === action.id))
       );
       setLogAction(null);
     } catch (err) {
@@ -720,7 +712,6 @@ export default function ActionsView() {
     }
   }
 
-  // Called from ManualLogModal when user clicks "Still in Progress"
   async function handleManualInProgress(action, notes) {
     try {
       await apiFetch(`/actions/${action.id}/status`, {
@@ -733,6 +724,42 @@ export default function ActionsView() {
       setLogAction(null);
     } catch (err) {
       console.error('Status update failed:', err);
+    }
+  }
+
+  async function handleSnooze(actionId, reason, duration) {
+    await apiFetch(`/actions/${actionId}/snooze`, {
+      method: 'PATCH',
+      body: JSON.stringify({ reason, duration }),
+    });
+    // Remove from open view, show in snoozed view
+    setActions(prev =>
+      prev.map(a => a.id === actionId
+        ? { ...a, status: 'snoozed', snoozeReason: reason, snoozeDuration: duration }
+        : a
+      ).filter(a => {
+        if (filters.status !== 'snoozed' && a.id === actionId) return false;
+        return true;
+      })
+    );
+    setSnoozeAction(null);
+  }
+
+  async function handleUnsnooze(actionId) {
+    try {
+      await apiFetch(`/actions/${actionId}/unsnooze`, { method: 'PATCH' });
+      setActions(prev =>
+        prev.map(a => a.id === actionId
+          ? { ...a, status: 'yet_to_start', snoozedUntil: null, snoozeReason: null, snoozeDuration: null }
+          : a
+        ).filter(a => {
+          // If we're on snoozed view, remove it after unsnooze
+          if (filters.status === 'snoozed' && a.id === actionId) return false;
+          return true;
+        })
+      );
+    } catch (err) {
+      alert('Failed to unsnooze: ' + err.message);
     }
   }
 
@@ -749,10 +776,11 @@ export default function ActionsView() {
     }
   }
 
-  // Counts for header
-  const yetToStart  = actions.filter(a => a.status === 'yet_to_start').length;
-  const inProgress  = actions.filter(a => a.status === 'in_progress').length;
-  const completed   = actions.filter(a => a.status === 'completed').length;
+  // Header counts
+  const yetToStart = actions.filter(a => a.status === 'yet_to_start').length;
+  const inProgress = actions.filter(a => a.status === 'in_progress').length;
+  const snoozed    = actions.filter(a => a.status === 'snoozed').length;
+  const completed  = actions.filter(a => a.status === 'completed').length;
 
   return (
     <>
@@ -765,6 +793,7 @@ export default function ActionsView() {
             <div className="av-header-counts">
               <span className="av-count av-count--open">{yetToStart} to start</span>
               {inProgress > 0 && <span className="av-count av-count--progress">{inProgress} in progress</span>}
+              {snoozed    > 0 && <span className="av-count av-count--snoozed">{snoozed} snoozed</span>}
               {completed  > 0 && <span className="av-count av-count--done">{completed} completed</span>}
             </div>
           </div>
@@ -799,11 +828,19 @@ export default function ActionsView() {
         {/* Empty state */}
         {!loading && !error && actions.length === 0 && (
           <div className="av-empty">
-            <div className="av-empty-icon">🎯</div>
-            <p>No actions match the current filters.</p>
-            <button className="av-generate-btn" onClick={handleGenerateActions} disabled={generating}>
-              Generate Actions
-            </button>
+            <div className="av-empty-icon">
+              {filters.status === 'snoozed' ? '😴' : '🎯'}
+            </div>
+            <p>
+              {filters.status === 'snoozed'
+                ? 'No snoozed actions.'
+                : 'No actions match the current filters.'}
+            </p>
+            {!filters.status && (
+              <button className="av-generate-btn" onClick={handleGenerateActions} disabled={generating}>
+                Generate Actions
+              </button>
+            )}
           </div>
         )}
 
@@ -816,6 +853,8 @@ export default function ActionsView() {
                 action={action}
                 onStatusChange={handleStatusChange}
                 onStart={handleStart}
+                onSnoozeClick={setSnoozeAction}
+                onUnsnooze={handleUnsnooze}
               />
             ))}
           </div>
@@ -829,12 +868,12 @@ export default function ActionsView() {
           contacts={contacts}
           deals={deals}
           prefill={{
-            contactId: composerAction.contact ? composerAction.contact.id : null,
-            dealId:    composerAction.deal    ? composerAction.deal.id    : null,
+            contactId: composerAction.contact ? composerAction.contact.id    : null,
+            dealId:    composerAction.deal    ? composerAction.deal.id       : null,
             subject:   composerAction.title,
             body:      composerAction.suggestedAction
-                       ? 'Hi,\n\n' + composerAction.suggestedAction + '\n\nBest regards,'
-                       : '',
+                         ? 'Hi,\n\n' + composerAction.suggestedAction + '\n\nBest regards,'
+                         : '',
             toAddress: composerAction.contact ? composerAction.contact.email : '',
           }}
           actionId={composerAction.id}
@@ -852,9 +891,18 @@ export default function ActionsView() {
       {logAction && (
         <ManualLogModal
           action={logAction}
-          onComplete={notes => handleManualComplete(logAction, notes)}
+          onComplete={notes   => handleManualComplete(logAction, notes)}
           onInProgress={notes => handleManualInProgress(logAction, notes)}
           onClose={() => setLogAction(null)}
+        />
+      )}
+
+      {/* Snooze Modal */}
+      {snoozeAction && (
+        <SnoozeModal
+          action={snoozeAction}
+          onSnooze={handleSnooze}
+          onClose={() => setSnoozeAction(null)}
         />
       )}
     </>

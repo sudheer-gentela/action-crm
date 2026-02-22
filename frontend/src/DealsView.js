@@ -6,6 +6,7 @@ import AIAnalyzeButton from './AIAnalyzeButton';
 import TranscriptUpload from './TranscriptUpload';
 import TranscriptAnalysis from './TranscriptAnalysis';
 import DealHealthScore from './DealHealthScore';
+import DealActionsPanel from './DealActionsPanel';
 import './DealsView.css';
 
 function DealsView() {
@@ -157,11 +158,18 @@ function DealsView() {
     }
   };
 
-  const handleUpdateSignal = async (dealId, signals) => {
+  const handleUpdateSignal = async (dealId, signalKey, value) => {
     try {
-      const response = await apiService.health.updateSignals(dealId, signals);
-      const { scored } = response.data;
-      const update = { health: scored.health, health_score: scored.score, health_score_breakdown: scored.breakdown, health_score_updated_at: new Date().toISOString(), ...signals };
+      const response = await apiService.health.signalOverride(dealId, signalKey, value);
+      const { signalValue, signalOverrides, health, score: health_score, breakdown } = response.data;
+      const update = {
+        [signalKey]:              signalValue,
+        signal_overrides:         signalOverrides,
+        health,
+        health_score,
+        health_score_breakdown:   breakdown,
+        health_score_updated_at:  new Date().toISOString(),
+      };
       setDeals(deals.map(d => d.id === dealId ? { ...d, ...update } : d));
       if (selectedDeal?.id === dealId) setSelectedDeal(prev => ({ ...prev, ...update }));
     } catch (err) {
@@ -441,6 +449,12 @@ function DealsView() {
                 </div>
               </div>
 
+              {/* Deal Actions */}
+              <div className="detail-section">
+                <h3>⚡ Actions</h3>
+                <DealActionsPanel deal={selectedDeal} />
+              </div>
+
               {/* Deal Health Score */}
               <div className="detail-section">
                 <h3>🏥 Deal Health Score</h3>
@@ -465,23 +479,29 @@ function DealsView() {
                     { key: 'competitive_deal_user',      label: '5a  Competitive deal' },
                     { key: 'price_sensitivity_user',     label: '5b  Price sensitivity flagged' },
                     { key: 'discount_pending_user',      label: '5c  Discount approval pending' },
-                  ].map(({ key, label }) => (
-                    <label key={key} className="signal-row">
-                      <input
-                        type="checkbox"
-                        checked={!!selectedDeal[key]}
-                        onChange={e => handleUpdateSignal(selectedDeal.id, { [key]: e.target.checked })}
-                      />
-                      <span>{label}</span>
-                    </label>
-                  ))}
+                  ].map(({ key, label }) => {
+                    const isOverridden = !!selectedDeal.signal_overrides?.[key];
+                    return (
+                      <label key={key} className="signal-row">
+                        <input
+                          type="checkbox"
+                          checked={!!selectedDeal[key]}
+                          onChange={e => handleUpdateSignal(selectedDeal.id, key, e.target.checked)}
+                        />
+                        <span>{label}</span>
+                        {isOverridden && (
+                          <span className="signal-override-badge" title="Human override recorded">👤</span>
+                        )}
+                      </label>
+                    );
+                  })}
                 </div>
                 {selectedDeal.buyer_event_user_confirmed && (
                   <input
                     className="signal-text-input"
                     placeholder="Describe the buyer event..."
                     value={selectedDeal.buyer_event_description || ''}
-                    onBlur={e => handleUpdateSignal(selectedDeal.id, { buyer_event_description: e.target.value })}
+                    onBlur={e => handleUpdateSignal(selectedDeal.id, 'buyer_event_description', e.target.value)}
                     onChange={e => setSelectedDeal(prev => ({ ...prev, buyer_event_description: e.target.value }))}
                   />
                 )}

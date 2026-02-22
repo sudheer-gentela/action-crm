@@ -451,3 +451,111 @@
 
 .av-log-btn-done:hover:not(:disabled) { background: #059669; }
 .av-log-btn-done:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ============================================================================
+   Snooze additions
+   ============================================================================ */
+
+/* Snoozed card */
+.av-card--snoozed {
+  opacity: 0.75;
+  border-left: 3px solid #f59e0b;
+  background: #fffbeb;
+}
+
+/* Snoozed badge */
+.av-badge--snoozed {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+/* Snoozed count pill in header */
+.av-count--snoozed {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+/* Snooze info block inside snoozed card */
+.av-snooze-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #fef9c3;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.av-snooze-info__reason {
+  color: #78350f;
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.av-snooze-info__meta {
+  color: #92400e;
+  font-weight: 500;
+}
+
+.av-snooze-info__unsnooze {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 3px 10px;
+  background: #fff;
+  border: 1px solid #f59e0b;
+  border-radius: 6px;
+  color: #92400e;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.av-snooze-info__unsnooze:hover {
+  background: #f59e0b;
+  color: #fff;
+}
+
+/* Card footer: status stepper + snooze button side by side */
+.av-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid #f3f4f6;
+  padding-top: 10px;
+}
+
+/* Reposition the existing av-status to work inside av-card-footer */
+.av-card-footer .av-status {
+  border-top: none;
+  padding-top: 0;
+  flex: 1;
+}
+
+/* Snooze icon button on card */
+.av-snooze-btn {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s;
+  opacity: 0;
+}
+
+.av-card:hover .av-snooze-btn {
+  opacity: 1;
+}
+
+.av-snooze-btn:hover {
+  background: #fef3c7;
+  border-color: #f59e0b;
+}

@@ -38,6 +38,10 @@ function mapActionRow(row) {
     completionEvidence:      row.completion_evidence,
     metadata:                row.metadata,
     dueDate:                 row.due_date,
+    // Snooze fields
+    snoozedUntil:            row.snoozed_until,
+    snoozeReason:            row.snooze_reason,
+    snoozeDuration:          row.snooze_duration,
     createdAt:               row.created_at,
     updatedAt:               row.updated_at,
     deal: row.deal_id ? {
@@ -96,7 +100,7 @@ const BASE_QUERY = `
 
 const ORDER_CLAUSE = `
   ORDER BY
-    CASE a.status WHEN 'yet_to_start' THEN 1 WHEN 'in_progress' THEN 2 ELSE 3 END,
+    CASE a.status WHEN 'yet_to_start' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'snoozed' THEN 3 ELSE 4 END,
     CASE a.priority WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
     a.due_date ASC NULLS LAST
 `;
@@ -240,14 +244,23 @@ router.get('/filter-options', async (req, res) => {
 });
 
 // ── POST /generate ────────────────────────────────────────────
-// NOTE: ActionsGenerator.generateAll() currently has no org
-// awareness. Once actionsGenerator.js is updated (next service
-// file to migrate), change this call to:
+// Optional body: { dealId } — if provided, generates for that deal only.
+// Snoozed actions are skipped by ActionsGenerator (it checks status='snoozed').
+// NOTE: ActionsGenerator.generateAll() currently has no org awareness.
+// Once actionsGenerator.js is updated, change to:
 //   ActionsGenerator.generateAll({ orgId: req.orgId, userId: req.user.userId })
 router.post('/generate', async (req, res) => {
   try {
-    console.log('🤖 Manual action generation triggered — user:', req.user.userId, 'org:', req.orgId);
-    const result = await ActionsGenerator.generateAll();
+    const { dealId } = req.body || {};
+    console.log('🤖 Manual action generation triggered — user:', req.user.userId, 'org:', req.orgId, dealId ? `deal: ${dealId}` : '(all deals)');
+
+    let result;
+    if (dealId) {
+      result = await ActionsGenerator.generateForDeal(dealId);
+    } else {
+      result = await ActionsGenerator.generateAll();
+    }
+
     if (result.success) {
       res.json({
         success:   true,
@@ -265,10 +278,13 @@ router.post('/generate', async (req, res) => {
 });
 
 // ── GET /config ───────────────────────────────────────────────
+// NOTE: ActionConfigService.getConfig() currently only takes
+// userId. Once actionConfig.service.js is updated, change to:
+//   ActionConfigService.getConfig(req.user.userId, req.orgId)
 router.get('/config', async (req, res) => {
   try {
     if (!req.user?.userId) return res.status(401).json({ error: { message: 'User not authenticated' } });
-    const config = await ActionConfigService.getConfig(req.user.userId, req.orgId);
+    const config = await ActionConfigService.getConfig(req.user.userId);
     res.json({ config });
   } catch (error) {
     console.error('Get action config error:', error);
@@ -277,9 +293,10 @@ router.get('/config', async (req, res) => {
 });
 
 // ── PUT /config ───────────────────────────────────────────────
+// NOTE: Same as above — update signature after service migration
 router.put('/config', async (req, res) => {
   try {
-    const config = await ActionConfigService.updateConfig(req.user.userId, req.orgId, req.body);
+    const config = await ActionConfigService.updateConfig(req.user.userId, req.body);
     res.json({ config });
   } catch (error) {
     console.error('Update action config error:', error);
@@ -393,6 +410,77 @@ router.patch('/:id/status', async (req, res) => {
   }
 });
 
+// ── PATCH /:id/snooze ─────────────────────────────────────────
+// Body: { reason: string, duration: '1_week'|'2_weeks'|'1_month'|'stage_change'|'indefinite' }
+// duration drives the computed snoozed_until timestamp.
+// 'stage_change' and 'indefinite' set snoozed_until = NULL (no auto-expiry).
+router.patch('/:id/snooze', async (req, res) => {
+  try {
+    const { reason, duration } = req.body;
+
+    const VALID_DURATIONS = ['1_week', '2_weeks', '1_month', 'stage_change', 'indefinite'];
+    if (!duration || !VALID_DURATIONS.includes(duration)) {
+      return res.status(400).json({
+        error: { message: `duration must be one of: ${VALID_DURATIONS.join(', ')}` }
+      });
+    }
+
+    // Compute snoozed_until based on duration
+    let snoozedUntil = null;
+    if (duration === '1_week') {
+      snoozedUntil = new Date(Date.now() + 7  * 24 * 60 * 60 * 1000);
+    } else if (duration === '2_weeks') {
+      snoozedUntil = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    } else if (duration === '1_month') {
+      const d = new Date();
+      d.setMonth(d.getMonth() + 1);
+      snoozedUntil = d;
+    }
+    // 'stage_change' and 'indefinite' → snoozed_until stays NULL
+
+    const result = await db.query(
+      `UPDATE actions
+       SET status          = 'snoozed',
+           snoozed_until   = $1,
+           snooze_reason   = $2,
+           snooze_duration = $3,
+           updated_at      = CURRENT_TIMESTAMP
+       WHERE id = $4 AND org_id = $5 AND user_id = $6
+       RETURNING *`,
+      [snoozedUntil, reason || null, duration, req.params.id, req.orgId, req.user.userId]
+    );
+
+    if (result.rows.length === 0) return res.status(404).json({ error: { message: 'Action not found' } });
+    res.json({ action: mapActionRow(result.rows[0]) });
+  } catch (error) {
+    console.error('Snooze action error:', error);
+    res.status(500).json({ error: { message: 'Failed to snooze action' } });
+  }
+});
+
+// ── PATCH /:id/unsnooze ───────────────────────────────────────
+// Clears snooze fields and returns action to 'yet_to_start'.
+router.patch('/:id/unsnooze', async (req, res) => {
+  try {
+    const result = await db.query(
+      `UPDATE actions
+       SET status          = 'yet_to_start',
+           snoozed_until   = NULL,
+           snooze_reason   = NULL,
+           snooze_duration = NULL,
+           updated_at      = CURRENT_TIMESTAMP
+       WHERE id = $1 AND org_id = $2 AND user_id = $3 AND status = 'snoozed'
+       RETURNING *`,
+      [req.params.id, req.orgId, req.user.userId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: { message: 'Action not found or not snoozed' } });
+    res.json({ action: mapActionRow(result.rows[0]) });
+  } catch (error) {
+    console.error('Unsnooze action error:', error);
+    res.status(500).json({ error: { message: 'Failed to unsnooze action' } });
+  }
+});
+
 // ── PATCH /:id/complete — legacy endpoint (backward compat) ──
 router.patch('/:id/complete', async (req, res) => {
   try {
@@ -462,7 +550,7 @@ router.post('/suggestions/:id/accept', async (req, res) => {
 router.post('/suggestions/:id/dismiss', async (req, res) => {
   try {
     await ActionCompletionDetector.dismissSuggestion(req.params.id, req.user.userId);
-    res.json({ success: true, message: 'Failed to dismiss suggestion' });
+    res.json({ success: true, message: 'Suggestion dismissed' });
   } catch (error) {
     res.status(500).json({ error: { message: 'Failed to dismiss suggestion' } });
   }

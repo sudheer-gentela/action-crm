@@ -85,19 +85,34 @@ export const apiService = {
 
   // Actions
   actions: {
-    getAll: () => api.get('/actions'),
-    getById: (id) => api.get(`/actions/${id}`),
-    create: (data) => api.post('/actions', data),
-    update: (id, data) => api.put(`/actions/${id}`, data),
-    complete: (id) => api.patch(`/actions/${id}`, { completed: true }),
-    delete: (id) => api.delete(`/actions/${id}`),
-    // NEW: Configuration endpoints
-    getConfig: () => api.get('/actions/config'),
+    getAll:     (params = {}) => {
+      const qs = new URLSearchParams(params).toString();
+      return api.get(`/actions${qs ? '?' + qs : ''}`);
+    },
+    getById:    (id)          => api.get(`/actions/${id}`),
+    create:     (data)        => api.post('/actions', data),
+    update:     (id, data)    => api.put(`/actions/${id}`, data),
+    delete:     (id)          => api.delete(`/actions/${id}`),
+
+    // Status
+    updateStatus: (id, status) => api.patch(`/actions/${id}/status`, { status }),
+    complete:     (id)         => api.patch(`/actions/${id}/complete`),
+
+    // Snooze
+    snooze:   (id, reason, duration) => api.patch(`/actions/${id}/snooze`,   { reason, duration }),
+    unsnooze: (id)                   => api.patch(`/actions/${id}/unsnooze`),
+
+    // Generation (optionally scoped to a deal — snoozed actions are skipped by the generator)
+    generate: (dealId = null) => api.post('/actions/generate', dealId ? { dealId } : {}),
+
+    // Config
+    getConfig:    ()     => api.get('/actions/config'),
     updateConfig: (data) => api.put('/actions/config', data),
-    // NEW: Suggestion endpoints
-    getSuggestions: (actionId) => api.get(`/actions/${actionId}/suggestions`),
-    acceptSuggestion: (suggestionId) => api.post(`/actions/suggestions/${suggestionId}/accept`),
-    dismissSuggestion: (suggestionId) => api.post(`/actions/suggestions/${suggestionId}/dismiss`)
+
+    // Suggestions
+    getSuggestions:    (actionId)     => api.get(`/actions/${actionId}/suggestions`),
+    acceptSuggestion:  (suggestionId) => api.post(`/actions/suggestions/${suggestionId}/accept`),
+    dismissSuggestion: (suggestionId) => api.post(`/actions/suggestions/${suggestionId}/dismiss`),
   },
 
   // Transcripts
@@ -117,9 +132,10 @@ export const apiService = {
 
   // Deal Health
   health: {
-    scoreDeal:     (id)           => api.post(`/deals/${id}/score`),
-    scoreAll:      ()             => api.post('/deals/score-all'),
-    updateSignals: (id, signals)  => api.patch(`/deals/${id}/signals`, signals),
+    scoreDeal:      (id)                                            => api.post(`/deals/${id}/score`),
+    scoreAll:       ()                                              => api.post('/deals/score-all'),
+    updateSignals:  (id, signals)                                   => api.patch(`/deals/${id}/signals`, signals),
+    signalOverride: (id, signalKey, value, managerOverride = false) => api.patch(`/deals/${id}/signal-override`, { signalKey, value, managerOverride }),
   },
 
   // Health Config
