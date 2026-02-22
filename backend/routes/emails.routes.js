@@ -62,11 +62,14 @@ router.post('/', async (req, res) => {
     }
 
     // ── 2. Save to DB with org_id ─────────────────────────────
+    // conversation_id: Graph doesn't return it on a 202 Accepted send response.
+    // Stored as NULL here; the next inbox sync will fill it in via
+    // storeEmailToDatabase when Outlook's sent-items folder is processed.
     const result = await db.query(
       `INSERT INTO emails
          (org_id, user_id, deal_id, contact_id, direction, subject, body,
-          to_address, from_address, sent_at)
-       VALUES ($1, $2, $3, $4, 'sent', $5, $6, $7, $8, CURRENT_TIMESTAMP)
+          to_address, from_address, sent_at, conversation_id)
+       VALUES ($1, $2, $3, $4, 'sent', $5, $6, $7, $8, CURRENT_TIMESTAMP, NULL)
        RETURNING *`,
       [orgId, userId, dealId || null, contactId || null,
        subject, body, toAddress, req.user.email]

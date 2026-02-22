@@ -68,14 +68,18 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail) {
   }
 
   // Store email — org_id is first data column
+  // conversation_id is stored both in its own indexed column (for fast cross-
+  // reference queries by GET /emails/outlook?dealId=) and kept in external_data
+  // for backward compatibility with existing code that reads it from there.
   const insertResult = await client.query(
     `INSERT INTO emails (
       org_id, user_id, deal_id, contact_id, direction,
       subject, body,
       to_address, from_address, cc_addresses,
       sent_at, external_id, external_data,
+      conversation_id,
       created_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
     RETURNING id`,
     [
       orgId,
@@ -97,6 +101,7 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail) {
         isRead:         email.isRead,
         categories:     email.categories,
       }),
+      email.conversationId || null,   // $14 — dedicated indexed column
     ]
   );
 

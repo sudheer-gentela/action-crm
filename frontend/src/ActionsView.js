@@ -189,6 +189,126 @@ function EvidencePanel({ action }) {
   );
 }
 
+// ── Resume Button ─────────────────────────────────────────────────────────────
+// Appears only on in_progress actions. Resolves the best deep-link target for
+// the action based on action_type, source_rule, and deal_id, then fires the
+// appropriate navigation event.
+
+async function resolveResumeTarget(action) {
+  const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const API   = process.env.REACT_APP_API_URL || '';
+
+  const type      = (action.actionType  || action.action_type  || '').toLowerCase();
+  const rule      = (action.sourceRule  || action.source_rule  || '').toLowerCase();
+  const nextStep  = (action.nextStep    || action.next_step    || '').toLowerCase();
+  const dealId    = action.deal?.id || action.dealId    || action.deal_id    || null;
+
+  // Helper: fetch with auth
+  const get = async (path) => {
+    const r = await fetch(`${API}${path}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!r.ok) return null;
+    return r.json();
+  };
+
+  // ── Email-type actions → most recent email thread for the deal ──────────
+  if (
+    type === 'unanswered_email' ||
+    rule === 'unanswered_email' ||
+    type === 'email_send' ||
+    type === 'email' ||
+    (type === 'follow_up' && nextStep === 'email') ||
+    nextStep === 'email'
+  ) {
+    return { tab: 'email', dealId, label: 'Open Email Thread', icon: '✉️' };
+  }
+
+  // ── Meeting prep / followup → calendar or deal ──────────────────────────
+  if (type === 'meeting_prep' || rule === 'meeting_prep') {
+    // Try to find the upcoming/most recent meeting
+    if (dealId) {
+      const data = await get(`/meetings?deal_id=${dealId}`).catch(() => null);
+      const meetings = data?.meetings || [];
+      const upcoming = meetings
+        .filter(m => m.status === 'scheduled' && new Date(m.start_time) > new Date())
+        .sort((a, b) => new Date(a.start_time) - new Date(b.start_time))[0];
+      if (upcoming) return { tab: 'calendar', meetingId: upcoming.id, label: 'View Meeting', icon: '📅' };
+    }
+    return { tab: 'deals', dealId, label: 'Open Deal', icon: '💼' };
+  }
+
+  if (type === 'meeting_followup' || rule === 'meeting_followup') {
+    return { tab: 'deals', dealId, label: 'Open Deal', icon: '💼' };
+  }
+
+  // ── Meeting schedule → calendar (scheduling new) ─────────────────────────
+  if (type === 'meeting_schedule' || type === 'meeting') {
+    return { tab: 'calendar', label: 'Schedule Meeting', icon: '📅' };
+  }
+
+  // ── Document / file actions → Files tab ─────────────────────────────────
+  if (
+    type === 'document_prep' || type === 'document' ||
+    rule === 'no_proposal_doc' || rule === 'no_files' ||
+    rule === 'health_5a_competitive' || rule === 'failed_file'
+  ) {
+    return { tab: 'files', dealId, label: 'Open Files', icon: '📁' };
+  }
+
+  // ── Internal / task → Deal detail pane ──────────────────────────────────
+  if (dealId) return { tab: 'deals', dealId, label: 'Open Deal', icon: '💼' };
+
+  // Fallback — go to Actions
+  return { tab: 'actions', label: 'Back to Actions', icon: '⚡' };
+}
+
+function ResumeButton({ action }) {
+  const [loading, setLoading] = useState(false);
+
+  if (action.status !== 'in_progress') return null;
+
+  async function handleResume(e) {
+    e.stopPropagation();
+    setLoading(true);
+    try {
+      const target = await resolveResumeTarget(action);
+
+      // If we're going to email with a deal context, signal App.js
+      if (target.tab === 'email' && target.dealId) {
+        window.dispatchEvent(new CustomEvent('resumeToEmail', {
+          detail: { dealId: target.dealId },
+        }));
+      }
+
+      // If we're going to deals and want a specific deal open
+      if (target.tab === 'deals' && target.dealId) {
+        window.dispatchEvent(new CustomEvent('resumeToDeal', {
+          detail: { dealId: target.dealId },
+        }));
+      }
+
+      // Navigate to the tab
+      window.dispatchEvent(new CustomEvent('navigate', { detail: target.tab }));
+    } catch (err) {
+      console.error('Resume navigation failed:', err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <button
+      className="av-resume-btn"
+      onClick={handleResume}
+      disabled={loading}
+      title="Pick up where you left off"
+    >
+      {loading ? '…' : '↩ Resume'}
+    </button>
+  );
+}
+
 // ── Manual Log Modal ──────────────────────────────────────────────────────────
 
 function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
@@ -390,19 +510,22 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
       {/* Evidence panel — hide on snoozed */}
       {!isSnoozed && <EvidencePanel action={action} />}
 
-      {/* Footer row: status stepper + snooze button */}
+      {/* Footer row: status stepper + resume + snooze button */}
       {!isSnoozed && (
         <div className="av-card-footer">
           <StatusStepper action={action} onStatusChange={onStatusChange} onStart={onStart} />
-          {!isCompleted && (
-            <button
-              className="av-snooze-btn"
-              onClick={() => onSnoozeClick(action)}
-              title="Snooze this action"
-            >
-              😴
-            </button>
-          )}
+          <div className="av-card-footer-actions">
+            <ResumeButton action={action} />
+            {!isCompleted && (
+              <button
+                className="av-snooze-btn"
+                onClick={() => onSnoozeClick(action)}
+                title="Snooze this action"
+              >
+                😴
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>

@@ -6,26 +6,36 @@ import './EmailView.css';
 
 /**
  * CONSOLIDATED Email View
- * Combines Outlook integration, sync status, and email list in one place
- * Replaces both "Email" and "Outlook Emails" tabs
+ * Combines Outlook integration, sync status, and email list in one place.
+ *
+ * Props:
+ *   dealId              — optional; when set (from Resume), filters the email
+ *                         list to show threads for this deal
+ *   onDealFilterApplied — callback to clear pendingEmailDealId in App.js once
+ *                         the filter has been acknowledged / applied
  */
-function EmailView() {
+function EmailView({ dealId = null, onDealFilterApplied }) {
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  
+  // activeDealFilter mirrors the incoming prop but can also be cleared by the user
+  const [activeDealFilter, setActiveDealFilter] = useState(dealId);
+
+  // Sync prop → local state when App.js passes a new dealId (e.g. on resume)
+  useEffect(() => {
+    if (dealId) {
+      setActiveDealFilter(dealId);
+      // Notify App.js that we've picked it up so it can reset pendingEmailDealId
+      if (onDealFilterApplied) onDealFilterApplied();
+    }
+  }, [dealId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Get user from localStorage and ensure userId is a NUMBER
   const getUserId = () => {
     try {
       const user = JSON.parse(localStorage.getItem('user'));
       const id = user?.id;
-      
-      if (id === null || id === undefined) {
-        return null;
-      }
-      
-      // Convert to number if it's a string
-      const userId = typeof id === 'number' ? id : parseInt(id, 10);
-      return userId;
+      if (id === null || id === undefined) return null;
+      return typeof id === 'number' ? id : parseInt(id, 10);
     } catch (error) {
       console.error('Error getting user from localStorage:', error);
       return null;
@@ -36,14 +46,12 @@ function EmailView() {
 
   // Check Outlook connection status
   const checkConnection = useCallback(async () => {
-    // Don't check if no userId
     if (!userId) {
       console.warn('⚠️  No userId available in EmailView');
       setIsConnected(false);
       setIsLoading(false);
       return;
     }
-
     try {
       const status = await outlookAPI.getStatus(userId);
       setIsConnected(status.connected);
@@ -70,7 +78,6 @@ function EmailView() {
     );
   }
 
-  // Show error if no userId
   if (!userId) {
     return (
       <div className="email-view">
@@ -99,8 +106,8 @@ function EmailView() {
         <div>
           <h2>📧 Email Management</h2>
           <p className="email-subtitle">
-            {isConnected 
-              ? 'Your Outlook account is connected and syncing' 
+            {isConnected
+              ? 'Your Outlook account is connected and syncing'
               : 'Connect your Outlook account to get started'}
           </p>
         </div>
@@ -109,12 +116,32 @@ function EmailView() {
       <div className="email-content">
         {isConnected ? (
           <>
+            {/* Resume banner — shown when navigated from a Resume action */}
+            {activeDealFilter && (
+              <div className="email-resume-banner">
+                <span className="email-resume-banner__icon">↩</span>
+                <span className="email-resume-banner__text">
+                  Showing emails for this deal
+                </span>
+                <button
+                  className="email-resume-banner__clear"
+                  onClick={() => setActiveDealFilter(null)}
+                  title="Show all emails"
+                >
+                  ✕ Show all
+                </button>
+              </div>
+            )}
+
             {/* Sync Status & Controls */}
             <SyncStatus userId={userId} />
-            
-            {/* Email List with AI Analysis Button */}
-            <OutlookEmailList userId={userId} />
-            
+
+            {/* Email List — pass dealId filter when active */}
+            <OutlookEmailList
+              userId={userId}
+              dealId={activeDealFilter || undefined}
+            />
+
             {/* Help Text */}
             <div className="email-help-section">
               <h3>💡 How it works</h3>

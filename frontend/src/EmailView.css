@@ -268,3 +268,52 @@
     color: #e2e8f0;
   }
 }
+
+/* ── Resume Banner ──────────────────────────────────────────────────────────
+   Shown when EmailView is navigated to from a Resume action in ActionsView.
+   Amber-toned to match the Resume button, dismissable with "Show all" link.  */
+.email-resume-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: #fffbeb;
+  border: 1.5px solid #f59e0b;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #92400e;
+  animation: banner-in 0.2s ease;
+}
+
+@keyframes banner-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.email-resume-banner__icon {
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.email-resume-banner__text {
+  flex: 1;
+  font-weight: 500;
+}
+
+.email-resume-banner__clear {
+  padding: 3px 10px;
+  border: 1px solid #f59e0b;
+  border-radius: 5px;
+  background: transparent;
+  color: #b45309;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s;
+  flex-shrink: 0;
+}
+
+.email-resume-banner__clear:hover {
+  background: #fef3c7;
+}

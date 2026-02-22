@@ -132,14 +132,19 @@ emailQueue.process(async (job) => {
     const actions = await createActionsFromEmail(userId, orgId, email, analysis);
 
     // ── Update email record with analysis metadata ───────────
+    // Also backfill conversation_id column if it's not set yet
+    // (covers emails stored before the add_conversation_id migration ran,
+    //  and emails stored by the outbound POST which sets conversation_id=NULL).
     if (dbEmailId) {
+      const conversationId = email.conversationId || null;
       await pool.query(
         `UPDATE emails
          SET external_data = jsonb_set(
-           COALESCE(external_data, '{}'::jsonb),
-           '{ai_analysis}',
-           $1::jsonb
-         )
+               COALESCE(external_data, '{}'::jsonb),
+               '{ai_analysis}',
+               $1::jsonb
+             ),
+             conversation_id = COALESCE(conversation_id, $3)
          WHERE id = $2`,
         [
           JSON.stringify({
@@ -151,6 +156,7 @@ emailQueue.process(async (job) => {
             used_database:     usedDatabase,
           }),
           dbEmailId,
+          conversationId,   // $3 — only writes if column is currently NULL
         ]
       );
     }

@@ -349,6 +349,7 @@ function Dashboard({ user, onLogout }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeContextAction, setActiveContextAction] = useState(null); // floating panel
   const [pendingDealId, setPendingDealId]               = useState(null); // tell DealsView which deal to open
+  const [pendingEmailDealId, setPendingEmailDealId]     = useState(null); // tell EmailView which deal to filter to
   const [sidebarOpen, setSidebarOpen]           = useState(false);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
 
@@ -433,6 +434,27 @@ function Dashboard({ user, onLogout }) {
     };
     window.addEventListener('actionContext', handleActionContext);
     return () => window.removeEventListener('actionContext', handleActionContext);
+  }, []);
+
+  // Listen for 'resumeToEmail' from ActionsView ResumeButton
+  // Sets pendingEmailDealId so EmailView can filter to the right deal's thread
+  useEffect(() => {
+    const handleResumeToEmail = (e) => {
+      const { dealId } = e.detail || {};
+      if (dealId) setPendingEmailDealId(dealId);
+    };
+    window.addEventListener('resumeToEmail', handleResumeToEmail);
+    return () => window.removeEventListener('resumeToEmail', handleResumeToEmail);
+  }, []);
+
+  // Listen for 'resumeToDeal' from ActionsView ResumeButton
+  useEffect(() => {
+    const handleResumeToDeal = (e) => {
+      const { dealId } = e.detail || {};
+      if (dealId) setPendingDealId(dealId);
+    };
+    window.addEventListener('resumeToDeal', handleResumeToDeal);
+    return () => window.removeEventListener('resumeToDeal', handleResumeToDeal);
   }, []);
 
   // Mobile title — check all role nav sets
@@ -533,7 +555,12 @@ function Dashboard({ user, onLogout }) {
           )}
           {currentTab === 'accounts'     && <AccountsView />}
           {currentTab === 'contacts'     && <ContactsView />}
-          {currentTab === 'email'        && <EmailView />}
+          {currentTab === 'email'        && (
+            <EmailView
+              dealId={pendingEmailDealId}
+              onDealFilterApplied={() => setPendingEmailDealId(null)}
+            />
+          )}
           {currentTab === 'files'        && <FilesView />}
           {currentTab === 'calendar'     && <CalendarView />}
           {currentTab === 'settings'     && <SettingsView />}

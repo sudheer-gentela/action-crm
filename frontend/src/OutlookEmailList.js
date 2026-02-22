@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import './OutlookEmailList.css';
 import { outlookAPI } from './apiService';
 
-function OutlookEmailList({ userId }) {
+function OutlookEmailList({ userId, dealId }) {
   const [emails, setEmails] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -13,14 +13,31 @@ function OutlookEmailList({ userId }) {
       setIsLoading(true);
       setError(null);
       
-      console.log('📧 Fetching emails for userId:', userId);
-      const result = await outlookAPI.fetchEmails(userId, { top: 20 });
-      
-      console.log('📧 API Result:', result);
-      console.log('📧 Emails array:', result?.data);
-      
-      // ✅ Safe access with fallback
-      const emailsArray = result?.data || [];
+      console.log('📧 Fetching emails for userId:', userId, dealId ? `dealId: ${dealId}` : '');
+
+      let emailsArray = [];
+
+      if (dealId) {
+        // ── Deal-filtered path ─────────────────────────────────────────────
+        // Call the backend directly with ?dealId= so it can cross-reference
+        // the DB emails table (which has deal_id) against the Graph results.
+        // This avoids needing to modify apiService.js.
+        const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+        const API   = process.env.REACT_APP_API_URL || '';
+        const res   = await fetch(
+          `${API}/emails/outlook?top=50&dealId=${encodeURIComponent(dealId)}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        emailsArray = json.data || [];
+        console.log(`📧 Deal-filtered: ${emailsArray.length} emails for dealId=${dealId}`);
+      } else {
+        // ── Normal path — use existing outlookAPI helper ───────────────────
+        const result = await outlookAPI.fetchEmails(userId, { top: 20 });
+        console.log('📧 API Result:', result);
+        emailsArray = result?.data || [];
+      }
       
       // Debug: Log first email structure
       if (emailsArray.length > 0) {
@@ -35,13 +52,13 @@ function OutlookEmailList({ userId }) {
     } finally {
       setIsLoading(false);
     }
-  }, [userId]);
+  }, [userId, dealId]);
 
   useEffect(() => {
     if (userId) {
       fetchEmails();
     }
-  }, [fetchEmails, userId]);
+  }, [fetchEmails, userId, dealId]);
 
   const handleProcessEmail = async (emailId) => {
     try {
@@ -138,8 +155,12 @@ function OutlookEmailList({ userId }) {
     return (
       <div className="outlook-email-list empty">
         <div className="empty-state">
-          <p>📭 No emails found</p>
-          <p className="empty-subtitle">Try syncing your inbox or check your connection</p>
+          <p>{dealId ? '📭 No emails found for this deal' : '📭 No emails found'}</p>
+          <p className="empty-subtitle">
+            {dealId
+              ? 'No Outlook threads matched this deal\'s email history. Try syncing your inbox or view all emails.'
+              : 'Try syncing your inbox or check your connection'}
+          </p>
           <button onClick={fetchEmails} className="btn btn-small btn-primary">
             Refresh
           </button>
@@ -151,7 +172,11 @@ function OutlookEmailList({ userId }) {
   return (
     <div className="outlook-email-list">
       <div className="email-list-header">
-        <h3>Recent Emails ({emails.length})</h3>
+        <h3>
+          {dealId
+            ? `Deal Emails (${emails.length})`
+            : `Recent Emails (${emails.length})`}
+        </h3>
         <button onClick={fetchEmails} className="btn btn-small btn-outline">
           🔄 Refresh
         </button>
