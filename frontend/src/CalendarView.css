@@ -25,20 +25,14 @@
 
 /* ─── Filter Bar ─────────────────────────────────────────────── */
 .filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
   background: white;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
-  padding: 14px 18px;
+  padding: 12px 18px;
   margin-bottom: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.filter-row {
-  display: flex;
-  align-items: center;
-  gap: 20px;
   flex-wrap: wrap;
 }
 
@@ -46,7 +40,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
 }
 
 .filter-group-label {
@@ -56,58 +49,10 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   white-space: nowrap;
-  margin-right: 2px;
 }
 
-/* Divider between groups */
-.filter-group + .filter-group {
-  padding-left: 20px;
-  border-left: 1px solid #e2e8f0;
-}
-
-/* Type / priority toggle buttons */
-.filter-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
-  border-radius: 20px;
-  border: 1.5px solid #e2e8f0;
-  background: #f7fafc;
-  color: #718096;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s;
-  white-space: nowrap;
-}
-
-.filter-toggle:hover {
-  border-color: #cbd5e0;
-  color: #4a5568;
-}
-
-.filter-toggle.active {
-  background: white;
-  border-color: #667eea;
-  color: #4c51bf;
-  box-shadow: 0 1px 4px rgba(102,126,234,0.15);
-}
-
-.filter-toggle.priority-toggle.active {
-  /* colour overridden inline per priority */
-  border-color: currentColor;
-}
-
-.filter-toggle-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-/* Date range tabs */
-.date-range-tabs {
+/* Segmented button group (Show: All / Meetings / Tasks) */
+.filter-segment {
   display: flex;
   background: #f1f5f9;
   border-radius: 8px;
@@ -115,7 +60,7 @@
   gap: 2px;
 }
 
-.date-range-tab {
+.segment-btn {
   padding: 5px 14px;
   border-radius: 6px;
   border: none;
@@ -128,16 +73,158 @@
   white-space: nowrap;
 }
 
-.date-range-tab:hover { color: #1e293b; }
+.segment-btn:hover { color: #1e293b; }
 
-.date-range-tab.active {
+.segment-btn.active {
   background: white;
   color: #1e293b;
   box-shadow: 0 1px 4px rgba(0,0,0,0.1);
 }
 
-.date-range-tab.has-overdue { color: #c2410c; }
-.date-range-tab.has-overdue.active { color: #c2410c; }
+/* Select dropdowns (Due Date) */
+.filter-select-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.filter-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 6px 32px 6px 12px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 8px;
+  background: white url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23718096' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E") no-repeat right 10px center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2d3748;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  min-width: 120px;
+}
+
+.filter-select:hover { border-color: #cbd5e0; }
+.filter-select:focus  { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,0.12); }
+
+.filter-select.select-overdue {
+  border-color: #fca5a5;
+  color: #b91c1c;
+  background-color: #fff5f5;
+}
+
+/* ── Priority multiselect dropdown ── */
+.priority-dropdown {
+  position: relative;
+}
+
+.priority-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 8px;
+  background: white;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2d3748;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  min-width: 100px;
+  white-space: nowrap;
+}
+
+.priority-trigger:hover { border-color: #cbd5e0; }
+
+.priority-trigger.has-selection {
+  border-color: #667eea;
+  background: #f5f7ff;
+  color: #4c51bf;
+}
+
+.trigger-dots {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.trigger-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.trigger-label {
+  flex: 1;
+  text-align: left;
+}
+
+.trigger-chevron {
+  font-size: 11px;
+  color: #a0aec0;
+  transition: transform 0.15s;
+  display: inline-block;
+}
+
+.trigger-chevron.open { transform: rotate(180deg); }
+
+/* Dropdown panel */
+.priority-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 200;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  padding: 6px;
+  min-width: 160px;
+  animation: popoverIn 0.12s ease-out;
+}
+
+.priority-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.1s;
+  user-select: none;
+}
+
+.priority-option:hover { background: #f7fafc; }
+
+.priority-option input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  cursor: pointer;
+  accent-color: #667eea;
+  flex-shrink: 0;
+}
+
+.priority-option-all .option-label { color: #4a5568; font-weight: 700; }
+
+.option-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.option-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.priority-divider {
+  height: 1px;
+  background: #e2e8f0;
+  margin: 4px 4px;
+}
 
 /* ─── Calendar Container ─────────────────────────────────────── */
 .calendar-container {

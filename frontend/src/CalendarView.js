@@ -23,10 +23,12 @@ function toLocalDateKey(dateVal) {
 function todayKey() { return toLocalDateKey(new Date()); }
 
 // ── Filter defaults ────────────────────────────────────────────
-const DEFAULT_SHOW = { meetings: true, tasks: true };
-const DEFAULT_PRIORITY = { critical: true, high: true, medium: true, low: true };
-// Date range: today → +30 days by default (no overdue)
-const DEFAULT_DATE_RANGE = 'upcoming'; // 'upcoming' | 'overdue' | 'all' | 'custom'
+// showType:   'all' | 'meetings' | 'tasks'
+// priorities: Set of selected priorities; empty Set = all selected
+// dateRange:  'upcoming' | 'overdue' | 'all'
+const ALL_PRIORITIES     = ['critical', 'high', 'medium', 'low'];
+const DEFAULT_SHOW_TYPE  = 'all';
+const DEFAULT_DATE_RANGE = 'upcoming';
 
 // Snooze durations
 const SNOOZE_OPTIONS = [
@@ -50,9 +52,13 @@ function CalendarView() {
   const [error, setError]                     = useState('');
 
   // ── Filter state ───────────────────────────────────────────
-  const [showTypes, setShowTypes]       = useState(DEFAULT_SHOW);
-  const [priorities, setPriorities]     = useState(DEFAULT_PRIORITY);
-  const [dateRange, setDateRange]       = useState(DEFAULT_DATE_RANGE);
+  const [showType,       setShowType]       = useState(DEFAULT_SHOW_TYPE);
+  // Empty set = "All" (no filter). Non-empty = show only selected priorities.
+  const [priorities,     setPriorities]     = useState(new Set());
+  const [priorityOpen,   setPriorityOpen]   = useState(false);
+  const [dateRange,      setDateRange]      = useState(DEFAULT_DATE_RANGE);
+
+  const priorityDropRef = useRef(null);
 
   const popoverRef = useRef(null);
   const snoozeRef  = useRef(null);
@@ -70,6 +76,18 @@ function CalendarView() {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [activeAction, snoozeAction]);
+
+  // Close priority dropdown on outside click
+  useEffect(() => {
+    if (!priorityOpen) return;
+    const handler = (e) => {
+      if (priorityDropRef.current && !priorityDropRef.current.contains(e.target)) {
+        setPriorityOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [priorityOpen]);
 
   const loadData = async () => {
     try {
@@ -196,19 +214,16 @@ function CalendarView() {
     return grouped;
   };
 
-  // Returns actions grouped by date key; filters by dateRange and priority
+  // Returns actions filtered by priority and dateRange
   const getFilteredActions = () => {
     const today = todayKey();
-
     return actions.filter(a => {
-      // Priority filter
-      if (!priorities[a.priority]) return false;
-
+      // Empty set = All; non-empty = must be in set
+      if (priorities.size > 0 && !priorities.has(a.priority)) return false;
       const key = toLocalDateKey(a.dueDate);
       if (dateRange === 'upcoming') return key >= today;
       if (dateRange === 'overdue')  return key < today;
-      // 'all': show everything
-      return true;
+      return true; // 'all'
     });
   };
 
@@ -228,8 +243,10 @@ function CalendarView() {
   };
 
   // ── Compute visible sets ───────────────────────────────────
-  const groupedMeetings = showTypes.meetings ? groupMeetingsByDate() : {};
-  const filteredActions = showTypes.tasks    ? getFilteredActions()  : [];
+  const showMeetings    = showType === 'all' || showType === 'meetings';
+  const showTasks       = showType === 'all' || showType === 'tasks';
+  const groupedMeetings = showMeetings ? groupMeetingsByDate() : {};
+  const filteredActions = showTasks    ? getFilteredActions()  : [];
   const groupedActions  = groupActionsByDate(filteredActions);
 
   const allDateKeys = Array.from(
@@ -238,7 +255,23 @@ function CalendarView() {
 
   const upcomingMeetingsCount = Object.values(groupedMeetings).reduce((s,d) => s + d.length, 0);
   const visibleActionsCount   = filteredActions.length;
-  const overdueCount          = actions.filter(a => toLocalDateKey(a.dueDate) < todayKey() && priorities[a.priority]).length;
+  const overdueCount          = actions.filter(a => toLocalDateKey(a.dueDate) < todayKey()).length;
+
+  // ── Priority toggle helper ─────────────────────────────────
+  const togglePriority = (p) => {
+    setPriorities(prev => {
+      const next = new Set(prev);
+      if (next.has(p)) next.delete(p); else next.add(p);
+      return next;
+    });
+  };
+
+  // Label shown on the priority dropdown trigger
+  const priorityLabel = () => {
+    if (priorities.size === 0) return 'All';
+    if (priorities.size === ALL_PRIORITIES.length) return 'All';
+    return [...priorities].map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(', ');
+  };
 
   // ── Pill click handler ─────────────────────────────────────
   const handleActionPillClick = (e, action) => {
@@ -248,10 +281,6 @@ function CalendarView() {
     setSelectedMeeting(null);
     setSnoozeAction(null);
   };
-
-  // ── Toggle helpers ─────────────────────────────────────────
-  const toggleType = (type) => setShowTypes(prev => ({ ...prev, [type]: !prev[type] }));
-  const togglePriority = (p)  => setPriorities(prev => ({ ...prev, [p]: !prev[p] }));
 
   if (loading) {
     return (
@@ -271,9 +300,9 @@ function CalendarView() {
         <div>
           <h1>Calendar</h1>
           <p className="calendar-subtitle">
-            {showTypes.meetings && <>{upcomingMeetingsCount} meeting{upcomingMeetingsCount !== 1 ? 's' : ''}</>}
-            {showTypes.meetings && showTypes.tasks && ' · '}
-            {showTypes.tasks && <>{visibleActionsCount} task{visibleActionsCount !== 1 ? 's' : ''}</>}
+            {showMeetings && <>{upcomingMeetingsCount} meeting{upcomingMeetingsCount !== 1 ? 's' : ''}</>}
+            {showMeetings && showTasks && ' · '}
+            {showTasks && <>{visibleActionsCount} task{visibleActionsCount !== 1 ? 's' : ''}</>}
           </p>
         </div>
         <div className="calendar-actions">
@@ -286,68 +315,99 @@ function CalendarView() {
 
       {/* ── Filter Bar ── */}
       <div className="filter-bar">
-        {/* Row 1: Type + Priority */}
-        <div className="filter-row">
-          {/* Type toggles */}
-          <div className="filter-group">
-            <span className="filter-group-label">Show</span>
-            <button
-              className={`filter-toggle ${showTypes.meetings ? 'active' : ''}`}
-              onClick={() => toggleType('meetings')}
-            >
-              <span className="filter-toggle-dot" style={{ background: '#667eea' }}></span>
-              Meetings
-            </button>
-            <button
-              className={`filter-toggle ${showTypes.tasks ? 'active' : ''}`}
-              onClick={() => toggleType('tasks')}
-            >
-              <span className="filter-toggle-dot" style={{ background: '#d97706' }}></span>
-              Tasks
-            </button>
+        {/* Show filter — segmented button group */}
+        <div className="filter-group">
+          <span className="filter-group-label">Show</span>
+          <div className="filter-segment">
+            {[
+              { key: 'all',      label: 'All' },
+              { key: 'meetings', label: '📅 Meetings' },
+              { key: 'tasks',    label: '✓ Tasks' },
+            ].map(opt => (
+              <button
+                key={opt.key}
+                className={`segment-btn ${showType === opt.key ? 'active' : ''}`}
+                onClick={() => setShowType(opt.key)}
+              >
+                {opt.label}
+              </button>
+            ))}
           </div>
-
-          {/* Priority toggles — only shown when tasks visible */}
-          {showTypes.tasks && (
-            <div className="filter-group">
-              <span className="filter-group-label">Priority</span>
-              {Object.entries(PRIORITY_COLORS).map(([p, c]) => (
-                <button
-                  key={p}
-                  className={`filter-toggle priority-toggle ${priorities[p] ? 'active' : ''}`}
-                  style={priorities[p]
-                    ? { background: c.bg, borderColor: c.border, color: c.text }
-                    : {}}
-                  onClick={() => togglePriority(p)}
-                >
-                  <span className="filter-toggle-dot" style={{ background: c.dot }}></span>
-                  {p.charAt(0).toUpperCase() + p.slice(1)}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
 
-        {/* Row 2: Date range — only shown when tasks visible */}
-        {showTypes.tasks && (
-          <div className="filter-row">
-            <div className="filter-group">
-              <span className="filter-group-label">Tasks</span>
-              <div className="date-range-tabs">
-                {[
-                  { key: 'upcoming', label: 'Upcoming' },
-                  { key: 'overdue',  label: `Overdue${overdueCount > 0 ? ` (${overdueCount})` : ''}` },
-                  { key: 'all',      label: 'All' },
-                ].map(opt => (
-                  <button
-                    key={opt.key}
-                    className={`date-range-tab ${dateRange === opt.key ? 'active' : ''} ${opt.key === 'overdue' && overdueCount > 0 ? 'has-overdue' : ''}`}
-                    onClick={() => setDateRange(opt.key)}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
+        {/* Priority multiselect — only when tasks are visible */}
+        {showTasks && (
+          <div className="filter-group" ref={priorityDropRef}>
+            <span className="filter-group-label">Priority</span>
+            <div className="priority-dropdown">
+              {/* Trigger */}
+              <button
+                className={`priority-trigger ${priorities.size > 0 && priorities.size < ALL_PRIORITIES.length ? 'has-selection' : ''}`}
+                onClick={() => setPriorityOpen(o => !o)}
+              >
+                {/* Coloured dots for selected priorities */}
+                {priorities.size > 0 && priorities.size < ALL_PRIORITIES.length ? (
+                  <span className="trigger-dots">
+                    {ALL_PRIORITIES.filter(p => priorities.has(p)).map(p => (
+                      <span key={p} className="trigger-dot" style={{ background: PRIORITY_COLORS[p].dot }}></span>
+                    ))}
+                  </span>
+                ) : null}
+                <span className="trigger-label">{priorityLabel()}</span>
+                <span className={`trigger-chevron ${priorityOpen ? 'open' : ''}`}>▾</span>
+              </button>
+
+              {/* Dropdown panel */}
+              {priorityOpen && (
+                <div className="priority-panel">
+                  {/* All option */}
+                  <label className="priority-option priority-option-all">
+                    <input
+                      type="checkbox"
+                      checked={priorities.size === 0}
+                      onChange={() => setPriorities(new Set())}
+                    />
+                    <span className="option-label">All</span>
+                  </label>
+                  <div className="priority-divider"></div>
+                  {ALL_PRIORITIES.map(p => {
+                    const c = PRIORITY_COLORS[p];
+                    return (
+                      <label key={p} className="priority-option">
+                        <input
+                          type="checkbox"
+                          checked={priorities.has(p)}
+                          onChange={() => togglePriority(p)}
+                        />
+                        <span className="option-dot" style={{ background: c.dot }}></span>
+                        <span className="option-label" style={{ color: c.text }}>
+                          {p.charAt(0).toUpperCase() + p.slice(1)}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Due Date dropdown — only when tasks are visible */}
+        {showTasks && (
+          <div className="filter-group">
+            <span className="filter-group-label">Due Date</span>
+            <div className="filter-select-wrap">
+              <select
+                className={`filter-select ${dateRange === 'overdue' ? 'select-overdue' : ''}`}
+                value={dateRange}
+                onChange={e => setDateRange(e.target.value)}
+              >
+                <option value="upcoming">Upcoming</option>
+                <option value="overdue">
+                  {overdueCount > 0 ? `Overdue (${overdueCount})` : 'Overdue'}
+                </option>
+                <option value="all">All</option>
+              </select>
             </div>
           </div>
         )}
