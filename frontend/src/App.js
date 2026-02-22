@@ -427,7 +427,7 @@ function Dashboard({ user, onLogout }) {
   // Sets pendingDealId so DealsView knows which deal to auto-open
   useEffect(() => {
     const handleActionContext = (e) => {
-      const { action, tab } = e.detail || {};
+      const { action } = e.detail || {};
       const dealId = action?.dealId || action?.deal?.id || action?.deal_id || null;
       if (dealId) setPendingDealId(dealId);
     };
