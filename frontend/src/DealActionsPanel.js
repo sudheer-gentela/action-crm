@@ -34,12 +34,25 @@ const SNOOZE_DURATION_LABELS = {
   'indefinite':  'indefinitely',
 };
 
+// ── Due date helper ───────────────────────────────────────────
+
+function formatDueDate(iso) {
+  if (!iso) return null;
+  const d        = new Date(iso);
+  const diffDays = Math.ceil((d - new Date()) / (1000 * 60 * 60 * 24));
+  if (diffDays < 0)  return { text: `${Math.abs(diffDays)}d overdue`, overdue: true };
+  if (diffDays === 0) return { text: 'Due today',    today: true };
+  if (diffDays === 1) return { text: 'Due tomorrow' };
+  return { text: `Due ${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` };
+}
+
 // ── Compact action row ────────────────────────────────────────
 
 function DealActionRow({ action, onStatusChange, onSnoozeClick, onUnsnooze, onDelete }) {
   const isSnoozed   = action.status === 'snoozed';
   const isCompleted = action.status === 'completed';
   const pColor      = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
+  const dueInfo     = formatDueDate(action.dueDate);
 
   return (
     <div className={`dap-action-row ${isSnoozed ? 'dap-action-row--snoozed' : ''} ${isCompleted ? 'dap-action-row--completed' : ''}`}>
@@ -68,6 +81,13 @@ function DealActionRow({ action, onStatusChange, onSnoozeClick, onUnsnooze, onDe
             {action.snoozedUntil && (
               <> · until {new Date(action.snoozedUntil).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</>
             )}
+          </div>
+        )}
+
+        {/* Due date */}
+        {dueInfo && !isSnoozed && (
+          <div className={`dap-action-row__due ${dueInfo.overdue ? 'dap-action-row__due--overdue' : dueInfo.today ? 'dap-action-row__due--today' : ''}`}>
+            🗓 {dueInfo.text}
           </div>
         )}
 
@@ -125,6 +145,7 @@ function DealActionRow({ action, onStatusChange, onSnoozeClick, onUnsnooze, onDe
 function AddActionForm({ dealId, onAdded, onCancel }) {
   const [title,    setTitle]    = useState('');
   const [priority, setPriority] = useState('medium');
+  const [dueDate,  setDueDate]  = useState('');
   const [saving,   setSaving]   = useState(false);
   const [error,    setError]    = useState('');
 
@@ -135,7 +156,14 @@ function AddActionForm({ dealId, onAdded, onCancel }) {
     try {
       const data = await apiFetch('/actions', {
         method: 'POST',
-        body: JSON.stringify({ dealId, title: title.trim(), priority, type: 'follow_up', source: 'manual' }),
+        body: JSON.stringify({
+          dealId,
+          title:    title.trim(),
+          priority,
+          dueDate:  dueDate || null,
+          type:     'follow_up',
+          source:   'manual',
+        }),
       });
       onAdded(data.action);
     } catch (err) {
@@ -155,16 +183,25 @@ function AddActionForm({ dealId, onAdded, onCancel }) {
         onKeyDown={e => { if (e.key === 'Enter') handleAdd(); if (e.key === 'Escape') onCancel(); }}
         autoFocus
       />
-      <select
-        className="dap-add-form__priority"
-        value={priority}
-        onChange={e => setPriority(e.target.value)}
-      >
-        <option value="critical">🔴 Critical</option>
-        <option value="high">🟠 High</option>
-        <option value="medium">🟡 Medium</option>
-        <option value="low">🟢 Low</option>
-      </select>
+      <div className="dap-add-form__row">
+        <select
+          className="dap-add-form__priority"
+          value={priority}
+          onChange={e => setPriority(e.target.value)}
+        >
+          <option value="critical">🔴 Critical</option>
+          <option value="high">🟠 High</option>
+          <option value="medium">🟡 Medium</option>
+          <option value="low">🟢 Low</option>
+        </select>
+        <input
+          type="date"
+          className="dap-add-form__date"
+          value={dueDate}
+          onChange={e => setDueDate(e.target.value)}
+          title="Due date (optional)"
+        />
+      </div>
       {error && <div className="dap-add-form__error">{error}</div>}
       <div className="dap-add-form__btns">
         <button className="dap-btn dap-btn--add-cancel" onClick={onCancel} disabled={saving}>Cancel</button>
