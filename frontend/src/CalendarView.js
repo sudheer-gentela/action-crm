@@ -5,18 +5,36 @@ import MeetingForm from './MeetingForm';
 import CalendarSyncStatus from './CalendarSyncStatus';
 import './CalendarView.css';
 
-// Priority colours for action pills
+// Distinct, accessible priority colours (critical ≠ high)
 const PRIORITY_COLORS = {
-  critical: { bg: '#fee2e2', border: '#dc2626', text: '#991b1b', dot: '#dc2626' },
-  high:     { bg: '#fee2e2', border: '#ef4444', text: '#b91c1c', dot: '#ef4444' },
-  medium:   { bg: '#fef3c7', border: '#f59e0b', text: '#92400e', dot: '#f59e0b' },
-  low:      { bg: '#d1fae5', border: '#10b981', text: '#065f46', dot: '#10b981' },
+  critical: { bg: '#fdf2f8', border: '#9d174d', text: '#9d174d', dot: '#9d174d' }, // deep pink/magenta
+  high:     { bg: '#fee2e2', border: '#dc2626', text: '#991b1b', dot: '#dc2626' }, // red
+  medium:   { bg: '#fef3c7', border: '#d97706', text: '#92400e', dot: '#d97706' }, // amber
+  low:      { bg: '#d1fae5', border: '#059669', text: '#065f46', dot: '#059669' }, // green
 };
+
+const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
 
 function toLocalDateKey(dateVal) {
   const d = new Date(dateVal);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+
+function todayKey() { return toLocalDateKey(new Date()); }
+
+// ── Filter defaults ────────────────────────────────────────────
+const DEFAULT_SHOW = { meetings: true, tasks: true };
+const DEFAULT_PRIORITY = { critical: true, high: true, medium: true, low: true };
+// Date range: today → +30 days by default (no overdue)
+const DEFAULT_DATE_RANGE = 'upcoming'; // 'upcoming' | 'overdue' | 'all' | 'custom'
+
+// Snooze durations
+const SNOOZE_OPTIONS = [
+  { label: '1 day',   days: 1 },
+  { label: '3 days',  days: 3 },
+  { label: '1 week',  days: 7 },
+  { label: '2 weeks', days: 14 },
+];
 
 function CalendarView() {
   const [meetings, setMeetings]               = useState([]);
@@ -27,28 +45,36 @@ function CalendarView() {
   const [showForm, setShowForm]               = useState(false);
   const [editingMeeting, setEditingMeeting]   = useState(null);
   const [selectedMeeting, setSelectedMeeting] = useState(null);
-  const [activeAction, setActiveAction]       = useState(null);
+  const [activeAction, setActiveAction]       = useState(null); // { action, rect }
+  const [snoozeAction, setSnoozeAction]       = useState(null); // action being snoozed
   const [error, setError]                     = useState('');
-  const popoverRef                            = useRef(null);
 
+  // ── Filter state ───────────────────────────────────────────
+  const [showTypes, setShowTypes]       = useState(DEFAULT_SHOW);
+  const [priorities, setPriorities]     = useState(DEFAULT_PRIORITY);
+  const [dateRange, setDateRange]       = useState(DEFAULT_DATE_RANGE);
+
+  const popoverRef = useRef(null);
+  const snoozeRef  = useRef(null);
   const userId = JSON.parse(localStorage.getItem('user') || '{}').id;
 
   useEffect(() => { loadData(); }, []);
 
+  // Close action popover on outside click
   useEffect(() => {
-    if (!activeAction) return;
+    if (!activeAction && !snoozeAction) return;
     const handler = (e) => {
       if (popoverRef.current && !popoverRef.current.contains(e.target)) setActiveAction(null);
+      if (snoozeRef.current  && !snoozeRef.current.contains(e.target))  setSnoozeAction(null);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [activeAction]);
+  }, [activeAction, snoozeAction]);
 
   const loadData = async () => {
     try {
       setLoading(true);
       setError('');
-
       const [meetingsRes, dealsRes, contactsRes, actionsRes] = await Promise.all([
         apiService.meetings.getAll().catch(() => ({ data: { meetings: mockData.meetings } })),
         apiService.deals.getAll().catch(() => ({ data: { deals: mockData.deals } })),
@@ -58,7 +84,7 @@ function CalendarView() {
 
       const enrichedData = enrichData({
         accounts: mockData.accounts,
-        deals:    dealsRes.data.deals    || dealsRes.data    || [],
+        deals:    dealsRes.data.deals       || dealsRes.data    || [],
         contacts: contactsRes.data.contacts || contactsRes.data || [],
         emails:   [],
         meetings: meetingsRes.data.meetings || meetingsRes.data || [],
@@ -70,6 +96,7 @@ function CalendarView() {
       setContacts(enrichedData.contacts);
 
       const rawActions = actionsRes.data.actions || actionsRes.data || [];
+      // Store ALL non-completed, non-snoozed actions that have a due date
       setActions(rawActions.filter(a => a.dueDate && a.status !== 'completed' && !a.snoozedUntil));
     } catch (err) {
       console.error('Error loading calendar data:', err);
@@ -83,20 +110,34 @@ function CalendarView() {
     }
   };
 
-  const handleActionStatus = async (actionId, newStatus) => {
+  // ── Action mutations ───────────────────────────────────────
+  const handleActionComplete = async (actionId) => {
     try {
-      if (newStatus === 'completed') {
-        await apiService.actions.complete(actionId);
-      } else {
-        await apiService.actions.updateStatus(actionId, newStatus);
-      }
-      setActions(prev => prev.filter(a => a.id !== actionId));
-      setActiveAction(null);
-    } catch (err) {
-      console.error('Error updating action status:', err);
-    }
+      await apiService.actions.complete(actionId);
+    } catch (err) { console.error(err); }
+    setActions(prev => prev.filter(a => a.id !== actionId));
+    setActiveAction(null);
+    setSnoozeAction(null);
   };
 
+  const handleActionStart = async (actionId) => {
+    try {
+      await apiService.actions.updateStatus(actionId, 'in_progress');
+      setActions(prev => prev.map(a => a.id === actionId ? { ...a, status: 'in_progress' } : a));
+      setActiveAction(prev => prev ? { ...prev, action: { ...prev.action, status: 'in_progress' } } : null);
+    } catch (err) { console.error(err); }
+  };
+
+  const handleSnooze = async (actionId, days) => {
+    try {
+      await apiService.actions.snooze(actionId, 'snoozed from calendar', days + 'd');
+    } catch (err) { console.error(err); }
+    setActions(prev => prev.filter(a => a.id !== actionId));
+    setActiveAction(null);
+    setSnoozeAction(null);
+  };
+
+  // ── Meeting mutations ──────────────────────────────────────
   const handleCreateMeeting = async (meetingData) => {
     try {
       const response = await apiService.meetings.create(meetingData);
@@ -104,9 +145,8 @@ function CalendarView() {
       const deal = deals.find(d => d.id === newMeeting.deal_id);
       setMeetings([...meetings, { ...newMeeting, deal, status: 'scheduled' }]);
       setShowForm(false);
-      setError('');
     } catch (err) {
-      console.error('Error creating meeting:', err);
+      console.error(err);
       setMeetings([...meetings, {
         ...meetingData, id: Date.now(),
         deal: deals.find(d => d.id === meetingData.deal_id),
@@ -122,14 +162,12 @@ function CalendarView() {
       const updated = response.data.meeting || response.data;
       const deal = deals.find(d => d.id === updated.deal_id);
       setMeetings(meetings.map(m => m.id === editingMeeting.id ? { ...updated, deal } : m));
-      setEditingMeeting(null);
-      setError('');
     } catch (err) {
-      console.error('Error updating meeting:', err);
+      console.error(err);
       const deal = deals.find(d => d.id === meetingData.deal_id);
       setMeetings(meetings.map(m => m.id === editingMeeting.id ? { ...m, ...meetingData, deal } : m));
-      setEditingMeeting(null);
     }
+    setEditingMeeting(null);
   };
 
   const handleDeleteMeeting = async (meetingId) => {
@@ -144,40 +182,76 @@ function CalendarView() {
     return contacts.filter(c => meeting.attendees.includes(c.id));
   };
 
+  // ── Date grouping ──────────────────────────────────────────
   const groupMeetingsByDate = () => {
     const grouped = {};
     const now = new Date(); now.setHours(0,0,0,0);
-    meetings.filter(m => new Date(m.start_time) >= now).forEach(m => {
-      const key = toLocalDateKey(m.start_time);
-      (grouped[key] = grouped[key] || []).push(m);
-    });
+    meetings
+      .filter(m => new Date(m.start_time) >= now)
+      .forEach(m => {
+        const key = toLocalDateKey(m.start_time);
+        (grouped[key] = grouped[key] || []).push(m);
+      });
     Object.keys(grouped).forEach(k => grouped[k].sort((a,b) => new Date(a.start_time) - new Date(b.start_time)));
     return grouped;
   };
 
-  const groupActionsByDate = () => {
-    const grouped = {};
-    const todayKey = toLocalDateKey(new Date());
-    actions.forEach(a => {
+  // Returns actions grouped by date key; filters by dateRange and priority
+  const getFilteredActions = () => {
+    const today = todayKey();
+
+    return actions.filter(a => {
+      // Priority filter
+      if (!priorities[a.priority]) return false;
+
       const key = toLocalDateKey(a.dueDate);
-      const displayKey = key < todayKey ? todayKey : key;
-      (grouped[displayKey] = grouped[displayKey] || []).push({ ...a, isOverdue: key < todayKey });
+      if (dateRange === 'upcoming') return key >= today;
+      if (dateRange === 'overdue')  return key < today;
+      // 'all': show everything
+      return true;
+    });
+  };
+
+  const groupActionsByDate = (filteredActions) => {
+    const grouped = {};
+    filteredActions.forEach(a => {
+      const key = toLocalDateKey(a.dueDate);
+      (grouped[key] = grouped[key] || []).push(a);
+    });
+    // Sort within each day by priority then title
+    Object.keys(grouped).forEach(k => {
+      grouped[k].sort((a,b) =>
+        (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9) || a.title.localeCompare(b.title)
+      );
     });
     return grouped;
   };
 
-  const groupedMeetings = groupMeetingsByDate();
-  const groupedActions  = groupActionsByDate();
-  const allDateKeys = Array.from(new Set([...Object.keys(groupedMeetings), ...Object.keys(groupedActions)])).sort();
-  const upcomingMeetingsCount = Object.values(groupedMeetings).reduce((s, d) => s + d.length, 0);
-  const pendingActionsCount   = actions.length;
+  // ── Compute visible sets ───────────────────────────────────
+  const groupedMeetings = showTypes.meetings ? groupMeetingsByDate() : {};
+  const filteredActions = showTypes.tasks    ? getFilteredActions()  : [];
+  const groupedActions  = groupActionsByDate(filteredActions);
 
+  const allDateKeys = Array.from(
+    new Set([...Object.keys(groupedMeetings), ...Object.keys(groupedActions)])
+  ).sort();
+
+  const upcomingMeetingsCount = Object.values(groupedMeetings).reduce((s,d) => s + d.length, 0);
+  const visibleActionsCount   = filteredActions.length;
+  const overdueCount          = actions.filter(a => toLocalDateKey(a.dueDate) < todayKey() && priorities[a.priority]).length;
+
+  // ── Pill click handler ─────────────────────────────────────
   const handleActionPillClick = (e, action) => {
     e.stopPropagation();
     const rect = e.currentTarget.getBoundingClientRect();
     setActiveAction({ action, rect });
     setSelectedMeeting(null);
+    setSnoozeAction(null);
   };
+
+  // ── Toggle helpers ─────────────────────────────────────────
+  const toggleType = (type) => setShowTypes(prev => ({ ...prev, [type]: !prev[type] }));
+  const togglePriority = (p)  => setPriorities(prev => ({ ...prev, [p]: !prev[p] }));
 
   if (loading) {
     return (
@@ -192,14 +266,14 @@ function CalendarView() {
 
   return (
     <div className="calendar-view">
+      {/* Header */}
       <div className="calendar-header">
         <div>
           <h1>Calendar</h1>
           <p className="calendar-subtitle">
-            {upcomingMeetingsCount} upcoming meeting{upcomingMeetingsCount !== 1 ? 's' : ''}
-            {pendingActionsCount > 0 && (
-              <> · <span className="actions-count-badge">{pendingActionsCount} action{pendingActionsCount !== 1 ? 's' : ''} due</span></>
-            )}
+            {showTypes.meetings && <>{upcomingMeetingsCount} meeting{upcomingMeetingsCount !== 1 ? 's' : ''}</>}
+            {showTypes.meetings && showTypes.tasks && ' · '}
+            {showTypes.tasks && <>{visibleActionsCount} task{visibleActionsCount !== 1 ? 's' : ''}</>}
           </p>
         </div>
         <div className="calendar-actions">
@@ -210,36 +284,97 @@ function CalendarView() {
 
       {error && <div className="info-banner">ℹ️ {error}</div>}
 
-      {pendingActionsCount > 0 && (
-        <div className="calendar-legend">
-          <span className="legend-item"><span className="legend-dot legend-dot-meeting"></span>Meeting</span>
-          <span className="legend-item"><span className="legend-dot" style={{background:'#dc2626'}}></span>Critical</span>
-          <span className="legend-item"><span className="legend-dot" style={{background:'#ef4444'}}></span>High</span>
-          <span className="legend-item"><span className="legend-dot" style={{background:'#f59e0b'}}></span>Medium</span>
-          <span className="legend-item"><span className="legend-dot" style={{background:'#10b981'}}></span>Low</span>
-        </div>
-      )}
+      {/* ── Filter Bar ── */}
+      <div className="filter-bar">
+        {/* Row 1: Type + Priority */}
+        <div className="filter-row">
+          {/* Type toggles */}
+          <div className="filter-group">
+            <span className="filter-group-label">Show</span>
+            <button
+              className={`filter-toggle ${showTypes.meetings ? 'active' : ''}`}
+              onClick={() => toggleType('meetings')}
+            >
+              <span className="filter-toggle-dot" style={{ background: '#667eea' }}></span>
+              Meetings
+            </button>
+            <button
+              className={`filter-toggle ${showTypes.tasks ? 'active' : ''}`}
+              onClick={() => toggleType('tasks')}
+            >
+              <span className="filter-toggle-dot" style={{ background: '#d97706' }}></span>
+              Tasks
+            </button>
+          </div>
 
+          {/* Priority toggles — only shown when tasks visible */}
+          {showTypes.tasks && (
+            <div className="filter-group">
+              <span className="filter-group-label">Priority</span>
+              {Object.entries(PRIORITY_COLORS).map(([p, c]) => (
+                <button
+                  key={p}
+                  className={`filter-toggle priority-toggle ${priorities[p] ? 'active' : ''}`}
+                  style={priorities[p]
+                    ? { background: c.bg, borderColor: c.border, color: c.text }
+                    : {}}
+                  onClick={() => togglePriority(p)}
+                >
+                  <span className="filter-toggle-dot" style={{ background: c.dot }}></span>
+                  {p.charAt(0).toUpperCase() + p.slice(1)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Row 2: Date range — only shown when tasks visible */}
+        {showTypes.tasks && (
+          <div className="filter-row">
+            <div className="filter-group">
+              <span className="filter-group-label">Tasks</span>
+              <div className="date-range-tabs">
+                {[
+                  { key: 'upcoming', label: 'Upcoming' },
+                  { key: 'overdue',  label: `Overdue${overdueCount > 0 ? ` (${overdueCount})` : ''}` },
+                  { key: 'all',      label: 'All' },
+                ].map(opt => (
+                  <button
+                    key={opt.key}
+                    className={`date-range-tab ${dateRange === opt.key ? 'active' : ''} ${opt.key === 'overdue' && overdueCount > 0 ? 'has-overdue' : ''}`}
+                    onClick={() => setDateRange(opt.key)}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Calendar Container */}
       <div className={`calendar-container ${selectedMeeting ? 'with-detail' : ''}`}>
         <div className="meetings-timeline">
           {allDateKeys.length === 0 ? (
             <div className="empty-state">
               <div className="empty-state-icon">📅</div>
-              <h3>No meetings scheduled</h3>
-              <p>Schedule your first meeting to get started</p>
-              <button className="btn-primary" onClick={() => setShowForm(true)}>📅 Schedule Meeting</button>
+              <h3>{dateRange === 'overdue' ? 'No overdue tasks' : 'Nothing scheduled'}</h3>
+              <p>{dateRange === 'overdue' ? "You're all caught up!" : 'Schedule a meeting or adjust your filters'}</p>
+              {dateRange !== 'overdue' && (
+                <button className="btn-primary" onClick={() => setShowForm(true)}>📅 Schedule Meeting</button>
+              )}
             </div>
           ) : (
             allDateKeys.map(dateKey => {
               const dayMeetings = groupedMeetings[dateKey] || [];
               const dayActions  = groupedActions[dateKey]  || [];
               const dateObj     = new Date(dateKey + 'T00:00:00');
-              const isToday     = dateKey === toLocalDateKey(new Date());
-              const overdue     = dayActions.filter(a => a.isOverdue);
-              const dueOnDay    = dayActions.filter(a => !a.isOverdue);
+              const isToday     = dateKey === todayKey();
+              const isPast      = dateKey < todayKey();
 
               return (
-                <div key={dateKey} className="date-section">
+                <div key={dateKey} className={`date-section${isPast ? ' past-date' : ''}`}>
                   <div className="date-header">
                     <h2>
                       {isToday && <span className="today-badge">Today</span>}
@@ -250,26 +385,23 @@ function CalendarView() {
                         <span className="meeting-count">{dayMeetings.length} meeting{dayMeetings.length !== 1 ? 's' : ''}</span>
                       )}
                       {dayActions.length > 0 && (
-                        <span className="action-count">{dayActions.length} action{dayActions.length !== 1 ? 's' : ''}</span>
+                        <span className={`action-count${isPast ? ' overdue-count' : ''}`}>
+                          {isPast && '⚠️ '}{dayActions.length} task{dayActions.length !== 1 ? 's' : ''}{isPast ? ' overdue' : ''}
+                        </span>
                       )}
                     </div>
                   </div>
 
-                  {overdue.length > 0 && (
-                    <div className="overdue-strip">
-                      <span className="overdue-label">⚠️ Overdue</span>
-                      <div className="action-pills-row">
-                        {overdue.map(a => <ActionPill key={a.id} action={a} onClick={handleActionPillClick} />)}
-                      </div>
+                  {/* Action pills for this day */}
+                  {dayActions.length > 0 && (
+                    <div className="action-pills-row">
+                      {dayActions.map(a => (
+                        <ActionPill key={a.id} action={a} isOverdue={isPast} onClick={handleActionPillClick} />
+                      ))}
                     </div>
                   )}
 
-                  {dueOnDay.length > 0 && (
-                    <div className="action-pills-row due-today-row">
-                      {dueOnDay.map(a => <ActionPill key={a.id} action={a} onClick={handleActionPillClick} />)}
-                    </div>
-                  )}
-
+                  {/* Meeting cards */}
                   {dayMeetings.length > 0 && (
                     <div className="meetings-list">
                       {dayMeetings.map(meeting => (
@@ -291,6 +423,7 @@ function CalendarView() {
           )}
         </div>
 
+        {/* Meeting Detail Panel */}
         {selectedMeeting && (
           <div className="meeting-detail-panel">
             <div className="panel-header">
@@ -378,16 +511,30 @@ function CalendarView() {
         )}
       </div>
 
+      {/* Action Popover */}
       {activeAction && (
         <ActionPopover
           action={activeAction.action}
           anchorRect={activeAction.rect}
           onClose={() => setActiveAction(null)}
-          onStatusChange={handleActionStatus}
+          onStart={handleActionStart}
+          onComplete={handleActionComplete}
+          onSnoozeRequest={(action) => { setSnoozeAction(action); setActiveAction(null); }}
           ref={popoverRef}
         />
       )}
 
+      {/* Snooze Picker */}
+      {snoozeAction && (
+        <SnoozePicker
+          action={snoozeAction}
+          onSnooze={handleSnooze}
+          onClose={() => setSnoozeAction(null)}
+          ref={snoozeRef}
+        />
+      )}
+
+      {/* Meeting Form */}
       {(showForm || editingMeeting) && (
         <MeetingForm
           meeting={editingMeeting}
@@ -401,26 +548,31 @@ function CalendarView() {
   );
 }
 
-function ActionPill({ action, onClick }) {
+// ── ActionPill ─────────────────────────────────────────────────
+function ActionPill({ action, isOverdue, onClick }) {
   const colors = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
   return (
     <button
-      className={`action-pill priority-${action.priority}${action.isOverdue ? ' overdue' : ''}`}
+      className={`action-pill priority-${action.priority}${isOverdue ? ' overdue' : ''}`}
       onClick={(e) => onClick(e, action)}
-      title={action.title}
+      title={`${action.title}${action.deal?.name ? ' · ' + action.deal.name : ''}`}
     >
       <span className="pill-dot" style={{ background: colors.dot }}></span>
       <span className="pill-label">{action.title}</span>
       {action.deal?.name && <span className="pill-deal">{action.deal.name}</span>}
+      {action.status === 'in_progress' && <span className="pill-in-progress">▶</span>}
     </button>
   );
 }
 
-const ActionPopover = React.forwardRef(function ActionPopover({ action, anchorRect, onClose, onStatusChange }, ref) {
+// ── ActionPopover ──────────────────────────────────────────────
+const ActionPopover = React.forwardRef(function ActionPopover(
+  { action, anchorRect, onClose, onStart, onComplete, onSnoozeRequest }, ref
+) {
   const colors = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
   const style = {
     position: 'fixed',
-    top: anchorRect.bottom + 8,
+    top: Math.min(anchorRect.bottom + 8, window.innerHeight - 280),
     left: Math.min(anchorRect.left, window.innerWidth - 320),
     zIndex: 1000,
   };
@@ -440,22 +592,74 @@ const ActionPopover = React.forwardRef(function ActionPopover({ action, anchorRe
         </div>
         {action.deal?.name && <div className="popover-deal">💼 {action.deal.name}</div>}
         {action.description && <p className="popover-description">{action.description}</p>}
-        {action.isOverdue && (
-          <div className="popover-overdue-tag">
-            ⚠️ Overdue — originally due {new Date(action.dueDate).toLocaleDateString()}
-          </div>
-        )}
+        <div className="popover-due">
+          📅 Due {new Date(action.dueDate).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+        </div>
       </div>
       <div className="popover-actions">
         {action.status !== 'in_progress' && (
-          <button className="popover-btn popover-btn-start" onClick={() => onStatusChange(action.id, 'in_progress')}>▶ Start</button>
+          <button className="popover-btn popover-btn-start" onClick={() => onStart(action.id)}>▶ Start</button>
         )}
-        <button className="popover-btn popover-btn-done" onClick={() => onStatusChange(action.id, 'completed')}>✓ Done</button>
+        <button className="popover-btn popover-btn-snooze" onClick={() => onSnoozeRequest(action)}>
+          💤 Snooze
+        </button>
+        <button className="popover-btn popover-btn-done" onClick={() => onComplete(action.id)}>✓ Done</button>
       </div>
     </div>
   );
 });
 
+// ── SnoozePicker ───────────────────────────────────────────────
+const SnoozePicker = React.forwardRef(function SnoozePicker({ action, onSnooze, onClose }, ref) {
+  const colors = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
+  // Position: centered-ish
+  const style = {
+    position: 'fixed',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    zIndex: 1001,
+  };
+
+  return (
+    <>
+      <div className="popover-overlay" onClick={onClose}></div>
+      <div className="snooze-picker" style={style} ref={ref}>
+        <div className="snooze-header" style={{ borderLeftColor: colors.dot }}>
+          <div>
+            <div className="snooze-title">💤 Snooze task</div>
+            <div className="snooze-subtitle">{action.title}</div>
+          </div>
+          <button className="popover-close" onClick={onClose}>×</button>
+        </div>
+        <div className="snooze-body">
+          <p className="snooze-instruction">Snooze for how long?</p>
+          <div className="snooze-options">
+            {SNOOZE_OPTIONS.map(opt => (
+              <button
+                key={opt.days}
+                className="snooze-option"
+                onClick={() => onSnooze(action.id, opt.days)}
+              >
+                <span className="snooze-option-label">{opt.label}</span>
+                <span className="snooze-option-date">
+                  Until {new Date(Date.now() + opt.days * 86400000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="snooze-footer">
+          <button className="popover-btn popover-btn-done" onClick={() => { /* onComplete handled by parent */ }}>
+            ✓ Mark complete instead
+          </button>
+        </div>
+      </div>
+    </>
+  );
+});
+
+// ── MeetingCard (unchanged) ────────────────────────────────────
 function MeetingCard({ meeting, attendees, onEdit, onDelete, onSelect, isSelected }) {
   const startTime = new Date(meeting.start_time);
   const endTime   = new Date(meeting.end_time);
