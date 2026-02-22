@@ -10,6 +10,7 @@ import FilesView from './FilesView';
 import SettingsView from './SettingsView';
 import SuperAdminView from './SuperAdminView';
 import OrgAdminView from './OrgAdminView';
+import ActionContextPanel from './ActionContextPanel';
 
 // ─────────────────────────────────────────────────────────────
 // ROLE DEFINITIONS
@@ -346,6 +347,7 @@ function RoleSwitcher({ availableRoles, activeRole, onSwitch, collapsed }) {
 // ─────────────────────────────────────────────────────────────
 function Dashboard({ user, onLogout }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [activeContextAction, setActiveContextAction] = useState(null); // floating panel
   const [sidebarOpen, setSidebarOpen]           = useState(false);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
 
@@ -413,6 +415,13 @@ function Dashboard({ user, onLogout }) {
     return () => window.removeEventListener('navigate', handleNavigate);
   }, [isMobile]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Listen for 'startAction' from CalendarView — opens the floating context panel
+  useEffect(() => {
+    const handleStartAction = (e) => setActiveContextAction(e.detail);
+    window.addEventListener('startAction', handleStartAction);
+    return () => window.removeEventListener('startAction', handleStartAction);
+  }, []);
+
   // Mobile title — check all role nav sets
   const allNavItems = Object.values(NAV_ITEMS_BY_ROLE).flat();
   const currentNavItem = allNavItems.find(item => item.id === currentTab);
@@ -476,6 +485,17 @@ function Dashboard({ user, onLogout }) {
 
       {isMobile && sidebarOpen && (
         <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />
+      )}
+
+      {/* Floating Action Context Panel — persists across tab navigation */}
+      {activeContextAction && (
+        <ActionContextPanel
+          action={activeContextAction}
+          onClose={() => setActiveContextAction(null)}
+          onNavigate={(tab) => {
+            handleNavClick(tab);
+          }}
+        />
       )}
 
       <main className={`main-container ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>

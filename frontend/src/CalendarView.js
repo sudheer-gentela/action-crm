@@ -146,6 +146,13 @@ function CalendarView() {
     } catch (err) { console.error(err); }
   };
 
+  // Launch the floating context panel — App.js listens for 'startAction'
+  const handleLaunchContextPanel = (action) => {
+    handleActionStart(action.id);   // mark in_progress
+    setActiveAction(null);          // close the popover
+    window.dispatchEvent(new CustomEvent('startAction', { detail: action }));
+  };
+
   const handleSnooze = async (actionId, days) => {
     try {
       await apiService.actions.snooze(actionId, 'snoozed from calendar', days + 'd');
@@ -577,7 +584,7 @@ function CalendarView() {
           action={activeAction.action}
           anchorRect={activeAction.rect}
           onClose={() => setActiveAction(null)}
-          onStart={handleActionStart}
+          onStart={handleLaunchContextPanel}
           onComplete={handleActionComplete}
           onSnoozeRequest={(action) => { setSnoozeAction(action); setActiveAction(null); }}
           ref={popoverRef}
@@ -658,7 +665,7 @@ const ActionPopover = React.forwardRef(function ActionPopover(
       </div>
       <div className="popover-actions">
         {action.status !== 'in_progress' && (
-          <button className="popover-btn popover-btn-start" onClick={() => onStart(action.id)}>▶ Start</button>
+          <button className="popover-btn popover-btn-start" onClick={() => onStart(action)}>🚀 Start & Open</button>
         )}
         <button className="popover-btn popover-btn-snooze" onClick={() => onSnoozeRequest(action)}>
           💤 Snooze
