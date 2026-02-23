@@ -5,7 +5,6 @@ import DealForm from './DealForm';
 import AIAnalyzeButton from './AIAnalyzeButton';
 import TranscriptUpload from './TranscriptUpload';
 import TranscriptAnalysis from './TranscriptAnalysis';
-import DealHealthScore from './DealHealthScore';
 import DealActionsPanel from './DealActionsPanel';
 import DealTeamPanel from './DealTeamPanel';
 import DealContactsPanel from './DealContactsPanel';
@@ -503,14 +502,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                   </div>
                 </div>
 
-                {/* Health Score breakdown */}
-                <div style={{ marginTop: 16 }}>
-                  <DealHealthScore
-                    deal={selectedDeal}
-                    scoring={scoringDealId === selectedDeal.id}
-                    onScoreDeal={() => handleScoreDeal(selectedDeal.id)}
-                  />
-                </div>
               </div>
 
               {/* ── 2. Actions / Tasks ──────────────────────────── */}
