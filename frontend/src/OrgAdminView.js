@@ -422,20 +422,26 @@ function OAInvitations() {
 // ─────────────────────────────────────────────────────────────
 // OAPlaybooks — full playbook management for org admins
 // ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// OAPlaybooks — wired to deal_stages + stage_guidance
+// ─────────────────────────────────────────────────────────────────
 function OAPlaybooks() {
-  const [playbooks, setPlaybooks]       = useState([]);
-  const [selectedId, setSelectedId]     = useState(null);
-  const [playbook, setPlaybook]         = useState(null);
-  const [loading, setLoading]           = useState(true);
-  const [saving, setSaving]             = useState(false);
-  const [error, setError]               = useState('');
-  const [success, setSuccess]           = useState('');
-  const [showNewForm, setShowNewForm]   = useState(false);
-  const [newPbData, setNewPbData]       = useState({ name: '', type: 'custom', description: '' });
-  const [editingStage, setEditingStage] = useState(null);
-  const [creating, setCreating]         = useState(false);
-  const [deleting, setDeleting]         = useState(false);
-  const [showCompany, setShowCompany]   = useState(false);
+  const [playbooks,    setPlaybooks]    = useState([]);
+  const [selectedId,   setSelectedId]   = useState(null);
+  const [playbook,     setPlaybook]     = useState(null);   // full playbook row incl. stage_guidance
+  const [liveStages,   setLiveStages]   = useState([]);    // from deal_stages table
+  const [guidance,     setGuidance]     = useState({});    // { stage_type: { goal, key_actions, ... } }
+  const [loading,      setLoading]      = useState(true);
+  const [stagesLoading,setStagesLoading]= useState(true);
+  const [saving,       setSaving]       = useState(null);   // null | 'meta' | stage_type string
+  const [error,        setError]        = useState('');
+  const [success,      setSuccess]      = useState('');
+  const [showNewForm,  setShowNewForm]  = useState(false);
+  const [newPbData,    setNewPbData]    = useState({ name: '', type: 'custom', description: '' });
+  const [editingStage, setEditingStage] = useState(null);   // stage_type being expanded
+  const [creating,     setCreating]     = useState(false);
+  const [deleting,     setDeleting]     = useState(false);
+  const [showCompany,  setShowCompany]  = useState(false);
 
   const flash = (type, msg) => {
     if (type === 'success') { setSuccess(msg); setError(''); }
@@ -443,6 +449,31 @@ function OAPlaybooks() {
     setTimeout(() => { setSuccess(''); setError(''); }, 3500);
   };
 
+  const token  = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const API    = process.env.REACT_APP_API_URL || '';
+
+  // ── Fetch live deal stages once on mount ──────────────────────────────────
+  useEffect(() => {
+    (async () => {
+      try {
+        const res  = await fetch(`${API}/deal-stages`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        // Only active non-terminal stages are meaningful for playbook guidance
+        const active = (data.stages || [])
+          .filter(s => s.is_active && !s.is_terminal)
+          .sort((a, b) => a.sort_order - b.sort_order);
+        setLiveStages(active);
+      } catch {
+        // Non-fatal — editor degrades gracefully
+      } finally {
+        setStagesLoading(false);
+      }
+    })();
+  }, [API, token]);
+
+  // ── Load playbook list ────────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
       try {
@@ -456,38 +487,101 @@ function OAPlaybooks() {
     })();
   }, []);
 
+  // ── Load selected playbook + extract stage_guidance ──────────────────────
   useEffect(() => {
     if (!selectedId) return;
     setPlaybook(null);
+    setGuidance({});
     setEditingStage(null);
     setShowCompany(false);
     (async () => {
       try {
         const r   = await apiService.playbooks.getById(selectedId);
         const raw = r.data.playbook;
-        if (raw?.content?.stages && !raw.content.deal_stages) {
-          raw.content.deal_stages = raw.content.stages;
-          delete raw.content.stages;
-        }
         setPlaybook(raw);
+        // stage_guidance is keyed by stage key: { qualified: {...}, demo: {...} }
+        setGuidance(raw.stage_guidance || {});
       } catch { setError('Failed to load playbook content'); }
     })();
   }, [selectedId]);
 
-  const handleSave = async () => {
+  // ── Save playbook name / description / company context ───────────────────
+  const handleSaveMeta = async () => {
     if (!playbook) return;
-    setSaving(true);
+    setSaving('meta');
     try {
       await apiService.playbooks.update(selectedId, {
         name:        playbook.name,
         description: playbook.description,
-        content:     playbook.content
+        content:     playbook.content,   // company context lives here
       });
-      setPlaybooks(prev => prev.map(p => p.id === selectedId ? { ...p, name: playbook.name, description: playbook.description } : p));
+      setPlaybooks(prev => prev.map(p =>
+        p.id === selectedId ? { ...p, name: playbook.name, description: playbook.description } : p
+      ));
       flash('success', 'Playbook saved ✓');
     } catch { flash('error', 'Failed to save playbook'); }
-    finally  { setSaving(false); }
+    finally  { setSaving(null); }
   };
+
+  // ── Save guidance for a single stage_type ────────────────────────────────
+  // Uses the dedicated PUT /api/playbooks/:id/stages/:stageType endpoint
+  // so we never clobber other stages' guidance.
+  const handleSaveStage = async (stageKey, stageType) => {
+    if (!playbook) return;
+    setSaving(stageKey);
+    const stageGuidance = guidance[stageKey] || {};
+    try {
+      const res = await fetch(`${API}/api/playbooks/${selectedId}/stages/${stageKey}`, {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body:    JSON.stringify({
+          goal:                  stageGuidance.goal                || null,
+          next_step:             stageGuidance.next_step           || null,
+          timeline:              stageGuidance.timeline            || null,
+          key_actions:           Array.isArray(stageGuidance.key_actions) ? stageGuidance.key_actions : [],
+          email_response_time:   stageGuidance.email_response_time || null,
+          success_criteria:      Array.isArray(stageGuidance.success_criteria) ? stageGuidance.success_criteria : [],
+          requires_proposal_doc: !!stageGuidance.requires_proposal_doc,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err?.error?.message || res.statusText);
+      }
+      flash('success', `Stage guidance saved ✓`);
+    } catch (e) {
+      flash('error', e.message || 'Failed to save stage guidance');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  // ── Helpers to mutate local guidance state ────────────────────────────────
+  const updateGuidanceField = (stageKey, field, value) => {
+    setGuidance(prev => ({
+      ...prev,
+      [stageKey]: { ...(prev[stageKey] || {}), [field]: value },
+    }));
+  };
+
+  const updateKeyAction = (stageKey, idx, value) => {
+    const actions = [...(guidance[stageKey]?.key_actions || [])];
+    actions[idx]  = value;
+    updateGuidanceField(stageKey, 'key_actions', actions);
+  };
+
+  const addKeyAction = (stageKey) => {
+    const actions = [...(guidance[stageKey]?.key_actions || []), ''];
+    updateGuidanceField(stageKey, 'key_actions', actions);
+  };
+
+  const removeKeyAction = (stageKey, idx) => {
+    const actions = (guidance[stageKey]?.key_actions || []).filter((_, i) => i !== idx);
+    updateGuidanceField(stageKey, 'key_actions', actions);
+  };
+
+  const TYPE_LABELS = { market: '🌍 Market', product: '📦 Product', custom: '⚙️ Custom' };
+  const TYPE_COLORS = { market: '#3182ce', product: '#38a169', custom: '#718096' };
 
   const handleSetDefault = async (id) => {
     try {
@@ -502,7 +596,7 @@ function OAPlaybooks() {
     if (!newPbData.name.trim()) { flash('error', 'Name is required'); return; }
     setCreating(true);
     try {
-      const r  = await apiService.playbooks.create({ ...newPbData, content: { deal_stages: {}, company: {} } });
+      const r  = await apiService.playbooks.create({ ...newPbData, content: { company: {} }, stage_guidance: {} });
       const nb = r.data.playbook;
       setPlaybooks(prev => [...prev, nb]);
       setSelectedId(nb.id);
@@ -528,25 +622,6 @@ function OAPlaybooks() {
     finally     { setDeleting(false); }
   };
 
-  const stagesSource = playbook?.content?.deal_stages || playbook?.content?.stages;
-  const stagesArray  = stagesSource
-    ? Array.isArray(stagesSource)
-      ? stagesSource
-      : Object.entries(stagesSource).map(([id, val]) => ({ id, ...val }))
-    : [];
-
-  const updateStageField = (stageId, fieldKey, value) => {
-    const ds = playbook.content.deal_stages || playbook.content.stages || {};
-    if (Array.isArray(ds)) {
-      setPlaybook({ ...playbook, content: { ...playbook.content, deal_stages: ds.map(s => (s.id === stageId || s.name === stageId) ? { ...s, [fieldKey]: value } : s) } });
-    } else {
-      setPlaybook({ ...playbook, content: { ...playbook.content, deal_stages: { ...ds, [stageId]: { ...ds[stageId], [fieldKey]: value } } } });
-    }
-  };
-
-  const TYPE_LABELS = { market: '🌍 Market', product: '📦 Product', custom: '⚙️ Custom' };
-  const TYPE_COLORS = { market: '#3182ce', product: '#38a169', custom: '#718096' };
-
   if (loading) return <div className="sv-loading">Loading playbooks...</div>;
 
   return (
@@ -554,7 +629,10 @@ function OAPlaybooks() {
       <div className="sv-panel-header">
         <div>
           <h2>📘 Sales Playbooks</h2>
-          <p className="sv-panel-desc">Create and manage playbooks per market or product. Each deal can use a specific playbook; the default is used when none is selected.</p>
+          <p className="sv-panel-desc">
+            Stage names and order come from the Deal Stages tab. Edit guidance here to tell the
+            AI what actions to generate for each stage.
+          </p>
         </div>
         <button className="sv-btn-primary" onClick={() => setShowNewForm(true)}>+ New Playbook</button>
       </div>
@@ -633,7 +711,7 @@ function OAPlaybooks() {
             <div className="sv-loading">Select a playbook to edit</div>
           ) : (
             <>
-              {/* Header row with name/desc editable inline */}
+              {/* Header — name / description / save meta */}
               <div className="oa-pb-editor-header">
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
@@ -653,12 +731,12 @@ function OAPlaybooks() {
                     placeholder="Description (optional)"
                   />
                 </div>
-                <button className="sv-btn-primary" onClick={handleSave} disabled={saving} style={{ flexShrink: 0 }}>
-                  {saving ? '⏳ Saving...' : '💾 Save'}
+                <button className="sv-btn-primary" onClick={handleSaveMeta} disabled={!!saving} style={{ flexShrink: 0 }}>
+                  {saving === 'meta' ? '⏳ Saving...' : '💾 Save'}
                 </button>
               </div>
 
-              {/* Company context — collapsible */}
+              {/* Company context */}
               {playbook.content && (
                 <div className="sv-card" style={{ marginBottom: 16 }}>
                   <div className="oa-pb-section-header" onClick={() => setShowCompany(v => !v)}>
@@ -685,64 +763,124 @@ function OAPlaybooks() {
                 </div>
               )}
 
-              {/* Deal stages */}
+              {/* Stage guidance — driven by live deal_stages */}
               <div className="sv-card">
-                <h4 style={{ marginTop: 0, marginBottom: 16, fontSize: 15 }}>📋 Deal Stages</h4>
-                {stagesArray.length === 0 ? (
-                  <div className="sv-empty">No stages in this playbook yet. Save after adding content.</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                  <h4 style={{ margin: 0, fontSize: 15 }}>📋 Stage Guidance</h4>
+                  <span style={{ fontSize: 12, color: '#9ca3af' }}>
+                    Stages from Deal Stages tab · save each stage individually
+                  </span>
+                </div>
+
+                {stagesLoading ? (
+                  <div className="sv-loading" style={{ padding: 16 }}>Loading stages…</div>
+                ) : liveStages.length === 0 ? (
+                  <div className="sv-empty">
+                    No active pipeline stages found. Add stages in the Deal Stages tab first.
+                  </div>
                 ) : (
                   <div className="sv-stages-list">
-                    {stagesArray.map((stage, i) => {
-                      const stageId = stage.id || stage.name || String(i);
+                    {liveStages.map((stage, i) => {
+                      const stageType = stage.stage_type;  // semantic label for display only
+                      const stageKey  = stage.key;              // guidance lookup key
+                      const g         = guidance[stageKey] || {};
+                      const isOpen    = editingStage === stage.id;
+                      const isSaving  = saving === stageKey;
+                      const hasGuidance = !!(g.goal || (g.key_actions?.length));
+
                       return (
-                        <div key={stageId} className="sv-stage-row">
+                        <div key={stage.id} className="sv-stage-row">
                           <div className="sv-stage-header"
-                            onClick={() => setEditingStage(editingStage === stageId ? null : stageId)}>
+                            onClick={() => setEditingStage(isOpen ? null : stage.id)}>
                             <span className="sv-stage-num">{i + 1}</span>
-                            <span className="sv-stage-name">{stage.name || stageId}</span>
-                            <span className="sv-hint sv-stage-goal">
-                              {stage.goal?.substring(0, 60)}{stage.goal?.length > 60 ? '…' : ''}
+                            <span className="sv-stage-name">{stage.name}</span>
+                            <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 6 }}>
+                              {stageType}
                             </span>
-                            <span className="sv-expand-btn">{editingStage === stageId ? '▲' : '▼'}</span>
+                            {hasGuidance && (
+                              <span style={{ fontSize: 11, color: '#10b981', marginLeft: 8 }}>● guided</span>
+                            )}
+                            <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 8, flex: 1 }}>
+                              {g.goal?.substring(0, 55)}{g.goal?.length > 55 ? '…' : ''}
+                            </span>
+                            <span className="sv-expand-btn">{isOpen ? '▲' : '▼'}</span>
                           </div>
-                          {editingStage === stageId && (
+
+                          {isOpen && (
                             <div className="sv-stage-detail">
-                              {Object.entries(stage)
-                                .filter(([k]) => k !== 'id' && k !== 'key_actions' && k !== 'success_criteria')
-                                .map(([key, val]) => (
-                                  <div key={key} className="sv-field" style={{ marginBottom: 10 }}>
-                                    <label style={{ textTransform: 'capitalize' }}>{key.replace(/_/g, ' ')}</label>
-                                    <input className="sv-input" value={val || ''}
-                                      onChange={e => updateStageField(stageId, key, e.target.value)} />
+                              <div className="sv-field" style={{ marginBottom: 10 }}>
+                                <label>Goal</label>
+                                <input className="sv-input"
+                                  placeholder="What should the rep achieve in this stage?"
+                                  value={g.goal || ''}
+                                  onChange={e => updateGuidanceField(stageKey, 'goal', e.target.value)} />
+                              </div>
+
+                              <div className="sv-field" style={{ marginBottom: 10 }}>
+                                <label>Timeline</label>
+                                <input className="sv-input"
+                                  placeholder="e.g. 1-2 weeks"
+                                  value={g.timeline || ''}
+                                  onChange={e => updateGuidanceField(stageKey, 'timeline', e.target.value)} />
+                              </div>
+
+                              <div className="sv-field" style={{ marginBottom: 10 }}>
+                                <label>Email Response Time</label>
+                                <input className="sv-input"
+                                  placeholder="e.g. within 4 hours"
+                                  value={g.email_response_time || ''}
+                                  onChange={e => updateGuidanceField(stageKey, 'email_response_time', e.target.value)} />
+                              </div>
+
+                              <div className="sv-field" style={{ marginBottom: 10 }}>
+                                <label>Next Step</label>
+                                <input className="sv-input"
+                                  placeholder="e.g. Schedule technical deep-dive"
+                                  value={g.next_step || ''}
+                                  onChange={e => updateGuidanceField(stageKey, 'next_step', e.target.value)} />
+                              </div>
+
+                              <div className="sv-field" style={{ marginBottom: 10 }}>
+                                <label>
+                                  <input type="checkbox"
+                                    checked={!!g.requires_proposal_doc}
+                                    onChange={e => updateGuidanceField(stageKey, 'requires_proposal_doc', e.target.checked)}
+                                    style={{ marginRight: 6 }} />
+                                  Requires proposal document
+                                </label>
+                              </div>
+
+                              {/* Key actions */}
+                              <div className="sv-field" style={{ marginTop: 8 }}>
+                                <label>Key Actions</label>
+                                {(g.key_actions || []).map((action, ai) => (
+                                  <div key={ai} className="oa-pb-action-row">
+                                    <span className="oa-pb-action-num">{ai + 1}</span>
+                                    <textarea
+                                      className="sv-input oa-pb-action-textarea"
+                                      value={action}
+                                      rows={Math.max(1, Math.ceil(action.length / 60))}
+                                      onChange={e => updateKeyAction(stageKey, ai, e.target.value)}
+                                    />
+                                    <button className="oa-pb-action-remove"
+                                      onClick={() => removeKeyAction(stageKey, ai)}
+                                      title="Remove">×</button>
                                   </div>
                                 ))}
-                              {Array.isArray(stage.key_actions) && (
-                                <div className="sv-field" style={{ marginTop: 8 }}>
-                                  <label>Key Actions</label>
-                                  {stage.key_actions.map((action, ai) => (
-                                    <div key={ai} className="oa-pb-action-row">
-                                      <span className="oa-pb-action-num">{ai + 1}</span>
-                                      <textarea
-                                        className="sv-input oa-pb-action-textarea"
-                                        value={action}
-                                        rows={Math.max(1, Math.ceil(action.length / 60))}
-                                        onChange={e => {
-                                          const a = [...stage.key_actions];
-                                          a[ai] = e.target.value;
-                                          updateStageField(stageId, 'key_actions', a);
-                                        }}
-                                      />
-                                      <button className="oa-pb-action-remove"
-                                        onClick={() => updateStageField(stageId, 'key_actions', stage.key_actions.filter((_, idx) => idx !== ai))}
-                                        title="Remove action">×</button>
-                                    </div>
-                                  ))}
-                                  <button className="oa-pb-add-action"
-                                    onClick={() => updateStageField(stageId, 'key_actions', [...stage.key_actions, ''])}>
-                                    + Add action
-                                  </button>
-                                </div>
-                              )}
+                                <button className="oa-pb-add-action" onClick={() => addKeyAction(stageKey)}>
+                                  + Add action
+                                </button>
+                              </div>
+
+                              <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end' }}>
+                                <button
+                                  className="sv-btn-primary"
+                                  onClick={() => handleSaveStage(stageKey, stageType)}
+                                  disabled={!!saving}
+                                >
+                                  {isSaving ? '⏳ Saving…' : `💾 Save ${stage.name} guidance`}
+                                </button>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -758,6 +896,7 @@ function OAPlaybooks() {
     </div>
   );
 }
+
 
 function OASettings() {
   const [org, setOrg]       = useState(null);

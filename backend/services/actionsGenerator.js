@@ -121,13 +121,16 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
     } catch (_) {}
   }
 
-  // Fetch both key_actions and full guidance for this stage_type
+  // Fetch both key_actions and full guidance using the stage KEY (deal.stage),
+  // not stage_type. Each stage gets its own guidance even if multiple stages
+  // share the same stage_type. stageType is still passed in context for the
+  // AI Enhancer prompt label — it is not used for guidance lookup.
   let playbookStageActions  = [];
   let playbookStageGuidance = null;
   try {
     [playbookStageActions, playbookStageGuidance] = await Promise.all([
-      PlaybookService.getStageActions(userId, stageType),
-      PlaybookService.getStageGuidance(userId, stageType),
+      PlaybookService.getStageActions(userId, deal.stage),
+      PlaybookService.getStageGuidance(userId, deal.stage),
     ]);
   } catch (err) {
     console.error('buildContext: PlaybookService error:', err.message);

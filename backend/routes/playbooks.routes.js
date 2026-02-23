@@ -1,24 +1,31 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // playbooks.routes.js  —  Multi-playbook CRUD + per-stage guidance
 // Mount in server.js: app.use('/api/playbooks', require('./routes/playbooks.routes'));
+//
+// KEY CHANGE: stage guidance endpoints now use stage KEY (e.g. "qualified", "demo")
+// as the identifier, not stage_type. The key is validated against deal_stages for
+// the org, so any key the org has defined is valid.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const express = require('express');
 const router  = express.Router();
 const db      = require('../config/database');
-const authenticateToken              = require('../middleware/auth.middleware');
-const { orgContext, requireRole }    = require('../middleware/orgContext.middleware');
-const PlaybookService                = require('../services/playbook.service');
+const authenticateToken           = require('../middleware/auth.middleware');
+const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
+const PlaybookService             = require('../services/playbook.service');
 
 router.use(authenticateToken, orgContext);
 
 const adminOnly = requireRole('owner', 'admin');
 
-// Valid stage_type values — must match deal_stages CHECK constraint
-const VALID_STAGE_TYPES = [
-  'awareness', 'discovery', 'evaluation', 'proposal',
-  'negotiation', 'closing', 'closed_won', 'closed_lost', 'custom',
-];
+// ── Helper: validate a stage key belongs to this org ─────────────────────────
+async function validateStageKey(orgId, stageKey) {
+  const result = await db.query(
+    `SELECT key FROM deal_stages WHERE org_id = $1 AND key = $2`,
+    [orgId, stageKey]
+  );
+  return result.rows.length > 0;
+}
 
 // ── GET / — list all playbooks for org ───────────────────────────────────────
 router.get('/', async (req, res) => {
@@ -110,7 +117,7 @@ router.post('/', adminOnly, async (req, res) => {
   }
 });
 
-// ── PUT /:id — update playbook content + metadata (admin only) ────────────────
+// ── PUT /:id — update playbook metadata + content (admin only) ────────────────
 router.put('/:id', adminOnly, async (req, res) => {
   try {
     const { name, type, description, content, stage_guidance } = req.body;
@@ -130,20 +137,20 @@ router.put('/:id', adminOnly, async (req, res) => {
 
     const result = await db.query(
       `UPDATE playbooks
-       SET name          = COALESCE($1, name),
-           type          = COALESCE($2, type),
-           description   = COALESCE($3, description),
-           content       = COALESCE($4, content),
+       SET name           = COALESCE($1, name),
+           type           = COALESCE($2, type),
+           description    = COALESCE($3, description),
+           content        = COALESCE($4, content),
            stage_guidance = COALESCE($5, stage_guidance),
-           updated_at    = NOW()
+           updated_at     = NOW()
        WHERE id = $6 AND org_id = $7
        RETURNING *`,
       [
-        name?.trim()     || null,
-        type             || null,
-        description      ?? null,
-        content          ? JSON.stringify(content)        : null,
-        stage_guidance   ? JSON.stringify(stage_guidance) : null,
+        name?.trim()   || null,
+        type           || null,
+        description    ?? null,
+        content        ? JSON.stringify(content)        : null,
+        stage_guidance ? JSON.stringify(stage_guidance) : null,
         req.params.id,
         req.orgId,
       ]
@@ -167,9 +174,8 @@ router.get('/:id/stages', async (req, res) => {
       return res.status(404).json({ error: { message: 'Playbook not found' } });
     }
 
-    const raw = result.rows[0].stage_guidance;
+    const raw      = result.rows[0].stage_guidance;
     const guidance = typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
-
     res.json({ stage_guidance: guidance });
   } catch (err) {
     console.error('Get stage guidance error:', err);
@@ -177,14 +183,18 @@ router.get('/:id/stages', async (req, res) => {
   }
 });
 
-// ── PUT /:id/stages/:stageType — upsert guidance for one stage (admin only) ───
-router.put('/:id/stages/:stageType', adminOnly, async (req, res) => {
-  try {
-    const { stageType } = req.params;
+// ── PUT /:id/stages/:stageKey — upsert guidance for one stage (admin only) ────
+// stageKey is the deal_stages.key value (e.g. "qualified", "demo", "security_review").
+// Validated against deal_stages for this org — any key the org has defined is accepted.
 
-    if (!VALID_STAGE_TYPES.includes(stageType)) {
+router.put('/:id/stages/:stageKey', adminOnly, async (req, res) => {
+  try {
+    const { stageKey } = req.params;
+
+    const keyExists = await validateStageKey(req.orgId, stageKey);
+    if (!keyExists) {
       return res.status(400).json({
-        error: { message: `stageType must be one of: ${VALID_STAGE_TYPES.join(', ')}` }
+        error: { message: `Stage key "${stageKey}" does not exist in your organisation's deal stages` },
       });
     }
 
@@ -194,23 +204,23 @@ router.put('/:id/stages/:stageType', adminOnly, async (req, res) => {
     } = req.body;
 
     const guidance = {
-      goal:                 goal                || null,
-      next_step:            next_step           || null,
-      timeline:             timeline            || null,
-      key_actions:          Array.isArray(key_actions) ? key_actions : [],
-      email_response_time:  email_response_time || null,
-      success_criteria:     Array.isArray(success_criteria) ? success_criteria : [],
+      goal:                  goal                || null,
+      next_step:             next_step           || null,
+      timeline:              timeline            || null,
+      key_actions:           Array.isArray(key_actions)       ? key_actions       : [],
+      email_response_time:   email_response_time              || null,
+      success_criteria:      Array.isArray(success_criteria)  ? success_criteria  : [],
       requires_proposal_doc: !!requires_proposal_doc,
     };
 
     const updated = await PlaybookService.upsertStageGuidance(
-      req.params.id, req.orgId, stageType, guidance
+      req.params.id, req.orgId, stageKey, guidance
     );
 
     const raw = updated.stage_guidance;
     res.json({
       stage_guidance: typeof raw === 'string' ? JSON.parse(raw) : (raw || {}),
-      message: `Stage guidance for "${stageType}" saved`,
+      message:        `Stage guidance for "${stageKey}" saved`,
     });
   } catch (err) {
     console.error('Upsert stage guidance error:', err);
@@ -218,25 +228,26 @@ router.put('/:id/stages/:stageType', adminOnly, async (req, res) => {
   }
 });
 
-// ── DELETE /:id/stages/:stageType — remove guidance for one stage (admin only)
-router.delete('/:id/stages/:stageType', adminOnly, async (req, res) => {
+// ── DELETE /:id/stages/:stageKey — remove guidance for one stage (admin only) ─
+
+router.delete('/:id/stages/:stageKey', adminOnly, async (req, res) => {
   try {
-    const { stageType } = req.params;
+    const { stageKey } = req.params;
 
     const result = await db.query(
       `UPDATE playbooks
        SET stage_guidance = stage_guidance - $1,
            updated_at     = NOW()
        WHERE id = $2 AND org_id = $3
-       RETURNING id, stage_guidance`,
-      [stageType, req.params.id, req.orgId]
+       RETURNING id`,
+      [stageKey, req.params.id, req.orgId]
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: { message: 'Playbook not found' } });
     }
 
-    res.json({ message: `Stage guidance for "${stageType}" removed` });
+    res.json({ message: `Stage guidance for "${stageKey}" removed` });
   } catch (err) {
     console.error('Delete stage guidance error:', err);
     res.status(500).json({ error: { message: err.message } });
@@ -283,7 +294,7 @@ router.delete('/:id', adminOnly, async (req, res) => {
     }
     if (existing.rows[0].is_default) {
       return res.status(400).json({
-        error: { message: 'Cannot delete the default playbook. Set another playbook as default first.' }
+        error: { message: 'Cannot delete the default playbook. Set another playbook as default first.' },
       });
     }
 
