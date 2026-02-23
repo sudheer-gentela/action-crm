@@ -24,6 +24,8 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
   const [showTranscriptUpload, setShowTranscriptUpload] = useState(false);
   const [viewingTranscriptId, setViewingTranscriptId] = useState(null);
   const [scoringDealId, setScoringDealId] = useState(null);
+  const [editingField, setEditingField] = useState(null); // { field, value } for inline editing
+  const [savingField, setSavingField] = useState(null);
 
   useEffect(() => {
     fetchDeals();
@@ -160,6 +162,30 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
   };
 
 
+  const handleInlineFieldSave = async (field, value) => {
+    if (!selectedDeal) return;
+    setSavingField(field);
+    try {
+      const payload = { [field]: value };
+      // Coerce types
+      if (field === 'value')       payload.value       = parseFloat(value);
+      if (field === 'probability') payload.probability = parseInt(value);
+      if (field === 'account_id')  payload.account_id  = parseInt(value);
+
+      const response = await apiService.deals.update(selectedDeal.id, payload);
+      const updated = response.data.deal || response.data;
+      const account = accounts.find(a => a.id === (updated.account_id || payload.account_id));
+      const enriched = { ...selectedDeal, ...updated, account };
+      setDeals(prev => prev.map(d => d.id === selectedDeal.id ? enriched : d));
+      setSelectedDeal(enriched);
+    } catch (err) {
+      console.error('Inline save error:', err);
+    } finally {
+      setSavingField(null);
+      setEditingField(null);
+    }
+  };
+
   const getDealMeetings = (dealId) => {
     return meetings.filter(m => m.deal_id === dealId);
   };
@@ -275,82 +301,235 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
             </div>
 
             <div className="panel-content">
-              {/* Deal Overview */}
+
+              {/* ── 1. Deal Information ─────────────────────────── */}
               <div className="detail-section">
-                <h3>Deal Information</h3>
+                <div className="detail-section-header">
+                  <h3>📋 Deal Information</h3>
+                  <div className="detail-section-actions">
+                    <AIAnalyzeButton
+                      type="deal"
+                      id={selectedDeal.id}
+                      onSuccess={() => alert('🎉 AI analysis complete! Check Actions below.')}
+                    />
+                  </div>
+                </div>
+
                 <div className="detail-grid">
+                  {/* Value — inline edit */}
                   <div className="detail-item">
                     <span className="detail-label">Value</span>
-                    <span className="detail-value-large">
-                      ${parseFloat(selectedDeal.value || 0).toLocaleString()}
-                    </span>
+                    {editingField?.field === 'value' ? (
+                      <div className="inline-edit-row">
+                        <input
+                          className="inline-edit-input"
+                          type="number"
+                          autoFocus
+                          value={editingField.value}
+                          onChange={e => setEditingField(f => ({ ...f, value: e.target.value }))}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter')  handleInlineFieldSave('value', editingField.value);
+                            if (e.key === 'Escape') setEditingField(null);
+                          }}
+                        />
+                        <button className="inline-save-btn" disabled={savingField === 'value'} onClick={() => handleInlineFieldSave('value', editingField.value)}>✓</button>
+                        <button className="inline-cancel-btn" onClick={() => setEditingField(null)}>✕</button>
+                      </div>
+                    ) : (
+                      <span
+                        className="detail-value-large detail-value--editable"
+                        onClick={() => setEditingField({ field: 'value', value: selectedDeal.value || '' })}
+                        title="Click to edit"
+                      >
+                        ${parseFloat(selectedDeal.value || 0).toLocaleString()} ✏️
+                      </span>
+                    )}
                   </div>
+
+                  {/* Stage — inline select */}
                   <div className="detail-item">
                     <span className="detail-label">Stage</span>
-                    <span className="detail-badge stage-badge">
-                      {stages.find(s => s.id === selectedDeal.stage)?.label || selectedDeal.stage}
-                    </span>
+                    {editingField?.field === 'stage' ? (
+                      <select
+                        className="inline-edit-select"
+                        autoFocus
+                        value={editingField.value}
+                        onChange={e => handleInlineFieldSave('stage', e.target.value)}
+                        onBlur={() => setEditingField(null)}
+                        onKeyDown={e => e.key === 'Escape' && setEditingField(null)}
+                      >
+                        <option value="qualified">Qualified</option>
+                        <option value="demo">Demo</option>
+                        <option value="proposal">Proposal</option>
+                        <option value="negotiation">Negotiation</option>
+                        <option value="closed_won">Closed Won</option>
+                        <option value="closed_lost">Closed Lost</option>
+                      </select>
+                    ) : (
+                      <span
+                        className="detail-badge stage-badge detail-value--editable"
+                        onClick={() => setEditingField({ field: 'stage', value: selectedDeal.stage })}
+                        title="Click to edit"
+                      >
+                        {stages.find(s => s.id === selectedDeal.stage)?.label || selectedDeal.stage} ✏️
+                      </span>
+                    )}
                   </div>
+
+                  {/* Probability — inline edit */}
                   <div className="detail-item">
                     <span className="detail-label">Probability</span>
-                    <span>{selectedDeal.probability || 50}%</span>
+                    {editingField?.field === 'probability' ? (
+                      <div className="inline-edit-row">
+                        <input
+                          className="inline-edit-input"
+                          type="number"
+                          min="0" max="100"
+                          autoFocus
+                          value={editingField.value}
+                          onChange={e => setEditingField(f => ({ ...f, value: e.target.value }))}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter')  handleInlineFieldSave('probability', editingField.value);
+                            if (e.key === 'Escape') setEditingField(null);
+                          }}
+                        />
+                        <button className="inline-save-btn" disabled={savingField === 'probability'} onClick={() => handleInlineFieldSave('probability', editingField.value)}>✓</button>
+                        <button className="inline-cancel-btn" onClick={() => setEditingField(null)}>✕</button>
+                      </div>
+                    ) : (
+                      <span
+                        className="detail-value--editable"
+                        onClick={() => setEditingField({ field: 'probability', value: selectedDeal.probability || 50 })}
+                        title="Click to edit"
+                      >
+                        {selectedDeal.probability || 50}% ✏️
+                      </span>
+                    )}
                   </div>
+
+                  {/* Health + ReScore */}
                   <div className="detail-item">
                     <span className="detail-label">Health</span>
-                    <span className={`detail-badge health-${selectedDeal.health}`}>
-                      {selectedDeal.health === 'healthy' && '✅ Healthy'}
-                      {selectedDeal.health === 'watch' && '⚠️ Watch'}
-                      {selectedDeal.health === 'risk' && '🔴 At Risk'}
-                    </span>
+                    <div className="health-rescore-row">
+                      <span className={`detail-badge health-${selectedDeal.health}`}>
+                        {selectedDeal.health === 'healthy' && '✅ Healthy'}
+                        {selectedDeal.health === 'watch'   && '⚠️ Watch'}
+                        {selectedDeal.health === 'risk'    && '🔴 At Risk'}
+                      </span>
+                      <button
+                        className="rescore-btn"
+                        onClick={() => handleScoreDeal(selectedDeal.id)}
+                        disabled={scoringDealId === selectedDeal.id}
+                        title="Re-score deal health"
+                      >
+                        {scoringDealId === selectedDeal.id ? '⏳' : '🔄'} ReScore
+                      </button>
+                    </div>
                   </div>
+
+                  {/* Expected Close Date — inline date */}
                   <div className="detail-item">
                     <span className="detail-label">Expected Close</span>
-                    <span>
-                      {selectedDeal.expected_close_date 
-                        ? new Date(selectedDeal.expected_close_date).toLocaleDateString()
-                        : 'Not set'}
-                    </span>
-                  </div>
-                  {selectedDeal.account && (
-                    <div className="detail-item">
-                      <span className="detail-label">Account</span>
+                    {editingField?.field === 'expected_close_date' ? (
+                      <div className="inline-edit-row">
+                        <input
+                          className="inline-edit-input"
+                          type="date"
+                          autoFocus
+                          value={editingField.value}
+                          onChange={e => setEditingField(f => ({ ...f, value: e.target.value }))}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter')  handleInlineFieldSave('expected_close_date', editingField.value);
+                            if (e.key === 'Escape') setEditingField(null);
+                          }}
+                        />
+                        <button className="inline-save-btn" disabled={savingField === 'expected_close_date'} onClick={() => handleInlineFieldSave('expected_close_date', editingField.value)}>✓</button>
+                        <button className="inline-cancel-btn" onClick={() => setEditingField(null)}>✕</button>
+                      </div>
+                    ) : (
                       <span
-                        className="detail-value--link"
-                        onClick={() => window.dispatchEvent(new CustomEvent('navigate', {
-                          detail: { tab: 'accounts', accountId: selectedDeal.account_id }
-                        }))}
-                        title="Open account"
+                        className="detail-value--editable"
+                        onClick={() => setEditingField({ field: 'expected_close_date', value: selectedDeal.expected_close_date ? selectedDeal.expected_close_date.split('T')[0] : '' })}
+                        title="Click to edit"
                       >
-                        {selectedDeal.account.name} →
+                        {selectedDeal.expected_close_date
+                          ? new Date(selectedDeal.expected_close_date).toLocaleDateString()
+                          : 'Not set'} ✏️
                       </span>
-                    </div>
-                  )}
+                    )}
+                  </div>
+
+                  {/* Account — inline select */}
+                  <div className="detail-item">
+                    <span className="detail-label">Account</span>
+                    {editingField?.field === 'account_id' ? (
+                      <select
+                        className="inline-edit-select"
+                        autoFocus
+                        value={editingField.value}
+                        onChange={e => handleInlineFieldSave('account_id', e.target.value)}
+                        onBlur={() => setEditingField(null)}
+                        onKeyDown={e => e.key === 'Escape' && setEditingField(null)}
+                      >
+                        {accounts.map(a => (
+                          <option key={a.id} value={a.id}>{a.name}</option>
+                        ))}
+                      </select>
+                    ) : selectedDeal.account ? (
+                      <div className="account-edit-row">
+                        <span
+                          className="detail-value--link"
+                          onClick={() => window.dispatchEvent(new CustomEvent('navigate', {
+                            detail: { tab: 'accounts', accountId: selectedDeal.account_id }
+                          }))}
+                          title="Open account"
+                        >
+                          {selectedDeal.account.name} →
+                        </span>
+                        <button
+                          className="inline-edit-trigger"
+                          onClick={() => setEditingField({ field: 'account_id', value: selectedDeal.account_id })}
+                          title="Change account"
+                        >✏️</button>
+                      </div>
+                    ) : (
+                      <span
+                        className="detail-value--editable"
+                        onClick={() => setEditingField({ field: 'account_id', value: '' })}
+                      >
+                        Not set ✏️
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Health Score breakdown */}
+                <div style={{ marginTop: 16 }}>
+                  <DealHealthScore
+                    deal={selectedDeal}
+                    scoring={scoringDealId === selectedDeal.id}
+                    onScoreDeal={() => handleScoreDeal(selectedDeal.id)}
+                  />
                 </div>
               </div>
 
-              {/* Deal Team */}
+              {/* ── 2. Actions / Tasks ──────────────────────────── */}
               <div className="detail-section">
-                <h3>👥 Deal Team</h3>
-                <DealTeamPanel deal={selectedDeal} />
+                <h3>⚡ Actions & Tasks</h3>
+                <DealActionsPanel deal={selectedDeal} />
               </div>
 
-              {/* Contacts */}
-              <div className="detail-section">
-                <h3>👤 Contacts</h3>
-                <DealContactsPanel deal={selectedDeal} />
-              </div>
-
-              {/* Email History — full thread view with tagging and contact snooze */}
+              {/* ── 3. Email History ────────────────────────────── */}
               <div className="detail-section">
                 <h3>📧 Email History</h3>
                 <DealEmailHistory deal={selectedDeal} />
               </div>
 
-              {/* Meetings */}
+              {/* ── 4. Meeting History ──────────────────────────── */}
               <div className="detail-section">
-                <h3>Meetings ({getDealMeetings(selectedDeal.id).length})</h3>
+                <h3>📅 Meeting History ({getDealMeetings(selectedDeal.id).length})</h3>
                 {getDealMeetings(selectedDeal.id).length === 0 ? (
-                  <p className="empty-message">No meetings scheduled</p>
+                  <p className="empty-message">No meetings recorded for this deal</p>
                 ) : (
                   <div className="linked-items-list">
                     {getDealMeetings(selectedDeal.id).map(meeting => (
@@ -364,7 +543,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                         <div className="item-info">
                           <div className="item-name">{meeting.title}</div>
                           <div className="item-meta">
-                            {new Date(meeting.start_time).toLocaleString()} • {meeting.status}
+                            {new Date(meeting.start_time).toLocaleString()} · {meeting.status}
                           </div>
                         </div>
                         <span className="item-arrow">→</span>
@@ -374,51 +553,44 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                 )}
               </div>
 
-              {/* Quick Actions */}
+              {/* ── 5. Deal Team ────────────────────────────────── */}
               <div className="detail-section">
-                <h3>Quick Actions</h3>
+                <h3>👥 Deal Team</h3>
+                <DealTeamPanel deal={selectedDeal} />
+              </div>
+
+              {/* ── 6. Contacts ─────────────────────────────────── */}
+              <div className="detail-section">
+                <h3>👤 Contacts</h3>
+                <DealContactsPanel deal={selectedDeal} />
+              </div>
+
+              {/* ── 7. Modify Deal Details ──────────────────────── */}
+              <div className="detail-section">
+                <h3>🛠️ Modify Deal Details</h3>
                 <div className="quick-actions">
-                  <button 
+                  <button
                     className="btn-action"
                     onClick={() => setEditingDeal(selectedDeal)}
                   >
                     ✏️ Edit Deal
                   </button>
-                  <button 
-                    className="btn-action"
+                  <button
+                    className="btn-action btn-action--danger"
                     onClick={() => handleDeleteDeal(selectedDeal.id)}
                   >
                     🗑️ Delete Deal
                   </button>
-                  <AIAnalyzeButton 
-                    type="deal" 
-                    id={selectedDeal.id}
-                    onSuccess={() => {
-                      alert('🎉 AI analysis complete! Check the Actions tab to see intelligent recommendations.');
-                    }}
-                  />
+                  <button
+                    className="btn-action"
+                    onClick={() => setShowTranscriptUpload(true)}
+                  >
+                    📝 Upload Meeting Transcript
+                  </button>
                 </div>
               </div>
 
-              {/* Deal Actions */}
-              <div className="detail-section">
-                <h3>⚡ Actions</h3>
-                <DealActionsPanel deal={selectedDeal} />
-              </div>
-
-              {/* Deal Health Score */}
-              <div className="detail-section">
-                <h3>🏥 Deal Health Score</h3>
-                <DealHealthScore
-                  deal={selectedDeal}
-                  scoring={scoringDealId === selectedDeal.id}
-                  onScoreDeal={() => handleScoreDeal(selectedDeal.id)}
-                />
-              </div>
-
-
-
-              {/* Notes */}
+              {/* ── 8. Notes ────────────────────────────────────── */}
               {selectedDeal.notes && (
                 <div className="detail-section">
                   <h3>📝 Notes</h3>
@@ -426,19 +598,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                 </div>
               )}
 
-              {/* Meeting Intelligence */}
-              <div className="detail-section">
-                <h3>🤖 Meeting Intelligence</h3>
-                <p className="section-description">
-                  Upload a meeting transcript to extract insights, action items and deal health signals automatically.
-                </p>
-                <button
-                  className="btn-action"
-                  onClick={() => setShowTranscriptUpload(true)}
-                >
-                  📝 Upload Meeting Transcript
-                </button>
-              </div>
             </div>
           </div>
         )}

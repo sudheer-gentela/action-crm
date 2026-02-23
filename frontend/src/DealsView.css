@@ -713,6 +713,149 @@
   text-decoration: underline;
 }
 
+/* ── Inline editable values ──────────────────────────────────── */
+.detail-value--editable {
+  cursor: pointer;
+  transition: color 0.15s;
+  font-size: 14px;
+  color: #2d3748;
+}
+
+.detail-value--editable:hover {
+  color: #667eea;
+}
+
+.detail-value--editable .detail-value-large {
+  font-size: 24px !important;
+}
+
+.inline-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.inline-edit-input {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid #667eea;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #111827;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(102,126,234,0.15);
+  max-width: 160px;
+}
+
+.inline-edit-select {
+  padding: 4px 8px;
+  border: 1px solid #667eea;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #111827;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(102,126,234,0.15);
+  background: white;
+  cursor: pointer;
+}
+
+.inline-save-btn {
+  padding: 3px 8px;
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.inline-save-btn:hover:not(:disabled) { background: #5568d3; }
+.inline-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.inline-cancel-btn {
+  padding: 3px 8px;
+  background: #f7fafc;
+  color: #718096;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.inline-cancel-btn:hover { background: #e2e8f0; color: #2d3748; }
+
+.inline-edit-trigger {
+  background: none;
+  border: none;
+  font-size: 12px;
+  cursor: pointer;
+  color: #a0aec0;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s;
+  line-height: 1;
+}
+.inline-edit-trigger:hover { color: #667eea; }
+
+/* ── Detail section header with action buttons ───────────────── */
+.detail-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.detail-section-header h3 {
+  margin: 0;
+}
+
+.detail-section-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ── Health + ReScore row ────────────────────────────────────── */
+.health-rescore-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rescore-btn {
+  padding: 3px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: white;
+  font-size: 11px;
+  font-weight: 600;
+  color: #4a5568;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.rescore-btn:hover:not(:disabled) { border-color: #667eea; color: #667eea; background: #f7faff; }
+.rescore-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Account edit row ────────────────────────────────────────── */
+.account-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Danger action button ────────────────────────────────────── */
+.btn-action--danger {
+  color: #c53030;
+  border-color: #fed7d7;
+}
+.btn-action--danger:hover {
+  background: #fff5f5;
+  border-color: #fc8181;
+}
+
 /* ── Notes at bottom ─────────────────────────────────────────── */
 .deal-notes-text {
   font-size: 14px;
