@@ -69,7 +69,15 @@ export const apiService = {
     getByContact: (contactId) => api.get(`/emails?contact_id=${contactId}`),
     getByDeal: (dealId) => api.get(`/emails?deal_id=${dealId}`),
     create: (data) => api.post('/emails', data),
-    send: (id) => api.post(`/emails/${id}/send`),
+    send: (data) => {
+      // If data is a number/string, it's a legacy call to send an existing email by id
+      if (typeof data === 'number' || typeof data === 'string') {
+        return api.post(`/emails/${data}/send`);
+      }
+      // Otherwise it's a compose+send with { contact_id, deal_id, subject, body, toAddress }
+      return api.post('/emails/compose', data);
+    },
+    compose: (data) => api.post('/emails/compose', data),
     delete: (id) => api.delete(`/emails/${id}`)
   },
 
@@ -176,6 +184,14 @@ export const apiService = {
     create:    (data)     => api.post('/deal-stages', data),
     update:    (id, data) => api.put(`/deal-stages/${id}`, data),
     delete:    (id)       => api.delete(`/deal-stages/${id}`),
+  },
+
+  // Deal Contacts (link contacts to deals with roles)
+  dealContacts: {
+    getByDeal:    (dealId)              => api.get(`/deals/${dealId}/contacts`),
+    add:          (dealId, contactId, role) => api.post(`/deals/${dealId}/contacts`, { contactId, role }),
+    updateRole:   (dealId, contactId, role) => api.put(`/deals/${dealId}/contacts/${contactId}`, { role }),
+    remove:       (dealId, contactId)       => api.delete(`/deals/${dealId}/contacts/${contactId}`),
   },
 
   // AI Prompts

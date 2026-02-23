@@ -7,7 +7,7 @@
  *   Stage-specific rules have been removed from this engine.
  *   All stage-specific intelligence now flows through:
  *     1. context.playbookStageActions  — key_actions from the org's playbook
- *                                        for the deal's current stage_type
+ *                                        for the deal's current stage KEY
  *     2. context.playbookStageGuidance — full guidance object (goal, timeline,
  *                                        requires_proposal_doc, etc.)
  *     3. ActionsAIEnhancer             — uses stage_type as semantic context
@@ -618,7 +618,8 @@ class ActionsRulesEngine {
   // Converts the key_actions array from the stage's playbook guidance into
   // individual actions. This is where stage-specific intelligence now lives.
   // The playbookStageActions array is populated in actionsGenerator.buildContext()
-  // by calling PlaybookService.getStageActions(userId, deal.stage_type).
+  // by calling PlaybookService.getStageActions(userId, deal.stage) — keyed by
+  // stage KEY (e.g. "demo"), not stage_type.
   // ─────────────────────────────────────────────────────────────────────────
 
   static _playbookRules(ctx, actions) {
@@ -633,7 +634,9 @@ class ActionsRulesEngine {
 
       actions.push(this._action({
         title:            actionText,
-        description:      `Playbook action for ${playbookStageGuidance?.goal || deal.stage_type || deal.stage} stage`,
+        description:      playbookStageGuidance?.goal
+                            ? `Playbook action — stage goal: ${playbookStageGuidance.goal}`
+                            : `Playbook action for ${deal.stage_type || deal.stage} stage`,
         action_type:      actionType,
         priority,
         due_days:         dueDays,

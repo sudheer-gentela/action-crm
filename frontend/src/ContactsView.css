@@ -624,3 +624,253 @@
 .contact-detail-panel::-webkit-scrollbar-thumb:hover {
   background: #a0aec0;
 }
+
+/* ── Clickable linked items ──────────────────────────────────── */
+
+.linked-item--clickable {
+  cursor: pointer;
+}
+
+.linked-item--clickable:hover {
+  background: #edf2f7;
+}
+
+.item-arrow {
+  color: #a0aec0;
+  font-size: 14px;
+  flex-shrink: 0;
+  transition: color 0.2s;
+}
+
+.linked-item--clickable:hover .item-arrow {
+  color: #667eea;
+}
+
+/* ── Clickable company / detail link ──────────────────────────── */
+
+.detail-value--link {
+  color: #667eea;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.detail-value--link:hover {
+  color: #5a67d8;
+  text-decoration: underline;
+}
+
+/* ── Meeting status badges ────────────────────────────────────── */
+
+.meeting-status {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.meeting-status--completed {
+  color: #38a169;
+}
+
+.meeting-status--scheduled {
+  color: #3182ce;
+}
+
+.meeting-status--cancelled {
+  color: #e53e3e;
+}
+
+.meeting-status--no_show {
+  color: #d69e2e;
+}
+
+/* ── Show more hint ───────────────────────────────────────────── */
+
+.show-more-hint {
+  text-align: center;
+  font-size: 13px;
+  color: #a0aec0;
+  padding: 8px 0 4px;
+  font-style: italic;
+}
+
+/* ── Contact notes ────────────────────────────────────────────── */
+
+.contact-notes-text {
+  font-size: 14px;
+  color: #4a5568;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+/* ── Deal Suggestion Banner ───────────────────────────────────── */
+
+.deal-suggestion-banner {
+  margin-top: 16px;
+  background: #fffff0;
+  border: 1px solid #f6e05e;
+  border-radius: 10px;
+  padding: 14px 16px;
+  animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.deal-suggestion-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.deal-suggestion-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.deal-suggestion-text {
+  font-size: 13px;
+  color: #744210;
+  line-height: 1.4;
+  font-weight: 500;
+}
+
+.deal-suggestion-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.deal-suggestion-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: white;
+  border: 1px solid #fefcbf;
+  border-radius: 6px;
+}
+
+.deal-suggestion-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.deal-suggestion-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #2d3748;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.deal-suggestion-item-meta {
+  font-size: 12px;
+  color: #718096;
+}
+
+.btn-tag-deal {
+  padding: 4px 12px;
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.btn-tag-deal:hover {
+  background: #5a67d8;
+}
+
+.btn-tag-deal:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Snooze / Dismiss controls ────────────────────────────────── */
+
+.deal-suggestion-dismiss {
+  border-top: 1px solid #fefcbf;
+  padding-top: 8px;
+}
+
+.btn-dismiss-link {
+  background: none;
+  border: none;
+  color: #a0aec0;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 0;
+  transition: color 0.2s;
+}
+
+.btn-dismiss-link:hover {
+  color: #718096;
+}
+
+.snooze-options {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.snooze-label {
+  font-size: 12px;
+  color: #718096;
+  margin-right: 2px;
+}
+
+.btn-snooze {
+  padding: 3px 10px;
+  background: #edf2f7;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #4a5568;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-snooze:hover {
+  background: #e2e8f0;
+  border-color: #cbd5e0;
+}
+
+.btn-snooze--cancel {
+  background: transparent;
+  border-color: transparent;
+  color: #a0aec0;
+}
+
+.btn-snooze--cancel:hover {
+  color: #718096;
+  background: transparent;
+}
+
+/* ── Danger action button ─────────────────────────────────────── */
+
+.btn-action--danger {
+  color: #e53e3e;
+}
+
+.btn-action--danger:hover {
+  background: #fff5f5;
+  border-color: #fc8181;
+}
