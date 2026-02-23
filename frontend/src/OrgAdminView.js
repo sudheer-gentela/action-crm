@@ -1096,7 +1096,7 @@ function OADealStages() {
   const API   = process.env.REACT_APP_API_URL || '';
 
   const apiFetch = useCallback(async (path, options = {}) => {
-    const res = await fetch(`${API}/api/deal-stages${path}`, {
+    const res = await fetch(`${API}/deal-stages${path}`, {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       ...options,
     });
