@@ -352,6 +352,7 @@ function Dashboard({ user, onLogout }) {
   const [pendingEmailDealId, setPendingEmailDealId]     = useState(null); // tell EmailView which deal to filter to
   const [pendingContactId, setPendingContactId]         = useState(null); // tell ContactsView which contact to open
   const [pendingMeetingId, setPendingMeetingId]         = useState(null); // tell CalendarView which meeting to open
+  const [pendingAccountId, setPendingAccountId]         = useState(null); // tell AccountsView which account to open
   const [sidebarOpen, setSidebarOpen]           = useState(false);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
 
@@ -438,6 +439,7 @@ function Dashboard({ user, onLogout }) {
       // Contact and meeting deep-links from deal panel
       if (detail?.contactId) setPendingContactId(detail.contactId);
       if (detail?.meetingId) setPendingMeetingId(detail.meetingId);
+      if (detail?.accountId) setPendingAccountId(detail.accountId);
 
       handleNavClick(detail?.tab || detail);
     };
@@ -564,7 +566,12 @@ function Dashboard({ user, onLogout }) {
               onDealOpened={() => setPendingDealId(null)}
             />
           )}
-          {currentTab === 'accounts'     && <AccountsView />}
+          {currentTab === 'accounts'     && (
+            <AccountsView
+              openAccountId={pendingAccountId}
+              onAccountOpened={() => setPendingAccountId(null)}
+            />
+          )}
           {currentTab === 'contacts'     && (
             <ContactsView
               openContactId={pendingContactId}

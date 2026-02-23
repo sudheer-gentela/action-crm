@@ -4,7 +4,7 @@ import { mockData, enrichData } from './mockData';
 import AccountForm from './AccountForm';
 import './AccountsView.css';
 
-function AccountsView() {
+function AccountsView({ openAccountId = null, onAccountOpened = null }) {
   const [accounts, setAccounts] = useState([]);
   const [deals, setDeals] = useState([]);
   const [contacts, setContacts] = useState([]);
@@ -17,6 +17,17 @@ function AccountsView() {
   useEffect(() => {
     loadAccounts();
   }, []);
+
+  // When App.js passes an openAccountId (e.g. from clicking account name in a deal),
+  // find that account in state and open its detail panel automatically
+  useEffect(() => {
+    if (!openAccountId || accounts.length === 0) return;
+    const target = accounts.find(a => a.id === openAccountId || a.id === parseInt(openAccountId));
+    if (target) {
+      setSelectedAccount(target);
+      if (onAccountOpened) onAccountOpened();
+    }
+  }, [openAccountId, accounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadAccounts = async () => {
     try {

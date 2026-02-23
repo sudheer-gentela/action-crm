@@ -677,6 +677,19 @@
   transform: translateX(3px);
 }
 
+/* ── Clickable detail values (e.g. account name in deal panel) ── */
+.detail-value--link {
+  color: #667eea;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.detail-value--link:hover {
+  color: #5568d3;
+  text-decoration: underline;
+}
+
 /* ── Notes at bottom ─────────────────────────────────────────── */
 .deal-notes-text {
   font-size: 14px;

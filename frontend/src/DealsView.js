@@ -322,7 +322,15 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                   {selectedDeal.account && (
                     <div className="detail-item">
                       <span className="detail-label">Account</span>
-                      <span>{selectedDeal.account.name}</span>
+                      <span
+                        className="detail-value--link"
+                        onClick={() => window.dispatchEvent(new CustomEvent('navigate', {
+                          detail: { tab: 'accounts', accountId: selectedDeal.account_id }
+                        }))}
+                        title="Open account"
+                      >
+                        {selectedDeal.account.name} →
+                      </span>
                     </div>
                   )}
                 </div>
