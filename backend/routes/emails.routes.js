@@ -62,14 +62,11 @@ router.post('/', async (req, res) => {
     }
 
     // ── 2. Save to DB with org_id ─────────────────────────────
-    // conversation_id: Graph doesn't return it on a 202 Accepted send response.
-    // Stored as NULL here; the next inbox sync will fill it in via
-    // storeEmailToDatabase when Outlook's sent-items folder is processed.
     const result = await db.query(
       `INSERT INTO emails
          (org_id, user_id, deal_id, contact_id, direction, subject, body,
-          to_address, from_address, sent_at, conversation_id)
-       VALUES ($1, $2, $3, $4, 'sent', $5, $6, $7, $8, CURRENT_TIMESTAMP, NULL)
+          to_address, from_address, sent_at)
+       VALUES ($1, $2, $3, $4, 'sent', $5, $6, $7, $8, CURRENT_TIMESTAMP)
        RETURNING *`,
       [orgId, userId, dealId || null, contactId || null,
        subject, body, toAddress, req.user.email]
@@ -169,6 +166,259 @@ router.post('/process', async (req, res) => {
       return res.status(403).json({ success: false, error: 'Outlook not connected', code: 'NOT_CONNECTED' });
     }
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ── GET /deal/:dealId — emails for a deal including team members' emails ────────
+// Fetches from DB only (not Outlook). Includes emails from all deal team members.
+// Returns threads grouped by conversation_id, ordered newest first.
+router.get('/deal/:dealId', async (req, res) => {
+  try {
+    const { dealId } = req.params;
+
+    // Verify deal belongs to this org
+    const dealCheck = await db.query(
+      `SELECT id FROM deals WHERE id = $1 AND org_id = $2`,
+      [dealId, req.orgId]
+    );
+    if (dealCheck.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Deal not found' } });
+    }
+
+    // Fetch emails for this deal — includes the deal owner's AND all team members' emails
+    const result = await db.query(
+      `SELECT
+         e.id,
+         e.direction,
+         e.subject,
+         e.body,
+         e.from_address,
+         e.to_address,
+         e.sent_at,
+         e.conversation_id,
+         e.tagged_by,
+         e.tag_source,
+         e.contact_id,
+         e.user_id,
+         c.first_name  AS contact_first,
+         c.last_name   AS contact_last,
+         c.email       AS contact_email,
+         u.first_name  AS sender_first,
+         u.last_name   AS sender_last
+       FROM emails e
+       LEFT JOIN contacts c ON c.id = e.contact_id
+       LEFT JOIN users    u ON u.id = e.user_id
+       WHERE e.deal_id = $1
+         AND e.org_id  = $2
+         AND (
+           -- Deal owner's emails
+           e.user_id = $3
+           OR
+           -- Any deal team member's emails
+           e.user_id IN (
+             SELECT user_id FROM deal_team_members
+             WHERE deal_id = $1 AND org_id = $2
+           )
+         )
+       ORDER BY e.sent_at DESC
+       LIMIT 100`,
+      [dealId, req.orgId, req.user.userId]
+    );
+
+    const emails = result.rows.map(e => ({
+      id:             e.id,
+      direction:      e.direction,
+      subject:        e.subject,
+      bodyPreview:    (e.body || '').replace(/<[^>]+>/g, '').slice(0, 200),
+      body:           e.body,
+      fromAddress:    e.from_address,
+      toAddress:      e.to_address,
+      sentAt:         e.sent_at,
+      conversationId: e.conversation_id,
+      tagSource:      e.tag_source,
+      contact: e.contact_id ? {
+        id:        e.contact_id,
+        name:      `${e.contact_first || ''} ${e.contact_last || ''}`.trim(),
+        email:     e.contact_email,
+      } : null,
+      sender: {
+        name: `${e.sender_first || ''} ${e.sender_last || ''}`.trim() || e.from_address,
+      },
+    }));
+
+    res.json({ emails });
+  } catch (err) {
+    console.error('Get deal emails error:', err);
+    res.status(500).json({ error: { message: 'Failed to fetch deal emails' } });
+  }
+});
+
+// ── GET /untagged — emails with a contact but no deal, not from snoozed contacts
+// Used to power the "Tag to deal" flow in the deal panel.
+// Optional ?accountId=X to scope to contacts from a specific account.
+router.get('/untagged', async (req, res) => {
+  try {
+    const { accountId } = req.query;
+
+    let query = `
+      SELECT
+        e.id,
+        e.direction,
+        e.subject,
+        e.body,
+        e.from_address,
+        e.to_address,
+        e.sent_at,
+        e.conversation_id,
+        c.id          AS contact_id,
+        c.first_name  AS contact_first,
+        c.last_name   AS contact_last,
+        c.email       AS contact_email,
+        c.account_id,
+        acc.name      AS account_name
+      FROM emails e
+      JOIN contacts c   ON c.id  = e.contact_id AND c.org_id = e.org_id
+      LEFT JOIN accounts acc ON acc.id = c.account_id
+      WHERE e.org_id     = $1
+        AND e.user_id    = $2
+        AND e.deal_id    IS NULL
+        AND e.contact_id IS NOT NULL
+        AND (c.email_snoozed IS NULL OR c.email_snoozed = false)
+    `;
+
+    const params = [req.orgId, req.user.userId];
+
+    if (accountId) {
+      query += ` AND c.account_id = $${params.length + 1}`;
+      params.push(accountId);
+    }
+
+    query += ` ORDER BY e.sent_at DESC LIMIT 50`;
+
+    const result = await db.query(query, params);
+
+    res.json({
+      emails: result.rows.map(e => ({
+        id:          e.id,
+        direction:   e.direction,
+        subject:     e.subject,
+        bodyPreview: (e.body || '').replace(/<[^>]+>/g, '').slice(0, 150),
+        fromAddress: e.from_address,
+        sentAt:      e.sent_at,
+        contact: {
+          id:          e.contact_id,
+          name:        `${e.contact_first || ''} ${e.contact_last || ''}`.trim(),
+          email:       e.contact_email,
+          accountId:   e.account_id,
+          accountName: e.account_name,
+        },
+      }))
+    });
+  } catch (err) {
+    console.error('Get untagged emails error:', err);
+    res.status(500).json({ error: { message: 'Failed to fetch untagged emails' } });
+  }
+});
+
+// ── PATCH /:id/tag — manually tag an email to a deal ─────────────────────────
+router.patch('/:id/tag', async (req, res) => {
+  try {
+    const { dealId } = req.body;
+    if (!dealId) {
+      return res.status(400).json({ error: { message: 'dealId is required' } });
+    }
+
+    // Verify deal belongs to this org and caller has access (owner or team member)
+    const dealCheck = await db.query(
+      `SELECT d.id FROM deals d
+       WHERE d.id = $1 AND d.org_id = $2
+         AND (
+           d.user_id = $3
+           OR EXISTS (
+             SELECT 1 FROM deal_team_members dtm
+             WHERE dtm.deal_id = d.id AND dtm.user_id = $3 AND dtm.org_id = $2
+           )
+         )`,
+      [dealId, req.orgId, req.user.userId]
+    );
+    if (dealCheck.rows.length === 0) {
+      return res.status(403).json({ error: { message: 'Deal not found or access denied' } });
+    }
+
+    // Verify email belongs to this org and this user (or a team member)
+    const emailCheck = await db.query(
+      `SELECT id FROM emails WHERE id = $1 AND org_id = $2`,
+      [req.params.id, req.orgId]
+    );
+    if (emailCheck.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Email not found' } });
+    }
+
+    const result = await db.query(
+      `UPDATE emails
+       SET deal_id    = $1,
+           tagged_by  = $2,
+           tagged_at  = CURRENT_TIMESTAMP,
+           tag_source = 'manual'
+       WHERE id = $3 AND org_id = $4
+       RETURNING id, deal_id, tag_source, tagged_at`,
+      [dealId, req.user.userId, req.params.id, req.orgId]
+    );
+
+    res.json({ email: result.rows[0] });
+  } catch (err) {
+    console.error('Tag email error:', err);
+    res.status(500).json({ error: { message: 'Failed to tag email' } });
+  }
+});
+
+// ── GET /deal/:dealId/snoozed-contacts — contacts snoozed on this deal ────────
+// Shows which contacts' emails are being suppressed from tagging prompts,
+// scoped to contacts whose account matches this deal's account.
+router.get('/deal/:dealId/snoozed-contacts', async (req, res) => {
+  try {
+    const dealCheck = await db.query(
+      `SELECT d.id, d.account_id FROM deals d WHERE d.id = $1 AND d.org_id = $2`,
+      [req.params.dealId, req.orgId]
+    );
+    if (dealCheck.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Deal not found' } });
+    }
+    const { account_id } = dealCheck.rows[0];
+
+    const result = await db.query(
+      `SELECT
+         c.id,
+         c.first_name,
+         c.last_name,
+         c.email,
+         c.email_snooze_reason,
+         c.email_snoozed_at,
+         u.first_name AS snoozed_by_first,
+         u.last_name  AS snoozed_by_last
+       FROM contacts c
+       LEFT JOIN users u ON u.id = c.email_snoozed_by
+       WHERE c.account_id = $1
+         AND c.org_id     = $2
+         AND c.email_snoozed = true`,
+      [account_id, req.orgId]
+    );
+
+    res.json({
+      contacts: result.rows.map(c => ({
+        id:           c.id,
+        name:         `${c.first_name || ''} ${c.last_name || ''}`.trim(),
+        email:        c.email,
+        snoozeReason: c.email_snooze_reason,
+        snoozedAt:    c.email_snoozed_at,
+        snoozedBy:    c.snoozed_by_first
+                        ? `${c.snoozed_by_first} ${c.snoozed_by_last}`.trim()
+                        : null,
+      }))
+    });
+  } catch (err) {
+    console.error('Get snoozed contacts error:', err);
+    res.status(500).json({ error: { message: 'Failed to fetch snoozed contacts' } });
   }
 });
 

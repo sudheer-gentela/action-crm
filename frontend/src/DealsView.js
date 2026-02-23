@@ -7,6 +7,8 @@ import TranscriptUpload from './TranscriptUpload';
 import TranscriptAnalysis from './TranscriptAnalysis';
 import DealHealthScore from './DealHealthScore';
 import DealActionsPanel from './DealActionsPanel';
+import DealTeamPanel from './DealTeamPanel';
+import DealEmailHistory from './DealEmailHistory';
 import './DealsView.css';
 
 function DealsView({ openDealId = null, onDealOpened = null }) {
@@ -363,6 +365,12 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                 )}
               </div>
 
+              {/* Deal Team */}
+              <div className="detail-section">
+                <h3>👥 Deal Team</h3>
+                <DealTeamPanel deal={selectedDeal} />
+              </div>
+
               {/* Contacts */}
               <div className="detail-section">
                 <h3>Contacts ({getDealContacts(selectedDeal.id).length})</h3>
@@ -387,30 +395,10 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                 )}
               </div>
 
-              {/* Emails */}
+              {/* Email History — full thread view with tagging and contact snooze */}
               <div className="detail-section">
-                <h3>Email Activity ({getDealEmails(selectedDeal.id).length})</h3>
-                {getDealEmails(selectedDeal.id).length === 0 ? (
-                  <p className="empty-message">No emails for this deal</p>
-                ) : (
-                  <div className="linked-items-list">
-                    {getDealEmails(selectedDeal.id).map(email => (
-                      <div key={email.id} className="linked-item">
-                        <span className="item-icon">
-                          {email.direction === 'sent' ? '📤' : '📥'}
-                        </span>
-                        <div className="item-info">
-                          <div className="item-name">{email.subject}</div>
-                          <div className="item-meta">
-                            {email.direction === 'sent' ? 'Sent to' : 'From'} {email.contact?.first_name} {email.contact?.last_name} •
-                            {new Date(email.sent_at).toLocaleDateString()}
-                            {email.opened_at && ' • Opened'}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <h3>📧 Email History</h3>
+                <DealEmailHistory deal={selectedDeal} />
               </div>
 
               {/* Meetings */}

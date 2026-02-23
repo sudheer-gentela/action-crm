@@ -1,0 +1,306 @@
+/* ─── DealTeamPanel ────────────────────────────────────────────────────────── */
+/* Prefix: dtp-  — mirrors dap- convention from DealActionsPanel               */
+
+.dtp-root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dtp-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #6b7280;
+  font-size: 13px;
+  padding: 12px 0;
+}
+
+.dtp-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #e5e7eb;
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: dtp-spin 0.7s linear infinite;
+  display: inline-block;
+}
+
+@keyframes dtp-spin { to { transform: rotate(360deg); } }
+
+.dtp-error {
+  font-size: 12px;
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+/* ── Header ──────────────────────────────────────────────────── */
+.dtp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dtp-count {
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.dtp-empty {
+  font-size: 13px;
+  color: #9ca3af;
+  padding: 8px 0;
+  margin: 0;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+.dtp-btn {
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 5px 12px;
+  transition: all 0.15s;
+}
+
+.dtp-btn--add {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+.dtp-btn--add:hover { background: #dbeafe; }
+
+.dtp-btn--save {
+  background: #1d4ed8;
+  color: white;
+}
+.dtp-btn--save:hover:not(:disabled) { background: #1e40af; }
+.dtp-btn--save:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.dtp-btn--remove {
+  background: none;
+  color: #9ca3af;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+/* ── Add member form ─────────────────────────────────────────── */
+.dtp-add-form {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dtp-add-form__row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dtp-select,
+.dtp-input {
+  flex: 1;
+  min-width: 160px;
+  padding: 7px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #111827;
+  background: white;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.dtp-select:focus,
+.dtp-input:focus { border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99,102,241,0.1); }
+
+.dtp-add-form__error {
+  font-size: 12px;
+  color: #dc2626;
+}
+
+.dtp-add-form__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ── Member list ─────────────────────────────────────────────── */
+.dtp-members {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dtp-member {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: #f9fafb;
+  border: 1px solid #f3f4f6;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+
+.dtp-member:hover { background: #f3f4f6; }
+.dtp-member:hover .dtp-btn--remove { opacity: 1; }
+.dtp-btn--remove:hover { color: #dc2626; border-color: #fecaca; background: #fef2f2; }
+
+/* ── Avatar ──────────────────────────────────────────────────── */
+.dtp-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ── Member info ─────────────────────────────────────────────── */
+.dtp-member__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dtp-member__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dtp-member__you   { font-weight: 400; color: #6b7280; font-size: 11px; }
+.dtp-member__owner { font-size: 11px; color: #6b7280; }
+
+.dtp-member__email {
+  font-size: 11px;
+  color: #6b7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Role section ────────────────────────────────────────────── */
+.dtp-member__role { flex-shrink: 0; }
+
+.dtp-role-select {
+  padding: 3px 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #374151;
+  background: white;
+  cursor: pointer;
+  outline: none;
+  max-width: 140px;
+}
+.dtp-role-select:focus { border-color: #6366f1; }
+
+.dtp-role-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 10px;
+  border: 1px solid;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── OrgAdminView extensions for deal roles ──────────────────── */
+/* These extend the existing oa- / sv- classes already in OrgAdminView.css */
+
+.oa-roles-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.oa-role-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: #f9fafb;
+  border: 1px solid #f3f4f6;
+  border-radius: 8px;
+}
+
+.oa-role-row--inactive { opacity: 0.55; }
+
+.oa-role-row__info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.oa-role-row__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.oa-role-row__name--editable { cursor: pointer; }
+.oa-role-row__name--editable:hover { color: #6366f1; }
+
+.oa-role-row__tag {
+  font-size: 11px;
+  background: #f3f4f6;
+  color: #6b7280;
+  padding: 2px 7px;
+  border-radius: 8px;
+}
+
+.oa-input--inline {
+  padding: 4px 8px;
+  font-size: 13px;
+  width: 200px;
+}
+
+.oa-role-add-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  align-items: center;
+}
+
+.sv-btn-sm {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.sv-btn-sm--primary { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.sv-btn-sm--primary:hover { background: #dbeafe; }
+.sv-btn-sm--danger  { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+.sv-btn-sm--danger:hover  { background: #fee2e2; }
+
+.sv-empty {
+  font-size: 13px;
+  color: #9ca3af;
+  padding: 8px 0;
+}

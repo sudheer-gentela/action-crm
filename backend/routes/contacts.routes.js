@@ -190,4 +190,59 @@ router.post('/:id/activities', async (req, res) => {
   }
 });
 
+// ── POST /:id/snooze-email — snooze email tagging for this contact ────────────
+// Emails from this contact won't appear in the untagged email tagging prompts.
+router.post('/:id/snooze-email', async (req, res) => {
+  try {
+    const { reason } = req.body;
+
+    const result = await db.query(
+      `UPDATE contacts
+       SET email_snoozed       = true,
+           email_snoozed_at    = CURRENT_TIMESTAMP,
+           email_snoozed_by    = $1,
+           email_snooze_reason = $2,
+           updated_at          = CURRENT_TIMESTAMP
+       WHERE id = $3 AND org_id = $4
+       RETURNING id, first_name, last_name, email_snoozed, email_snooze_reason`,
+      [req.user.userId, reason || null, req.params.id, req.orgId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Contact not found' } });
+    }
+
+    res.json({ contact: result.rows[0] });
+  } catch (err) {
+    console.error('Snooze contact email error:', err);
+    res.status(500).json({ error: { message: 'Failed to snooze contact' } });
+  }
+});
+
+// ── POST /:id/unsnooze-email — remove email snooze from contact ───────────────
+router.post('/:id/unsnooze-email', async (req, res) => {
+  try {
+    const result = await db.query(
+      `UPDATE contacts
+       SET email_snoozed       = false,
+           email_snoozed_at    = NULL,
+           email_snoozed_by    = NULL,
+           email_snooze_reason = NULL,
+           updated_at          = CURRENT_TIMESTAMP
+       WHERE id = $1 AND org_id = $2
+       RETURNING id, first_name, last_name, email_snoozed`,
+      [req.params.id, req.orgId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Contact not found' } });
+    }
+
+    res.json({ contact: result.rows[0] });
+  } catch (err) {
+    console.error('Unsnooze contact email error:', err);
+    res.status(500).json({ error: { message: 'Failed to unsnooze contact' } });
+  }
+});
+
 module.exports = router;
