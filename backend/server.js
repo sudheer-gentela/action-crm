@@ -166,7 +166,7 @@ app.use('/api/playbooks',  playbooksRoutes);
 app.use('/api/ai',         aiContextRoutes);
 app.use('/api/deal-roles', dealRolesRoutes);
 app.use('/api/deal-team',  dealTeamRoutes);
-app.use('/deal-contacts', dealContactsRoutes);
+app.use('/api/deal-contacts', dealContactsRoutes);
 
 // ─────────────────────────────────────────────────────────────
 // Error handling
