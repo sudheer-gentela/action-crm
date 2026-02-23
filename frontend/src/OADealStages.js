@@ -78,7 +78,7 @@ export default function OADealStages() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const r = await apiFetch('/api/deal-stages');
+      const r = await apiFetch('/deal-stages');
       setStages(r.stages || []);
     } catch (e) {
       setError(e.message);
@@ -103,7 +103,7 @@ export default function OADealStages() {
     });
 
     try {
-      const r = await apiFetch('/api/deal-stages/reorder', {
+      const r = await apiFetch('/deal-stages/reorder', {
         method: 'POST',
         body:   JSON.stringify({ order }),
       });
@@ -116,7 +116,7 @@ export default function OADealStages() {
   // ── Toggle active ────────────────────────────────────────────────────────────
   async function handleToggle(stage) {
     try {
-      const r = await apiFetch(`/api/deal-stages/${stage.id}`, {
+      const r = await apiFetch(`/deal-stages/${stage.id}`, {
         method: 'PATCH',
         body:   JSON.stringify({ is_active: !stage.is_active }),
       });
@@ -134,7 +134,7 @@ export default function OADealStages() {
       return;
     }
     try {
-      const r = await apiFetch(`/api/deal-stages/${stage.id}`, {
+      const r = await apiFetch(`/deal-stages/${stage.id}`, {
         method: 'PATCH',
         body:   JSON.stringify({ name: editName.trim() }),
       });
@@ -150,7 +150,7 @@ export default function OADealStages() {
   async function handleDelete(stage) {
     if (!window.confirm(`Delete stage "${stage.name}"?\n\nThis cannot be undone. Deals in this stage must be moved first.`)) return;
     try {
-      await apiFetch(`/api/deal-stages/${stage.id}`, { method: 'DELETE' });
+      await apiFetch(`/deal-stages/${stage.id}`, { method: 'DELETE' });
       setStages(prev => prev.filter(s => s.id !== stage.id));
       flash('success', `"${stage.name}" deleted`);
     } catch (e) {
@@ -163,7 +163,7 @@ export default function OADealStages() {
     if (!newName.trim()) return;
     setSubmitting(true);
     try {
-      const r = await apiFetch('/api/deal-stages', {
+      const r = await apiFetch('/deal-stages', {
         method: 'POST',
         body:   JSON.stringify({
           name:        newName.trim(),
