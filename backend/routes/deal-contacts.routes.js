@@ -130,6 +130,50 @@ router.post('/:dealId/contacts', async (req, res) => {
   }
 });
 
+// ── GET /:dealId/contacts/eligible — org contacts not yet linked ───────────────
+// NOTE: this MUST be registered before /:dealId/contacts/:contactId so Express
+// does not treat the literal string "eligible" as a contactId param.
+router.get('/:dealId/contacts/eligible', async (req, res) => {
+  try {
+    const deal = await resolveDeal(req, res);
+    if (!deal) return;
+
+    const result = await db.query(
+      `SELECT
+         c.id,
+         c.first_name,
+         c.last_name,
+         c.email,
+         c.title,
+         c.role_type,
+         acc.name AS account_name
+       FROM contacts c
+       LEFT JOIN accounts acc ON acc.id = c.account_id
+       WHERE c.org_id = $1
+         AND c.id NOT IN (
+           SELECT contact_id FROM deal_contacts WHERE deal_id = $2
+         )
+       ORDER BY c.first_name, c.last_name`,
+      [req.orgId, req.params.dealId]
+    );
+
+    res.json({
+      contacts: result.rows.map(c => ({
+        id:          c.id,
+        firstName:   c.first_name,
+        lastName:    c.last_name,
+        email:       c.email,
+        title:       c.title,
+        roleType:    c.role_type,
+        accountName: c.account_name,
+      }))
+    });
+  } catch (err) {
+    console.error('Get eligible contacts error:', err);
+    res.status(500).json({ error: { message: 'Failed to fetch eligible contacts' } });
+  }
+});
+
 // ── PATCH /:dealId/contacts/:contactId — update the role on a linked contact ──
 router.patch('/:dealId/contacts/:contactId', async (req, res) => {
   try {
@@ -178,49 +222,6 @@ router.delete('/:dealId/contacts/:contactId', async (req, res) => {
   } catch (err) {
     console.error('Remove deal contact error:', err);
     res.status(500).json({ error: { message: 'Failed to remove deal contact' } });
-  }
-});
-
-// ── GET /:dealId/contacts/eligible — org contacts not yet linked ───────────────
-// Returns all org contacts minus those already on this deal
-router.get('/:dealId/contacts/eligible', async (req, res) => {
-  try {
-    const deal = await resolveDeal(req, res);
-    if (!deal) return;
-
-    const result = await db.query(
-      `SELECT
-         c.id,
-         c.first_name,
-         c.last_name,
-         c.email,
-         c.title,
-         c.role_type,
-         acc.name AS account_name
-       FROM contacts c
-       LEFT JOIN accounts acc ON acc.id = c.account_id
-       WHERE c.org_id = $1
-         AND c.id NOT IN (
-           SELECT contact_id FROM deal_contacts WHERE deal_id = $2
-         )
-       ORDER BY c.first_name, c.last_name`,
-      [req.orgId, req.params.dealId]
-    );
-
-    res.json({
-      contacts: result.rows.map(c => ({
-        id:          c.id,
-        firstName:   c.first_name,
-        lastName:    c.last_name,
-        email:       c.email,
-        title:       c.title,
-        roleType:    c.role_type,
-        accountName: c.account_name,
-      }))
-    });
-  } catch (err) {
-    console.error('Get eligible contacts error:', err);
-    res.status(500).json({ error: { message: 'Failed to fetch eligible contacts' } });
   }
 });
 
