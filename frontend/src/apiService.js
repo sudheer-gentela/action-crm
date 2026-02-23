@@ -39,7 +39,10 @@ export const apiService = {
     getById: (id) => api.get(`/accounts/${id}`),
     create: (data) => api.post('/accounts', data),
     update: (id, data) => api.put(`/accounts/${id}`, data),
-    delete: (id) => api.delete(`/accounts/${id}`)
+    delete: (id) => api.delete(`/accounts/${id}`),
+    getDuplicates: () => api.get('/accounts/duplicates'),
+    merge: (keepId, removeId, fieldOverrides = {}) =>
+      api.post('/accounts/merge', { keepId, removeId, fieldOverrides }),
   },
 
   // Contacts

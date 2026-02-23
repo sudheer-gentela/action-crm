@@ -2,7 +2,17 @@ import React, { useState, useEffect } from 'react';
 import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import AccountForm from './AccountForm';
+import AccountMergeBanner from './AccountMergeBanner';
 import './AccountsView.css';
+
+const EDITABLE_FIELDS = {
+  name:        { label: 'Company Name', type: 'text', required: true },
+  domain:      { label: 'Website',      type: 'url' },
+  industry:    { label: 'Industry',     type: 'text' },
+  size:        { label: 'Size',         type: 'number' },
+  location:    { label: 'Location',     type: 'text' },
+  description: { label: 'Description',  type: 'textarea' },
+};
 
 function AccountsView({ openAccountId = null, onAccountOpened = null }) {
   const [accounts, setAccounts] = useState([]);
@@ -14,12 +24,12 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
   const [selectedAccount, setSelectedAccount] = useState(null);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    loadAccounts();
-  }, []);
+  // Inline editing
+  const [editingField, setEditingField] = useState(null);
+  const [savingField, setSavingField] = useState(null);
 
-  // When App.js passes an openAccountId (e.g. from clicking account name in a deal),
-  // find that account in state and open its detail panel automatically
+  useEffect(() => { loadAccounts(); }, []);
+
   useEffect(() => {
     if (!openAccountId || accounts.length === 0) return;
     const target = accounts.find(a => a.id === openAccountId || a.id === parseInt(openAccountId));
@@ -29,41 +39,30 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
     }
   }, [openAccountId, accounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => { setEditingField(null); }, [selectedAccount?.id]);
+
   const loadAccounts = async () => {
     try {
       setLoading(true);
       setError('');
-
       const [accountsRes, dealsRes, contactsRes] = await Promise.all([
         apiService.accounts.getAll().catch(() => ({ data: { accounts: mockData.accounts } })),
         apiService.deals.getAll().catch(() => ({ data: { deals: mockData.deals } })),
         apiService.contacts.getAll().catch(() => ({ data: { contacts: mockData.contacts } }))
       ]);
-
       const enrichedData = enrichData({
         accounts: accountsRes.data.accounts || accountsRes.data || [],
-        deals: dealsRes.data.deals || dealsRes.data || [],
+        deals:    dealsRes.data.deals       || dealsRes.data || [],
         contacts: contactsRes.data.contacts || contactsRes.data || [],
-        emails: [],
-        meetings: [],
-        actions: []
+        emails: [], meetings: [], actions: []
       });
-
       setAccounts(enrichedData.accounts);
       setDeals(enrichedData.deals);
       setContacts(enrichedData.contacts);
-
     } catch (err) {
       console.error('Error loading accounts:', err);
       setError('Failed to load accounts. Using sample data.');
-      
-      const enrichedData = enrichData({
-        ...mockData,
-        emails: [],
-        meetings: [],
-        actions: []
-      });
-      
+      const enrichedData = enrichData({ ...mockData, emails: [], meetings: [], actions: [] });
       setAccounts(enrichedData.accounts);
       setDeals(enrichedData.deals);
       setContacts(enrichedData.contacts);
@@ -71,6 +70,8 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
       setLoading(false);
     }
   };
+
+  // ── CRUD ────────────────────────────────────────────────────────────────
 
   const handleCreateAccount = async (accountData) => {
     try {
@@ -80,66 +81,168 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
       setError('');
     } catch (err) {
       console.error('Error creating account:', err);
-      const newAccount = { 
-        ...accountData, 
-        id: Date.now(),
-        created_at: new Date().toISOString()
-      };
-      setAccounts([...accounts, newAccount]);
-      setShowForm(false);
+      if (err.response?.status === 409) {
+        setError(err.response.data.error.message);
+      } else {
+        setError(`Failed to create account: ${err.response?.data?.error?.message || err.message}`);
+      }
     }
   };
 
   const handleUpdateAccount = async (accountData) => {
     try {
       const response = await apiService.accounts.update(editingAccount.id, accountData);
-      setAccounts(accounts.map(a => 
-        a.id === editingAccount.id ? (response.data.account || response.data) : a
-      ));
+      const updated = response.data.account || response.data;
+      setAccounts(accounts.map(a => a.id === editingAccount.id ? updated : a));
+      if (selectedAccount?.id === editingAccount.id) setSelectedAccount(updated);
       setEditingAccount(null);
+      setShowForm(false);
       setError('');
     } catch (err) {
       console.error('Error updating account:', err);
-      setAccounts(accounts.map(a => 
-        a.id === editingAccount.id ? { ...a, ...accountData } : a
-      ));
-      setEditingAccount(null);
+      setError(`Failed to update: ${err.response?.data?.error?.message || err.message}`);
     }
   };
 
   const handleDeleteAccount = async (accountId) => {
-    if (!window.confirm('Are you sure you want to delete this account? All associated deals and contacts will be affected.')) {
-      return;
-    }
-
+    if (!window.confirm('Are you sure you want to delete this account? All associated deals and contacts will be affected.')) return;
     try {
       await apiService.accounts.delete(accountId);
-      setAccounts(accounts.filter(a => a.id !== accountId));
-      if (selectedAccount?.id === accountId) {
-        setSelectedAccount(null);
-      }
-      setError('');
+    } catch {}
+    setAccounts(accounts.filter(a => a.id !== accountId));
+    if (selectedAccount?.id === accountId) setSelectedAccount(null);
+  };
+
+  // ── Inline field save ───────────────────────────────────────────────────
+
+  const handleInlineFieldSave = async (field, value) => {
+    if (!selectedAccount) return;
+    setSavingField(field);
+    try {
+      const response = await apiService.accounts.update(selectedAccount.id, { [field]: value });
+      const updated = response.data.account || response.data;
+      setAccounts(prev => prev.map(a => a.id === selectedAccount.id ? updated : a));
+      setSelectedAccount(updated);
     } catch (err) {
-      console.error('Error deleting account:', err);
-      setAccounts(accounts.filter(a => a.id !== accountId));
-      if (selectedAccount?.id === accountId) {
-        setSelectedAccount(null);
-      }
+      console.error('Inline save error:', err);
+      setError(`Failed to save: ${err.response?.data?.error?.message || err.message}`);
+    } finally {
+      setSavingField(null);
+      setEditingField(null);
     }
   };
 
-  const getAccountDeals = (accountId) => {
-    return deals.filter(d => d.account_id === accountId && d.stage !== 'closed_lost');
+  // ── Helpers ─────────────────────────────────────────────────────────────
+
+  const getAccountDeals = (accountId) =>
+    deals.filter(d => d.account_id === accountId && d.stage !== 'closed_lost');
+
+  const getAccountContacts = (accountId) =>
+    contacts.filter(c => c.account_id === accountId);
+
+  const calculateAccountValue = (accountId) =>
+    getAccountDeals(accountId).reduce((sum, d) => sum + parseFloat(d.value || 0), 0);
+
+  // ── Navigation ──────────────────────────────────────────────────────────
+
+  const nav = (tab, extra) =>
+    window.dispatchEvent(new CustomEvent('navigate', { detail: { tab, ...extra } }));
+
+  // ── Render editable field ───────────────────────────────────────────────
+
+  const renderEditableField = (field, account) => {
+    const cfg = EDITABLE_FIELDS[field];
+    if (!cfg) return null;
+    const currentValue = account[field] || '';
+    const isEditing = editingField?.field === field;
+
+    // Textarea
+    if (cfg.type === 'textarea') {
+      if (isEditing) {
+        return (
+          <div className="inline-edit-row inline-edit-row--vertical">
+            <textarea
+              className="inline-edit-textarea"
+              autoFocus
+              value={editingField.value}
+              onChange={e => setEditingField(f => ({ ...f, value: e.target.value }))}
+              onKeyDown={e => { if (e.key === 'Escape') setEditingField(null); }}
+              rows={3}
+            />
+            <div className="inline-edit-actions">
+              <button className="inline-save-btn" disabled={savingField === field}
+                onClick={() => handleInlineFieldSave(field, editingField.value)}>✓ Save</button>
+              <button className="inline-cancel-btn" onClick={() => setEditingField(null)}>✕</button>
+            </div>
+          </div>
+        );
+      }
+      return (
+        <span
+          className="detail-value--editable acct-description-text"
+          onClick={() => setEditingField({ field, value: currentValue })}
+          title="Click to edit"
+        >
+          {currentValue || 'Add description…'} ✏️
+        </span>
+      );
+    }
+
+    // Text / url / number
+    if (isEditing) {
+      return (
+        <div className="inline-edit-row">
+          <input
+            className="inline-edit-input"
+            type={cfg.type === 'url' ? 'text' : cfg.type}
+            autoFocus
+            value={editingField.value}
+            onChange={e => setEditingField(f => ({ ...f, value: e.target.value }))}
+            onKeyDown={e => {
+              if (e.key === 'Enter')  handleInlineFieldSave(field, editingField.value);
+              if (e.key === 'Escape') setEditingField(null);
+            }}
+          />
+          <button className="inline-save-btn" disabled={savingField === field}
+            onClick={() => handleInlineFieldSave(field, editingField.value)}>✓</button>
+          <button className="inline-cancel-btn" onClick={() => setEditingField(null)}>✕</button>
+        </div>
+      );
+    }
+
+    // Display — special for domain (show as link)
+    if (field === 'domain' && currentValue) {
+      return (
+        <span className="inline-display-row">
+          <a href={`https://${currentValue}`} target="_blank" rel="noopener noreferrer">{currentValue}</a>
+          <button className="inline-edit-trigger" onClick={() => setEditingField({ field, value: currentValue })} title="Edit">✏️</button>
+        </span>
+      );
+    }
+    if (field === 'size' && currentValue) {
+      return (
+        <span
+          className="detail-value--editable"
+          onClick={() => setEditingField({ field, value: currentValue })}
+          title="Click to edit"
+        >
+          {parseInt(currentValue).toLocaleString()} employees ✏️
+        </span>
+      );
+    }
+
+    return (
+      <span
+        className="detail-value--editable"
+        onClick={() => setEditingField({ field, value: currentValue })}
+        title="Click to edit"
+      >
+        {currentValue || 'Not set'} ✏️
+      </span>
+    );
   };
 
-  const getAccountContacts = (accountId) => {
-    return contacts.filter(c => c.account_id === accountId);
-  };
-
-  const calculateAccountValue = (accountId) => {
-    const accountDeals = getAccountDeals(accountId);
-    return accountDeals.reduce((sum, d) => sum + parseFloat(d.value || 0), 0);
-  };
+  // ── Loading ─────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -151,6 +254,8 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
       </div>
     );
   }
+
+  // ── Main render ─────────────────────────────────────────────────────────
 
   return (
     <div className="accounts-view">
@@ -167,13 +272,12 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
         </button>
       </div>
 
-      {error && (
-        <div className="info-banner">
-          ℹ️ {error}
-        </div>
-      )}
+      {error && <div className="info-banner">ℹ️ {error}</div>}
 
-      {/* Accounts Grid */}
+      {/* Duplicate Accounts Banner */}
+      <AccountMergeBanner onMergeComplete={loadAccounts} />
+
+      {/* Accounts Container */}
       <div className="accounts-container">
         <div className="accounts-grid">
           {accounts.length === 0 ? (
@@ -181,9 +285,7 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
               <div className="empty-state-icon">🏢</div>
               <h3>No accounts yet</h3>
               <p>Create your first account to start managing deals and contacts</p>
-              <button className="btn-primary" onClick={() => setShowForm(true)}>
-                + Create Account
-              </button>
+              <button className="btn-primary" onClick={() => setShowForm(true)}>+ Create Account</button>
             </div>
           ) : (
             accounts.map(account => (
@@ -193,7 +295,7 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
                 deals={getAccountDeals(account.id)}
                 contacts={getAccountContacts(account.id)}
                 totalValue={calculateAccountValue(account.id)}
-                onEdit={() => setEditingAccount(account)}
+                onEdit={() => { setEditingAccount(account); setShowForm(true); }}
                 onDelete={() => handleDeleteAccount(account.id)}
                 onSelect={() => setSelectedAccount(account)}
                 isSelected={selectedAccount?.id === account.id}
@@ -202,97 +304,132 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
           )}
         </div>
 
-        {/* Account Detail Panel */}
+        {/* Account Detail Panel — fullscreen overlay */}
         {selectedAccount && (
-          <div className="account-detail-panel">
+          <div className="account-detail-panel panel-fullscreen">
             <div className="panel-header">
               <h2>{selectedAccount.name}</h2>
-              <button className="close-panel" onClick={() => setSelectedAccount(null)}>×</button>
+              <div className="panel-header-actions">
+                <button className="close-panel" onClick={() => setSelectedAccount(null)}>×</button>
+              </div>
             </div>
 
             <div className="panel-content">
-              {/* Basic Info */}
+
+              {/* ── 1. Company Information (inline-editable) ──────── */}
               <div className="detail-section">
-                <h3>Company Information</h3>
+                <h3>🏢 Company Information</h3>
                 <div className="detail-grid">
-                  {selectedAccount.domain && (
-                    <div className="detail-item">
-                      <span className="detail-label">Website</span>
-                      <a href={`https://${selectedAccount.domain}`} target="_blank" rel="noopener noreferrer">
-                        {selectedAccount.domain}
-                      </a>
-                    </div>
-                  )}
-                  {selectedAccount.industry && (
-                    <div className="detail-item">
-                      <span className="detail-label">Industry</span>
-                      <span>{selectedAccount.industry}</span>
-                    </div>
-                  )}
-                  {selectedAccount.size && (
-                    <div className="detail-item">
-                      <span className="detail-label">Size</span>
-                      <span>{selectedAccount.size} employees</span>
-                    </div>
-                  )}
-                  {selectedAccount.location && (
-                    <div className="detail-item">
-                      <span className="detail-label">Location</span>
-                      <span>{selectedAccount.location}</span>
-                    </div>
-                  )}
-                </div>
-                {selectedAccount.description && (
-                  <div className="detail-description">
-                    <span className="detail-label">Description</span>
-                    <p>{selectedAccount.description}</p>
+                  <div className="detail-item">
+                    <span className="detail-label">Company Name</span>
+                    {renderEditableField('name', selectedAccount)}
                   </div>
-                )}
+                  <div className="detail-item">
+                    <span className="detail-label">Website</span>
+                    {renderEditableField('domain', selectedAccount)}
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Industry</span>
+                    {renderEditableField('industry', selectedAccount)}
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Size</span>
+                    {renderEditableField('size', selectedAccount)}
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Location</span>
+                    {renderEditableField('location', selectedAccount)}
+                  </div>
+                </div>
               </div>
 
-              {/* Deals */}
+              {/* ── 2. Description (inline-editable) ──────────────── */}
               <div className="detail-section">
-                <h3>Active Deals ({getAccountDeals(selectedAccount.id).length})</h3>
+                <h3>📝 Description</h3>
+                {renderEditableField('description', selectedAccount)}
+              </div>
+
+              {/* ── 3. Active Deals (clickable → DealsView) ────────── */}
+              <div className="detail-section">
+                <h3>💼 Active Deals ({getAccountDeals(selectedAccount.id).length})</h3>
                 {getAccountDeals(selectedAccount.id).length === 0 ? (
                   <p className="empty-message">No active deals</p>
                 ) : (
                   <div className="linked-items-list">
                     {getAccountDeals(selectedAccount.id).map(deal => (
-                      <div key={deal.id} className="linked-item">
+                      <div
+                        key={deal.id}
+                        className="linked-item linked-item--clickable"
+                        onClick={() => nav('deals', { dealId: deal.id })}
+                        title="Open deal"
+                      >
                         <span className="item-icon">💼</span>
                         <div className="item-info">
                           <div className="item-name">{deal.name}</div>
                           <div className="item-meta">
-                            ${parseFloat(deal.value).toLocaleString()} • {deal.stage}
+                            ${parseFloat(deal.value || 0).toLocaleString()} · {deal.stage}
+                            {deal.health && (
+                              <span className={`acct-deal-health acct-deal-health--${deal.health}`}>
+                                {deal.health}
+                              </span>
+                            )}
                           </div>
                         </div>
+                        <span className="item-arrow">→</span>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
 
-              {/* Contacts */}
+              {/* ── 4. Contacts (clickable → ContactsView) ─────────── */}
               <div className="detail-section">
-                <h3>Contacts ({getAccountContacts(selectedAccount.id).length})</h3>
+                <h3>👤 Contacts ({getAccountContacts(selectedAccount.id).length})</h3>
                 {getAccountContacts(selectedAccount.id).length === 0 ? (
                   <p className="empty-message">No contacts</p>
                 ) : (
                   <div className="linked-items-list">
                     {getAccountContacts(selectedAccount.id).map(contact => (
-                      <div key={contact.id} className="linked-item">
+                      <div
+                        key={contact.id}
+                        className="linked-item linked-item--clickable"
+                        onClick={() => nav('contacts', { contactId: contact.id })}
+                        title="Open contact"
+                      >
                         <span className="item-icon">👤</span>
                         <div className="item-info">
                           <div className="item-name">
                             {contact.first_name} {contact.last_name}
                           </div>
-                          <div className="item-meta">{contact.title}</div>
+                          <div className="item-meta">
+                            {[contact.title, contact.email].filter(Boolean).join(' · ')}
+                          </div>
                         </div>
+                        <span className="item-arrow">→</span>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
+
+              {/* ── 5. Quick Actions ────────────────────────────────── */}
+              <div className="detail-section">
+                <h3>⚡ Quick Actions</h3>
+                <div className="quick-actions">
+                  {selectedAccount.domain && (
+                    <a href={`https://${selectedAccount.domain}`} target="_blank" rel="noopener noreferrer" className="btn-action">
+                      🌐 Visit Website
+                    </a>
+                  )}
+                  <button className="btn-action" onClick={() => { setEditingAccount(selectedAccount); setShowForm(true); }}>
+                    ✏️ Edit in Form
+                  </button>
+                  <button className="btn-action btn-action--danger" onClick={() => handleDeleteAccount(selectedAccount.id)}>
+                    🗑️ Delete Account
+                  </button>
+                </div>
+              </div>
+
             </div>
           </div>
         )}
@@ -303,52 +440,31 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
         <AccountForm
           account={editingAccount}
           onSubmit={editingAccount ? handleUpdateAccount : handleCreateAccount}
-          onClose={() => {
-            setShowForm(false);
-            setEditingAccount(null);
-          }}
+          onClose={() => { setShowForm(false); setEditingAccount(null); }}
         />
       )}
     </div>
   );
 }
 
+// ── Account Card ──────────────────────────────────────────────────────────────
+
 function AccountCard({ account, deals, contacts, totalValue, onEdit, onDelete, onSelect, isSelected }) {
   const activeDeals = deals.filter(d => d.stage !== 'closed_won' && d.stage !== 'closed_lost');
-  
+
   return (
-    <div 
-      className={`account-card ${isSelected ? 'selected' : ''}`}
-      onClick={onSelect}
-    >
+    <div className={`account-card ${isSelected ? 'selected' : ''}`} onClick={onSelect}>
       <div className="account-card-header">
         <div className="account-icon">
           {account.name.substring(0, 2).toUpperCase()}
         </div>
         <div className="account-actions">
-          <button 
-            onClick={(e) => { e.stopPropagation(); onEdit(); }} 
-            className="icon-btn" 
-            title="Edit"
-          >
-            ✏️
-          </button>
-          <button 
-            onClick={(e) => { e.stopPropagation(); onDelete(); }} 
-            className="icon-btn" 
-            title="Delete"
-          >
-            🗑️
-          </button>
+          <button onClick={(e) => { e.stopPropagation(); onEdit(); }} className="icon-btn" title="Edit">✏️</button>
+          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="icon-btn" title="Delete">🗑️</button>
         </div>
       </div>
-
       <h3 className="account-name">{account.name}</h3>
-      
-      {account.industry && (
-        <p className="account-industry">{account.industry}</p>
-      )}
-
+      {account.industry && <p className="account-industry">{account.industry}</p>}
       <div className="account-stats">
         <div className="stat-item">
           <span className="stat-value">{activeDeals.length}</span>
@@ -363,10 +479,7 @@ function AccountCard({ account, deals, contacts, totalValue, onEdit, onDelete, o
           <span className="stat-label">Pipeline</span>
         </div>
       </div>
-
-      {account.location && (
-        <p className="account-location">📍 {account.location}</p>
-      )}
+      {account.location && <p className="account-location">📍 {account.location}</p>}
     </div>
   );
 }
