@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiService } from './apiService';
-import { mockData, enrichData } from './mockData';
+import { enrichData } from './mockData';
 import DealForm from './DealForm';
 import AIAnalyzeButton from './AIAnalyzeButton';
 import TranscriptUpload from './TranscriptUpload';
