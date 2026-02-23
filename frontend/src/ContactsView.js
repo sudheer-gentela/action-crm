@@ -3,6 +3,7 @@ import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import ContactForm from './ContactForm';
 import EmailComposer from './EmailComposer';
+import ContactMergeBanner from './ContactMergeBanner';
 import './ContactsView.css';
 
 // Fields that can be inline-edited on the contact detail panel
@@ -479,6 +480,9 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
       </div>
 
       {error && <div className="info-banner">ℹ️ {error}</div>}
+
+      {/* Duplicate Contacts Banner */}
+      <ContactMergeBanner onMergeComplete={loadContacts} />
 
       {/* Search */}
       <div className="search-bar">
