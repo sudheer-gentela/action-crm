@@ -321,18 +321,25 @@
 }
 
 /* ─── Action Pills ───────────────────────────────────────────── */
-.action-pills-stack {
+/* ── Task pills: one per row ─────────────────────────────────────
+   Both class names covered: action-pills-stack (new) and
+   action-pills-row (old) so it works regardless of which JS is live. */
+.action-pills-stack,
+.action-pills-row {
   display: flex;
-  flex-direction: column;
+  flex-direction: column !important;
+  flex-wrap: nowrap !important;
   gap: 6px;
   margin-bottom: 16px;
 }
 
-.action-pills-stack:last-child { margin-bottom: 0; }
+.action-pills-stack:last-child,
+.action-pills-row:last-child { margin-bottom: 0; }
 
-/* Each action sits in its own full-width row */
+/* Each action pill wrapper — full width */
 .action-pill-row {
   display: flex;
+  width: 100%;
 }
 
 .action-pill {
@@ -388,10 +395,10 @@
 }
 
 .pill-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 170px;
+  flex: 1;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.4;
 }
 
 .pill-deal {
@@ -399,9 +406,7 @@
   font-weight: 500;
   opacity: 0.6;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 90px;
+  flex-shrink: 0;
   border-left: 1px solid currentColor;
   padding-left: 6px;
   margin-left: 2px;
