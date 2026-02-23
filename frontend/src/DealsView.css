@@ -613,44 +613,67 @@
 .panel-fullscreen {
   position: fixed;
   inset: 0;
-  z-index: 500;
+  z-index: 1000;        /* above the app sidebar (~z-index 100) */
   border-radius: 0;
   max-height: 100vh;
   width: 100vw;
   border: none;
-  animation: none;
+  animation: dealModalIn 0.2s ease-out;
+  background: white;
+  overflow-y: auto;
 }
 
-/* When fullscreen, hide the pipeline board */
-.deals-container.with-panel .pipeline-board:has(~ .panel-fullscreen) {
+@keyframes dealModalIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Constrain content width for readability on wide screens */
+.panel-fullscreen .panel-content {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px 40px;
+}
+
+.panel-fullscreen .panel-header {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 20px 40px;
+  border-bottom: 1px solid #e2e8f0;
+  position: sticky;
+  top: 0;
+  background: white;
+  z-index: 10;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Wrap header + content so the sticky header max-width works */
+.panel-fullscreen > .panel-header {
+  max-width: 100%;
+  width: 100%;
+}
+
+.panel-fullscreen > .panel-header > *,
+.panel-fullscreen > .panel-header {
+  max-width: 100%;
+}
+
+/* Panel header - full width bar with centred content */
+.panel-fullscreen .panel-header {
+  max-width: none;
+  padding: 16px 40px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.panel-fullscreen .panel-header h2 {
+  font-size: 22px;
+}
+
+/* ── When fullscreen panel is open, hide the pipeline board ────── */
+.deals-container:has(.panel-fullscreen) .pipeline-board {
   display: none;
-}
-
-.panel-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.expand-panel {
-  background: none;
-  border: none;
-  font-size: 18px;
-  color: #718096;
-  cursor: pointer;
-  padding: 0;
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  transition: all 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.expand-panel:hover {
-  background: #f7fafc;
-  color: #2d3748;
 }
 
 /* ── Clickable linked items ───────────────────────────────────── */

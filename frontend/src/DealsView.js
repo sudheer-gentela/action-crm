@@ -255,7 +255,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                       deal={deal}
                       onEdit={() => setEditingDeal(deal)}
                       onDelete={() => handleDeleteDeal(deal.id)}
-                      onSelect={() => setSelectedDeal(deal)}
+                      onSelect={() => { setSelectedDeal(deal); setIsFullscreen(true); }}
                       isSelected={selectedDeal?.id === deal.id}
                     />
                   ))
@@ -267,17 +267,10 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
 
         {/* Deal Detail Panel */}
         {selectedDeal && (
-          <div className={`deal-detail-panel ${isFullscreen ? 'panel-fullscreen' : ''}`}>
+          <div className="deal-detail-panel panel-fullscreen">
             <div className="panel-header">
               <h2>{selectedDeal.name}</h2>
               <div className="panel-header-actions">
-                <button
-                  className="expand-panel"
-                  onClick={() => setIsFullscreen(v => !v)}
-                  title={isFullscreen ? 'Exit fullscreen' : 'Expand to fullscreen'}
-                >
-                  {isFullscreen ? '⊙' : '⛶'}
-                </button>
                 <button className="close-panel" onClick={() => { setSelectedDeal(null); setIsFullscreen(false); }}>×</button>
               </div>
             </div>
