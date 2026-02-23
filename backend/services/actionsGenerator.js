@@ -1,9 +1,17 @@
 /**
- * Actions Generator Service
+ * actionsGenerator.js
+ *
  * Builds deal context, runs ActionsRulesEngine, optionally runs ActionsAIEnhancer.
  *
- * MULTI-ORG: All queries now include org_id. org_id is always derived from
- * deal.org_id — never trusted from the caller — so it can't be spoofed.
+ * Changes from previous version:
+ *   - buildContext now fetches playbookStageGuidance (full guidance object)
+ *     in addition to playbookStageActions, and passes both into context.
+ *   - deal.stage_type is read from the deals table (backfilled by migration
+ *     trigger) and passed through context so rules engine + AI enhancer
+ *     can use semantic type instead of stage name.
+ *   - generateAll / generateForDeal terminal-stage guard uses is_terminal
+ *     from deal_stages instead of a hardcoded string list.
+ *   - org_id is always derived from deal.org_id — never trusted from the caller.
  */
 
 const db = require('../config/database');
@@ -12,7 +20,7 @@ const ActionsAIEnhancer   = require('./ActionsAIEnhancer');
 const PlaybookService     = require('./playbook.service');
 const ActionConfigService = require('./actionConfig.service');
 
-// ── Internal classification (unchanged) ──────────────────────────────────────
+// ── Internal classification ───────────────────────────────────────────────────
 
 const INTERNAL_SOURCE_RULES = new Set([
   'stagnant_deal', 'champion_nurture', 'at_risk_deal',
@@ -34,7 +42,7 @@ function isInternalAction(action) {
   return false;
 }
 
-// ── Derived context builder (unchanged) ──────────────────────────────────────
+// ── Derived context builder ───────────────────────────────────────────────────
 
 function buildDerived(deal, contacts, emails, meetings, files) {
   const now = Date.now();
@@ -84,18 +92,25 @@ function buildDerived(deal, contacts, emails, meetings, files) {
     decisionMakers, champions,
     unansweredEmails, failedFiles,
     isHighValue:       parseFloat(deal.value || 0) > 100000,
-    isStagnant:        daysInStage > 30 && !['closed_won', 'closed_lost'].includes(deal.stage),
+    isStagnant:        daysInStage > 30 && !deal.is_terminal,
     closingImminently: daysUntilClose !== null && daysUntilClose >= 0 && daysUntilClose <= 7,
     isPastClose:       daysUntilClose !== null && daysUntilClose < 0,
   };
 }
+
+// ── Context builder ───────────────────────────────────────────────────────────
 
 async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles, userId) {
   const contacts = allContacts.filter(c => c.account_id === deal.account_id);
   const emails   = allEmails.filter(e => e.deal_id === deal.id);
   const meetings = allMeetings.filter(m => m.deal_id === deal.id);
   const files    = allFiles.filter(f => f.deal_id === deal.id);
-  const derived  = buildDerived(deal, contacts, emails, meetings, files);
+
+  // stage_type is stored on the deal row (backfilled by migration, kept in sync
+  // by the trg_sync_deal_stage_type trigger). Fall back to 'custom' if missing.
+  const stageType = deal.stage_type || 'custom';
+
+  const derived = buildDerived(deal, contacts, emails, meetings, files);
 
   let healthBreakdown = null;
   if (deal.health_score_breakdown) {
@@ -106,22 +121,35 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
     } catch (_) {}
   }
 
-  let playbookStageActions = [];
+  // Fetch both key_actions and full guidance for this stage_type
+  let playbookStageActions  = [];
+  let playbookStageGuidance = null;
   try {
-    playbookStageActions = await PlaybookService.getStageActions(userId, deal.stage);
-  } catch (_) {}
+    [playbookStageActions, playbookStageGuidance] = await Promise.all([
+      PlaybookService.getStageActions(userId, stageType),
+      PlaybookService.getStageGuidance(userId, stageType),
+    ]);
+  } catch (err) {
+    console.error('buildContext: PlaybookService error:', err.message);
+  }
 
   return {
-    deal, contacts, emails, meetings, files,
+    deal,
+    contacts,
+    emails,
+    meetings,
+    files,
     healthBreakdown,
-    healthStatus:        deal.health || null,
+    healthStatus:         deal.health      || null,
+    healthScore:          deal.health_score || null,
+    stageType,                                        // ← semantic type for AI Enhancer
     derived,
     playbookStageActions,
+    playbookStageGuidance,                            // ← full guidance for _fileRules etc.
   };
 }
 
 // ── DB insert helper ──────────────────────────────────────────────────────────
-// org_id is now the first column — always sourced from the deal, never the caller
 
 async function insertAction(action, userId, orgId) {
   const internal  = isInternalAction(action);
@@ -167,23 +195,36 @@ async function insertAction(action, userId, orgId) {
   );
 }
 
+// ── Terminal stage check ──────────────────────────────────────────────────────
+// Reads from deal_stages so org-specific terminal stages are respected.
+// Falls back to the is_terminal flag stored on the deal row (set by trigger).
+
+function isTerminalDeal(deal) {
+  // is_terminal is joined in by generateAll's query
+  return deal.is_terminal === true;
+}
+
 // ── Main class ────────────────────────────────────────────────────────────────
 
 class ActionsGenerator {
 
   // ── generateAll ─────────────────────────────────────────────────────────────
-  // Scoped to all orgs — runs for every active deal in every org.
-  // Each deal carries its own org_id so no cross-org contamination is possible.
 
   static async generateAll() {
     try {
       console.log('🤖 Starting ActionsRulesEngine — generating all actions...');
 
+      // Join deal_stages to get is_terminal flag — avoids hardcoded stage name list
       const [dealsRes, contactsRes, emailsRes, meetingsRes, filesRes] = await Promise.all([
-        db.query('SELECT * FROM deals         WHERE deleted_at IS NULL'),
-        db.query('SELECT * FROM contacts      WHERE deleted_at IS NULL'),
-        db.query('SELECT * FROM emails        WHERE deleted_at IS NULL'),
-        db.query('SELECT * FROM meetings      WHERE deleted_at IS NULL'),
+        db.query(`
+          SELECT d.*, ds.is_terminal, ds.stage_type AS stage_type_from_db
+          FROM deals d
+          LEFT JOIN deal_stages ds ON ds.org_id = d.org_id AND ds.key = d.stage
+          WHERE d.deleted_at IS NULL
+        `),
+        db.query('SELECT * FROM contacts  WHERE deleted_at IS NULL'),
+        db.query('SELECT * FROM emails    WHERE deleted_at IS NULL'),
+        db.query('SELECT * FROM meetings  WHERE deleted_at IS NULL'),
         db.query("SELECT * FROM storage_files WHERE processing_status = 'completed'"),
       ]);
 
@@ -203,10 +244,10 @@ class ActionsGenerator {
       let totalInserted  = 0;
 
       for (const deal of deals) {
-        if (['closed_won', 'closed_lost'].includes(deal.stage)) continue;
+        if (isTerminalDeal(deal)) continue;
 
         const userId = deal.owner_id;
-        const orgId  = deal.org_id;         // ← always from the deal row
+        const orgId  = deal.org_id;
 
         if (!userId) {
           console.warn(`⚠️  No owner_id on deal ${deal.id} (${deal.name}) — skipping`);
@@ -255,20 +296,26 @@ class ActionsGenerator {
   }
 
   // ── generateForDeal ─────────────────────────────────────────────────────────
-  // org_id is always derived from the deal row — never passed by the caller.
 
   static async generateForDeal(dealId) {
     try {
       console.log(`🤖 Generating actions for deal ${dealId}...`);
 
-      const dealResult = await db.query('SELECT * FROM deals WHERE id = $1', [dealId]);
+      const dealResult = await db.query(`
+        SELECT d.*, ds.is_terminal
+        FROM deals d
+        LEFT JOIN deal_stages ds ON ds.org_id = d.org_id AND ds.key = d.stage
+        WHERE d.id = $1
+      `, [dealId]);
+
       if (dealResult.rows.length === 0) return 0;
 
       const deal   = dealResult.rows[0];
       const userId = deal.owner_id;
       const orgId  = deal.org_id;
 
-      if (!userId || !orgId) return 0;
+      if (!userId || !orgId)  return 0;
+      if (isTerminalDeal(deal)) return 0;
 
       const [contactsRes, emailsRes, meetingsRes, filesRes] = await Promise.all([
         db.query('SELECT * FROM contacts      WHERE account_id = $1 AND org_id = $2',                       [deal.account_id, orgId]),
@@ -330,16 +377,12 @@ class ActionsGenerator {
   }
 
   // ── generateForStageChange ──────────────────────────────────────────────────
-  // userId is still accepted here (kept for backward compat) but orgId is
-  // derived from the deal inside generateForDeal — no need to pass it.
 
   static async generateForStageChange(dealId, newStage, userId) {
     try {
-      // Look up orgId from the deal so we can gate on config
       const dealRes = await db.query('SELECT org_id FROM deals WHERE id = $1', [dealId]);
       if (dealRes.rows.length === 0) return [];
       const orgId = dealRes.rows[0].org_id;
-
       const config = await ActionConfigService.getConfig(userId, orgId);
       if (config.generation_mode === 'manual') return [];
       return this.generateForDeal(dealId);

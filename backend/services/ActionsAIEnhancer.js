@@ -2,9 +2,15 @@
  * ActionsAIEnhancer.js
  *
  * Runs AFTER ActionsRulesEngine. Enhances actions with deal-specific context.
- * When enabled, AI can also override the fixed rule next_step with a
- * context-aware channel (e.g. if emails are being ignored → suggest 'call'
- * or 'linkedin' instead of the default 'email').
+ *
+ * Changes from previous version:
+ *   - Uses context.stageType (semantic type e.g. 'evaluation') instead of
+ *     deal.stage (raw key e.g. 'demo') in the AI prompt. This ensures the
+ *     AI understands the sales phase correctly regardless of what the org
+ *     has named the stage.
+ *   - Includes playbookStageGuidance.goal and success_criteria in the prompt
+ *     so the AI generates actions aligned with the org's playbook.
+ *   - AI can override the fixed rule next_step with a context-aware channel.
  */
 
 const { Anthropic } = require('@anthropic-ai/sdk');
@@ -12,6 +18,19 @@ const { Anthropic } = require('@anthropic-ai/sdk');
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const VALID_NEXT_STEPS = ['email', 'call', 'whatsapp', 'linkedin', 'slack', 'document', 'internal_task'];
+
+// Human-readable labels for stage types shown in the AI prompt
+const STAGE_TYPE_LABELS = {
+  awareness:   'Awareness / Top of Funnel',
+  discovery:   'Discovery / Qualification',
+  evaluation:  'Evaluation / Demo / POC',
+  proposal:    'Proposal / Pricing',
+  negotiation: 'Negotiation / Legal / Contract',
+  closing:     'Closing / Final Approval',
+  closed_won:  'Closed Won',
+  closed_lost: 'Closed Lost',
+  custom:      'Custom Stage',
+};
 
 class ActionsAIEnhancer {
 
@@ -43,8 +62,15 @@ class ActionsAIEnhancer {
   }
 
   static _buildPrompt(context, rulesActions) {
-    const { deal, contacts, meetings, emails, files,
-            healthBreakdown, healthScore, healthStatus, derived, playbookStageActions } = context;
+    const {
+      deal, contacts, meetings, emails, files,
+      healthBreakdown, healthScore, healthStatus, derived,
+      stageType, playbookStageGuidance,
+    } = context;
+
+    const stageLabel    = STAGE_TYPE_LABELS[stageType] || stageType;
+    const playbookGoal  = playbookStageGuidance?.goal || 'Not specified';
+    const successCriteria = (playbookStageGuidance?.success_criteria || []).join(', ') || 'Not specified';
 
     const existingTitles = rulesActions.map(a => `- ${a.title} [next_step: ${a.next_step}]`).join('\n');
 
@@ -88,7 +114,8 @@ For each action, choose the most effective NEXT STEP channel based on the deal c
 
 ## DEAL
 Name: ${deal.name}
-Stage: ${deal.stage}
+Stage name: ${deal.stage}
+Stage type: ${stageLabel}
 Value: $${parseFloat(deal.value || 0).toLocaleString()}
 Close date: ${deal.close_date ? new Date(deal.close_date).toLocaleDateString() : 'Not set'}
 Days until close: ${derived.daysUntilClose ?? 'Unknown'}
@@ -96,6 +123,10 @@ Health: ${healthStatus?.toUpperCase()} (score: ${healthScore ?? 'N/A'}/100)
 Days in current stage: ${derived.daysInStage}
 Meeting cadence: ${daysSinceMeeting}
 Days since last email: ${derived.daysSinceLastEmail >= 999 ? 'no emails on record' : derived.daysSinceLastEmail}
+
+## PLAYBOOK GUIDANCE FOR THIS STAGE
+Goal: ${playbookGoal}
+Success criteria: ${successCriteria}
 
 ## CONTACTS (${contacts.length} total)
 ${contactSummary || 'None'}
@@ -162,7 +193,6 @@ Return ONLY a JSON array. No markdown. No preamble. Each item:
           const due_date = new Date();
           due_date.setDate(due_date.getDate() + (parseInt(a.due_days) || 1));
 
-          // Validate next_step — fall back to 'email' if AI returns something invalid
           const next_step = VALID_NEXT_STEPS.includes(a.next_step) ? a.next_step : 'email';
 
           return {
@@ -177,7 +207,7 @@ Return ONLY a JSON array. No markdown. No preamble. Each item:
             contact_id:       null,
             account_id:       context.deal.account_id,
             suggested_action: a.suggested_action || null,
-            context:          a.reasoning || null,
+            context:          a.reasoning        || null,
             source:           'ai_generated',
             source_rule:      'ai_enhancer',
             metadata:         JSON.stringify({ confidence: a.confidence, reasoning: a.reasoning }),

@@ -12,33 +12,68 @@ import DealEmailHistory from './DealEmailHistory';
 import DealFilesPanel from './DealFilesPanel';
 import './DealsView.css';
 
+const API_BASE = process.env.REACT_APP_API_URL || '';
+
+// Hardcoded fallback — used only if /api/deal-stages/active fails.
+// Preserves full backward compatibility during the migration window.
+const FALLBACK_STAGES = [
+  { key: 'qualified',   name: 'Qualified',   is_terminal: false },
+  { key: 'demo',        name: 'Demo',        is_terminal: false },
+  { key: 'proposal',    name: 'Proposal',    is_terminal: false },
+  { key: 'negotiation', name: 'Negotiation', is_terminal: false },
+  { key: 'closed_won',  name: 'Closed Won',  is_terminal: true  },
+];
+
 function DealsView({ openDealId = null, onDealOpened = null }) {
-  const [deals, setDeals] = useState([]);
-  const [accounts, setAccounts] = useState([]);
-  const [meetings, setMeetings] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
+  const [deals, setDeals]             = useState([]);
+  const [accounts, setAccounts]       = useState([]);
+  const [meetings, setMeetings]       = useState([]);
+  const [loading, setLoading]         = useState(true);
+  const [showForm, setShowForm]       = useState(false);
   const [editingDeal, setEditingDeal] = useState(null);
   const [selectedDeal, setSelectedDeal] = useState(null);
-  const [error, setError] = useState('');
+  const [error, setError]             = useState('');
   const [showTranscriptUpload, setShowTranscriptUpload] = useState(false);
-  const [viewingTranscriptId, setViewingTranscriptId] = useState(null);
+  const [viewingTranscriptId, setViewingTranscriptId]   = useState(null);
   const [scoringDealId, setScoringDealId] = useState(null);
-  const [editingField, setEditingField] = useState(null); // { field, value } for inline editing
-  const [savingField, setSavingField] = useState(null);
+  const [editingField, setEditingField]   = useState(null);
+  const [savingField, setSavingField]     = useState(null);
+
+  // Dynamic stages state
+  const [orgStages, setOrgStages] = useState(FALLBACK_STAGES);
+
+  // Load org stages once on mount — silent fallback
+  useEffect(() => {
+    const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+    fetch(`${API_BASE}/api/deal-stages/active`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+      .then(data => {
+        if (data.stages?.length) {
+          setOrgStages(data.stages.map(s => ({
+            key:         s.key,
+            name:        s.name,
+            is_terminal: s.is_terminal,
+            sort_order:  s.sort_order,
+          })));
+        }
+      })
+      .catch(() => {
+        console.warn('DealsView: could not load org stages, using defaults');
+      });
+  }, []);
 
   useEffect(() => {
     fetchDeals();
   }, []);
 
-  // When App.js passes an openDealId (from "Go there" in ActionContextPanel),
-  // find that deal in state and open its detail panel automatically
+  // Open a deal from App.js navigation
   useEffect(() => {
     if (!openDealId || deals.length === 0) return;
     const target = deals.find(d => d.id === openDealId || d.id === parseInt(openDealId));
     if (target) {
       setSelectedDeal(target);
-      // Tell App.js we've consumed this so it doesn't re-trigger on re-renders
       if (onDealOpened) onDealOpened();
     }
   }, [openDealId, deals]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -48,8 +83,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
       setLoading(true);
       setError('');
 
-      // ✅ FIX 1: Removed .catch() fallbacks so real API errors are visible
-      // If this fails, check browser console for the actual error (401, 404, CORS, etc.)
       const [dealsRes, accountsRes, meetingsRes] = await Promise.all([
         apiService.deals.getAll(),
         apiService.accounts.getAll(),
@@ -68,10 +101,8 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
       setDeals(enrichedData.deals);
       setAccounts(enrichedData.accounts);
       setMeetings(enrichedData.meetings);
-
     } catch (err) {
       console.error('Error fetching deals:', err);
-      // Show the real error message so you can diagnose it
       setError(`Failed to load deals: ${err.message}`);
     } finally {
       setLoading(false);
@@ -81,20 +112,16 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
   const handleCreateDeal = async (dealData) => {
     try {
       const response = await apiService.deals.create(dealData);
-      const newDeal = response.data.deal || response.data;
-      
-      // Enrich the new deal
-      const account = accounts.find(a => a.id === newDeal.account_id);
-      const enrichedDeal = { ...newDeal, account };
-      
-      setDeals([...deals, enrichedDeal]);
+      const newDeal  = response.data.deal || response.data;
+      const account  = accounts.find(a => a.id === newDeal.account_id);
+      setDeals([...deals, { ...newDeal, account }]);
       setShowForm(false);
       setError('');
     } catch (err) {
       console.error('Error creating deal:', err);
-      const newDeal = { 
-        ...dealData, 
-        id: Date.now(),
+      const newDeal = {
+        ...dealData,
+        id:      Date.now(),
         account: accounts.find(a => a.id === dealData.account_id)
       };
       setDeals([...deals, newDeal]);
@@ -104,44 +131,31 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
 
   const handleUpdateDeal = async (dealData) => {
     try {
-      const response = await apiService.deals.update(editingDeal.id, dealData);
+      const response   = await apiService.deals.update(editingDeal.id, dealData);
       const updatedDeal = response.data.deal || response.data;
-      
-      // Enrich the updated deal
-      const account = accounts.find(a => a.id === updatedDeal.account_id);
-      const enrichedDeal = { ...updatedDeal, account };
-      
-      setDeals(deals.map(d => d.id === editingDeal.id ? enrichedDeal : d));
+      const account    = accounts.find(a => a.id === updatedDeal.account_id);
+      setDeals(deals.map(d => d.id === editingDeal.id ? { ...updatedDeal, account } : d));
       setEditingDeal(null);
       setError('');
     } catch (err) {
       console.error('Error updating deal:', err);
       const account = accounts.find(a => a.id === dealData.account_id);
-      setDeals(deals.map(d => 
-        d.id === editingDeal.id ? { ...d, ...dealData, account } : d
-      ));
+      setDeals(deals.map(d => d.id === editingDeal.id ? { ...d, ...dealData, account } : d));
       setEditingDeal(null);
     }
   };
 
   const handleDeleteDeal = async (dealId) => {
-    if (!window.confirm('Are you sure you want to delete this deal?')) {
-      return;
-    }
-
+    if (!window.confirm('Are you sure you want to delete this deal?')) return;
     try {
       await apiService.deals.delete(dealId);
       setDeals(deals.filter(d => d.id !== dealId));
-      if (selectedDeal?.id === dealId) {
-        setSelectedDeal(null);
-      }
+      if (selectedDeal?.id === dealId) setSelectedDeal(null);
       setError('');
     } catch (err) {
       console.error('Error deleting deal:', err);
       setDeals(deals.filter(d => d.id !== dealId));
-      if (selectedDeal?.id === dealId) {
-        setSelectedDeal(null);
-      }
+      if (selectedDeal?.id === dealId) setSelectedDeal(null);
     }
   };
 
@@ -150,8 +164,11 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
       setScoringDealId(dealId);
       const response = await apiService.health.scoreDeal(dealId);
       const { score, health, breakdown } = response.data.result;
-      // Update the deal in state with new score
-      const update = { health, health_score: score, health_score_breakdown: breakdown, health_score_updated_at: new Date().toISOString() };
+      const update = {
+        health, health_score: score,
+        health_score_breakdown: breakdown,
+        health_score_updated_at: new Date().toISOString()
+      };
       setDeals(deals.map(d => d.id === dealId ? { ...d, ...update } : d));
       if (selectedDeal?.id === dealId) setSelectedDeal(prev => ({ ...prev, ...update }));
     } catch (err) {
@@ -161,20 +178,18 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
     }
   };
 
-
   const handleInlineFieldSave = async (field, value) => {
     if (!selectedDeal) return;
     setSavingField(field);
     try {
       const payload = { [field]: value };
-      // Coerce types
       if (field === 'value')       payload.value       = parseFloat(value);
       if (field === 'probability') payload.probability = parseInt(value);
       if (field === 'account_id')  payload.account_id  = parseInt(value);
 
       const response = await apiService.deals.update(selectedDeal.id, payload);
-      const updated = response.data.deal || response.data;
-      const account = accounts.find(a => a.id === (updated.account_id || payload.account_id));
+      const updated  = response.data.deal || response.data;
+      const account  = accounts.find(a => a.id === (updated.account_id || payload.account_id));
       const enriched = { ...selectedDeal, ...updated, account };
       setDeals(prev => prev.map(d => d.id === selectedDeal.id ? enriched : d));
       setSelectedDeal(enriched);
@@ -186,25 +201,23 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
     }
   };
 
-  const getDealMeetings = (dealId) => {
-    return meetings.filter(m => m.deal_id === dealId);
-  };
+  const getDealMeetings = (dealId) => meetings.filter(m => m.deal_id === dealId);
 
-  const groupedDeals = {
-    qualified: deals.filter(d => d.stage === 'qualified'),
-    demo: deals.filter(d => d.stage === 'demo'),
-    proposal: deals.filter(d => d.stage === 'proposal'),
-    negotiation: deals.filter(d => d.stage === 'negotiation'),
-    closed_won: deals.filter(d => d.stage === 'closed_won')
-  };
+  // ── Pipeline board: group deals by stage key, follow orgStages order ────────
+  // Only show non-terminal stages in the pipeline board (terminal stages like
+  // closed_won / closed_lost don't need a visible column, but still work for
+  // filtering). Closed Won column is shown separately below if desired.
+  const pipelineStages  = orgStages.filter(s => !s.is_terminal);
+  const terminalStages  = orgStages.filter(s => s.is_terminal);
+  const allBoardStages  = [...pipelineStages, ...terminalStages.slice(0, 1)]; // show first terminal (won)
 
-  const stages = [
-    { id: 'qualified', label: 'Qualified' },
-    { id: 'demo', label: 'Demo' },
-    { id: 'proposal', label: 'Proposal' },
-    { id: 'negotiation', label: 'Negotiation' },
-    { id: 'closed_won', label: 'Closed Won' }
-  ];
+  const groupedDeals = {};
+  orgStages.forEach(s => {
+    groupedDeals[s.key] = deals.filter(d => d.stage === s.key);
+  });
+  // Catch any deals in stages not yet in orgStages (e.g. legacy data)
+  const knownKeys = new Set(orgStages.map(s => s.key));
+  const unknownDeals = deals.filter(d => !knownKeys.has(d.stage));
 
   if (loading) {
     return (
@@ -232,11 +245,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
         </button>
       </div>
 
-      {error && (
-        <div className="error-banner">
-          ⚠️ {error}
-        </div>
-      )}
+      {error && <div className="error-banner">⚠️ {error}</div>}
 
       {/* Pipeline Stats */}
       <div className="pipeline-stats">
@@ -252,7 +261,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
         </div>
         <div className="stat-card">
           <div className="stat-value">
-            {deals.length > 0 
+            {deals.length > 0
               ? Math.round(deals.reduce((sum, d) => sum + (d.probability || 0), 0) / deals.length)
               : 0}%
           </div>
@@ -260,21 +269,22 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
         </div>
       </div>
 
-      {/* Deals Container with Pipeline and Detail Panel */}
+      {/* Deals Container */}
       <div className={`deals-container ${selectedDeal ? 'with-panel' : ''}`}>
-        {/* Pipeline View */}
+
+        {/* Pipeline Board — columns driven by orgStages */}
         <div className="pipeline-board">
-          {stages.map(stage => (
-            <div key={stage.id} className="pipeline-stage">
+          {allBoardStages.map(stage => (
+            <div key={stage.key} className="pipeline-stage">
               <div className="stage-header">
-                <h3>{stage.label}</h3>
-                <span className="stage-count">{groupedDeals[stage.id].length}</span>
+                <h3>{stage.name}</h3>
+                <span className="stage-count">{(groupedDeals[stage.key] || []).length}</span>
               </div>
               <div className="stage-content">
-                {groupedDeals[stage.id].length === 0 ? (
+                {(groupedDeals[stage.key] || []).length === 0 ? (
                   <div className="empty-stage">No deals</div>
                 ) : (
-                  groupedDeals[stage.id].map(deal => (
+                  (groupedDeals[stage.key] || []).map(deal => (
                     <DealCard
                       key={deal.id}
                       deal={deal}
@@ -288,6 +298,28 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
               </div>
             </div>
           ))}
+
+          {/* Catch-all column for deals with unrecognised stages (legacy data safety net) */}
+          {unknownDeals.length > 0 && (
+            <div className="pipeline-stage">
+              <div className="stage-header">
+                <h3>Other</h3>
+                <span className="stage-count">{unknownDeals.length}</span>
+              </div>
+              <div className="stage-content">
+                {unknownDeals.map(deal => (
+                  <DealCard
+                    key={deal.id}
+                    deal={deal}
+                    onEdit={() => setEditingDeal(deal)}
+                    onDelete={() => handleDeleteDeal(deal.id)}
+                    onSelect={() => setSelectedDeal(deal)}
+                    isSelected={selectedDeal?.id === deal.id}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Deal Detail Panel */}
@@ -332,7 +364,8 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                             if (e.key === 'Escape') setEditingField(null);
                           }}
                         />
-                        <button className="inline-save-btn" disabled={savingField === 'value'} onClick={() => handleInlineFieldSave('value', editingField.value)}>✓</button>
+                        <button className="inline-save-btn" disabled={savingField === 'value'}
+                          onClick={() => handleInlineFieldSave('value', editingField.value)}>✓</button>
                         <button className="inline-cancel-btn" onClick={() => setEditingField(null)}>✕</button>
                       </div>
                     ) : (
@@ -346,7 +379,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                     )}
                   </div>
 
-                  {/* Stage — inline select */}
+                  {/* Stage — inline select, options from orgStages */}
                   <div className="detail-item">
                     <span className="detail-label">Stage</span>
                     {editingField?.field === 'stage' ? (
@@ -358,12 +391,9 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                         onBlur={() => setEditingField(null)}
                         onKeyDown={e => e.key === 'Escape' && setEditingField(null)}
                       >
-                        <option value="qualified">Qualified</option>
-                        <option value="demo">Demo</option>
-                        <option value="proposal">Proposal</option>
-                        <option value="negotiation">Negotiation</option>
-                        <option value="closed_won">Closed Won</option>
-                        <option value="closed_lost">Closed Lost</option>
+                        {orgStages.map(s => (
+                          <option key={s.key} value={s.key}>{s.name}</option>
+                        ))}
                       </select>
                     ) : (
                       <span
@@ -371,7 +401,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                         onClick={() => setEditingField({ field: 'stage', value: selectedDeal.stage })}
                         title="Click to edit"
                       >
-                        {stages.find(s => s.id === selectedDeal.stage)?.label || selectedDeal.stage} ✏️
+                        {orgStages.find(s => s.key === selectedDeal.stage)?.name || selectedDeal.stage} ✏️
                       </span>
                     )}
                   </div>
@@ -393,7 +423,8 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                             if (e.key === 'Escape') setEditingField(null);
                           }}
                         />
-                        <button className="inline-save-btn" disabled={savingField === 'probability'} onClick={() => handleInlineFieldSave('probability', editingField.value)}>✓</button>
+                        <button className="inline-save-btn" disabled={savingField === 'probability'}
+                          onClick={() => handleInlineFieldSave('probability', editingField.value)}>✓</button>
                         <button className="inline-cancel-btn" onClick={() => setEditingField(null)}>✕</button>
                       </div>
                     ) : (
@@ -443,13 +474,19 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                             if (e.key === 'Escape') setEditingField(null);
                           }}
                         />
-                        <button className="inline-save-btn" disabled={savingField === 'expected_close_date'} onClick={() => handleInlineFieldSave('expected_close_date', editingField.value)}>✓</button>
+                        <button className="inline-save-btn" disabled={savingField === 'expected_close_date'}
+                          onClick={() => handleInlineFieldSave('expected_close_date', editingField.value)}>✓</button>
                         <button className="inline-cancel-btn" onClick={() => setEditingField(null)}>✕</button>
                       </div>
                     ) : (
                       <span
                         className="detail-value--editable"
-                        onClick={() => setEditingField({ field: 'expected_close_date', value: selectedDeal.expected_close_date ? selectedDeal.expected_close_date.split('T')[0] : '' })}
+                        onClick={() => setEditingField({
+                          field: 'expected_close_date',
+                          value: selectedDeal.expected_close_date
+                            ? selectedDeal.expected_close_date.split('T')[0]
+                            : ''
+                        })}
                         title="Click to edit"
                       >
                         {selectedDeal.expected_close_date
@@ -501,8 +538,8 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                       </span>
                     )}
                   </div>
-                </div>
 
+                </div>
               </div>
 
               {/* ── 2. Actions / Tasks ──────────────────────────── */}
@@ -528,7 +565,9 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                       <div
                         key={meeting.id}
                         className="linked-item linked-item--clickable"
-                        onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'calendar', meetingId: meeting.id } }))}
+                        onClick={() => window.dispatchEvent(new CustomEvent('navigate', {
+                          detail: { tab: 'calendar', meetingId: meeting.id }
+                        }))}
                         title="View in Calendar"
                       >
                         <span className="item-icon">📅</span>
@@ -567,10 +606,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
               <div className="detail-section">
                 <h3>🛠️ Modify Deal Details</h3>
                 <div className="quick-actions">
-                  <button
-                    className="btn-action"
-                    onClick={() => setEditingDeal(selectedDeal)}
-                  >
+                  <button className="btn-action" onClick={() => setEditingDeal(selectedDeal)}>
                     ✏️ Edit Deal
                   </button>
                   <button
@@ -579,16 +615,13 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                   >
                     🗑️ Delete Deal
                   </button>
-                  <button
-                    className="btn-action"
-                    onClick={() => setShowTranscriptUpload(true)}
-                  >
+                  <button className="btn-action" onClick={() => setShowTranscriptUpload(true)}>
                     📝 Upload Meeting Transcript
                   </button>
                 </div>
               </div>
 
-              {/* ── 8. Notes ────────────────────────────────────── */}
+              {/* ── 9. Notes ────────────────────────────────────── */}
               {selectedDeal.notes && (
                 <div className="detail-section">
                   <h3>📝 Notes</h3>
@@ -633,50 +666,31 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
           onClose={() => setViewingTranscriptId(null)}
         />
       )}
-
-      {/* Health Config moved to Settings → Deal Health */}
     </div>
   );
 }
 
 function DealCard({ deal, onEdit, onDelete, onSelect, isSelected }) {
   const account = deal.account || { name: 'Unknown Account' };
-  
   return (
-    <div 
+    <div
       className={`deal-card ${isSelected ? 'selected' : ''}`}
       onClick={onSelect}
     >
       <div className="deal-card-header">
         <h4>{deal.name}</h4>
         <div className="deal-actions">
-          <button 
-            onClick={(e) => { e.stopPropagation(); onEdit(); }} 
-            className="icon-btn" 
-            title="Edit"
-          >
-            ✏️
-          </button>
-          <button 
-            onClick={(e) => { e.stopPropagation(); onDelete(); }} 
-            className="icon-btn" 
-            title="Delete"
-          >
-            🗑️
-          </button>
+          <button onClick={(e) => { e.stopPropagation(); onEdit(); }} className="icon-btn" title="Edit">✏️</button>
+          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="icon-btn" title="Delete">🗑️</button>
         </div>
       </div>
       <p className="deal-company">{account.name}</p>
       <p className="deal-value">${parseFloat(deal.value || 0).toLocaleString()}</p>
-      <div className={`deal-health ${deal.health}`}>
-        ● {deal.health}
-      </div>
+      <div className={`deal-health ${deal.health}`}>● {deal.health}</div>
       <p className="deal-date">
         Close: {deal.expected_close_date ? new Date(deal.expected_close_date).toLocaleDateString() : 'Not set'}
       </p>
-      <div className="deal-probability">
-        {deal.probability || 50}% likely
-      </div>
+      <div className="deal-probability">{deal.probability || 50}% likely</div>
     </div>
   );
 }

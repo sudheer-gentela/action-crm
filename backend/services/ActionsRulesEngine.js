@@ -2,74 +2,77 @@
  * ActionsRulesEngine.js
  *
  * Pure rules-based action generation. Zero AI cost.
- * Each action now carries both:
+ *
+ * STAGE STRATEGY (Option B — Playbook-Driven):
+ *   Stage-specific rules have been removed from this engine.
+ *   All stage-specific intelligence now flows through:
+ *     1. context.playbookStageActions  — key_actions from the org's playbook
+ *                                        for the deal's current stage_type
+ *     2. context.playbookStageGuidance — full guidance object (goal, timeline,
+ *                                        requires_proposal_doc, etc.)
+ *     3. ActionsAIEnhancer             — uses stage_type as semantic context
+ *
+ *   This means orgs can name their stages anything they want. The rules engine
+ *   operates on deal health, contacts, meetings, emails, and files — none of
+ *   which depend on stage names.
+ *
+ *   The only stage-aware logic retained here is:
+ *     - _fileRules: reads playbookStageGuidance.requires_proposal_doc (data-driven)
+ *     - _fileRules: reads playbookStageGuidance.active_stage (data-driven)
+ *     - Stagnant / imminent close / past close — timing rules, not stage-name rules
+ *
+ * Each action carries both:
  *   action_type — the GOAL (meeting_schedule, document_prep, etc.)
  *   next_step   — the IMMEDIATE ACTION to take right now
  *                 one of: email | call | whatsapp | linkedin | slack | document | internal_task
- *
- * next_step mapping rationale:
- *   - Anything that schedules a meeting       → email  (you email to book it)
- *   - Slow/unresponsive contact               → call   (switch channel)
- *   - Unanswered emails (>7 days)             → call   (email isn't working)
- *   - Unanswered emails (3-7 days)            → email  (one more try)
- *   - Stakeholder nurture / champion          → email
- *   - Document creation / internal review     → document / internal_task
- *   - Internal strategy / checklist items     → internal_task
- *   - Stagnant deal re-engagement             → email
- *   - Slow response (6b) — different channel  → call
  */
 
 const PlaybookService = require('./playbook.service');
 
 // ── next_step per source_rule ─────────────────────────────────────────────────
-// Deterministic mapping. AI Enhancer can override per-deal when enabled.
 const RULE_NEXT_STEP = {
   // Health params
   health_1a_unknown:        'email',
-  health_1b_slipped:        'call',         // candid check-in is better as a call
+  health_1b_slipped:        'call',
   health_1c_unknown:        'email',
-  health_2a_no_buyer:       'email',        // ask champion via email
-  health_2b_no_exec:        'email',        // ask champion to facilitate intro
-  health_2c_single_thread:  'internal_task',// internal mapping exercise
+  health_2a_no_buyer:       'email',
+  health_2b_no_exec:        'email',
+  health_2c_single_thread:  'internal_task',
   health_3a_legal:          'email',
   health_3b_security:       'email',
   health_4c_scope:          'email',
-  health_4a_oversized:      'internal_task',// internal review with manager
-  health_5a_competitive:    'document',     // prep battlecard
-  health_5b_price:          'document',     // prep ROI doc
-  health_5c_discount:       'slack',        // internal approval escalation
-  health_6a_no_meeting:     'email',        // send time slots
-  health_6b_slow_response:  'call',         // switch channel — email not working
+  health_4a_oversized:      'internal_task',
+  health_5a_competitive:    'document',
+  health_5b_price:          'document',
+  health_5c_discount:       'slack',
+  health_6a_no_meeting:     'email',
+  health_6b_slow_response:  'call',
 
-  // Deal stage rules
-  stagnant_deal:                  'email',
-  close_imminent:                 'internal_task',
-  past_close_date:                'internal_task',
-  high_value_no_meeting:          'email',
-  stage_qualified_no_discovery:   'email',
-  stage_demo_no_demo:             'email',
-  stage_proposal_followup:        'email',
-  stage_negotiation_blockers:     'call',    // negotiation blockers need a call
+  // Deal timing rules (stage-name-agnostic)
+  stagnant_deal:            'email',
+  close_imminent:           'internal_task',
+  past_close_date:          'internal_task',
+  high_value_no_meeting:    'email',
 
   // Contact rules
-  no_contacts:                    'internal_task',
-  decision_maker_no_contact:      'email',
-  champion_nurture:               'email',
+  no_contacts:              'internal_task',
+  decision_maker_no_contact:'email',
+  champion_nurture:         'email',
 
   // Meeting rules
-  meeting_prep:                   'internal_task',
-  meeting_followup:               'email',
+  meeting_prep:             'internal_task',
+  meeting_followup:         'email',
 
   // Email rules
-  unanswered_email:               'call',    // email not working — switch to call
+  unanswered_email:         'call',
 
   // File rules
-  no_files:                       'internal_task',
-  failed_file:                    'internal_task',
-  no_proposal_doc:                'document',
+  no_files:                 'internal_task',
+  failed_file:              'internal_task',
+  no_proposal_doc:          'document',
 
-  // Playbook
-  playbook:                       'email',   // default, AI can override
+  // Playbook-driven (AI Enhancer can override per-deal)
+  playbook:                 'email',
 };
 
 class ActionsRulesEngine {
@@ -77,7 +80,7 @@ class ActionsRulesEngine {
   static generate(context) {
     const actions = [];
     this._healthParamRules(context, actions);
-    this._dealStageRules(context, actions);
+    this._dealTimingRules(context, actions);
     this._contactRules(context, actions);
     this._meetingRules(context, actions);
     this._emailRules(context, actions);
@@ -88,6 +91,7 @@ class ActionsRulesEngine {
 
   // ─────────────────────────────────────────────────────────────────────────
   // A. HEALTH SCORE PARAMETER RULES
+  // Unchanged — all health rules are parameter-driven, not stage-name-driven.
   // ─────────────────────────────────────────────────────────────────────────
 
   static _healthParamRules(ctx, actions) {
@@ -328,12 +332,17 @@ class ActionsRulesEngine {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // B. DEAL STAGE + TIMING RULES
+  // B. DEAL TIMING RULES
+  //
+  // Renamed from _dealStageRules. These rules fire on timing signals
+  // (stagnant, imminent close, past close, high value) — none depend on
+  // stage names. Stage-specific actions (schedule discovery call, send
+  // proposal follow-up, etc.) are now entirely handled by _playbookRules.
   // ─────────────────────────────────────────────────────────────────────────
 
-  static _dealStageRules(ctx, actions) {
+  static _dealTimingRules(ctx, actions) {
     const { deal, derived } = ctx;
-    const { stage, name: dealName, id: dealId, account_id } = deal;
+    const { name: dealName, id: dealId, account_id } = deal;
 
     if (derived.isStagnant) {
       actions.push(this._action({
@@ -367,21 +376,21 @@ class ActionsRulesEngine {
       const overdue = Math.abs(derived.daysUntilClose);
       actions.push(this._action({
         title:            `${dealName} is ${overdue} day${overdue !== 1 ? 's' : ''} past close date`,
-        description:      `Deal has passed its close date without closing. Update or escalate.`,
+        description:      `Deal has missed its close date. Update the forecast or drive to close immediately.`,
         action_type:      'task_complete',
         priority:         'high',
         due_days:         0,
         deal_id:          dealId,
         account_id,
-        suggested_action: 'Update close date with new forecast. If no clear path forward, discuss internally whether to re-qualify or close as lost.',
+        suggested_action: 'Call the decision maker today. Either get a firm new close date with written commitment, or update the CRM to reflect the new reality.',
         source_rule:      'past_close_date',
       }));
     }
 
-    if (derived.isHighValue && derived.daysSinceLastMeeting > 7) {
+    if (derived.isHighValue && derived.completedMeetings.length === 0) {
       const meetingDisplay = derived.daysSinceLastMeeting >= 999
         ? 'no meetings on record'
-        : `no meeting in ${derived.daysSinceLastMeeting} days`;
+        : `${derived.daysSinceLastMeeting} days since last meeting`;
       actions.push(this._action({
         title:            `High-value deal ${dealName} needs executive touchpoint`,
         description:      `$${parseFloat(deal.value || 0).toLocaleString()} deal with ${meetingDisplay}.`,
@@ -394,66 +403,10 @@ class ActionsRulesEngine {
         source_rule:      'high_value_no_meeting',
       }));
     }
-
-    if (stage === 'qualified' && derived.completedMeetings.length === 0) {
-      actions.push(this._action({
-        title:            `Schedule discovery call for ${dealName}`,
-        description:      `Qualified deal with no discovery meeting yet.`,
-        action_type:      'meeting_schedule',
-        priority:         'high',
-        due_days:         1,
-        deal_id:          dealId,
-        account_id,
-        suggested_action: 'Email to book a 45-minute discovery call. Prepare MEDDIC questions: Metrics, Economic Buyer, Decision Criteria, Decision Process, Identify Pain, Champion.',
-        source_rule:      'stage_qualified_no_discovery',
-      }));
-    }
-
-    if (stage === 'demo' && !derived.completedMeetings.some(m => (m.meeting_type || '').includes('demo'))) {
-      actions.push(this._action({
-        title:            `Schedule product demo for ${dealName}`,
-        description:      `Deal is in demo stage but no demo meeting recorded.`,
-        action_type:      'meeting_schedule',
-        priority:         'high',
-        due_days:         2,
-        deal_id:          dealId,
-        account_id,
-        suggested_action: 'Email to schedule the demo. Confirm attendees include at least one decision maker and customise the agenda to their use cases.',
-        source_rule:      'stage_demo_no_demo',
-      }));
-    }
-
-    if (stage === 'proposal' && derived.daysSinceLastEmail > 3) {
-      actions.push(this._action({
-        title:            `Follow up on proposal for ${dealName}`,
-        description:      `Proposal stage with no email contact in ${derived.daysSinceLastEmail} days.`,
-        action_type:      'email_send',
-        priority:         derived.daysSinceLastEmail > 7 ? 'high' : 'medium',
-        due_days:         0,
-        deal_id:          dealId,
-        account_id,
-        suggested_action: 'Send a short follow-up: "Just checking in on the proposal — any questions, or anything I can clarify?"',
-        source_rule:      'stage_proposal_followup',
-      }));
-    }
-
-    if (stage === 'negotiation') {
-      actions.push(this._action({
-        title:            `Check negotiation blockers for ${dealName}`,
-        description:      `Deal is in negotiation — identify and address any remaining blockers.`,
-        action_type:      'task_complete',
-        priority:         'high',
-        due_days:         1,
-        deal_id:          dealId,
-        account_id,
-        suggested_action: 'Call to review: open pricing, legal, or scope issues? Who needs to approve? What is their internal process timeline?',
-        source_rule:      'stage_negotiation_blockers',
-      }));
-    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // C. CONTACT ENGAGEMENT RULES
+  // C. CONTACT ENGAGEMENT RULES — unchanged
   // ─────────────────────────────────────────────────────────────────────────
 
   static _contactRules(ctx, actions) {
@@ -518,7 +471,7 @@ class ActionsRulesEngine {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // D. MEETING RULES
+  // D. MEETING RULES — unchanged
   // ─────────────────────────────────────────────────────────────────────────
 
   static _meetingRules(ctx, actions) {
@@ -565,7 +518,7 @@ class ActionsRulesEngine {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // E. EMAIL RULES
+  // E. EMAIL RULES — unchanged
   // ─────────────────────────────────────────────────────────────────────────
 
   static _emailRules(ctx, actions) {
@@ -573,7 +526,6 @@ class ActionsRulesEngine {
 
     derived.unansweredEmails.slice(0, 2).forEach(email => {
       const daysSince = Math.floor((Date.now() - new Date(email.sent_at)) / 86400000);
-      // Switch to call if email has been ignored > 7 days
       const switchToCall = daysSince > 7;
       actions.push(this._action({
         title:            `Follow up on unanswered email: "${(email.subject || '').substring(0, 50)}"`,
@@ -588,7 +540,6 @@ class ActionsRulesEngine {
           ? 'Email has been ignored — switch to a phone call. Keep it short: "Just following up on my email from last week — still relevant for you?"'
           : 'Send one more short follow-up email: "Just following up — still relevant for you?"',
         source_rule:      'unanswered_email',
-        // Override next_step based on days — call if ignored >7d
         _next_step_override: switchToCall ? 'call' : 'email',
       }));
     });
@@ -596,13 +547,23 @@ class ActionsRulesEngine {
 
   // ─────────────────────────────────────────────────────────────────────────
   // F. FILE RULES
+  //
+  // Previously hardcoded stage name lists. Now reads from playbookStageGuidance:
+  //   - requires_proposal_doc: boolean — whether this stage needs a proposal doc
+  //   - is_active_stage:       boolean — whether to prompt for file uploads
+  //
+  // Falls back to safe defaults if guidance is not available.
   // ─────────────────────────────────────────────────────────────────────────
 
   static _fileRules(ctx, actions) {
-    const { deal, files, derived } = ctx;
-    const activeStages = ['demo', 'proposal', 'negotiation', 'closing'];
+    const { deal, files, derived, playbookStageGuidance } = ctx;
 
-    if (files.length === 0 && activeStages.includes(deal.stage)) {
+    // Determine file-related flags from playbook guidance (data-driven)
+    // is_terminal stages (closed_won, closed_lost) have no guidance — skip
+    const requiresProposalDoc = playbookStageGuidance?.requires_proposal_doc ?? false;
+    const isActiveStage       = !['closed_won', 'closed_lost'].includes(deal.stage_type);
+
+    if (files.length === 0 && isActiveStage) {
       actions.push(this._action({
         title:            `Upload relevant documents for ${deal.name}`,
         description:      `No files uploaded for this deal. Proposals, contracts, and meeting notes help AI generate better actions.`,
@@ -630,7 +591,7 @@ class ActionsRulesEngine {
       }));
     });
 
-    if (['proposal', 'negotiation'].includes(deal.stage)) {
+    if (requiresProposalDoc) {
       const hasProposal = files.some(f =>
         f.category === 'document' &&
         /proposal|quote|pricing|sow|contract/i.test(f.file_name)
@@ -638,7 +599,7 @@ class ActionsRulesEngine {
       if (!hasProposal) {
         actions.push(this._action({
           title:            `Prepare proposal document for ${deal.name}`,
-          description:      `Deal is in ${deal.stage} stage but no proposal document found.`,
+          description:      `This stage requires a proposal document but none has been uploaded.`,
           action_type:      'document_prep',
           priority:         'high',
           due_days:         2,
@@ -653,21 +614,26 @@ class ActionsRulesEngine {
 
   // ─────────────────────────────────────────────────────────────────────────
   // G. PLAYBOOK RULES
+  //
+  // Converts the key_actions array from the stage's playbook guidance into
+  // individual actions. This is where stage-specific intelligence now lives.
+  // The playbookStageActions array is populated in actionsGenerator.buildContext()
+  // by calling PlaybookService.getStageActions(userId, deal.stage_type).
   // ─────────────────────────────────────────────────────────────────────────
 
   static _playbookRules(ctx, actions) {
-    const { deal, playbookStageActions } = ctx;
+    const { deal, playbookStageActions, playbookStageGuidance } = ctx;
     if (!playbookStageActions?.length) return;
 
     playbookStageActions.forEach(actionText => {
       const actionType = PlaybookService.classifyActionType(actionText);
-      const priority   = PlaybookService.suggestPriority(deal.stage, actionType);
-      const dueDays    = PlaybookService.suggestDueDays(deal.stage, actionType);
+      const priority   = PlaybookService.suggestPriority(deal.stage_type || deal.stage, actionType);
+      const dueDays    = PlaybookService.suggestDueDays(deal.stage_type || deal.stage, actionType);
       const keywords   = PlaybookService.extractKeywords(actionText);
 
       actions.push(this._action({
         title:            actionText,
-        description:      `Playbook action for ${deal.stage} stage`,
+        description:      `Playbook action for ${playbookStageGuidance?.goal || deal.stage_type || deal.stage} stage`,
         action_type:      actionType,
         priority,
         due_days:         dueDays,
@@ -675,7 +641,7 @@ class ActionsRulesEngine {
         account_id:       deal.account_id,
         keywords,
         requires_external_evidence: PlaybookService.requiresExternalEvidence(actionType, actionText),
-        deal_stage:       deal.stage,
+        deal_stage:       deal.stage_type || deal.stage,
         source_rule:      'playbook',
         source:           'playbook',
       }));
@@ -683,7 +649,7 @@ class ActionsRulesEngine {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Helpers
+  // Helpers — unchanged
   // ─────────────────────────────────────────────────────────────────────────
 
   static _action({
@@ -692,12 +658,11 @@ class ActionsRulesEngine {
     suggested_action = null, health_param = null,
     keywords = null, requires_external_evidence = false,
     deal_stage = null, source_rule = 'rules', source = 'auto_generated',
-    _next_step_override = null,   // internal use only — for dynamic next_step
+    _next_step_override = null,
   }) {
     const due_date = new Date();
     due_date.setDate(due_date.getDate() + (due_days || 0));
 
-    // Resolve next_step: dynamic override first, then rule lookup, then fallback
     const next_step = _next_step_override
       || RULE_NEXT_STEP[source_rule]
       || this._inferNextStep(action_type);
@@ -723,7 +688,6 @@ class ActionsRulesEngine {
     };
   }
 
-  /** Fallback: infer next_step from action_type when no rule mapping exists */
   static _inferNextStep(action_type) {
     switch (action_type) {
       case 'email_send':
@@ -731,11 +695,11 @@ class ActionsRulesEngine {
       case 'follow_up':
       case 'meeting_schedule': return 'email';
       case 'document_prep':
-      case 'document':        return 'document';
+      case 'document':         return 'document';
       case 'task_complete':
       case 'review':
-      case 'meeting_prep':    return 'internal_task';
-      default:                return 'email';
+      case 'meeting_prep':     return 'internal_task';
+      default:                 return 'email';
     }
   }
 

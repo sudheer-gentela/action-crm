@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// playbooks.routes.js  —  Multi-playbook CRUD
+// playbooks.routes.js  —  Multi-playbook CRUD + per-stage guidance
 // Mount in server.js: app.use('/api/playbooks', require('./routes/playbooks.routes'));
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -8,10 +8,17 @@ const router  = express.Router();
 const db      = require('../config/database');
 const authenticateToken              = require('../middleware/auth.middleware');
 const { orgContext, requireRole }    = require('../middleware/orgContext.middleware');
+const PlaybookService                = require('../services/playbook.service');
 
 router.use(authenticateToken, orgContext);
 
 const adminOnly = requireRole('owner', 'admin');
+
+// Valid stage_type values — must match deal_stages CHECK constraint
+const VALID_STAGE_TYPES = [
+  'awareness', 'discovery', 'evaluation', 'proposal',
+  'negotiation', 'closing', 'closed_won', 'closed_lost', 'custom',
+];
 
 // ── GET / — list all playbooks for org ───────────────────────────────────────
 router.get('/', async (req, res) => {
@@ -30,25 +37,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ── GET /:id — get one playbook with full content ─────────────────────────────
-router.get('/:id', async (req, res) => {
-  try {
-    const result = await db.query(
-      `SELECT * FROM playbooks WHERE id = $1 AND org_id = $2`,
-      [req.params.id, req.orgId]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'Playbook not found' } });
-    }
-    res.json({ playbook: result.rows[0] });
-  } catch (err) {
-    console.error('Get playbook error:', err);
-    res.status(500).json({ error: { message: err.message } });
-  }
-});
-
 // ── GET /default — get the org default playbook ───────────────────────────────
-// Used by AI services that need the fallback playbook
 router.get('/default', async (req, res) => {
   try {
     const result = await db.query(
@@ -58,9 +47,26 @@ router.get('/default', async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: { message: 'No default playbook found' } });
     }
-    res.json({ playbook: result.rows[0] });
+    res.json({ playbook: parsePlaybook(result.rows[0]) });
   } catch (err) {
     console.error('Get default playbook error:', err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// ── GET /:id — get one playbook with full content + stage_guidance ─────────────
+router.get('/:id', async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT * FROM playbooks WHERE id = $1 AND org_id = $2`,
+      [req.params.id, req.orgId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Playbook not found' } });
+    }
+    res.json({ playbook: parsePlaybook(result.rows[0]) });
+  } catch (err) {
+    console.error('Get playbook error:', err);
     res.status(500).json({ error: { message: err.message } });
   }
 });
@@ -68,7 +74,10 @@ router.get('/default', async (req, res) => {
 // ── POST / — create new playbook (admin only) ─────────────────────────────────
 router.post('/', adminOnly, async (req, res) => {
   try {
-    const { name, type = 'custom', description = '', content = {}, is_default = false } = req.body;
+    const {
+      name, type = 'custom', description = '',
+      content = {}, stage_guidance = {}, is_default = false,
+    } = req.body;
 
     if (!name?.trim()) {
       return res.status(400).json({ error: { message: 'Playbook name is required' } });
@@ -79,22 +88,22 @@ router.post('/', adminOnly, async (req, res) => {
       return res.status(400).json({ error: { message: `type must be one of: ${VALID_TYPES.join(', ')}` } });
     }
 
-    // If this is being set as default, unset the current default first
     if (is_default) {
       await db.query(
-        `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND is_default = TRUE`,
+        'UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND is_default = TRUE',
         [req.orgId]
       );
     }
 
     const result = await db.query(
-      `INSERT INTO playbooks (org_id, name, type, description, content, is_default)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO playbooks (org_id, name, type, description, content, stage_guidance, is_default)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [req.orgId, name.trim(), type, description, JSON.stringify(content), is_default]
+      [req.orgId, name.trim(), type, description,
+       JSON.stringify(content), JSON.stringify(stage_guidance), is_default]
     );
 
-    res.status(201).json({ playbook: result.rows[0] });
+    res.status(201).json({ playbook: parsePlaybook(result.rows[0]) });
   } catch (err) {
     console.error('Create playbook error:', err);
     res.status(500).json({ error: { message: err.message } });
@@ -104,11 +113,10 @@ router.post('/', adminOnly, async (req, res) => {
 // ── PUT /:id — update playbook content + metadata (admin only) ────────────────
 router.put('/:id', adminOnly, async (req, res) => {
   try {
-    const { name, type, description, content } = req.body;
+    const { name, type, description, content, stage_guidance } = req.body;
 
-    // Confirm playbook belongs to this org
     const existing = await db.query(
-      `SELECT id FROM playbooks WHERE id = $1 AND org_id = $2`,
+      'SELECT id FROM playbooks WHERE id = $1 AND org_id = $2',
       [req.params.id, req.orgId]
     );
     if (existing.rows.length === 0) {
@@ -122,26 +130,115 @@ router.put('/:id', adminOnly, async (req, res) => {
 
     const result = await db.query(
       `UPDATE playbooks
-       SET name        = COALESCE($1, name),
-           type        = COALESCE($2, type),
-           description = COALESCE($3, description),
-           content     = COALESCE($4, content),
-           updated_at  = NOW()
-       WHERE id = $5 AND org_id = $6
+       SET name          = COALESCE($1, name),
+           type          = COALESCE($2, type),
+           description   = COALESCE($3, description),
+           content       = COALESCE($4, content),
+           stage_guidance = COALESCE($5, stage_guidance),
+           updated_at    = NOW()
+       WHERE id = $6 AND org_id = $7
        RETURNING *`,
       [
-        name?.trim() || null,
-        type         || null,
-        description  ?? null,
-        content ? JSON.stringify(content) : null,
+        name?.trim()     || null,
+        type             || null,
+        description      ?? null,
+        content          ? JSON.stringify(content)        : null,
+        stage_guidance   ? JSON.stringify(stage_guidance) : null,
         req.params.id,
-        req.orgId
+        req.orgId,
       ]
     );
 
-    res.json({ playbook: result.rows[0] });
+    res.json({ playbook: parsePlaybook(result.rows[0]) });
   } catch (err) {
     console.error('Update playbook error:', err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// ── GET /:id/stages — get all stage guidance for a playbook ───────────────────
+router.get('/:id/stages', async (req, res) => {
+  try {
+    const result = await db.query(
+      'SELECT id, stage_guidance FROM playbooks WHERE id = $1 AND org_id = $2',
+      [req.params.id, req.orgId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Playbook not found' } });
+    }
+
+    const raw = result.rows[0].stage_guidance;
+    const guidance = typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
+
+    res.json({ stage_guidance: guidance });
+  } catch (err) {
+    console.error('Get stage guidance error:', err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// ── PUT /:id/stages/:stageType — upsert guidance for one stage (admin only) ───
+router.put('/:id/stages/:stageType', adminOnly, async (req, res) => {
+  try {
+    const { stageType } = req.params;
+
+    if (!VALID_STAGE_TYPES.includes(stageType)) {
+      return res.status(400).json({
+        error: { message: `stageType must be one of: ${VALID_STAGE_TYPES.join(', ')}` }
+      });
+    }
+
+    const {
+      goal, next_step, timeline, key_actions,
+      email_response_time, success_criteria, requires_proposal_doc,
+    } = req.body;
+
+    const guidance = {
+      goal:                 goal                || null,
+      next_step:            next_step           || null,
+      timeline:             timeline            || null,
+      key_actions:          Array.isArray(key_actions) ? key_actions : [],
+      email_response_time:  email_response_time || null,
+      success_criteria:     Array.isArray(success_criteria) ? success_criteria : [],
+      requires_proposal_doc: !!requires_proposal_doc,
+    };
+
+    const updated = await PlaybookService.upsertStageGuidance(
+      req.params.id, req.orgId, stageType, guidance
+    );
+
+    const raw = updated.stage_guidance;
+    res.json({
+      stage_guidance: typeof raw === 'string' ? JSON.parse(raw) : (raw || {}),
+      message: `Stage guidance for "${stageType}" saved`,
+    });
+  } catch (err) {
+    console.error('Upsert stage guidance error:', err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// ── DELETE /:id/stages/:stageType — remove guidance for one stage (admin only)
+router.delete('/:id/stages/:stageType', adminOnly, async (req, res) => {
+  try {
+    const { stageType } = req.params;
+
+    const result = await db.query(
+      `UPDATE playbooks
+       SET stage_guidance = stage_guidance - $1,
+           updated_at     = NOW()
+       WHERE id = $2 AND org_id = $3
+       RETURNING id, stage_guidance`,
+      [stageType, req.params.id, req.orgId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Playbook not found' } });
+    }
+
+    res.json({ message: `Stage guidance for "${stageType}" removed` });
+  } catch (err) {
+    console.error('Delete stage guidance error:', err);
     res.status(500).json({ error: { message: err.message } });
   }
 });
@@ -150,19 +247,15 @@ router.put('/:id', adminOnly, async (req, res) => {
 router.post('/:id/set-default', adminOnly, async (req, res) => {
   try {
     const existing = await db.query(
-      `SELECT id FROM playbooks WHERE id = $1 AND org_id = $2`,
+      'SELECT id FROM playbooks WHERE id = $1 AND org_id = $2',
       [req.params.id, req.orgId]
     );
     if (existing.rows.length === 0) {
       return res.status(404).json({ error: { message: 'Playbook not found' } });
     }
 
-    // Unset current default, set new one — do both in a transaction
     await db.query('BEGIN');
-    await db.query(
-      `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1`,
-      [req.orgId]
-    );
+    await db.query('UPDATE playbooks SET is_default = FALSE WHERE org_id = $1', [req.orgId]);
     const result = await db.query(
       `UPDATE playbooks SET is_default = TRUE, updated_at = NOW()
        WHERE id = $1 AND org_id = $2 RETURNING *`,
@@ -170,7 +263,7 @@ router.post('/:id/set-default', adminOnly, async (req, res) => {
     );
     await db.query('COMMIT');
 
-    res.json({ playbook: result.rows[0] });
+    res.json({ playbook: parsePlaybook(result.rows[0]) });
   } catch (err) {
     await db.query('ROLLBACK');
     console.error('Set default playbook error:', err);
@@ -182,7 +275,7 @@ router.post('/:id/set-default', adminOnly, async (req, res) => {
 router.delete('/:id', adminOnly, async (req, res) => {
   try {
     const existing = await db.query(
-      `SELECT id, is_default FROM playbooks WHERE id = $1 AND org_id = $2`,
+      'SELECT id, is_default FROM playbooks WHERE id = $1 AND org_id = $2',
       [req.params.id, req.orgId]
     );
     if (existing.rows.length === 0) {
@@ -194,17 +287,22 @@ router.delete('/:id', adminOnly, async (req, res) => {
       });
     }
 
-    // Null out any deals pointing to this playbook (FK is ON DELETE SET NULL)
-    await db.query(
-      `DELETE FROM playbooks WHERE id = $1 AND org_id = $2`,
-      [req.params.id, req.orgId]
-    );
-
+    await db.query('DELETE FROM playbooks WHERE id = $1 AND org_id = $2', [req.params.id, req.orgId]);
     res.json({ message: 'Playbook deleted' });
   } catch (err) {
     console.error('Delete playbook error:', err);
     res.status(500).json({ error: { message: err.message } });
   }
 });
+
+// ── Helper: parse JSONB fields ────────────────────────────────────────────────
+function parsePlaybook(row) {
+  const parse = v => (typeof v === 'string' ? JSON.parse(v) : v) || {};
+  return {
+    ...row,
+    content:        parse(row.content),
+    stage_guidance: parse(row.stage_guidance),
+  };
+}
 
 module.exports = router;

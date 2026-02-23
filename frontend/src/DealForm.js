@@ -2,40 +2,81 @@ import React, { useState, useEffect } from 'react';
 import './DealForm.css';
 import { apiService } from './apiService';
 
+const API_BASE = process.env.REACT_APP_API_URL || '';
+
+// Hardcoded fallback — used only if the API call fails.
+// Preserves full backward compatibility during the migration window.
+const FALLBACK_STAGES = [
+  { key: 'qualified',   name: 'Qualified' },
+  { key: 'demo',        name: 'Demo' },
+  { key: 'proposal',    name: 'Proposal' },
+  { key: 'negotiation', name: 'Negotiation' },
+  { key: 'closed_won',  name: 'Closed Won' },
+  { key: 'closed_lost', name: 'Closed Lost' },
+];
+
 function DealForm({ deal, onSubmit, onClose, accounts }) {
   const [formData, setFormData] = useState({
-    name: '',
-    account_id: '',
-    value: '',
-    stage: 'qualified',
-    health: 'healthy',
+    name:                '',
+    account_id:          '',
+    value:               '',
+    stage:               'qualified',
+    health:              'healthy',
     expected_close_date: '',
-    probability: 50,
-    notes: '',
-    playbook_id: ''
+    probability:         50,
+    notes:               '',
+    playbook_id:         ''
   });
 
   const [errors, setErrors]                     = useState({});
   const [isSubmitting, setIsSubmitting]         = useState(false);
   const [playbooks, setPlaybooks]               = useState([]);
   const [playbooksLoading, setPlaybooksLoading] = useState(true);
+  const [stages, setStages]                     = useState(FALLBACK_STAGES);
+  const [stagesLoading, setStagesLoading]       = useState(true);
 
-  // Populate form if editing existing deal
+  // Populate form if editing an existing deal
   useEffect(() => {
     if (deal) {
       setFormData({
-        name: deal.name || '',
-        account_id: deal.account_id || '',
-        value: deal.value || '',
-        stage: deal.stage || 'qualified',
-        health: deal.health || 'healthy',
+        name:                deal.name                || '',
+        account_id:          deal.account_id          || '',
+        value:               deal.value               || '',
+        stage:               deal.stage               || 'qualified',
+        health:              deal.health              || 'healthy',
         expected_close_date: deal.expected_close_date ? deal.expected_close_date.split('T')[0] : '',
-        probability: deal.probability || 50,
-        notes: deal.notes || '',
-        playbook_id: deal.playbook_id || ''
+        probability:         deal.probability         || 50,
+        notes:               deal.notes               || '',
+        playbook_id:         deal.playbook_id         || ''
       });
     }
   }, [deal]);
+
+  // Load active org stages — falls back to FALLBACK_STAGES on error
+  useEffect(() => {
+    const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+    fetch(`${API_BASE}/api/deal-stages/active`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+      .then(data => {
+        if (data.stages?.length) {
+          setStages(data.stages.map(s => ({ key: s.key, name: s.name, is_terminal: s.is_terminal })));
+          // If creating a new deal, default to the first active non-terminal stage
+          if (!deal) {
+            const firstActive = data.stages.find(s => !s.is_terminal);
+            if (firstActive) {
+              setFormData(prev => ({ ...prev, stage: firstActive.key }));
+            }
+          }
+        }
+      })
+      .catch(() => {
+        // Silent fallback — FALLBACK_STAGES already set as initial state
+        console.warn('DealForm: could not load org stages, using defaults');
+      })
+      .finally(() => setStagesLoading(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load playbooks for dropdown
   useEffect(() => {
@@ -53,16 +94,9 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
-    // Clear error for this field
+    setFormData(prev => ({ ...prev, [name]: value }));
     if (errors[name]) {
-      setErrors(prev => ({
-        ...prev,
-        [name]: null
-      }));
+      setErrors(prev => ({ ...prev, [name]: null }));
     }
   };
 
@@ -72,15 +106,12 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
     if (!formData.name.trim()) {
       newErrors.name = 'Deal name is required';
     }
-
     if (!formData.account_id) {
       newErrors.account_id = 'Please select an account';
     }
-
     if (!formData.value || formData.value <= 0) {
       newErrors.value = 'Deal value must be greater than 0';
     }
-
     if (!formData.expected_close_date) {
       newErrors.expected_close_date = 'Expected close date is required';
     } else {
@@ -91,7 +122,6 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
         newErrors.expected_close_date = 'Close date cannot be in the past';
       }
     }
-
     if (formData.probability < 0 || formData.probability > 100) {
       newErrors.probability = 'Probability must be between 0 and 100';
     }
@@ -102,22 +132,16 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-
-    if (!validateForm()) {
-      return;
-    }
+    if (!validateForm()) return;
 
     setIsSubmitting(true);
-
     try {
-      // Prepare data for submission
       const submitData = {
         ...formData,
         value:       parseFloat(formData.value),
         probability: parseInt(formData.probability),
         playbookId:  formData.playbook_id ? parseInt(formData.playbook_id) : null
       };
-
       await onSubmit(submitData);
     } catch (error) {
       console.error('Error submitting form:', error);
@@ -136,6 +160,7 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
         </div>
 
         <form onSubmit={handleSubmit} className="deal-form">
+
           {/* Deal Name */}
           <div className="form-group">
             <label htmlFor="name">
@@ -199,9 +224,7 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
             </div>
 
             <div className="form-group">
-              <label htmlFor="probability">
-                Probability (%)
-              </label>
+              <label htmlFor="probability">Probability (%)</label>
               <input
                 type="number"
                 id="probability"
@@ -225,14 +248,15 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
                 name="stage"
                 value={formData.stage}
                 onChange={handleChange}
+                disabled={stagesLoading}
               >
-                <option value="qualified">Qualified</option>
-                <option value="demo">Demo</option>
-                <option value="proposal">Proposal</option>
-                <option value="negotiation">Negotiation</option>
-                <option value="closed_won">Closed Won</option>
-                <option value="closed_lost">Closed Lost</option>
+                {stages.map(s => (
+                  <option key={s.key} value={s.key}>
+                    {s.name}
+                  </option>
+                ))}
               </select>
+              {stagesLoading && <span className="field-hint">Loading stages…</span>}
             </div>
 
             <div className="form-group">
@@ -304,28 +328,15 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
             />
           </div>
 
-          {/* Submit Error */}
           {errors.submit && (
-            <div className="error-banner">
-              {errors.submit}
-            </div>
+            <div className="error-banner">{errors.submit}</div>
           )}
 
-          {/* Form Actions */}
           <div className="form-actions">
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={onClose}
-              disabled={isSubmitting}
-            >
+            <button type="button" className="btn-secondary" onClick={onClose} disabled={isSubmitting}>
               Cancel
             </button>
-            <button
-              type="submit"
-              className="btn-primary"
-              disabled={isSubmitting}
-            >
+            <button type="submit" className="btn-primary" disabled={isSubmitting}>
               {isSubmitting ? 'Saving...' : (deal ? 'Update Deal' : 'Create Deal')}
             </button>
           </div>

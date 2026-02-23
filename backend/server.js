@@ -25,7 +25,7 @@ const aiContextRoutes  = require('./routes/ai-context.routes');
 const dealRolesRoutes  = require('./routes/deal-roles.routes');
 const dealTeamRoutes   = require('./routes/deal-team.routes');
 const dealContactsRoutes = require('./routes/deal-contacts.routes');
-
+const dealStagesRoutes = require('./routes/deal-stages.routes');
 
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
@@ -167,6 +167,7 @@ app.use('/api/ai',         aiContextRoutes);
 app.use('/api/deal-roles', dealRolesRoutes);
 app.use('/api/deal-team',  dealTeamRoutes);
 app.use('/api/deal-contacts', dealContactsRoutes);
+app.use('/api/deal-contacts', dealStagesRoutes);
 
 // ─────────────────────────────────────────────────────────────
 // Error handling

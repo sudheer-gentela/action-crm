@@ -3,11 +3,56 @@ const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
-const ActionsGenerator  = require('../services/actionsGenerator');
+const ActionsGenerator    = require('../services/actionsGenerator');
 const ActionConfigService = require('../services/actionConfig.service');
 
 router.use(authenticateToken);
 router.use(orgContext);
+
+// ── Helper: validate a stage key belongs to this org and is active ────────────
+// Returns the stage row { key, stage_type, is_active, is_terminal } or throws.
+// Falls back gracefully — if deal_stages table doesn't exist yet (pre-migration),
+// skips validation so the route still works during a rolling deploy.
+async function validateStage(orgId, stageKey) {
+  if (!stageKey) return null;
+  try {
+    const result = await db.query(
+      `SELECT key, stage_type, is_active, is_terminal
+       FROM deal_stages
+       WHERE org_id = $1 AND key = $2`,
+      [orgId, stageKey]
+    );
+    if (result.rows.length === 0) {
+      throw new Error(`Invalid stage: "${stageKey}" does not exist in this organisation`);
+    }
+    if (!result.rows[0].is_active) {
+      throw new Error(`Stage "${stageKey}" is inactive and cannot be assigned to deals`);
+    }
+    return result.rows[0];
+  } catch (err) {
+    // If the error is a missing table (migration not run yet), skip validation
+    if (err.message?.includes('relation "deal_stages" does not exist')) {
+      console.warn('validateStage: deal_stages table not found, skipping validation (pre-migration?)');
+      return null;
+    }
+    throw err;
+  }
+}
+
+// Helper: resolve the default stage key for new deals (first active non-terminal)
+async function resolveDefaultStage(orgId) {
+  try {
+    const result = await db.query(
+      `SELECT key FROM deal_stages
+       WHERE org_id = $1 AND is_active = TRUE AND is_terminal = FALSE
+       ORDER BY sort_order ASC LIMIT 1`,
+      [orgId]
+    );
+    return result.rows[0]?.key || 'qualified';
+  } catch {
+    return 'qualified'; // pre-migration fallback
+  }
+}
 
 // ── GET / ─────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
@@ -52,18 +97,19 @@ router.get('/', async (req, res) => {
 
     res.json({
       deals: result.rows.map(row => ({
-        id:                   row.id,
-        user_id:              row.owner_id,
-        account_id:           row.account_id,
-        name:                 row.name,
-        value:                parseFloat(row.value),
-        stage:                row.stage,
-        health:               row.health,
-        expected_close_date:  row.expected_close_date,
-        probability:          row.probability,
-        notes:                row.notes,
-        created_at:           row.created_at,
-        updated_at:           row.updated_at,
+        id:                  row.id,
+        user_id:             row.owner_id,
+        account_id:          row.account_id,
+        name:                row.name,
+        value:               parseFloat(row.value),
+        stage:               row.stage,
+        stage_type:          row.stage_type || null,    // included post-migration
+        health:              row.health,
+        expected_close_date: row.expected_close_date,
+        probability:         row.probability,
+        notes:               row.notes,
+        created_at:          row.created_at,
+        updated_at:          row.updated_at,
         account: row.account_name ? {
           id:     row.account_id,
           name:   row.account_name,
@@ -81,36 +127,74 @@ router.get('/', async (req, res) => {
 });
 
 // ── GET /pipeline/summary ─────────────────────────────────────
-// Must come BEFORE /:id so Express doesn't try to parse 'pipeline' as an id
+// Updated: joins deal_stages so ordering follows org sort_order instead of
+// a hardcoded CASE WHEN. Backward compatible — falls back to count-only if
+// deal_stages table doesn't exist yet.
 router.get('/pipeline/summary', async (req, res) => {
   try {
     const result = await db.query(
       `SELECT
-         stage,
-         COUNT(*)   as count,
-         SUM(value) as total_value
-       FROM deals
-       WHERE org_id = $1 AND owner_id = $2
-         AND stage NOT IN ('closed_won', 'closed_lost')
-       GROUP BY stage
-       ORDER BY CASE stage
-         WHEN 'qualified'   THEN 1
-         WHEN 'demo'        THEN 2
-         WHEN 'proposal'    THEN 3
-         WHEN 'negotiation' THEN 4
-         ELSE 5
-       END`,
+         d.stage,
+         ds.name       AS stage_name,
+         ds.sort_order AS stage_order,
+         ds.stage_type,
+         ds.is_terminal,
+         COUNT(d.id)   AS count,
+         SUM(d.value)  AS total_value
+       FROM deals d
+       LEFT JOIN deal_stages ds
+         ON ds.org_id = d.org_id AND ds.key = d.stage
+       WHERE d.org_id   = $1
+         AND d.owner_id = $2
+         AND (ds.is_terminal = FALSE OR ds.is_terminal IS NULL)
+       GROUP BY d.stage, ds.name, ds.sort_order, ds.stage_type, ds.is_terminal
+       ORDER BY COALESCE(ds.sort_order, 999) ASC`,
       [req.orgId, req.user.userId]
     );
 
     res.json({
       pipeline: result.rows.map(row => ({
         stage:      row.stage,
+        stageName:  row.stage_name  || row.stage,   // display name (new) or raw key (fallback)
+        stageType:  row.stage_type  || 'custom',
+        sortOrder:  parseInt(row.stage_order) || 0,
         count:      parseInt(row.count),
-        totalValue: parseFloat(row.total_value)
+        totalValue: parseFloat(row.total_value) || 0,
       }))
     });
   } catch (error) {
+    // Fallback: if deal_stages doesn't exist, return legacy format
+    if (error.message?.includes('relation "deal_stages" does not exist')) {
+      try {
+        const fallback = await db.query(
+          `SELECT stage, COUNT(*) as count, SUM(value) as total_value
+           FROM deals
+           WHERE org_id = $1 AND owner_id = $2
+             AND stage NOT IN ('closed_won', 'closed_lost')
+           GROUP BY stage
+           ORDER BY CASE stage
+             WHEN 'qualified'   THEN 1
+             WHEN 'demo'        THEN 2
+             WHEN 'proposal'    THEN 3
+             WHEN 'negotiation' THEN 4
+             ELSE 5
+           END`,
+          [req.orgId, req.user.userId]
+        );
+        return res.json({
+          pipeline: fallback.rows.map(row => ({
+            stage:      row.stage,
+            stageName:  row.stage,
+            stageType:  'custom',
+            sortOrder:  0,
+            count:      parseInt(row.count),
+            totalValue: parseFloat(row.total_value) || 0,
+          }))
+        });
+      } catch (fallbackError) {
+        console.error('Get pipeline summary fallback error:', fallbackError);
+      }
+    }
     console.error('Get pipeline summary error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch pipeline summary' } });
   }
@@ -165,6 +249,7 @@ router.get('/:id', async (req, res) => {
         name:                deal.name,
         value:               parseFloat(deal.value),
         stage:               deal.stage,
+        stage_type:          deal.stage_type || null,
         health:              deal.health,
         expected_close_date: deal.expected_close_date,
         probability:         deal.probability,
@@ -195,6 +280,15 @@ router.post('/', async (req, res) => {
   try {
     const { accountId, name, value, stage, health, expectedCloseDate, probability, notes, playbookId } = req.body;
 
+    // Validate stage if provided; resolve org default if not
+    let resolvedStage;
+    if (stage) {
+      await validateStage(req.orgId, stage); // throws if invalid
+      resolvedStage = stage;
+    } else {
+      resolvedStage = await resolveDefaultStage(req.orgId);
+    }
+
     // Resolve playbook: use the provided one, or fall back to the org default
     let resolvedPlaybookId = playbookId || null;
     if (!resolvedPlaybookId) {
@@ -212,7 +306,7 @@ router.post('/', async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11)
        RETURNING *`,
       [req.orgId, accountId, req.user.userId, name, value,
-       stage || 'qualified', health || 'healthy',
+       resolvedStage, health || 'healthy',
        expectedCloseDate, probability || 50, notes, resolvedPlaybookId]
     );
 
@@ -231,6 +325,10 @@ router.post('/', async (req, res) => {
     res.status(201).json({ deal: newDeal });
   } catch (error) {
     console.error('Create deal error:', error);
+    // Surface stage validation errors as 400 instead of 500
+    if (error.message?.includes('Invalid stage') || error.message?.includes('inactive')) {
+      return res.status(400).json({ error: { message: error.message } });
+    }
     res.status(500).json({ error: { message: 'Failed to create deal' } });
   }
 });
@@ -239,6 +337,11 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { name, value, stage, health, expectedCloseDate, probability, notes, playbookId } = req.body;
+
+    // Validate stage if being changed
+    if (stage) {
+      await validateStage(req.orgId, stage);
+    }
 
     const currentDeal = await db.query(
       'SELECT stage, value, expected_close_date, close_date_push_count, original_close_date FROM deals WHERE id = $1 AND org_id = $2 AND owner_id = $3',
@@ -258,6 +361,20 @@ router.put('/:id', async (req, res) => {
       }
     }
 
+    // closed_at: check against org terminal stages if available, fallback to hardcoded keys
+    const isClosingStage = async (stageKey) => {
+      try {
+        const r = await db.query(
+          'SELECT is_terminal FROM deal_stages WHERE org_id = $1 AND key = $2',
+          [req.orgId, stageKey]
+        );
+        return r.rows[0]?.is_terminal === true;
+      } catch {
+        return ['closed_won', 'closed_lost'].includes(stageKey);
+      }
+    };
+    const willClose = stage ? await isClosingStage(stage) : false;
+
     const result = await db.query(
       `UPDATE deals
        SET name                = COALESCE($1, name),
@@ -270,12 +387,12 @@ router.put('/:id', async (req, res) => {
            playbook_id         = COALESCE($12, playbook_id),
            close_date_push_count = close_date_push_count + $10,
            updated_at          = CURRENT_TIMESTAMP,
-           closed_at           = CASE WHEN $3 IN ('closed_won', 'closed_lost') THEN CURRENT_TIMESTAMP ELSE closed_at END
+           closed_at           = CASE WHEN $13 THEN CURRENT_TIMESTAMP ELSE closed_at END
        WHERE id = $8 AND org_id = $9 AND owner_id = $11
        RETURNING *`,
       [name, value, stage, health, expectedCloseDate, probability, notes,
        req.params.id, req.orgId, closeDatePushIncrement, req.user.userId,
-       playbookId || null]
+       playbookId || null, willClose]
     );
 
     if (result.rows.length === 0) {
@@ -324,6 +441,9 @@ router.put('/:id', async (req, res) => {
     res.json({ deal: result.rows[0] });
   } catch (error) {
     console.error('Update deal error:', error);
+    if (error.message?.includes('Invalid stage') || error.message?.includes('inactive')) {
+      return res.status(400).json({ error: { message: error.message } });
+    }
     res.status(500).json({ error: { message: 'Failed to update deal' } });
   }
 });
@@ -350,7 +470,6 @@ router.post('/:id/contacts', async (req, res) => {
   try {
     const { contactId, role } = req.body;
 
-    // Verify deal belongs to this org
     const check = await db.query(
       'SELECT id FROM deals WHERE id = $1 AND org_id = $2',
       [req.params.id, req.orgId]
@@ -378,14 +497,10 @@ router.post('/:id/contacts', async (req, res) => {
 });
 
 // ── PATCH /:id/signal-override ────────────────────────────────
-// Writes a user or manager override on a health signal.
-// Body: { signalKey: 'legal_engaged_user', value: true, managerOverride: false }
-// signalKey must be one of the *_user columns that exists on deals.
 router.patch('/:id/signal-override', async (req, res) => {
   try {
     const { signalKey, value, managerOverride } = req.body;
 
-    // Whitelist of overrideable signal columns — must match deals table *_user columns
     const OVERRIDEABLE_SIGNALS = [
       'close_date_user_confirmed',
       'buyer_event_user_confirmed',
@@ -401,7 +516,6 @@ router.patch('/:id/signal-override', async (req, res) => {
       return res.status(400).json({ error: { message: `Invalid signal key: ${signalKey}` } });
     }
 
-    // Verify deal belongs to this user/org
     const checkResult = await db.query(
       'SELECT id, signal_overrides FROM deals WHERE id = $1 AND org_id = $2 AND owner_id = $3',
       [req.params.id, req.orgId, req.user.userId]
@@ -411,8 +525,6 @@ router.patch('/:id/signal-override', async (req, res) => {
     }
 
     const currentOverrides = checkResult.rows[0].signal_overrides || {};
-
-    // Build updated override metadata for this signal
     const updatedOverrides = {
       ...currentOverrides,
       [signalKey]: {
@@ -422,7 +534,6 @@ router.patch('/:id/signal-override', async (req, res) => {
       },
     };
 
-    // Update the signal column + override metadata atomically
     const result = await db.query(
       `UPDATE deals
        SET ${signalKey}       = $1,
