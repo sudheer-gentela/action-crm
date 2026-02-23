@@ -151,12 +151,24 @@ async function findEmailAssociations(client, userId, orgId, fromAddress, toAddre
     if (accountId) {
       const dealResult = await client.query(
         `SELECT id FROM deals
-         WHERE user_id = $1
-           AND org_id = $2
+         WHERE org_id = $2
            AND account_id = $3
            AND stage NOT IN ('closed_won', 'closed_lost')
            AND deleted_at IS NULL
-         ORDER BY created_at DESC
+           AND (
+             -- Deal is owned by the syncing user
+             user_id = $1
+             OR
+             -- Syncing user is a team member on this deal
+             id IN (
+               SELECT deal_id FROM deal_team_members
+               WHERE user_id = $1 AND org_id = $2
+             )
+           )
+         ORDER BY
+           -- Prefer deals owned by this user, then by recency
+           CASE WHEN user_id = $1 THEN 0 ELSE 1 END,
+           created_at DESC
          LIMIT 1`,
         [userId, orgId, accountId]
       );

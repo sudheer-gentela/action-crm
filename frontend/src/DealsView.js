@@ -15,7 +15,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
   const [deals, setDeals] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [contacts, setContacts] = useState([]);
-  const [emails, setEmails] = useState([]);
   const [meetings, setMeetings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -47,11 +46,10 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
       setLoading(true);
       setError('');
 
-      const [dealsRes, accountsRes, contactsRes, emailsRes, meetingsRes] = await Promise.all([
+      const [dealsRes, accountsRes, contactsRes, meetingsRes] = await Promise.all([
         apiService.deals.getAll().catch(() => ({ data: { deals: mockData.deals } })),
         apiService.accounts.getAll().catch(() => ({ data: { accounts: mockData.accounts } })),
         apiService.contacts.getAll().catch(() => ({ data: { contacts: mockData.contacts } })),
-        apiService.emails.getAll().catch(() => ({ data: { emails: mockData.emails } })),
         apiService.meetings.getAll().catch(() => ({ data: { meetings: mockData.meetings } }))
       ]);
 
@@ -59,7 +57,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
         accounts: accountsRes.data.accounts || accountsRes.data || [],
         deals: dealsRes.data.deals || dealsRes.data || [],
         contacts: contactsRes.data.contacts || contactsRes.data || [],
-        emails: emailsRes.data.emails || emailsRes.data || [],
         meetings: meetingsRes.data.meetings || meetingsRes.data || [],
         actions: []
       });
@@ -67,7 +64,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
       setDeals(enrichedData.deals);
       setAccounts(enrichedData.accounts);
       setContacts(enrichedData.contacts);
-      setEmails(enrichedData.emails);
       setMeetings(enrichedData.meetings);
 
     } catch (err) {
@@ -82,7 +78,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
       setDeals(enrichedData.deals);
       setAccounts(enrichedData.accounts);
       setContacts(enrichedData.contacts);
-      setEmails(enrichedData.emails);
       setMeetings(enrichedData.meetings);
     } finally {
       setLoading(false);
