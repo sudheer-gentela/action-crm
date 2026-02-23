@@ -24,7 +24,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
   const [showTranscriptUpload, setShowTranscriptUpload] = useState(false);
   const [viewingTranscriptId, setViewingTranscriptId] = useState(null);
   const [scoringDealId, setScoringDealId] = useState(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     fetchDeals();
@@ -255,7 +254,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                       deal={deal}
                       onEdit={() => setEditingDeal(deal)}
                       onDelete={() => handleDeleteDeal(deal.id)}
-                      onSelect={() => { setSelectedDeal(deal); setIsFullscreen(true); }}
+                      onSelect={() => setSelectedDeal(deal)}
                       isSelected={selectedDeal?.id === deal.id}
                     />
                   ))
@@ -271,7 +270,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
             <div className="panel-header">
               <h2>{selectedDeal.name}</h2>
               <div className="panel-header-actions">
-                <button className="close-panel" onClick={() => { setSelectedDeal(null); setIsFullscreen(false); }}>×</button>
+                <button className="close-panel" onClick={() => setSelectedDeal(null)}>×</button>
               </div>
             </div>
 
