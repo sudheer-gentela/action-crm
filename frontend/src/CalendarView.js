@@ -15,6 +15,56 @@ const PRIORITY_COLORS = {
 
 const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
 
+// ── Action type + channel helpers ─────────────────────────────
+const ACTION_TYPE_MAP = {
+  email_send:       { icon: '✉️',  label: 'Send Email'       },
+  email:            { icon: '✉️',  label: 'Send Email'       },
+  follow_up:        { icon: '🔄',  label: 'Follow Up'        },
+  meeting:          { icon: '📅',  label: 'Meeting'          },
+  meeting_schedule: { icon: '📅',  label: 'Schedule Meeting' },
+  meeting_prep:     { icon: '📋',  label: 'Meeting Prep'     },
+  meeting_followup: { icon: '📋',  label: 'Meeting Follow-up'},
+  document_prep:    { icon: '📄',  label: 'Document Prep'    },
+  task_complete:    { icon: '🔧',  label: 'Internal Task'    },
+  review:           { icon: '🔍',  label: 'Review'           },
+  internal_task:    { icon: '🔧',  label: 'Internal Task'    },
+};
+
+const CHANNEL_MAP = {
+  email:         { icon: '✉️',  label: 'Email'        },
+  call:          { icon: '📞',  label: 'Call'         },
+  whatsapp:      { icon: '💬',  label: 'WhatsApp'     },
+  linkedin:      { icon: '🔗',  label: 'LinkedIn'     },
+  slack:         { icon: '💬',  label: 'Slack'        },
+  document:      { icon: '📄',  label: 'Document'     },
+  internal_task: { icon: '🔧',  label: 'Internal Task'},
+};
+
+function getActionTypeInfo(action) {
+  const type = (action.actionType || action.action_type || '').toLowerCase();
+  return ACTION_TYPE_MAP[type] || null;
+}
+
+function getChannelInfo(action) {
+  const type    = (action.actionType  || action.action_type || '').toLowerCase();
+  const channel = (action.nextStep    || action.next_step   || '').toLowerCase();
+  // Suppress channel when it's redundant with the type label
+  if (type === 'email_send' || type === 'email')   return null;
+  if (type.startsWith('meeting'))                   return null;
+  if (type === 'document_prep' || type === 'task_complete' || type === 'review') return null;
+  return CHANNEL_MAP[channel] || null;
+}
+
+// Compact icon for pills — type icon if known, else channel icon, else ✉️
+function getActionIcon(action) {
+  const typeInfo    = getActionTypeInfo(action);
+  const channelInfo = getChannelInfo(action);
+  if (typeInfo)    return typeInfo.icon;
+  if (channelInfo) return channelInfo.icon;
+  const channel = (action.nextStep || action.next_step || '').toLowerCase();
+  return CHANNEL_MAP[channel]?.icon || '✉️';
+}
+
 function toLocalDateKey(dateVal) {
   const d = new Date(dateVal);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -617,15 +667,22 @@ function CalendarView() {
 
 // ── ActionPill ─────────────────────────────────────────────────
 function ActionPill({ action, isOverdue, onClick }) {
-  const colors = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
+  const colors  = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
+  const icon    = getActionIcon(action);
+  const channel = getChannelInfo(action);
   return (
     <button
       className={`action-pill priority-${action.priority}${isOverdue ? ' overdue' : ''}`}
       onClick={(e) => onClick(e, action)}
       title={`${action.title}${action.deal?.name ? ' · ' + action.deal.name : ''}`}
     >
-      <span className="pill-dot" style={{ background: colors.dot }}></span>
+      {/* Action type icon — tells you at a glance: email / call / meeting / doc */}
+      <span className="pill-type-icon" aria-hidden="true">{icon}</span>
       <span className="pill-label">{action.title}</span>
+      {/* Channel badge — only for follow-ups where channel matters (Call, WhatsApp…) */}
+      {channel && (
+        <span className="pill-channel">{channel.icon}</span>
+      )}
       {action.deal?.name && <span className="pill-deal">{action.deal.name}</span>}
       {action.status === 'in_progress' && <span className="pill-in-progress">▶</span>}
     </button>
@@ -651,6 +708,29 @@ const ActionPopover = React.forwardRef(function ActionPopover(
         <button className="popover-close" onClick={onClose}>×</button>
       </div>
       <div className="popover-body">
+        {/* Action type + channel — the most important missing info */}
+        {(() => {
+          const typeInfo    = getActionTypeInfo(action);
+          const channelInfo = getChannelInfo(action);
+          return (
+            <div className="popover-type-row">
+              {typeInfo ? (
+                <span className="popover-action-type">
+                  {typeInfo.icon} {typeInfo.label}
+                </span>
+              ) : (
+                <span className="popover-action-type">
+                  {getActionIcon(action)} {(action.nextStep || action.next_step || 'Email')}
+                </span>
+              )}
+              {channelInfo && (
+                <span className="popover-channel-badge">
+                  via {channelInfo.icon} {channelInfo.label}
+                </span>
+              )}
+            </div>
+          );
+        })()}
         <div className="popover-meta">
           <span className="popover-priority" style={{ background: colors.bg, color: colors.text, border: `1px solid ${colors.border}` }}>
             {action.priority}

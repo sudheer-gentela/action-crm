@@ -368,6 +368,21 @@
   flex-shrink: 0;
 }
 
+/* Action type icon on pill — e.g. ✉️ 📞 📅 📄 */
+.pill-type-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+/* Channel badge on pill — small emoji for follow-up channel (Call, WhatsApp…) */
+.pill-channel {
+  font-size: 11px;
+  flex-shrink: 0;
+  opacity: 0.75;
+  line-height: 1;
+}
+
 .pill-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -741,6 +756,38 @@
 .popover-close:hover { color: #4a5568; }
 
 .popover-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+
+/* Action type row — first thing you see in the popover */
+.popover-type-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f0f4f8;
+}
+
+.popover-action-type {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1a202c;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.popover-channel-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #718096;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 2px 8px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
 
 .popover-meta { display: flex; align-items: center; gap: 8px; }
 
