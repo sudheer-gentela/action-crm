@@ -15,6 +15,7 @@ const ORG_ADMIN_TABS = [
   { id: 'invitations', label: 'Invitations',  icon: '✉️' },
   { id: 'playbooks',   label: 'Playbooks',    icon: '📘' },
   { id: 'health',      label: 'Deal Health',  icon: '🏥' },
+  { id: 'deal-stages', label: 'Deal Stages',  icon: '🏷️' },
   { id: 'deal-roles',  label: 'Deal Roles',   icon: '🎭' },
   { id: 'settings',    label: 'Org Settings', icon: '⚙️' },
 ];
@@ -87,6 +88,7 @@ export default function OrgAdminView() {
         {tab === 'invitations' && <OAInvitations />}
         {tab === 'playbooks'   && <OAPlaybooks />}
         {tab === 'health'      && <DealHealthSettings />}
+        {tab === 'deal-stages' && <OADealStages />}
         {tab === 'deal-roles'  && <OADealRoles />}
         {tab === 'settings'    && <OASettings />}
       </div>
@@ -1065,3 +1067,295 @@ function OADealRoles() {
   );
 }
 
+
+// ── OADealStages ──────────────────────────────────────────────────────────────
+const STAGE_TYPES = [
+  { value: 'discovery',     label: 'Discovery' },
+  { value: 'qualification', label: 'Qualification' },
+  { value: 'evaluation',    label: 'Evaluation' },
+  { value: 'proposal',      label: 'Proposal' },
+  { value: 'negotiation',   label: 'Negotiation' },
+  { value: 'legal_review',  label: 'Legal Review' },
+  { value: 'closed_won',    label: 'Closed Won' },
+  { value: 'closed_lost',   label: 'Closed Lost' },
+  { value: 'custom',        label: 'Custom' },
+];
+
+function OADealStages() {
+  const [stages, setStages]       = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [saving, setSaving]       = useState(null);
+  const [error, setError]         = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName]   = useState('');
+  const [showAdd, setShowAdd]     = useState(false);
+  const [newStage, setNewStage]   = useState({ name: '', stage_type: 'custom', is_terminal: false });
+  const [addError, setAddError]   = useState('');
+
+  const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const API   = process.env.REACT_APP_API_URL || '';
+
+  const apiFetch = useCallback(async (path, options = {}) => {
+    const res = await fetch(`${API}/api/deal-stages${path}`, {
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      ...options,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || res.statusText);
+    return data;
+  }, [API, token]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await apiFetch('');
+      setStages(data.stages || []);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [apiFetch]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const saveStage = async (id, updates) => {
+    setSaving(id);
+    try {
+      const data = await apiFetch(`/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(updates),
+      });
+      setStages(prev => prev.map(s => s.id === id ? data.stage : s));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const commitRename = async (id) => {
+    if (editName.trim()) await saveStage(id, { name: editName.trim() });
+    setEditingId(null);
+  };
+
+  const moveStage = async (id, direction) => {
+    const idx     = stages.findIndex(s => s.id === id);
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= stages.length) return;
+
+    const updated = [...stages];
+    const orderA  = updated[idx].sort_order;
+    const orderB  = updated[swapIdx].sort_order;
+
+    // Optimistic update
+    updated[idx]     = { ...updated[idx],     sort_order: orderB };
+    updated[swapIdx] = { ...updated[swapIdx], sort_order: orderA };
+    updated.sort((a, b) => a.sort_order - b.sort_order);
+    setStages(updated);
+
+    // Persist both
+    await Promise.all([
+      saveStage(id,                  { sort_order: orderB }),
+      saveStage(stages[swapIdx].id,  { sort_order: orderA }),
+    ]);
+  };
+
+  const toggleActive = async (stage) => {
+    if (stage.is_system && stage.is_active) {
+      if (!window.confirm(`Deactivating "${stage.name}" will hide it from deal forms. Continue?`)) return;
+    }
+    await saveStage(stage.id, { is_active: !stage.is_active });
+  };
+
+  const deleteStage = async (stage) => {
+    if (!window.confirm(`Delete "${stage.name}"? This cannot be undone.`)) return;
+    setSaving(stage.id);
+    try {
+      await apiFetch(`/${stage.id}`, { method: 'DELETE' });
+      setStages(prev => prev.filter(s => s.id !== stage.id));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const handleAdd = async () => {
+    setAddError('');
+    if (!newStage.name.trim()) { setAddError('Name is required'); return; }
+    setSaving('new');
+    try {
+      const data = await apiFetch('', {
+        method: 'POST',
+        body: JSON.stringify(newStage),
+      });
+      setStages(prev => [...prev, data.stage]);
+      setNewStage({ name: '', stage_type: 'custom', is_terminal: false });
+      setShowAdd(false);
+    } catch (e) {
+      setAddError(e.message);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  if (loading) return <div style={{ padding: 32 }}>Loading stages…</div>;
+
+  return (
+    <div style={{ padding: '24px 32px', maxWidth: 700 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <div>
+          <h2 style={{ margin: 0 }}>🏷️ Deal Stages</h2>
+          <p style={{ margin: '4px 0 0', color: '#6b7280', fontSize: 14 }}>
+            Configure your pipeline stages. Rename or reorder freely — keys never change so existing deals are unaffected.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowAdd(s => !s)}
+          style={{ padding: '8px 16px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}
+        >
+          + Add Stage
+        </button>
+      </div>
+
+      {error && <div style={{ background: '#fee2e2', color: '#dc2626', padding: '10px 14px', borderRadius: 6, marginBottom: 12 }}>⚠️ {error}</div>}
+
+      {/* Add form */}
+      {showAdd && (
+        <div style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+          <h4 style={{ margin: '0 0 12px' }}>New Stage</h4>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>Name</label>
+              <input
+                value={newStage.name}
+                onChange={e => setNewStage(s => ({ ...s, name: e.target.value }))}
+                placeholder="e.g. Security Review"
+                style={{ padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, width: 200 }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>Stage Type</label>
+              <select
+                value={newStage.stage_type}
+                onChange={e => setNewStage(s => ({ ...s, stage_type: e.target.value }))}
+                style={{ padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
+              >
+                {STAGE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 2 }}>
+              <input
+                type="checkbox"
+                id="is_terminal"
+                checked={newStage.is_terminal}
+                onChange={e => setNewStage(s => ({ ...s, is_terminal: e.target.checked }))}
+              />
+              <label htmlFor="is_terminal" style={{ fontSize: 13 }}>Terminal (won/lost)</label>
+            </div>
+            <button
+              onClick={handleAdd}
+              disabled={saving === 'new'}
+              style={{ padding: '7px 16px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+            >
+              {saving === 'new' ? 'Adding…' : 'Add'}
+            </button>
+            <button
+              onClick={() => setShowAdd(false)}
+              style={{ padding: '7px 12px', background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 6, cursor: 'pointer' }}
+            >
+              Cancel
+            </button>
+          </div>
+          {addError && <div style={{ color: '#dc2626', fontSize: 13, marginTop: 8 }}>⚠️ {addError}</div>}
+        </div>
+      )}
+
+      {/* Stages list */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {stages.map((stage, idx) => (
+          <div
+            key={stage.id}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              background: stage.is_active ? '#fff' : '#f9fafb',
+              border: '1px solid #e5e7eb', borderRadius: 8, padding: '10px 14px',
+              opacity: stage.is_active ? 1 : 0.6,
+            }}
+          >
+            {/* Reorder */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <button onClick={() => moveStage(stage.id, 'up')}   disabled={idx === 0 || !!saving} style={arrowBtn}>▲</button>
+              <button onClick={() => moveStage(stage.id, 'down')} disabled={idx === stages.length - 1 || !!saving} style={arrowBtn}>▼</button>
+            </div>
+
+            {/* Name */}
+            <div style={{ flex: 1 }}>
+              {editingId === stage.id ? (
+                <input
+                  autoFocus
+                  value={editName}
+                  onChange={e => setEditName(e.target.value)}
+                  onBlur={() => commitRename(stage.id)}
+                  onKeyDown={e => { if (e.key === 'Enter') commitRename(stage.id); if (e.key === 'Escape') setEditingId(null); }}
+                  style={{ padding: '4px 8px', border: '1px solid #6366f1', borderRadius: 4, fontSize: 14, width: '100%' }}
+                />
+              ) : (
+                <span
+                  onClick={() => { setEditingId(stage.id); setEditName(stage.name); }}
+                  style={{ fontWeight: 500, cursor: 'text' }}
+                  title="Click to rename"
+                >
+                  {stage.name}
+                  <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 6 }}>✏️</span>
+                </span>
+              )}
+              <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
+                key: <code>{stage.key}</code>
+                {' · '}{STAGE_TYPES.find(t => t.value === stage.stage_type)?.label || stage.stage_type}
+                {stage.is_terminal && ' · 🏁 terminal'}
+                {stage.is_system   && ' · 🔒 system'}
+              </div>
+            </div>
+
+            {/* Active toggle */}
+            <button
+              onClick={() => toggleActive(stage)}
+              disabled={!!saving}
+              title={stage.is_active ? 'Deactivate' : 'Activate'}
+              style={{
+                padding: '4px 10px', fontSize: 12, borderRadius: 12, cursor: 'pointer', border: 'none',
+                background: stage.is_active ? '#dcfce7' : '#f3f4f6',
+                color:      stage.is_active ? '#166534' : '#6b7280',
+              }}
+            >
+              {stage.is_active ? '● Active' : '○ Inactive'}
+            </button>
+
+            {/* Delete (custom stages only) */}
+            {!stage.is_system && (
+              <button
+                onClick={() => deleteStage(stage)}
+                disabled={saving === stage.id}
+                title="Delete stage"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: '#ef4444' }}
+              >
+                🗑️
+              </button>
+            )}
+
+            {saving === stage.id && <span style={{ fontSize: 12, color: '#6b7280' }}>saving…</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const arrowBtn = {
+  background: 'none', border: '1px solid #e5e7eb', borderRadius: 3,
+  cursor: 'pointer', fontSize: 10, padding: '1px 4px', color: '#6b7280',
+  lineHeight: 1,
+};

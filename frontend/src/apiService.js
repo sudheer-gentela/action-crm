@@ -169,6 +169,15 @@ export const apiService = {
     delete:     (id)       => api.delete(`/playbooks/${id}`),
   },
 
+  // Deal Stages
+  dealStages: {
+    getAll:    ()         => api.get('/deal-stages'),
+    getActive: ()         => api.get('/deal-stages/active'),
+    create:    (data)     => api.post('/deal-stages', data),
+    update:    (id, data) => api.put(`/deal-stages/${id}`, data),
+    delete:    (id)       => api.delete(`/deal-stages/${id}`),
+  },
+
   // AI Prompts
   prompts: {
     get:        ()    => api.get('/prompts'),
