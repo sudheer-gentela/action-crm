@@ -151,7 +151,14 @@ router.delete('/members/:userId', adminOnly, async (req, res) => {
 router.get('/invitations', adminOnly, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT oi.*, u.email AS invited_by_email
+      SELECT
+        oi.*,
+        u.email AS invited_by_email,
+        CASE
+          WHEN oi.accepted_at IS NOT NULL          THEN 'accepted'
+          WHEN oi.expires_at  < NOW()              THEN 'expired'
+          ELSE                                          'pending'
+        END AS status
       FROM   org_invitations oi
       LEFT JOIN users u ON u.id = oi.invited_by
       WHERE  oi.org_id = $1
@@ -194,8 +201,8 @@ router.post('/invitations', adminOnly, async (req, res) => {
 
     const result = await pool.query(`
       INSERT INTO org_invitations
-        (org_id, invited_by, email, role, message, token, expires_at, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+        (org_id, invited_by, email, role, message, token, expires_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *
     `, [req.orgId, req.userId, email.trim(), role, message, token, expires]);
 
@@ -208,7 +215,7 @@ router.post('/invitations', adminOnly, async (req, res) => {
 router.delete('/invitations/:id', adminOnly, async (req, res) => {
   try {
     await pool.query(
-      `UPDATE org_invitations SET status = 'cancelled' WHERE id = $1 AND org_id = $2`,
+      `DELETE FROM org_invitations WHERE id = $1 AND org_id = $2`,
       [req.params.id, req.orgId]
     );
     res.json({ message: 'Invitation cancelled' });
@@ -235,7 +242,7 @@ router.get('/stats', adminOnly, async (req, res) => {
           COUNT(*) FILTER (WHERE status = 'pending')                      AS pending
         FROM actions WHERE org_id = $1
       `, [req.orgId]),
-      pool.query(`SELECT COUNT(*) AS total FROM org_invitations WHERE org_id = $1 AND status = 'pending'`, [req.orgId]),
+      pool.query(`SELECT COUNT(*) AS total FROM org_invitations WHERE org_id = $1 AND accepted_at IS NULL AND expires_at > NOW()`, [req.orgId]),
     ]);
 
     res.json({
