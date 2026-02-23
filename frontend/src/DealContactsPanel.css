@@ -1,0 +1,268 @@
+/* ─── DealContactsPanel ────────────────────────────────────────────────────── */
+/* Prefix: dcp-  — mirrors dtp- convention from DealTeamPanel                  */
+
+.dcp-root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dcp-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #6b7280;
+  font-size: 13px;
+  padding: 12px 0;
+}
+
+.dcp-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #e5e7eb;
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: dcp-spin 0.7s linear infinite;
+  display: inline-block;
+}
+
+@keyframes dcp-spin { to { transform: rotate(360deg); } }
+
+.dcp-error {
+  font-size: 12px;
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+/* ── Header ──────────────────────────────────────────────────── */
+.dcp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dcp-count {
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.dcp-empty {
+  font-size: 13px;
+  color: #9ca3af;
+  padding: 8px 0;
+  margin: 0;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+.dcp-btn {
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 5px 12px;
+  transition: all 0.15s;
+}
+
+.dcp-btn--add {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+.dcp-btn--add:hover { background: #dbeafe; }
+
+.dcp-btn--save {
+  background: #1d4ed8;
+  color: white;
+}
+.dcp-btn--save:hover:not(:disabled) { background: #1e40af; }
+.dcp-btn--save:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.dcp-btn--remove {
+  background: none;
+  color: #9ca3af;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.dcp-btn--set-role {
+  background: none;
+  color: #9ca3af;
+  border: 1px dashed #d1d5db;
+  border-radius: 10px;
+  padding: 2px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.dcp-btn--set-role:hover {
+  color: #6366f1;
+  border-color: #6366f1;
+  background: #f5f3ff;
+}
+
+/* ── Add form ────────────────────────────────────────────────── */
+.dcp-add-form {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dcp-add-form__row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dcp-select,
+.dcp-input {
+  flex: 1;
+  min-width: 160px;
+  padding: 7px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #111827;
+  background: white;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.dcp-select:focus,
+.dcp-input:focus { border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99,102,241,0.1); }
+
+.dcp-add-form__error {
+  font-size: 12px;
+  color: #dc2626;
+}
+
+.dcp-add-form__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ── Contact list ────────────────────────────────────────────── */
+.dcp-contacts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dcp-contact {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: #f9fafb;
+  border: 1px solid #f3f4f6;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+
+.dcp-contact:hover { background: #f3f4f6; }
+.dcp-contact:hover .dcp-btn--remove { opacity: 1; }
+.dcp-btn--remove:hover { color: #dc2626; border-color: #fecaca; background: #fef2f2; }
+
+/* ── Avatar ──────────────────────────────────────────────────── */
+.dcp-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #0ea5e9, #6366f1);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ── Contact info ────────────────────────────────────────────── */
+.dcp-contact__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dcp-contact__info--clickable {
+  cursor: pointer;
+}
+
+.dcp-contact__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dcp-contact__info--clickable .dcp-contact__name:hover {
+  color: #6366f1;
+}
+
+.dcp-contact__arrow {
+  font-size: 11px;
+  color: #9ca3af;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.dcp-contact__info--clickable:hover .dcp-contact__arrow {
+  opacity: 1;
+}
+
+.dcp-contact__meta {
+  font-size: 11px;
+  color: #6b7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Role section ────────────────────────────────────────────── */
+.dcp-contact__role {
+  flex-shrink: 0;
+  max-width: 160px;
+}
+
+.dcp-role-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 10px;
+  border: 1px solid;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.dcp-role-badge:hover { opacity: 0.75; }
+
+.dcp-role-input {
+  width: 130px;
+  padding: 3px 8px;
+  border: 1px solid #6366f1;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #111827;
+  background: white;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(99,102,241,0.15);
+}

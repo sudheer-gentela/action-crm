@@ -8,6 +8,7 @@ import TranscriptAnalysis from './TranscriptAnalysis';
 import DealHealthScore from './DealHealthScore';
 import DealActionsPanel from './DealActionsPanel';
 import DealTeamPanel from './DealTeamPanel';
+import DealContactsPanel from './DealContactsPanel';
 import DealEmailHistory from './DealEmailHistory';
 import './DealsView.css';
 
@@ -163,12 +164,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
     }
   };
 
-
-  const getDealContacts = (dealId) => {
-    const deal = deals.find(d => d.id === dealId);
-    if (!deal) return [];
-    return contacts.filter(c => c.account_id === deal.account_id);
-  };
 
   const getDealMeetings = (dealId) => {
     return meetings.filter(m => m.deal_id === dealId);
@@ -345,32 +340,8 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
 
               {/* Contacts */}
               <div className="detail-section">
-                <h3>Contacts ({getDealContacts(selectedDeal.id).length})</h3>
-                {getDealContacts(selectedDeal.id).length === 0 ? (
-                  <p className="empty-message">No contacts linked to this deal</p>
-                ) : (
-                  <div className="linked-items-list">
-                    {getDealContacts(selectedDeal.id).map(contact => (
-                      <div
-                        key={contact.id}
-                        className="linked-item linked-item--clickable"
-                        onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'contacts', contactId: contact.id } }))}
-                        title="Open contact"
-                      >
-                        <span className="item-icon">👤</span>
-                        <div className="item-info">
-                          <div className="item-name">
-                            {contact.first_name} {contact.last_name}
-                          </div>
-                          <div className="item-meta">
-                            {contact.title} • {contact.role_type}
-                          </div>
-                        </div>
-                        <span className="item-arrow">→</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <h3>👤 Contacts</h3>
+                <DealContactsPanel deal={selectedDeal} />
               </div>
 
               {/* Email History — full thread view with tagging and contact snooze */}
