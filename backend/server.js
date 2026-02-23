@@ -21,7 +21,9 @@ const storageRoutes    = require('./routes/storage.routes');
 const superAdminRoutes  = require('./routes/superAdmin.routes');
 const orgAdminRoutes    = require('./routes/orgAdmin.routes');
 const playbooksRoutes   = require('./routes/playbooks.routes');
-const aiContextRoutes = require('./routes/ai-context.routes');
+const aiContextRoutes  = require('./routes/ai-context.routes');
+const dealRolesRoutes  = require('./routes/deal-roles.routes');
+const dealTeamRoutes   = require('./routes/deal-team.routes');
 
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
@@ -159,7 +161,9 @@ app.use('/api/storage',   storageRoutes);
 app.use('/api/super',      superAdminRoutes);
 app.use('/api/org/admin',  orgAdminRoutes);
 app.use('/api/playbooks',  playbooksRoutes);
-app.use('/api/ai', aiContextRoutes);
+app.use('/api/ai',         aiContextRoutes);
+app.use('/api/deal-roles', dealRolesRoutes);
+app.use('/api/deal-team',  dealTeamRoutes);
 
 // ─────────────────────────────────────────────────────────────
 // Error handling
