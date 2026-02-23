@@ -1,10 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // deal-stages.routes.js
-// Org-admin–only management of deal stages.
-//
-// Key design decision: deals.stage stores the key string (VARCHAR 50).
-// To allow key renames without orphaning deals, a PUT that changes the key
-// runs a cascading UPDATE on deals inside the same transaction.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const express = require('express');
@@ -17,24 +12,24 @@ router.use(authenticateToken, orgContext);
 
 const adminOnly = requireRole('owner', 'admin');
 
-// ── Validation helpers ────────────────────────────────────────────────────────
+// Exact columns that exist in deal_stages
+const SELECT_COLS = `id, key, name, stage_type, sort_order, is_active, is_terminal, is_system`;
 
-// Keys must be lowercase, alphanumeric + underscores, 1-50 chars.
-// This matches the VARCHAR(50) column and keeps keys safe for use as
-// identifiers in playbooks / rules engine.
 function isValidKey(key) {
-  return typeof key === 'string' && /^[a-z0-9_]{1,50}$/.test(key);
+  return typeof key === 'string' && /^[a-z0-9_]{1,100}$/.test(key);
 }
 
-const VALID_STAGE_TYPES = ['pipeline', 'won', 'lost', 'custom'];
+const VALID_STAGE_TYPES = [
+  'discovery', 'qualification', 'evaluation', 'proposal',
+  'negotiation', 'legal_review', 'closed_won', 'closed_lost', 'custom',
+];
 
 // ── GET /deal-stages ──────────────────────────────────────────────────────────
-// Returns all stages for this org, ordered by sort_order.
 
 router.get('/', adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, key, name, stage_type, sort_order, is_active, is_terminal, color, description
+      `SELECT ${SELECT_COLS}
        FROM deal_stages
        WHERE org_id = $1
        ORDER BY sort_order ASC, id ASC`,
@@ -47,29 +42,17 @@ router.get('/', adminOnly, async (req, res) => {
 });
 
 // ── POST /deal-stages ─────────────────────────────────────────────────────────
-// Creates a new stage. Key must be unique within the org.
 
 router.post('/', adminOnly, async (req, res) => {
   try {
     const {
-      key,
       name,
-      stage_type  = 'pipeline',
+      stage_type  = 'custom',
       sort_order,
       is_active   = true,
       is_terminal = false,
-      color       = null,
-      description = null,
     } = req.body;
 
-    if (!key?.trim()) {
-      return res.status(400).json({ error: { message: 'key is required' } });
-    }
-    if (!isValidKey(key)) {
-      return res.status(400).json({
-        error: { message: 'key must be lowercase letters, numbers, or underscores (max 50 chars)' },
-      });
-    }
     if (!name?.trim()) {
       return res.status(400).json({ error: { message: 'name is required' } });
     }
@@ -79,7 +62,9 @@ router.post('/', adminOnly, async (req, res) => {
       });
     }
 
-    // Determine sort_order: caller can specify; otherwise append after current max.
+    // Auto-generate key from name
+    const key = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+
     let resolvedOrder = sort_order;
     if (resolvedOrder == null) {
       const maxRow = await pool.query(
@@ -90,29 +75,17 @@ router.post('/', adminOnly, async (req, res) => {
     }
 
     const result = await pool.query(
-      `INSERT INTO deal_stages
-         (org_id, key, name, stage_type, sort_order, is_active, is_terminal, color, description)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING id, key, name, stage_type, sort_order, is_active, is_terminal, color, description`,
-      [
-        req.orgId,
-        key.trim(),
-        name.trim(),
-        stage_type,
-        resolvedOrder,
-        is_active,
-        is_terminal,
-        color,
-        description,
-      ]
+      `INSERT INTO deal_stages (org_id, key, name, stage_type, sort_order, is_active, is_terminal, is_system)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, false)
+       RETURNING ${SELECT_COLS}`,
+      [req.orgId, key, name.trim(), stage_type, resolvedOrder, is_active, is_terminal]
     );
 
     res.status(201).json({ stage: result.rows[0] });
   } catch (err) {
     if (err.code === '23505') {
-      // unique_violation — UNIQUE(org_id, key)
       return res.status(409).json({
-        error: { message: `A stage with key "${req.body.key}" already exists in this organisation` },
+        error: { message: `A stage with that key already exists. Try a different name.` },
       });
     }
     res.status(500).json({ error: { message: err.message } });
@@ -120,25 +93,14 @@ router.post('/', adminOnly, async (req, res) => {
 });
 
 // ── PUT /deal-stages/:id ──────────────────────────────────────────────────────
-// Updates a stage. If the key changes, cascades the rename to deals.stage and
-// actions.deal_stage in the same transaction so nothing is orphaned.
+// Cascades key rename to deals.stage and actions.deal_stage in one transaction.
 
 router.put('/:id', adminOnly, async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
-    const {
-      key,
-      name,
-      stage_type,
-      sort_order,
-      is_active,
-      is_terminal,
-      color,
-      description,
-    } = req.body;
+    const { key, name, stage_type, sort_order, is_active, is_terminal } = req.body;
 
-    // Load the current row first so we know the old key.
     const current = await client.query(
       `SELECT * FROM deal_stages WHERE id = $1 AND org_id = $2`,
       [id, req.orgId]
@@ -148,16 +110,12 @@ router.put('/:id', adminOnly, async (req, res) => {
     }
     const existing = current.rows[0];
 
-    // Validate the incoming key if it's being changed.
     const newKey = key !== undefined ? key.trim() : existing.key;
-    if (newKey !== existing.key) {
-      if (!isValidKey(newKey)) {
-        return res.status(400).json({
-          error: { message: 'key must be lowercase letters, numbers, or underscores (max 50 chars)' },
-        });
-      }
+    if (newKey !== existing.key && !isValidKey(newKey)) {
+      return res.status(400).json({
+        error: { message: 'key must be lowercase letters, numbers, or underscores' },
+      });
     }
-
     if (stage_type !== undefined && !VALID_STAGE_TYPES.includes(stage_type)) {
       return res.status(400).json({
         error: { message: `stage_type must be one of: ${VALID_STAGE_TYPES.join(', ')}` },
@@ -166,28 +124,18 @@ router.put('/:id', adminOnly, async (req, res) => {
 
     await client.query('BEGIN');
 
-    // ── Cascade key rename ────────────────────────────────────────────────────
-    // If the key is changing we update every row that currently stores the old
-    // key string. This keeps deals.stage and actions.deal_stage consistent
-    // without requiring a schema change or FK column.
+    // Cascade key rename to all tables that store the key as a string
     if (newKey !== existing.key) {
       await client.query(
-        `UPDATE deals
-         SET stage = $1, updated_at = NOW()
-         WHERE org_id = $2 AND stage = $3`,
+        `UPDATE deals SET stage = $1, updated_at = NOW() WHERE org_id = $2 AND stage = $3`,
         [newKey, req.orgId, existing.key]
       );
-
-      // actions.deal_stage is a denormalized snapshot — update it too.
       await client.query(
-        `UPDATE actions
-         SET deal_stage = $1
-         WHERE org_id = $2 AND deal_stage = $3`,
+        `UPDATE actions SET deal_stage = $1 WHERE org_id = $2 AND deal_stage = $3`,
         [newKey, req.orgId, existing.key]
       );
     }
 
-    // ── Update the stage row itself ───────────────────────────────────────────
     const updated = await client.query(
       `UPDATE deal_stages
        SET
@@ -197,19 +145,16 @@ router.put('/:id', adminOnly, async (req, res) => {
          sort_order  = COALESCE($4, sort_order),
          is_active   = COALESCE($5, is_active),
          is_terminal = COALESCE($6, is_terminal),
-         color       = COALESCE($7, color),
-         description = COALESCE($8, description)
-       WHERE id = $9 AND org_id = $10
-       RETURNING id, key, name, stage_type, sort_order, is_active, is_terminal, color, description`,
+         updated_at  = NOW()
+       WHERE id = $7 AND org_id = $8
+       RETURNING ${SELECT_COLS}`,
       [
         newKey,
-        name        !== undefined ? name.trim()  : null,
-        stage_type  !== undefined ? stage_type   : null,
-        sort_order  !== undefined ? sort_order   : null,
-        is_active   !== undefined ? is_active    : null,
-        is_terminal !== undefined ? is_terminal  : null,
-        color       !== undefined ? color        : null,
-        description !== undefined ? description  : null,
+        name        !== undefined ? name.trim() : null,
+        stage_type  !== undefined ? stage_type  : null,
+        sort_order  !== undefined ? sort_order  : null,
+        is_active   !== undefined ? is_active   : null,
+        is_terminal !== undefined ? is_terminal : null,
         id,
         req.orgId,
       ]
@@ -220,9 +165,7 @@ router.put('/:id', adminOnly, async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK');
     if (err.code === '23505') {
-      return res.status(409).json({
-        error: { message: `A stage with that key already exists in this organisation` },
-      });
+      return res.status(409).json({ error: { message: 'A stage with that key already exists' } });
     }
     res.status(500).json({ error: { message: err.message } });
   } finally {
@@ -231,8 +174,6 @@ router.put('/:id', adminOnly, async (req, res) => {
 });
 
 // ── PATCH /deal-stages/reorder ────────────────────────────────────────────────
-// Accepts an ordered array of stage IDs and reassigns sort_order values.
-// Body: { order: [id1, id2, id3, ...] }
 
 router.patch('/reorder', adminOnly, async (req, res) => {
   const client = await pool.connect();
@@ -243,23 +184,16 @@ router.patch('/reorder', adminOnly, async (req, res) => {
     }
 
     await client.query('BEGIN');
-
     for (let i = 0; i < order.length; i++) {
       await client.query(
-        `UPDATE deal_stages SET sort_order = $1 WHERE id = $2 AND org_id = $3`,
+        `UPDATE deal_stages SET sort_order = $1, updated_at = NOW() WHERE id = $2 AND org_id = $3`,
         [(i + 1) * 10, order[i], req.orgId]
       );
     }
-
     await client.query('COMMIT');
 
-    // Return the full updated list so the frontend can re-render without a
-    // second round-trip.
     const result = await pool.query(
-      `SELECT id, key, name, stage_type, sort_order, is_active, is_terminal, color, description
-       FROM deal_stages
-       WHERE org_id = $1
-       ORDER BY sort_order ASC, id ASC`,
+      `SELECT ${SELECT_COLS} FROM deal_stages WHERE org_id = $1 ORDER BY sort_order ASC, id ASC`,
       [req.orgId]
     );
     res.json({ stages: result.rows });
@@ -272,9 +206,6 @@ router.patch('/reorder', adminOnly, async (req, res) => {
 });
 
 // ── DELETE /deal-stages/:id ───────────────────────────────────────────────────
-// Prevents deletion if any active (non-deleted) deals are on this stage.
-// Soft-deletion is done by setting is_active = false rather than removing the
-// row, which would otherwise orphan historical deal records.
 
 router.delete('/:id', adminOnly, async (req, res) => {
   try {
@@ -289,47 +220,34 @@ router.delete('/:id', adminOnly, async (req, res) => {
     }
     const { key, name } = stage.rows[0];
 
-    // Block hard delete if live deals use this stage.
-    const dealCount = await pool.query(
-      `SELECT COUNT(*) AS count
-       FROM deals
-       WHERE org_id = $1 AND stage = $2 AND deleted_at IS NULL`,
+    const activeDeals = await pool.query(
+      `SELECT COUNT(*) AS count FROM deals WHERE org_id = $1 AND stage = $2 AND deleted_at IS NULL`,
       [req.orgId, key]
     );
-    const count = parseInt(dealCount.rows[0].count);
+    const count = parseInt(activeDeals.rows[0].count);
     if (count > 0) {
       return res.status(409).json({
         error: {
-          message: `Cannot delete stage "${name}" — ${count} active deal${count === 1 ? '' : 's'} ${count === 1 ? 'is' : 'are'} currently in this stage. Move or close those deals first, or deactivate the stage instead.`,
+          message: `Cannot delete "${name}" — ${count} active deal${count === 1 ? '' : 's'} ${count === 1 ? 'is' : 'are'} in this stage. Move them first, or deactivate instead.`,
         },
       });
     }
 
-    // Also check total_count (including deleted deals) to decide hard vs soft.
-    const totalCount = await pool.query(
+    // If historical (deleted) deals reference this key, soft-delete to preserve history
+    const totalDeals = await pool.query(
       `SELECT COUNT(*) AS count FROM deals WHERE org_id = $1 AND stage = $2`,
       [req.orgId, key]
     );
-    const totalDeals = parseInt(totalCount.rows[0].count);
-
-    if (totalDeals > 0) {
-      // Historical deals reference this key — soft delete to preserve history.
+    if (parseInt(totalDeals.rows[0].count) > 0) {
       await pool.query(
-        `UPDATE deal_stages SET is_active = FALSE WHERE id = $1 AND org_id = $2`,
+        `UPDATE deal_stages SET is_active = FALSE, updated_at = NOW() WHERE id = $1 AND org_id = $2`,
         [id, req.orgId]
       );
-      return res.json({
-        message: `Stage "${name}" deactivated (it has historical deal records and cannot be permanently deleted).`,
-        action: 'deactivated',
-      });
+      return res.json({ message: `"${name}" deactivated (has historical deals).`, action: 'deactivated' });
     }
 
-    // No deals ever used this stage — safe to hard delete.
-    await pool.query(
-      `DELETE FROM deal_stages WHERE id = $1 AND org_id = $2`,
-      [id, req.orgId]
-    );
-    res.json({ message: `Stage "${name}" deleted.`, action: 'deleted' });
+    await pool.query(`DELETE FROM deal_stages WHERE id = $1 AND org_id = $2`, [id, req.orgId]);
+    res.json({ message: `"${name}" deleted.`, action: 'deleted' });
   } catch (err) {
     res.status(500).json({ error: { message: err.message } });
   }
