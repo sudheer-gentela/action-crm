@@ -1,0 +1,164 @@
+/* ─── DealFilesPanel ───────────────────────────────────────────────────────── */
+/* Prefix: dfp-  — mirrors dtp-/dcp- convention                                */
+
+.dfp-root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dfp-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #6b7280;
+  font-size: 13px;
+  padding: 12px 0;
+}
+
+.dfp-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #e5e7eb;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: dfp-spin 0.7s linear infinite;
+  display: inline-block;
+}
+@keyframes dfp-spin { to { transform: rotate(360deg); } }
+
+.dfp-error {
+  font-size: 12px;
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+/* ── Header ──────────────────────────────────────────────────── */
+.dfp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dfp-count {
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.dfp-btn--manage {
+  font-size: 12px;
+  font-weight: 600;
+  color: #2563eb;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 4px 11px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+.dfp-btn--manage:hover { background: #dbeafe; }
+
+/* ── Empty state ─────────────────────────────────────────────── */
+.dfp-empty {
+  font-size: 13px;
+  color: #9ca3af;
+  padding: 8px 0;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.dfp-link {
+  color: #2563eb;
+  cursor: pointer;
+  font-weight: 500;
+  text-decoration: underline;
+}
+.dfp-link:hover { color: #1d4ed8; }
+
+/* ── File list ───────────────────────────────────────────────── */
+.dfp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dfp-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #f9fafb;
+  border: 1px solid #f3f4f6;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+.dfp-file:hover { background: #f3f4f6; }
+
+/* ── File icon ───────────────────────────────────────────────── */
+.dfp-file-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+/* ── File info ───────────────────────────────────────────────── */
+.dfp-file-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dfp-file-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+
+.dfp-file-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.dfp-category-badge {
+  display: inline-block;
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+/* ── Actions ─────────────────────────────────────────────────── */
+.dfp-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.dfp-icon-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #6b7280;
+  text-decoration: none;
+  transition: all 0.15s;
+  line-height: 1.4;
+}
+.dfp-icon-btn:hover { background: #e5e7eb; border-color: #d1d5db; color: #111827; }
+.dfp-icon-btn--danger:hover { background: #fef2f2; border-color: #fca5a5; color: #ef4444; }
+.dfp-icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }

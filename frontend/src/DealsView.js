@@ -9,6 +9,7 @@ import DealActionsPanel from './DealActionsPanel';
 import DealTeamPanel from './DealTeamPanel';
 import DealContactsPanel from './DealContactsPanel';
 import DealEmailHistory from './DealEmailHistory';
+import DealFilesPanel from './DealFilesPanel';
 import './DealsView.css';
 
 function DealsView({ openDealId = null, onDealOpened = null }) {
@@ -556,7 +557,13 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                 <DealContactsPanel deal={selectedDeal} />
               </div>
 
-              {/* ── 7. Modify Deal Details ──────────────────────── */}
+              {/* ── 7. Files ─────────────────────────────────────── */}
+              <div className="detail-section">
+                <h3>📁 Files</h3>
+                <DealFilesPanel deal={selectedDeal} />
+              </div>
+
+              {/* ── 8. Modify Deal Details ──────────────────────── */}
               <div className="detail-section">
                 <h3>🛠️ Modify Deal Details</h3>
                 <div className="quick-actions">
