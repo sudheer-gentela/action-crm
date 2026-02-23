@@ -4,7 +4,7 @@ import { mockData, enrichData } from './mockData';
 import ContactForm from './ContactForm';
 import './ContactsView.css';
 
-function ContactsView() {
+function ContactsView({ openContactId = null, onContactOpened = null }) {
   const [contacts, setContacts] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [deals, setDeals] = useState([]);
@@ -20,6 +20,16 @@ function ContactsView() {
   useEffect(() => {
     loadContacts();
   }, []);
+
+  // Auto-open a specific contact when navigated from another view (e.g. deal panel)
+  useEffect(() => {
+    if (!openContactId || contacts.length === 0) return;
+    const target = contacts.find(c => c.id === openContactId || c.id === parseInt(openContactId));
+    if (target) {
+      setSelectedContact(target);
+      if (onContactOpened) onContactOpened();
+    }
+  }, [openContactId, contacts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadContacts = async () => {
     try {

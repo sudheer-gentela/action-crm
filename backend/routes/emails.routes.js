@@ -194,6 +194,7 @@ router.get('/deal/:dealId', async (req, res) => {
          e.body,
          e.from_address,
          e.to_address,
+         e.cc_addresses,
          e.sent_at,
          e.conversation_id,
          e.tagged_by,
@@ -225,26 +226,62 @@ router.get('/deal/:dealId', async (req, res) => {
       [dealId, req.orgId, req.user.userId]
     );
 
-    const emails = result.rows.map(e => ({
-      id:             e.id,
-      direction:      e.direction,
-      subject:        e.subject,
-      bodyPreview:    (e.body || '').replace(/<[^>]+>/g, '').slice(0, 200),
-      body:           e.body,
-      fromAddress:    e.from_address,
-      toAddress:      e.to_address,
-      sentAt:         e.sent_at,
-      conversationId: e.conversation_id,
-      tagSource:      e.tag_source,
-      contact: e.contact_id ? {
-        id:        e.contact_id,
-        name:      `${e.contact_first || ''} ${e.contact_last || ''}`.trim(),
-        email:     e.contact_email,
-      } : null,
-      sender: {
-        name: `${e.sender_first || ''} ${e.sender_last || ''}`.trim() || e.from_address,
-      },
-    }));
+    // Collect all CC addresses across emails, resolve to org users in one query
+    const allCcEmails = new Set();
+    result.rows.forEach(e => {
+      if (e.cc_addresses) {
+        e.cc_addresses.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+          .forEach(addr => allCcEmails.add(addr));
+      }
+    });
+
+    const ccUserMap = new Map(); // lowercase email → { userId, name, email }
+    if (allCcEmails.size > 0) {
+      const ccUsersResult = await db.query(
+        `SELECT id, first_name, last_name, email FROM users
+         WHERE org_id = $1 AND LOWER(email) = ANY($2::text[])`,
+        [req.orgId, [...allCcEmails]]
+      );
+      ccUsersResult.rows.forEach(u => {
+        ccUserMap.set(u.email.toLowerCase(), {
+          userId: u.id,
+          name:   `${u.first_name} ${u.last_name}`.trim(),
+          email:  u.email,
+        });
+      });
+    }
+
+    const emails = result.rows.map(e => {
+      const ccAddresses = (e.cc_addresses || '').split(',').map(s => s.trim()).filter(Boolean);
+      const ccUsers = ccAddresses
+        .map(addr => ccUserMap.get(addr.toLowerCase()))
+        .filter(Boolean);
+
+      return {
+        id:             e.id,
+        direction:      e.direction,
+        subject:        e.subject,
+        bodyPreview:    (e.body || '').replace(/<[^>]+>/g, '').slice(0, 200),
+        body:           e.body,
+        fromAddress:    e.from_address,
+        toAddress:      e.to_address,
+        ccAddresses,
+        sentAt:         e.sent_at,
+        conversationId: e.conversation_id,
+        tagSource:      e.tag_source,
+        contact: e.contact_id ? {
+          id:        e.contact_id,
+          name:      `${e.contact_first || ''} ${e.contact_last || ''}`.trim(),
+          email:     e.contact_email,
+        } : null,
+        sender: {
+          name: `${e.sender_first || ''} ${e.sender_last || ''}`.trim() || e.from_address,
+        },
+        senderId:   e.user_id,
+        senderName: `${e.sender_first || ''} ${e.sender_last || ''}`.trim(),
+        ccUsers,   // org users found in CC — used by DealTeamPanel for suggestions
+      };
+    });
 
     res.json({ emails });
   } catch (err) {

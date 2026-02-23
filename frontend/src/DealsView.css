@@ -608,3 +608,84 @@
   outline: none;
   border-color: #3b82f6;
 }
+
+/* ── Fullscreen panel ─────────────────────────────────────────── */
+.panel-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  border-radius: 0;
+  max-height: 100vh;
+  width: 100vw;
+  border: none;
+  animation: none;
+}
+
+/* When fullscreen, hide the pipeline board */
+.deals-container.with-panel .pipeline-board:has(~ .panel-fullscreen) {
+  display: none;
+}
+
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.expand-panel {
+  background: none;
+  border: none;
+  font-size: 18px;
+  color: #718096;
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.expand-panel:hover {
+  background: #f7fafc;
+  color: #2d3748;
+}
+
+/* ── Clickable linked items ───────────────────────────────────── */
+.linked-item--clickable {
+  cursor: pointer;
+}
+
+.linked-item--clickable:hover {
+  background: #ebf4ff;
+  border-left: 3px solid #667eea;
+  padding-left: 9px;
+}
+
+.item-arrow {
+  font-size: 14px;
+  color: #a0aec0;
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: color 0.2s, transform 0.2s;
+}
+
+.linked-item--clickable:hover .item-arrow {
+  color: #667eea;
+  transform: translateX(3px);
+}
+
+/* ── Notes at bottom ─────────────────────────────────────────── */
+.deal-notes-text {
+  font-size: 14px;
+  color: #4a5568;
+  line-height: 1.7;
+  margin: 0;
+  white-space: pre-wrap;
+  background: #f7fafc;
+  border-left: 3px solid #e2e8f0;
+  padding: 10px 14px;
+  border-radius: 0 6px 6px 0;
+}

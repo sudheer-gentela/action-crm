@@ -458,3 +458,61 @@
   gap: 5px;
   flex-shrink: 0;
 }
+
+/* ── Direction demarcation ───────────────────────────────────── */
+
+/* Thread-level left border color */
+.deh-thread--inbound  { border-left: 3px solid #3b82f6; }
+.deh-thread--outbound { border-left: 3px solid #10b981; }
+
+/* Direction pill in thread summary */
+.deh-thread__dir-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+  min-width: 48px;
+  text-align: center;
+}
+
+.deh-thread__dir-pill--inbound {
+  background: #dbeafe;
+  color: #1d4ed8;
+  border: 1px solid #93c5fd;
+}
+
+.deh-thread__dir-pill--outbound {
+  background: #d1fae5;
+  color: #065f46;
+  border: 1px solid #6ee7b7;
+}
+
+/* Per-email direction background tint */
+.deh-email--inbound  { background: #f0f7ff; }
+.deh-email--outbound { background: #f0fdf8; }
+
+/* Direction label inside expanded email */
+.deh-email__dir-label {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.deh-email__dir-label--inbound {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.deh-email__dir-label--outbound {
+  background: #d1fae5;
+  color: #065f46;
+}

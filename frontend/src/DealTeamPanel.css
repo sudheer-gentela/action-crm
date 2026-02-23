@@ -304,3 +304,45 @@
   color: #9ca3af;
   padding: 8px 0;
 }
+
+/* ── Email-based suggestions ─────────────────────────────────── */
+.dtp-suggestions {
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dtp-suggestions__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #0369a1;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.dtp-suggestion-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid #e0f2fe;
+}
+
+.dtp-btn--add-suggestion {
+  background: #0ea5e9;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.dtp-btn--add-suggestion:hover { background: #0284c7; }

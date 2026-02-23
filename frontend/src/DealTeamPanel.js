@@ -62,6 +62,7 @@ export default function DealTeamPanel({ deal }) {
   const [addCustomRole, setAddCustomRole] = useState('');
   const [adding,        setAdding]        = useState(false);
   const [addError,      setAddError]      = useState('');
+  const [emailSuggestions, setEmailSuggestions] = useState([]); // users seen in emails but not on team
 
   const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
 
@@ -73,9 +74,33 @@ export default function DealTeamPanel({ deal }) {
         apiFetch('/deal-roles'),
         apiFetch(`/deal-team/${deal.id}/eligible`),
       ]);
+      const memberIds = new Set((teamRes.members || []).map(m => m.userId));
       setMembers(teamRes.members || []);
       setRoles((rolesRes.roles || []).filter(r => r.is_active));
       setEligibleUsers(eligibleRes.users || []);
+
+      // Fetch deal emails to surface people not yet on team
+      try {
+        const emailsRes = await apiFetch(`/emails/deal/${deal.id}`);
+        const emails = emailsRes.emails || [];
+        // Collect org users who appear in emails (sender OR cc) but aren't team members
+        const seen = new Map();
+        emails.forEach(e => {
+          // From/sender — senderId is set for internal org users
+          if (e.senderId && e.senderName && !memberIds.has(e.senderId)) {
+            seen.set(e.senderId, { userId: e.senderId, name: e.senderName, email: '' });
+          }
+          // CC — ccUsers contains resolved org users from CC addresses
+          (e.ccUsers || []).forEach(u => {
+            if (!memberIds.has(u.userId)) {
+              seen.set(u.userId, u);
+            }
+          });
+        });
+        setEmailSuggestions([...seen.values()]);
+      } catch (_) {
+        // Email suggestions are best-effort
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -107,6 +132,7 @@ export default function DealTeamPanel({ deal }) {
       setMembers(prev => [...prev, res.member]);
       // Remove added user from eligible list
       setEligibleUsers(prev => prev.filter(u => u.id !== parseInt(addUserId)));
+      setEmailSuggestions(prev => prev.filter(u => u.userId !== parseInt(addUserId)));
       setAddUserId('');
       setAddRoleId('');
       setAddCustomRole('');
@@ -216,6 +242,47 @@ export default function DealTeamPanel({ deal }) {
               {adding ? '…' : 'Add to Team'}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Email-based suggestions — people seen in deal emails but not on team */}
+      {emailSuggestions.length > 0 && (
+        <div className="dtp-suggestions">
+          <div className="dtp-suggestions__label">👀 Seen in deal emails — add to team?</div>
+          {emailSuggestions.map(suggestion => (
+            <div key={suggestion.userId} className="dtp-suggestion-row">
+              <MemberAvatar name={suggestion.name} />
+              <div className="dtp-member__info">
+                <div className="dtp-member__name">{suggestion.name}</div>
+                <div className="dtp-member__email">{suggestion.email}</div>
+              </div>
+              <button
+                className="dtp-btn dtp-btn--add-suggestion"
+                onClick={async () => {
+                  // Find the "untagged" role or first active role as default
+                  const untaggedRole = roles.find(r => r.key === 'custom') || roles[0];
+                  if (!untaggedRole) return;
+                  try {
+                    const res = await apiFetch(`/deal-team/${deal.id}/members`, {
+                      method: 'POST',
+                      body: JSON.stringify({
+                        userId:     suggestion.userId,
+                        roleId:     untaggedRole.id,
+                        customRole: 'Untagged team member',
+                      }),
+                    });
+                    setMembers(prev => [...prev, res.member]);
+                    setEmailSuggestions(prev => prev.filter(s => s.userId !== suggestion.userId));
+                    setEligibleUsers(prev => prev.filter(u => u.id !== suggestion.userId));
+                  } catch (err) {
+                    setError(err.message);
+                  }
+                }}
+              >
+                + Add
+              </button>
+            </div>
+          ))}
         </div>
       )}
 

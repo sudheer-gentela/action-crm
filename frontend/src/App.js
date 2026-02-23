@@ -350,6 +350,8 @@ function Dashboard({ user, onLogout }) {
   const [activeContextAction, setActiveContextAction] = useState(null); // floating panel
   const [pendingDealId, setPendingDealId]               = useState(null); // tell DealsView which deal to open
   const [pendingEmailDealId, setPendingEmailDealId]     = useState(null); // tell EmailView which deal to filter to
+  const [pendingContactId, setPendingContactId]         = useState(null); // tell ContactsView which contact to open
+  const [pendingMeetingId, setPendingMeetingId]         = useState(null); // tell CalendarView which meeting to open
   const [sidebarOpen, setSidebarOpen]           = useState(false);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
 
@@ -432,6 +434,10 @@ function Dashboard({ user, onLogout }) {
           setPendingDealId(dealId);
         }
       }
+
+      // Contact and meeting deep-links from deal panel
+      if (detail?.contactId) setPendingContactId(detail.contactId);
+      if (detail?.meetingId) setPendingMeetingId(detail.meetingId);
 
       handleNavClick(detail?.tab || detail);
     };
@@ -559,7 +565,12 @@ function Dashboard({ user, onLogout }) {
             />
           )}
           {currentTab === 'accounts'     && <AccountsView />}
-          {currentTab === 'contacts'     && <ContactsView />}
+          {currentTab === 'contacts'     && (
+            <ContactsView
+              openContactId={pendingContactId}
+              onContactOpened={() => setPendingContactId(null)}
+            />
+          )}
           {currentTab === 'email'        && (
             <EmailView
               dealId={pendingEmailDealId}
@@ -567,7 +578,12 @@ function Dashboard({ user, onLogout }) {
             />
           )}
           {currentTab === 'files'        && <FilesView />}
-          {currentTab === 'calendar'     && <CalendarView />}
+          {currentTab === 'calendar'     && (
+            <CalendarView
+              openMeetingId={pendingMeetingId}
+              onMeetingOpened={() => setPendingMeetingId(null)}
+            />
+          )}
           {currentTab === 'settings'     && <SettingsView />}
           {/* Org admin view — only when activeRole is org-admin */}
           {currentTab === 'org-admin'    && activeRole === 'org-admin'   && <OrgAdminView />}

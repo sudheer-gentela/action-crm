@@ -88,7 +88,7 @@ const SNOOZE_OPTIONS = [
   { label: '2 weeks', days: 14 },
 ];
 
-function CalendarView() {
+function CalendarView({ openMeetingId = null, onMeetingOpened = null }) {
   const [meetings, setMeetings]               = useState([]);
   const [actions, setActions]                 = useState([]);
   const [deals, setDeals]                     = useState([]);
@@ -115,6 +115,16 @@ function CalendarView() {
   const userId = JSON.parse(localStorage.getItem('user') || '{}').id;
 
   useEffect(() => { loadData(); }, []);
+
+  // Auto-open a specific meeting when navigated from deal panel
+  useEffect(() => {
+    if (!openMeetingId || meetings.length === 0) return;
+    const target = meetings.find(m => m.id === openMeetingId || m.id === parseInt(openMeetingId));
+    if (target) {
+      setSelectedMeeting(target);
+      if (onMeetingOpened) onMeetingOpened();
+    }
+  }, [openMeetingId, meetings]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Close action popover on outside click
   useEffect(() => {

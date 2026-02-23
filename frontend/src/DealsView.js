@@ -24,6 +24,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
   const [showTranscriptUpload, setShowTranscriptUpload] = useState(false);
   const [viewingTranscriptId, setViewingTranscriptId] = useState(null);
   const [scoringDealId, setScoringDealId] = useState(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
     fetchDeals();
@@ -162,24 +163,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
     }
   };
 
-  const handleUpdateSignal = async (dealId, signalKey, value) => {
-    try {
-      const response = await apiService.health.signalOverride(dealId, signalKey, value);
-      const { signalValue, signalOverrides, health, score: health_score, breakdown } = response.data;
-      const update = {
-        [signalKey]:              signalValue,
-        signal_overrides:         signalOverrides,
-        health,
-        health_score,
-        health_score_breakdown:   breakdown,
-        health_score_updated_at:  new Date().toISOString(),
-      };
-      setDeals(deals.map(d => d.id === dealId ? { ...d, ...update } : d));
-      if (selectedDeal?.id === dealId) setSelectedDeal(prev => ({ ...prev, ...update }));
-    } catch (err) {
-      console.error('Update signal error:', err);
-    }
-  };
 
   const getDealContacts = (dealId) => {
     const deal = deals.find(d => d.id === dealId);
@@ -293,10 +276,19 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
 
         {/* Deal Detail Panel */}
         {selectedDeal && (
-          <div className="deal-detail-panel">
+          <div className={`deal-detail-panel ${isFullscreen ? 'panel-fullscreen' : ''}`}>
             <div className="panel-header">
               <h2>{selectedDeal.name}</h2>
-              <button className="close-panel" onClick={() => setSelectedDeal(null)}>×</button>
+              <div className="panel-header-actions">
+                <button
+                  className="expand-panel"
+                  onClick={() => setIsFullscreen(v => !v)}
+                  title={isFullscreen ? 'Exit fullscreen' : 'Expand to fullscreen'}
+                >
+                  {isFullscreen ? '⊙' : '⛶'}
+                </button>
+                <button className="close-panel" onClick={() => { setSelectedDeal(null); setIsFullscreen(false); }}>×</button>
+              </div>
             </div>
 
             <div className="panel-content">
@@ -343,12 +335,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                     </div>
                   )}
                 </div>
-                {selectedDeal.notes && (
-                  <div className="detail-description">
-                    <span className="detail-label">Notes</span>
-                    <p>{selectedDeal.notes}</p>
-                  </div>
-                )}
               </div>
 
               {/* Deal Team */}
@@ -365,7 +351,12 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                 ) : (
                   <div className="linked-items-list">
                     {getDealContacts(selectedDeal.id).map(contact => (
-                      <div key={contact.id} className="linked-item">
+                      <div
+                        key={contact.id}
+                        className="linked-item linked-item--clickable"
+                        onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'contacts', contactId: contact.id } }))}
+                        title="Open contact"
+                      >
                         <span className="item-icon">👤</span>
                         <div className="item-info">
                           <div className="item-name">
@@ -375,6 +366,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                             {contact.title} • {contact.role_type}
                           </div>
                         </div>
+                        <span className="item-arrow">→</span>
                       </div>
                     ))}
                   </div>
@@ -395,7 +387,12 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                 ) : (
                   <div className="linked-items-list">
                     {getDealMeetings(selectedDeal.id).map(meeting => (
-                      <div key={meeting.id} className="linked-item">
+                      <div
+                        key={meeting.id}
+                        className="linked-item linked-item--clickable"
+                        onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'calendar', meetingId: meeting.id } }))}
+                        title="View in Calendar"
+                      >
                         <span className="item-icon">📅</span>
                         <div className="item-info">
                           <div className="item-name">{meeting.title}</div>
@@ -403,6 +400,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                             {new Date(meeting.start_time).toLocaleString()} • {meeting.status}
                           </div>
                         </div>
+                        <span className="item-arrow">→</span>
                       </div>
                     ))}
                   </div>
@@ -451,47 +449,15 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                 />
               </div>
 
-              {/* Manual Health Signals */}
-              <div className="detail-section">
-                <h3>📋 Health Signals</h3>
-                <p className="section-description">Your assessment of key deal signals — shown alongside AI detection.</p>
-                <div className="signal-grid">
-                  {[
-                    { key: 'close_date_user_confirmed', label: '1a  Buyer confirmed close date' },
-                    { key: 'buyer_event_user_confirmed', label: '1c  Close date tied to buyer event' },
-                    { key: 'legal_engaged_user',         label: '3a  Legal/procurement engaged' },
-                    { key: 'security_review_user',       label: '3b  Security/IT review started' },
-                    { key: 'scope_approved_user',        label: '4c  Buyer approved scope' },
-                    { key: 'competitive_deal_user',      label: '5a  Competitive deal' },
-                    { key: 'price_sensitivity_user',     label: '5b  Price sensitivity flagged' },
-                    { key: 'discount_pending_user',      label: '5c  Discount approval pending' },
-                  ].map(({ key, label }) => {
-                    const isOverridden = !!selectedDeal.signal_overrides?.[key];
-                    return (
-                      <label key={key} className="signal-row">
-                        <input
-                          type="checkbox"
-                          checked={!!selectedDeal[key]}
-                          onChange={e => handleUpdateSignal(selectedDeal.id, key, e.target.checked)}
-                        />
-                        <span>{label}</span>
-                        {isOverridden && (
-                          <span className="signal-override-badge" title="Human override recorded">👤</span>
-                        )}
-                      </label>
-                    );
-                  })}
+
+
+              {/* Notes */}
+              {selectedDeal.notes && (
+                <div className="detail-section">
+                  <h3>📝 Notes</h3>
+                  <p className="deal-notes-text">{selectedDeal.notes}</p>
                 </div>
-                {selectedDeal.buyer_event_user_confirmed && (
-                  <input
-                    className="signal-text-input"
-                    placeholder="Describe the buyer event..."
-                    value={selectedDeal.buyer_event_description || ''}
-                    onBlur={e => handleUpdateSignal(selectedDeal.id, 'buyer_event_description', e.target.value)}
-                    onChange={e => setSelectedDeal(prev => ({ ...prev, buyer_event_description: e.target.value }))}
-                  />
-                )}
-              </div>
+              )}
 
               {/* Meeting Intelligence */}
               <div className="detail-section">

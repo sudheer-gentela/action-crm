@@ -62,7 +62,7 @@ function EmailThread({ thread }) {
   )].join(', ');
 
   return (
-    <div className={`deh-thread ${expanded ? 'deh-thread--expanded' : ''}`}>
+    <div className={`deh-thread deh-thread--${latest.direction === 'sent' ? 'outbound' : 'inbound'} ${expanded ? 'deh-thread--expanded' : ''}`}>
       {/* Thread summary row — always visible */}
       <div
         className="deh-thread__summary"
@@ -71,8 +71,8 @@ function EmailThread({ thread }) {
         tabIndex={0}
         onKeyDown={e => e.key === 'Enter' && setExpanded(v => !v)}
       >
-        <span className="deh-thread__dir">
-          {latest.direction === 'sent' ? '📤' : '📥'}
+        <span className={`deh-thread__dir-pill deh-thread__dir-pill--${latest.direction === 'sent' ? 'outbound' : 'inbound'}`}>
+          {latest.direction === 'sent' ? '↑ Sent' : '↓ Recv'}
         </span>
         <div className="deh-thread__meta">
           <div className="deh-thread__subject">
@@ -95,11 +95,11 @@ function EmailThread({ thread }) {
       {expanded && (
         <div className="deh-thread__emails">
           {thread.map(email => (
-            <div key={email.id} className="deh-email">
+            <div key={email.id} className={`deh-email deh-email--${email.direction === 'sent' ? 'outbound' : 'inbound'}`}>
               <div className="deh-email__header">
                 <div className="deh-email__from">
-                  <span className="deh-email__dir-icon">
-                    {email.direction === 'sent' ? '📤' : '📥'}
+                  <span className={`deh-email__dir-label deh-email__dir-label--${email.direction === 'sent' ? 'outbound' : 'inbound'}`}>
+                    {email.direction === 'sent' ? '↑ You' : '↓ Them'}
                   </span>
                   <strong>
                     {email.direction === 'sent'
