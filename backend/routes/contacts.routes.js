@@ -59,6 +59,160 @@ router.get('/', async (req, res) => {
   }
 });
 
+// ── GET /duplicates — find duplicate contact groups in this org ────────────────
+// NOTE: Must be registered BEFORE /:id so Express doesn't treat "duplicates" as an id
+router.get('/duplicates', async (req, res) => {
+  try {
+    const emailDupes = await db.query(
+      `SELECT LOWER(email) AS match_key, 'email' AS match_type,
+              json_agg(
+                json_build_object(
+                  'id', c.id, 'first_name', c.first_name, 'last_name', c.last_name,
+                  'email', c.email, 'phone', c.phone, 'title', c.title,
+                  'role_type', c.role_type, 'engagement_level', c.engagement_level,
+                  'location', c.location, 'linkedin_url', c.linkedin_url,
+                  'notes', c.notes, 'account_id', c.account_id,
+                  'account_name', acc.name, 'last_contact_date', c.last_contact_date,
+                  'created_at', c.created_at
+                ) ORDER BY c.created_at ASC
+              ) AS contacts
+       FROM contacts c
+       LEFT JOIN accounts acc ON acc.id = c.account_id
+       WHERE c.org_id = $1
+         AND c.email IS NOT NULL AND c.email != ''
+       GROUP BY LOWER(c.email)
+       HAVING COUNT(*) > 1`,
+      [req.orgId]
+    );
+
+    const nameDupes = await db.query(
+      `SELECT LOWER(c.first_name) || '|' || LOWER(c.last_name) || '|' || c.account_id AS match_key,
+              'name_account' AS match_type,
+              json_agg(
+                json_build_object(
+                  'id', c.id, 'first_name', c.first_name, 'last_name', c.last_name,
+                  'email', c.email, 'phone', c.phone, 'title', c.title,
+                  'role_type', c.role_type, 'engagement_level', c.engagement_level,
+                  'location', c.location, 'linkedin_url', c.linkedin_url,
+                  'notes', c.notes, 'account_id', c.account_id,
+                  'account_name', acc.name, 'last_contact_date', c.last_contact_date,
+                  'created_at', c.created_at
+                ) ORDER BY c.created_at ASC
+              ) AS contacts
+       FROM contacts c
+       LEFT JOIN accounts acc ON acc.id = c.account_id
+       WHERE c.org_id = $1
+         AND c.account_id IS NOT NULL
+       GROUP BY LOWER(c.first_name), LOWER(c.last_name), c.account_id
+       HAVING COUNT(*) > 1`,
+      [req.orgId]
+    );
+
+    const seenPairs = new Set();
+    const groups = [];
+    for (const row of [...emailDupes.rows, ...nameDupes.rows]) {
+      const ids = row.contacts.map(c => c.id).sort().join(',');
+      if (!seenPairs.has(ids)) {
+        seenPairs.add(ids);
+        groups.push({ matchType: row.match_type, matchKey: row.match_key, contacts: row.contacts });
+      }
+    }
+
+    res.json({ duplicateGroups: groups, totalGroups: groups.length });
+  } catch (error) {
+    console.error('Get duplicates error:', error);
+    res.status(500).json({ error: { message: 'Failed to find duplicates' } });
+  }
+});
+
+// ── POST /merge — merge two contacts ──────────────────────────────────────────
+// NOTE: Must be registered BEFORE /:id
+router.post('/merge', async (req, res) => {
+  const client = await (db.pool ? db.pool.connect() : db.connect());
+  try {
+    const { keepId, removeId, fieldOverrides = {} } = req.body;
+    if (!keepId || !removeId) {
+      return res.status(400).json({ error: { message: 'keepId and removeId are required' } });
+    }
+    if (keepId === removeId) {
+      return res.status(400).json({ error: { message: 'Cannot merge a contact with itself' } });
+    }
+
+    const bothRes = await client.query(
+      `SELECT id, first_name, last_name, email, phone, title, role_type,
+              engagement_level, location, linkedin_url, notes, account_id
+       FROM contacts WHERE id IN ($1, $2) AND org_id = $3`,
+      [keepId, removeId, req.orgId]
+    );
+    if (bothRes.rows.length !== 2) {
+      return res.status(404).json({ error: { message: 'One or both contacts not found in this org' } });
+    }
+    const keepContact   = bothRes.rows.find(r => r.id === keepId);
+    const removeContact = bothRes.rows.find(r => r.id === removeId);
+
+    await client.query('BEGIN');
+
+    const overridableFields = [
+      'first_name', 'last_name', 'email', 'phone', 'title', 'role_type',
+      'engagement_level', 'location', 'linkedin_url', 'notes', 'account_id'
+    ];
+    const updates = [];
+    const values  = [];
+    let paramIdx  = 1;
+
+    for (const field of overridableFields) {
+      if (fieldOverrides[field] === 'from_remove' && removeContact[field]) {
+        updates.push(`${field} = $${paramIdx}`);
+        values.push(removeContact[field]);
+        paramIdx++;
+      }
+    }
+
+    if (updates.length > 0) {
+      values.push(keepId, req.orgId);
+      await client.query(
+        `UPDATE contacts SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $${paramIdx} AND org_id = $${paramIdx + 1}`,
+        values
+      );
+    }
+
+    await client.query(
+      `INSERT INTO deal_contacts (deal_id, contact_id, role)
+       SELECT dc.deal_id, $1, dc.role FROM deal_contacts dc
+       WHERE dc.contact_id = $2
+         AND dc.deal_id NOT IN (SELECT deal_id FROM deal_contacts WHERE contact_id = $1)
+       ON CONFLICT (deal_id, contact_id) DO NOTHING`,
+      [keepId, removeId]
+    );
+
+    await client.query(`UPDATE emails SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
+
+    try { await client.query(`UPDATE meetings SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]); } catch (e) {}
+    try { await client.query(`UPDATE contact_activities SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]); } catch (e) {}
+    try { await client.query(`UPDATE conversation_starters SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]); } catch (e) {}
+
+    await client.query(`DELETE FROM deal_contacts WHERE contact_id = $1`, [removeId]);
+    await client.query(`DELETE FROM contacts WHERE id = $1 AND org_id = $2`, [removeId, req.orgId]);
+
+    await client.query('COMMIT');
+
+    const updatedRes = await db.query(
+      `SELECT c.*, acc.name as account_name FROM contacts c
+       LEFT JOIN accounts acc ON acc.id = c.account_id WHERE c.id = $1`,
+      [keepId]
+    );
+
+    res.json({ success: true, mergedContact: updatedRes.rows[0], removedId: removeId });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Merge contacts error:', error);
+    res.status(500).json({ error: { message: 'Failed to merge contacts' } });
+  } finally {
+    client.release();
+  }
+});
+
 // ── GET /:id ──────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {
@@ -283,219 +437,6 @@ router.post('/:id/unsnooze-email', async (req, res) => {
   } catch (err) {
     console.error('Unsnooze contact email error:', err);
     res.status(500).json({ error: { message: 'Failed to unsnooze contact' } });
-  }
-});
-
-// ── GET /duplicates — find duplicate contact groups in this org ────────────────
-router.get('/duplicates', async (req, res) => {
-  try {
-    // Group 1: Same email (case-insensitive)
-    const emailDupes = await db.query(
-      `SELECT LOWER(email) AS match_key, 'email' AS match_type,
-              json_agg(
-                json_build_object(
-                  'id', c.id, 'first_name', c.first_name, 'last_name', c.last_name,
-                  'email', c.email, 'phone', c.phone, 'title', c.title,
-                  'role_type', c.role_type, 'engagement_level', c.engagement_level,
-                  'location', c.location, 'linkedin_url', c.linkedin_url,
-                  'notes', c.notes, 'account_id', c.account_id,
-                  'account_name', acc.name, 'last_contact_date', c.last_contact_date,
-                  'created_at', c.created_at
-                ) ORDER BY c.created_at ASC
-              ) AS contacts
-       FROM contacts c
-       LEFT JOIN accounts acc ON acc.id = c.account_id
-       WHERE c.org_id = $1
-         AND c.email IS NOT NULL AND c.email != ''
-       GROUP BY LOWER(c.email)
-       HAVING COUNT(*) > 1`,
-      [req.orgId]
-    );
-
-    // Group 2: Same first+last name on same account
-    const nameDupes = await db.query(
-      `SELECT LOWER(c.first_name) || '|' || LOWER(c.last_name) || '|' || c.account_id AS match_key,
-              'name_account' AS match_type,
-              json_agg(
-                json_build_object(
-                  'id', c.id, 'first_name', c.first_name, 'last_name', c.last_name,
-                  'email', c.email, 'phone', c.phone, 'title', c.title,
-                  'role_type', c.role_type, 'engagement_level', c.engagement_level,
-                  'location', c.location, 'linkedin_url', c.linkedin_url,
-                  'notes', c.notes, 'account_id', c.account_id,
-                  'account_name', acc.name, 'last_contact_date', c.last_contact_date,
-                  'created_at', c.created_at
-                ) ORDER BY c.created_at ASC
-              ) AS contacts
-       FROM contacts c
-       LEFT JOIN accounts acc ON acc.id = c.account_id
-       WHERE c.org_id = $1
-         AND c.account_id IS NOT NULL
-       GROUP BY LOWER(c.first_name), LOWER(c.last_name), c.account_id
-       HAVING COUNT(*) > 1`,
-      [req.orgId]
-    );
-
-    // Deduplicate groups (a pair might match on both email and name)
-    const seenPairs = new Set();
-    const groups = [];
-
-    for (const row of [...emailDupes.rows, ...nameDupes.rows]) {
-      const ids = row.contacts.map(c => c.id).sort().join(',');
-      if (!seenPairs.has(ids)) {
-        seenPairs.add(ids);
-        groups.push({
-          matchType: row.match_type,
-          matchKey:  row.match_key,
-          contacts:  row.contacts,
-        });
-      }
-    }
-
-    res.json({ duplicateGroups: groups, totalGroups: groups.length });
-  } catch (error) {
-    console.error('Get duplicates error:', error);
-    res.status(500).json({ error: { message: 'Failed to find duplicates' } });
-  }
-});
-
-// ── POST /merge — merge two contacts ──────────────────────────────────────────
-// Body: { keepId, removeId, fieldOverrides }
-// fieldOverrides is an optional object like { phone: 'from_remove', title: 'from_remove' }
-// — any field listed uses the value from the removed contact instead of the kept one.
-router.post('/merge', async (req, res) => {
-  const client = await db.pool ? db.pool.connect() : db.connect();
-  try {
-    const { keepId, removeId, fieldOverrides = {} } = req.body;
-    if (!keepId || !removeId) {
-      return res.status(400).json({ error: { message: 'keepId and removeId are required' } });
-    }
-    if (keepId === removeId) {
-      return res.status(400).json({ error: { message: 'Cannot merge a contact with itself' } });
-    }
-
-    // Verify both contacts belong to this org
-    const bothRes = await client.query(
-      `SELECT id, first_name, last_name, email, phone, title, role_type,
-              engagement_level, location, linkedin_url, notes, account_id
-       FROM contacts WHERE id IN ($1, $2) AND org_id = $3`,
-      [keepId, removeId, req.orgId]
-    );
-    if (bothRes.rows.length !== 2) {
-      return res.status(404).json({ error: { message: 'One or both contacts not found in this org' } });
-    }
-    const keepContact   = bothRes.rows.find(r => r.id === keepId);
-    const removeContact = bothRes.rows.find(r => r.id === removeId);
-
-    await client.query('BEGIN');
-
-    // 1. Apply field overrides — copy chosen fields from removeContact to keepContact
-    const overridableFields = [
-      'first_name', 'last_name', 'email', 'phone', 'title', 'role_type',
-      'engagement_level', 'location', 'linkedin_url', 'notes', 'account_id'
-    ];
-    const updates = [];
-    const values  = [];
-    let paramIdx  = 1;
-
-    for (const field of overridableFields) {
-      if (fieldOverrides[field] === 'from_remove' && removeContact[field]) {
-        updates.push(`${field} = $${paramIdx}`);
-        values.push(removeContact[field]);
-        paramIdx++;
-      }
-    }
-
-    if (updates.length > 0) {
-      values.push(keepId, req.orgId);
-      await client.query(
-        `UPDATE contacts SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $${paramIdx} AND org_id = $${paramIdx + 1}`,
-        values
-      );
-    }
-
-    // 2. Migrate deal_contacts — move links, skip if keeper already linked to that deal
-    await client.query(
-      `INSERT INTO deal_contacts (deal_id, contact_id, role)
-       SELECT dc.deal_id, $1, dc.role
-       FROM deal_contacts dc
-       WHERE dc.contact_id = $2
-         AND dc.deal_id NOT IN (SELECT deal_id FROM deal_contacts WHERE contact_id = $1)
-       ON CONFLICT (deal_id, contact_id) DO NOTHING`,
-      [keepId, removeId]
-    );
-
-    // 3. Migrate emails
-    await client.query(
-      `UPDATE emails SET contact_id = $1 WHERE contact_id = $2`,
-      [keepId, removeId]
-    );
-
-    // 4. Migrate meetings (if contact_id column exists on meetings)
-    try {
-      await client.query(
-        `UPDATE meetings SET contact_id = $1 WHERE contact_id = $2`,
-        [keepId, removeId]
-      );
-    } catch (e) {
-      // meetings table may not have contact_id — ignore
-    }
-
-    // 5. Migrate contact_activities
-    try {
-      await client.query(
-        `UPDATE contact_activities SET contact_id = $1 WHERE contact_id = $2`,
-        [keepId, removeId]
-      );
-    } catch (e) {
-      // table may not exist — ignore
-    }
-
-    // 6. Migrate conversation_starters
-    try {
-      await client.query(
-        `UPDATE conversation_starters SET contact_id = $1 WHERE contact_id = $2`,
-        [keepId, removeId]
-      );
-    } catch (e) {
-      // table may not exist — ignore
-    }
-
-    // 7. Clean up leftover deal_contacts for removed contact
-    await client.query(
-      `DELETE FROM deal_contacts WHERE contact_id = $1`,
-      [removeId]
-    );
-
-    // 8. Delete the removed contact
-    await client.query(
-      `DELETE FROM contacts WHERE id = $1 AND org_id = $2`,
-      [removeId, req.orgId]
-    );
-
-    await client.query('COMMIT');
-
-    // Fetch the updated keeper
-    const updatedRes = await db.query(
-      `SELECT c.*, acc.name as account_name
-       FROM contacts c
-       LEFT JOIN accounts acc ON acc.id = c.account_id
-       WHERE c.id = $1`,
-      [keepId]
-    );
-
-    res.json({
-      success: true,
-      mergedContact: updatedRes.rows[0],
-      removedId: removeId,
-    });
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('Merge contacts error:', error);
-    res.status(500).json({ error: { message: 'Failed to merge contacts' } });
-  } finally {
-    client.release();
   }
 });
 
