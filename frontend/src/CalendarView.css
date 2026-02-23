@@ -321,29 +321,33 @@
 }
 
 /* ─── Action Pills ───────────────────────────────────────────── */
-.action-pills-row {
+.action-pills-stack {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-direction: column;
+  gap: 6px;
   margin-bottom: 16px;
 }
 
-/* When there are no meetings below, no bottom margin needed */
-.action-pills-row:last-child { margin-bottom: 0; }
+.action-pills-stack:last-child { margin-bottom: 0; }
+
+/* Each action sits in its own full-width row */
+.action-pill-row {
+  display: flex;
+}
 
 .action-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 5px 12px 5px 8px;
-  border-radius: 20px;
+  border-radius: 8px;
   border: 1.5px solid;
   background: white;
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
   transition: all 0.15s;
-  max-width: 300px;
+  width: 100%;
   text-align: left;
 }
 

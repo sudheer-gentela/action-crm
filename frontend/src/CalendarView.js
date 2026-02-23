@@ -509,11 +509,13 @@ function CalendarView() {
                     </div>
                   </div>
 
-                  {/* Action pills for this day */}
+                  {/* Action pills for this day — one per row */}
                   {dayActions.length > 0 && (
-                    <div className="action-pills-row">
+                    <div className="action-pills-stack">
                       {dayActions.map(a => (
-                        <ActionPill key={a.id} action={a} isOverdue={isPast} onClick={handleActionPillClick} />
+                        <div key={a.id} className="action-pill-row">
+                          <ActionPill action={a} isOverdue={isPast} onClick={handleActionPillClick} />
+                        </div>
                       ))}
                     </div>
                   )}
@@ -667,7 +669,6 @@ function CalendarView() {
 
 // ── ActionPill ─────────────────────────────────────────────────
 function ActionPill({ action, isOverdue, onClick }) {
-  const colors  = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
   const icon    = getActionIcon(action);
   const channel = getChannelInfo(action);
   return (
