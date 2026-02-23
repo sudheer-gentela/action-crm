@@ -13,6 +13,7 @@ const db      = require('../config/database');
 const authenticateToken           = require('../middleware/auth.middleware');
 const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
 const PlaybookService             = require('../services/playbook.service');
+const SALES_PLAYBOOK              = require('../config/salesPlaybook');
 
 router.use(authenticateToken, orgContext);
 
@@ -25,6 +26,24 @@ async function validateStageKey(orgId, stageKey) {
     [orgId, stageKey]
   );
   return result.rows.length > 0;
+}
+
+// ── Helper: build default stage_guidance from salesPlaybook.js ───────────────
+// Fetches the org's active stage keys and maps them to salesPlaybook defaults.
+// Called on new playbook creation and the seed-guidance endpoint.
+
+async function buildDefaultGuidance(orgId) {
+  const stagesResult = await db.query(
+    `SELECT key FROM deal_stages WHERE org_id = $1 AND is_active = TRUE AND is_terminal = FALSE ORDER BY sort_order ASC`,
+    [orgId]
+  );
+  const guidance = {};
+  for (const { key } of stagesResult.rows) {
+    if (SALES_PLAYBOOK.deal_stages?.[key]) {
+      guidance[key] = SALES_PLAYBOOK.deal_stages[key];
+    }
+  }
+  return guidance;
 }
 
 // ── GET / — list all playbooks for org ───────────────────────────────────────
@@ -102,12 +121,17 @@ router.post('/', adminOnly, async (req, res) => {
       );
     }
 
+    // Auto-populate stage_guidance from salesPlaybook defaults when none provided
+    const resolvedGuidance = (Object.keys(stage_guidance).length > 0)
+      ? stage_guidance
+      : await buildDefaultGuidance(req.orgId);
+
     const result = await db.query(
       `INSERT INTO playbooks (org_id, name, type, description, content, stage_guidance, is_default)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
       [req.orgId, name.trim(), type, description,
-       JSON.stringify(content), JSON.stringify(stage_guidance), is_default]
+       JSON.stringify(content), JSON.stringify(resolvedGuidance), is_default]
     );
 
     res.status(201).json({ playbook: parsePlaybook(result.rows[0]) });
@@ -250,6 +274,60 @@ router.delete('/:id/stages/:stageKey', adminOnly, async (req, res) => {
     res.json({ message: `Stage guidance for "${stageKey}" removed` });
   } catch (err) {
     console.error('Delete stage guidance error:', err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// ── POST /:id/seed-guidance — backfill stage_guidance from salesPlaybook defaults ─
+// Safe to run multiple times — only fills keys that have no existing guidance.
+// Use this to backfill the existing default playbook after the key→stageKey migration.
+
+router.post('/:id/seed-guidance', adminOnly, async (req, res) => {
+  try {
+    const existing = await db.query(
+      'SELECT id, stage_guidance FROM playbooks WHERE id = $1 AND org_id = $2',
+      [req.params.id, req.orgId]
+    );
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Playbook not found' } });
+    }
+
+    const raw     = existing.rows[0].stage_guidance;
+    const current = typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
+
+    const defaults = await buildDefaultGuidance(req.orgId);
+
+    // Merge: only fill keys that don't already have guidance
+    const seeded  = {};
+    const skipped = [];
+    for (const [key, guidance] of Object.entries(defaults)) {
+      if (!current[key] || (!current[key].goal && !current[key].key_actions?.length)) {
+        seeded[key] = guidance;
+      } else {
+        skipped.push(key);
+      }
+    }
+
+    if (Object.keys(seeded).length === 0) {
+      return res.json({ message: 'All stages already have guidance — nothing to seed.', skipped });
+    }
+
+    const merged = { ...current, ...seeded };
+    const result = await db.query(
+      `UPDATE playbooks SET stage_guidance = $1, updated_at = NOW()
+       WHERE id = $2 AND org_id = $3 RETURNING id, stage_guidance`,
+      [JSON.stringify(merged), req.params.id, req.orgId]
+    );
+
+    const updatedGuidance = result.rows[0].stage_guidance;
+    res.json({
+      message: `Seeded guidance for ${Object.keys(seeded).length} stage(s).`,
+      seeded:  Object.keys(seeded),
+      skipped,
+      stage_guidance: typeof updatedGuidance === 'string' ? JSON.parse(updatedGuidance) : updatedGuidance,
+    });
+  } catch (err) {
+    console.error('Seed guidance error:', err);
     res.status(500).json({ error: { message: err.message } });
   }
 });
