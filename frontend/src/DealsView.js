@@ -46,19 +46,23 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
       setLoading(true);
       setError('');
 
+      // ✅ FIX 1: Removed .catch() fallbacks so real API errors are visible
+      // If this fails, check browser console for the actual error (401, 404, CORS, etc.)
       const [dealsRes, accountsRes, contactsRes, meetingsRes] = await Promise.all([
-        apiService.deals.getAll().catch(() => ({ data: { deals: mockData.deals } })),
-        apiService.accounts.getAll().catch(() => ({ data: { accounts: mockData.accounts } })),
-        apiService.contacts.getAll().catch(() => ({ data: { contacts: mockData.contacts } })),
-        apiService.meetings.getAll().catch(() => ({ data: { meetings: mockData.meetings } }))
+        apiService.deals.getAll(),
+        apiService.accounts.getAll(),
+        apiService.contacts.getAll(),
+        apiService.meetings.getAll()
       ]);
 
+      // ✅ FIX 2: Added emails: [] to enrichData() to prevent crash
       const enrichedData = enrichData({
         accounts: accountsRes.data.accounts || accountsRes.data || [],
-        deals: dealsRes.data.deals || dealsRes.data || [],
+        deals:    dealsRes.data.deals       || dealsRes.data    || [],
         contacts: contactsRes.data.contacts || contactsRes.data || [],
         meetings: meetingsRes.data.meetings || meetingsRes.data || [],
-        actions: []
+        emails:   [],
+        actions:  []
       });
 
       setDeals(enrichedData.deals);
@@ -68,17 +72,8 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
 
     } catch (err) {
       console.error('Error fetching deals:', err);
-      setError('Failed to load deals. Using sample data.');
-      
-      const enrichedData = enrichData({
-        ...mockData,
-        actions: []
-      });
-      
-      setDeals(enrichedData.deals);
-      setAccounts(enrichedData.accounts);
-      setContacts(enrichedData.contacts);
-      setMeetings(enrichedData.meetings);
+      // Show the real error message so you can diagnose it
+      setError(`Failed to load deals: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -239,8 +234,8 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
       </div>
 
       {error && (
-        <div className="info-banner">
-          ℹ️ {error}
+        <div className="error-banner">
+          ⚠️ {error}
         </div>
       )}
 
