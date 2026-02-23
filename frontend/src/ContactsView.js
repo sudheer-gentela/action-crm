@@ -510,8 +510,8 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
         </div>
       </div>
 
-      {/* Container */}
-      <div className={`contacts-container ${selectedContact ? 'with-panel' : ''}`}>
+      {/* Contacts Container */}
+      <div className="contacts-container">
         {/* Cards */}
         <div className="contacts-list">
           {filteredContacts.length === 0 ? (
@@ -538,16 +538,11 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
           )}
         </div>
 
-        {/* ── Detail Panel (fullscreen like DealsView) ─────────────────── */}
+        {/* Contact Detail Panel */}
         {selectedContact && (
           <div className="contact-detail-panel panel-fullscreen">
             <div className="panel-header">
-              <div>
-                <h2>{selectedContact.first_name} {selectedContact.last_name}</h2>
-                {selectedContact.title && (
-                  <p className="panel-subtitle">{selectedContact.title}</p>
-                )}
-              </div>
+              <h2>{selectedContact.first_name} {selectedContact.last_name}{selectedContact.title ? ` — ${selectedContact.title}` : ''}</h2>
               <div className="panel-header-actions">
                 <button className="close-panel" onClick={() => setSelectedContact(null)}>×</button>
               </div>
