@@ -15,7 +15,6 @@ import './DealsView.css';
 function DealsView({ openDealId = null, onDealOpened = null }) {
   const [deals, setDeals] = useState([]);
   const [accounts, setAccounts] = useState([]);
-  const [contacts, setContacts] = useState([]);
   const [meetings, setMeetings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -50,18 +49,16 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
 
       // ✅ FIX 1: Removed .catch() fallbacks so real API errors are visible
       // If this fails, check browser console for the actual error (401, 404, CORS, etc.)
-      const [dealsRes, accountsRes, contactsRes, meetingsRes] = await Promise.all([
+      const [dealsRes, accountsRes, meetingsRes] = await Promise.all([
         apiService.deals.getAll(),
         apiService.accounts.getAll(),
-        apiService.contacts.getAll(),
         apiService.meetings.getAll()
       ]);
 
-      // ✅ FIX 2: Added emails: [] to enrichData() to prevent crash
       const enrichedData = enrichData({
         accounts: accountsRes.data.accounts || accountsRes.data || [],
         deals:    dealsRes.data.deals       || dealsRes.data    || [],
-        contacts: contactsRes.data.contacts || contactsRes.data || [],
+        contacts: [],
         meetings: meetingsRes.data.meetings || meetingsRes.data || [],
         emails:   [],
         actions:  []
@@ -69,7 +66,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
 
       setDeals(enrichedData.deals);
       setAccounts(enrichedData.accounts);
-      setContacts(enrichedData.contacts);
       setMeetings(enrichedData.meetings);
 
     } catch (err) {
