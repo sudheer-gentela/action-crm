@@ -102,13 +102,13 @@ export default function DealFilesPanel({ deal }) {
             ? 'No files linked yet'
             : `${files.length} file${files.length !== 1 ? 's' : ''}`}
         </span>
-        <a
+        <button
           className="dfp-btn dfp-btn--manage"
           onClick={() => window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'files' } }))}
           title="Manage all files"
         >
           Manage Files ↗
-        </a>
+        </button>
       </div>
 
       {error && <div className="dfp-error">⚠️ {error}</div>}
