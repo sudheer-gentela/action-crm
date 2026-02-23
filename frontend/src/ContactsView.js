@@ -5,6 +5,33 @@ import ContactForm from './ContactForm';
 import EmailComposer from './EmailComposer';
 import './ContactsView.css';
 
+// Fields that can be inline-edited on the contact detail panel
+const EDITABLE_FIELDS = {
+  first_name:       { label: 'First Name',       type: 'text',   required: true },
+  last_name:        { label: 'Last Name',        type: 'text',   required: true },
+  email:            { label: 'Email',            type: 'email',  required: true },
+  phone:            { label: 'Phone',            type: 'tel' },
+  title:            { label: 'Job Title',        type: 'text' },
+  role_type:        { label: 'Role Type',        type: 'select', options: [
+    { value: '',               label: 'No role' },
+    { value: 'decision_maker', label: 'Decision Maker' },
+    { value: 'influencer',     label: 'Influencer' },
+    { value: 'champion',       label: 'Champion' },
+    { value: 'blocker',        label: 'Blocker' },
+    { value: 'end_user',       label: 'End User' },
+    { value: 'economic_buyer', label: 'Economic Buyer' },
+    { value: 'executive',      label: 'Executive' },
+  ]},
+  engagement_level: { label: 'Engagement',       type: 'select', options: [
+    { value: 'low',    label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high',   label: 'High' },
+  ]},
+  location:         { label: 'Location',         type: 'text' },
+  linkedin_url:     { label: 'LinkedIn',         type: 'url' },
+  notes:            { label: 'Notes',            type: 'textarea' },
+};
+
 function ContactsView({ openContactId = null, onContactOpened = null }) {
   const [contacts, setContacts] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -18,11 +45,15 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
+  // Inline editing state
+  const [editingField, setEditingField] = useState(null); // { field, value }
+  const [savingField, setSavingField] = useState(null);
+
   // Email composer state
   const [showEmailComposer, setShowEmailComposer] = useState(false);
   const [emailComposerPrefill, setEmailComposerPrefill] = useState(null);
 
-  // Deal suggestion snooze state — keyed by contact id
+  // Deal suggestion snooze state
   const [snoozedSuggestions, setSnoozedSuggestions] = useState(() => {
     try {
       const stored = sessionStorage.getItem('contact_deal_snoozes');
@@ -30,11 +61,8 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
     } catch { return {}; }
   });
 
-  useEffect(() => {
-    loadContacts();
-  }, []);
+  useEffect(() => { loadContacts(); }, []);
 
-  // Auto-open a specific contact when navigated from another view
   useEffect(() => {
     if (!openContactId || contacts.length === 0) return;
     const target = contacts.find(c => c.id === openContactId || c.id === parseInt(openContactId));
@@ -44,11 +72,13 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
     }
   }, [openContactId, contacts]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Reset inline edit when switching contacts
+  useEffect(() => { setEditingField(null); }, [selectedContact?.id]);
+
   const loadContacts = async () => {
     try {
       setLoading(true);
       setError('');
-
       const [contactsRes, accountsRes, dealsRes, emailsRes, meetingsRes] = await Promise.all([
         apiService.contacts.getAll().catch(() => ({ data: { contacts: mockData.contacts } })),
         apiService.accounts.getAll().catch(() => ({ data: { accounts: mockData.accounts } })),
@@ -56,31 +86,23 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
         apiService.emails.getAll().catch(() => ({ data: { emails: mockData.emails } })),
         apiService.meetings.getAll().catch(() => ({ data: { meetings: mockData.meetings } }))
       ]);
-
       const enrichedData = enrichData({
         accounts: accountsRes.data.accounts || accountsRes.data || [],
         contacts: contactsRes.data.contacts || contactsRes.data || [],
-        deals: dealsRes.data.deals || dealsRes.data || [],
-        emails: emailsRes.data.emails || emailsRes.data || [],
+        deals:    dealsRes.data.deals       || dealsRes.data || [],
+        emails:   emailsRes.data.emails     || emailsRes.data || [],
         meetings: meetingsRes.data.meetings || meetingsRes.data || [],
         actions: []
       });
-
       setContacts(enrichedData.contacts);
       setAccounts(enrichedData.accounts);
       setDeals(enrichedData.deals);
       setEmails(enrichedData.emails);
       setMeetings(enrichedData.meetings);
-
     } catch (err) {
       console.error('Error loading contacts:', err);
       setError('Failed to load contacts. Using sample data.');
-      
-      const enrichedData = enrichData({
-        ...mockData,
-        actions: []
-      });
-      
+      const enrichedData = enrichData({ ...mockData, actions: [] });
       setContacts(enrichedData.contacts);
       setAccounts(enrichedData.accounts);
       setDeals(enrichedData.deals);
@@ -91,41 +113,35 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
     }
   };
 
+  // ── CRUD ────────────────────────────────────────────────────────────────
+
   const handleCreateContact = async (contactData) => {
     try {
-      console.log('🔵 Creating contact with data:', contactData);
       const response = await apiService.contacts.create(contactData);
-      console.log('✅ Contact created successfully:', response.data);
       const newContact = response.data.contact || response.data;
       const account = accounts.find(a => a.id === newContact.account_id);
-      const enrichedContact = { ...newContact, account };
-      setContacts([...contacts, enrichedContact]);
+      setContacts([...contacts, { ...newContact, account }]);
       setShowForm(false);
       setError('');
     } catch (err) {
-      console.error('❌ Error creating contact:', err);
+      console.error('Error creating contact:', err);
       setError(`Failed to create contact: ${err.response?.data?.error?.message || err.message}`);
     }
   };
 
   const handleUpdateContact = async (contactData) => {
     try {
-      console.log('🔵 Updating contact:', editingContact.id, 'with data:', contactData);
       const response = await apiService.contacts.update(editingContact.id, contactData);
-      console.log('✅ Contact updated successfully:', response.data);
-      const updatedContact = response.data.contact || response.data;
-      const account = accounts.find(a => a.id === updatedContact.account_id);
-      const enrichedContact = { ...updatedContact, account };
-      setContacts(contacts.map(c => c.id === editingContact.id ? enrichedContact : c));
-      // Update selected contact if it's the one being edited
-      if (selectedContact?.id === editingContact.id) {
-        setSelectedContact(enrichedContact);
-      }
+      const updated = response.data.contact || response.data;
+      const account = accounts.find(a => a.id === updated.account_id);
+      const enriched = { ...updated, account };
+      setContacts(contacts.map(c => c.id === editingContact.id ? enriched : c));
+      if (selectedContact?.id === editingContact.id) setSelectedContact(enriched);
       setEditingContact(null);
       setShowForm(false);
       setError('');
     } catch (err) {
-      console.error('❌ Error updating contact:', err);
+      console.error('Error updating contact:', err);
       setError(`Failed to update contact: ${err.response?.data?.error?.message || err.message}`);
     }
   };
@@ -134,81 +150,101 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
     if (!window.confirm('Are you sure you want to delete this contact?')) return;
     try {
       await apiService.contacts.delete(contactId);
-      setContacts(contacts.filter(c => c.id !== contactId));
-      if (selectedContact?.id === contactId) setSelectedContact(null);
-      setError('');
+    } catch {}
+    setContacts(contacts.filter(c => c.id !== contactId));
+    if (selectedContact?.id === contactId) setSelectedContact(null);
+  };
+
+  // ── Inline field save ───────────────────────────────────────────────────
+
+  const handleInlineFieldSave = async (field, value) => {
+    if (!selectedContact) return;
+    setSavingField(field);
+    try {
+      // Map field names to what the backend expects (camelCase)
+      const fieldMap = {
+        first_name: 'firstName', last_name: 'lastName',
+        email: 'email', phone: 'phone', title: 'title',
+        role_type: 'roleType', engagement_level: 'engagementLevel',
+        location: 'location', linkedin_url: 'linkedinUrl', notes: 'notes',
+      };
+      const payload = { [fieldMap[field] || field]: value };
+
+      const response = await apiService.contacts.update(selectedContact.id, payload);
+      const updated = response.data.contact || response.data;
+      const account = accounts.find(a => a.id === (updated.account_id || selectedContact.account_id));
+      const enriched = { ...selectedContact, ...updated, account };
+
+      setContacts(prev => prev.map(c => c.id === selectedContact.id ? enriched : c));
+      setSelectedContact(enriched);
     } catch (err) {
-      console.error('Error deleting contact:', err);
-      setContacts(contacts.filter(c => c.id !== contactId));
-      if (selectedContact?.id === contactId) setSelectedContact(null);
+      console.error('Inline save error:', err);
+      setError(`Failed to save: ${err.response?.data?.error?.message || err.message}`);
+    } finally {
+      setSavingField(null);
+      setEditingField(null);
     }
   };
 
-  // ── Deal lookup helpers ──────────────────────────────────────────────────
+  // ── Deal helpers ────────────────────────────────────────────────────────
 
-  // Primary: deals where the contact has a role (from deal_contacts join)
   const getLinkedDeals = (contact) => {
     if (!contact) return [];
-    const linked = contact.deals || [];
-    return linked
-      .map(ld => {
-        const fullDeal = deals.find(d => d.id === ld.id);
-        return fullDeal || ld;
-      })
+    return (contact.deals || [])
+      .map(ld => deals.find(d => d.id === ld.id) || ld)
       .filter(d => d && d.id);
   };
 
-  // Secondary: unlinked account deals — open deals on same account where contact has no role
   const getUnlinkedAccountDeals = (contact) => {
     if (!contact) return [];
     const linkedIds = new Set((contact.deals || []).map(d => d.id));
     return deals.filter(d =>
       d.account_id === contact.account_id &&
       !linkedIds.has(d.id) &&
-      d.stage !== 'closed_won' &&
-      d.stage !== 'closed_lost'
+      d.stage !== 'closed_won' && d.stage !== 'closed_lost'
     );
   };
 
   const isSuggestionSnoozed = (contactId) => {
-    const snooze = snoozedSuggestions[contactId];
-    if (!snooze) return false;
-    if (snooze === 'forever') return true;
-    if (snooze === 'session') return true;
-    if (typeof snooze === 'number' && Date.now() < snooze) return true;
+    const s = snoozedSuggestions[contactId];
+    if (!s) return false;
+    if (s === 'forever' || s === 'session') return true;
+    if (typeof s === 'number' && Date.now() < s) return true;
     return false;
   };
 
   const handleSnoozeSuggestion = (contactId, duration) => {
-    let value;
-    if (duration === 'forever') value = 'forever';
-    else if (duration === 'session') value = 'session';
-    else if (duration === '7d') value = Date.now() + 7 * 24 * 60 * 60 * 1000;
-    else if (duration === '30d') value = Date.now() + 30 * 24 * 60 * 60 * 1000;
-    else value = 'session';
-
-    const updated = { ...snoozedSuggestions, [contactId]: value };
+    const map = { forever: 'forever', session: 'session', '7d': Date.now() + 7*864e5, '30d': Date.now() + 30*864e5 };
+    const updated = { ...snoozedSuggestions, [contactId]: map[duration] || 'session' };
     setSnoozedSuggestions(updated);
     try { sessionStorage.setItem('contact_deal_snoozes', JSON.stringify(updated)); } catch {}
   };
 
-  const getContactEmails = (contactId) => {
-    return emails.filter(e => e.contact_id === contactId)
-      .sort((a, b) => new Date(b.sent_at) - new Date(a.sent_at));
+  const handleTagContactToDeal = async (contactId, dealId) => {
+    try {
+      await apiService.dealContacts.add(dealId, contactId);
+      await loadContacts();
+    } catch (err) {
+      console.error('Error tagging contact to deal:', err);
+      setError(`Failed to link contact to deal: ${err.response?.data?.error?.message || err.message}`);
+    }
   };
+
+  // ── Email / Meeting helpers ─────────────────────────────────────────────
+
+  const getContactEmails = (contactId) =>
+    emails.filter(e => e.contact_id === contactId)
+      .sort((a, b) => new Date(b.sent_at) - new Date(a.sent_at));
 
   const getContactMeetings = (contactId) => {
     const contact = contacts.find(c => c.id === contactId);
     if (!contact) return [];
     const linkedDealIds = new Set((contact.deals || []).map(d => d.id));
-
     return meetings.filter(m => {
       if (m.contact_id === contactId) return true;
       if (contact.email && m.attendees) {
-        const attendeeStr = typeof m.attendees === 'string'
-          ? m.attendees.toLowerCase()
-          : JSON.stringify(m.attendees || []).toLowerCase();
-        if (attendeeStr.includes(contact.email.toLowerCase())) return true;
+        const str = typeof m.attendees === 'string' ? m.attendees : JSON.stringify(m.attendees || []);
+        if (str.toLowerCase().includes(contact.email.toLowerCase())) return true;
       }
       if (m.deal_id && linkedDealIds.has(m.deal_id)) return true;
       return false;
@@ -217,46 +253,20 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
 
   // ── Navigation ──────────────────────────────────────────────────────────
 
-  const navigateToAccount = (accountId) => {
-    window.dispatchEvent(new CustomEvent('navigate', {
-      detail: { tab: 'accounts', accountId }
-    }));
-  };
-
-  const navigateToDeal = (dealId) => {
-    window.dispatchEvent(new CustomEvent('navigate', {
-      detail: { tab: 'deals', dealId }
-    }));
-  };
-
-  const navigateToMeeting = (meetingId) => {
-    window.dispatchEvent(new CustomEvent('navigate', {
-      detail: { tab: 'calendar', meetingId }
-    }));
-  };
-
-  // ── Email composer ──────────────────────────────────────────────────────
+  const nav = (tab, extra) =>
+    window.dispatchEvent(new CustomEvent('navigate', { detail: { tab, ...extra } }));
 
   const openEmailComposer = (contact) => {
-    setEmailComposerPrefill({
-      contactId: contact.id,
-      dealId: '',
-      subject: '',
-      body: '',
-      toAddress: contact.email,
-    });
+    setEmailComposerPrefill({ contactId: contact.id, dealId: '', subject: '', body: '', toAddress: contact.email });
     setShowEmailComposer(true);
   };
 
   const handleSendEmail = async (emailData) => {
     try {
-      // emailData comes from EmailComposer: { contact_id, deal_id, subject, body, toAddress, actionId }
       const response = await apiService.emails.send(emailData);
-      // Reload emails to reflect the new one
       try {
-        const emailsRes = await apiService.emails.getAll();
-        const updatedEmails = emailsRes.data.emails || emailsRes.data || [];
-        setEmails(updatedEmails);
+        const r = await apiService.emails.getAll();
+        setEmails(r.data.emails || r.data || []);
       } catch {}
       return response.data;
     } catch (err) {
@@ -265,38 +275,180 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
     }
   };
 
-  // ── Tag contact to deal ─────────────────────────────────────────────────
-
-  const handleTagContactToDeal = async (contactId, dealId) => {
-    try {
-      await apiService.dealContacts.add(dealId, contactId);
-      // Reload contacts to refresh the deals array from deal_contacts join
-      await loadContacts();
-    } catch (err) {
-      console.error('Error tagging contact to deal:', err);
-      setError(`Failed to link contact to deal: ${err.response?.data?.error?.message || err.message}`);
-    }
-  };
-
   // ── Filter + group ──────────────────────────────────────────────────────
 
   const filteredContacts = contacts.filter(contact => {
     if (!searchTerm) return true;
-    const search = searchTerm.toLowerCase();
+    const s = searchTerm.toLowerCase();
     return (
-      contact.first_name?.toLowerCase().includes(search) ||
-      contact.last_name?.toLowerCase().includes(search) ||
-      contact.email?.toLowerCase().includes(search) ||
-      contact.title?.toLowerCase().includes(search) ||
-      contact.account?.name?.toLowerCase().includes(search)
+      contact.first_name?.toLowerCase().includes(s) ||
+      contact.last_name?.toLowerCase().includes(s) ||
+      contact.email?.toLowerCase().includes(s) ||
+      contact.title?.toLowerCase().includes(s) ||
+      contact.account?.name?.toLowerCase().includes(s)
     );
   });
 
   const groupedContacts = {
-    high: filteredContacts.filter(c => c.engagement_level === 'high'),
+    high:   filteredContacts.filter(c => c.engagement_level === 'high'),
     medium: filteredContacts.filter(c => c.engagement_level === 'medium'),
-    low: filteredContacts.filter(c => c.engagement_level === 'low')
+    low:    filteredContacts.filter(c => c.engagement_level === 'low'),
   };
+
+  // ── Render helpers for inline editable fields ───────────────────────────
+
+  const renderEditableField = (field, contact) => {
+    const cfg = EDITABLE_FIELDS[field];
+    if (!cfg) return null;
+    const currentValue = contact[field] || '';
+    const isEditing = editingField?.field === field;
+
+    // Select fields
+    if (cfg.type === 'select') {
+      if (isEditing) {
+        return (
+          <select
+            className="inline-edit-select"
+            autoFocus
+            value={editingField.value}
+            onChange={e => handleInlineFieldSave(field, e.target.value)}
+            onBlur={() => setEditingField(null)}
+            onKeyDown={e => e.key === 'Escape' && setEditingField(null)}
+          >
+            {cfg.options.map(o => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        );
+      }
+      // Display value
+      if (field === 'role_type' && currentValue) {
+        return (
+          <span
+            className={`detail-badge role-${currentValue} detail-value--editable`}
+            onClick={() => setEditingField({ field, value: currentValue })}
+            title="Click to edit"
+          >
+            {currentValue.replace(/_/g, ' ')} ✏️
+          </span>
+        );
+      }
+      if (field === 'engagement_level') {
+        return (
+          <span
+            className={`detail-badge engagement-${currentValue} detail-value--editable`}
+            onClick={() => setEditingField({ field, value: currentValue })}
+            title="Click to edit"
+          >
+            {currentValue} engagement ✏️
+          </span>
+        );
+      }
+      return (
+        <span
+          className="detail-value--editable"
+          onClick={() => setEditingField({ field, value: currentValue })}
+          title="Click to edit"
+        >
+          {currentValue || 'Not set'} ✏️
+        </span>
+      );
+    }
+
+    // Textarea
+    if (cfg.type === 'textarea') {
+      if (isEditing) {
+        return (
+          <div className="inline-edit-row inline-edit-row--vertical">
+            <textarea
+              className="inline-edit-textarea"
+              autoFocus
+              value={editingField.value}
+              onChange={e => setEditingField(f => ({ ...f, value: e.target.value }))}
+              onKeyDown={e => {
+                if (e.key === 'Escape') setEditingField(null);
+              }}
+              rows={3}
+            />
+            <div className="inline-edit-actions">
+              <button className="inline-save-btn" disabled={savingField === field}
+                onClick={() => handleInlineFieldSave(field, editingField.value)}>✓ Save</button>
+              <button className="inline-cancel-btn" onClick={() => setEditingField(null)}>✕</button>
+            </div>
+          </div>
+        );
+      }
+      return (
+        <span
+          className="detail-value--editable contact-notes-text"
+          onClick={() => setEditingField({ field, value: currentValue })}
+          title="Click to edit"
+        >
+          {currentValue || 'Add notes…'} ✏️
+        </span>
+      );
+    }
+
+    // Text / email / tel / url / date
+    if (isEditing) {
+      return (
+        <div className="inline-edit-row">
+          <input
+            className="inline-edit-input"
+            type={cfg.type}
+            autoFocus
+            value={editingField.value}
+            onChange={e => setEditingField(f => ({ ...f, value: e.target.value }))}
+            onKeyDown={e => {
+              if (e.key === 'Enter')  handleInlineFieldSave(field, editingField.value);
+              if (e.key === 'Escape') setEditingField(null);
+            }}
+          />
+          <button className="inline-save-btn" disabled={savingField === field}
+            onClick={() => handleInlineFieldSave(field, editingField.value)}>✓</button>
+          <button className="inline-cancel-btn" onClick={() => setEditingField(null)}>✕</button>
+        </div>
+      );
+    }
+
+    // Display value — special rendering for links
+    if (field === 'email' && currentValue) {
+      return (
+        <span className="inline-display-row">
+          <a href={`mailto:${currentValue}`}>{currentValue}</a>
+          <button className="inline-edit-trigger" onClick={() => setEditingField({ field, value: currentValue })} title="Edit">✏️</button>
+        </span>
+      );
+    }
+    if (field === 'phone' && currentValue) {
+      return (
+        <span className="inline-display-row">
+          <a href={`tel:${currentValue}`}>{currentValue}</a>
+          <button className="inline-edit-trigger" onClick={() => setEditingField({ field, value: currentValue })} title="Edit">✏️</button>
+        </span>
+      );
+    }
+    if (field === 'linkedin_url' && currentValue) {
+      return (
+        <span className="inline-display-row">
+          <a href={currentValue} target="_blank" rel="noopener noreferrer">View Profile →</a>
+          <button className="inline-edit-trigger" onClick={() => setEditingField({ field, value: currentValue })} title="Edit">✏️</button>
+        </span>
+      );
+    }
+
+    return (
+      <span
+        className="detail-value--editable"
+        onClick={() => setEditingField({ field, value: currentValue })}
+        title="Click to edit"
+      >
+        {currentValue || 'Not set'} ✏️
+      </span>
+    );
+  };
+
+  // ── Loading ─────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -308,6 +460,8 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
       </div>
     );
   }
+
+  // ── Main render ─────────────────────────────────────────────────────────
 
   return (
     <div className="contacts-view">
@@ -324,13 +478,9 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
         </button>
       </div>
 
-      {error && (
-        <div className="info-banner">
-          ℹ️ {error}
-        </div>
-      )}
+      {error && <div className="info-banner">ℹ️ {error}</div>}
 
-      {/* Search Bar */}
+      {/* Search */}
       <div className="search-bar">
         <input
           type="text"
@@ -340,9 +490,7 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
           className="search-input"
         />
         {searchTerm && (
-          <button className="clear-search" onClick={() => setSearchTerm('')}>
-            ✕
-          </button>
+          <button className="clear-search" onClick={() => setSearchTerm('')}>✕</button>
         )}
       </div>
 
@@ -362,23 +510,17 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
         </div>
       </div>
 
-      {/* Contacts Container */}
+      {/* Container */}
       <div className={`contacts-container ${selectedContact ? 'with-panel' : ''}`}>
-        {/* Contacts List */}
+        {/* Cards */}
         <div className="contacts-list">
           {filteredContacts.length === 0 ? (
             <div className="empty-state">
               <div className="empty-state-icon">👥</div>
               <h3>{searchTerm ? 'No contacts found' : 'No contacts yet'}</h3>
-              <p>
-                {searchTerm 
-                  ? 'Try a different search term'
-                  : 'Create your first contact to start building relationships'}
-              </p>
+              <p>{searchTerm ? 'Try a different search term' : 'Create your first contact to start building relationships'}</p>
               {!searchTerm && (
-                <button className="btn-primary" onClick={() => setShowForm(true)}>
-                  + Create Contact
-                </button>
+                <button className="btn-primary" onClick={() => setShowForm(true)}>+ Create Contact</button>
               )}
             </div>
           ) : (
@@ -387,7 +529,7 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
                 key={contact.id}
                 contact={contact}
                 linkedDeals={getLinkedDeals(contact)}
-                onEdit={() => setEditingContact(contact)}
+                onEdit={() => { setEditingContact(contact); setShowForm(true); }}
                 onDelete={() => handleDeleteContact(contact.id)}
                 onSelect={() => setSelectedContact(contact)}
                 isSelected={selectedContact?.id === contact.id}
@@ -396,9 +538,9 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
           )}
         </div>
 
-        {/* Contact Detail Panel */}
+        {/* ── Detail Panel (fullscreen like DealsView) ─────────────────── */}
         {selectedContact && (
-          <div className="contact-detail-panel">
+          <div className="contact-detail-panel panel-fullscreen">
             <div className="panel-header">
               <div>
                 <h2>{selectedContact.first_name} {selectedContact.last_name}</h2>
@@ -406,32 +548,47 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
                   <p className="panel-subtitle">{selectedContact.title}</p>
                 )}
               </div>
-              <button className="close-panel" onClick={() => setSelectedContact(null)}>×</button>
+              <div className="panel-header-actions">
+                <button className="close-panel" onClick={() => setSelectedContact(null)}>×</button>
+              </div>
             </div>
 
             <div className="panel-content">
-              {/* Contact Information */}
+
+              {/* ── 1. Contact Information (all fields inline-editable) ── */}
               <div className="detail-section">
-                <h3>Contact Information</h3>
+                <div className="detail-section-header">
+                  <h3>📋 Contact Information</h3>
+                </div>
                 <div className="detail-grid">
                   <div className="detail-item">
-                    <span className="detail-label">Email</span>
-                    <a href={`mailto:${selectedContact.email}`}>{selectedContact.email}</a>
+                    <span className="detail-label">First Name</span>
+                    {renderEditableField('first_name', selectedContact)}
                   </div>
-                  {selectedContact.phone && (
-                    <div className="detail-item">
-                      <span className="detail-label">Phone</span>
-                      <a href={`tel:${selectedContact.phone}`}>{selectedContact.phone}</a>
-                    </div>
-                  )}
+                  <div className="detail-item">
+                    <span className="detail-label">Last Name</span>
+                    {renderEditableField('last_name', selectedContact)}
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Email</span>
+                    {renderEditableField('email', selectedContact)}
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Phone</span>
+                    {renderEditableField('phone', selectedContact)}
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Job Title</span>
+                    {renderEditableField('title', selectedContact)}
+                  </div>
 
-                  {/* 1. Company — clickable, navigates to account page */}
+                  {/* Company — clickable navigation (not inline-editable here) */}
                   {selectedContact.account && (
                     <div className="detail-item">
                       <span className="detail-label">Company</span>
                       <span
                         className="detail-value--link"
-                        onClick={() => navigateToAccount(selectedContact.account_id || selectedContact.account.id)}
+                        onClick={() => nav('accounts', { accountId: selectedContact.account_id || selectedContact.account.id })}
                         title="Open company page"
                       >
                         {selectedContact.account.name} →
@@ -439,34 +596,22 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
                     </div>
                   )}
 
-                  {selectedContact.role_type && (
-                    <div className="detail-item">
-                      <span className="detail-label">Role Type</span>
-                      <span className={`detail-badge role-${selectedContact.role_type}`}>
-                        {selectedContact.role_type.replace('_', ' ')}
-                      </span>
-                    </div>
-                  )}
+                  <div className="detail-item">
+                    <span className="detail-label">Role Type</span>
+                    {renderEditableField('role_type', selectedContact)}
+                  </div>
                   <div className="detail-item">
                     <span className="detail-label">Engagement</span>
-                    <span className={`detail-badge engagement-${selectedContact.engagement_level}`}>
-                      {selectedContact.engagement_level} engagement
-                    </span>
+                    {renderEditableField('engagement_level', selectedContact)}
                   </div>
-                  {selectedContact.location && (
-                    <div className="detail-item">
-                      <span className="detail-label">Location</span>
-                      <span>{selectedContact.location}</span>
-                    </div>
-                  )}
-                  {selectedContact.linkedin_url && (
-                    <div className="detail-item">
-                      <span className="detail-label">LinkedIn</span>
-                      <a href={selectedContact.linkedin_url} target="_blank" rel="noopener noreferrer">
-                        View Profile →
-                      </a>
-                    </div>
-                  )}
+                  <div className="detail-item">
+                    <span className="detail-label">Location</span>
+                    {renderEditableField('location', selectedContact)}
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">LinkedIn</span>
+                    {renderEditableField('linkedin_url', selectedContact)}
+                  </div>
                   {selectedContact.last_contact_date && (
                     <div className="detail-item">
                       <span className="detail-label">Last Contact</span>
@@ -476,9 +621,9 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
                 </div>
               </div>
 
-              {/* 2. Related Deals — from deal_contacts table */}
+              {/* ── 2. Related Deals ──────────────────────────────── */}
               <div className="detail-section">
-                <h3>Related Deals ({getLinkedDeals(selectedContact).length})</h3>
+                <h3>💼 Related Deals ({getLinkedDeals(selectedContact).length})</h3>
                 {getLinkedDeals(selectedContact).length === 0 ? (
                   <p className="empty-message">No deal roles assigned to this contact</p>
                 ) : (
@@ -487,7 +632,7 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
                       <div
                         key={deal.id}
                         className="linked-item linked-item--clickable"
-                        onClick={() => navigateToDeal(deal.id)}
+                        onClick={() => nav('deals', { dealId: deal.id })}
                         title="Open deal"
                       >
                         <span className="item-icon">💼</span>
@@ -505,7 +650,6 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
                   </div>
                 )}
 
-                {/* Unlinked account deals — suggestion banner */}
                 {!isSuggestionSnoozed(selectedContact.id) &&
                  getUnlinkedAccountDeals(selectedContact).length > 0 && (
                   <DealSuggestionBanner
@@ -517,73 +661,77 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
                 )}
               </div>
 
-              {/* 3. Email Activity */}
+              {/* ── 3. Email Activity (sent vs received) ──────────── */}
               <div className="detail-section">
-                <h3>Email Activity ({getContactEmails(selectedContact.id).length})</h3>
+                <h3>📧 Email Activity ({getContactEmails(selectedContact.id).length})</h3>
                 {getContactEmails(selectedContact.id).length === 0 ? (
                   <p className="empty-message">No email history</p>
                 ) : (
                   <div className="linked-items-list">
-                    {getContactEmails(selectedContact.id).slice(0, 10).map(email => (
-                      <div key={email.id} className="linked-item">
-                        <span className="item-icon">
-                          {email.direction === 'sent' ? '📤' : '📥'}
-                        </span>
-                        <div className="item-info">
-                          <div className="item-name">{email.subject || '(No subject)'}</div>
-                          <div className="item-meta">
-                            {new Date(email.sent_at).toLocaleDateString(undefined, {
-                              month: 'short', day: 'numeric', year: 'numeric',
-                              hour: '2-digit', minute: '2-digit'
-                            })}
-                            {email.direction === 'sent' && email.opened_at && ' · Opened'}
-                            {email.deal_id && (() => {
-                              const deal = deals.find(d => d.id === email.deal_id);
-                              return deal ? ` · ${deal.name}` : '';
-                            })()}
+                    {getContactEmails(selectedContact.id).slice(0, 15).map(em => {
+                      const isSent = em.direction === 'sent';
+                      return (
+                        <div key={em.id} className={`linked-item email-item email-item--${isSent ? 'sent' : 'received'}`}>
+                          <span className="item-icon">{isSent ? '📤' : '📥'}</span>
+                          <div className="item-info">
+                            <div className="item-name">
+                              <span className={`email-direction-badge email-direction-badge--${isSent ? 'sent' : 'received'}`}>
+                                {isSent ? 'Sent' : 'Received'}
+                              </span>
+                              {em.subject || '(No subject)'}
+                            </div>
+                            <div className="item-meta">
+                              {new Date(em.sent_at).toLocaleDateString(undefined, {
+                                month: 'short', day: 'numeric', year: 'numeric',
+                                hour: '2-digit', minute: '2-digit'
+                              })}
+                              {isSent && em.opened_at && (
+                                <span className="email-opened-badge">Opened</span>
+                              )}
+                              {em.deal_id && (() => {
+                                const d = deals.find(x => x.id === em.deal_id);
+                                return d ? <span className="email-deal-tag">{d.name}</span> : '';
+                              })()}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
-                    {getContactEmails(selectedContact.id).length > 10 && (
+                      );
+                    })}
+                    {getContactEmails(selectedContact.id).length > 15 && (
                       <div className="show-more-hint">
-                        +{getContactEmails(selectedContact.id).length - 10} more emails
+                        +{getContactEmails(selectedContact.id).length - 15} more emails
                       </div>
                     )}
                   </div>
                 )}
               </div>
 
-              {/* 4. Meetings */}
+              {/* ── 4. Meetings ────────────────────────────────────── */}
               <div className="detail-section">
-                <h3>Meetings ({getContactMeetings(selectedContact.id).length})</h3>
+                <h3>📅 Meetings ({getContactMeetings(selectedContact.id).length})</h3>
                 {getContactMeetings(selectedContact.id).length === 0 ? (
                   <p className="empty-message">No meetings on record</p>
                 ) : (
                   <div className="linked-items-list">
-                    {getContactMeetings(selectedContact.id).map(meeting => {
-                      const isPast = new Date(meeting.start_time) < new Date();
+                    {getContactMeetings(selectedContact.id).map(m => {
+                      const isPast = new Date(m.start_time) < new Date();
                       return (
                         <div
-                          key={meeting.id}
+                          key={m.id}
                           className="linked-item linked-item--clickable"
-                          onClick={() => navigateToMeeting(meeting.id)}
+                          onClick={() => nav('calendar', { meetingId: m.id })}
                           title="View in Calendar"
                         >
-                          <span className="item-icon">
-                            {isPast ? '✅' : '📅'}
-                          </span>
+                          <span className="item-icon">{isPast ? '✅' : '📅'}</span>
                           <div className="item-info">
-                            <div className="item-name">{meeting.title || 'Meeting'}</div>
+                            <div className="item-name">{m.title || 'Meeting'}</div>
                             <div className="item-meta">
-                              {new Date(meeting.start_time).toLocaleDateString(undefined, {
+                              {new Date(m.start_time).toLocaleDateString(undefined, {
                                 month: 'short', day: 'numeric', year: 'numeric',
                                 hour: '2-digit', minute: '2-digit'
                               })}
                               {' · '}
-                              <span className={`meeting-status meeting-status--${meeting.status}`}>
-                                {meeting.status}
-                              </span>
+                              <span className={`meeting-status meeting-status--${m.status}`}>{m.status}</span>
                             </div>
                           </div>
                           <span className="item-arrow">→</span>
@@ -594,57 +742,33 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
                 )}
               </div>
 
-              {/* Quick Actions */}
+              {/* ── 5. Notes (inline-editable) ─────────────────────── */}
               <div className="detail-section">
-                <h3>Quick Actions</h3>
+                <h3>📝 Notes</h3>
+                {renderEditableField('notes', selectedContact)}
+              </div>
+
+              {/* ── 6. Quick Actions ───────────────────────────────── */}
+              <div className="detail-section">
+                <h3>⚡ Quick Actions</h3>
                 <div className="quick-actions">
-                  {/* 5. Send Email — opens EmailComposer */}
-                  <button
-                    className="btn-action"
-                    onClick={() => openEmailComposer(selectedContact)}
-                  >
+                  <button className="btn-action" onClick={() => openEmailComposer(selectedContact)}>
                     ✉️ Send Email
                   </button>
                   {selectedContact.phone && (
-                    <a href={`tel:${selectedContact.phone}`} className="btn-action">
-                      📞 Call Contact
-                    </a>
+                    <a href={`tel:${selectedContact.phone}`} className="btn-action">📞 Call Contact</a>
                   )}
                   {selectedContact.linkedin_url && (
-                    <a
-                      href={selectedContact.linkedin_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="btn-action"
-                    >
+                    <a href={selectedContact.linkedin_url} target="_blank" rel="noopener noreferrer" className="btn-action">
                       💼 View LinkedIn
                     </a>
                   )}
-                  <button
-                    className="btn-action"
-                    onClick={() => {
-                      setEditingContact(selectedContact);
-                      setShowForm(true);
-                    }}
-                  >
-                    ✏️ Edit Contact
-                  </button>
-                  <button
-                    className="btn-action btn-action--danger"
-                    onClick={() => handleDeleteContact(selectedContact.id)}
-                  >
+                  <button className="btn-action btn-action--danger" onClick={() => handleDeleteContact(selectedContact.id)}>
                     🗑️ Delete Contact
                   </button>
                 </div>
               </div>
 
-              {/* Notes */}
-              {selectedContact.notes && (
-                <div className="detail-section">
-                  <h3>Notes</h3>
-                  <p className="contact-notes-text">{selectedContact.notes}</p>
-                </div>
-              )}
             </div>
           </div>
         )}
@@ -656,10 +780,7 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
           contact={editingContact}
           accounts={accounts}
           onSubmit={editingContact ? handleUpdateContact : handleCreateContact}
-          onClose={() => {
-            setShowForm(false);
-            setEditingContact(null);
-          }}
+          onClose={() => { setShowForm(false); setEditingContact(null); }}
         />
       )}
 
@@ -670,10 +791,7 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
           deals={deals}
           prefill={emailComposerPrefill}
           onSubmit={handleSendEmail}
-          onClose={() => {
-            setShowEmailComposer(false);
-            setEmailComposerPrefill(null);
-          }}
+          onClose={() => { setShowEmailComposer(false); setEmailComposerPrefill(null); }}
         />
       )}
     </div>
@@ -689,11 +807,7 @@ function DealSuggestionBanner({ contact, unlinkedDeals, onTag, onSnooze }) {
 
   const handleTag = async (dealId) => {
     setTaggingDealId(dealId);
-    try {
-      await onTag(dealId);
-    } finally {
-      setTaggingDealId(null);
-    }
+    try { await onTag(dealId); } finally { setTaggingDealId(null); }
   };
 
   return (
@@ -701,10 +815,10 @@ function DealSuggestionBanner({ contact, unlinkedDeals, onTag, onSnooze }) {
       <div className="deal-suggestion-header">
         <span className="deal-suggestion-icon">💡</span>
         <span className="deal-suggestion-text">
-          {contact.account?.name || 'This account'} has {unlinkedDeals.length} open deal{unlinkedDeals.length !== 1 ? 's' : ''} where {contact.first_name} isn't linked
+          {contact.account?.name || 'This account'} has {unlinkedDeals.length} open
+          deal{unlinkedDeals.length !== 1 ? 's' : ''} where {contact.first_name} isn't linked
         </span>
       </div>
-
       <div className="deal-suggestion-list">
         {unlinkedDeals.map(deal => (
           <div key={deal.id} className="deal-suggestion-item">
@@ -714,25 +828,15 @@ function DealSuggestionBanner({ contact, unlinkedDeals, onTag, onSnooze }) {
                 {deal.value ? `$${parseFloat(deal.value).toLocaleString()}` : ''} · {deal.stage}
               </span>
             </div>
-            <button
-              className="btn-tag-deal"
-              onClick={() => handleTag(deal.id)}
-              disabled={taggingDealId === deal.id}
-            >
+            <button className="btn-tag-deal" onClick={() => handleTag(deal.id)} disabled={taggingDealId === deal.id}>
               {taggingDealId === deal.id ? 'Linking…' : '+ Link'}
             </button>
           </div>
         ))}
       </div>
-
       <div className="deal-suggestion-dismiss">
         {!showSnoozeOptions ? (
-          <button
-            className="btn-dismiss-link"
-            onClick={() => setShowSnoozeOptions(true)}
-          >
-            Dismiss
-          </button>
+          <button className="btn-dismiss-link" onClick={() => setShowSnoozeOptions(true)}>Dismiss</button>
         ) : (
           <div className="snooze-options">
             <span className="snooze-label">Dismiss for:</span>
@@ -754,57 +858,30 @@ function DealSuggestionBanner({ contact, unlinkedDeals, onTag, onSnooze }) {
 function ContactCard({ contact, linkedDeals, onEdit, onDelete, onSelect, isSelected }) {
   const account = contact.account || { name: 'Unknown Company' };
   const activeDeals = linkedDeals.filter(d => d.stage !== 'closed_won' && d.stage !== 'closed_lost');
-  
+
   return (
-    <div 
-      className={`contact-card ${isSelected ? 'selected' : ''}`}
-      onClick={onSelect}
-    >
+    <div className={`contact-card ${isSelected ? 'selected' : ''}`} onClick={onSelect}>
       <div className="contact-card-header">
         <div className="contact-avatar">
           {contact.first_name?.[0]}{contact.last_name?.[0]}
         </div>
         <div className="contact-actions">
-          <button 
-            onClick={(e) => { e.stopPropagation(); onEdit(); }} 
-            className="icon-btn" 
-            title="Edit"
-          >
-            ✏️
-          </button>
-          <button 
-            onClick={(e) => { e.stopPropagation(); onDelete(); }} 
-            className="icon-btn" 
-            title="Delete"
-          >
-            🗑️
-          </button>
+          <button onClick={(e) => { e.stopPropagation(); onEdit(); }} className="icon-btn" title="Edit">✏️</button>
+          <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="icon-btn" title="Delete">🗑️</button>
         </div>
       </div>
-
-      <h3 className="contact-name">
-        {contact.first_name} {contact.last_name}
-      </h3>
-      
-      {contact.title && (
-        <p className="contact-title">{contact.title}</p>
-      )}
-
+      <h3 className="contact-name">{contact.first_name} {contact.last_name}</h3>
+      {contact.title && <p className="contact-title">{contact.title}</p>}
       <p className="contact-company">{account.name}</p>
-
       <div className="contact-meta">
         <span className="contact-email">✉️ {contact.email}</span>
-        {contact.phone && (
-          <span className="contact-phone">📞 {contact.phone}</span>
-        )}
+        {contact.phone && <span className="contact-phone">📞 {contact.phone}</span>}
       </div>
-
       {contact.role_type && (
         <div className={`contact-role role-${contact.role_type}`}>
-          {contact.role_type.replace('_', ' ')}
+          {contact.role_type.replace(/_/g, ' ')}
         </div>
       )}
-
       <div className="contact-footer">
         <span className={`engagement-badge ${contact.engagement_level}`}>
           {contact.engagement_level} engagement
