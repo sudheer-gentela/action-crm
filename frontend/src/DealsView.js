@@ -197,10 +197,6 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
     return contacts.filter(c => c.account_id === deal.account_id);
   };
 
-  const getDealEmails = (dealId) => {
-    return emails.filter(e => e.deal_id === dealId);
-  };
-
   const getDealMeetings = (dealId) => {
     return meetings.filter(m => m.deal_id === dealId);
   };
