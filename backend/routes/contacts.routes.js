@@ -27,7 +27,7 @@ router.get('/', async (req, res) => {
       LEFT JOIN accounts acc ON c.account_id = acc.id
       LEFT JOIN deal_contacts dc ON c.id = dc.contact_id
       LEFT JOIN deals d ON dc.deal_id = d.id AND d.org_id = $1
-      WHERE c.org_id = $1
+      WHERE c.org_id = $1 AND c.deleted_at IS NULL
     `;
 
     const params = [req.orgId];
@@ -79,6 +79,7 @@ router.get('/duplicates', async (req, res) => {
        FROM contacts c
        LEFT JOIN accounts acc ON acc.id = c.account_id
        WHERE c.org_id = $1
+         AND c.deleted_at IS NULL
          AND c.email IS NOT NULL AND c.email != ''
        GROUP BY LOWER(c.email)
        HAVING COUNT(*) > 1`,
@@ -102,6 +103,7 @@ router.get('/duplicates', async (req, res) => {
        FROM contacts c
        LEFT JOIN accounts acc ON acc.id = c.account_id
        WHERE c.org_id = $1
+         AND c.deleted_at IS NULL
          AND c.account_id IS NOT NULL
        GROUP BY LOWER(c.first_name), LOWER(c.last_name), c.account_id
        HAVING COUNT(*) > 1`,
@@ -476,14 +478,13 @@ router.post('/:id/unsnooze-email', async (req, res) => {
   }
 });
 
-// ── DELETE /:id — delete contact ─────────────────────────────
+// ── DELETE /:id — soft-delete contact ────────────────────────
 router.delete('/:id', async (req, res) => {
   try {
-    // Clean up deal_contacts first
-    await db.query('DELETE FROM deal_contacts WHERE contact_id = $1', [req.params.id]);
-
     const result = await db.query(
-      'DELETE FROM contacts WHERE id = $1 AND org_id = $2 RETURNING id',
+      `UPDATE contacts SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
+       RETURNING id`,
       [req.params.id, req.orgId]
     );
 
