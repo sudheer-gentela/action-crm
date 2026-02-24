@@ -16,29 +16,9 @@ import Sidebar from './Sidebar';
 
 // ─────────────────────────────────────────────────────────────
 // ROLE DEFINITIONS
-// Centralised here so nav items, switcher labels and content
-// rendering all draw from the same source of truth.
+// Display config (labels, badges, colors) now lives in Sidebar.js.
+// Only nav items and default tabs remain here.
 // ─────────────────────────────────────────────────────────────
-const ROLE_CONFIG = {
-  member: {
-    label:    'Member',
-    icon:     '👤',
-    color:    '#667eea',
-    desc:     'CRM workspace',
-  },
-  'org-admin': {
-    label:    'Org Admin',
-    icon:     '🔑',
-    color:    '#38a169',
-    desc:     'Organisation management',
-  },
-  'super-admin': {
-    label:    'Platform Admin',
-    icon:     '⚡',
-    color:    '#ed8936',
-    desc:     'Platform administration',
-  },
-};
 
 // Nav items per role — each role only sees its own set
 const NAV_ITEMS_BY_ROLE = {
