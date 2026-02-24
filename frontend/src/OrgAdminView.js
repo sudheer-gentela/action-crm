@@ -10,22 +10,66 @@ import DealHealthSettings from './DealHealthSettings';
 // this view handles PEOPLE, ROLES, INVITATIONS, and ORG SETTINGS.
 // ═══════════════════════════════════════════════════════════════════
 
-const ORG_ADMIN_TABS = [
-  { id: 'members',     label: 'Members',      icon: '👥' },
-  { id: 'invitations', label: 'Invitations',  icon: '✉️' },
-  { id: 'playbooks',   label: 'Playbooks',    icon: '📘' },
-  { id: 'health',      label: 'Deal Health',  icon: '🏥' },
-  { id: 'deal-stages', label: 'Deal Stages',  icon: '🏷️' },
-  { id: 'deal-roles',  label: 'Deal Roles',   icon: '🎭' },
-  { id: 'ai-agent',    label: 'AI Agent',     icon: '🤖' },
-  { id: 'duplicates',  label: 'Duplicates',   icon: '🔍' },
-  { id: 'settings',    label: 'Org Settings', icon: '⚙️' },
+const NAV_GROUPS = [
+  {
+    label: 'Team',
+    items: [
+      { id: 'members',     icon: '👥', label: 'Members' },
+      { id: 'invitations', icon: '✉️', label: 'Invitations' },
+    ],
+  },
+  {
+    label: 'Sales Process',
+    items: [
+      { id: 'playbooks',   icon: '📘', label: 'Playbooks' },
+      { id: 'deal-stages', icon: '🏷️', label: 'Deal Stages' },
+      { id: 'deal-roles',  icon: '🎭', label: 'Deal Roles' },
+    ],
+  },
+  {
+    label: 'Sales Execution Insights',
+    items: [
+      { id: 'health',      icon: '🏥', label: 'Deal Health' },
+    ],
+  },
+  {
+    label: 'Auto Action Execution',
+    items: [
+      { id: 'ai-agent',    icon: '🤖', label: 'AI Agent' },
+    ],
+  },
+  {
+    label: 'Data Quality',
+    items: [
+      { id: 'duplicates',  icon: '🔍', label: 'Duplicates' },
+    ],
+  },
+  {
+    label: 'General',
+    items: [
+      { id: 'settings',    icon: '⚙️', label: 'Org Settings' },
+    ],
+  },
 ];
+
+// Content descriptions for the top bar
+const TAB_META = {
+  members:       { title: 'Members',       desc: 'Manage team members, roles, and permissions' },
+  invitations:   { title: 'Invitations',   desc: 'Invite new members to your organisation' },
+  playbooks:     { title: 'Playbooks',     desc: 'Configure deal playbooks and templates' },
+  'deal-stages': { title: 'Deal Stages',   desc: 'Customise your pipeline stages' },
+  'deal-roles':  { title: 'Deal Roles',    desc: 'Define contact roles in deals' },
+  health:        { title: 'Deal Health',   desc: 'Configure health scoring parameters' },
+  duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
+  'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
+  settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
+};
 
 export default function OrgAdminView() {
   const [tab, setTab]       = useState('members');
   const [stats, setStats]   = useState(null);
   const [orgName, setOrgName] = useState('');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
     apiService.orgAdmin.getStats()
@@ -37,65 +81,90 @@ export default function OrgAdminView() {
   }, []);
 
   const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
+  const meta = TAB_META[tab] || TAB_META.members;
 
   return (
-    <div className="oa-view">
-      <div className="oa-header">
-        <div>
-          <h1>{orgName || 'Organisation'} Admin</h1>
-          <p className="oa-subtitle">Manage your team, roles, and organisation settings</p>
-        </div>
-      </div>
-
-      {/* Stats strip */}
-      {stats && (
-        <div className="oa-stats-strip">
-          <div className="oa-stat">
-            <span className="oa-stat-value">{stats.members.active}</span>
-            <span className="oa-stat-label">Active Members</span>
-          </div>
-          <div className="oa-stat-divider" />
-          <div className="oa-stat">
-            <span className="oa-stat-value">{stats.invitations.total}</span>
-            <span className="oa-stat-label">Pending Invites</span>
-          </div>
-          <div className="oa-stat-divider" />
-          <div className="oa-stat">
-            <span className="oa-stat-value">{stats.deals.total}</span>
-            <span className="oa-stat-label">Total Deals</span>
-          </div>
-          <div className="oa-stat-divider" />
-          <div className="oa-stat">
-            <span className="oa-stat-value">{stats.actions.week}</span>
-            <span className="oa-stat-label">Actions (7d)</span>
-          </div>
-        </div>
-      )}
-
-      <div className="settings-tabs">
-        {ORG_ADMIN_TABS.map(t => (
+    <div className="oa-layout">
+      {/* ── Sidebar ── */}
+      <nav className={`oa-sidebar ${sidebarCollapsed ? 'oa-sidebar--collapsed' : ''}`}>
+        <div className="oa-sidebar-header">
+          {!sidebarCollapsed && <span className="oa-sidebar-title">{orgName || 'Admin'}</span>}
           <button
-            key={t.id}
-            className={`settings-tab ${tab === t.id ? 'active' : ''}`}
-            onClick={() => setTab(t.id)}
+            className="oa-sidebar-toggle"
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
-            <span className="settings-tab-icon">{t.icon}</span>
-            {t.label}
+            {sidebarCollapsed ? '›' : '‹'}
           </button>
-        ))}
-      </div>
+        </div>
 
-      <div className="settings-body">
-        {tab === 'members'     && <OAMembers currentUserId={currentUser.id} />}
-        {tab === 'invitations' && <OAInvitations />}
-        {tab === 'playbooks'   && <OAPlaybooks />}
-        {tab === 'health'      && <DealHealthSettings />}
-        {tab === 'deal-stages' && <OADealStages />}
-        {tab === 'deal-roles'  && <OADealRoles />}
-        {tab === 'ai-agent'    && <OAAgentSettings />}
-        {tab === 'duplicates'  && <OADuplicateSettings />}
-        {tab === 'settings'    && <OASettings />}
-      </div>
+        <div className="oa-sidebar-nav">
+          {NAV_GROUPS.map(group => (
+            <div key={group.label} className="oa-nav-group">
+              {!sidebarCollapsed && <div className="oa-nav-group-label">{group.label}</div>}
+              {group.items.map(item => (
+                <button
+                  key={item.id}
+                  className={`oa-nav-item ${tab === item.id ? 'oa-nav-item--active' : ''}`}
+                  onClick={() => setTab(item.id)}
+                  title={sidebarCollapsed ? item.label : undefined}
+                >
+                  <span className="oa-nav-icon">{item.icon}</span>
+                  {!sidebarCollapsed && <span className="oa-nav-label">{item.label}</span>}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        {!sidebarCollapsed && (
+          <div className="oa-sidebar-footer">Organisation Admin</div>
+        )}
+      </nav>
+
+      {/* ── Main Content ── */}
+      <main className="oa-main">
+        <div className="oa-topbar">
+          <h1 className="oa-topbar-title">{meta.title}</h1>
+          <p className="oa-topbar-desc">{meta.desc}</p>
+        </div>
+
+        <div className="oa-content">
+          {/* Stats cards — show on members tab */}
+          {tab === 'members' && stats && (
+            <div className="oa-stats-grid">
+              <div className="oa-stat-card">
+                <div className="oa-stat-card-label">Active Members</div>
+                <div className="oa-stat-card-value" style={{ color: '#059669' }}>{stats.members.active}</div>
+              </div>
+              <div className="oa-stat-card">
+                <div className="oa-stat-card-label">Pending Invites</div>
+                <div className="oa-stat-card-value" style={{ color: '#d97706' }}>{stats.invitations.total}</div>
+              </div>
+              <div className="oa-stat-card">
+                <div className="oa-stat-card-label">Total Deals</div>
+                <div className="oa-stat-card-value" style={{ color: '#4338ca' }}>{stats.deals.total}</div>
+              </div>
+              <div className="oa-stat-card">
+                <div className="oa-stat-card-label">Actions (7d)</div>
+                <div className="oa-stat-card-value" style={{ color: '#0284c7' }}>{stats.actions.week}</div>
+              </div>
+            </div>
+          )}
+
+          <div className="oa-tab-content">
+            {tab === 'members'     && <OAMembers currentUserId={currentUser.id} />}
+            {tab === 'invitations' && <OAInvitations />}
+            {tab === 'playbooks'   && <OAPlaybooks />}
+            {tab === 'health'      && <DealHealthSettings />}
+            {tab === 'deal-stages' && <OADealStages />}
+            {tab === 'deal-roles'  && <OADealRoles />}
+            {tab === 'ai-agent'    && <OAAgentSettings />}
+            {tab === 'duplicates'  && <OADuplicateSettings />}
+            {tab === 'settings'    && <OASettings />}
+          </div>
+        </div>
+      </main>
     </div>
   );
 }

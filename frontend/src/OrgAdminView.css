@@ -1,36 +1,248 @@
 /* ═══════════════════════════════════════════════════════════════
    OrgAdminView.css
-   Extends SettingsView design system (.settings-* / .sv-*)
+   Sidebar navigation layout + extends SettingsView (.sv-*)
    Org admin namespace: .oa-*
    ═══════════════════════════════════════════════════════════════ */
 
-/* ── Layout ───────────────────────────────────────────────────── */
-.oa-view {
-  padding: 24px 0;
-  max-width: 960px;
+/* ── Sidebar Layout ─────────────────────────────────────────── */
+.oa-layout {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  background: #f8f9fb;
 }
-.oa-header {
-  display: flex; justify-content: space-between; align-items: flex-start;
+
+/* ── Sidebar ────────────────────────────────────────────────── */
+.oa-sidebar {
+  width: 228px;
+  min-width: 228px;
+  background: #fff;
+  border-right: 1px solid #e8e9ee;
+  display: flex;
+  flex-direction: column;
+  transition: width 0.2s ease, min-width 0.2s ease;
+  overflow: hidden;
+}
+.oa-sidebar--collapsed {
+  width: 56px;
+  min-width: 56px;
+}
+
+.oa-sidebar-header {
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid #e8e9ee;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 56px;
+}
+.oa-sidebar--collapsed .oa-sidebar-header {
+  padding: 16px 12px;
+  justify-content: center;
+}
+
+.oa-sidebar-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1a1a2e;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oa-sidebar-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: #8b8fa3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.oa-sidebar-toggle:hover {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+/* ── Sidebar nav ────────────────────────────────────────────── */
+.oa-sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+}
+.oa-sidebar--collapsed .oa-sidebar-nav {
+  padding: 8px 6px;
+}
+
+.oa-nav-group {
   margin-bottom: 20px;
 }
-.oa-header h1 {
-  font-size: 28px; font-weight: 700; color: #1a202c; margin: 0 0 6px;
+.oa-sidebar--collapsed .oa-nav-group {
+  margin-bottom: 8px;
 }
-.oa-subtitle { color: #718096; font-size: 15px; margin: 0; }
 
-/* ── Stats strip ──────────────────────────────────────────────── */
-.oa-stats-strip {
-  display: flex; align-items: center; gap: 0;
-  background: white; border: 1px solid #e2e8f0; border-radius: 12px;
-  padding: 16px 24px; margin-bottom: 24px; flex-wrap: wrap;
+.oa-nav-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #a0a3b1;
+  padding: 0 8px;
+  margin-bottom: 4px;
 }
-.oa-stat {
-  display: flex; flex-direction: column; align-items: center;
-  gap: 2px; padding: 0 24px;
+
+.oa-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  cursor: pointer;
+  padding: 7px 10px;
+  border-radius: 8px;
+  margin-bottom: 1px;
+  font-size: 13px;
+  font-weight: 400;
+  color: #4a4d5e;
+  background: transparent;
+  transition: all 0.15s ease;
+  text-align: left;
+  font-family: inherit;
 }
-.oa-stat-value { font-size: 26px; font-weight: 700; color: #1a202c; line-height: 1; }
-.oa-stat-label { font-size: 12px; color: #718096; font-weight: 500; }
-.oa-stat-divider { width: 1px; height: 40px; background: #e2e8f0; }
+.oa-sidebar--collapsed .oa-nav-item {
+  padding: 8px 0;
+  justify-content: center;
+}
+
+.oa-nav-item:hover {
+  background: #f5f5f7;
+}
+.oa-nav-item--active {
+  color: #4338ca;
+  background: #eef2ff;
+  font-weight: 600;
+}
+.oa-nav-item--active:hover {
+  background: #e0e7ff;
+}
+
+.oa-nav-icon {
+  font-size: 15px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.oa-sidebar--collapsed .oa-nav-icon {
+  font-size: 18px;
+}
+
+.oa-nav-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oa-sidebar-footer {
+  padding: 12px 16px;
+  border-top: 1px solid #e8e9ee;
+  font-size: 11px;
+  color: #a0a3b1;
+}
+
+/* ── Main content area ──────────────────────────────────────── */
+.oa-main {
+  flex: 1;
+  overflow: auto;
+  min-width: 0;
+}
+
+.oa-topbar {
+  padding: 20px 32px 16px;
+  border-bottom: 1px solid #e8e9ee;
+  background: #fff;
+}
+.oa-topbar-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+  color: #1a202c;
+  letter-spacing: -0.02em;
+}
+.oa-topbar-desc {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 4px 0 0;
+}
+
+.oa-content {
+  padding: 24px 32px;
+}
+
+.oa-tab-content {
+  max-width: 960px;
+}
+
+/* ── Stats grid (Members tab) ───────────────────────────────── */
+.oa-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.oa-stat-card {
+  background: #fff;
+  border: 1px solid #e8e9ee;
+  border-radius: 10px;
+  padding: 16px 20px;
+}
+.oa-stat-card-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #8b8fa3;
+  margin-bottom: 4px;
+}
+.oa-stat-card-value {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+/* ── Responsive ─────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .oa-sidebar {
+    width: 56px;
+    min-width: 56px;
+  }
+  .oa-sidebar .oa-nav-group-label,
+  .oa-sidebar .oa-nav-label,
+  .oa-sidebar .oa-sidebar-title,
+  .oa-sidebar .oa-sidebar-footer {
+    display: none;
+  }
+  .oa-sidebar .oa-nav-item {
+    justify-content: center;
+    padding: 8px 0;
+  }
+  .oa-sidebar .oa-nav-icon {
+    font-size: 18px;
+  }
+  .oa-sidebar .oa-sidebar-header {
+    justify-content: center;
+    padding: 16px 12px;
+  }
+  .oa-content { padding: 16px; }
+  .oa-topbar  { padding: 16px 16px 12px; }
+  .oa-stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 600px) {
+  .oa-stats-grid { grid-template-columns: 1fr; }
+}
 
 /* ── Role legend ──────────────────────────────────────────────── */
 .oa-role-legend {
