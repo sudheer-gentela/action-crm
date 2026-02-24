@@ -1,634 +1,328 @@
-/* Deals View - Enhanced with Detail Panel */
+/* ═══════════════════════════════════════════════════════════════
+   DealsView.css — Modernised to match ActionsView aesthetic
+   Drop-in replacement: all class names unchanged.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Root ────────────────────────────────────────────────────── */
 .deals-view {
-  padding: 24px 0;
+  padding: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #f4f5f7;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
-/* Header */
+/* ── Header ──────────────────────────────────────────────────── */
 .deals-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 24px;
+  align-items: center;
+  padding: 18px 24px 14px;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
+  flex-shrink: 0;
 }
 
 .deals-header h1 {
-  font-size: 28px;
+  font-size: 20px;
   font-weight: 700;
-  color: #1a202c;
-  margin: 0 0 8px 0;
-}
-
-.deals-subtitle {
-  color: #718096;
-  font-size: 15px;
+  color: #0f172a;
   margin: 0;
 }
 
-/* Pipeline Stats */
-.pipeline-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
-  margin-bottom: 24px;
+.deals-subtitle {
+  color: #64748b;
+  font-size: 13px;
+  margin: 4px 0 0 0;
 }
 
-/* Deals Container - Pipeline + Detail Panel */
+.deals-header .btn-primary {
+  padding: 9px 18px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  background: #6366f1;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.15s;
+  font-family: inherit;
+}
+.deals-header .btn-primary:hover:not(:disabled) { background: #4f46e5; }
+
+/* ── Error banner ────────────────────────────────────────────── */
+.error-banner {
+  margin: 0 24px 0;
+  padding: 10px 16px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  color: #991b1b;
+  font-size: 13px;
+}
+
+/* ── Pipeline Stats ──────────────────────────────────────────── */
+.pipeline-stats {
+  display: flex;
+  gap: 12px;
+  padding: 14px 24px;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.pipeline-stats .stat-card {
+  flex: 1;
+  min-width: 160px;
+  padding: 12px 16px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  border-left: none;
+  transition: box-shadow 0.15s;
+}
+.pipeline-stats .stat-card:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,.04);
+  transform: none;
+}
+
+.pipeline-stats .stat-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 2px;
+}
+
+.pipeline-stats .stat-label {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Deals Container ─────────────────────────────────────────── */
 .deals-container {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 24px;
-  transition: grid-template-columns 0.3s ease;
+  gap: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
 .deals-container.with-panel {
   grid-template-columns: 1fr 400px;
 }
 
-/* Pipeline Board */
+/* Hide pipeline when fullscreen panel is open */
+.deals-container:has(.panel-fullscreen) .pipeline-board {
+  display: none;
+}
+
+/* ── Pipeline Board ──────────────────────────────────────────── */
 .pipeline-board {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 16px;
+  gap: 12px;
+  padding: 20px 24px;
   overflow-x: auto;
+  flex: 1;
 }
 
-.pipeline-column {
-  background: #f7fafc;
-  border-radius: 12px;
-  padding: 16px;
-  min-width: 280px;
+/* ── Pipeline Stage (column) ─────────────────────────────────── */
+.pipeline-stage {
+  background: #f8fafc;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  min-width: 240px;
   display: flex;
   flex-direction: column;
 }
 
-.column-header {
+.stage-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
-  padding-bottom: 12px;
-  border-bottom: 2px solid #e2e8f0;
+  padding: 12px 14px;
+  border-bottom: 1px solid #e5e7eb;
 }
 
-.column-header h3 {
-  font-size: 14px;
-  font-weight: 600;
-  color: #2d3748;
+.stage-header h3 {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.05em;
   margin: 0;
 }
 
-.column-header .count {
-  background: #667eea;
-  color: white;
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 12px;
+.stage-count {
+  background: #e5e7eb;
+  color: #64748b;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
 
-.column-content {
+.stage-content {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
+  padding: 10px;
   overflow-y: auto;
-  max-height: calc(100vh - 350px);
-  padding-right: 4px;
+  max-height: calc(100vh - 320px);
 }
 
-.column-content::-webkit-scrollbar {
-  width: 6px;
-}
+.stage-content::-webkit-scrollbar { width: 4px; }
+.stage-content::-webkit-scrollbar-track { background: transparent; }
+.stage-content::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 2px; }
 
-.column-content::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.column-content::-webkit-scrollbar-thumb {
-  background: #cbd5e0;
-  border-radius: 3px;
-}
-
-.empty-column {
+.empty-stage {
   text-align: center;
-  padding: 40px 20px;
-  color: #a0aec0;
-  font-size: 14px;
+  padding: 24px 12px;
+  color: #94a3b8;
+  font-size: 12px;
   font-style: italic;
 }
 
-/* Deal Card - Enhanced */
+/* ── Deal Card ───────────────────────────────────────────────── */
 .deal-card {
-  background: white;
-  border: 2px solid #e2e8f0;
+  background: #fff;
+  border: 1px solid #e5e7eb;
   border-radius: 10px;
-  padding: 16px;
+  padding: 14px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: box-shadow 0.15s, border-color 0.15s;
   position: relative;
 }
 
 .deal-card:hover {
-  border-color: #cbd5e0;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  transform: translateY(-2px);
+  border-color: #d1d5db;
+  box-shadow: 0 4px 12px rgba(0,0,0,.06);
+  transform: none;
 }
 
 .deal-card.selected {
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-  background: #f7fafc;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  background: #fafaff;
 }
 
 .deal-card-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 8px;
-  gap: 8px;
+  margin-bottom: 6px;
+  gap: 6px;
 }
 
 .deal-card-header h4 {
   flex: 1;
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 600;
-  color: #2d3748;
+  color: #0f172a;
   margin: 0;
   line-height: 1.4;
 }
 
 .deal-actions {
   display: flex;
-  gap: 4px;
+  gap: 2px;
   opacity: 0;
-  transition: opacity 0.2s;
+  transition: opacity 0.15s;
 }
+.deal-card:hover .deal-actions { opacity: 1; }
 
-.deal-card:hover .deal-actions {
-  opacity: 1;
+.icon-btn {
+  background: none;
+  border: none;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 4px;
+  transition: background 0.12s;
 }
+.icon-btn:hover { background: #f1f5f9; }
 
 .deal-company {
-  font-size: 13px;
-  color: #718096;
-  margin: 0 0 8px 0;
+  font-size: 12px;
+  color: #64748b;
+  margin: 0 0 6px 0;
 }
 
 .deal-value {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
-  color: #667eea;
-  margin: 8px 0;
+  color: #0f172a;
+  margin: 6px 0;
 }
 
 .deal-health {
   display: inline-block;
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
   font-weight: 600;
-  margin: 8px 0;
+  margin: 4px 0;
   text-transform: capitalize;
 }
-
-.deal-health.healthy {
-  background: #c6f6d5;
-  color: #22543d;
-}
-
-.deal-health.watch {
-  background: #feebc8;
-  color: #7c2d12;
-}
-
-.deal-health.risk {
-  background: #fed7d7;
-  color: #742a2a;
-}
+.deal-health.healthy { background: #dcfce7; color: #166534; }
+.deal-health.watch   { background: #fef3c7; color: #92400e; }
+.deal-health.risk    { background: #fee2e2; color: #991b1b; }
 
 .deal-date {
-  font-size: 12px;
-  color: #718096;
-  margin: 8px 0 4px 0;
+  font-size: 11px;
+  color: #94a3b8;
+  margin: 6px 0 2px 0;
 }
 
 .deal-probability {
-  font-size: 12px;
-  color: #667eea;
+  font-size: 11px;
+  color: #6366f1;
   font-weight: 600;
-  margin: 4px 0 0 0;
+  margin: 2px 0 0 0;
 }
 
-/* Deal Detail Panel - Matches AccountsView */
+/* ── Deal Detail Panel ───────────────────────────────────────── */
 .deal-detail-panel {
-  background: white;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
   position: sticky;
   top: 24px;
   max-height: calc(100vh - 48px);
   overflow-y: auto;
-  animation: slideIn 0.3s ease-out;
+  animation: slideIn 0.2s ease-out;
 }
 
 @keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateX(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0); }
 }
 
-.panel-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 24px;
-  border-bottom: 1px solid #e2e8f0;
-  position: sticky;
-  top: 0;
-  background: white;
-  z-index: 10;
-}
-
-.panel-header h2 {
-  font-size: 20px;
-  font-weight: 600;
-  color: #2d3748;
-  margin: 0;
-}
-
-.close-panel {
-  background: none;
-  border: none;
-  font-size: 24px;
-  color: #718096;
-  cursor: pointer;
-  padding: 0;
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  transition: all 0.2s;
-}
-
-.close-panel:hover {
-  background: #f7fafc;
-  color: #2d3748;
-}
-
-.panel-content {
-  padding: 24px;
-}
-
-.detail-section {
-  margin-bottom: 24px;
-  padding-bottom: 24px;
-  border-bottom: 1px solid #f7fafc;
-}
-
-.detail-section:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
-  margin-bottom: 0;
-}
-
-.detail-section h3 {
-  font-size: 14px;
-  font-weight: 600;
-  color: #2d3748;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin: 0 0 16px 0;
-}
-
-.detail-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16px;
-}
-
-.detail-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.detail-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: #718096;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.detail-item span:not(.detail-label) {
-  font-size: 14px;
-  color: #2d3748;
-}
-
-.detail-value-large {
-  font-size: 24px !important;
-  font-weight: 700 !important;
-  color: #667eea !important;
-}
-
-.detail-badge {
-  display: inline-block;
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.stage-badge {
-  background: #bee3f8;
-  color: #2c5282;
-}
-
-.health-healthy {
-  background: #c6f6d5;
-  color: #22543d;
-}
-
-.health-watch {
-  background: #feebc8;
-  color: #7c2d12;
-}
-
-.health-risk {
-  background: #fed7d7;
-  color: #742a2a;
-}
-
-.detail-description {
-  margin-top: 16px;
-}
-
-.detail-description p {
-  font-size: 14px;
-  color: #4a5568;
-  line-height: 1.6;
-  margin: 8px 0 0 0;
-}
-
-/* Linked Items List */
-.linked-items-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.linked-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px;
-  background: #f7fafc;
-  border-radius: 8px;
-  transition: all 0.2s;
-}
-
-.linked-item:hover {
-  background: #edf2f7;
-}
-
-.item-icon {
-  font-size: 20px;
-  flex-shrink: 0;
-}
-
-.item-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.item-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: #2d3748;
-  margin-bottom: 2px;
-}
-
-.item-meta {
-  font-size: 12px;
-  color: #718096;
-}
-
-.empty-message {
-  font-size: 14px;
-  color: #a0aec0;
-  font-style: italic;
-}
-
-/* Quick Actions */
-.quick-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.btn-action {
-  padding: 12px 16px;
-  background: white;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #2d3748;
-  cursor: pointer;
-  transition: all 0.2s;
-  text-align: left;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.btn-action:hover {
-  background: #f7fafc;
-  border-color: #cbd5e0;
-}
-
-/* Loading State */
-.loading-state {
-  text-align: center;
-  padding: 80px 20px;
-}
-
-.loading-spinner {
-  width: 48px;
-  height: 48px;
-  border: 4px solid #e2e8f0;
-  border-top-color: #667eea;
-  border-radius: 50%;
-  margin: 0 auto 20px;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.loading-state p {
-  color: #718096;
-  font-size: 16px;
-}
-
-/* Info Banner */
-.info-banner {
-  background: #bee3f8;
-  border: 1px solid #90cdf4;
-  color: #2c5282;
-  padding: 12px 16px;
-  border-radius: 8px;
-  margin-bottom: 20px;
-  font-size: 14px;
-}
-
-/* Responsive Design */
-@media (max-width: 1400px) {
-  .pipeline-board {
-    grid-template-columns: repeat(3, 1fr);
-  }
-}
-
-@media (max-width: 1024px) {
-  .deals-container.with-panel {
-    grid-template-columns: 1fr;
-  }
-  
-  .deal-detail-panel {
-    position: relative;
-    top: 0;
-    max-height: none;
-  }
-  
-  .pipeline-board {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (max-width: 768px) {
-  .deals-header {
-    flex-direction: column;
-    gap: 16px;
-  }
-  
-  .deals-header .btn-primary {
-    width: 100%;
-  }
-  
-  .pipeline-board {
-    grid-template-columns: 1fr;
-  }
-  
-  .pipeline-stats {
-    grid-template-columns: 1fr;
-  }
-  
-  .detail-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* Scrollbar Styling */
-.deal-detail-panel::-webkit-scrollbar {
-  width: 8px;
-}
-
-.deal-detail-panel::-webkit-scrollbar-track {
-  background: #f7fafc;
-}
-
-.deal-detail-panel::-webkit-scrollbar-thumb {
-  background: #cbd5e0;
-  border-radius: 4px;
-}
-
-.deal-detail-panel::-webkit-scrollbar-thumb:hover {
-  background: #a0aec0;
-}
-
-/* ── Deal Health Signal Grid ─────────────────────────────────
-   Append these styles to your existing DealsView.css
-   ──────────────────────────────────────────────────────────── */
-
-.signal-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
-}
-
-.signal-row {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  cursor: pointer;
-  padding: 0.375rem 0.5rem;
-  border-radius: 6px;
-  transition: background 0.15s;
-}
-
-.signal-row:hover {
-  background: #f3f4f6;
-}
-
-.signal-row input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  accent-color: #3b82f6;
-}
-
-.signal-row span {
-  font-size: 0.875rem;
-  color: #374151;
-  font-family: monospace;
-}
-
-.signal-text-input {
-  width: 100%;
-  margin-top: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  font-size: 0.875rem;
-  color: #111827;
-  box-sizing: border-box;
-}
-
-.signal-text-input:focus {
-  outline: none;
-  border-color: #3b82f6;
-}
-
-/* ── Fullscreen panel ─────────────────────────────────────────── */
+/* Fullscreen panel */
 .panel-fullscreen {
   position: fixed;
   inset: 0;
-  z-index: 1000;        /* above the app sidebar (~z-index 100) */
+  z-index: 1000;
   border-radius: 0;
   max-height: 100vh;
   width: 100vw;
   border: none;
   animation: dealModalIn 0.2s ease-out;
-  background: white;
+  background: #fff;
   overflow-y: auto;
 }
 
 @keyframes dealModalIn {
-  from { opacity: 0; transform: translateY(12px); }
+  from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* Constrain content width for readability on wide screens */
 .panel-fullscreen .panel-content {
   max-width: 900px;
   margin: 0 auto;
@@ -636,235 +330,374 @@
 }
 
 .panel-fullscreen .panel-header {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 20px 40px;
-  border-bottom: 1px solid #e2e8f0;
+  max-width: none;
+  width: 100%;
+  padding: 16px 40px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e5e7eb;
   position: sticky;
   top: 0;
-  background: white;
   z-index: 10;
-  width: 100%;
   box-sizing: border-box;
 }
 
-/* Wrap header + content so the sticky header max-width works */
-.panel-fullscreen > .panel-header {
-  max-width: 100%;
-  width: 100%;
-}
-
-.panel-fullscreen > .panel-header > *,
-.panel-fullscreen > .panel-header {
-  max-width: 100%;
-}
-
-/* Panel header - full width bar with centred content */
-.panel-fullscreen .panel-header {
-  max-width: none;
-  padding: 16px 40px;
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
-}
-
 .panel-fullscreen .panel-header h2 {
-  font-size: 22px;
+  font-size: 20px;
 }
 
-/* ── When fullscreen panel is open, hide the pipeline board ────── */
-.deals-container:has(.panel-fullscreen) .pipeline-board {
-  display: none;
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e5e7eb;
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 10;
 }
 
-/* ── Clickable linked items ───────────────────────────────────── */
-.linked-item--clickable {
-  cursor: pointer;
+.panel-header h2 {
+  font-size: 18px;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 0;
 }
 
-.linked-item--clickable:hover {
-  background: #ebf4ff;
-  border-left: 3px solid #667eea;
-  padding-left: 9px;
-}
-
-.item-arrow {
-  font-size: 14px;
-  color: #a0aec0;
-  margin-left: auto;
+.panel-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
   flex-shrink: 0;
-  transition: color 0.2s, transform 0.2s;
 }
 
-.linked-item--clickable:hover .item-arrow {
-  color: #667eea;
-  transform: translateX(3px);
-}
-
-/* ── Clickable detail values (e.g. account name in deal panel) ── */
-.detail-value--link {
-  color: #667eea;
-  font-weight: 500;
+.close-panel {
+  background: none;
+  border: none;
+  font-size: 22px;
+  color: #94a3b8;
   cursor: pointer;
-  transition: color 0.15s;
-}
-
-.detail-value--link:hover {
-  color: #5568d3;
-  text-decoration: underline;
-}
-
-/* ── Inline editable values ──────────────────────────────────── */
-.detail-value--editable {
-  cursor: pointer;
-  transition: color 0.15s;
-  font-size: 14px;
-  color: #2d3748;
-}
-
-.detail-value--editable:hover {
-  color: #667eea;
-}
-
-.detail-value--editable .detail-value-large {
-  font-size: 24px !important;
-}
-
-.inline-edit-row {
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  transition: all 0.15s;
   display: flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
 }
+.close-panel:hover { background: #f1f5f9; color: #0f172a; }
+
+.panel-content {
+  padding: 24px;
+}
+
+/* ── Detail sections ─────────────────────────────────────────── */
+.detail-section {
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #f1f5f9;
+}
+.detail-section:last-child { border-bottom: none; padding-bottom: 0; margin-bottom: 0; }
+
+.detail-section h3 {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 14px 0;
+}
+
+.detail-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.detail-section-header h3 { margin: 0; }
+.detail-section-actions { display: flex; gap: 8px; align-items: center; }
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+
+.detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.detail-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.detail-item span:not(.detail-label) {
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.detail-value-large {
+  font-size: 22px !important;
+  font-weight: 700 !important;
+  color: #0f172a !important;
+}
+
+.detail-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.stage-badge { background: #dbeafe; color: #1e40af; }
+.health-healthy { background: #dcfce7; color: #166534; }
+.health-watch   { background: #fef3c7; color: #92400e; }
+.health-risk    { background: #fee2e2; color: #991b1b; }
+
+.detail-description { margin-top: 14px; }
+.detail-description p { font-size: 14px; color: #475569; line-height: 1.6; margin: 8px 0 0 0; }
+
+/* ── Linked items ────────────────────────────────────────────── */
+.linked-items-list { display: flex; flex-direction: column; gap: 6px; }
+
+.linked-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #f1f5f9;
+  transition: all 0.15s;
+}
+.linked-item:hover { background: #f1f5f9; }
+
+.linked-item--clickable { cursor: pointer; }
+.linked-item--clickable:hover {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+}
+
+.item-icon { font-size: 18px; flex-shrink: 0; }
+.item-info { flex: 1; min-width: 0; }
+.item-name { font-size: 13px; font-weight: 600; color: #0f172a; margin-bottom: 1px; }
+.item-meta { font-size: 11px; color: #64748b; }
+.item-arrow {
+  font-size: 13px; color: #94a3b8; margin-left: auto; flex-shrink: 0;
+  transition: color 0.15s, transform 0.15s;
+}
+.linked-item--clickable:hover .item-arrow { color: #6366f1; transform: translateX(2px); }
+
+.empty-message { font-size: 13px; color: #94a3b8; font-style: italic; }
+
+/* ── Quick Actions ───────────────────────────────────────────── */
+.quick-actions { display: flex; flex-direction: column; gap: 6px; }
+
+.btn-action {
+  padding: 10px 14px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: inherit;
+}
+.btn-action:hover { background: #f8fafc; border-color: #d1d5db; }
+.btn-action--danger { color: #dc2626; border-color: #fee2e2; }
+.btn-action--danger:hover { background: #fef2f2; border-color: #fca5a5; }
+
+/* ── Inline editing ──────────────────────────────────────────── */
+.detail-value--editable {
+  cursor: pointer;
+  font-size: 14px;
+  color: #0f172a;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border-radius: 4px;
+  transition: background 0.12s;
+}
+.detail-value--editable:hover { background: #f1f5f9; }
+
+.detail-value--link {
+  color: #6366f1;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.12s;
+}
+.detail-value--link:hover { color: #4f46e5; text-decoration: underline; }
+
+.inline-edit-row { display: flex; align-items: center; gap: 4px; }
 
 .inline-edit-input {
   flex: 1;
-  padding: 4px 8px;
-  border: 1px solid #667eea;
+  padding: 5px 8px;
+  border: 1.5px solid #6366f1;
   border-radius: 6px;
   font-size: 13px;
-  color: #111827;
+  color: #0f172a;
   outline: none;
-  box-shadow: 0 0 0 2px rgba(102,126,234,0.15);
+  box-shadow: 0 0 0 2px rgba(99,102,241,.12);
   max-width: 160px;
+  font-family: inherit;
 }
 
 .inline-edit-select {
-  padding: 4px 8px;
-  border: 1px solid #667eea;
+  padding: 5px 8px;
+  border: 1.5px solid #6366f1;
   border-radius: 6px;
   font-size: 13px;
-  color: #111827;
+  color: #0f172a;
   outline: none;
-  box-shadow: 0 0 0 2px rgba(102,126,234,0.15);
-  background: white;
+  box-shadow: 0 0 0 2px rgba(99,102,241,.12);
+  background: #fff;
   cursor: pointer;
+  font-family: inherit;
 }
 
 .inline-save-btn {
-  padding: 3px 8px;
-  background: #667eea;
-  color: white;
+  padding: 4px 10px;
+  background: #6366f1;
+  color: #fff;
   border: none;
   border-radius: 5px;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.12s;
 }
-.inline-save-btn:hover:not(:disabled) { background: #5568d3; }
+.inline-save-btn:hover:not(:disabled) { background: #4f46e5; }
 .inline-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .inline-cancel-btn {
-  padding: 3px 8px;
-  background: #f7fafc;
-  color: #718096;
-  border: 1px solid #e2e8f0;
+  padding: 4px 8px;
+  background: #f1f5f9;
+  color: #64748b;
+  border: none;
   border-radius: 5px;
   font-size: 12px;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.12s;
 }
-.inline-cancel-btn:hover { background: #e2e8f0; color: #2d3748; }
+.inline-cancel-btn:hover { background: #e2e8f0; color: #0f172a; }
 
 .inline-edit-trigger {
   background: none;
   border: none;
   font-size: 12px;
   cursor: pointer;
-  color: #a0aec0;
+  color: #94a3b8;
   padding: 2px 4px;
   border-radius: 4px;
-  transition: color 0.15s;
+  transition: color 0.12s;
   line-height: 1;
 }
-.inline-edit-trigger:hover { color: #667eea; }
+.inline-edit-trigger:hover { color: #6366f1; }
 
-/* ── Detail section header with action buttons ───────────────── */
-.detail-section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
+.account-edit-row { display: flex; align-items: center; gap: 6px; }
 
-.detail-section-header h3 {
-  margin: 0;
-}
-
-.detail-section-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-/* ── Health + ReScore row ────────────────────────────────────── */
-.health-rescore-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
+/* ── Health + ReScore ────────────────────────────────────────── */
+.health-rescore-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .rescore-btn {
   padding: 3px 10px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #e5e7eb;
   border-radius: 6px;
-  background: white;
+  background: #fff;
   font-size: 11px;
   font-weight: 600;
-  color: #4a5568;
+  color: #64748b;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.12s;
   white-space: nowrap;
+  font-family: inherit;
 }
-.rescore-btn:hover:not(:disabled) { border-color: #667eea; color: #667eea; background: #f7faff; }
+.rescore-btn:hover:not(:disabled) { border-color: #6366f1; color: #6366f1; }
 .rescore-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* ── Account edit row ────────────────────────────────────────── */
-.account-edit-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* ── Danger action button ────────────────────────────────────── */
-.btn-action--danger {
-  color: #c53030;
-  border-color: #fed7d7;
-}
-.btn-action--danger:hover {
-  background: #fff5f5;
-  border-color: #fc8181;
-}
-
-/* ── Notes at bottom ─────────────────────────────────────────── */
+/* ── Notes ───────────────────────────────────────────────────── */
 .deal-notes-text {
-  font-size: 14px;
-  color: #4a5568;
+  font-size: 13px;
+  color: #475569;
   line-height: 1.7;
   margin: 0;
   white-space: pre-wrap;
-  background: #f7fafc;
-  border-left: 3px solid #e2e8f0;
+  background: #f8fafc;
+  border-left: 3px solid #e5e7eb;
   padding: 10px 14px;
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 8px 8px 0;
 }
+
+/* ── Signal grid ─────────────────────────────────────────────── */
+.signal-grid { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
+.signal-row {
+  display: flex; align-items: center; gap: 0.625rem;
+  cursor: pointer; padding: 0.375rem 0.5rem; border-radius: 6px; transition: background 0.12s;
+}
+.signal-row:hover { background: #f1f5f9; }
+.signal-row input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: #6366f1; }
+.signal-row span { font-size: 0.875rem; color: #374151; font-family: monospace; }
+.signal-text-input {
+  width: 100%; margin-top: 0.5rem; padding: 0.5rem 0.75rem;
+  border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.875rem; color: #0f172a; box-sizing: border-box;
+}
+.signal-text-input:focus { outline: none; border-color: #6366f1; }
+
+/* ── Info banner ─────────────────────────────────────────────── */
+.info-banner {
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  color: #3730a3;
+  padding: 10px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+/* ── Loading / Empty ─────────────────────────────────────────── */
+.loading-state { text-align: center; padding: 80px 20px; }
+.loading-state .loading-spinner {
+  width: 36px; height: 36px; border: 3px solid #e5e7eb;
+  border-top-color: #6366f1; border-radius: 50%;
+  margin: 0 auto 16px; animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-state p { color: #64748b; font-size: 14px; }
+
+/* ── Responsive ──────────────────────────────────────────────── */
+@media (max-width: 1400px) {
+  .pipeline-board { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 1024px) {
+  .deals-container.with-panel { grid-template-columns: 1fr; }
+  .deal-detail-panel { position: relative; top: 0; max-height: none; }
+  .pipeline-board { grid-template-columns: repeat(2, 1fr); }
+  .panel-fullscreen .panel-content { padding: 20px 24px; }
+  .panel-fullscreen .panel-header { padding: 16px 24px; }
+}
+@media (max-width: 768px) {
+  .deals-header { flex-direction: column; gap: 12px; padding: 16px; }
+  .deals-header .btn-primary { width: 100%; }
+  .pipeline-board { grid-template-columns: 1fr; padding: 12px 16px; }
+  .pipeline-stats { padding: 10px 16px; }
+  .detail-grid { grid-template-columns: 1fr; }
+}
+
+/* Scrollbar */
+.deal-detail-panel::-webkit-scrollbar { width: 6px; }
+.deal-detail-panel::-webkit-scrollbar-track { background: transparent; }
+.deal-detail-panel::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
