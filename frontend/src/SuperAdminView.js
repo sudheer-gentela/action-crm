@@ -364,6 +364,7 @@ function SAOrgDetail({ orgId, onClose }) {
     if (createForm.password.length < 8) { setError('Password must be at least 8 characters'); return; }
     try {
       setCreatingUser(true);
+      setError('');
       await apiService.superAdmin.createUserForOrg(orgId, createForm);
       setCreateForm({ email: '', first_name: '', last_name: '', password: '', role: 'member' });
       setShowCreateUser(false);
@@ -371,7 +372,17 @@ function SAOrgDetail({ orgId, onClose }) {
       setTimeout(() => setSuccess(''), 3000);
       load();
     } catch (e) {
-      setError(e.response?.data?.error?.message || 'Failed to create user');
+      const msg = e.response?.data?.error?.message || 'Failed to create user';
+      // If user already exists, offer to add them directly
+      if (e.response?.status === 409) {
+        const email = createForm.email.trim();
+        setError(`${msg} — Would you like to add them?`);
+        setAddEmail(email);
+        setAddRole(createForm.role);
+        setShowCreateUser(false);
+      } else {
+        setError(msg);
+      }
     } finally { setCreatingUser(false); }
   };
 
