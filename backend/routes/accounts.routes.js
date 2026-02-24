@@ -23,55 +23,83 @@ router.get('/', async (req, res) => {
 // ── GET /duplicates — find duplicate account groups ──────────────────────────
 router.get('/duplicates', async (req, res) => {
   try {
+    // ── Read org-level duplicate detection settings ──────────
+    const orgRes = await db.query(`SELECT settings FROM organizations WHERE id = $1`, [req.orgId]);
+    const settings = orgRes.rows[0]?.settings || {};
+    const dedupConfig = settings.duplicate_detection || {};
+
+    // Enabled rules (default: all on)
+    const domainMatchEnabled = dedupConfig.account_domain_match !== false;
+    const nameMatchEnabled   = dedupConfig.account_name_match !== false;
+
+    // Visibility: 'org' (default) = all accounts in org; 'own' = only user's accounts
+    const visibility = dedupConfig.account_visibility || 'org';
+
+    // Build the scope filter
+    let scopeFilter = `a.org_id = $1`;
+    const scopeParams = [req.orgId];
+    if (visibility === 'own') {
+      scopeFilter += ` AND a.owner_id = $${scopeParams.length + 1}`;
+      scopeParams.push(req.user.userId);
+    }
+
+    const groups = [];
+    const seenPairs = new Set();
+
     // Group 1: Same domain (case-insensitive, non-empty)
-    const domainDupes = await db.query(
-      `SELECT LOWER(domain) AS match_key, 'domain' AS match_type,
-              json_agg(
-                json_build_object(
-                  'id', a.id, 'name', a.name, 'domain', a.domain,
-                  'industry', a.industry, 'size', a.size,
-                  'location', a.location, 'description', a.description,
-                  'created_at', a.created_at
-                ) ORDER BY a.created_at ASC
-              ) AS accounts
-       FROM accounts a
-       WHERE a.org_id = $1 AND a.owner_id = $2
-         AND a.domain IS NOT NULL AND a.domain != ''
-       GROUP BY LOWER(a.domain)
-       HAVING COUNT(*) > 1`,
-      [req.orgId, req.user.userId]
-    );
+    if (domainMatchEnabled) {
+      const domainDupes = await db.query(
+        `SELECT LOWER(domain) AS match_key, 'domain' AS match_type,
+                json_agg(
+                  json_build_object(
+                    'id', a.id, 'name', a.name, 'domain', a.domain,
+                    'industry', a.industry, 'size', a.size,
+                    'location', a.location, 'description', a.description,
+                    'owner_id', a.owner_id,
+                    'created_at', a.created_at
+                  ) ORDER BY a.created_at ASC
+                ) AS accounts
+         FROM accounts a
+         WHERE ${scopeFilter}
+           AND a.domain IS NOT NULL AND a.domain != ''
+         GROUP BY LOWER(a.domain)
+         HAVING COUNT(*) > 1`,
+        scopeParams
+      );
+      for (const row of domainDupes.rows) {
+        const ids = row.accounts.map(a => a.id).sort().join(',');
+        if (!seenPairs.has(ids)) {
+          seenPairs.add(ids);
+          groups.push({ matchType: row.match_type, matchKey: row.match_key, accounts: row.accounts });
+        }
+      }
+    }
 
     // Group 2: Same name (case-insensitive)
-    const nameDupes = await db.query(
-      `SELECT LOWER(name) AS match_key, 'name' AS match_type,
-              json_agg(
-                json_build_object(
-                  'id', a.id, 'name', a.name, 'domain', a.domain,
-                  'industry', a.industry, 'size', a.size,
-                  'location', a.location, 'description', a.description,
-                  'created_at', a.created_at
-                ) ORDER BY a.created_at ASC
-              ) AS accounts
-       FROM accounts a
-       WHERE a.org_id = $1 AND a.owner_id = $2
-       GROUP BY LOWER(a.name)
-       HAVING COUNT(*) > 1`,
-      [req.orgId, req.user.userId]
-    );
-
-    // Deduplicate groups
-    const seenPairs = new Set();
-    const groups = [];
-    for (const row of [...domainDupes.rows, ...nameDupes.rows]) {
-      const ids = row.accounts.map(a => a.id).sort().join(',');
-      if (!seenPairs.has(ids)) {
-        seenPairs.add(ids);
-        groups.push({
-          matchType: row.match_type,
-          matchKey:  row.match_key,
-          accounts:  row.accounts,
-        });
+    if (nameMatchEnabled) {
+      const nameDupes = await db.query(
+        `SELECT LOWER(name) AS match_key, 'name' AS match_type,
+                json_agg(
+                  json_build_object(
+                    'id', a.id, 'name', a.name, 'domain', a.domain,
+                    'industry', a.industry, 'size', a.size,
+                    'location', a.location, 'description', a.description,
+                    'owner_id', a.owner_id,
+                    'created_at', a.created_at
+                  ) ORDER BY a.created_at ASC
+                ) AS accounts
+         FROM accounts a
+         WHERE ${scopeFilter}
+         GROUP BY LOWER(a.name)
+         HAVING COUNT(*) > 1`,
+        scopeParams
+      );
+      for (const row of nameDupes.rows) {
+        const ids = row.accounts.map(a => a.id).sort().join(',');
+        if (!seenPairs.has(ids)) {
+          seenPairs.add(ids);
+          groups.push({ matchType: row.match_type, matchKey: row.match_key, accounts: row.accounts });
+        }
       }
     }
 

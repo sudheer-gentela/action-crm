@@ -256,4 +256,66 @@ router.get('/stats', adminOnly, async (req, res) => {
   }
 });
 
+// ── Duplicate Detection Settings ──────────────────────────────────────────────
+
+// Any org member can read (needed to apply rules in contacts/accounts views)
+router.get('/duplicate-settings', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT settings FROM organizations WHERE id = $1`, [req.orgId]);
+    const settings = result.rows[0]?.settings || {};
+    const dedupConfig = settings.duplicate_detection || {};
+
+    res.json({
+      duplicate_detection: {
+        contact_email_match:        dedupConfig.contact_email_match !== false,
+        contact_name_account_match: dedupConfig.contact_name_account_match !== false,
+        contact_visibility:         dedupConfig.contact_visibility || 'org',
+        account_domain_match:       dedupConfig.account_domain_match !== false,
+        account_name_match:         dedupConfig.account_name_match !== false,
+        account_visibility:         dedupConfig.account_visibility || 'org',
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: { message: 'Failed to fetch duplicate settings' } });
+  }
+});
+
+// Only admins/owners can change
+router.patch('/duplicate-settings', adminOnly, async (req, res) => {
+  try {
+    const allowed = [
+      'contact_email_match', 'contact_name_account_match', 'contact_visibility',
+      'account_domain_match', 'account_name_match', 'account_visibility',
+    ];
+    const patch = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) {
+        if (key.endsWith('_visibility')) {
+          patch[key] = req.body[key] === 'own' ? 'own' : 'org';
+        } else {
+          patch[key] = !!req.body[key];
+        }
+      }
+    }
+
+    const result = await pool.query(
+      `UPDATE organizations
+       SET settings = jsonb_set(
+         COALESCE(settings, '{}'::jsonb),
+         '{duplicate_detection}',
+         COALESCE(settings->'duplicate_detection', '{}'::jsonb) || $1::jsonb
+       ),
+       updated_at = NOW()
+       WHERE id = $2
+       RETURNING settings->'duplicate_detection' AS duplicate_detection`,
+      [JSON.stringify(patch), req.orgId]
+    );
+
+    res.json({ duplicate_detection: result.rows[0]?.duplicate_detection || {} });
+  } catch (err) {
+    console.error('PATCH /org-admin/duplicate-settings error:', err);
+    res.status(500).json({ error: { message: 'Failed to update duplicate settings' } });
+  }
+});
+
 module.exports = router;

@@ -266,6 +266,8 @@ export const apiService = {
     getInvitations:  ()               => api.get('/org/admin/invitations'),
     sendInvitation:  (data)           => api.post('/org/admin/invitations', data),
     cancelInvitation:(id)             => api.delete(`/org/admin/invitations/${id}`),
+    getDuplicateSettings: ()          => api.get('/org/admin/duplicate-settings'),
+    updateDuplicateSettings: (data)   => api.patch('/org/admin/duplicate-settings', data),
   },
 };
 

@@ -63,60 +63,92 @@ router.get('/', async (req, res) => {
 // NOTE: Must be registered BEFORE /:id so Express doesn't treat "duplicates" as an id
 router.get('/duplicates', async (req, res) => {
   try {
-    const emailDupes = await db.query(
-      `SELECT LOWER(email) AS match_key, 'email' AS match_type,
-              json_agg(
-                json_build_object(
-                  'id', c.id, 'first_name', c.first_name, 'last_name', c.last_name,
-                  'email', c.email, 'phone', c.phone, 'title', c.title,
-                  'role_type', c.role_type, 'engagement_level', c.engagement_level,
-                  'location', c.location, 'linkedin_url', c.linkedin_url,
-                  'notes', c.notes, 'account_id', c.account_id,
-                  'account_name', acc.name, 'last_contact_date', c.last_contact_date,
-                  'created_at', c.created_at
-                ) ORDER BY c.created_at ASC
-              ) AS contacts
-       FROM contacts c
-       LEFT JOIN accounts acc ON acc.id = c.account_id
-       WHERE c.org_id = $1
-         AND c.deleted_at IS NULL
-         AND c.email IS NOT NULL AND c.email != ''
-       GROUP BY LOWER(c.email)
-       HAVING COUNT(*) > 1`,
-      [req.orgId]
-    );
+    // ── Read org-level duplicate detection settings ──────────
+    const orgRes = await db.query(`SELECT settings FROM organizations WHERE id = $1`, [req.orgId]);
+    const settings = orgRes.rows[0]?.settings || {};
+    const dedupConfig = settings.duplicate_detection || {};
 
-    const nameDupes = await db.query(
-      `SELECT LOWER(c.first_name) || '|' || LOWER(c.last_name) || '|' || c.account_id AS match_key,
-              'name_account' AS match_type,
-              json_agg(
-                json_build_object(
-                  'id', c.id, 'first_name', c.first_name, 'last_name', c.last_name,
-                  'email', c.email, 'phone', c.phone, 'title', c.title,
-                  'role_type', c.role_type, 'engagement_level', c.engagement_level,
-                  'location', c.location, 'linkedin_url', c.linkedin_url,
-                  'notes', c.notes, 'account_id', c.account_id,
-                  'account_name', acc.name, 'last_contact_date', c.last_contact_date,
-                  'created_at', c.created_at
-                ) ORDER BY c.created_at ASC
-              ) AS contacts
-       FROM contacts c
-       LEFT JOIN accounts acc ON acc.id = c.account_id
-       WHERE c.org_id = $1
-         AND c.deleted_at IS NULL
-         AND c.account_id IS NOT NULL
-       GROUP BY LOWER(c.first_name), LOWER(c.last_name), c.account_id
-       HAVING COUNT(*) > 1`,
-      [req.orgId]
-    );
+    // Enabled rules (default: all on)
+    const emailMatchEnabled       = dedupConfig.contact_email_match !== false;
+    const nameAccountMatchEnabled = dedupConfig.contact_name_account_match !== false;
 
-    const seenPairs = new Set();
+    // Visibility: 'org' (default) = all contacts in org; 'own' = only user's contacts
+    const visibility = dedupConfig.contact_visibility || 'org';
+
+    // Build the scope filter
+    let scopeFilter = `c.org_id = $1 AND c.deleted_at IS NULL`;
+    const scopeParams = [req.orgId];
+    if (visibility === 'own') {
+      // contacts don't have owner_id — scope via account ownership
+      scopeFilter += ` AND c.account_id IN (SELECT id FROM accounts WHERE owner_id = $${scopeParams.length + 1} AND org_id = $1)`;
+      scopeParams.push(req.user.userId);
+    }
+
     const groups = [];
-    for (const row of [...emailDupes.rows, ...nameDupes.rows]) {
-      const ids = row.contacts.map(c => c.id).sort().join(',');
-      if (!seenPairs.has(ids)) {
-        seenPairs.add(ids);
-        groups.push({ matchType: row.match_type, matchKey: row.match_key, contacts: row.contacts });
+    const seenPairs = new Set();
+
+    // Group 1: Same email (case-insensitive)
+    if (emailMatchEnabled) {
+      const emailDupes = await db.query(
+        `SELECT LOWER(email) AS match_key, 'email' AS match_type,
+                json_agg(
+                  json_build_object(
+                    'id', c.id, 'first_name', c.first_name, 'last_name', c.last_name,
+                    'email', c.email, 'phone', c.phone, 'title', c.title,
+                    'role_type', c.role_type, 'engagement_level', c.engagement_level,
+                    'location', c.location, 'linkedin_url', c.linkedin_url,
+                    'notes', c.notes, 'account_id', c.account_id,
+                    'account_name', acc.name, 'last_contact_date', c.last_contact_date,
+                    'created_at', c.created_at
+                  ) ORDER BY c.created_at ASC
+                ) AS contacts
+         FROM contacts c
+         LEFT JOIN accounts acc ON acc.id = c.account_id
+         WHERE ${scopeFilter}
+           AND c.email IS NOT NULL AND c.email != ''
+         GROUP BY LOWER(c.email)
+         HAVING COUNT(*) > 1`,
+        scopeParams
+      );
+      for (const row of emailDupes.rows) {
+        const ids = row.contacts.map(c => c.id).sort().join(',');
+        if (!seenPairs.has(ids)) {
+          seenPairs.add(ids);
+          groups.push({ matchType: row.match_type, matchKey: row.match_key, contacts: row.contacts });
+        }
+      }
+    }
+
+    // Group 2: Same first+last name on same account
+    if (nameAccountMatchEnabled) {
+      const nameDupes = await db.query(
+        `SELECT LOWER(c.first_name) || '|' || LOWER(c.last_name) || '|' || c.account_id AS match_key,
+                'name_account' AS match_type,
+                json_agg(
+                  json_build_object(
+                    'id', c.id, 'first_name', c.first_name, 'last_name', c.last_name,
+                    'email', c.email, 'phone', c.phone, 'title', c.title,
+                    'role_type', c.role_type, 'engagement_level', c.engagement_level,
+                    'location', c.location, 'linkedin_url', c.linkedin_url,
+                    'notes', c.notes, 'account_id', c.account_id,
+                    'account_name', acc.name, 'last_contact_date', c.last_contact_date,
+                    'created_at', c.created_at
+                  ) ORDER BY c.created_at ASC
+                ) AS contacts
+         FROM contacts c
+         LEFT JOIN accounts acc ON acc.id = c.account_id
+         WHERE ${scopeFilter}
+           AND c.account_id IS NOT NULL
+         GROUP BY LOWER(c.first_name), LOWER(c.last_name), c.account_id
+         HAVING COUNT(*) > 1`,
+        scopeParams
+      );
+      for (const row of nameDupes.rows) {
+        const ids = row.contacts.map(c => c.id).sort().join(',');
+        if (!seenPairs.has(ids)) {
+          seenPairs.add(ids);
+          groups.push({ matchType: row.match_type, matchKey: row.match_key, contacts: row.contacts });
+        }
       }
     }
 
