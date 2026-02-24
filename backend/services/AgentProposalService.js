@@ -8,6 +8,10 @@
  * creating proposals. User-level agentic_proposals_enabled is checked too.
  *
  * All queries are scoped by org_id to prevent cross-org leakage.
+ *
+ * FIXES applied:
+ *   - reject() now requires and checks orgId (security hardening)
+ *   - createProposal() deduplicates against existing pending proposals
  */
 
 const db = require('../config/database');
@@ -125,7 +129,7 @@ class AgentProposalService {
   // ── Create ─────────────────────────────────────────────────────────────────
 
   /**
-   * Create a new proposal. Validates org/user gates and rate limits.
+   * Create a new proposal. Validates org/user gates, rate limits, and deduplicates.
    *
    * @param {object} params
    * @param {number} params.orgId
@@ -181,6 +185,33 @@ class AgentProposalService {
       );
       if (parseInt(countRes.rows[0].cnt) >= maxPerDeal) {
         return { success: false, error: `Rate limit: ${maxPerDeal} proposals/deal/day reached` };
+      }
+    }
+
+    // ── Duplicate detection ──────────────────────────────────────────────────
+    // Skip if there's already a pending proposal of the same type for the same deal
+    // from the same source trigger. This prevents repeated generateAll() cycles
+    // from creating redundant proposals.
+    if (dealId) {
+      const dedupQuery = `
+        SELECT id FROM agent_proposals
+        WHERE deal_id = $1 AND org_id = $2 AND proposal_type = $3 AND status = 'pending'`;
+      const dedupParams = [dealId, orgId, proposalType];
+
+      // Optionally narrow dedup by source trigger if available
+      // This allows different triggers (e.g. email vs rules_engine) to create
+      // proposals of the same type, while preventing the same trigger from duplicating.
+      let dedupSql = dedupQuery;
+      if (sourceContext?.trigger) {
+        dedupSql += ` AND source_context->>'trigger' = $4`;
+        dedupParams.push(sourceContext.trigger);
+      }
+      dedupSql += ` LIMIT 1`;
+
+      const dupRes = await db.query(dedupSql, dedupParams);
+      if (dupRes.rows.length > 0) {
+        console.log(`🤖 Agent: skipping duplicate proposal — ${proposalType} (trigger: ${sourceContext?.trigger || 'N/A'}) for deal ${dealId}, existing: #${dupRes.rows[0].id}`);
+        return { success: false, error: 'Duplicate pending proposal exists' };
       }
     }
 
@@ -255,17 +286,26 @@ class AgentProposalService {
   }
 
   // ── Reject ─────────────────────────────────────────────────────────────────
+  // FIX: Now requires orgId parameter and scopes query by org_id
 
-  static async reject(proposalId, reviewerId, reason = null) {
+  static async reject(proposalId, reviewerId, reason = null, orgId = null) {
     try {
-      const result = await db.query(
-        `UPDATE agent_proposals
-         SET status = 'rejected', reviewed_by = $2, reviewed_at = NOW(),
-             rejection_reason = $3, updated_at = NOW()
-         WHERE id = $1 AND status = 'pending'
-         RETURNING *`,
-        [proposalId, reviewerId, reason]
-      );
+      let query = `
+        UPDATE agent_proposals
+        SET status = 'rejected', reviewed_by = $2, reviewed_at = NOW(),
+            rejection_reason = $3, updated_at = NOW()
+        WHERE id = $1 AND status = 'pending'`;
+      const params = [proposalId, reviewerId, reason];
+
+      // Add org_id guard when available (always should be from route layer)
+      if (orgId) {
+        query += ` AND org_id = $4`;
+        params.push(orgId);
+      }
+
+      query += ` RETURNING *`;
+
+      const result = await db.query(query, params);
 
       if (result.rows.length === 0) {
         return { success: false, error: 'Proposal not found or not in pending state' };
@@ -281,7 +321,7 @@ class AgentProposalService {
   // ── Bulk operations ────────────────────────────────────────────────────────
 
   static async bulkApprove(proposalIds, reviewerId, orgId) {
-    if (!proposalIds?.length) return { success: true, count: 0 };
+    if (!proposalIds?.length) return { success: true, count: 0, approvedIds: [] };
     try {
       const result = await db.query(
         `UPDATE agent_proposals
@@ -290,9 +330,13 @@ class AgentProposalService {
          RETURNING id`,
         [proposalIds, reviewerId, orgId]
       );
-      return { success: true, count: result.rows.length };
+      return {
+        success: true,
+        count: result.rows.length,
+        approvedIds: result.rows.map(r => r.id),
+      };
     } catch (err) {
-      return { success: false, error: err.message };
+      return { success: false, error: err.message, approvedIds: [] };
     }
   }
 

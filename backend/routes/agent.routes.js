@@ -6,6 +6,10 @@
  *
  * All routes require authenticateToken + orgContext (same pattern as actions.routes.js).
  * Proposals are scoped by org_id + user_id — users only see proposals for their own deals.
+ *
+ * FIXES applied:
+ *   - POST /reject now passes req.orgId to AgentProposalService.reject() (security)
+ *   - POST /bulk-approve now only executes proposals that were actually approved
  */
 
 const express = require('express');
@@ -132,11 +136,12 @@ router.post('/proposals/:id/approve', async (req, res) => {
 
 // ── POST /proposals/:id/reject ───────────────────────────────
 // Body: { reason? }
+// FIX: Now passes req.orgId to service for org_id scoping
 router.post('/proposals/:id/reject', async (req, res) => {
   try {
     const { reason } = req.body || {};
     const result = await AgentProposalService.reject(
-      parseInt(req.params.id), req.user.userId, reason || null
+      parseInt(req.params.id), req.user.userId, reason || null, req.orgId
     );
     if (!result.success) {
       return res.status(400).json({ error: { message: result.error } });
@@ -173,6 +178,7 @@ router.patch('/proposals/:id/payload', async (req, res) => {
 
 // ── POST /proposals/bulk-approve ─────────────────────────────
 // Body: { proposalIds: number[] }
+// FIX: Now only executes proposals that were actually approved
 router.post('/proposals/bulk-approve', async (req, res) => {
   try {
     const { proposalIds } = req.body;
@@ -180,9 +186,9 @@ router.post('/proposals/bulk-approve', async (req, res) => {
 
     const result = await AgentProposalService.bulkApprove(proposalIds, req.user.userId, req.orgId);
 
-    // Execute all approved
+    // Execute only the proposals that were actually approved (not already rejected, wrong org, etc.)
     const execResults = [];
-    for (const id of proposalIds) {
+    for (const id of (result.approvedIds || [])) {
       const execResult = await ProposalExecutor.execute(id);
       execResults.push({ id, ...execResult });
     }

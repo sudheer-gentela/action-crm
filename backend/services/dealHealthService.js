@@ -9,12 +9,17 @@
  *   - applyAISignals(dealId, analysisResult, sourceType, userId, orgId)
  *   - detectCompetitors(dealId, userId, orgId, text)
  *
+ * AGENTIC FRAMEWORK change:
+ *   - scoreDeal now calls AgentObserver.onHealthScoreChanged() after updating the deal,
+ *     passing old and new scores so the observer can propose risk flags or stage advances.
+ *
  * All scoring logic (scoreCategory, score* functions, calculateSlowResponse,
  * extract*, parse*, getDeal, getContacts, getMeetings, getEmails,
  * getValueHistory) is completely unchanged.
  */
 
 const { pool } = require('../config/database');
+const AgentObserver = require('./AgentObserver');
 
 // ── Main scoring entry point ─────────────────────────────────
 
@@ -32,6 +37,10 @@ async function scoreDeal(dealId, userId, orgId) {
       ]);
 
     if (!deal) throw new Error(`Deal ${dealId} not found`);
+
+    // ── Capture old score before recalculation ──────────────
+    const oldScore  = deal.health_score ?? null;
+    const oldHealth = deal.health || null;
 
     const enabled = config.params_enabled || {};
     const isEnabled = key => enabled[key] !== false;
@@ -72,6 +81,18 @@ async function scoreDeal(dealId, userId, orgId) {
        WHERE id = $4`,
       [health, score, JSON.stringify(breakdown), dealId]
     );
+
+    // ── Agentic Framework: notify observer of health change (non-blocking) ──
+    // Only fire if score actually changed to avoid noise
+    if (oldScore !== null && oldScore !== score) {
+      AgentObserver.onHealthScoreChanged(dealId, oldScore, score, {
+        orgId:         orgId,
+        userId:        userId,
+        health_params: breakdown,
+        current_stage: deal.stage || null,
+        next_stage:    null, // Could be resolved from deal_stages if needed
+      }).catch(err => console.error(`🤖 AgentObserver health hook error for deal ${dealId}:`, err.message));
+    }
 
     return { dealId, score, health, breakdown };
 

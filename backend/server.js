@@ -207,6 +207,38 @@ app.listen(PORT, () => {
     console.error('❌ Failed to start Bull worker:', error.message);
     console.error('   Queue processing will not work!');
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // Agentic Framework — periodic jobs
+  //
+  // Uses node-cron (lightweight, no external deps beyond npm package).
+  // Install: npm install node-cron
+  //
+  // Jobs:
+  //   1. Expire stale proposals — every hour
+  // ─────────────────────────────────────────────────────────────
+  try {
+    const cron = require('node-cron');
+    const AgentProposalService = require('./services/AgentProposalService');
+
+    // Every hour: expire proposals past their expires_at date
+    cron.schedule('0 * * * *', async () => {
+      try {
+        const count = await AgentProposalService.expireStale();
+        if (count > 0) {
+          console.log(`🕐 Cron: expired ${count} stale agent proposals`);
+        }
+      } catch (err) {
+        console.error('🕐 Cron: expireStale error:', err.message);
+      }
+    });
+
+    console.log('✅ Agentic framework cron jobs initialized (proposal expiry: hourly)');
+  } catch (error) {
+    console.error('⚠️  Failed to initialize agentic cron jobs:', error.message);
+    console.error('   Install node-cron: npm install node-cron');
+    console.error('   Proposals will not auto-expire until this is resolved.');
+  }
 });
 
 module.exports = app;

@@ -9,8 +9,13 @@
  *   - getPlaybook(userId, orgId)        — queries user_playbooks WHERE (user_id, org_id)
  *   - getPromptTemplate(userId, orgId, templateType) — queries user_prompts WHERE (user_id, org_id, template_type)
  *
+ * AGENTIC FRAMEWORK fixes:
+ *   - processEmail now passes contacts_mentioned, urgency, and sentiment to AgentObserver
+ *   - callClaude now returns { actions, usage } so callers can track tokens with org/user context
+ *   - Token tracking moved to processEmail() and analyzeDeal() where org/user are available
+ *
  * analyzeEmailSimple, renderTemplate, formatEmailThread, formatMeetings,
- * formatDealHistory, callClaude, fetchEmail, getDeal, gatherFullContext,
+ * formatDealHistory, fetchEmail, getDeal, gatherFullContext,
  * gatherDealContext are all unchanged.
  */
 
@@ -56,18 +61,34 @@ Extract the following information and respond ONLY with valid JSON (no markdown,
     }
   ],
   "key_contacts": ["email@example.com or contact names"],
+  "contacts_mentioned": [
+    {
+      "name": "Full Name",
+      "email": "email@example.com or null",
+      "title": "Job title if mentioned or null",
+      "role_type": "decision_maker|champion|influencer|technical|null",
+      "confidence": 0.0-1.0
+    }
+  ],
   "category": "Sales|Support|Meeting Request|Follow-up|Task|Information|Other",
   "sentiment": "positive|neutral|negative|urgent",
+  "urgency": "high|medium|low",
   "priority": "high|medium|low",
   "summary": "1-2 sentence summary of the email",
   "requires_response": true or false,
-  "suggested_actions": ["Brief action suggestions"]
+  "suggested_actions": ["Brief action suggestions"],
+  "suggested_reply": {
+    "subject": "Reply subject or null if no reply needed",
+    "body": "Brief suggested reply or null"
+  }
 }
 
 Important:
 - Only include action_items if there are clear, specific tasks mentioned
 - Set requires_response to true if the email expects a reply
 - Estimate priority based on urgency indicators, deadlines, and sender importance
+- contacts_mentioned should include any people referenced in the email who might be CRM contacts
+- suggested_reply should only be populated if requires_response is true and urgency is high
 - Return valid JSON only, no other text`;
 
     try {
@@ -88,15 +109,21 @@ Important:
       if (!analysis.action_items || !Array.isArray(analysis.action_items)) {
         analysis.action_items = [];
       }
+      // Ensure new fields have defaults
+      if (!analysis.contacts_mentioned)  analysis.contacts_mentioned = [];
+      if (!analysis.urgency)             analysis.urgency = analysis.priority || 'medium';
+      if (!analysis.sentiment)           analysis.sentiment = 'neutral';
+      if (!analysis.suggested_reply)     analysis.suggested_reply = null;
+
       return analysis;
 
     } catch (error) {
       console.error('Claude analysis error:', error);
       return {
-        action_items: [], key_contacts: [],
-        category: 'Information', sentiment: 'neutral', priority: 'medium',
+        action_items: [], key_contacts: [], contacts_mentioned: [],
+        category: 'Information', sentiment: 'neutral', urgency: 'medium', priority: 'medium',
         summary: emailData.subject || 'Email analysis failed',
-        requires_response: false, suggested_actions: [],
+        requires_response: false, suggested_actions: [], suggested_reply: null,
         error: error.message
       };
     }
@@ -117,11 +144,35 @@ Important:
       const promptTemplate  = await this.getPromptTemplate(userId, orgId, 'email_analysis');
       const playbook        = await this.getPlaybook(userId, orgId);
       const prompt          = this.renderTemplate(promptTemplate, { email, context, playbook });
-      const actions         = await this.callClaude(prompt);
+      const { actions, usage } = await this.callClaude(prompt);
       const saved           = await this.saveActions(actions, userId, orgId, email, context);
 
-      // ── Agentic Framework: notify observer (non-blocking) ──
-      AgentObserver.onEmailReceived(emailId, { actions, contacts_mentioned: [] }, orgId, userId, email?.deal_id || null)
+      // ── Token tracking at caller level (has org/user context) ──
+      if (usage) {
+        TokenTrackingService.log({
+          orgId,
+          userId,
+          callType: 'email_analysis',
+          model:    AI_PROMPTS.system_instructions.model,
+          usage:    { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens },
+          emailId:  parseInt(emailId) || null,
+          dealId:   email?.deal_id || null,
+        }).catch(() => {});
+      }
+
+      // ── Agentic Framework: notify observer with enriched data (non-blocking) ──
+      // Extract contacts_mentioned and urgency/sentiment from the AI response
+      // The AI actions array may contain these signals; also try analyzeEmailSimple-style extraction
+      const observerAnalysis = {
+        actions,
+        contacts_mentioned: this._extractContactsFromActions(actions, email),
+        urgency:            this._inferUrgency(actions, email),
+        sentiment:          this._inferSentiment(actions, email),
+        suggested_reply:    this._extractSuggestedReply(actions, email),
+        from_address:       email?.from_address || null,
+      };
+
+      AgentObserver.onEmailReceived(emailId, observerAnalysis, orgId, userId, email?.deal_id || null)
         .catch(err => console.error('AgentObserver email hook error:', err.message));
 
       return { success: true, actions: saved };
@@ -147,8 +198,20 @@ Important:
       const promptTemplate = await this.getPromptTemplate(userId, orgId, 'deal_health_check');
       const playbook       = await this.getPlaybook(userId, orgId);
       const prompt         = this.renderTemplate(promptTemplate, { deal, context, playbook });
-      const actions        = await this.callClaude(prompt);
+      const { actions, usage } = await this.callClaude(prompt);
       const saved          = await this.saveActions(actions, userId, orgId, { id: `deal-${dealId}` }, context);
+
+      // ── Token tracking at caller level (has org/user context) ──
+      if (usage) {
+        TokenTrackingService.log({
+          orgId,
+          userId,
+          callType: 'deal_health_check',
+          model:    AI_PROMPTS.system_instructions.model,
+          usage:    { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens },
+          dealId:   parseInt(dealId) || null,
+        }).catch(() => {});
+      }
 
       return { success: true, health_check: true, actions: saved };
 
@@ -298,6 +361,10 @@ Important:
     return history.map(h => `- ${h.activity_type}: ${h.description}`).join('\n');
   }
 
+  /**
+   * Call Claude and return both parsed actions AND raw usage for caller-level tracking.
+   * @returns {{ actions: Array, usage: object|null }}
+   */
   static async callClaude(prompt) {
     const message = await anthropic.messages.create({
       model:      AI_PROMPTS.system_instructions.model,
@@ -305,15 +372,8 @@ Important:
       messages:   [{ role: 'user', content: prompt }]
     });
 
-    // ── Token tracking (non-blocking) ────────────────────────
-    if (message.usage) {
-      TokenTrackingService.log({
-        orgId: null, userId: null, // callClaude is stateless; caller tracks context
-        callType: 'email_analysis',
-        model: AI_PROMPTS.system_instructions.model,
-        usage: { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens },
-      }).catch(() => {});
-    }
+    // Capture usage for caller-level token tracking (no longer tracked here)
+    const usage = message.usage || null;
 
     const response = message.content[0].text;
     let cleaned = response.trim()
@@ -335,12 +395,12 @@ Important:
 
     try {
       const parsed = JSON.parse(cleaned);
-      return Array.isArray(parsed) ? parsed : [];
+      return { actions: Array.isArray(parsed) ? parsed : [], usage };
     } catch (error) {
       console.error('Failed to parse AI response:', error);
       console.error('Cleaned response:', cleaned);
       console.error('Original response:', response);
-      return [];
+      return { actions: [], usage };
     }
   }
 
@@ -385,6 +445,130 @@ Important:
     }
 
     return saved;
+  }
+
+  // ── Observer data extraction helpers (new) ───────────────────────────────
+  // These extract structured data from the AI-generated actions and email
+  // to enrich the AgentObserver.onEmailReceived call.
+
+  /**
+   * Extract potential new contacts from AI actions and email metadata.
+   * Returns array of { name, email, title, role_type, confidence }.
+   */
+  static _extractContactsFromActions(actions, email) {
+    const contacts = [];
+    const seenEmails = new Set();
+
+    // Look for contact references in AI-generated action metadata
+    for (const action of (actions || [])) {
+      // Check key_contacts if present (from enhanced prompts)
+      if (action.key_contacts && Array.isArray(action.key_contacts)) {
+        for (const kc of action.key_contacts) {
+          if (typeof kc === 'string' && kc.includes('@') && !seenEmails.has(kc.toLowerCase())) {
+            seenEmails.add(kc.toLowerCase());
+            contacts.push({
+              name:       kc.split('@')[0].replace(/[._-]/g, ' '),
+              email:      kc,
+              title:      null,
+              role_type:  null,
+              confidence: 0.50,
+            });
+          }
+        }
+      }
+
+      // Check contacts_mentioned if present
+      if (action.contacts_mentioned && Array.isArray(action.contacts_mentioned)) {
+        for (const cm of action.contacts_mentioned) {
+          if (cm.email && !seenEmails.has(cm.email.toLowerCase())) {
+            seenEmails.add(cm.email.toLowerCase());
+            contacts.push({
+              name:       cm.name || cm.email.split('@')[0],
+              email:      cm.email,
+              title:      cm.title || null,
+              role_type:  cm.role_type || null,
+              confidence: cm.confidence || 0.55,
+            });
+          }
+        }
+      }
+    }
+
+    // Also check CC addresses on the email for potential new contacts
+    if (email?.cc_addresses) {
+      const ccList = typeof email.cc_addresses === 'string'
+        ? email.cc_addresses.split(',').map(s => s.trim()).filter(Boolean)
+        : (Array.isArray(email.cc_addresses) ? email.cc_addresses : []);
+      for (const cc of ccList) {
+        const addr = cc.includes('<') ? cc.match(/<([^>]+)>/)?.[1] : cc;
+        if (addr && addr.includes('@') && !seenEmails.has(addr.toLowerCase())) {
+          seenEmails.add(addr.toLowerCase());
+          contacts.push({
+            name:       cc.includes('<') ? cc.split('<')[0].trim() : addr.split('@')[0],
+            email:      addr,
+            title:      null,
+            role_type:  null,
+            confidence: 0.40,
+          });
+        }
+      }
+    }
+
+    return contacts;
+  }
+
+  /**
+   * Infer urgency from AI actions and email content.
+   */
+  static _inferUrgency(actions, email) {
+    // Check if any action has high priority
+    const hasHighPriority = (actions || []).some(a =>
+      a.priority === 'high' || a.urgency === 'high'
+    );
+    if (hasHighPriority) return 'high';
+
+    // Check email subject for urgency signals
+    const subject = (email?.subject || '').toLowerCase();
+    if (/urgent|asap|immediate|critical|deadline|time.?sensitive/i.test(subject)) {
+      return 'high';
+    }
+
+    // Check if multiple actions suggest follow-up urgency
+    const followUpActions = (actions || []).filter(a =>
+      (a.action_type || '').includes('follow') || a.requires_response
+    );
+    if (followUpActions.length >= 2) return 'high';
+
+    return 'medium';
+  }
+
+  /**
+   * Infer sentiment from AI actions and email content.
+   */
+  static _inferSentiment(actions, email) {
+    // Look for sentiment in action metadata
+    for (const action of (actions || [])) {
+      if (action.sentiment) return action.sentiment;
+    }
+
+    // Keyword-based fallback on email body
+    const body = ((email?.body || '') + ' ' + (email?.subject || '')).toLowerCase();
+    if (/disappointed|frustrated|concerned|issue|problem|cancel|unhappy/i.test(body)) return 'negative';
+    if (/excited|great|thank|appreciate|looking forward|pleased/i.test(body)) return 'positive';
+    return 'neutral';
+  }
+
+  /**
+   * Extract suggested reply from AI actions if present.
+   */
+  static _extractSuggestedReply(actions, email) {
+    for (const action of (actions || [])) {
+      if (action.suggested_reply) return action.suggested_reply;
+      if (action.action_type === 'follow_up' && action.suggested_action) {
+        return { subject: `Re: ${email?.subject || 'Follow-up'}`, body: action.suggested_action };
+      }
+    }
+    return null;
   }
 }
 

@@ -132,11 +132,13 @@ class ProposalExecutor {
 
   static async _execDraftEmail(data, orgId, userId) {
     // Create the email as a draft (not sent) — user can review in Email view
+    // FIX: direction='draft' so it doesn't appear as an already-sent message.
+    //      sent_at is NULL to further indicate draft status.
     const result = await db.query(
       `INSERT INTO emails
          (org_id, user_id, deal_id, contact_id, direction, subject, body,
           to_address, from_address, sent_at, created_at)
-       VALUES ($1,$2,$3,$4,'sent',$5,$6,$7,NULL,NULL,NOW())
+       VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,NULL,NULL,NOW())
        RETURNING id, subject`,
       [
         orgId, userId,
