@@ -303,12 +303,30 @@ function SAOrgDetail({ orgId, onClose }) {
   const [addEmail, setAddEmail] = useState('');
   const [addRole, setAddRole]   = useState('member');
 
+  // Create user state
+  const [showCreateUser, setShowCreateUser] = useState(false);
+  const [createForm, setCreateForm] = useState({ email: '', first_name: '', last_name: '', password: '', role: 'member' });
+  const [creatingUser, setCreatingUser] = useState(false);
+
+  // Invite state
+  const [showInvite, setShowInvite] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState('member');
+  const [sendingInvite, setSendingInvite] = useState(false);
+  const [invites, setInvites] = useState([]);
+  const [lastInviteUrl, setLastInviteUrl] = useState('');
+
   const load = useCallback(async () => {
     try {
       setLoading(true);
       const r = await apiService.superAdmin.getOrg(orgId);
       setData(r.data);
       setForm({ name: r.data.org.name, plan: r.data.org.plan, max_users: r.data.org.max_users, notes: r.data.org.notes || '' });
+      // Load invites
+      try {
+        const invR = await apiService.superAdmin.getInvites(orgId);
+        setInvites(invR.data.invites || []);
+      } catch { /* invites table might not exist yet */ }
     } catch { setError('Failed to load org'); }
     finally { setLoading(false); }
   }, [orgId]);
@@ -339,6 +357,48 @@ function SAOrgDetail({ orgId, onClose }) {
     }
   };
 
+  const handleCreateUser = async () => {
+    if (!createForm.email.trim() || !createForm.first_name.trim() || !createForm.last_name.trim()) {
+      setError('Email, first name, and last name are required'); return;
+    }
+    if (createForm.password.length < 8) { setError('Password must be at least 8 characters'); return; }
+    try {
+      setCreatingUser(true);
+      await apiService.superAdmin.createUserForOrg(orgId, createForm);
+      setCreateForm({ email: '', first_name: '', last_name: '', password: '', role: 'member' });
+      setShowCreateUser(false);
+      setSuccess('User created and added to org');
+      setTimeout(() => setSuccess(''), 3000);
+      load();
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to create user');
+    } finally { setCreatingUser(false); }
+  };
+
+  const handleInvite = async () => {
+    if (!inviteEmail.trim()) return;
+    try {
+      setSendingInvite(true);
+      const r = await apiService.superAdmin.inviteUserToOrg(orgId, { email: inviteEmail.trim(), role: inviteRole });
+      setLastInviteUrl(r.data.inviteUrl || '');
+      setInviteEmail('');
+      setSuccess('Invite created — copy the link below to share');
+      setTimeout(() => setSuccess(''), 5000);
+      load();
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to create invite');
+    } finally { setSendingInvite(false); }
+  };
+
+  const handleCancelInvite = async (inviteId) => {
+    try {
+      await apiService.superAdmin.cancelInvite(orgId, inviteId);
+      load();
+    } catch (e) {
+      setError('Failed to cancel invite');
+    }
+  };
+
   const handleRoleChange = async (userId, role) => {
     try {
       await apiService.superAdmin.updateUserInOrg(orgId, userId, { role });
@@ -357,6 +417,16 @@ function SAOrgDetail({ orgId, onClose }) {
       setError(e.response?.data?.error?.message || 'Failed to remove user');
     }
   };
+
+  const generateTempPassword = () => {
+    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$';
+    let pw = '';
+    for (let i = 0; i < 12; i++) pw += chars[Math.floor(Math.random() * chars.length)];
+    setCreateForm(f => ({ ...f, password: pw }));
+  };
+
+  const pendingInvites = invites.filter(i => !i.accepted_at && new Date(i.expires_at) > new Date());
+  const expiredInvites = invites.filter(i => !i.accepted_at && new Date(i.expires_at) <= new Date());
 
   return (
     <div className="sa-drawer-backdrop" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -420,13 +490,141 @@ function SAOrgDetail({ orgId, onClose }) {
 
             {/* Members */}
             <section className="sa-drawer-section">
-              <h3>Members ({data.members.length})</h3>
+              <div className="sa-section-header">
+                <h3>Members ({data.members.length})</h3>
+                <div className="sa-section-header-actions">
+                  <button className="sa-btn-sm sa-btn-sm--blue" onClick={() => { setShowCreateUser(!showCreateUser); setShowInvite(false); }}>
+                    {showCreateUser ? '✕ Close' : '➕ Create User'}
+                  </button>
+                  <button className="sa-btn-sm sa-btn-sm--green" onClick={() => { setShowInvite(!showInvite); setShowCreateUser(false); }}>
+                    {showInvite ? '✕ Close' : '📧 Invite'}
+                  </button>
+                </div>
+              </div>
 
-              {/* Add user */}
-              <div className="sa-add-user-row">
+              {/* Create User Form */}
+              {showCreateUser && (
+                <div className="sa-create-user-form">
+                  <div className="sa-form-section-title">Create New User Account</div>
+                  <div className="sa-form-grid">
+                    <div className="sa-form-field">
+                      <label>First Name *</label>
+                      <input
+                        value={createForm.first_name}
+                        onChange={e => setCreateForm({ ...createForm, first_name: e.target.value })}
+                        placeholder="John"
+                      />
+                    </div>
+                    <div className="sa-form-field">
+                      <label>Last Name *</label>
+                      <input
+                        value={createForm.last_name}
+                        onChange={e => setCreateForm({ ...createForm, last_name: e.target.value })}
+                        placeholder="Doe"
+                      />
+                    </div>
+                    <div className="sa-form-field sa-form-field--full">
+                      <label>Email *</label>
+                      <input
+                        type="email"
+                        value={createForm.email}
+                        onChange={e => setCreateForm({ ...createForm, email: e.target.value })}
+                        placeholder="user@company.com"
+                      />
+                    </div>
+                    <div className="sa-form-field">
+                      <label>Temp Password *</label>
+                      <div className="sa-password-row">
+                        <input
+                          value={createForm.password}
+                          onChange={e => setCreateForm({ ...createForm, password: e.target.value })}
+                          placeholder="Min 8 characters"
+                        />
+                        <button className="sa-btn-sm" onClick={generateTempPassword} title="Generate password">🎲</button>
+                      </div>
+                    </div>
+                    <div className="sa-form-field">
+                      <label>Role</label>
+                      <select value={createForm.role} onChange={e => setCreateForm({ ...createForm, role: e.target.value })}>
+                        <option value="owner">Owner</option>
+                        <option value="admin">Admin</option>
+                        <option value="member">Member</option>
+                        <option value="viewer">Viewer</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="sa-form-actions">
+                    <button className="sa-btn-primary" onClick={handleCreateUser} disabled={creatingUser}>
+                      {creatingUser ? 'Creating…' : '✅ Create & Add to Org'}
+                    </button>
+                    <span className="sa-form-hint">User will be prompted to change password on first login</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Invite Form */}
+              {showInvite && (
+                <div className="sa-invite-form">
+                  <div className="sa-form-section-title">Send Invite Link</div>
+                  <div className="sa-add-user-row">
+                    <input
+                      className="sa-input-inline"
+                      placeholder="user@company.com"
+                      value={inviteEmail}
+                      onChange={e => setInviteEmail(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleInvite()}
+                    />
+                    <select className="sa-select-inline" value={inviteRole} onChange={e => setInviteRole(e.target.value)}>
+                      <option value="owner">Owner</option>
+                      <option value="admin">Admin</option>
+                      <option value="member">Member</option>
+                      <option value="viewer">Viewer</option>
+                    </select>
+                    <button className="sa-btn-primary" onClick={handleInvite} disabled={sendingInvite}>
+                      {sendingInvite ? 'Sending…' : '📧 Invite'}
+                    </button>
+                  </div>
+                  {lastInviteUrl && (
+                    <div className="sa-invite-url-box">
+                      <label>Invite Link (share with user):</label>
+                      <div className="sa-invite-url-row">
+                        <code className="sa-invite-url">{lastInviteUrl}</code>
+                        <button className="sa-btn-sm" onClick={() => { navigator.clipboard.writeText(lastInviteUrl); setSuccess('Link copied!'); setTimeout(() => setSuccess(''), 2000); }}>
+                          📋 Copy
+                        </button>
+                      </div>
+                      <span className="sa-form-hint">Expires in 7 days. User will register via this link and auto-join the org.</span>
+                    </div>
+                  )}
+                  {pendingInvites.length > 0 && (
+                    <div className="sa-pending-invites">
+                      <div className="sa-form-section-title" style={{ marginTop: 12 }}>Pending Invites</div>
+                      {pendingInvites.map(inv => (
+                        <div key={inv.id} className="sa-invite-row">
+                          <div className="sa-member-info">
+                            <div className="sa-member-name">{inv.email}</div>
+                            <div className="sa-sub-text">
+                              {inv.role} · Expires {new Date(inv.expires_at).toLocaleDateString()}
+                            </div>
+                          </div>
+                          <button className="sa-btn-sm sa-btn-sm--red" onClick={() => handleCancelInvite(inv.id)} title="Cancel invite">✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {expiredInvites.length > 0 && (
+                    <div className="sa-sub-text" style={{ marginTop: 8, fontStyle: 'italic' }}>
+                      {expiredInvites.length} expired invite{expiredInvites.length !== 1 ? 's' : ''}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Add existing user */}
+              <div className="sa-add-user-row" style={{ marginTop: showCreateUser || showInvite ? 16 : 0 }}>
                 <input
                   className="sa-input-inline"
-                  placeholder="user@email.com"
+                  placeholder="Add existing user by email…"
                   value={addEmail}
                   onChange={e => setAddEmail(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleAddUser()}

@@ -9,6 +9,8 @@
 
 const express = require('express');
 const router  = express.Router();
+const bcrypt  = require('bcryptjs');
+const crypto  = require('crypto');
 const { pool } = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { requireSuperAdmin, auditLog } = require('../middleware/superAdmin.middleware');
@@ -262,7 +264,7 @@ router.post('/orgs/:orgId/users', async (req, res) => {
     const { email, role = 'member' } = req.body;
 
     const userResult = await pool.query(
-      'SELECT id, email, name FROM users WHERE email = $1', [email]
+      'SELECT id, email, first_name, last_name FROM users WHERE email = $1', [email]
     );
     if (userResult.rows.length === 0) {
       return res.status(404).json({ error: { message: 'User not found. They must register first.' } });
@@ -345,6 +347,176 @@ router.delete('/orgs/:orgId/users/:userId', async (req, res) => {
     res.json({ message: 'User removed from org' });
   } catch (err) {
     console.error(`DELETE /super/orgs/${req.params.orgId}/users/${req.params.userId} error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CREATE USER + ADD TO ORG (super admin creates account directly)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.post('/orgs/:orgId/users/create', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const { email, first_name, last_name, password, role = 'member' } = req.body;
+
+    if (!email?.trim()) return res.status(400).json({ error: { message: 'Email is required' } });
+    if (!first_name?.trim()) return res.status(400).json({ error: { message: 'First name is required' } });
+    if (!last_name?.trim()) return res.status(400).json({ error: { message: 'Last name is required' } });
+    if (!password || password.length < 8) return res.status(400).json({ error: { message: 'Password must be at least 8 characters' } });
+
+    // Check if user already exists
+    const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email.trim().toLowerCase()]);
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: { message: 'A user with this email already exists. Use "Add Existing User" instead.' } });
+    }
+
+    // Check seat limit
+    const [countRow, orgRow] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM org_users WHERE org_id = $1 AND is_active = TRUE', [orgId]),
+      pool.query('SELECT max_users FROM organizations WHERE id = $1', [orgId]),
+    ]);
+    if (parseInt(countRow.rows[0].count) >= parseInt(orgRow.rows[0].max_users)) {
+      return res.status(400).json({ error: { message: 'Org has reached its user seat limit' } });
+    }
+
+    // Hash password and create user
+    const password_hash = await bcrypt.hash(password, 12);
+    const userResult = await pool.query(`
+      INSERT INTO users (email, password_hash, first_name, last_name, must_change_password, created_at)
+      VALUES ($1, $2, $3, $4, TRUE, now())
+      RETURNING id, email, first_name, last_name
+    `, [email.trim().toLowerCase(), password_hash, first_name.trim(), last_name.trim()]);
+
+    const user = userResult.rows[0];
+
+    // Add to org
+    await pool.query(`
+      INSERT INTO org_users (org_id, user_id, role, is_active, joined_at)
+      VALUES ($1, $2, $3, TRUE, now())
+    `, [orgId, user.id, role]);
+
+    await auditLog(req, 'create_user_for_org', 'user', user.id, { orgId, role, email });
+    res.status(201).json({ message: 'User created and added to org', user: { ...user, role } });
+  } catch (err) {
+    console.error(`POST /super/orgs/${req.params.orgId}/users/create error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// INVITE FLOW — generate invite link, list pending invites
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Ensure org_invites table exists (idempotent)
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS org_invites (
+        id           SERIAL PRIMARY KEY,
+        org_id       INTEGER NOT NULL REFERENCES organizations(id),
+        email        VARCHAR(255) NOT NULL,
+        role         VARCHAR(50) NOT NULL DEFAULT 'member',
+        token        VARCHAR(64) NOT NULL UNIQUE,
+        invited_by   INTEGER REFERENCES users(id),
+        expires_at   TIMESTAMPTZ NOT NULL,
+        accepted_at  TIMESTAMPTZ,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+  } catch (e) {
+    console.warn('org_invites table creation skipped:', e.message);
+  }
+})();
+
+// Create invite
+router.post('/orgs/:orgId/invites', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const { email, role = 'member' } = req.body;
+
+    if (!email?.trim()) return res.status(400).json({ error: { message: 'Email is required' } });
+
+    // Check if user already in org
+    const existingUser = await pool.query(
+      `SELECT u.id FROM users u JOIN org_users ou ON ou.user_id = u.id
+       WHERE u.email = $1 AND ou.org_id = $2 AND ou.is_active = TRUE`,
+      [email.trim().toLowerCase(), orgId]
+    );
+    if (existingUser.rows.length > 0) {
+      return res.status(409).json({ error: { message: 'This user is already a member of this org' } });
+    }
+
+    // Check for existing pending invite
+    const existingInvite = await pool.query(
+      `SELECT id FROM org_invites WHERE email = $1 AND org_id = $2 AND accepted_at IS NULL AND expires_at > now()`,
+      [email.trim().toLowerCase(), orgId]
+    );
+    if (existingInvite.rows.length > 0) {
+      return res.status(409).json({ error: { message: 'An active invite already exists for this email' } });
+    }
+
+    // Check seat limit
+    const [countRow, orgRow] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM org_users WHERE org_id = $1 AND is_active = TRUE', [orgId]),
+      pool.query('SELECT max_users, name FROM organizations WHERE id = $1', [orgId]),
+    ]);
+    if (parseInt(countRow.rows[0].count) >= parseInt(orgRow.rows[0].max_users)) {
+      return res.status(400).json({ error: { message: 'Org has reached its user seat limit' } });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expires_at = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+    const result = await pool.query(`
+      INSERT INTO org_invites (org_id, email, role, token, invited_by, expires_at)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING *
+    `, [orgId, email.trim().toLowerCase(), role, token, req.userId, expires_at]);
+
+    // Build invite URL (frontend registration page with token)
+    const appUrl = process.env.APP_URL || process.env.REACT_APP_URL || 'http://localhost:3000';
+    const inviteUrl = `${appUrl}/register?invite=${token}`;
+
+    // TODO: Send email with inviteUrl when email service is configured
+    // e.g. await sendEmail({ to: email, subject: `You're invited to ${orgRow.rows[0].name}`, body: `...${inviteUrl}...` });
+    console.log(`📧 Invite created for ${email} → ${inviteUrl}`);
+
+    await auditLog(req, 'invite_user_to_org', 'org', parseInt(orgId), { email, role });
+    res.status(201).json({
+      invite: result.rows[0],
+      inviteUrl,
+      message: 'Invite created. Share the invite URL with the user.',
+    });
+  } catch (err) {
+    console.error(`POST /super/orgs/${req.params.orgId}/invites error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// List pending invites for an org
+router.get('/orgs/:orgId/invites', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const result = await pool.query(`
+      SELECT oi.*, u.email AS invited_by_email
+      FROM   org_invites oi
+      LEFT JOIN users u ON u.id = oi.invited_by
+      WHERE  oi.org_id = $1
+      ORDER  BY oi.created_at DESC
+    `, [orgId]);
+    res.json({ invites: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// Revoke/cancel an invite
+router.delete('/orgs/:orgId/invites/:inviteId', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM org_invites WHERE id = $1 AND org_id = $2', [req.params.inviteId, req.params.orgId]);
+    res.json({ message: 'Invite cancelled' });
+  } catch (err) {
     res.status(500).json({ error: { message: err.message } });
   }
 });

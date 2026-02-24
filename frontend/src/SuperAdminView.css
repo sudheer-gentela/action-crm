@@ -369,3 +369,112 @@
 
 /* ── Loading ──────────────────────────────────────────────────── */
 .sa-loading { padding: 48px; text-align: center; color: #718096; font-size: 15px; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Create User + Invite flow additions
+   ═══════════════════════════════════════════════════════════════ */
+
+.sa-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sa-section-header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.sa-create-user-form,
+.sa-invite-form {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 12px;
+  animation: sa-slideDown 0.15s ease;
+}
+
+@keyframes sa-slideDown {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.sa-form-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-bottom: 12px;
+}
+
+.sa-password-row {
+  display: flex;
+  gap: 6px;
+}
+.sa-password-row input { flex: 1; }
+
+.sa-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.sa-form-hint {
+  font-size: 11px;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+/* Invite URL box */
+.sa-invite-url-box {
+  margin-top: 12px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.sa-invite-url-box label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.sa-invite-url-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.sa-invite-url {
+  flex: 1;
+  font-size: 11px;
+  padding: 6px 10px;
+  background: #f1f5f9;
+  border-radius: 6px;
+  word-break: break-all;
+  color: #334155;
+  font-family: monospace;
+  line-height: 1.4;
+}
+
+/* Pending invites */
+.sa-invite-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #f1f5f9;
+  border-radius: 6px;
+  margin-top: 6px;
+}
