@@ -125,7 +125,15 @@ router.get('/orgs/:orgId', async (req, res) => {
   try {
     const { orgId } = req.params;
 
-    const [org, members, integrations] = await Promise.all([
+    // org_integrations may not exist yet — query gracefully
+    let integrations = { rows: [] };
+    try {
+      integrations = await pool.query(`
+        SELECT * FROM org_integrations WHERE org_id = $1
+      `, [orgId]);
+    } catch (_) { /* table may not exist yet */ }
+
+    const [org, members] = await Promise.all([
       pool.query(`
         SELECT o.*, u.email AS suspended_by_email
         FROM   organizations o
@@ -140,12 +148,6 @@ router.get('/orgs/:orgId', async (req, res) => {
         JOIN   users u ON u.id = ou.user_id
         WHERE  ou.org_id = $1
         ORDER  BY ou.role, u.first_name
-      `, [orgId]),
-
-      pool.query(`
-        SELECT provider, is_active, created_at
-        FROM   org_integrations
-        WHERE  org_id = $1
       `, [orgId]),
     ]);
 
