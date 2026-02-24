@@ -210,10 +210,6 @@ export default function AgentInboxView() {
     );
   }
 
-  // ── Detail panel ───────────────────────────────────────────
-
-  const detailProposal = proposals.find(p => p.id === detailId);
-
   return (
     <div className="ai-inbox-view">
       {/* Header */}
