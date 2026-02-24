@@ -12,6 +12,7 @@ import SuperAdminView from './SuperAdminView';
 import OrgAdminView from './OrgAdminView';
 import ActionContextPanel from './ActionContextPanel';
 import AgentInboxView from './AgentInboxView';
+import Sidebar from './Sidebar';
 
 // ─────────────────────────────────────────────────────────────
 // ROLE DEFINITIONS
@@ -42,15 +43,16 @@ const ROLE_CONFIG = {
 // Nav items per role — each role only sees its own set
 const NAV_ITEMS_BY_ROLE = {
   member: [
-    { id: 'actions',  label: 'Actions',  icon: '🎯' },
-    { id: 'deals',    label: 'Deals',    icon: '💼' },
-    { id: 'accounts', label: 'Accounts', icon: '🏢' },
-    { id: 'contacts', label: 'Contacts', icon: '👥' },
-    { id: 'email',    label: 'Email',    icon: '✉️' },
-    { id: 'files',    label: 'Files',    icon: '☁️' },
-    { id: 'calendar', label: 'Calendar', icon: '📅' },
-    { id: 'settings', label: 'Settings', icon: '⚙️' },
-    { id: 'agent',    label: 'Agent',    icon: '🤖' },
+    { id: 'deals',     label: 'Deals',     icon: '💼' },
+    { id: 'accounts',  label: 'Accounts',  icon: '🏢' },
+    { id: 'contacts',  label: 'Contacts',  icon: '👥' },
+    { id: 'actions',   label: 'Actions',   icon: '⚡' },
+    { id: 'email',     label: 'Email',     icon: '✉️' },
+    { id: 'calendar',  label: 'Calendar',  icon: '📅' },
+    { id: 'files',     label: 'Files',     icon: '📁' },
+    { id: 'agent',     label: 'Agents',    icon: '🤖' },
+    { id: 'playbooks', label: 'Playbooks', icon: '📋' },
+    { id: 'settings',  label: 'Settings',  icon: '⚙️' },
   ],
   'org-admin': [
     { id: 'org-admin', label: 'Org Admin', icon: '🔑' },
@@ -275,74 +277,8 @@ function AuthScreen({ onLogin, onRegister }) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// RoleSwitcher — collapsible sidebar footer component
-//
-// Default state: CLOSED — shows only the current role as a
-// compact single-line chip with a chevron toggle.
-// When opened: expands downward to reveal all role pills.
-// Collapsed sidebar: shows current role icon only (no toggle).
+// RoleSwitcher — now handled inside Sidebar.js (UserCard popover)
 // ─────────────────────────────────────────────────────────────
-function RoleSwitcher({ availableRoles, activeRole, onSwitch, collapsed }) {
-  const [open, setOpen] = useState(false);
-
-  // Only render if the user has more than one role
-  if (availableRoles.length <= 1) return null;
-
-  const current = ROLE_CONFIG[activeRole];
-
-  // Collapsed sidebar — icon only, no toggle needed
-  if (collapsed) {
-    return (
-      <div className="role-switcher-collapsed" title={`Active: ${current.label} — expand sidebar to switch role`}>
-        <span className="role-switcher-icon" style={{ color: current.color }}>
-          {current.icon}
-        </span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="role-switcher">
-      {/* Toggle row — always visible, shows current role */}
-      <button
-        className="role-switcher-toggle"
-        onClick={() => setOpen(o => !o)}
-        title={open ? 'Hide role switcher' : 'Switch context'}
-      >
-        <span className="role-switcher-toggle-icon" style={{ color: current.color }}>
-          {current.icon}
-        </span>
-        <span className="role-switcher-toggle-label" style={{ color: current.color }}>
-          {current.label}
-        </span>
-        <span className={`role-switcher-chevron ${open ? 'open' : ''}`}>›</span>
-      </button>
-
-      {/* Expandable pill list */}
-      {open && (
-        <div className="role-switcher-pills">
-          {availableRoles.map(role => {
-            const cfg      = ROLE_CONFIG[role];
-            const isActive = role === activeRole;
-            return (
-              <button
-                key={role}
-                className={`role-pill ${isActive ? 'role-pill--active' : ''}`}
-                style={isActive ? { borderColor: cfg.color, color: cfg.color, background: `${cfg.color}18` } : {}}
-                onClick={() => { onSwitch(role); setOpen(false); }}
-                title={cfg.desc}
-              >
-                <span className="role-pill-icon">{cfg.icon}</span>
-                <span className="role-pill-label">{cfg.label}</span>
-                {isActive && <span className="role-pill-dot" style={{ background: cfg.color }} />}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────────────
 // Dashboard
@@ -476,66 +412,23 @@ function Dashboard({ user, onLogout }) {
   const allNavItems = Object.values(NAV_ITEMS_BY_ROLE).flat();
   const currentNavItem = allNavItems.find(item => item.id === currentTab);
 
-  // ── Active role config for sidebar accent ─────────────────
-  const activeRoleCfg = ROLE_CONFIG[activeRole];
-
   return (
     <div className="dashboard">
-      <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''} ${sidebarOpen ? 'open' : ''}`}
-             style={{ '--role-color': activeRoleCfg.color }}>
-        <div className="sidebar-header">
-          <div className="logo">
-            <span className="logo-icon">⚡</span>
-            {!sidebarCollapsed && <span className="logo-text">Action CRM</span>}
-          </div>
-          <button className="sidebar-toggle" onClick={toggleSidebar}
-                  title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
-            {isMobile ? '✕' : (sidebarCollapsed ? '→' : '←')}
-          </button>
-        </div>
-
-        <nav className="sidebar-nav">
-          {navItems.map(item => (
-            <button
-              key={item.id}
-              className={`nav-item ${currentTab === item.id ? 'active' : ''}`}
-              onClick={() => handleNavClick(item.id)}
-              title={sidebarCollapsed ? item.label : ''}
-            >
-              <span className="nav-icon">{item.icon}</span>
-              {!sidebarCollapsed && <span className="nav-text">{item.label}</span>}
-            </button>
-          ))}
-        </nav>
-
-        <div className="sidebar-footer">
-          {/* Role switcher sits above user info */}
-          <RoleSwitcher
-            availableRoles={availableRoles}
-            activeRole={activeRole}
-            onSwitch={handleRoleSwitch}
-            collapsed={sidebarCollapsed}
-          />
-
-          <div className="user-info">
-            <span className="user-icon">👤</span>
-            {!sidebarCollapsed && (
-              <div className="user-details">
-                <span className="user-email">{user.email}</span>
-                <span className="user-name">{user.firstName} {user.lastName}</span>
-              </div>
-            )}
-          </div>
-          <button className="logout-btn" onClick={onLogout} title="Logout">
-            <span className="logout-icon">🚪</span>
-            {!sidebarCollapsed && <span className="logout-text">Logout</span>}
-          </button>
-        </div>
-      </aside>
-
-      {isMobile && sidebarOpen && (
-        <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />
-      )}
+      <Sidebar
+        user={user}
+        navItems={navItems}
+        currentTab={currentTab}
+        onNavClick={handleNavClick}
+        activeRole={activeRole}
+        availableRoles={availableRoles}
+        onRoleSwitch={handleRoleSwitch}
+        onLogout={onLogout}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={toggleSidebar}
+        isMobile={isMobile}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+      />
 
       {/* Floating Action Context Panel — persists across tab navigation */}
       {activeContextAction && (
@@ -595,6 +488,13 @@ function Dashboard({ user, onLogout }) {
           )}
           {currentTab === 'settings'     && <SettingsView />}
           {currentTab === 'agent'        && <AgentInboxView />}
+          {currentTab === 'playbooks'    && (
+            <div style={{ padding: '40px 24px', textAlign: 'center', color: '#64748b' }}>
+              <div style={{ fontSize: '48px', marginBottom: '16px' }}>📋</div>
+              <h2 style={{ marginBottom: '8px', color: '#0f172a' }}>Playbooks</h2>
+              <p>Sales playbooks and stage guidance will appear here.</p>
+            </div>
+          )}
           {/* Org admin view — only when activeRole is org-admin */}
           {currentTab === 'org-admin'    && activeRole === 'org-admin'   && <OrgAdminView />}
           {/* Super admin view — only when activeRole is super-admin */}
