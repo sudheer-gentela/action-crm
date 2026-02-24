@@ -55,6 +55,14 @@ function getConfidenceLevel(confidence) {
   return CONFIDENCE_THRESHOLDS.low;
 }
 
+function getPriorityLevel(score) {
+  if (score == null) return { label: '—', color: '#9ca3af', bg: '#f3f4f6' };
+  if (score >= 70)   return { label: 'Urgent',  color: '#dc2626', bg: '#fee2e2' };
+  if (score >= 50)   return { label: 'High',    color: '#d97706', bg: '#fef3c7' };
+  if (score >= 30)   return { label: 'Medium',  color: '#2563eb', bg: '#dbeafe' };
+  return                     { label: 'Low',     color: '#6b7280', bg: '#f3f4f6' };
+}
+
 function timeAgo(iso) {
   if (!iso) return '';
   const diff = Date.now() - new Date(iso).getTime();
@@ -292,6 +300,7 @@ export default function AgentInboxView() {
           {proposals.map(p => {
             const typeCfg    = PROPOSAL_TYPE_CONFIG[p.proposalType] || { icon: '❓', label: p.proposalType, color: '#6b7280' };
             const confLevel  = getConfidenceLevel(p.confidence);
+            const prioLevel  = getPriorityLevel(p.priorityScore);
             const statusCfg  = STATUS_CONFIG[p.status] || STATUS_CONFIG.pending;
             const isSelected = selected.has(p.id);
             const isDetail   = detailId === p.id;
@@ -326,6 +335,14 @@ export default function AgentInboxView() {
                       <div className="ai-inbox-card-reasoning">{p.reasoning.substring(0, 120)}{p.reasoning.length > 120 ? '…' : ''}</div>
                     )}
                   </div>
+
+                  {/* Priority badge */}
+                  {p.priorityScore != null && (
+                    <div className="ai-inbox-card-priority" style={{ background: prioLevel.bg, color: prioLevel.color, padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}
+                         title={`Priority score: ${p.priorityScore}/100`}>
+                      {prioLevel.label}
+                    </div>
+                  )}
 
                   {/* Confidence badge */}
                   {p.confidence != null && (
@@ -474,6 +491,14 @@ function ProposalDetail({ proposal, onApprove, onReject, onClose, onRefresh }) {
         <div className="ai-detail-meta-row">
           <span className="ai-detail-meta-label">Confidence</span>
           <span className="ai-detail-meta-value">{p.confidence != null ? `${Math.round(p.confidence * 100)}%` : '—'}</span>
+        </div>
+        <div className="ai-detail-meta-row">
+          <span className="ai-detail-meta-label">Priority</span>
+          <span className="ai-detail-meta-value">
+            {p.priorityScore != null
+              ? (() => { const pl = getPriorityLevel(p.priorityScore); return <span style={{ color: pl.color, fontWeight: 600 }}>{pl.label} ({p.priorityScore}/100)</span>; })()
+              : '—'}
+          </span>
         </div>
         <div className="ai-detail-meta-row">
           <span className="ai-detail-meta-label">Created</span>

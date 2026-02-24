@@ -1582,6 +1582,8 @@ function OADealStages() {
 function OAAgentSettings() {
   const [enabled, setEnabled]               = useState(false);
   const [autoExpireDays, setAutoExpireDays] = useState(7);
+  const [maxPerDeal, setMaxPerDeal]         = useState(10);
+  const [minConfidence, setMinConfidence]   = useState(0.40);
   const [loading, setLoading]               = useState(true);
   const [saving, setSaving]                 = useState(false);
   const [error, setError]                   = useState('');
@@ -1601,6 +1603,11 @@ function OAAgentSettings() {
       try {
         const statusRes = await apiService.agent.getStatus();
         setEnabled(statusRes.data?.enabled || false);
+        if (statusRes.data?.settings) {
+          setMaxPerDeal(statusRes.data.settings.max_proposals_per_deal || 10);
+          setMinConfidence(statusRes.data.settings.min_confidence ?? 0.40);
+          setAutoExpireDays(statusRes.data.settings.auto_expire_days || 7);
+        }
 
         const statsRes = await apiService.agent.admin.getStats(period);
         setStats(statsRes.data?.stats || null);
@@ -1681,7 +1688,7 @@ function OAAgentSettings() {
         </div>
 
         {/* Auto-expire */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 20px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 20px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 12 }}>
           <label style={{ fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap' }}>Auto-expire pending proposals after:</label>
           <select value={autoExpireDays} onChange={e => setAutoExpireDays(parseInt(e.target.value))}
             style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}>
@@ -1695,6 +1702,54 @@ function OAAgentSettings() {
             style={{ padding: '6px 14px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, cursor: 'pointer' }}>
             Save
           </button>
+        </div>
+
+        {/* Max proposals per deal per day */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 20px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 12 }}>
+          <label style={{ fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap' }}>Max proposals per deal/day:</label>
+          <select value={maxPerDeal} onChange={e => setMaxPerDeal(parseInt(e.target.value))}
+            style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}>
+            <option value={3}>3 (conservative)</option>
+            <option value={5}>5</option>
+            <option value={10}>10 (default)</option>
+            <option value={15}>15</option>
+            <option value={25}>25</option>
+            <option value={50}>50 (max)</option>
+          </select>
+          <button onClick={async () => {
+            setSaving(true);
+            try { await apiService.agent.admin.updateSettings({ agentic_max_proposals_per_deal: maxPerDeal }); flash('success', 'Daily cap saved ✓'); }
+            catch (e) { flash('error', e.message); }
+            finally { setSaving(false); }
+          }} disabled={saving}
+            style={{ padding: '6px 14px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, cursor: 'pointer' }}>
+            Save
+          </button>
+          <span style={{ fontSize: 11, color: '#9ca3af' }}>Lower = less noise, higher = more proposals to review</span>
+        </div>
+
+        {/* Confidence floor */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 20px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, marginBottom: 16 }}>
+          <label style={{ fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap' }}>Min. confidence threshold:</label>
+          <select value={minConfidence} onChange={e => setMinConfidence(parseFloat(e.target.value))}
+            style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}>
+            <option value={0}>0% (show all)</option>
+            <option value={0.25}>25%</option>
+            <option value={0.40}>40% (default)</option>
+            <option value={0.50}>50%</option>
+            <option value={0.60}>60%</option>
+            <option value={0.75}>75% (high only)</option>
+          </select>
+          <button onClick={async () => {
+            setSaving(true);
+            try { await apiService.agent.admin.updateSettings({ agentic_min_confidence: minConfidence }); flash('success', 'Confidence threshold saved ✓'); }
+            catch (e) { flash('error', e.message); }
+            finally { setSaving(false); }
+          }} disabled={saving}
+            style={{ padding: '6px 14px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, cursor: 'pointer' }}>
+            Save
+          </button>
+          <span style={{ fontSize: 11, color: '#9ca3af' }}>Proposals below this confidence are discarded automatically</span>
         </div>
 
         {/* Proposal Stats */}

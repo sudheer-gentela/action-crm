@@ -21,8 +21,58 @@ const VALID_STATUSES = [
   'pending', 'approved', 'executing', 'executed', 'rejected', 'failed', 'expired',
 ];
 
-// Max proposals per deal per day — prevents runaway generation
-const MAX_PROPOSALS_PER_DEAL_PER_DAY = 50;
+// ── Defaults (overridable via org settings) ─────────────────────────────────
+const DEFAULT_MAX_PROPOSALS_PER_DEAL_PER_DAY = 10;
+const DEFAULT_MIN_CONFIDENCE = 0.40;
+
+// ── Composite priority scoring ──────────────────────────────────────────────
+// Weights for each signal that contributes to the priority score (0–100).
+
+const TYPE_WEIGHTS = {
+  flag_risk:         25,  // Risk flags are most urgent
+  update_deal_stage: 20,  // Stage progression matters
+  draft_email:       15,
+  schedule_meeting:  15,
+  create_contact:    10,
+  update_contact:     8,
+  link_contact_deal:  7,
+};
+
+function computePriorityScore(proposal, dealValue = 0) {
+  let score = 0;
+
+  // 1. Confidence (0–30 pts)
+  const conf = parseFloat(proposal.confidence) || 0;
+  score += conf * 30;
+
+  // 2. Proposal type weight (0–25 pts)
+  score += TYPE_WEIGHTS[proposal.proposal_type] || 5;
+
+  // 3. Deal value signal (0–20 pts) — log scale so $1M isn't 10x $100k
+  const dv = parseFloat(dealValue) || 0;
+  if (dv > 0) {
+    score += Math.min(20, Math.log10(dv + 1) * 4);
+  }
+
+  // 4. Urgency — expires soon (0–15 pts)
+  if (proposal.expires_at) {
+    const hoursLeft = (new Date(proposal.expires_at) - Date.now()) / 3600000;
+    if (hoursLeft < 24)      score += 15;
+    else if (hoursLeft < 72) score += 10;
+    else if (hoursLeft < 168) score += 5;
+  }
+
+  // 5. Freshness bonus — newer proposals get a small bump (0–10 pts)
+  if (proposal.created_at) {
+    const hoursOld = (Date.now() - new Date(proposal.created_at)) / 3600000;
+    if (hoursOld < 1)       score += 10;
+    else if (hoursOld < 6)  score += 7;
+    else if (hoursOld < 24) score += 4;
+    else if (hoursOld < 72) score += 2;
+  }
+
+  return Math.round(Math.min(100, Math.max(0, score)));
+}
 
 class AgentProposalService {
 
@@ -30,7 +80,7 @@ class AgentProposalService {
 
   /**
    * Check if agentic framework is enabled for the org + user.
-   * Returns { enabled, reason } — reason explains why it's disabled.
+   * Returns { enabled, reason, settings } — settings includes configurable thresholds.
    */
   static async isEnabled(orgId, userId) {
     try {
@@ -57,7 +107,15 @@ class AgentProposalService {
         return { enabled: false, reason: 'user_disabled' };
       }
 
-      return { enabled: true, reason: null };
+      return {
+        enabled: true,
+        reason: null,
+        settings: {
+          max_proposals_per_deal: settings.agentic_max_proposals_per_deal || DEFAULT_MAX_PROPOSALS_PER_DEAL_PER_DAY,
+          min_confidence:         settings.agentic_min_confidence ?? DEFAULT_MIN_CONFIDENCE,
+          auto_expire_days:       settings.agentic_auto_expire_days || 7,
+        },
+      };
     } catch (err) {
       console.error('AgentProposalService.isEnabled error:', err.message);
       return { enabled: false, reason: 'error' };
@@ -98,21 +156,31 @@ class AgentProposalService {
       return { success: false, error: `Invalid proposal_type: ${proposalType}` };
     }
 
-    // Gate check
+    // Gate check (also returns org settings)
     const gate = await this.isEnabled(orgId, userId);
     if (!gate.enabled) {
       return { success: false, error: `Agentic framework disabled: ${gate.reason}` };
     }
 
-    // Rate limit per deal per day
+    const orgSettings = gate.settings || {};
+
+    // Confidence floor — reject proposals below the configured threshold
+    const minConf = orgSettings.min_confidence ?? DEFAULT_MIN_CONFIDENCE;
+    if (confidence != null && confidence < minConf) {
+      console.log(`🤖 Agent: skipping low-confidence proposal (${confidence} < ${minConf}) — ${proposalType} for deal ${dealId || 'N/A'}`);
+      return { success: false, error: `Confidence ${confidence} below threshold ${minConf}` };
+    }
+
+    // Rate limit per deal per day (configurable)
+    const maxPerDeal = orgSettings.max_proposals_per_deal || DEFAULT_MAX_PROPOSALS_PER_DEAL_PER_DAY;
     if (dealId) {
       const countRes = await db.query(
         `SELECT COUNT(*) AS cnt FROM agent_proposals
          WHERE deal_id = $1 AND org_id = $2 AND created_at >= NOW() - INTERVAL '1 day'`,
         [dealId, orgId]
       );
-      if (parseInt(countRes.rows[0].cnt) >= MAX_PROPOSALS_PER_DEAL_PER_DAY) {
-        return { success: false, error: 'Rate limit: too many proposals for this deal today' };
+      if (parseInt(countRes.rows[0].cnt) >= maxPerDeal) {
+        return { success: false, error: `Rate limit: ${maxPerDeal} proposals/deal/day reached` };
       }
     }
 
@@ -284,7 +352,7 @@ class AgentProposalService {
     let query = `
       SELECT ap.*,
              d.name AS deal_name, d.value AS deal_value, d.stage AS deal_stage,
-             d.health AS deal_health,
+             d.health AS deal_health, d.close_date AS deal_close_date,
              c.first_name AS contact_first_name, c.last_name AS contact_last_name,
              c.email AS contact_email,
              acc.name AS account_name
@@ -313,15 +381,32 @@ class AgentProposalService {
       query += ` AND ap.deal_id = $${params.length}`;
     }
 
-    query += ` ORDER BY ap.confidence DESC NULLS LAST, ap.created_at DESC`;
+    // Fetch all, then compute priority in-memory and sort
+    query += ` ORDER BY ap.created_at DESC`;
 
     if (filters.limit) {
-      params.push(parseInt(filters.limit));
+      // Fetch extra so we can re-sort by priority before limiting
+      params.push(parseInt(filters.limit) * 3);
       query += ` LIMIT $${params.length}`;
     }
 
     const result = await db.query(query, params);
-    return result.rows;
+
+    // Attach computed priority_score to each row
+    const rows = result.rows.map(row => ({
+      ...row,
+      priority_score: computePriorityScore(row, row.deal_value),
+    }));
+
+    // Sort by priority_score descending
+    rows.sort((a, b) => b.priority_score - a.priority_score);
+
+    // Apply actual limit after re-sort
+    if (filters.limit) {
+      return rows.slice(0, parseInt(filters.limit));
+    }
+
+    return rows;
   }
 
   static async getById(proposalId, orgId) {

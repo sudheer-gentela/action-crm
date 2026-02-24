@@ -64,6 +64,7 @@ function mapProposalRow(row) {
       name: row.account_name,
     } : null,
     actionId: row.action_id,
+    priorityScore: row.priority_score || null,
   };
 }
 
@@ -210,7 +211,11 @@ router.post('/proposals/bulk-reject', async (req, res) => {
 router.get('/status', async (req, res) => {
   try {
     const gate = await AgentProposalService.isEnabled(req.orgId, req.user.userId);
-    res.json(gate);
+    res.json({
+      enabled:  gate.enabled,
+      reason:   gate.reason,
+      settings: gate.settings || null,
+    });
   } catch (err) {
     res.status(500).json({ error: { message: 'Failed to check status' } });
   }
@@ -235,7 +240,12 @@ router.get('/deals/:dealId/proposals', async (req, res) => {
 // ── PATCH /admin/settings — toggle agentic framework ─────────
 router.patch('/admin/settings', requireRole('admin', 'owner'), async (req, res) => {
   try {
-    const { agentic_framework_enabled, agentic_auto_expire_days } = req.body;
+    const {
+      agentic_framework_enabled,
+      agentic_auto_expire_days,
+      agentic_max_proposals_per_deal,
+      agentic_min_confidence,
+    } = req.body;
     const db2 = require('../config/database');
 
     // Build settings patch
@@ -245,6 +255,12 @@ router.patch('/admin/settings', requireRole('admin', 'owner'), async (req, res) 
     }
     if (agentic_auto_expire_days !== undefined) {
       patch.agentic_auto_expire_days = parseInt(agentic_auto_expire_days) || 7;
+    }
+    if (agentic_max_proposals_per_deal !== undefined) {
+      patch.agentic_max_proposals_per_deal = Math.max(1, Math.min(50, parseInt(agentic_max_proposals_per_deal) || 10));
+    }
+    if (agentic_min_confidence !== undefined) {
+      patch.agentic_min_confidence = Math.max(0, Math.min(1, parseFloat(agentic_min_confidence) || 0.40));
     }
 
     const result = await db2.query(
