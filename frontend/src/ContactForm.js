@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { apiService } from './apiService';
 import './ContactForm.css';
 
-function ContactForm({ contact, accounts, onSubmit, onClose }) {
+function ContactForm({ contact, accounts: initialAccounts, onSubmit, onClose }) {
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
@@ -18,6 +19,15 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
 
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Local accounts list — updated when a new account is created inline
+  const [accounts, setAccounts] = useState(initialAccounts || []);
+
+  // Inline new-account state
+  const [showNewAccount, setShowNewAccount] = useState(false);
+  const [newAccount, setNewAccount] = useState({ name: '', domain: '', industry: '' });
+  const [creatingAccount, setCreatingAccount] = useState(false);
+  const [accountError, setAccountError] = useState('');
 
   // Populate form if editing
   useEffect(() => {
@@ -38,6 +48,11 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
     }
   }, [contact]);
 
+  // Keep accounts in sync if parent re-renders with new list
+  useEffect(() => {
+    if (initialAccounts) setAccounts(initialAccounts);
+  }, [initialAccounts]);
+
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({
@@ -49,6 +64,38 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
         ...prev,
         [name]: null
       }));
+    }
+  };
+
+  // ── Inline account creation ────────────────────────────────
+  const handleCreateAccount = async () => {
+    if (!newAccount.name.trim()) {
+      setAccountError('Account name is required');
+      return;
+    }
+    setCreatingAccount(true);
+    setAccountError('');
+    try {
+      const response = await apiService.accounts.create({
+        name: newAccount.name.trim(),
+        domain: newAccount.domain.trim() || null,
+        industry: newAccount.industry.trim() || null,
+      });
+      const created = response.data.account || response.data;
+      // Add to local list and auto-select it
+      setAccounts(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+      setFormData(prev => ({ ...prev, accountId: created.id }));
+      setShowNewAccount(false);
+      setNewAccount({ name: '', domain: '', industry: '' });
+      // Clear accountId validation error if it existed
+      if (errors.accountId) {
+        setErrors(prev => ({ ...prev, accountId: null }));
+      }
+    } catch (err) {
+      const msg = err.response?.data?.error?.message || err.message || 'Failed to create account';
+      setAccountError(msg);
+    } finally {
+      setCreatingAccount(false);
     }
   };
 
@@ -68,10 +115,6 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
     } else if (!formData.email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
       newErrors.email = 'Please enter a valid email address';
     }
-
-//    if (formData.phone && !formData.phone.match(/^[\d\s\-\+\(\)]+$/)) {
-//      newErrors.phone = 'Please enter a valid phone number';
-//    }
 
     if (!formData.accountId) {
       newErrors.accountId = 'Please select an account';
@@ -192,21 +235,91 @@ function ContactForm({ contact, accounts, onSubmit, onClose }) {
               <label htmlFor="accountId">
                 Account <span className="required">*</span>
               </label>
-              <select
-                id="accountId"
-                name="accountId"
-                value={formData.accountId}
-                onChange={handleChange}
-                className={errors.accountId ? 'error' : ''}
-              >
-                <option value="">Select account...</option>
-                {accounts.map(account => (
-                  <option key={account.id} value={account.id}>
-                    {account.name}
-                  </option>
-                ))}
-              </select>
-              {errors.accountId && <span className="error-message">{errors.accountId}</span>}
+              {!showNewAccount ? (
+                <>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <select
+                      id="accountId"
+                      name="accountId"
+                      value={formData.accountId}
+                      onChange={handleChange}
+                      className={errors.accountId ? 'error' : ''}
+                      style={{ flex: 1 }}
+                    >
+                      <option value="">Select account...</option>
+                      {accounts.map(account => (
+                        <option key={account.id} value={account.id}>
+                          {account.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => setShowNewAccount(true)}
+                      style={{
+                        padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6,
+                        background: '#f9fafb', cursor: 'pointer', fontSize: 14, color: '#4f46e5',
+                        whiteSpace: 'nowrap', fontWeight: 600,
+                      }}
+                      title="Create a new account"
+                    >
+                      + New
+                    </button>
+                  </div>
+                  {errors.accountId && <span className="error-message">{errors.accountId}</span>}
+                </>
+              ) : (
+                <div style={{ border: '1px solid #c7d2fe', borderRadius: 8, padding: 12, background: '#eef2ff' }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#4338ca', marginBottom: 8 }}>New Account</div>
+                  <input
+                    type="text"
+                    placeholder="Account name *"
+                    value={newAccount.name}
+                    onChange={e => setNewAccount(prev => ({ ...prev, name: e.target.value }))}
+                    style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, marginBottom: 6, fontSize: 13, boxSizing: 'border-box' }}
+                  />
+                  <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                    <input
+                      type="text"
+                      placeholder="Domain (optional)"
+                      value={newAccount.domain}
+                      onChange={e => setNewAccount(prev => ({ ...prev, domain: e.target.value }))}
+                      style={{ flex: 1, padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Industry (optional)"
+                      value={newAccount.industry}
+                      onChange={e => setNewAccount(prev => ({ ...prev, industry: e.target.value }))}
+                      style={{ flex: 1, padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+                    />
+                  </div>
+                  {accountError && <div style={{ color: '#dc2626', fontSize: 12, marginBottom: 6 }}>{accountError}</div>}
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      type="button"
+                      onClick={handleCreateAccount}
+                      disabled={creatingAccount}
+                      style={{
+                        padding: '6px 14px', background: '#4f46e5', color: '#fff',
+                        border: 'none', borderRadius: 6, fontSize: 12, cursor: 'pointer', fontWeight: 600,
+                      }}
+                    >
+                      {creatingAccount ? 'Creating…' : 'Create Account'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowNewAccount(false); setAccountError(''); setNewAccount({ name: '', domain: '', industry: '' }); }}
+                      style={{
+                        padding: '6px 14px', background: '#f3f4f6', color: '#374151',
+                        border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
