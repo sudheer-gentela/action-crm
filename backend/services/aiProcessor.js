@@ -23,6 +23,9 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
 });
 
+const AgentObserver       = require('./AgentObserver');
+const TokenTrackingService = require('./TokenTrackingService');
+
 class AIProcessor {
 
   /**
@@ -116,6 +119,10 @@ Important:
       const prompt          = this.renderTemplate(promptTemplate, { email, context, playbook });
       const actions         = await this.callClaude(prompt);
       const saved           = await this.saveActions(actions, userId, orgId, email, context);
+
+      // ── Agentic Framework: notify observer (non-blocking) ──
+      AgentObserver.onEmailReceived(emailId, { actions, contacts_mentioned: [] }, orgId, userId, email?.deal_id || null)
+        .catch(err => console.error('AgentObserver email hook error:', err.message));
 
       return { success: true, actions: saved };
 
@@ -297,6 +304,16 @@ Important:
       max_tokens: AI_PROMPTS.system_instructions.max_tokens,
       messages:   [{ role: 'user', content: prompt }]
     });
+
+    // ── Token tracking (non-blocking) ────────────────────────
+    if (message.usage) {
+      TokenTrackingService.log({
+        orgId: null, userId: null, // callClaude is stateless; caller tracks context
+        callType: 'email_analysis',
+        model: AI_PROMPTS.system_instructions.model,
+        usage: { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens },
+      }).catch(() => {});
+    }
 
     const response = message.content[0].text;
     let cleaned = response.trim()

@@ -207,6 +207,36 @@ export const apiService = {
     reset:      (key) => api.delete(`/prompts/${key}`),
   },
 
+  // ── Agentic Framework ─────────────────────────────────────────
+  agent: {
+    getProposals:     (params = {}) => {
+      const q = new URLSearchParams();
+      if (params.status)       q.set('status', params.status);
+      if (params.proposalType) q.set('proposalType', params.proposalType);
+      if (params.dealId)       q.set('dealId', params.dealId);
+      if (params.limit)        q.set('limit', params.limit);
+      const qs = q.toString();
+      return api.get(`/agent/proposals${qs ? '?' + qs : ''}`);
+    },
+    getCount:         ()              => api.get('/agent/proposals/count'),
+    getById:          (id)            => api.get(`/agent/proposals/${id}`),
+    approve:          (id, body = {}) => api.post(`/agent/proposals/${id}/approve`, body),
+    reject:           (id, body = {}) => api.post(`/agent/proposals/${id}/reject`, body),
+    editPayload:      (id, payload)   => api.patch(`/agent/proposals/${id}/payload`, { payload }),
+    bulkApprove:      (ids)           => api.post('/agent/proposals/bulk-approve', { proposalIds: ids }),
+    bulkReject:       (ids, reason)   => api.post('/agent/proposals/bulk-reject', { proposalIds: ids, reason }),
+    getStatus:        ()              => api.get('/agent/status'),
+    getDealProposals: (dealId)        => api.get(`/agent/deals/${dealId}/proposals`),
+    getTokenUsage:    (days = 30)     => api.get(`/agent/token-usage?days=${days}`),
+    admin: {
+      updateSettings: (settings)      => api.patch('/agent/admin/settings', settings),
+      getStats:       (days = 30)     => api.get(`/agent/admin/stats?days=${days}`),
+      getTokenUsage:  (days = 30)     => api.get(`/agent/admin/token-usage?days=${days}`),
+    },
+  },
+
+
+
   // ── Super Admin (platform-level) ─────────────────────────────
   superAdmin: {
     getStats:          ()                        => api.get('/super/stats'),

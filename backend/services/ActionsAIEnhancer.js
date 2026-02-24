@@ -17,6 +17,8 @@ const { Anthropic } = require('@anthropic-ai/sdk');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+const TokenTrackingService = require('./TokenTrackingService');
+
 const VALID_NEXT_STEPS = ['email', 'call', 'whatsapp', 'linkedin', 'slack', 'document', 'internal_task'];
 
 // Human-readable labels for stage types shown in the AI prompt
@@ -39,7 +41,7 @@ class ActionsAIEnhancer {
 
     try {
       const prompt    = this._buildPrompt(context, rulesActions);
-      const rawText   = await this._callClaude(prompt);
+      const rawText   = await this._callClaude(prompt, context);
       const aiActions = this._parseResponse(rawText, context);
       console.log(`🤖 AI Enhancer: generated ${aiActions.length} additional actions for deal ${context.deal.id}`);
       return aiActions;
@@ -164,12 +166,25 @@ Return ONLY a JSON array. No markdown. No preamble. Each item:
 }`;
   }
 
-  static async _callClaude(prompt) {
+  static async _callClaude(prompt, context) {
     const message = await anthropic.messages.create({
       model:      'claude-haiku-4-5-20251001',
       max_tokens: 1500,
       messages:   [{ role: 'user', content: prompt }],
     });
+
+    // ── Token tracking (non-blocking) ────────────────────────
+    if (message.usage && context?.deal) {
+      TokenTrackingService.log({
+        orgId:    context.deal.org_id || null,
+        userId:   context.deal.owner_id || null,
+        callType: 'ai_enhancement',
+        model:    'claude-haiku-4-5-20251001',
+        usage:    { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens },
+        dealId:   context.deal.id || null,
+      }).catch(() => {});
+    }
+
     return message.content[0]?.text || '[]';
   }
 

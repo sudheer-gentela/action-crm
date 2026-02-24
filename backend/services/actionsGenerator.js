@@ -19,6 +19,7 @@ const ActionsRulesEngine  = require('./ActionsRulesEngine');
 const ActionsAIEnhancer   = require('./ActionsAIEnhancer');
 const PlaybookService     = require('./playbook.service');
 const ActionConfigService = require('./actionConfig.service');
+const AgentObserver       = require('./AgentObserver');
 
 // ── Internal classification ───────────────────────────────────────────────────
 
@@ -284,6 +285,10 @@ class ActionsGenerator {
               console.error(`  ❌ Insert failed for "${action.title}":`, err.message);
             }
           }
+
+          // ── Agentic Framework hook (non-blocking) ──────────────
+          AgentObserver.onActionsGenerated(deal.id, allActions, context, orgId, userId)
+            .catch(err => console.error(`  🤖 AgentObserver hook error:`, err.message));
         } catch (err) {
           console.error(`  ❌ Error processing deal ${deal.id} (${deal.name}):`, err.message);
         }
@@ -349,6 +354,11 @@ class ActionsGenerator {
       }
 
       console.log(`✅ Generated ${inserted} actions for deal ${dealId}`);
+
+      // ── Agentic Framework hook (non-blocking) ──────────────
+      AgentObserver.onActionsGenerated(dealId, allActions, context, orgId, userId)
+        .catch(err => console.error(`  🤖 AgentObserver hook error:`, err.message));
+
       return inserted;
 
     } catch (error) {

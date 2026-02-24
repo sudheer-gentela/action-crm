@@ -16,6 +16,7 @@ const SETTINGS_TABS = [
   { id: 'playbook',     label: 'Sales Playbook',icon: '📘' },
   { id: 'prompts',      label: 'AI Prompts',    icon: '🤖' },
   { id: 'actions',      label: 'Actions',       icon: '🎯' },
+  { id: 'ai-agent',     label: 'AI Agent',      icon: '🤖' },
 ];
 
 
@@ -53,6 +54,7 @@ export default function SettingsView({ initialTab }) {
         {settingsTab === 'playbook'     && <PlaybookSettings />}
         {settingsTab === 'prompts'      && <PromptsSettings />}
         {settingsTab === 'actions'      && <ActionsSettings />}
+        {settingsTab === 'ai-agent'     && <AgentUserSettings />}
       </div>
     </div>
   );
@@ -542,6 +544,126 @@ function IntegrationsSettings() {
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// AI AGENT — personal preferences + token usage
+// ─────────────────────────────────────────────────────────────────
+
+function AgentUserSettings() {
+  const [agentStatus, setAgentStatus]   = useState(null);
+  const [tokenUsage, setTokenUsage]     = useState(null);
+  const [loading, setLoading]           = useState(true);
+  const [period, setPeriod]             = useState(30);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [statusRes, usageRes] = await Promise.all([
+          apiService.agent.getStatus(),
+          apiService.agent.getTokenUsage(period),
+        ]);
+        setAgentStatus(statusRes.data);
+        setTokenUsage(usageRes.data);
+      } catch (e) {
+        console.log('Agent user settings load:', e.message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [period]);
+
+  if (loading) return <div style={{ padding: 32, color: '#6b7280' }}>Loading AI Agent settings…</div>;
+
+  const orgEnabled = agentStatus?.enabled;
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2 style={{ margin: '0 0 4px' }}>🤖 AI Agent</h2>
+          <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
+            View your personal AI token usage and agent status.
+          </p>
+        </div>
+      </div>
+
+      <div className="sv-panel-body">
+        {/* Org status */}
+        {!orgEnabled && (
+          <div style={{ padding: '14px 20px', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 10, marginBottom: 12 }}>
+            <div style={{ fontSize: 13, color: '#92400e' }}>
+              ⚠️ The AI Agent is not enabled for your organisation. Ask your admin to enable it in Org Admin → AI Agent.
+            </div>
+          </div>
+        )}
+
+        {orgEnabled && (
+          <div style={{ padding: '14px 20px', background: '#d1fae5', border: '1px solid #a7f3d0', borderRadius: 10, marginBottom: 12 }}>
+            <div style={{ fontSize: 13, color: '#065f46' }}>
+              🟢 AI Agent is active. Proposals will appear in your Agent Inbox for review and approval.
+            </div>
+          </div>
+        )}
+
+        {/* Personal Token Usage */}
+        {tokenUsage && (
+          <div style={{ marginTop: 16 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginBottom: 10 }}>
+              🔢 Your AI Token Usage
+              <select value={period} onChange={e => setPeriod(parseInt(e.target.value))}
+                style={{ marginLeft: 12, padding: '4px 8px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12 }}>
+                <option value={7}>7 days</option>
+                <option value={30}>30 days</option>
+                <option value={90}>90 days</option>
+              </select>
+            </h3>
+
+            <div style={{ padding: '14px 20px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, display: 'flex', gap: 32, flexWrap: 'wrap', marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 11, color: '#6b7280' }}>Total Tokens</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#374151' }}>
+                  {parseInt(tokenUsage.totals?.total_tokens || 0).toLocaleString()}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: '#6b7280' }}>Est. Cost</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#374151' }}>
+                  ${parseFloat(tokenUsage.totals?.estimated_cost || 0).toFixed(4)}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: '#6b7280' }}>API Calls</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#374151' }}>
+                  {parseInt(tokenUsage.totals?.call_count || 0).toLocaleString()}
+                </div>
+              </div>
+            </div>
+
+            {tokenUsage.byType?.length > 0 && (
+              <div style={{ padding: '14px 20px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#6b7280', marginBottom: 8 }}>Breakdown by Type</div>
+                {tokenUsage.byType.map((t, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, padding: '4px 0', borderBottom: '1px solid #f3f4f6' }}>
+                    <span style={{ fontWeight: 500 }}>{t.call_type.replace(/_/g, ' ')}</span>
+                    <span style={{ color: '#6b7280' }}>
+                      {parseInt(t.total_tokens).toLocaleString()} tokens · ${parseFloat(t.estimated_cost || 0).toFixed(4)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {(!tokenUsage.byType || tokenUsage.byType.length === 0) && (
+              <div style={{ padding: 24, textAlign: 'center', color: '#9ca3af' }}>
+                No AI usage recorded yet. Usage will appear here as you generate actions, process emails, and use AI features.
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

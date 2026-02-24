@@ -153,6 +153,7 @@ app.use('/api/meetings',  require('./routes/meetings.routes'));
 app.use('/api/proposals', require('./routes/proposals.routes'));
 app.use('/api/calendar',  require('./routes/calendar.routes'));
 app.use('/api/dashboard', require('./routes/dashboard.routes'));
+app.use('/api/agent', 	  require('./routes/agent.routes'));
 app.use('/api/outlook',   outlookRoutes);
 app.use('/api/sync',      syncRoutes);
 app.use('/api/playbook',  playbookRoutes);

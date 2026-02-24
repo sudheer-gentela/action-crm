@@ -21,6 +21,8 @@ const { orgContext }    = require('../middleware/orgContext.middleware');
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+const TokenTrackingService = require('../services/TokenTrackingService');
+
 router.use(authenticateToken);
 router.use(orgContext);
 
@@ -314,6 +316,18 @@ router.post('/context-suggest', async (req, res) => {
       max_tokens: 1200,
       messages:   [{ role: 'user', content: prompt }],
     });
+
+    // ── Token tracking (non-blocking) ────────────────────────
+    if (message.usage) {
+      TokenTrackingService.log({
+        orgId:    req.orgId,
+        userId:   req.user.userId,
+        callType: 'context_suggest',
+        model:    'claude-haiku-4-5-20251001',
+        usage:    { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens },
+        dealId:   dealId || null,
+      }).catch(() => {});
+    }
 
     const rawText = message.content[0]?.text || '{}';
     let parsed;

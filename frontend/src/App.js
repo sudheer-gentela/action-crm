@@ -11,6 +11,7 @@ import SettingsView from './SettingsView';
 import SuperAdminView from './SuperAdminView';
 import OrgAdminView from './OrgAdminView';
 import ActionContextPanel from './ActionContextPanel';
+import AgentInboxView from './AgentInboxView';
 
 // ─────────────────────────────────────────────────────────────
 // ROLE DEFINITIONS
@@ -49,6 +50,7 @@ const NAV_ITEMS_BY_ROLE = {
     { id: 'files',    label: 'Files',    icon: '☁️' },
     { id: 'calendar', label: 'Calendar', icon: '📅' },
     { id: 'settings', label: 'Settings', icon: '⚙️' },
+    { id: 'agent',    label: 'Agent',    icon: '🤖' },
   ],
   'org-admin': [
     { id: 'org-admin', label: 'Org Admin', icon: '🔑' },
@@ -592,6 +594,7 @@ function Dashboard({ user, onLogout }) {
             />
           )}
           {currentTab === 'settings'     && <SettingsView />}
+          {currentTab === 'agent'        && <AgentInboxView />}
           {/* Org admin view — only when activeRole is org-admin */}
           {currentTab === 'org-admin'    && activeRole === 'org-admin'   && <OrgAdminView />}
           {/* Super admin view — only when activeRole is super-admin */}
