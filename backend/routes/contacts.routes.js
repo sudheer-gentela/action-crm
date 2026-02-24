@@ -200,6 +200,9 @@ router.post('/merge', async (req, res) => {
 
     await client.query(`UPDATE contact_activities SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
     await client.query(`UPDATE conversation_starters SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
+    await client.query(`UPDATE actions SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
+    await client.query(`UPDATE deals SET economic_buyer_contact_id = $1 WHERE economic_buyer_contact_id = $2`, [keepId, removeId]);
+    await client.query(`UPDATE storage_files SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
 
     await client.query(`DELETE FROM deal_contacts WHERE contact_id = $1`, [removeId]);
     await client.query(`DELETE FROM contacts WHERE id = $1 AND org_id = $2`, [removeId, req.orgId]);
