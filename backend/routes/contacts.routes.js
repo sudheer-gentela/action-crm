@@ -188,9 +188,18 @@ router.post('/merge', async (req, res) => {
 
     await client.query(`UPDATE emails SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
 
-    try { await client.query(`UPDATE meetings SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]); } catch (e) {}
-    try { await client.query(`UPDATE contact_activities SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]); } catch (e) {}
-    try { await client.query(`UPDATE conversation_starters SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]); } catch (e) {}
+    // Meetings link contacts via meeting_attendees (join table), not a direct column.
+    // Move attendee rows from removed contact to kept contact, skip if already attending.
+    await client.query(
+      `UPDATE meeting_attendees SET contact_id = $1
+       WHERE contact_id = $2
+         AND meeting_id NOT IN (SELECT meeting_id FROM meeting_attendees WHERE contact_id = $1)`,
+      [keepId, removeId]
+    );
+    await client.query(`DELETE FROM meeting_attendees WHERE contact_id = $1`, [removeId]);
+
+    await client.query(`UPDATE contact_activities SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
+    await client.query(`UPDATE conversation_starters SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
 
     await client.query(`DELETE FROM deal_contacts WHERE contact_id = $1`, [removeId]);
     await client.query(`DELETE FROM contacts WHERE id = $1 AND org_id = $2`, [removeId, req.orgId]);
