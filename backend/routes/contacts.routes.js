@@ -334,24 +334,48 @@ router.post('/', async (req, res) => {
 // ── PUT /:id — update contact ─────────────────────────────────
 router.put('/:id', async (req, res) => {
   try {
-    const { firstName, lastName, email, phone, title, roleType, engagementLevel, location, linkedinUrl, notes } = req.body;
+    const { firstName, lastName, email, phone, title, roleType, engagementLevel, location, linkedinUrl, notes, accountId } = req.body;
+
+    // Convert empty strings to null so COALESCE can fall back to the existing value.
+    // To actually clear a field, the frontend should send null explicitly.
+    const toParam = (v) => (v === undefined ? undefined : (v === '' ? null : v));
+
+    // Build dynamic SET clause — only include fields that were actually sent
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    const maybeSet = (col, val) => {
+      if (val !== undefined) {
+        fields.push(`${col} = $${idx++}`);
+        values.push(val);
+      }
+    };
+
+    maybeSet('first_name',       firstName);
+    maybeSet('last_name',        lastName);
+    maybeSet('email',            email);
+    maybeSet('phone',            toParam(phone));
+    maybeSet('title',            toParam(title));
+    maybeSet('role_type',        toParam(roleType));
+    maybeSet('engagement_level', toParam(engagementLevel));
+    maybeSet('location',         toParam(location));
+    maybeSet('linkedin_url',     toParam(linkedinUrl));
+    maybeSet('notes',            toParam(notes));
+    maybeSet('account_id',       accountId || undefined);
+
+    if (fields.length === 0) {
+      return res.status(400).json({ error: { message: 'No fields to update' } });
+    }
+
+    fields.push('updated_at = CURRENT_TIMESTAMP');
+
+    values.push(req.params.id, req.orgId);
+    const whereClause = `WHERE id = $${idx++} AND org_id = $${idx}`;
 
     const result = await db.query(
-      `UPDATE contacts
-       SET first_name       = COALESCE($1,  first_name),
-           last_name        = COALESCE($2,  last_name),
-           email            = COALESCE($3,  email),
-           phone            = COALESCE($4,  phone),
-           title            = COALESCE($5,  title),
-           role_type        = COALESCE($6,  role_type),
-           engagement_level = COALESCE($7,  engagement_level),
-           location         = COALESCE($8,  location),
-           linkedin_url     = COALESCE($9,  linkedin_url),
-           notes            = COALESCE($10, notes),
-           updated_at       = CURRENT_TIMESTAMP
-       WHERE id = $11 AND org_id = $12
-       RETURNING *`,
-      [firstName, lastName, email, phone, title, roleType, engagementLevel, location, linkedinUrl, notes, req.params.id, req.orgId]
+      `UPDATE contacts SET ${fields.join(', ')} ${whereClause} RETURNING *`,
+      values
     );
 
     if (result.rows.length === 0) {
