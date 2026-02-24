@@ -9,7 +9,7 @@
 
 const express = require('express');
 const router  = express.Router();
-const bcrypt  = require('bcryptjs');
+const bcrypt  = require('bcrypt');
 const crypto  = require('crypto');
 const { pool } = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
