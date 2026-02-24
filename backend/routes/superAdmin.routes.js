@@ -168,11 +168,13 @@ router.post('/orgs', async (req, res) => {
       return res.status(400).json({ error: { message: 'Organisation name is required' } });
     }
 
+    const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
     const result = await pool.query(`
-      INSERT INTO organizations (name, plan, max_users, notes, status, created_at)
-      VALUES ($1, $2, $3, $4, 'active', now())
+      INSERT INTO organizations (name, slug, plan, max_users, notes, status, created_at)
+      VALUES ($1, $2, $3, $4, $5, 'active', now())
       RETURNING *
-    `, [name.trim(), plan, max_users, notes]);
+    `, [name.trim(), slug, plan, max_users, notes]);
 
     await auditLog(req, 'create_org', 'org', result.rows[0].id, { name, plan });
     res.status(201).json({ org: result.rows[0] });
