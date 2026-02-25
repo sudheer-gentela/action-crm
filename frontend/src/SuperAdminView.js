@@ -349,7 +349,7 @@ function SAOrgDetail({ orgId, onClose }) {
     if (!addEmail.trim()) return;
     try {
       await apiService.superAdmin.addUserToOrg(orgId, { email: addEmail.trim(), role: addRole });
-      setAddEmail(''); setSuccess('User added');
+      setAddEmail(''); setError(''); setSuccess('User added');
       setTimeout(() => setSuccess(''), 2000);
       load();
     } catch (e) {
@@ -422,7 +422,10 @@ function SAOrgDetail({ orgId, onClose }) {
   const handleRemoveUser = async (userId) => {
     if (!window.confirm('Remove this user from the org?')) return;
     try {
+      setError('');
       await apiService.superAdmin.removeUserFromOrg(orgId, userId);
+      setSuccess('User removed');
+      setTimeout(() => setSuccess(''), 2000);
       load();
     } catch (e) {
       setError(e.response?.data?.error?.message || 'Failed to remove user');

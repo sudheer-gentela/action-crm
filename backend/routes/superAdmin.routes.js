@@ -383,10 +383,10 @@ router.post('/orgs/:orgId/users/create', async (req, res) => {
     // Hash password and create user
     const password_hash = await bcrypt.hash(password, 12);
     const userResult = await pool.query(`
-      INSERT INTO users (email, password_hash, first_name, last_name, must_change_password, created_at)
-      VALUES ($1, $2, $3, $4, TRUE, now())
+      INSERT INTO users (email, password_hash, first_name, last_name, org_id, created_at)
+      VALUES ($1, $2, $3, $4, $5, now())
       RETURNING id, email, first_name, last_name
-    `, [email.trim().toLowerCase(), password_hash, first_name.trim(), last_name.trim()]);
+    `, [email.trim().toLowerCase(), password_hash, first_name.trim(), last_name.trim(), orgId]);
 
     const user = userResult.rows[0];
 
