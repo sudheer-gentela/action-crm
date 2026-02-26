@@ -3,6 +3,7 @@ import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import AccountForm from './AccountForm';
 import AccountMergeBanner from './AccountMergeBanner';
+import CoverageScorecard from './CoverageScorecard';
 import { csvExport, EXPORT_COLUMNS } from './csvUtils';
 import CSVImportModal from './CSVImportModal';
 import './AccountsView.css';
@@ -473,6 +474,11 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
 
               {/* ── 5. Prospecting ─────────────────────────────────── */}
               <AccountProspectingSection accountId={selectedAccount.id} />
+
+              {/* ── 6. Coverage Scorecard ──────────────────────────── */}
+              <div className="detail-section">
+                <CoverageScorecard accountId={selectedAccount.id} />
+              </div>
 
               {/* ── 6. Quick Actions ────────────────────────────────── */}
               <div className="detail-section">

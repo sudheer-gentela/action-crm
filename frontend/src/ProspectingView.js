@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import OutreachComposer from './OutreachComposer';
+import CoverageScorecard from './CoverageScorecard';
 import './ProspectingView.css';
+import './OutreachComposer.css';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -463,6 +466,12 @@ function AccountView({ groups, onSelect }) {
             </span>
             <span className="pv-account-count">{group.prospects.length} prospect{group.prospects.length !== 1 ? 's' : ''}</span>
           </div>
+          {/* Coverage scorecard for linked accounts */}
+          {group.accountId && (
+            <div style={{ padding: '0 12px 8px' }}>
+              <CoverageScorecard accountId={group.accountId} />
+            </div>
+          )}
           <div className="pv-account-prospects">
             {group.prospects.map(p => {
               const stageCfg = ALL_STAGES.find(s => s.key === p.stage);
@@ -588,6 +597,10 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
   const [showStageMenu, setShowStageMenu] = useState(false);
+  const [showOutreach, setShowOutreach] = useState(false);
+  const [outreachChannel, setOutreachChannel] = useState(null);
+  const [outreachAction, setOutreachAction] = useState(null);
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     const fetchDetail = async () => {
@@ -660,6 +673,55 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
     }
   };
 
+  const handleGenerateActions = async () => {
+    if (!prospect?.playbook_id) {
+      alert('Assign a playbook to this prospect first (in the Overview tab).');
+      return;
+    }
+    setGenerating(true);
+    try {
+      const res = await apiFetch('/api/prospecting-actions/generate', {
+        method: 'POST',
+        body: JSON.stringify({ prospectId }),
+      });
+      const msg = res.message || `Created ${res.created} action(s), skipped ${res.skipped} duplicate(s).`;
+      if (res.created === 0 && res.skipped === 0 && res.message) {
+        alert(msg);
+      }
+      // Refresh detail
+      const detail = await apiFetch(`/api/prospects/${prospectId}`);
+      setProspect(detail.prospect);
+      setActions(detail.actions || []);
+      setActivities(detail.activities || []);
+      onUpdate();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const openOutreach = (channel, action) => {
+    setOutreachChannel(channel || null);
+    setOutreachAction(action || null);
+    setShowOutreach(true);
+  };
+
+  const handleOutreachComplete = async () => {
+    setShowOutreach(false);
+    setOutreachAction(null);
+    // Refresh data
+    try {
+      const res = await apiFetch(`/api/prospects/${prospectId}`);
+      setProspect(res.prospect);
+      setActions(res.actions || []);
+      setActivities(res.activities || []);
+      onUpdate();
+    } catch (err) {
+      console.error('Refresh after outreach:', err);
+    }
+  };
+
   if (loading) {
     return (
       <div className="pv-detail-overlay" onClick={onClose}>
@@ -697,6 +759,9 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
           </div>
 
           <div className="pv-detail-stage-actions">
+            <button className="pv-btn-primary" style={{ fontSize: '12px', padding: '5px 12px' }} onClick={() => openOutreach()}>
+              📤 New Outreach
+            </button>
             {prospect.stage === 'qualified' && (
               <button className="pv-btn-convert" onClick={handleConvert}>🎉 Convert</button>
             )}
@@ -793,8 +858,18 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
 
           {activeTab === 'actions' && (
             <div className="pv-actions-tab">
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+                <button
+                  className="pv-btn-secondary"
+                  style={{ fontSize: '11px', padding: '5px 10px' }}
+                  onClick={handleGenerateActions}
+                  disabled={generating}
+                >
+                  {generating ? '⏳ Generating...' : '🤖 Generate from Playbook'}
+                </button>
+              </div>
               {actions.length === 0 ? (
-                <div className="pv-empty-state">No actions yet</div>
+                <div className="pv-empty-state">No actions yet. {prospect?.playbook_id ? 'Click "Generate from Playbook" to create actions.' : 'Assign a playbook to auto-generate actions.'}</div>
               ) : (
                 actions.map(a => (
                   <div key={a.id} className={`pv-action-card ${a.status}`}>
@@ -807,8 +882,23 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                       </span>
                     </div>
                     {a.description && <p className="pv-action-desc">{a.description}</p>}
+                    {a.source === 'playbook' && (
+                      <span style={{ fontSize: '10px', color: '#0F9D8E', fontWeight: 600 }}>📋 Playbook</span>
+                    )}
+                    {a.due_date && (
+                      <span style={{ fontSize: '10px', color: '#9ca3af', marginLeft: 8 }}>Due: {formatDate(a.due_date)}</span>
+                    )}
                     {a.status === 'pending' && (
                       <div className="pv-action-buttons">
+                        {a.channel && (
+                          <button
+                            className="pv-btn-sm"
+                            style={{ background: '#0F9D8E', color: '#fff', border: 'none' }}
+                            onClick={() => openOutreach(a.channel, a)}
+                          >
+                            📤 Start Outreach
+                          </button>
+                        )}
                         <button
                           className="pv-btn-sm"
                           onClick={() => handleCompleteAction(a.id, 'completed')}
@@ -850,6 +940,17 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
             </div>
           )}
         </div>
+
+        {/* OutreachComposer slide-out */}
+        {showOutreach && prospect && (
+          <OutreachComposer
+            prospect={prospect}
+            initialChannel={outreachChannel}
+            actionToExecute={outreachAction}
+            onComplete={handleOutreachComplete}
+            onClose={() => { setShowOutreach(false); setOutreachAction(null); }}
+          />
+        )}
       </div>
     </div>
   );

@@ -296,6 +296,8 @@ export const apiService = {
     snooze:        (id, duration, reason)       => api.patch(`/prospecting-actions/${id}/snooze`, { duration, reason }),
     unsnooze:      (id)                         => api.patch(`/prospecting-actions/${id}/unsnooze`),
     execute:       (id, outcome, notes)         => api.post(`/prospecting-actions/${id}/execute`, { outcome, notes }),
+    generate:      (prospectId)                 => api.post('/prospecting-actions/generate', { prospectId }),
+    outreachSend:  (data)                       => api.post('/prospecting-actions/outreach-send', data),
     delete:        (id)                         => api.delete(`/prospecting-actions/${id}`),
   },
 

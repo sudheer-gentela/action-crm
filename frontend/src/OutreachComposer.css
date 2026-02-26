@@ -1,0 +1,469 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   OutreachComposer.css — Multi-channel outreach composer styling
+   Prefix: oc-   Accent: #0F9D8E (teal)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Modal ──────────────────────────────────────────────────────────────── */
+
+.oc-modal {
+  position: fixed;
+  right: 0;
+  top: 0;
+  width: 520px;
+  max-width: 95vw;
+  height: 100vh;
+  background: #fff;
+  box-shadow: -4px 0 24px rgba(0,0,0,0.12);
+  display: flex;
+  flex-direction: column;
+  z-index: 1100;
+  animation: oc-slide-in 0.2s ease-out;
+}
+
+@keyframes oc-slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.oc-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.oc-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.oc-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.oc-prospect-name {
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.oc-close {
+  background: none;
+  border: none;
+  font-size: 22px;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+.oc-close:hover { color: #374151; }
+
+/* ── Channel tabs ───────────────────────────────────────────────────────── */
+
+.oc-channel-tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 24px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.oc-channel-tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: 12px;
+  font-weight: 500;
+  color: #6b7280;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.oc-channel-tab:hover:not(.disabled) {
+  color: #111827;
+  background: #f9fafb;
+}
+
+.oc-channel-tab.active {
+  color: #0F9D8E;
+  border-bottom-color: #0F9D8E;
+  font-weight: 600;
+}
+
+.oc-channel-tab.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.oc-ch-icon { font-size: 14px; }
+.oc-ch-label { font-size: 12px; }
+
+/* ── Action banner ──────────────────────────────────────────────────────── */
+
+.oc-action-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 24px;
+  background: #f0fdfa;
+  border-bottom: 1px solid #99f6e4;
+  font-size: 12px;
+  color: #0F9D8E;
+}
+
+.oc-action-banner-icon { font-size: 14px; }
+
+/* ── Success banner ─────────────────────────────────────────────────────── */
+
+.oc-success-banner {
+  padding: 10px 24px;
+  background: #ecfdf5;
+  border-bottom: 1px solid #a7f3d0;
+  color: #047857;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* ── Body ───────────────────────────────────────────────────────────────── */
+
+.oc-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ── Fields ─────────────────────────────────────────────────────────────── */
+
+.oc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.oc-field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.oc-required { color: #ef4444; }
+
+.oc-to-display {
+  padding: 8px 12px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #374151;
+}
+
+.oc-input {
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #111827;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.oc-input:focus {
+  border-color: #0F9D8E;
+  box-shadow: 0 0 0 2px rgba(15,157,142,0.12);
+}
+
+.oc-textarea {
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #111827;
+  font-family: inherit;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.15s;
+  line-height: 1.5;
+}
+.oc-textarea:focus {
+  border-color: #0F9D8E;
+  box-shadow: 0 0 0 2px rgba(15,157,142,0.12);
+}
+
+.oc-textarea-sm { min-height: 48px; }
+
+.oc-char-count {
+  text-align: right;
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.oc-link {
+  color: #0F9D8E;
+  text-decoration: none;
+  font-size: 13px;
+  word-break: break-all;
+}
+.oc-link:hover { text-decoration: underline; }
+
+/* ── Copy button ────────────────────────────────────────────────────────── */
+
+.oc-copy-btn {
+  align-self: flex-start;
+  padding: 7px 14px;
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.oc-copy-btn:hover:not(:disabled) {
+  background: #e5e7eb;
+}
+.oc-copy-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.oc-manual-note {
+  font-size: 11px;
+  color: #9ca3af;
+  font-style: italic;
+  line-height: 1.4;
+}
+
+/* ── Divider ────────────────────────────────────────────────────────────── */
+
+.oc-divider {
+  height: 1px;
+  background: #e5e7eb;
+  margin: 4px 0;
+}
+
+/* ── Outcome grid ───────────────────────────────────────────────────────── */
+
+.oc-outcome-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.oc-outcome-btn {
+  padding: 6px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 20px;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  color: #374151;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.oc-outcome-btn:hover {
+  border-color: #0F9D8E;
+  color: #0F9D8E;
+}
+.oc-outcome-btn.active {
+  background: #0F9D8E;
+  border-color: #0F9D8E;
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ── Error ──────────────────────────────────────────────────────────────── */
+
+.oc-error {
+  padding: 8px 24px;
+  background: #fef2f2;
+  border-top: 1px solid #fecaca;
+  color: #991b1b;
+  font-size: 12px;
+}
+
+/* ── Footer ─────────────────────────────────────────────────────────────── */
+
+.oc-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 24px;
+  border-top: 1px solid #e5e7eb;
+  background: #fafbfc;
+}
+
+.oc-btn-cancel {
+  padding: 8px 16px;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+  cursor: pointer;
+}
+.oc-btn-cancel:hover { background: #f3f4f6; }
+
+.oc-btn-send {
+  padding: 8px 20px;
+  background: #0F9D8E;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.oc-btn-send:hover:not(:disabled) { background: #0d8a7d; }
+.oc-btn-send:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CoverageScorecard.css — inline (uses cs- prefix)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.cs-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 16px;
+  background: #fff;
+}
+
+.cs-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.cs-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.cs-score-badge {
+  font-size: 14px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 12px;
+}
+
+.cs-progress-bar {
+  height: 8px;
+  background: #f3f4f6;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.cs-progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.cs-roles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cs-role-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.cs-role-name {
+  font-weight: 600;
+  color: #374151;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cs-role-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.cs-role-matches {
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.cs-gaps-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #f3f4f6;
+}
+
+.cs-gaps-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #ef4444;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-bottom: 6px;
+}
+
+.cs-gap-item {
+  font-size: 12px;
+  color: #6b7280;
+  padding: 2px 0;
+}
+
+.cs-playbook-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.cs-playbook-select label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.cs-playbook-select select {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid #e2e4ea;
+  border-radius: 5px;
+  font-size: 12px;
+  outline: none;
+}
+
+.cs-loading, .cs-empty {
+  font-size: 12px;
+  color: #9ca3af;
+  text-align: center;
+  padding: 12px 0;
+}

@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
+const { generateForProspect } = require('../services/prospectingActions.service');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -237,27 +238,37 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// ── PATCH /:id/status — change status ────────────────────────────────────────
+// ── PATCH /:id/status — update status (complete/reopen) ──────────────────────
 router.patch('/:id/status', async (req, res) => {
   try {
     const { status, outcome } = req.body;
-    const VALID = ['pending', 'in_progress', 'completed', 'skipped', 'failed'];
-    if (!VALID.includes(status)) {
-      return res.status(400).json({ error: { message: `status must be one of: ${VALID.join(', ')}` } });
+    const VALID_STATUSES = ['pending', 'in_progress', 'completed', 'skipped'];
+    if (!VALID_STATUSES.includes(status)) {
+      return res.status(400).json({ error: { message: `status must be one of: ${VALID_STATUSES.join(', ')}` } });
     }
 
     const isCompleting = status === 'completed';
 
+    const updates = [`status = $1`, `updated_at = CURRENT_TIMESTAMP`];
+    const params = [status];
+    if (isCompleting) {
+      updates.push(`completed_at = CURRENT_TIMESTAMP`, `completed_by = $${params.length + 1}`);
+      params.push(req.user.userId);
+      if (outcome) {
+        updates.push(`outcome = $${params.length + 1}`);
+        params.push(outcome);
+      }
+    }
+
+    params.push(req.params.id, req.orgId, req.user.userId);
+    const idIdx = params.length - 2;
+
     const result = await db.query(
       `UPDATE prospecting_actions
-       SET status       = $1,
-           outcome      = COALESCE($2, outcome),
-           completed_at = CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE completed_at END,
-           completed_by = CASE WHEN $3 THEN $4 ELSE completed_by END,
-           updated_at   = CURRENT_TIMESTAMP
-       WHERE id = $5 AND org_id = $6 AND user_id = $4
+       SET ${updates.join(', ')}
+       WHERE id = $${idIdx} AND org_id = $${idIdx + 1} AND user_id = $${idIdx + 2}
        RETURNING *`,
-      [status, outcome || null, isCompleting, req.user.userId, req.params.id, req.orgId]
+      params
     );
 
     if (result.rows.length === 0) {
@@ -266,13 +277,13 @@ router.patch('/:id/status', async (req, res) => {
 
     const action = result.rows[0];
 
-    // If completing an outreach action, update prospect's engagement tracking
+    // Auto-advance logic on completion of outreach actions
     if (isCompleting && action.channel) {
       await db.query(
         `UPDATE prospects
          SET outreach_count = outreach_count + 1,
              last_outreach_at = CURRENT_TIMESTAMP,
-             current_sequence_step = GREATEST(current_sequence_step, COALESCE($1, 0)),
+             current_sequence_step = COALESCE($1, current_sequence_step),
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $2`,
         [action.sequence_step, action.prospect_id]
@@ -478,6 +489,158 @@ router.post('/:id/execute', async (req, res) => {
   } catch (error) {
     console.error('Execute action error:', error);
     res.status(500).json({ error: { message: 'Failed to execute action' } });
+  }
+});
+
+// ── POST /generate — generate actions from playbook for a prospect ──────────
+router.post('/generate', async (req, res) => {
+  try {
+    const { prospectId } = req.body;
+    if (!prospectId) {
+      return res.status(400).json({ error: { message: 'prospectId is required' } });
+    }
+
+    const result = await generateForProspect(prospectId, req.orgId, req.user.userId);
+    res.json(result);
+  } catch (error) {
+    console.error('Generate actions error:', error);
+    res.status(400).json({ error: { message: error.message || 'Failed to generate actions' } });
+  }
+});
+
+// ── POST /outreach-send — create a completed outreach + optional email record ─
+// Used by OutreachComposer to log any channel's outreach in one call.
+// For email channel, also creates an emails record with prospect_id set.
+router.post('/outreach-send', async (req, res) => {
+  try {
+    const {
+      prospectId, channel, subject, body, outcome,
+      notes, toAddress,
+    } = req.body;
+
+    if (!prospectId || !channel) {
+      return res.status(400).json({ error: { message: 'prospectId and channel are required' } });
+    }
+
+    // Verify prospect
+    const pRes = await db.query(
+      'SELECT * FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL',
+      [prospectId, req.orgId]
+    );
+    if (pRes.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+    const prospect = pRes.rows[0];
+
+    const channelLabel = channel.charAt(0).toUpperCase() + channel.slice(1);
+    const title = `${channelLabel} outreach to ${prospect.first_name} ${prospect.last_name}`;
+
+    // Create completed action
+    const actionResult = await db.query(
+      `INSERT INTO prospecting_actions (
+         org_id, user_id, prospect_id, title, action_type, channel,
+         message_subject, message_body, status, completed_at, completed_by,
+         outcome, source, message_metadata
+       ) VALUES ($1, $2, $3, $4, 'outreach', $5, $6, $7, 'completed', CURRENT_TIMESTAMP, $2, $8, 'manual', $9)
+       RETURNING *`,
+      [
+        req.orgId, req.user.userId, prospectId, title, channel,
+        subject || null, body || null,
+        outcome || 'sent',
+        JSON.stringify({ notes: notes || null, toAddress: toAddress || null }),
+      ]
+    );
+
+    // Update prospect outreach tracking
+    await db.query(
+      `UPDATE prospects
+       SET outreach_count = outreach_count + 1,
+           last_outreach_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [prospectId]
+    );
+
+    // Auto-advance target/researched → contacted
+    if (['target', 'researched'].includes(prospect.stage)) {
+      await db.query(
+        `UPDATE prospects SET stage = 'contacted', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [prospectId]
+      );
+      await db.query(
+        `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
+         VALUES ($1, $2, 'stage_change', 'Auto-advanced to contacted after first outreach')`,
+        [prospectId, req.user.userId]
+      );
+    }
+
+    // If response outcome, advance engaged
+    if (['replied', 'call_connected', 'meeting_booked'].includes(outcome)) {
+      await db.query(
+        `UPDATE prospects
+         SET response_count = response_count + 1, last_response_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [prospectId]
+      );
+      if (prospect.stage === 'contacted') {
+        await db.query(
+          `UPDATE prospects SET stage = 'engaged', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [prospectId]
+        );
+        await db.query(
+          `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
+           VALUES ($1, $2, 'stage_change', 'Auto-advanced to engaged after response received')`,
+          [prospectId, req.user.userId]
+        );
+      }
+    }
+
+    // For email channel, also create an emails record
+    let emailRecord = null;
+    if (channel === 'email' && (subject || body)) {
+      try {
+        const emailResult = await db.query(
+          `INSERT INTO emails (
+             org_id, user_id, prospect_id, contact_id,
+             subject, body, to_address, direction, status
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'outbound', 'sent')
+           RETURNING id`,
+          [
+            req.orgId, req.user.userId, prospectId,
+            prospect.contact_id || null,
+            subject || '', body || '', toAddress || prospect.email || '',
+          ]
+        );
+        emailRecord = { id: emailResult.rows[0].id };
+      } catch (emailErr) {
+        // Non-fatal — email record creation can fail if emails table schema differs
+        console.warn('Could not create emails record for prospect outreach:', emailErr.message);
+      }
+    }
+
+    // Log activity
+    await db.query(
+      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, 'outreach_sent', $3, $4)`,
+      [
+        prospectId, req.user.userId,
+        `${channelLabel} outreach sent${outcome && outcome !== 'sent' ? ` — outcome: ${outcome}` : ''}`,
+        JSON.stringify({
+          channel, outcome: outcome || 'sent', actionId: actionResult.rows[0].id,
+          emailId: emailRecord?.id || null,
+        }),
+      ]
+    );
+
+    res.json({
+      action: mapActionRow(actionResult.rows[0]),
+      emailId: emailRecord?.id || null,
+    });
+  } catch (error) {
+    console.error('Outreach send error:', error);
+    res.status(500).json({ error: { message: 'Failed to send outreach' } });
   }
 });
 
