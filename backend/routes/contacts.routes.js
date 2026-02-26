@@ -174,8 +174,8 @@ router.post('/merge', async (req, res) => {
 
     const bothRes = await client.query(
       `SELECT id, first_name, last_name, email, phone, title, role_type,
-              engagement_level, location, linkedin_url, notes, account_id
-       FROM contacts WHERE id IN ($1, $2) AND org_id = $3`,
+              engagement_level, location, linkedin_url, notes, account_id, org_id
+       FROM contacts WHERE id IN ($1, $2) AND org_id = $3 AND deleted_at IS NULL`,
       [keepId, removeId, req.orgId]
     );
     if (bothRes.rows.length !== 2) {
@@ -184,7 +184,30 @@ router.post('/merge', async (req, res) => {
     const keepContact   = bothRes.rows.find(r => r.id === keepId);
     const removeContact = bothRes.rows.find(r => r.id === removeId);
 
+    // Double-check org_id on both
+    if (keepContact.org_id !== req.orgId || removeContact.org_id !== req.orgId) {
+      return res.status(403).json({ error: { message: 'Cannot merge contacts from different organisations' } });
+    }
+
     await client.query('BEGIN');
+
+    // 0. Archive removed contact for recovery
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS merged_contacts_archive (
+        id              SERIAL PRIMARY KEY,
+        original_id     INTEGER NOT NULL,
+        merged_into_id  INTEGER NOT NULL,
+        org_id          INTEGER NOT NULL,
+        contact_data    JSONB NOT NULL,
+        merged_by       INTEGER,
+        field_overrides JSONB DEFAULT '{}',
+        merged_at       TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      INSERT INTO merged_contacts_archive (original_id, merged_into_id, org_id, contact_data, merged_by, field_overrides)
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `, [removeId, keepId, req.orgId, JSON.stringify(removeContact), req.user.userId, JSON.stringify(fieldOverrides)]);
 
     const overridableFields = [
       'first_name', 'last_name', 'email', 'phone', 'title', 'role_type',
@@ -211,37 +234,78 @@ router.post('/merge', async (req, res) => {
       );
     }
 
+    // Move deal_contacts — scoped via deal org_id
     await client.query(
       `INSERT INTO deal_contacts (deal_id, contact_id, role)
        SELECT dc.deal_id, $1, dc.role FROM deal_contacts dc
+       JOIN deals d ON d.id = dc.deal_id AND d.org_id = $3
        WHERE dc.contact_id = $2
          AND dc.deal_id NOT IN (SELECT deal_id FROM deal_contacts WHERE contact_id = $1)
        ON CONFLICT (deal_id, contact_id) DO NOTHING`,
-      [keepId, removeId]
+      [keepId, removeId, req.orgId]
     );
 
-    await client.query(`UPDATE emails SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
+    // Move emails — scoped to org
+    await client.query(
+      `UPDATE emails SET contact_id = $1 WHERE contact_id = $2 AND org_id = $3`,
+      [keepId, removeId, req.orgId]
+    );
 
-    // Meetings link contacts via meeting_attendees (join table), not a direct column.
-    // Move attendee rows from removed contact to kept contact, skip if already attending.
+    // Move meeting_attendees — scoped via meeting org
     await client.query(
       `UPDATE meeting_attendees SET contact_id = $1
        WHERE contact_id = $2
+         AND meeting_id IN (SELECT id FROM meetings WHERE org_id = $3)
          AND meeting_id NOT IN (SELECT meeting_id FROM meeting_attendees WHERE contact_id = $1)`,
-      [keepId, removeId]
+      [keepId, removeId, req.orgId]
     );
-    await client.query(`DELETE FROM meeting_attendees WHERE contact_id = $1`, [removeId]);
+    await client.query(
+      `DELETE FROM meeting_attendees WHERE contact_id = $1
+       AND meeting_id IN (SELECT id FROM meetings WHERE org_id = $2)`,
+      [removeId, req.orgId]
+    );
 
+    // Move contact_activities — scoped via contact org check (contact already verified)
     await client.query(`UPDATE contact_activities SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
-    await client.query(`UPDATE conversation_starters SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
-    await client.query(`UPDATE actions SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
-    await client.query(`UPDATE deals SET economic_buyer_contact_id = $1 WHERE economic_buyer_contact_id = $2`, [keepId, removeId]);
-    await client.query(`UPDATE storage_files SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
 
-    await client.query(`DELETE FROM deal_contacts WHERE contact_id = $1`, [removeId]);
-    await client.query(`DELETE FROM contacts WHERE id = $1 AND org_id = $2`, [removeId, req.orgId]);
+    // Move conversation_starters
+    await client.query(`UPDATE conversation_starters SET contact_id = $1 WHERE contact_id = $2`, [keepId, removeId]);
+
+    // Move actions — scoped to org
+    await client.query(
+      `UPDATE actions SET contact_id = $1 WHERE contact_id = $2 AND org_id = $3`,
+      [keepId, removeId, req.orgId]
+    );
+
+    // Move economic_buyer references on deals — scoped to org
+    await client.query(
+      `UPDATE deals SET economic_buyer_contact_id = $1 WHERE economic_buyer_contact_id = $2 AND org_id = $3`,
+      [keepId, removeId, req.orgId]
+    );
+
+    // Move storage_files — scoped to org
+    await client.query(
+      `UPDATE storage_files SET contact_id = $1 WHERE contact_id = $2 AND org_id = $3`,
+      [keepId, removeId, req.orgId]
+    );
+
+    // Clean up remaining deal_contacts for removed contact (org-scoped)
+    await client.query(
+      `DELETE FROM deal_contacts WHERE contact_id = $1
+       AND deal_id IN (SELECT id FROM deals WHERE org_id = $2)`,
+      [removeId, req.orgId]
+    );
+
+    // Soft-delete the removed contact
+    await client.query(
+      `UPDATE contacts SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND org_id = $2`,
+      [removeId, req.orgId]
+    );
 
     await client.query('COMMIT');
+
+    console.log(`🔗 Contact merge: kept #${keepId}, removed #${removeId} (org ${req.orgId}). Archived for recovery.`);
 
     const updatedRes = await db.query(
       `SELECT c.*, acc.name as account_name FROM contacts c

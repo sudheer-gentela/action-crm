@@ -177,21 +177,53 @@ router.post('/merge', async (req, res) => {
       return res.status(400).json({ error: { message: 'Cannot merge an account with itself' } });
     }
 
-    // Verify both belong to this org (not restricted to owner — matches duplicate detection scope)
+    // Verify BOTH accounts belong to THIS org
     const bothRes = await client.query(
-      `SELECT id, name, domain, industry, size, location, description, owner_id
+      `SELECT id, name, domain, industry, size, location, description, owner_id, org_id
        FROM accounts WHERE id IN ($1, $2) AND org_id = $3`,
       [keepId, removeId, req.orgId]
     );
     if (bothRes.rows.length !== 2) {
-      return res.status(404).json({ error: { message: 'One or both accounts not found' } });
+      return res.status(404).json({ error: { message: 'One or both accounts not found in your organisation' } });
     }
+
     const keepAcct   = bothRes.rows.find(r => r.id === keepId);
     const removeAcct = bothRes.rows.find(r => r.id === removeId);
 
+    // Double-check org_id matches on both (belt + suspenders)
+    if (keepAcct.org_id !== req.orgId || removeAcct.org_id !== req.orgId) {
+      return res.status(403).json({ error: { message: 'Cannot merge accounts from different organisations' } });
+    }
+
     await client.query('BEGIN');
 
-    // 1. Apply field overrides
+    // 0. Archive the removed account for recovery (create table if needed)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS merged_accounts_archive (
+        id              SERIAL PRIMARY KEY,
+        original_id     INTEGER NOT NULL,
+        merged_into_id  INTEGER NOT NULL,
+        org_id          INTEGER NOT NULL,
+        account_data    JSONB NOT NULL,
+        merged_by       INTEGER,
+        field_overrides JSONB DEFAULT '{}',
+        merged_at       TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      INSERT INTO merged_accounts_archive (original_id, merged_into_id, org_id, account_data, merged_by, field_overrides)
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `, [
+      removeId,
+      keepId,
+      req.orgId,
+      JSON.stringify(removeAcct),
+      req.user.userId,
+      JSON.stringify(fieldOverrides),
+    ]);
+
+    // 1. Apply field overrides to keeper
     const overridableFields = ['name', 'domain', 'industry', 'size', 'location', 'description'];
     const updates = [];
     const values  = [];
@@ -214,25 +246,31 @@ router.post('/merge', async (req, res) => {
       );
     }
 
-    // 2. Move contacts from removed account to keeper
-    await client.query(
-      `UPDATE contacts SET account_id = $1, updated_at = CURRENT_TIMESTAMP WHERE account_id = $2`,
-      [keepId, removeId]
+    // 2. Move contacts — scoped to org_id to prevent cross-org contamination
+    const movedContacts = await client.query(
+      `UPDATE contacts SET account_id = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE account_id = $2 AND org_id = $3
+       RETURNING id`,
+      [keepId, removeId, req.orgId]
     );
 
-    // 3. Move deals from removed account to keeper
-    await client.query(
-      `UPDATE deals SET account_id = $1, updated_at = CURRENT_TIMESTAMP WHERE account_id = $2`,
-      [keepId, removeId]
+    // 3. Move deals — scoped to org_id
+    const movedDeals = await client.query(
+      `UPDATE deals SET account_id = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE account_id = $2 AND org_id = $3
+       RETURNING id`,
+      [keepId, removeId, req.orgId]
     );
 
-    // 4. Delete the removed account
+    // 4. Delete the removed account (org-scoped)
     await client.query(
       `DELETE FROM accounts WHERE id = $1 AND org_id = $2`,
       [removeId, req.orgId]
     );
 
     await client.query('COMMIT');
+
+    console.log(`🔗 Account merge: kept #${keepId}, removed #${removeId} (org ${req.orgId}) — moved ${movedContacts.rowCount} contacts, ${movedDeals.rowCount} deals. Archived for recovery.`);
 
     // Fetch updated keeper
     const updatedRes = await db.query(
@@ -244,6 +282,8 @@ router.post('/merge', async (req, res) => {
       success: true,
       mergedAccount: updatedRes.rows[0],
       removedId: removeId,
+      movedContacts: movedContacts.rowCount,
+      movedDeals: movedDeals.rowCount,
     });
   } catch (error) {
     await client.query('ROLLBACK');
