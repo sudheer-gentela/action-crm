@@ -134,18 +134,33 @@ router.get('/pipeline/summary', async (req, res) => {
     );
 
     // Outreach metrics for the current week
+    // Note: prospecting_actions uses user_id, not owner_id
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     weekStart.setHours(0, 0, 0, 0);
 
-    const weekParams = [...params, weekStart];
+    // Build a separate filter for prospecting_actions (user_id instead of owner_id)
+    let actionOwnerFilter = '';
+    const actionParams = [req.orgId];
+    if (scope === 'team' && req.subordinateIds?.length > 0) {
+      const teamIds = [req.user.userId, ...req.subordinateIds];
+      actionOwnerFilter = `AND user_id = ANY($${actionParams.length + 1}::int[])`;
+      actionParams.push(teamIds);
+    } else if (scope === 'org') {
+      actionOwnerFilter = '';
+    } else {
+      actionOwnerFilter = `AND user_id = $${actionParams.length + 1}`;
+      actionParams.push(req.user.userId);
+    }
+    actionParams.push(weekStart);
+
     const outreachResult = await db.query(
       `SELECT
          COUNT(CASE WHEN status = 'completed' AND channel IS NOT NULL THEN 1 END) AS outreach_this_week,
          COUNT(CASE WHEN outcome IN ('replied','call_connected','meeting_booked') THEN 1 END) AS responses_this_week
        FROM prospecting_actions
-       WHERE org_id = $1 ${ownerFilter} AND created_at >= $${weekParams.length}`,
-      weekParams
+       WHERE org_id = $1 ${actionOwnerFilter} AND created_at >= $${actionParams.length}`,
+      actionParams
     );
 
     res.json({
