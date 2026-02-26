@@ -164,37 +164,8 @@ router.post('/', async (req, res) => {
   }
 });
 
-// ── PUT /:id — update account ────────────────────────────────────────────────
-router.put('/:id', async (req, res) => {
-  try {
-    const { name, domain, industry, size, location, description } = req.body;
-
-    const result = await db.query(
-      `UPDATE accounts
-       SET name        = COALESCE($1, name),
-           domain      = COALESCE($2, domain),
-           industry    = COALESCE($3, industry),
-           size        = COALESCE($4, size),
-           location    = COALESCE($5, location),
-           description = COALESCE($6, description),
-           updated_at  = CURRENT_TIMESTAMP
-       WHERE id = $7 AND org_id = $8 AND owner_id = $9
-       RETURNING *`,
-      [name, domain, industry, size, location, description, req.params.id, req.orgId, req.user.userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'Account not found' } });
-    }
-
-    res.json({ account: result.rows[0] });
-  } catch (error) {
-    console.error('Update account error:', error);
-    res.status(500).json({ error: { message: 'Failed to update account' } });
-  }
-});
-
 // ── POST /merge — merge two accounts ─────────────────────────────────────────
+// ⚠️  Must be declared BEFORE /:id routes so Express doesn't treat "merge" as an id
 router.post('/merge', async (req, res) => {
   const client = await (db.pool ? db.pool.connect() : db.connect());
   try {
@@ -280,6 +251,36 @@ router.post('/merge', async (req, res) => {
     res.status(500).json({ error: { message: 'Failed to merge accounts' } });
   } finally {
     client.release();
+  }
+});
+
+// ── PUT /:id — update account ────────────────────────────────────────────────
+router.put('/:id', async (req, res) => {
+  try {
+    const { name, domain, industry, size, location, description } = req.body;
+
+    const result = await db.query(
+      `UPDATE accounts
+       SET name        = COALESCE($1, name),
+           domain      = COALESCE($2, domain),
+           industry    = COALESCE($3, industry),
+           size        = COALESCE($4, size),
+           location    = COALESCE($5, location),
+           description = COALESCE($6, description),
+           updated_at  = CURRENT_TIMESTAMP
+       WHERE id = $7 AND org_id = $8 AND owner_id = $9
+       RETURNING *`,
+      [name, domain, industry, size, location, description, req.params.id, req.orgId, req.user.userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Account not found' } });
+    }
+
+    res.json({ account: result.rows[0] });
+  } catch (error) {
+    console.error('Update account error:', error);
+    res.status(500).json({ error: { message: 'Failed to update account' } });
   }
 });
 
