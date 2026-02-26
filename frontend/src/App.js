@@ -12,6 +12,7 @@ import SuperAdminView from './SuperAdminView';
 import OrgAdminView from './OrgAdminView';
 import ActionContextPanel from './ActionContextPanel';
 import AgentInboxView from './AgentInboxView';
+import PlaybooksView from './PlaybooksView';
 import Sidebar from './Sidebar';
 
 // ─────────────────────────────────────────────────────────────
@@ -468,13 +469,7 @@ function Dashboard({ user, onLogout }) {
           )}
           {currentTab === 'settings'     && <SettingsView />}
           {currentTab === 'agent'        && <AgentInboxView />}
-          {currentTab === 'playbooks'    && (
-            <div style={{ padding: '40px 24px', textAlign: 'center', color: '#64748b' }}>
-              <div style={{ fontSize: '48px', marginBottom: '16px' }}>📋</div>
-              <h2 style={{ marginBottom: '8px', color: '#0f172a' }}>Playbooks</h2>
-              <p>Sales playbooks and stage guidance will appear here.</p>
-            </div>
-          )}
+          {currentTab === 'playbooks'    && <PlaybooksView />}
           {/* Org admin view — only when activeRole is org-admin */}
           {currentTab === 'org-admin'    && activeRole === 'org-admin'   && <OrgAdminView />}
           {/* Super admin view — only when activeRole is super-admin */}
