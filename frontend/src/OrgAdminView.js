@@ -606,11 +606,6 @@ function OAHierarchy() {
     borderLeft: depth > 0 ? '2px solid #c7d2fe' : 'none',
   });
 
-  const nodeConnectorBefore = (depth) => depth > 0 ? {
-    content: '""', position: 'absolute', left: '-2px', top: '22px',
-    width: '20px', height: '0', borderTop: '2px solid #c7d2fe',
-  } : {};
-
   // ── Render a tree node ─────────────────────────────────────
   const renderNode = (node, depth = 0) => {
     const isEditing = editing === node.user_id;
