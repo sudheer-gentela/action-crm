@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { apiService } from './apiService';
 import './ProspectingView.css';
 
 // ── Constants ────────────────────────────────────────────────────────────────
