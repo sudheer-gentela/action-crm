@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
+import { csvExport, EXPORT_COLUMNS } from './csvUtils';
 import './ActionsView.css';
 import EmailComposer from './EmailComposer';
 import SnoozeModal from './SnoozeModal';
@@ -971,6 +972,11 @@ export default function ActionsView() {
               disabled={generating || loading}
             >
               {generating ? '⏳ Generating…' : '⚡ Generate Actions'}
+            </button>
+            <button onClick={() => csvExport(actions, EXPORT_COLUMNS.actions, `actions-${scope}-${new Date().toISOString().slice(0,10)}.csv`)} title="Export CSV"
+              style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #d1d5db',
+                       background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+              📤 Export
             </button>
           </div>
         </div>

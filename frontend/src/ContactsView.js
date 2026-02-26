@@ -4,6 +4,8 @@ import { mockData, enrichData } from './mockData';
 import ContactForm from './ContactForm';
 import EmailComposer from './EmailComposer';
 import ContactMergeBanner from './ContactMergeBanner';
+import { csvExport, EXPORT_COLUMNS } from './csvUtils';
+import CSVImportModal from './CSVImportModal';
 import './ContactsView.css';
 
 // Fields that can be inline-edited on the contact detail panel
@@ -53,6 +55,7 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
   // Email composer state
   const [showEmailComposer, setShowEmailComposer] = useState(false);
   const [emailComposerPrefill, setEmailComposerPrefill] = useState(null);
+  const [showImportModal, setShowImportModal] = useState(false);
 
   // Deal suggestion snooze state
   const [snoozedSuggestions, setSnoozedSuggestions] = useState(() => {
@@ -239,6 +242,17 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
       console.error('Error tagging contact to deal:', err);
       setError(`Failed to link contact to deal: ${err.response?.data?.error?.message || err.message}`);
     }
+  };
+
+  const handleExportCSV = () => {
+    csvExport(contacts, EXPORT_COLUMNS.contacts, `contacts-${scope}-${new Date().toISOString().slice(0,10)}.csv`);
+  };
+
+  const handleImportContacts = async (rows) => {
+    const response = await apiService.contacts.bulk(rows);
+    const result = response.data;
+    if (result.imported > 0) loadContacts();
+    return result;
   };
 
   // ── Email / Meeting helpers ─────────────────────────────────────────────
@@ -510,6 +524,16 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
           )}
           <button className="btn-primary" onClick={() => setShowForm(true)}>
             + New Contact
+          </button>
+          <button onClick={handleExportCSV} title="Export CSV"
+            style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #d1d5db',
+                     background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+            📤 Export
+          </button>
+          <button onClick={() => setShowImportModal(true)} title="Import CSV"
+            style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #d1d5db',
+                     background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+            📥 Import
           </button>
         </div>
       </div>
@@ -826,6 +850,16 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
           prefill={emailComposerPrefill}
           onSubmit={handleSendEmail}
           onClose={() => { setShowEmailComposer(false); setEmailComposerPrefill(null); }}
+        />
+      )}
+
+      {/* CSV Import Modal */}
+      {showImportModal && (
+        <CSVImportModal
+          entity="contacts"
+          accounts={accounts}
+          onImport={handleImportContacts}
+          onClose={() => setShowImportModal(false)}
         />
       )}
     </div>

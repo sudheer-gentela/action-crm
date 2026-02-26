@@ -3,6 +3,8 @@ import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import AccountForm from './AccountForm';
 import AccountMergeBanner from './AccountMergeBanner';
+import { csvExport, EXPORT_COLUMNS } from './csvUtils';
+import CSVImportModal from './CSVImportModal';
 import './AccountsView.css';
 
 const EDITABLE_FIELDS = {
@@ -27,6 +29,7 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
   // Inline editing
   const [editingField, setEditingField] = useState(null);
   const [savingField, setSavingField] = useState(null);
+  const [showImportModal, setShowImportModal] = useState(false);
 
   // ── Scope toggle state ────────────────────────────────────────
   const [scope, setScope] = useState('mine');
@@ -157,6 +160,17 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
 
   const nav = (tab, extra) =>
     window.dispatchEvent(new CustomEvent('navigate', { detail: { tab, ...extra } }));
+
+  const handleExportCSV = () => {
+    csvExport(accounts, EXPORT_COLUMNS.accounts, `accounts-${scope}-${new Date().toISOString().slice(0,10)}.csv`);
+  };
+
+  const handleImportAccounts = async (rows) => {
+    const response = await apiService.accounts.bulk(rows);
+    const result = response.data;
+    if (result.imported > 0) loadAccounts();
+    return result;
+  };
 
   // ── Render editable field ───────────────────────────────────────────────
 
@@ -303,6 +317,16 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
           )}
           <button className="btn-primary" onClick={() => setShowForm(true)}>
             + New Account
+          </button>
+          <button onClick={handleExportCSV} title="Export CSV"
+            style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #d1d5db',
+                     background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+            📤 Export
+          </button>
+          <button onClick={() => setShowImportModal(true)} title="Import CSV"
+            style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #d1d5db',
+                     background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+            📥 Import
           </button>
         </div>
       </div>
@@ -476,6 +500,15 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
           account={editingAccount}
           onSubmit={editingAccount ? handleUpdateAccount : handleCreateAccount}
           onClose={() => { setShowForm(false); setEditingAccount(null); }}
+        />
+      )}
+
+      {/* CSV Import Modal */}
+      {showImportModal && (
+        <CSVImportModal
+          entity="accounts"
+          onImport={handleImportAccounts}
+          onClose={() => setShowImportModal(false)}
         />
       )}
     </div>

@@ -43,6 +43,7 @@ export const apiService = {
     getDuplicates: () => api.get('/accounts/duplicates'),
     merge: (keepId, removeId, fieldOverrides = {}) =>
       api.post('/accounts/merge', { keepId, removeId, fieldOverrides }),
+    bulk: (rows) => api.post('/accounts/bulk', { rows }),
   },
 
   // Contacts
@@ -56,6 +57,7 @@ export const apiService = {
     getDuplicates: () => api.get('/contacts/duplicates'),
     merge: (keepId, removeId, fieldOverrides = {}) =>
       api.post('/contacts/merge', { keepId, removeId, fieldOverrides }),
+    bulk: (rows) => api.post('/contacts/bulk', { rows }),
   },
 
   // Deals
@@ -66,7 +68,8 @@ export const apiService = {
     getPlaybookGuide: (id) => api.get(`/deals/${id}/playbook-guide`),
     create: (data) => api.post('/deals', data),
     update: (id, data) => api.put(`/deals/${id}`, data),
-    delete: (id) => api.delete(`/deals/${id}`)
+    delete: (id) => api.delete(`/deals/${id}`),
+    bulk: (rows) => api.post('/deals/bulk', { rows }),
   },
 
   // Emails

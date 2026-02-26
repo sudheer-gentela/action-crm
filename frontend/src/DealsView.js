@@ -10,6 +10,8 @@ import DealTeamPanel from './DealTeamPanel';
 import DealContactsPanel from './DealContactsPanel';
 import DealEmailHistory from './DealEmailHistory';
 import DealFilesPanel from './DealFilesPanel';
+import { csvExport, EXPORT_COLUMNS } from './csvUtils';
+import CSVImportModal from './CSVImportModal';
 import './DealsView.css';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
@@ -38,6 +40,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
   const [scoringDealId, setScoringDealId] = useState(null);
   const [editingField, setEditingField]   = useState(null);
   const [savingField, setSavingField]     = useState(null);
+  const [showImportModal, setShowImportModal] = useState(false);
 
   // Dynamic stages state
   const [orgStages, setOrgStages] = useState(FALLBACK_STAGES);
@@ -213,6 +216,17 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
     }
   };
 
+  const handleExportCSV = () => {
+    csvExport(deals, EXPORT_COLUMNS.deals, `deals-${scope}-${new Date().toISOString().slice(0,10)}.csv`);
+  };
+
+  const handleImportDeals = async (rows) => {
+    const response = await apiService.deals.bulk(rows);
+    const result = response.data;
+    if (result.imported > 0) fetchDeals();
+    return result;
+  };
+
   const handleInlineFieldSave = async (field, value) => {
     if (!selectedDeal) return;
     setSavingField(field);
@@ -303,6 +317,16 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
           )}
           <button className="btn-primary" onClick={() => setShowForm(true)}>
             + New Deal
+          </button>
+          <button onClick={handleExportCSV} title="Export CSV"
+            style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #d1d5db',
+                     background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+            📤 Export
+          </button>
+          <button onClick={() => setShowImportModal(true)} title="Import CSV"
+            style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #d1d5db',
+                     background: '#fff', fontSize: 13, cursor: 'pointer' }}>
+            📥 Import
           </button>
         </div>
       </div>
@@ -891,6 +915,15 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
         <TranscriptAnalysis
           transcriptId={viewingTranscriptId}
           onClose={() => setViewingTranscriptId(null)}
+        />
+      )}
+      {/* CSV Import Modal */}
+      {showImportModal && (
+        <CSVImportModal
+          entity="deals"
+          accounts={accounts}
+          onImport={handleImportDeals}
+          onClose={() => setShowImportModal(false)}
         />
       )}
     </div>
