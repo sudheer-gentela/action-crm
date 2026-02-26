@@ -2112,12 +2112,6 @@ function OAAgentSettings() {
   );
 }
 
-const arrowBtn = {
-  background: 'none', border: '1px solid #e5e7eb', borderRadius: 3,
-  cursor: 'pointer', fontSize: 10, padding: '1px 4px', color: '#6b7280',
-  lineHeight: 1,
-};
-
 // ═══════════════════════════════════════════════════════════════
 // Duplicate Detection Settings (Org Admin)
 // ═══════════════════════════════════════════════════════════════
