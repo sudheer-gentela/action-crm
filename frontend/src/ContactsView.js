@@ -806,6 +806,32 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
                 {renderEditableField('notes', selectedContact)}
               </div>
 
+              {/* ── 5b. Prospecting Origin ─────────────────────────── */}
+              {selectedContact.converted_from_prospect_id && (
+                <div className="detail-section">
+                  <h3>🎯 Prospecting Origin</h3>
+                  <div style={{
+                    padding: '10px 14px', background: '#f0fdfa', borderRadius: '8px',
+                    border: '1px solid #99f6e4', display: 'flex', alignItems: 'center',
+                    gap: '8px', cursor: 'pointer',
+                  }}
+                  onClick={() => {
+                    window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'prospecting' } }));
+                  }}
+                  >
+                    <span style={{ fontSize: '16px' }}>🎯</span>
+                    <div>
+                      <span style={{ fontSize: '13px', fontWeight: 600, color: '#0F9D8E' }}>
+                        Converted from Prospect #{selectedContact.converted_from_prospect_id}
+                      </span>
+                      <span style={{ display: 'block', fontSize: '11px', color: '#6b7280' }}>
+                        Click to view prospecting history →
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* ── 6. Quick Actions ───────────────────────────────── */}
               <div className="detail-section">
                 <h3>⚡ Quick Actions</h3>

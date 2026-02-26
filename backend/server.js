@@ -28,6 +28,12 @@ const dealTeamRoutes   = require('./routes/deal-team.routes');
 const dealContactsRoutes = require('./routes/deal-contacts.routes');
 const dealStagesRoutes = require('./routes/deal-stages.routes');
 
+// Prospecting Module
+const prospectsRoutes           = require('./routes/prospects.routes');
+const prospectingActionsRoutes  = require('./routes/prospecting-actions.routes');
+const accountProspectingRoutes  = require('./routes/account-prospecting.routes');
+const unifiedActionsRoutes      = require('./routes/unified-actions.routes');
+
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
 // auth middleware is used inside individual route files.
@@ -171,6 +177,12 @@ app.use('/api/deal-roles', dealRolesRoutes);
 app.use('/api/deal-team',  dealTeamRoutes);
 app.use('/api/deal-contacts', dealContactsRoutes);
 app.use('/api/deal-stages',   dealStagesRoutes);
+
+// ─── Prospecting Module ──────────────────────────────────────
+app.use('/api/prospects',           prospectsRoutes);
+app.use('/api/prospecting-actions', prospectingActionsRoutes);
+app.use('/api/accounts',            accountProspectingRoutes); // /:id/prospecting, /:id/coverage
+app.use('/api/actions',             unifiedActionsRoutes);     // /unified
 
 // ─────────────────────────────────────────────────────────────
 // Error handling

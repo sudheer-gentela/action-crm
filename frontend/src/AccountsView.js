@@ -471,7 +471,10 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
                 )}
               </div>
 
-              {/* ── 5. Quick Actions ────────────────────────────────── */}
+              {/* ── 5. Prospecting ─────────────────────────────────── */}
+              <AccountProspectingSection accountId={selectedAccount.id} />
+
+              {/* ── 6. Quick Actions ────────────────────────────────── */}
               <div className="detail-section">
                 <h3>⚡ Quick Actions</h3>
                 <div className="quick-actions">
@@ -548,6 +551,63 @@ function AccountCard({ account, deals, contacts, totalValue, onEdit, onDelete, o
         </div>
       </div>
       {account.location && <p className="account-location">📍 {account.location}</p>}
+    </div>
+  );
+}
+
+// ── Account Prospecting Section ───────────────────────────────────────────────
+
+function AccountProspectingSection({ accountId }) {
+  const [prospects, setProspects] = useState([]);
+  const [loading, setLoading]     = useState(true);
+
+  useEffect(() => {
+    if (!accountId) return;
+    setLoading(true);
+    apiService.accountProspecting.getOverview(accountId)
+      .then(res => {
+        setProspects(res.data?.prospects || []);
+      })
+      .catch(() => setProspects([]))
+      .finally(() => setLoading(false));
+  }, [accountId]);
+
+  if (loading) return null;
+  if (prospects.length === 0) return null;
+
+  const STAGE_COLORS = {
+    target: '#6b7280', researched: '#8b5cf6', contacted: '#3b82f6',
+    engaged: '#0F9D8E', qualified: '#10b981', converted: '#059669',
+    disqualified: '#ef4444', nurture: '#f59e0b',
+  };
+
+  return (
+    <div className="detail-section">
+      <h3>🎯 Prospecting ({prospects.length})</h3>
+      <div className="linked-items-list">
+        {prospects.map(p => (
+          <div
+            key={p.id}
+            className="linked-item"
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'prospecting' } }));
+            }}
+            style={{ cursor: 'pointer' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontWeight: 600, fontSize: '13px' }}>{p.first_name} {p.last_name}</span>
+              {p.title && <span style={{ fontSize: '11px', color: '#6b7280' }}>{p.title}</span>}
+            </div>
+            <span style={{
+              fontSize: '11px', fontWeight: 600, padding: '2px 8px', borderRadius: '4px',
+              background: (STAGE_COLORS[p.stage] || '#6b7280') + '20',
+              color: STAGE_COLORS[p.stage] || '#6b7280',
+            }}>
+              {p.stage}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

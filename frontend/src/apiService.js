@@ -263,6 +263,54 @@ export const apiService = {
     getAuditLog:       (params = {})             => api.get('/super/audit', { params }),
   },
 
+  // ── Prospects ────────────────────────────────────────────────
+  prospects: {
+    getAll: (scope = 'mine', params = {}) => {
+      const qs = new URLSearchParams({ scope, ...params }).toString();
+      return api.get(`/prospects?${qs}`);
+    },
+    getById:          (id)                        => api.get(`/prospects/${id}`),
+    create:           (data)                      => api.post('/prospects', data),
+    update:           (id, data)                  => api.put(`/prospects/${id}`, data),
+    delete:           (id)                        => api.delete(`/prospects/${id}`),
+    updateStage:      (id, stage, reason)         => api.post(`/prospects/${id}/stage`, { stage, reason }),
+    disqualify:       (id, reason)                => api.post(`/prospects/${id}/disqualify`, { reason }),
+    nurture:          (id, nurtureUntil, reason)  => api.post(`/prospects/${id}/nurture`, { nurtureUntil, reason }),
+    convert:          (id, data)                  => api.post(`/prospects/${id}/convert`, data),
+    linkAccount:      (id, accountId)             => api.post(`/prospects/${id}/link-account`, { accountId }),
+    linkContact:      (id, contactId)             => api.post(`/prospects/${id}/link-contact`, { contactId }),
+    getActivities:    (id)                        => api.get(`/prospects/${id}/activities`),
+    getPipelineSummary: (scope = 'mine')           => api.get(`/prospects/pipeline/summary?scope=${scope}`),
+  },
+
+  // ── Prospecting Actions ─────────────────────────────────────
+  prospectingActions: {
+    getAll: (params = {}) => {
+      const qs = new URLSearchParams(params).toString();
+      return api.get(`/prospecting-actions${qs ? '?' + qs : ''}`);
+    },
+    getById:       (id)                         => api.get(`/prospecting-actions/${id}`),
+    create:        (data)                       => api.post('/prospecting-actions', data),
+    update:        (id, data)                   => api.put(`/prospecting-actions/${id}`, data),
+    updateStatus:  (id, status, outcome)        => api.patch(`/prospecting-actions/${id}/status`, { status, outcome }),
+    snooze:        (id, duration, reason)       => api.patch(`/prospecting-actions/${id}/snooze`, { duration, reason }),
+    unsnooze:      (id)                         => api.patch(`/prospecting-actions/${id}/unsnooze`),
+    execute:       (id, outcome, notes)         => api.post(`/prospecting-actions/${id}/execute`, { outcome, notes }),
+    delete:        (id)                         => api.delete(`/prospecting-actions/${id}`),
+  },
+
+  // ── Account Prospecting ─────────────────────────────────────
+  accountProspecting: {
+    getOverview: (accountId)              => api.get(`/accounts/${accountId}/prospecting`),
+    getCoverage: (accountId, playbookId)  => api.get(`/accounts/${accountId}/coverage?playbookId=${playbookId}`),
+  },
+
+  // ── Unified Actions ─────────────────────────────────────────
+  unifiedActions: {
+    getAll: (scope = 'mine', source = 'all') =>
+      api.get(`/actions/unified?scope=${scope}&source=${source}`),
+  },
+
   // ── Org Admin (org-level) ─────────────────────────────────────
   orgAdmin: {
     getProfile:      ()               => api.get('/org/admin/profile'),

@@ -711,6 +711,7 @@ export default function ActionsView() {
 
   // ── Scope toggle state ────────────────────────────────────────
   const [scope, setScope] = useState('mine');   // 'mine' | 'team' | 'org'
+  const [actionSource, setActionSource] = useState('all'); // 'all' | 'deals' | 'prospecting'
   const [hasTeam, setHasTeam] = useState(false);
 
   useEffect(() => {
@@ -966,6 +967,31 @@ export default function ActionsView() {
                 ))}
               </div>
             )}
+            {/* Source filter — Deals vs Prospecting */}
+            <div style={{
+              display: 'inline-flex', borderRadius: '8px', overflow: 'hidden',
+              border: '1px solid #e2e4ea', fontSize: '13px',
+            }}>
+              {[
+                { key: 'all',         label: 'All' },
+                { key: 'deals',       label: '💼 Deals' },
+                { key: 'prospecting', label: '🎯 Prospecting' },
+              ].map(s => (
+                <button
+                  key={s.key}
+                  onClick={() => setActionSource(s.key)}
+                  style={{
+                    padding: '6px 14px', border: 'none', cursor: 'pointer',
+                    background: actionSource === s.key ? (s.key === 'prospecting' ? '#0F9D8E' : '#4f46e5') : '#fff',
+                    color: actionSource === s.key ? '#fff' : '#4b5563',
+                    fontWeight: actionSource === s.key ? 600 : 400,
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
             <button
               className="av-generate-btn"
               onClick={handleGenerateActions}

@@ -13,6 +13,7 @@ import OrgAdminView from './OrgAdminView';
 import ActionContextPanel from './ActionContextPanel';
 import AgentInboxView from './AgentInboxView';
 import PlaybooksView from './PlaybooksView';
+import ProspectingView from './ProspectingView';
 import Sidebar from './Sidebar';
 
 // ─────────────────────────────────────────────────────────────
@@ -24,10 +25,11 @@ import Sidebar from './Sidebar';
 // Nav items per role — each role only sees its own set
 const NAV_ITEMS_BY_ROLE = {
   member: [
-    { id: 'deals',     label: 'Deals',     icon: '💼' },
+    { id: 'actions',      label: 'Actions',      icon: '⚡' },
+    { id: 'prospecting',  label: 'Prospecting',  icon: '🎯' },
+    { id: 'deals',        label: 'Deals',        icon: '💼' },
     { id: 'accounts',  label: 'Accounts',  icon: '🏢' },
     { id: 'contacts',  label: 'Contacts',  icon: '👥' },
-    { id: 'actions',   label: 'Actions',   icon: '⚡' },
     { id: 'email',     label: 'Email',     icon: '✉️' },
     { id: 'calendar',  label: 'Calendar',  icon: '📅' },
     { id: 'files',     label: 'Files',     icon: '📁' },
@@ -436,6 +438,7 @@ function Dashboard({ user, onLogout }) {
         <div className="content-area">
           {/* Member views */}
           {currentTab === 'actions'      && <ActionsView />}
+          {currentTab === 'prospecting'  && <ProspectingView />}
           {currentTab === 'deals'        && (
             <DealsView
               openDealId={pendingDealId}
