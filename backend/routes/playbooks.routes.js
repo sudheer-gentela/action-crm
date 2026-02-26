@@ -46,16 +46,63 @@ async function buildDefaultGuidance(orgId) {
   return guidance;
 }
 
+// ── Helper: build default stage_guidance for prospecting playbooks ─────────
+// Uses prospect lifecycle stages instead of deal stages.
+
+function buildDefaultProspectingGuidance() {
+  return {
+    target: {
+      goal: 'Verify ICP fit and gather basic company intel',
+      key_actions: ['research_company', 'research_contact'],
+      success_criteria: ['Company research completed', 'ICP score above threshold'],
+      timeline: '1-2 days',
+    },
+    researched: {
+      goal: 'Prepare personalised outreach based on research findings',
+      key_actions: ['craft_outreach', 'identify_pain_points'],
+      success_criteria: ['Personalised message drafted', 'Value prop mapped to pain points'],
+      timeline: '1 day',
+    },
+    contacted: {
+      goal: 'Execute multi-touch outreach sequence and get a response',
+      key_actions: ['send_email', 'send_linkedin', 'follow_up', 'make_call'],
+      success_criteria: ['Response received', 'Meeting booked', 'Or sequence exhausted'],
+      timeline: '2-3 weeks',
+      cadence: { touches: 8, span_days: 21 },
+    },
+    engaged: {
+      goal: 'Deepen conversation and qualify the opportunity',
+      key_actions: ['discovery_call', 'qualify', 'share_resources'],
+      success_criteria: ['Budget confirmed', 'Decision timeline identified', 'Champion identified'],
+      timeline: '1-2 weeks',
+    },
+    qualified: {
+      goal: 'Convert to a deal with a clear next step',
+      key_actions: ['schedule_demo', 'intro_to_ae', 'convert'],
+      success_criteria: ['Deal created in pipeline', 'Meeting scheduled with decision maker'],
+      timeline: '1 week',
+    },
+  };
+}
+
 // ── GET / — list all playbooks for org ───────────────────────────────────────
+// Supports ?type=prospecting to filter by type
 router.get('/', async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT id, name, type, description, is_default, created_at, updated_at
+    const { type } = req.query;
+    let query = `SELECT id, name, type, description, is_default, created_at, updated_at
        FROM playbooks
-       WHERE org_id = $1
-       ORDER BY is_default DESC, name ASC`,
-      [req.orgId]
-    );
+       WHERE org_id = $1`;
+    const params = [req.orgId];
+
+    if (type) {
+      query += ` AND type = $2`;
+      params.push(type);
+    }
+
+    query += ` ORDER BY is_default DESC, name ASC`;
+
+    const result = await db.query(query, params);
     res.json({ playbooks: result.rows });
   } catch (err) {
     console.error('List playbooks error:', err);
@@ -109,7 +156,7 @@ router.post('/', adminOnly, async (req, res) => {
       return res.status(400).json({ error: { message: 'Playbook name is required' } });
     }
 
-    const VALID_TYPES = ['market', 'product', 'custom'];
+    const VALID_TYPES = ['market', 'product', 'custom', 'prospecting'];
     if (!VALID_TYPES.includes(type)) {
       return res.status(400).json({ error: { message: `type must be one of: ${VALID_TYPES.join(', ')}` } });
     }
@@ -122,9 +169,10 @@ router.post('/', adminOnly, async (req, res) => {
     }
 
     // Auto-populate stage_guidance from salesPlaybook defaults when none provided
+    // (skip for prospecting playbooks — they use prospect stages, not deal stages)
     const resolvedGuidance = (Object.keys(stage_guidance).length > 0)
       ? stage_guidance
-      : await buildDefaultGuidance(req.orgId);
+      : (type === 'prospecting' ? buildDefaultProspectingGuidance() : await buildDefaultGuidance(req.orgId));
 
     const result = await db.query(
       `INSERT INTO playbooks (org_id, name, type, description, content, stage_guidance, is_default)
@@ -154,7 +202,7 @@ router.put('/:id', adminOnly, async (req, res) => {
       return res.status(404).json({ error: { message: 'Playbook not found' } });
     }
 
-    const VALID_TYPES = ['market', 'product', 'custom'];
+    const VALID_TYPES = ['market', 'product', 'custom', 'prospecting'];
     if (type && !VALID_TYPES.includes(type)) {
       return res.status(400).json({ error: { message: `type must be one of: ${VALID_TYPES.join(', ')}` } });
     }
