@@ -177,11 +177,11 @@ router.post('/merge', async (req, res) => {
       return res.status(400).json({ error: { message: 'Cannot merge an account with itself' } });
     }
 
-    // Verify both belong to this user/org
+    // Verify both belong to this org (not restricted to owner — matches duplicate detection scope)
     const bothRes = await client.query(
-      `SELECT id, name, domain, industry, size, location, description
-       FROM accounts WHERE id IN ($1, $2) AND org_id = $3 AND owner_id = $4`,
-      [keepId, removeId, req.orgId, req.user.userId]
+      `SELECT id, name, domain, industry, size, location, description, owner_id
+       FROM accounts WHERE id IN ($1, $2) AND org_id = $3`,
+      [keepId, removeId, req.orgId]
     );
     if (bothRes.rows.length !== 2) {
       return res.status(404).json({ error: { message: 'One or both accounts not found' } });
