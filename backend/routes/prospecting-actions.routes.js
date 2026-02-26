@@ -3,7 +3,6 @@ const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
-const { generateForProspect } = require('../services/prospectingActions.service');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -238,37 +237,27 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// ── PATCH /:id/status — update status (complete/reopen) ──────────────────────
+// ── PATCH /:id/status — change status ────────────────────────────────────────
 router.patch('/:id/status', async (req, res) => {
   try {
     const { status, outcome } = req.body;
-    const VALID_STATUSES = ['pending', 'in_progress', 'completed', 'skipped'];
-    if (!VALID_STATUSES.includes(status)) {
-      return res.status(400).json({ error: { message: `status must be one of: ${VALID_STATUSES.join(', ')}` } });
+    const VALID = ['pending', 'in_progress', 'completed', 'skipped', 'failed'];
+    if (!VALID.includes(status)) {
+      return res.status(400).json({ error: { message: `status must be one of: ${VALID.join(', ')}` } });
     }
 
     const isCompleting = status === 'completed';
 
-    const updates = [`status = $1`, `updated_at = CURRENT_TIMESTAMP`];
-    const params = [status];
-    if (isCompleting) {
-      updates.push(`completed_at = CURRENT_TIMESTAMP`, `completed_by = $${params.length + 1}`);
-      params.push(req.user.userId);
-      if (outcome) {
-        updates.push(`outcome = $${params.length + 1}`);
-        params.push(outcome);
-      }
-    }
-
-    params.push(req.params.id, req.orgId, req.user.userId);
-    const idIdx = params.length - 2;
-
     const result = await db.query(
       `UPDATE prospecting_actions
-       SET ${updates.join(', ')}
-       WHERE id = $${idIdx} AND org_id = $${idIdx + 1} AND user_id = $${idIdx + 2}
+       SET status       = $1,
+           outcome      = COALESCE($2, outcome),
+           completed_at = CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE completed_at END,
+           completed_by = CASE WHEN $3 THEN $4 ELSE completed_by END,
+           updated_at   = CURRENT_TIMESTAMP
+       WHERE id = $5 AND org_id = $6 AND user_id = $4
        RETURNING *`,
-      params
+      [status, outcome || null, isCompleting, req.user.userId, req.params.id, req.orgId]
     );
 
     if (result.rows.length === 0) {
@@ -277,13 +266,13 @@ router.patch('/:id/status', async (req, res) => {
 
     const action = result.rows[0];
 
-    // Auto-advance logic on completion of outreach actions
+    // If completing an outreach action, update prospect's engagement tracking
     if (isCompleting && action.channel) {
       await db.query(
         `UPDATE prospects
          SET outreach_count = outreach_count + 1,
              last_outreach_at = CURRENT_TIMESTAMP,
-             current_sequence_step = COALESCE($1, current_sequence_step),
+             current_sequence_step = GREATEST(current_sequence_step, COALESCE($1, 0)),
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $2`,
         [action.sequence_step, action.prospect_id]
@@ -492,158 +481,6 @@ router.post('/:id/execute', async (req, res) => {
   }
 });
 
-// ── POST /generate — generate actions from playbook for a prospect ──────────
-router.post('/generate', async (req, res) => {
-  try {
-    const { prospectId } = req.body;
-    if (!prospectId) {
-      return res.status(400).json({ error: { message: 'prospectId is required' } });
-    }
-
-    const result = await generateForProspect(prospectId, req.orgId, req.user.userId);
-    res.json(result);
-  } catch (error) {
-    console.error('Generate actions error:', error);
-    res.status(400).json({ error: { message: error.message || 'Failed to generate actions' } });
-  }
-});
-
-// ── POST /outreach-send — create a completed outreach + optional email record ─
-// Used by OutreachComposer to log any channel's outreach in one call.
-// For email channel, also creates an emails record with prospect_id set.
-router.post('/outreach-send', async (req, res) => {
-  try {
-    const {
-      prospectId, channel, subject, body, outcome,
-      notes, toAddress,
-    } = req.body;
-
-    if (!prospectId || !channel) {
-      return res.status(400).json({ error: { message: 'prospectId and channel are required' } });
-    }
-
-    // Verify prospect
-    const pRes = await db.query(
-      'SELECT * FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL',
-      [prospectId, req.orgId]
-    );
-    if (pRes.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'Prospect not found' } });
-    }
-    const prospect = pRes.rows[0];
-
-    const channelLabel = channel.charAt(0).toUpperCase() + channel.slice(1);
-    const title = `${channelLabel} outreach to ${prospect.first_name} ${prospect.last_name}`;
-
-    // Create completed action
-    const actionResult = await db.query(
-      `INSERT INTO prospecting_actions (
-         org_id, user_id, prospect_id, title, action_type, channel,
-         message_subject, message_body, status, completed_at, completed_by,
-         outcome, source, message_metadata
-       ) VALUES ($1, $2, $3, $4, 'outreach', $5, $6, $7, 'completed', CURRENT_TIMESTAMP, $2, $8, 'manual', $9)
-       RETURNING *`,
-      [
-        req.orgId, req.user.userId, prospectId, title, channel,
-        subject || null, body || null,
-        outcome || 'sent',
-        JSON.stringify({ notes: notes || null, toAddress: toAddress || null }),
-      ]
-    );
-
-    // Update prospect outreach tracking
-    await db.query(
-      `UPDATE prospects
-       SET outreach_count = outreach_count + 1,
-           last_outreach_at = CURRENT_TIMESTAMP,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1`,
-      [prospectId]
-    );
-
-    // Auto-advance target/researched → contacted
-    if (['target', 'researched'].includes(prospect.stage)) {
-      await db.query(
-        `UPDATE prospects SET stage = 'contacted', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1`,
-        [prospectId]
-      );
-      await db.query(
-        `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
-         VALUES ($1, $2, 'stage_change', 'Auto-advanced to contacted after first outreach')`,
-        [prospectId, req.user.userId]
-      );
-    }
-
-    // If response outcome, advance engaged
-    if (['replied', 'call_connected', 'meeting_booked'].includes(outcome)) {
-      await db.query(
-        `UPDATE prospects
-         SET response_count = response_count + 1, last_response_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1`,
-        [prospectId]
-      );
-      if (prospect.stage === 'contacted') {
-        await db.query(
-          `UPDATE prospects SET stage = 'engaged', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-           WHERE id = $1`,
-          [prospectId]
-        );
-        await db.query(
-          `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
-           VALUES ($1, $2, 'stage_change', 'Auto-advanced to engaged after response received')`,
-          [prospectId, req.user.userId]
-        );
-      }
-    }
-
-    // For email channel, also create an emails record
-    let emailRecord = null;
-    if (channel === 'email' && (subject || body)) {
-      try {
-        const emailResult = await db.query(
-          `INSERT INTO emails (
-             org_id, user_id, prospect_id, contact_id,
-             subject, body, to_address, direction, status
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'outbound', 'sent')
-           RETURNING id`,
-          [
-            req.orgId, req.user.userId, prospectId,
-            prospect.contact_id || null,
-            subject || '', body || '', toAddress || prospect.email || '',
-          ]
-        );
-        emailRecord = { id: emailResult.rows[0].id };
-      } catch (emailErr) {
-        // Non-fatal — email record creation can fail if emails table schema differs
-        console.warn('Could not create emails record for prospect outreach:', emailErr.message);
-      }
-    }
-
-    // Log activity
-    await db.query(
-      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, 'outreach_sent', $3, $4)`,
-      [
-        prospectId, req.user.userId,
-        `${channelLabel} outreach sent${outcome && outcome !== 'sent' ? ` — outcome: ${outcome}` : ''}`,
-        JSON.stringify({
-          channel, outcome: outcome || 'sent', actionId: actionResult.rows[0].id,
-          emailId: emailRecord?.id || null,
-        }),
-      ]
-    );
-
-    res.json({
-      action: mapActionRow(actionResult.rows[0]),
-      emailId: emailRecord?.id || null,
-    });
-  } catch (error) {
-    console.error('Outreach send error:', error);
-    res.status(500).json({ error: { message: 'Failed to send outreach' } });
-  }
-});
-
 // ── DELETE /:id ──────────────────────────────────────────────────────────────
 router.delete('/:id', async (req, res) => {
   try {
@@ -662,5 +499,288 @@ router.delete('/:id', async (req, res) => {
     res.status(500).json({ error: { message: 'Failed to delete action' } });
   }
 });
+
+// ── POST /generate — generate actions from a prospect's assigned playbook ────
+// Reads the prospect's current stage, looks up the playbook's stage_guidance for
+// that stage, and creates prospecting_actions from the key_actions list.
+// Skips actions that already exist (by title match) to avoid duplicates.
+
+router.post('/generate', async (req, res) => {
+  try {
+    const { prospectId } = req.body;
+    if (!prospectId) {
+      return res.status(400).json({ error: { message: 'prospectId is required' } });
+    }
+
+    // 1. Load the prospect
+    const prospectResult = await db.query(
+      `SELECT p.*, pb.stage_guidance, pb.name AS playbook_name, pb.type AS playbook_type
+       FROM prospects p
+       LEFT JOIN playbooks pb ON p.playbook_id = pb.id
+       WHERE p.id = $1 AND p.org_id = $2`,
+      [prospectId, req.orgId]
+    );
+
+    if (prospectResult.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+
+    const prospect = prospectResult.rows[0];
+
+    if (!prospect.playbook_id) {
+      return res.status(400).json({ error: { message: 'No playbook assigned to this prospect. Assign one in the Overview tab first.' } });
+    }
+
+    const stageKey = prospect.stage;
+    if (!stageKey) {
+      return res.status(400).json({ error: { message: 'Prospect has no stage set' } });
+    }
+
+    // Terminal stages don't generate actions
+    if (['converted', 'disqualified'].includes(stageKey)) {
+      return res.json({ created: 0, skipped: 0, message: `No actions generated — prospect is in terminal stage "${stageKey}".` });
+    }
+
+    // 2. Get stage guidance
+    const rawGuidance = prospect.stage_guidance;
+    const guidance = typeof rawGuidance === 'string' ? JSON.parse(rawGuidance) : (rawGuidance || {});
+    const stageGuidance = guidance[stageKey];
+
+    if (!stageGuidance) {
+      return res.json({
+        created: 0, skipped: 0,
+        message: `No guidance found for stage "${stageKey}" in playbook "${prospect.playbook_name}". Add stage guidance in Org Admin → Playbooks.`,
+      });
+    }
+
+    const keyActions = stageGuidance.key_actions || [];
+    if (keyActions.length === 0) {
+      return res.json({
+        created: 0, skipped: 0,
+        message: `Stage "${stageKey}" has guidance but no key_actions defined. Add actions in the playbook stage guidance.`,
+      });
+    }
+
+    // 3. Check existing actions to avoid duplicates
+    const existingResult = await db.query(
+      `SELECT title FROM prospecting_actions 
+       WHERE prospect_id = $1 AND org_id = $2 AND status IN ('pending', 'in_progress', 'snoozed')`,
+      [prospectId, req.orgId]
+    );
+    const existingTitles = new Set(existingResult.rows.map(r => r.title.toLowerCase()));
+
+    // 4. Generate actions from key_actions
+    let created = 0;
+    let skipped = 0;
+    const now = new Date();
+
+    for (let i = 0; i < keyActions.length; i++) {
+      const actionKey = keyActions[i];
+      // Convert key to human-readable title
+      const title = actionKeyToTitle(actionKey, stageKey, prospect);
+
+      if (existingTitles.has(title.toLowerCase())) {
+        skipped++;
+        continue;
+      }
+
+      // Classify the action
+      const actionType = classifyProspectingAction(actionKey);
+      const channel    = inferChannel(actionKey, prospect.preferred_channel);
+      const priority   = inferPriority(stageKey, actionType, i);
+      const dueDays    = inferDueDays(stageKey, actionType, i);
+      const dueDate    = new Date(now.getTime() + dueDays * 86400000);
+
+      const description = buildActionDescription(actionKey, stageKey, stageGuidance, prospect);
+
+      await db.query(
+        `INSERT INTO prospecting_actions 
+         (org_id, user_id, prospect_id, title, description, action_type, channel,
+          sequence_step, status, priority, due_date, source, ai_context, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, 'playbook', $11, $12)`,
+        [
+          req.orgId,
+          prospect.owner_id,
+          prospectId,
+          title,
+          description,
+          actionType,
+          channel,
+          prospect.current_sequence_step + i + 1,
+          priority,
+          dueDate,
+          JSON.stringify({
+            playbook_id: prospect.playbook_id,
+            playbook_name: prospect.playbook_name,
+            stage: stageKey,
+            guidance_goal: stageGuidance.goal || null,
+          }),
+          JSON.stringify({
+            generated_from: 'playbook',
+            action_key: actionKey,
+            stage_key: stageKey,
+          }),
+        ]
+      );
+      created++;
+    }
+
+    // 5. Log activity
+    if (created > 0) {
+      await db.query(
+        `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
+         VALUES ($1, $2, 'actions_generated', $3, $4)`,
+        [
+          prospectId,
+          req.user.userId,
+          `Generated ${created} action(s) from playbook "${prospect.playbook_name}" for stage "${stageKey}"`,
+          JSON.stringify({ created, skipped, playbook_id: prospect.playbook_id, stage: stageKey }),
+        ]
+      );
+    }
+
+    res.json({
+      created,
+      skipped,
+      message: `Created ${created} action(s)${skipped > 0 ? `, skipped ${skipped} duplicate(s)` : ''} for stage "${stageKey}".`,
+    });
+  } catch (error) {
+    console.error('Generate prospecting actions error:', error);
+    res.status(500).json({ error: { message: 'Failed to generate actions: ' + error.message } });
+  }
+});
+
+// ── Helper: convert action key to readable title ────────────────────────────
+
+function actionKeyToTitle(actionKey, stageKey, prospect) {
+  const titleMap = {
+    // Target stage
+    research_company:      `Research ${prospect.company_name || 'company'} — firmographics & ICP fit`,
+    research_contact:      `Research ${prospect.first_name} ${prospect.last_name} — LinkedIn & background`,
+    // Researched stage
+    craft_outreach:        `Draft personalised outreach for ${prospect.first_name}`,
+    identify_pain_points:  `Map pain points & value proposition for ${prospect.company_name || 'prospect'}`,
+    // Contacted stage
+    send_email:            `Send personalised email to ${prospect.first_name}`,
+    send_linkedin:         `Send LinkedIn message to ${prospect.first_name}`,
+    follow_up:             `Follow up with ${prospect.first_name} (${prospect.company_name || ''})`,
+    make_call:             `Call ${prospect.first_name} ${prospect.last_name}`,
+    // Engaged stage
+    discovery_call:        `Schedule discovery call with ${prospect.first_name}`,
+    qualify:               `Qualify ${prospect.first_name} — BANT assessment`,
+    share_resources:       `Share relevant case study/resources with ${prospect.first_name}`,
+    // Qualified stage
+    schedule_demo:         `Schedule demo for ${prospect.first_name} at ${prospect.company_name || ''}`,
+    intro_to_ae:           `Introduce ${prospect.first_name} to Account Executive`,
+    convert:               `Convert ${prospect.first_name} to deal — create opportunity`,
+  };
+
+  if (titleMap[actionKey]) return titleMap[actionKey];
+
+  // Fallback: humanise the key
+  return actionKey
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+    + ` — ${prospect.first_name} ${prospect.last_name}`;
+}
+
+// ── Helper: classify action type ────────────────────────────────────────────
+
+function classifyProspectingAction(actionKey) {
+  const map = {
+    research_company:     'research',
+    research_contact:     'research',
+    craft_outreach:       'document_prep',
+    identify_pain_points: 'research',
+    send_email:           'email_send',
+    send_linkedin:        'social_touch',
+    follow_up:            'email_send',
+    make_call:            'call',
+    discovery_call:       'meeting_schedule',
+    qualify:              'task_complete',
+    share_resources:      'email_send',
+    schedule_demo:        'meeting_schedule',
+    intro_to_ae:          'task_complete',
+    convert:              'task_complete',
+  };
+  return map[actionKey] || 'task_complete';
+}
+
+// ── Helper: infer channel ───────────────────────────────────────────────────
+
+function inferChannel(actionKey, preferredChannel) {
+  const channelMap = {
+    send_email:    'email',
+    follow_up:     'email',
+    share_resources: 'email',
+    send_linkedin: 'linkedin',
+    make_call:     'phone',
+    discovery_call: 'phone',
+  };
+  return channelMap[actionKey] || null;
+}
+
+// ── Helper: infer priority ──────────────────────────────────────────────────
+
+function inferPriority(stageKey, actionType, index) {
+  // Later stages are higher priority
+  const stagePriority = {
+    qualified: 'high',
+    engaged:   'high',
+    contacted: 'medium',
+    researched: 'medium',
+    target:    'low',
+    nurture:   'low',
+  };
+
+  if (stagePriority[stageKey] === 'high') return index === 0 ? 'critical' : 'high';
+  if (actionType === 'meeting_schedule') return 'high';
+  return stagePriority[stageKey] || 'medium';
+}
+
+// ── Helper: infer due days ──────────────────────────────────────────────────
+
+function inferDueDays(stageKey, actionType, index) {
+  const baseByStage = {
+    target:     2,
+    researched: 1,
+    contacted:  1,
+    engaged:    1,
+    qualified:  0, // today
+    nurture:    5,
+  };
+  const base = baseByStage[stageKey] ?? 2;
+  // Stagger actions: each subsequent action gets +1 day
+  return base + index;
+}
+
+// ── Helper: build action description ────────────────────────────────────────
+
+function buildActionDescription(actionKey, stageKey, stageGuidance, prospect) {
+  const parts = [];
+
+  // Stage context
+  if (stageGuidance.goal) {
+    parts.push(`Stage goal: ${stageGuidance.goal}`);
+  }
+  if (stageGuidance.timeline) {
+    parts.push(`Target timeline: ${stageGuidance.timeline}`);
+  }
+
+  // Prospect context
+  if (prospect.research_notes) {
+    parts.push(`Research notes: ${prospect.research_notes.substring(0, 200)}`);
+  }
+  if (prospect.company_industry) {
+    parts.push(`Industry: ${prospect.company_industry}`);
+  }
+
+  // Success criteria
+  if (stageGuidance.success_criteria?.length) {
+    parts.push(`Success criteria: ${stageGuidance.success_criteria.join('; ')}`);
+  }
+
+  return parts.join('\n\n') || `Action for ${stageKey} stage.`;
+}
 
 module.exports = router;
