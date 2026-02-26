@@ -11,10 +11,16 @@ import './SettingsView.css';
 
 const TEAL = '#0F9D8E';
 
-const PROSPECT_STAGE_KEYS = ['target', 'researched', 'contacted', 'engaged', 'qualified'];
-const PROSPECT_STAGE_LABELS = {
+// Fallback prospect stage keys (used while loading)
+const DEFAULT_PROSPECT_STAGE_KEYS = ['target', 'researched', 'contacted', 'engaged', 'qualified'];
+const DEFAULT_PROSPECT_STAGE_LABELS = {
   target: '🎯 Target', researched: '🔍 Researched', contacted: '📤 Contacted',
   engaged: '💬 Engaged', qualified: '✅ Qualified',
+};
+
+const STAGE_TYPE_ICONS = {
+  targeting: '🎯', research: '🔍', outreach: '📤', engagement: '💬',
+  qualification: '✅', converted: '🎉', disqualified: '❌', nurture: '🌱', custom: '⚙️',
 };
 
 export default function PlaybooksView({ initialTypeFilter }) {
@@ -34,6 +40,31 @@ export default function PlaybooksView({ initialTypeFilter }) {
 
   // Type filter: 'sales' | 'prospecting'
   const [typeFilter, setTypeFilter]     = useState(initialTypeFilter || 'sales');
+
+  // Dynamic prospect stages from API
+  const [prospectStageKeys, setProspectStageKeys]     = useState(DEFAULT_PROSPECT_STAGE_KEYS);
+  const [prospectStageLabels, setProspectStageLabels] = useState(DEFAULT_PROSPECT_STAGE_LABELS);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+    const API_BASE = process.env.REACT_APP_API_URL || '';
+    fetch(`${API_BASE}/prospect-stages`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(data => {
+        const stages = (data.stages || [])
+          .filter(s => s.is_active && !s.is_terminal)
+          .sort((a, b) => a.sort_order - b.sort_order);
+        if (stages.length > 0) {
+          setProspectStageKeys(stages.map(s => s.key));
+          setProspectStageLabels(Object.fromEntries(
+            stages.map(s => [s.key, `${STAGE_TYPE_ICONS[s.stage_type] || '⚙️'} ${s.name}`])
+          ));
+        }
+      })
+      .catch(() => { /* fallback to defaults */ });
+  }, []);
 
   const activeRole = sessionStorage.getItem('activeRole') || 'member';
   const canEdit    = activeRole === 'org-admin' || activeRole === 'super-admin';
@@ -451,7 +482,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
                         Define guidance for each active stage below.
                       </p>
                       <div className="sv-stages-list">
-                        {PROSPECT_STAGE_KEYS.map((stageKey, i) => {
+                        {prospectStageKeys.map((stageKey, i) => {
                           const g = prospectGuidance[stageKey] || {};
                           const isOpen = editingStage === stageKey;
                           const hasGuidance = !!(g.goal || g.key_actions?.length);
@@ -460,7 +491,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
                             <div key={stageKey} className="sv-stage-row">
                               <div className="sv-stage-header" onClick={() => setEditingStage(isOpen ? null : stageKey)}>
                                 <span className="sv-stage-num" style={{ background: TEAL + '20', color: TEAL }}>{i + 1}</span>
-                                <span className="sv-stage-name">{PROSPECT_STAGE_LABELS[stageKey]}</span>
+                                <span className="sv-stage-name">{prospectStageLabels[stageKey] || stageKey}</span>
                                 {hasGuidance && (
                                   <span style={{ fontSize: 11, color: TEAL, marginLeft: 8 }}>● guided</span>
                                 )}

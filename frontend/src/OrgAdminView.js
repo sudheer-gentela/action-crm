@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import './OrgAdminView.css';
 import DealHealthSettings from './DealHealthSettings';
-import OAProspectStages from './OAProspectStages';
+import OAStages from './OAStages';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -24,9 +24,8 @@ const NAV_GROUPS = [
     label: 'Sales Process',
     items: [
       { id: 'playbooks',   icon: '📘', label: 'Playbooks' },
-      { id: 'deal-stages', icon: '🏷️', label: 'Deal Stages' },
+      { id: 'stages',      icon: '🏷️', label: 'Stages' },
       { id: 'deal-roles',  icon: '🎭', label: 'Deal Roles' },
-      { id: 'prospect-stages', icon: '🔬', label: 'Prospect Stages' },
     ],
   },
   {
@@ -62,9 +61,8 @@ const TAB_META = {
   hierarchy:     { title: 'Hierarchy',     desc: 'Reporting structure and team visibility' },
   invitations:   { title: 'Invitations',   desc: 'Invite new members to your organisation' },
   playbooks:     { title: 'Playbooks',     desc: 'Configure deal playbooks and templates' },
-  'deal-stages': { title: 'Deal Stages',   desc: 'Customise your pipeline stages' },
+  'stages':      { title: 'Stages',       desc: 'Customise your deal and prospecting pipeline stages' },
   'deal-roles':  { title: 'Deal Roles',    desc: 'Define contact roles in deals' },
-  'prospect-stages': { title: 'Prospect Stages', desc: 'Customise your prospecting lifecycle stages' },
   health:        { title: 'Deal Health',   desc: 'Configure health scoring parameters' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
@@ -165,9 +163,8 @@ export default function OrgAdminView() {
             {tab === 'invitations' && <OAInvitations />}
             {tab === 'playbooks'   && <OAPlaybooks />}
             {tab === 'health'      && <DealHealthSettings />}
-            {tab === 'deal-stages' && <OADealStages />}
+            {tab === 'stages'      && <OAStages />}
             {tab === 'deal-roles'  && <OADealRoles />}
-            {tab === 'prospect-stages' && <OAProspectStages />}
             {tab === 'ai-agent'    && <OAAgentSettings />}
             {tab === 'duplicates'  && <OADuplicateSettings />}
             {tab === 'integrations' && <OAIntegrations />}

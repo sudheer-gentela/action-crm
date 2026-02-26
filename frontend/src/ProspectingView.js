@@ -6,7 +6,8 @@ import './OutreachComposer.css';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const PROSPECT_STAGES = [
+// Fallback stages used while loading or if API fails
+const DEFAULT_PROSPECT_STAGES = [
   { key: 'target',     label: 'Target',      icon: '🎯', color: '#6b7280' },
   { key: 'researched', label: 'Researched',   icon: '🔍', color: '#8b5cf6' },
   { key: 'contacted',  label: 'Contacted',    icon: '📤', color: '#3b82f6' },
@@ -14,13 +15,16 @@ const PROSPECT_STAGES = [
   { key: 'qualified',  label: 'Qualified',    icon: '✅', color: '#10b981' },
 ];
 
-const TERMINAL_STAGES = [
+const DEFAULT_TERMINAL_STAGES = [
   { key: 'converted',    label: 'Converted',    icon: '🎉', color: '#059669' },
   { key: 'disqualified', label: 'Disqualified', icon: '❌', color: '#ef4444' },
   { key: 'nurture',      label: 'Nurture',      icon: '🌱', color: '#f59e0b' },
 ];
 
-const ALL_STAGES = [...PROSPECT_STAGES, ...TERMINAL_STAGES];
+const STAGE_ICONS = {
+  targeting: '🎯', research: '🔍', outreach: '📤', engagement: '💬',
+  qualification: '✅', converted: '🎉', disqualified: '❌', nurture: '🌱', custom: '⚙️',
+};
 
 const CHANNEL_ICONS = {
   email:    '✉️',
@@ -78,6 +82,34 @@ export default function ProspectingView() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedProspect, setSelectedProspect] = useState(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
+
+  // Dynamic stages from API
+  const [PROSPECT_STAGES, setProspectStages] = useState(DEFAULT_PROSPECT_STAGES);
+  const [TERMINAL_STAGES, setTerminalStages] = useState(DEFAULT_TERMINAL_STAGES);
+  const ALL_STAGES = [...PROSPECT_STAGES, ...TERMINAL_STAGES];
+
+  // Fetch org-customised prospect stages
+  useEffect(() => {
+    apiFetch('/prospect-stages')
+      .then(data => {
+        const stages = (data.stages || []).sort((a, b) => a.sort_order - b.sort_order);
+        if (stages.length > 0) {
+          const active    = stages.filter(s => s.is_active && !s.is_terminal);
+          const terminal  = stages.filter(s => s.is_active && s.is_terminal);
+          setProspectStages(active.map(s => ({
+            key: s.key, label: s.name,
+            icon: STAGE_ICONS[s.stage_type] || '⚙️',
+            color: s.color || '#6b7280',
+          })));
+          setTerminalStages(terminal.map(s => ({
+            key: s.key, label: s.name,
+            icon: STAGE_ICONS[s.stage_type] || '⚙️',
+            color: s.color || '#6b7280',
+          })));
+        }
+      })
+      .catch(() => { /* fallback to defaults */ });
+  }, []);
 
   // Check if user has team
   const user = JSON.parse(localStorage.getItem('user') || '{}');

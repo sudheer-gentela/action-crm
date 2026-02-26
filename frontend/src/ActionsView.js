@@ -755,6 +755,10 @@ export default function ActionsView() {
       if (activeFilters.source === 'rules')    rows = rows.filter(a => a.source === 'auto_generated');
       if (activeFilters.source === 'playbook') rows = rows.filter(a => a.source === 'playbook');
 
+      // Deals vs Prospecting source filter
+      if (actionSource === 'deals')       rows = rows.filter(a => a.deal !== null && a.deal !== undefined);
+      if (actionSource === 'prospecting') rows = rows.filter(a => a.deal === null || a.deal === undefined);
+
       // Default view: hide completed and snoozed
       if (!activeFilters.status) {
         rows = rows.filter(a => a.status !== 'completed' && a.status !== 'snoozed');
@@ -767,11 +771,11 @@ export default function ActionsView() {
     } finally {
       setLoading(false);
     }
-  }, [scope]);
+  }, [scope, actionSource]);
 
   useEffect(() => {
     fetchActions(filters);
-  }, [filters, fetchActions, scope]); // re-fetch when scope changes
+  }, [filters, fetchActions, scope, actionSource]); // re-fetch when scope or actionSource changes
 
   function handleFilterChange(key, value) {
     if (key === '__reset__') { setFilters(DEFAULT_FILTERS); return; }
