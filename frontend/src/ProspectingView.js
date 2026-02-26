@@ -308,6 +308,7 @@ export default function ProspectingView() {
       ) : viewMode === 'pipeline' ? (
         <PipelineBoard
           stages={PROSPECT_STAGES}
+          terminalStages={TERMINAL_STAGES}
           groupedByStage={groupedByStage}
           onSelect={setSelectedProspect}
           onStageChange={handleStageChange}
@@ -316,11 +317,13 @@ export default function ProspectingView() {
       ) : viewMode === 'list' ? (
         <ListView
           prospects={prospects}
+          allStages={ALL_STAGES}
           onSelect={setSelectedProspect}
         />
       ) : (
         <AccountView
           groups={Object.values(groupedByAccount)}
+          allStages={ALL_STAGES}
           onSelect={setSelectedProspect}
         />
       )}
@@ -337,6 +340,8 @@ export default function ProspectingView() {
       {selectedProspect && (
         <ProspectDetailPanel
           prospectId={selectedProspect.id || selectedProspect}
+          allStages={ALL_STAGES}
+          prospectStages={PROSPECT_STAGES}
           onClose={() => setSelectedProspect(null)}
           onUpdate={fetchProspects}
         />
@@ -350,7 +355,7 @@ export default function ProspectingView() {
 // PIPELINE BOARD
 // ═════════════════════════════════════════════════════════════════════════════
 
-function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, terminalCounts }) {
+function PipelineBoard({ stages, terminalStages, groupedByStage, onSelect, onStageChange, terminalCounts }) {
   return (
     <div className="pv-pipeline">
       <div className="pv-pipeline-columns">
@@ -375,7 +380,7 @@ function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, termin
 
       {/* Terminal stage footer */}
       <div className="pv-pipeline-footer">
-        {TERMINAL_STAGES.map(s => (
+        {terminalStages.map(s => (
           <span key={s.key} className="pv-terminal-badge" style={{ color: s.color }}>
             {s.icon} {s.label}: {terminalCounts[s.key] || 0}
           </span>
@@ -431,7 +436,7 @@ function ProspectCard({ prospect: p, onClick }) {
 // LIST VIEW
 // ═════════════════════════════════════════════════════════════════════════════
 
-function ListView({ prospects, onSelect }) {
+function ListView({ prospects, allStages, onSelect }) {
   return (
     <div className="pv-list">
       <table className="pv-table">
@@ -449,7 +454,7 @@ function ListView({ prospects, onSelect }) {
         </thead>
         <tbody>
           {prospects.map(p => {
-            const stageCfg = ALL_STAGES.find(s => s.key === p.stage);
+            const stageCfg = allStages.find(s => s.key === p.stage);
             return (
               <tr key={p.id} onClick={() => onSelect(p)} className="pv-table-row">
                 <td className="pv-table-name">
@@ -483,7 +488,7 @@ function ListView({ prospects, onSelect }) {
 // ACCOUNT VIEW
 // ═════════════════════════════════════════════════════════════════════════════
 
-function AccountView({ groups, onSelect }) {
+function AccountView({ groups, allStages, onSelect }) {
   return (
     <div className="pv-account-view">
       {groups.sort((a, b) => b.prospects.length - a.prospects.length).map((group, idx) => (
@@ -503,7 +508,7 @@ function AccountView({ groups, onSelect }) {
           )}
           <div className="pv-account-prospects">
             {group.prospects.map(p => {
-              const stageCfg = ALL_STAGES.find(s => s.key === p.stage);
+              const stageCfg = allStages.find(s => s.key === p.stage);
               return (
                 <div key={p.id} className="pv-account-prospect-row" onClick={() => onSelect(p)}>
                   <span className="pv-apr-name">{p.first_name} {p.last_name}</span>
@@ -619,7 +624,7 @@ function ProspectCreateModal({ onSave, onClose }) {
 // PROSPECT DETAIL PANEL (slide-out)
 // ═════════════════════════════════════════════════════════════════════════════
 
-function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
+function ProspectDetailPanel({ prospectId, allStages, prospectStages, onClose, onUpdate }) {
   const [prospect, setProspect] = useState(null);
   const [actions, setActions] = useState([]);
   const [activities, setActivities] = useState([]);
@@ -763,8 +768,8 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
 
   if (!prospect) return null;
 
-  const stageCfg = ALL_STAGES.find(s => s.key === prospect.stage);
-  const currentStageIdx = PROSPECT_STAGES.findIndex(s => s.key === prospect.stage);
+  const stageCfg = allStages.find(s => s.key === prospect.stage);
+  const currentStageIdx = prospectStages.findIndex(s => s.key === prospect.stage);
 
   return (
     <div className="pv-detail-overlay" onClick={onClose}>
@@ -800,7 +805,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
               </button>
               {showStageMenu && (
                 <div className="pv-stage-dropdown">
-                  {ALL_STAGES.filter(s => s.key !== prospect.stage).map(s => (
+                  {allStages.filter(s => s.key !== prospect.stage).map(s => (
                     <button key={s.key} onClick={() => handleStageChange(s.key)} className="pv-stage-option">
                       {s.icon} {s.label}
                     </button>
@@ -814,7 +819,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
         {/* Stage progress bar */}
         {currentStageIdx >= 0 && (
           <div className="pv-stage-progress">
-            {PROSPECT_STAGES.map((s, idx) => (
+            {prospectStages.map((s, idx) => (
               <div
                 key={s.key}
                 className={`pv-stage-step ${idx <= currentStageIdx ? 'active' : ''}`}
