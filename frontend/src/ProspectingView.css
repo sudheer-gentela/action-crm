@@ -1,0 +1,929 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   ProspectingView.css — Teal-accented prospecting UI
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Container ──────────────────────────────────────────────────────────── */
+
+.pv-container {
+  padding: 24px;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+
+.pv-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.pv-header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.pv-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pv-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0;
+}
+
+/* Scope toggle */
+.pv-scope-toggle {
+  display: inline-flex;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #e2e4ea;
+  font-size: 13px;
+}
+
+.pv-scope-btn {
+  padding: 6px 14px;
+  border: none;
+  cursor: pointer;
+  background: #fff;
+  color: #4b5563;
+  font-weight: 400;
+  transition: all 0.15s;
+  font-size: 13px;
+}
+
+.pv-scope-btn.active {
+  background: #0F9D8E;
+  color: #fff;
+  font-weight: 600;
+}
+
+.pv-scope-btn:hover:not(.active) {
+  background: #f3f4f6;
+}
+
+/* Search */
+.pv-search-input {
+  padding: 7px 12px;
+  border: 1px solid #e2e4ea;
+  border-radius: 8px;
+  font-size: 13px;
+  width: 200px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.pv-search-input:focus {
+  border-color: #0F9D8E;
+}
+
+/* View toggle */
+.pv-view-toggle {
+  display: inline-flex;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #e2e4ea;
+}
+
+.pv-view-btn {
+  padding: 6px 10px;
+  border: none;
+  cursor: pointer;
+  background: #fff;
+  color: #6b7280;
+  font-size: 14px;
+  transition: all 0.15s;
+}
+
+.pv-view-btn.active {
+  background: #f0fdfa;
+  color: #0F9D8E;
+}
+
+/* Add button */
+.pv-add-btn {
+  padding: 7px 16px;
+  background: #0F9D8E;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.pv-add-btn:hover {
+  background: #0c8577;
+}
+
+/* ── Metrics bar ────────────────────────────────────────────────────────── */
+
+.pv-metrics-bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 12px 16px;
+  background: #fafbfc;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.pv-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 60px;
+}
+
+.pv-metric-value {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.pv-metric-label {
+  font-size: 11px;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.pv-metric-separator {
+  width: 1px;
+  height: 32px;
+  background: #e5e7eb;
+}
+
+/* ── Loading ────────────────────────────────────────────────────────────── */
+
+.pv-loading {
+  text-align: center;
+  padding: 60px 20px;
+  color: #6b7280;
+  font-size: 14px;
+}
+
+/* ── Pipeline Board ─────────────────────────────────────────────────────── */
+
+.pv-pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pv-pipeline-columns {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  min-height: 400px;
+}
+
+.pv-pipeline-col {
+  flex: 1;
+  min-width: 200px;
+  max-width: 280px;
+  background: #f9fafb;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+.pv-col-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.pv-col-icon {
+  font-size: 14px;
+}
+
+.pv-col-count {
+  margin-left: auto;
+  background: #e5e7eb;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 9999px;
+}
+
+.pv-col-body {
+  flex: 1;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.pv-col-empty {
+  text-align: center;
+  color: #9ca3af;
+  font-size: 12px;
+  padding: 20px 0;
+}
+
+/* Pipeline footer */
+.pv-pipeline-footer {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  padding: 8px;
+}
+
+.pv-terminal-badge {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ── Prospect Card ──────────────────────────────────────────────────────── */
+
+.pv-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.pv-card:hover {
+  border-color: #0F9D8E;
+  box-shadow: 0 2px 8px rgba(15, 157, 142, 0.1);
+}
+
+.pv-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.pv-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.pv-card-icp {
+  font-size: 11px;
+  font-weight: 700;
+  background: #f0fdfa;
+  color: #0F9D8E;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.pv-card-title {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+.pv-card-company {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: 1px;
+}
+
+.pv-card-bottom {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.pv-card-channel {
+  font-size: 12px;
+}
+
+/* ── List View ──────────────────────────────────────────────────────────── */
+
+.pv-list {
+  overflow-x: auto;
+}
+
+.pv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.pv-table th {
+  text-align: left;
+  padding: 10px 12px;
+  font-weight: 600;
+  color: #6b7280;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.pv-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f3f4f6;
+  color: #374151;
+}
+
+.pv-table-row {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.pv-table-row:hover {
+  background: #f0fdfa;
+}
+
+.pv-table-name {
+  font-weight: 600;
+}
+
+.pv-table-email {
+  display: block;
+  font-size: 11px;
+  color: #9ca3af;
+  font-weight: 400;
+}
+
+.pv-table-empty {
+  text-align: center;
+  color: #9ca3af;
+  padding: 40px !important;
+}
+
+.pv-stage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── Account View ───────────────────────────────────────────────────────── */
+
+.pv-account-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pv-account-group {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.pv-account-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #fafbfc;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.pv-account-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: #111827;
+}
+
+.pv-account-domain {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #9ca3af;
+  font-weight: 400;
+}
+
+.pv-account-count {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.pv-account-prospects {
+  padding: 4px 0;
+}
+
+.pv-account-prospect-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.pv-account-prospect-row:hover {
+  background: #f0fdfa;
+}
+
+.pv-apr-name {
+  font-weight: 600;
+  font-size: 13px;
+  min-width: 140px;
+}
+
+.pv-apr-title {
+  font-size: 12px;
+  color: #6b7280;
+  flex: 1;
+}
+
+.pv-apr-touches {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+/* ── Modal ──────────────────────────────────────────────────────────────── */
+
+.pv-modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.pv-modal {
+  background: #fff;
+  border-radius: 12px;
+  width: 520px;
+  max-width: 95vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+}
+
+.pv-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.pv-modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.pv-modal-close {
+  background: none;
+  border: none;
+  font-size: 22px;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.pv-form {
+  padding: 16px 20px;
+}
+
+.pv-form-section {
+  margin-bottom: 16px;
+}
+
+.pv-form-section h4 {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: #6b7280;
+  letter-spacing: 0.5px;
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.pv-form-row {
+  display: flex;
+  gap: 8px;
+}
+
+.pv-form input,
+.pv-form select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #e2e4ea;
+  border-radius: 6px;
+  font-size: 13px;
+  margin-bottom: 8px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.pv-form input:focus,
+.pv-form select:focus {
+  border-color: #0F9D8E;
+}
+
+.pv-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e5e7eb;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+
+.pv-btn-primary {
+  padding: 8px 16px;
+  background: #0F9D8E;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pv-btn-primary:hover {
+  background: #0c8577;
+}
+
+.pv-btn-secondary {
+  padding: 8px 16px;
+  background: #fff;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pv-btn-secondary:hover {
+  background: #f9fafb;
+}
+
+.pv-btn-convert {
+  padding: 8px 16px;
+  background: #059669;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pv-btn-convert:hover {
+  background: #047857;
+}
+
+.pv-btn-sm {
+  padding: 4px 10px;
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.pv-btn-sm:hover {
+  background: #e5e7eb;
+}
+
+/* ── Detail Panel (slide-out) ───────────────────────────────────────────── */
+
+.pv-detail-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 999;
+}
+
+.pv-detail-panel {
+  width: 520px;
+  max-width: 90vw;
+  background: #fff;
+  height: 100%;
+  overflow-y: auto;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+}
+
+.pv-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 20px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.pv-detail-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.pv-detail-title {
+  display: block;
+  font-size: 13px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+.pv-detail-company {
+  display: block;
+  font-size: 13px;
+  color: #9ca3af;
+}
+
+.pv-detail-close {
+  background: none;
+  border: none;
+  font-size: 24px;
+  color: #6b7280;
+  cursor: pointer;
+}
+
+/* Stage row */
+.pv-detail-stage-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  background: #fafbfc;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.pv-detail-stage-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pv-detail-stage-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.pv-stage-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  z-index: 10;
+  min-width: 160px;
+  padding: 4px;
+}
+
+.pv-stage-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.pv-stage-option:hover {
+  background: #f3f4f6;
+}
+
+/* Stage progress bar */
+.pv-stage-progress {
+  display: flex;
+  padding: 12px 20px;
+  gap: 4px;
+}
+
+.pv-stage-step {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.pv-stage-step-dot {
+  width: 100%;
+  height: 4px;
+  background: #e5e7eb;
+  border-radius: 2px;
+  transition: background 0.2s;
+}
+
+.pv-stage-step.active .pv-stage-step-dot {
+  background: var(--stage-color, #0F9D8E);
+}
+
+.pv-stage-step-label {
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+.pv-stage-step.active .pv-stage-step-label {
+  color: #374151;
+  font-weight: 600;
+}
+
+/* Tabs */
+.pv-detail-tabs {
+  display: flex;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 0 20px;
+}
+
+.pv-detail-tab {
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  font-size: 13px;
+  color: #6b7280;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+
+.pv-detail-tab.active {
+  color: #0F9D8E;
+  border-bottom-color: #0F9D8E;
+  font-weight: 600;
+}
+
+.pv-detail-content {
+  flex: 1;
+  padding: 16px 20px;
+  overflow-y: auto;
+}
+
+/* Info grid */
+.pv-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.pv-info-row {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0;
+}
+
+.pv-info-label {
+  font-size: 11px;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.pv-info-value {
+  font-size: 13px;
+  color: #111827;
+  font-weight: 500;
+}
+
+.pv-research-notes {
+  margin-top: 16px;
+  padding: 12px;
+  background: #fefce8;
+  border-radius: 8px;
+  border: 1px solid #fde68a;
+}
+
+.pv-research-notes h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: #92400e;
+}
+
+.pv-research-notes p {
+  margin: 0;
+  font-size: 13px;
+  color: #451a03;
+  white-space: pre-wrap;
+}
+
+.pv-linked-entity {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: #f0fdfa;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #0F9D8E;
+}
+
+/* Actions tab */
+.pv-action-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.pv-action-card.completed {
+  opacity: 0.6;
+}
+
+.pv-action-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.pv-action-type {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.pv-action-status {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pv-action-status.pending   { color: #6b7280; }
+.pv-action-status.completed { color: #10b981; }
+.pv-action-status.snoozed   { color: #f59e0b; }
+
+.pv-action-desc {
+  font-size: 12px;
+  color: #6b7280;
+  margin: 4px 0 0;
+}
+
+.pv-action-buttons {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+/* Activity tab */
+.pv-activity-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 12px;
+}
+
+.pv-activity-type {
+  background: #f3f4f6;
+  color: #374151;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.pv-activity-desc {
+  flex: 1;
+  color: #4b5563;
+}
+
+.pv-activity-time {
+  color: #9ca3af;
+  white-space: nowrap;
+}
+
+/* Empty state */
+.pv-empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: #9ca3af;
+  font-size: 14px;
+}
