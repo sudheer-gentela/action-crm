@@ -1151,7 +1151,11 @@ function OAPlaybooks() {
 
   // ── Load selected playbook + extract stage_guidance ──────────────────────
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId) {
+      setPlaybook(null);
+      setGuidance({});
+      return;
+    }
     setPlaybook(null);
     setGuidance({});
     setEditingStage(null);
