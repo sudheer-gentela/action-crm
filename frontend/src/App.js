@@ -274,6 +274,7 @@ function Dashboard({ user, onLogout }) {
   const [pendingContactId, setPendingContactId]         = useState(null); // tell ContactsView which contact to open
   const [pendingMeetingId, setPendingMeetingId]         = useState(null); // tell CalendarView which meeting to open
   const [pendingAccountId, setPendingAccountId]         = useState(null); // tell AccountsView which account to open
+  const [pendingPlaybookFilter, setPendingPlaybookFilter] = useState(null); // tell PlaybooksView which type tab to open
   const [sidebarOpen, setSidebarOpen]           = useState(false);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
 
@@ -361,6 +362,7 @@ function Dashboard({ user, onLogout }) {
       if (detail?.contactId) setPendingContactId(detail.contactId);
       if (detail?.meetingId) setPendingMeetingId(detail.meetingId);
       if (detail?.accountId) setPendingAccountId(detail.accountId);
+      if (detail?.playbookFilter) setPendingPlaybookFilter(detail.playbookFilter);
 
       handleNavClick(detail?.tab || detail);
     };
@@ -472,7 +474,12 @@ function Dashboard({ user, onLogout }) {
           )}
           {currentTab === 'settings'     && <SettingsView />}
           {currentTab === 'agent'        && <AgentInboxView />}
-          {currentTab === 'playbooks'    && <PlaybooksView />}
+          {currentTab === 'playbooks'    && (
+            <PlaybooksView
+              initialTypeFilter={pendingPlaybookFilter}
+              key={pendingPlaybookFilter || 'default'}
+            />
+          )}
           {/* Org admin view — only when activeRole is org-admin */}
           {currentTab === 'org-admin'    && activeRole === 'org-admin'   && <OrgAdminView />}
           {/* Super admin view — only when activeRole is super-admin */}
