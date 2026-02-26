@@ -470,6 +470,151 @@ router.put('/config', async (req, res) => {
   }
 });
 
+// ── GET /unified — merge deal actions + prospecting actions into one list ────
+// IMPORTANT: This must be defined BEFORE /:id to avoid Express matching "unified" as an ID.
+router.get('/unified', async (req, res) => {
+  try {
+    const {
+      scope = 'mine', status, source, actionType, nextStep,
+      dueBefore, dueAfter, dealId, accountId, ownerId, isInternal,
+    } = req.query;
+
+    let ownerFilterDeal = '';
+    let ownerFilterProspect = '';
+    const ownerParams = [];
+    let pIdx = 1;
+
+    ownerParams.push(req.orgId);
+    pIdx = 2;
+
+    if (scope === 'team' && req.subordinateIds?.length > 0) {
+      const teamIds = [req.user.userId, ...req.subordinateIds];
+      ownerFilterDeal = `AND a.user_id = ANY($${pIdx}::int[])`;
+      ownerFilterProspect = `AND pa.user_id = ANY($${pIdx}::int[])`;
+      ownerParams.push(teamIds);
+      pIdx++;
+    } else if (scope === 'org') {
+      // no owner filter
+    } else {
+      ownerFilterDeal = `AND a.user_id = $${pIdx}`;
+      ownerFilterProspect = `AND pa.user_id = $${pIdx}`;
+      ownerParams.push(req.user.userId);
+      pIdx++;
+    }
+
+    // Deal actions query
+    let dealWhere = '';
+    const dealParams = [...ownerParams];
+    let dIdx = pIdx;
+
+    if (status) { dealWhere += ` AND a.status = $${dIdx}`; dealParams.push(status); dIdx++; }
+    if (dealId) { dealWhere += ` AND a.deal_id = $${dIdx}`; dealParams.push(parseInt(dealId)); dIdx++; }
+    if (actionType) { dealWhere += ` AND a.action_type = $${dIdx}`; dealParams.push(actionType); dIdx++; }
+    if (nextStep) { dealWhere += ` AND a.next_step = $${dIdx}`; dealParams.push(nextStep); dIdx++; }
+    if (isInternal === 'true') { dealWhere += ` AND a.is_internal = TRUE`; }
+    if (dueBefore) { dealWhere += ` AND a.due_date <= $${dIdx}`; dealParams.push(dueBefore); dIdx++; }
+    if (dueAfter) { dealWhere += ` AND a.due_date >= $${dIdx}`; dealParams.push(dueAfter); dIdx++; }
+
+    const dealQuery = `
+      SELECT
+        'deal' AS action_source,
+        a.id, a.title, a.description, a.action_type, a.priority,
+        a.status, a.source, a.source_rule, a.source_id,
+        a.next_step, a.is_internal,
+        a.due_date, a.created_at, a.updated_at,
+        a.completed_at, a.completed_by, a.auto_completed,
+        a.completion_evidence, a.context, a.suggested_action, a.metadata,
+        a.snoozed_until, a.snooze_reason, a.snooze_duration,
+        a.deal_id, a.contact_id, a.user_id, a.health_param,
+        d.name AS deal_name, d.value AS deal_value, d.stage AS deal_stage,
+        d.owner_id AS deal_owner_id,
+        du.first_name || ' ' || du.last_name AS deal_owner_name,
+        c.first_name AS contact_first_name, c.last_name AS contact_last_name, c.email AS contact_email,
+        acc.name AS account_name,
+        ev.subject AS evidence_subject, LEFT(ev.body, 300) AS evidence_snippet,
+        ev.direction AS evidence_direction, ev.sent_at AS evidence_sent_at,
+        NULL::integer AS prospect_id, NULL AS prospect_first_name, NULL AS prospect_last_name,
+        NULL AS prospect_email, NULL AS prospect_company_name, NULL AS prospect_stage, NULL AS channel
+      FROM actions a
+      LEFT JOIN deals d ON a.deal_id = d.id AND d.org_id = a.org_id
+      LEFT JOIN users du ON d.owner_id = du.id
+      LEFT JOIN contacts c ON a.contact_id = c.id AND c.org_id = a.org_id
+      LEFT JOIN accounts acc ON d.account_id = acc.id AND acc.org_id = a.org_id
+      LEFT JOIN emails ev ON a.source_id = ev.id::varchar AND ev.org_id = a.org_id
+      WHERE a.org_id = $1 ${ownerFilterDeal} ${dealWhere}
+    `;
+
+    // Prospecting actions query
+    let prospectWhere = '';
+    const prospectParams = [...ownerParams];
+    let ppIdx = pIdx;
+
+    if (status) {
+      const statusMap = { yet_to_start: 'pending' };
+      const mappedStatus = statusMap[status] || status;
+      prospectWhere += ` AND pa.status = $${ppIdx}`; prospectParams.push(mappedStatus); ppIdx++;
+    }
+    if (dueBefore) { prospectWhere += ` AND pa.due_date <= $${ppIdx}`; prospectParams.push(dueBefore); ppIdx++; }
+    if (dueAfter) { prospectWhere += ` AND pa.due_date >= $${ppIdx}`; prospectParams.push(dueAfter); ppIdx++; }
+
+    const prospectQuery = `
+      SELECT
+        'prospecting' AS action_source,
+        pa.id, pa.title, pa.description, pa.action_type, pa.priority,
+        CASE pa.status WHEN 'pending' THEN 'yet_to_start' ELSE pa.status END AS status,
+        pa.source, NULL AS source_rule, NULL AS source_id,
+        pa.channel AS next_step, FALSE AS is_internal,
+        pa.due_date, pa.created_at, pa.updated_at,
+        pa.completed_at, pa.completed_by, FALSE AS auto_completed,
+        NULL AS completion_evidence, pa.ai_context AS context, pa.suggested_action, pa.metadata,
+        pa.snoozed_until, pa.snooze_reason, pa.snooze_duration,
+        NULL::integer AS deal_id, NULL::integer AS contact_id, pa.user_id, NULL AS health_param,
+        NULL AS deal_name, NULL::numeric AS deal_value, NULL AS deal_stage,
+        NULL::integer AS deal_owner_id, NULL AS deal_owner_name,
+        NULL AS contact_first_name, NULL AS contact_last_name, NULL AS contact_email,
+        NULL AS account_name,
+        NULL AS evidence_subject, NULL AS evidence_snippet,
+        NULL AS evidence_direction, NULL::timestamp AS evidence_sent_at,
+        pa.prospect_id, p.first_name AS prospect_first_name, p.last_name AS prospect_last_name,
+        p.email AS prospect_email, p.company_name AS prospect_company_name, p.stage AS prospect_stage,
+        pa.channel
+      FROM prospecting_actions pa
+      LEFT JOIN prospects p ON pa.prospect_id = p.id
+      WHERE pa.org_id = $1 ${ownerFilterProspect} ${prospectWhere}
+    `;
+
+    const [dealResult, prospectResult] = await Promise.all([
+      db.query(dealQuery, dealParams),
+      db.query(prospectQuery, prospectParams),
+    ]);
+
+    const allActions = [
+      ...dealResult.rows.map(r => mapUnifiedAction(r, 'deal')),
+      ...prospectResult.rows.map(r => mapUnifiedAction(r, 'prospecting')),
+    ];
+
+    allActions.sort((a, b) => {
+      const statusOrder = { yet_to_start: 1, in_progress: 2, snoozed: 3, completed: 4, skipped: 5 };
+      const sA = statusOrder[a.status] || 4;
+      const sB = statusOrder[b.status] || 4;
+      if (sA !== sB) return sA - sB;
+      const priorityOrder = { critical: 1, high: 2, medium: 3, low: 4 };
+      const pA = priorityOrder[a.priority] || 3;
+      const pB = priorityOrder[b.priority] || 3;
+      if (pA !== pB) return pA - pB;
+      if (a.dueDate && b.dueDate) return new Date(a.dueDate) - new Date(b.dueDate);
+      if (a.dueDate) return -1;
+      if (b.dueDate) return 1;
+      return 0;
+    });
+
+    res.json({ actions: allActions });
+  } catch (error) {
+    console.error('Unified actions error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch unified actions' } });
+  }
+});
+
 // ── GET /:id ──────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {
@@ -722,166 +867,11 @@ router.post('/suggestions/:id/dismiss', async (req, res) => {
   }
 });
 
-// ── GET /unified — merge deal actions + prospecting actions into one list ────
-// This is what ActionsView should call. Returns both tables normalised to the
-// same shape so the frontend can display them together with consistent status tracking.
-
-router.get('/unified', async (req, res) => {
-  try {
-    const {
-      scope = 'mine', status, source, actionType, nextStep,
-      dueBefore, dueAfter, dealId, accountId, ownerId, isInternal,
-    } = req.query;
-
-    // ── 1. Build owner/scope filter ──────────────────────────────
-    let ownerFilterDeal = '';     // for actions table (user_id)
-    let ownerFilterProspect = ''; // for prospecting_actions table (user_id)
-    const ownerParams = [];
-    let pIdx = 1; // param index counter
-
-    // Org_id is always $1
-    ownerParams.push(req.orgId); // $1
-    pIdx = 2;
-
-    if (scope === 'team' && req.subordinateIds?.length > 0) {
-      const teamIds = [req.user.userId, ...req.subordinateIds];
-      ownerFilterDeal = `AND a.user_id = ANY($${pIdx}::int[])`;
-      ownerFilterProspect = `AND pa.user_id = ANY($${pIdx}::int[])`;
-      ownerParams.push(teamIds);
-      pIdx++;
-    } else if (scope === 'org') {
-      // no owner filter
-    } else {
-      ownerFilterDeal = `AND a.user_id = $${pIdx}`;
-      ownerFilterProspect = `AND pa.user_id = $${pIdx}`;
-      ownerParams.push(req.user.userId);
-      pIdx++;
-    }
-
-    // ── 2. Deal actions query ────────────────────────────────────
-    let dealWhere = '';
-    const dealParams = [...ownerParams];
-    let dIdx = pIdx;
-
-    if (status) { dealWhere += ` AND a.status = $${dIdx}`; dealParams.push(status); dIdx++; }
-    if (dealId) { dealWhere += ` AND a.deal_id = $${dIdx}`; dealParams.push(parseInt(dealId)); dIdx++; }
-    if (actionType) { dealWhere += ` AND a.action_type = $${dIdx}`; dealParams.push(actionType); dIdx++; }
-    if (nextStep) { dealWhere += ` AND a.next_step = $${dIdx}`; dealParams.push(nextStep); dIdx++; }
-    if (isInternal === 'true') { dealWhere += ` AND a.is_internal = TRUE`; }
-    if (dueBefore) { dealWhere += ` AND a.due_date <= $${dIdx}`; dealParams.push(dueBefore); dIdx++; }
-    if (dueAfter) { dealWhere += ` AND a.due_date >= $${dIdx}`; dealParams.push(dueAfter); dIdx++; }
-
-    const dealQuery = `
-      SELECT
-        'deal' AS action_source,
-        a.id, a.title, a.description, a.action_type, a.priority,
-        a.status, a.source, a.source_rule, a.source_id,
-        a.next_step, a.is_internal,
-        a.due_date, a.created_at, a.updated_at,
-        a.completed_at, a.completed_by, a.auto_completed,
-        a.completion_evidence, a.context, a.suggested_action, a.metadata,
-        a.snoozed_until, a.snooze_reason, a.snooze_duration,
-        a.deal_id, a.contact_id, a.user_id, a.health_param,
-        d.name AS deal_name, d.value AS deal_value, d.stage AS deal_stage,
-        d.owner_id AS deal_owner_id,
-        du.first_name || ' ' || du.last_name AS deal_owner_name,
-        c.first_name AS contact_first_name, c.last_name AS contact_last_name, c.email AS contact_email,
-        acc.name AS account_name,
-        ev.subject AS evidence_subject, LEFT(ev.body, 300) AS evidence_snippet,
-        ev.direction AS evidence_direction, ev.sent_at AS evidence_sent_at,
-        NULL::integer AS prospect_id, NULL AS prospect_first_name, NULL AS prospect_last_name,
-        NULL AS prospect_email, NULL AS prospect_company_name, NULL AS prospect_stage, NULL AS channel
-      FROM actions a
-      LEFT JOIN deals d ON a.deal_id = d.id AND d.org_id = a.org_id
-      LEFT JOIN users du ON d.owner_id = du.id
-      LEFT JOIN contacts c ON a.contact_id = c.id AND c.org_id = a.org_id
-      LEFT JOIN accounts acc ON d.account_id = acc.id AND acc.org_id = a.org_id
-      LEFT JOIN emails ev ON a.source_id = ev.id::varchar AND ev.org_id = a.org_id
-      WHERE a.org_id = $1 ${ownerFilterDeal} ${dealWhere}
-    `;
-
-    // ── 3. Prospecting actions query ─────────────────────────────
-    let prospectWhere = '';
-    const prospectParams = [...ownerParams];
-    let ppIdx = pIdx;
-
-    if (status) {
-      // Map ActionsView status values to prospecting_actions values
-      const statusMap = { yet_to_start: 'pending' };
-      const mappedStatus = statusMap[status] || status;
-      prospectWhere += ` AND pa.status = $${ppIdx}`; prospectParams.push(mappedStatus); ppIdx++;
-    }
-    if (dueBefore) { prospectWhere += ` AND pa.due_date <= $${ppIdx}`; prospectParams.push(dueBefore); ppIdx++; }
-    if (dueAfter) { prospectWhere += ` AND pa.due_date >= $${ppIdx}`; prospectParams.push(dueAfter); ppIdx++; }
-
-    const prospectQuery = `
-      SELECT
-        'prospecting' AS action_source,
-        pa.id, pa.title, pa.description, pa.action_type, pa.priority,
-        CASE pa.status WHEN 'pending' THEN 'yet_to_start' ELSE pa.status END AS status,
-        pa.source, NULL AS source_rule, NULL AS source_id,
-        pa.channel AS next_step, FALSE AS is_internal,
-        pa.due_date, pa.created_at, pa.updated_at,
-        pa.completed_at, pa.completed_by, FALSE AS auto_completed,
-        NULL AS completion_evidence, pa.ai_context AS context, pa.suggested_action, pa.metadata,
-        pa.snoozed_until, pa.snooze_reason, pa.snooze_duration,
-        NULL::integer AS deal_id, NULL::integer AS contact_id, pa.user_id, NULL AS health_param,
-        NULL AS deal_name, NULL::numeric AS deal_value, NULL AS deal_stage,
-        NULL::integer AS deal_owner_id, NULL AS deal_owner_name,
-        NULL AS contact_first_name, NULL AS contact_last_name, NULL AS contact_email,
-        NULL AS account_name,
-        NULL AS evidence_subject, NULL AS evidence_snippet,
-        NULL AS evidence_direction, NULL::timestamp AS evidence_sent_at,
-        pa.prospect_id, p.first_name AS prospect_first_name, p.last_name AS prospect_last_name,
-        p.email AS prospect_email, p.company_name AS prospect_company_name, p.stage AS prospect_stage,
-        pa.channel
-      FROM prospecting_actions pa
-      LEFT JOIN prospects p ON pa.prospect_id = p.id
-      WHERE pa.org_id = $1 ${ownerFilterProspect} ${prospectWhere}
-    `;
-
-    // ── 4. Execute both and merge ────────────────────────────────
-    const [dealResult, prospectResult] = await Promise.all([
-      db.query(dealQuery, dealParams),
-      db.query(prospectQuery, prospectParams),
-    ]);
-
-    // Map both to unified shape (prefix IDs to avoid collisions between tables)
-    const allActions = [
-      ...dealResult.rows.map(r => mapUnifiedAction(r, 'deal')),
-      ...prospectResult.rows.map(r => mapUnifiedAction(r, 'prospecting')),
-    ];
-
-    // Sort: active first, then by priority, then by due date
-    allActions.sort((a, b) => {
-      const statusOrder = { yet_to_start: 1, in_progress: 2, snoozed: 3, completed: 4, skipped: 5 };
-      const sA = statusOrder[a.status] || 4;
-      const sB = statusOrder[b.status] || 4;
-      if (sA !== sB) return sA - sB;
-
-      const priorityOrder = { critical: 1, high: 2, medium: 3, low: 4 };
-      const pA = priorityOrder[a.priority] || 3;
-      const pB = priorityOrder[b.priority] || 3;
-      if (pA !== pB) return pA - pB;
-
-      if (a.dueDate && b.dueDate) return new Date(a.dueDate) - new Date(b.dueDate);
-      if (a.dueDate) return -1;
-      if (b.dueDate) return 1;
-      return 0;
-    });
-
-    res.json({ actions: allActions });
-  } catch (error) {
-    console.error('Unified actions error:', error);
-    res.status(500).json({ error: { message: 'Failed to fetch unified actions' } });
-  }
-});
-
 // Unified row mapper — works for both deal and prospecting action rows
 function mapUnifiedAction(row, source) {
   return {
-    id:                      row.id,        // Raw DB id (used for API calls)
-    actionSource:            source || row.action_source, // 'deal' or 'prospecting'
+    id:                      row.id,
+    actionSource:            source || row.action_source,
     type:                    row.action_type,
     actionType:              row.action_type,
     priority:                row.priority,
