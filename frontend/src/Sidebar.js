@@ -20,7 +20,7 @@ const MEMBER_NAV_SECTIONS = [
   {
     id: 'pipeline',
     label: 'Pipeline',
-    items: ['actions', 'deals', 'contacts', 'accounts'],
+    items: ['actions', 'prospecting', 'deals', 'contacts', 'accounts'],
   },
   {
     id: 'workflow',
