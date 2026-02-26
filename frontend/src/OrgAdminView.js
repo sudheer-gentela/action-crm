@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import './OrgAdminView.css';
 import DealHealthSettings from './DealHealthSettings';
+import OAProspectStages from './OAProspectStages';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -25,6 +26,7 @@ const NAV_GROUPS = [
       { id: 'playbooks',   icon: '📘', label: 'Playbooks' },
       { id: 'deal-stages', icon: '🏷️', label: 'Deal Stages' },
       { id: 'deal-roles',  icon: '🎭', label: 'Deal Roles' },
+      { id: 'prospect-stages', icon: '🔬', label: 'Prospect Stages' },
     ],
   },
   {
@@ -62,6 +64,7 @@ const TAB_META = {
   playbooks:     { title: 'Playbooks',     desc: 'Configure deal playbooks and templates' },
   'deal-stages': { title: 'Deal Stages',   desc: 'Customise your pipeline stages' },
   'deal-roles':  { title: 'Deal Roles',    desc: 'Define contact roles in deals' },
+  'prospect-stages': { title: 'Prospect Stages', desc: 'Customise your prospecting lifecycle stages' },
   health:        { title: 'Deal Health',   desc: 'Configure health scoring parameters' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
@@ -164,6 +167,7 @@ export default function OrgAdminView() {
             {tab === 'health'      && <DealHealthSettings />}
             {tab === 'deal-stages' && <OADealStages />}
             {tab === 'deal-roles'  && <OADealRoles />}
+            {tab === 'prospect-stages' && <OAProspectStages />}
             {tab === 'ai-agent'    && <OAAgentSettings />}
             {tab === 'duplicates'  && <OADuplicateSettings />}
             {tab === 'integrations' && <OAIntegrations />}

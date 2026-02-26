@@ -595,3 +595,155 @@
 .sv-stage-name   { font-weight: 600; color: #1a202c; font-size: 14px; min-width: 100px; }
 .sv-stage-goal   { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sv-stage-detail { padding: 16px; background: #fafafa; border-top: 1px solid #e2e8f0; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Deal Stages + Prospect Stages — shared classes
+   Used by OADealStages.js and OAProspectStages.js
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Flash messages ──────────────────────────────────────────── */
+.sv-error   { padding: 10px 16px; border-radius: 8px; margin: 0 24px 12px; background: #fff5f5; color: #c53030; font-size: 14px; border: 1px solid #fed7d7; }
+.sv-success { padding: 10px 16px; border-radius: 8px; margin: 0 24px 12px; background: #f0fff4; color: #276749; font-size: 14px; border: 1px solid #c6f6d5; }
+
+/* ── Panel body + sections ───────────────────────────────────── */
+.sv-panel-body { padding: 20px 24px; display: flex; flex-direction: column; gap: 20px; }
+.sv-section    { display: flex; flex-direction: column; gap: 8px; }
+
+/* ── Small buttons ───────────────────────────────────────────── */
+.sv-btn-sm {
+  padding: 6px 14px; font-size: 13px; font-weight: 500; border-radius: 6px;
+  border: 1px solid #e2e8f0; background: white; color: #4a5568;
+  cursor: pointer; transition: all 0.15s; white-space: nowrap;
+}
+.sv-btn-sm:hover { background: #f7fafc; border-color: #cbd5e0; }
+.sv-btn-sm--primary { background: #eef2ff; color: #4338ca; border-color: #c7d2fe; }
+.sv-btn-sm--primary:hover { background: #e0e7ff; }
+.sv-btn-sm--danger  { color: #c53030; border-color: #fed7d7; }
+.sv-btn-sm--danger:hover  { background: #fff5f5; }
+
+/* ── Roles / stages list ─────────────────────────────────────── */
+.oa-roles-list {
+  display: flex; flex-direction: column; gap: 6px; margin-top: 10px;
+}
+
+.oa-role-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; background: white; border: 1px solid #e2e8f0;
+  border-radius: 8px; transition: background 0.15s, opacity 0.2s;
+}
+.oa-role-row:hover { background: #fafbfc; }
+.oa-role-row--inactive { opacity: 0.55; }
+
+.oa-role-row__info {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+
+.oa-role-row__name {
+  font-weight: 600; font-size: 14px; color: #1a202c;
+}
+.oa-role-row__name--editable { cursor: pointer; }
+.oa-role-row__name--editable:hover { color: #4338ca; }
+
+.oa-role-row__tag {
+  display: inline-block; padding: 2px 8px; font-size: 11px; font-weight: 600;
+  border-radius: 4px; background: #f3f4f6; color: #6b7280; text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.oa-role-row__tag--terminal { background: #fef2f2; color: #991b1b; }
+.oa-role-row__tag--system   { background: #eef2ff; color: #4338ca; }
+
+/* ── Reorder arrows ──────────────────────────────────────────── */
+.oa-stage-row__order {
+  display: flex; flex-direction: column; gap: 2px;
+}
+.oa-stage-order-btn {
+  width: 22px; height: 18px; padding: 0; font-size: 10px; line-height: 1;
+  background: #f3f4f6; border: 1px solid #e2e8f0; border-radius: 4px;
+  color: #6b7280; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+}
+.oa-stage-order-btn:hover:not(:disabled) { background: #e5e7eb; color: #1a202c; }
+.oa-stage-order-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+/* ── Stage row actions column ────────────────────────────────── */
+.oa-stage-row__actions {
+  display: flex; gap: 6px; margin-left: auto; flex-shrink: 0;
+}
+
+/* ── Stage type badge ────────────────────────────────────────── */
+.oa-stage-type-badge {
+  display: inline-block; padding: 2px 8px; font-size: 11px; font-weight: 600;
+  border-radius: 4px; background: #f0f4ff; color: #4338ca;
+  text-transform: capitalize;
+}
+
+/* ── Inline edit input ───────────────────────────────────────── */
+.oa-input--inline {
+  padding: 4px 8px; font-size: 14px; font-weight: 600; width: 200px;
+  border: 1px solid #667eea; border-radius: 6px; outline: none;
+}
+
+/* ── Select dropdown ─────────────────────────────────────────── */
+.oa-select {
+  width: 100%; padding: 9px 12px; border: 1px solid #e2e8f0; border-radius: 8px;
+  font-size: 14px; color: #1a202c; background: white; font-family: inherit;
+  cursor: pointer; transition: border-color 0.15s;
+}
+.oa-select:focus { outline: none; border-color: #667eea; }
+
+/* ── Add stage form ──────────────────────────────────────────── */
+.oa-stage-add-form {
+  margin-top: 12px; padding: 16px; background: #f9fafb;
+  border: 1px dashed #d1d5db; border-radius: 10px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.oa-stage-add-row {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.oa-stage-add-row--checkbox {
+  flex-direction: row; align-items: center; gap: 8px;
+  font-size: 13px; color: #4b5563;
+}
+.oa-stage-add-row--checkbox label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.oa-stage-add-row--actions {
+  flex-direction: row; gap: 8px;
+}
+.oa-stage-label {
+  font-size: 13px; font-weight: 600; color: #374151;
+}
+
+/* ── Stage type reference grid ───────────────────────────────── */
+.oa-stage-type-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px; margin-top: 10px;
+}
+.oa-stage-type-card {
+  padding: 10px 14px; background: white; border: 1px solid #e2e8f0;
+  border-radius: 8px; display: flex; flex-direction: column; gap: 2px;
+}
+.oa-stage-type-name { font-weight: 600; font-size: 13px; color: #1a202c; }
+.oa-stage-type-desc { font-size: 12px; color: #718096; }
+
+/* ── Prospect stage color dot ────────────────────────────────── */
+.oa-stage-color-dot {
+  display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+  flex-shrink: 0; margin-right: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
+}
+
+/* ── Color preset picker ─────────────────────────────────────── */
+.oa-color-presets {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px;
+}
+.oa-color-swatch {
+  width: 28px; height: 28px; border-radius: 6px;
+  border: 2px solid transparent; cursor: pointer;
+  transition: transform 0.1s, border-color 0.15s; padding: 0;
+}
+.oa-color-swatch:hover { transform: scale(1.15); }
+.oa-color-swatch--active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px #3B82F6;
+  transform: scale(1.1);
+}

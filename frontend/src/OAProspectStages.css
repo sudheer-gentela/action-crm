@@ -1,0 +1,45 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * OAProspectStages — Additional CSS
+ *
+ * Append these rules to your existing OrgAdmin / settings stylesheet.
+ * All other styles (.sv-panel, .oa-role-row, .oa-stage-*, etc.) are
+ * shared with OADealStages and already present.
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/* ── Color dot next to stage name ──────────────────────────────────────────── */
+.oa-stage-color-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-right: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
+}
+
+/* ── Color preset picker ───────────────────────────────────────────────────── */
+.oa-color-presets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.oa-color-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform 0.1s, border-color 0.15s;
+  padding: 0;
+}
+.oa-color-swatch:hover {
+  transform: scale(1.15);
+}
+.oa-color-swatch--active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px #3B82F6;
+  transform: scale(1.1);
+}

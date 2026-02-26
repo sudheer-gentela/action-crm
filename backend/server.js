@@ -27,6 +27,7 @@ const dealRolesRoutes  = require('./routes/deal-roles.routes');
 const dealTeamRoutes   = require('./routes/deal-team.routes');
 const dealContactsRoutes = require('./routes/deal-contacts.routes');
 const dealStagesRoutes = require('./routes/deal-stages.routes');
+const prospectStagesRoutes = require('./routes/prospect-stages.routes');
 
 // Prospecting Module
 const prospectsRoutes           = require('./routes/prospects.routes');
@@ -176,7 +177,8 @@ app.use('/api/ai',         aiContextRoutes);
 app.use('/api/deal-roles', dealRolesRoutes);
 app.use('/api/deal-team',  dealTeamRoutes);
 app.use('/api/deal-contacts', dealContactsRoutes);
-app.use('/api/deal-stages',   dealStagesRoutes);
+app.use('/api/deal-stages',      dealStagesRoutes);
+app.use('/api/prospect-stages', prospectStagesRoutes);
 
 // ─── Prospecting Module ──────────────────────────────────────
 app.use('/api/prospects',           prospectsRoutes);
