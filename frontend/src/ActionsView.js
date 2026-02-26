@@ -476,6 +476,19 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
         </div>
       )}
 
+      {/* Prospect context */}
+      {action.prospect && (
+        <div className="av-card-context">
+          <span style={{ color: '#0F9D8E', fontWeight: 600 }}>🎯 {action.prospect.firstName} {action.prospect.lastName}</span>
+          {action.prospect.companyName && <span className="av-context-account">· {action.prospect.companyName}</span>}
+          {action.prospect.stage && (
+            <span className="av-context-stage" style={{ background: '#0F9D8E18', color: '#0F9D8E' }}>
+              {action.prospect.stage.replace(/_/g, ' ')}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Contact context */}
       {action.contact && (
         <div className="av-card-context">
@@ -747,7 +760,7 @@ export default function ActionsView() {
       if (activeFilters.dueAfter)   params.set('dueAfter',   activeFilters.dueAfter);
       if (activeFilters.dueBefore)  params.set('dueBefore',  activeFilters.dueBefore);
 
-      const data = await apiFetch(`/actions?${params.toString()}`);
+      const data = await apiFetch(`/actions/unified?${params.toString()}`);
       let rows = data.actions || [];
 
       // Client-side source filter
@@ -755,9 +768,9 @@ export default function ActionsView() {
       if (activeFilters.source === 'rules')    rows = rows.filter(a => a.source === 'auto_generated');
       if (activeFilters.source === 'playbook') rows = rows.filter(a => a.source === 'playbook');
 
-      // Deals vs Prospecting source filter
-      if (actionSource === 'deals')       rows = rows.filter(a => a.deal !== null && a.deal !== undefined);
-      if (actionSource === 'prospecting') rows = rows.filter(a => a.deal === null || a.deal === undefined);
+      // Deals vs Prospecting source filter (uses actionSource from unified endpoint)
+      if (actionSource === 'deals')       rows = rows.filter(a => a.actionSource === 'deal');
+      if (actionSource === 'prospecting') rows = rows.filter(a => a.actionSource === 'prospecting');
 
       // Default view: hide completed and snoozed
       if (!activeFilters.status) {
@@ -784,10 +797,25 @@ export default function ActionsView() {
 
   async function handleStatusChange(actionId, newStatus) {
     try {
-      await apiFetch(`/actions/${actionId}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: newStatus }),
-      });
+      // Find the action to determine which table to update
+      const action = actions.find(a => a.id === actionId);
+      const isProspecting = action?.actionSource === 'prospecting';
+
+      if (isProspecting) {
+        // Map ActionsView statuses to prospecting_actions statuses
+        const statusMap = { yet_to_start: 'pending', in_progress: 'in_progress', completed: 'completed' };
+        const mappedStatus = statusMap[newStatus] || newStatus;
+        await apiFetch(`/prospecting-actions/${actionId}/status`, {
+          method: 'PATCH',
+          body: JSON.stringify({ status: mappedStatus }),
+        });
+      } else {
+        await apiFetch(`/actions/${actionId}/status`, {
+          method: 'PATCH',
+          body: JSON.stringify({ status: newStatus }),
+        });
+      }
+
       setActions(prev =>
         prev.map(a => a.id === actionId
           ? { ...a, status: newStatus, completed: newStatus === 'completed' }
@@ -873,7 +901,11 @@ export default function ActionsView() {
   }
 
   async function handleSnooze(actionId, reason, duration) {
-    await apiFetch(`/actions/${actionId}/snooze`, {
+    const action = actions.find(a => a.id === actionId);
+    const endpoint = action?.actionSource === 'prospecting'
+      ? `/prospecting-actions/${actionId}/snooze`
+      : `/actions/${actionId}/snooze`;
+    await apiFetch(endpoint, {
       method: 'PATCH',
       body: JSON.stringify({ reason, duration }),
     });
@@ -892,7 +924,11 @@ export default function ActionsView() {
 
   async function handleUnsnooze(actionId) {
     try {
-      await apiFetch(`/actions/${actionId}/unsnooze`, { method: 'PATCH' });
+      const action = actions.find(a => a.id === actionId);
+      const endpoint = action?.actionSource === 'prospecting'
+        ? `/prospecting-actions/${actionId}/unsnooze`
+        : `/actions/${actionId}/unsnooze`;
+      await apiFetch(endpoint, { method: 'PATCH' });
       setActions(prev =>
         prev.map(a => a.id === actionId
           ? { ...a, status: 'yet_to_start', snoozedUntil: null, snoozeReason: null, snoozeDuration: null }
@@ -913,7 +949,10 @@ export default function ActionsView() {
     try {
       const result = await apiFetch('/actions/generate', { method: 'POST' });
       await fetchActions(filters);
-      alert(`✅ Generated ${result.generated} actions, inserted ${result.inserted} new.`);
+      const dealMsg = result.deal ? `${result.deal.inserted} deal action(s)` : '';
+      const prospectMsg = result.prospecting ? `${result.prospecting.created} prospecting action(s)` : '';
+      const parts = [dealMsg, prospectMsg].filter(Boolean).join(', ');
+      alert(`✅ Generated ${parts || 'no new actions'}.${result.prospecting?.skipped ? ` Skipped ${result.prospecting.skipped} duplicate(s).` : ''}`);
     } catch (err) {
       alert('Failed to generate actions: ' + err.message);
     } finally {
