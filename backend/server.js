@@ -34,6 +34,7 @@ const prospectsRoutes           = require('./routes/prospects.routes');
 const prospectingActionsRoutes  = require('./routes/prospecting-actions.routes');
 const accountProspectingRoutes  = require('./routes/account-prospecting.routes');
 const unifiedActionsRoutes      = require('./routes/unified-actions.routes');
+const prospectContextRoutes     = require('./routes/prospect-context.routes');
 
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
@@ -185,6 +186,7 @@ app.use('/api/prospects',           prospectsRoutes);
 app.use('/api/prospecting-actions', prospectingActionsRoutes);
 app.use('/api/accounts',            accountProspectingRoutes); // /:id/prospecting, /:id/coverage
 app.use('/api/actions',             unifiedActionsRoutes);     // /unified
+app.use('/api/prospect-context',    prospectContextRoutes);    // /:prospectId, /icp-config/current
 
 // ─────────────────────────────────────────────────────────────
 // Error handling
