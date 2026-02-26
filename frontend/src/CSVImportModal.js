@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useMemo } from 'react';
 import { csvParse, IMPORT_FIELDS } from './csvUtils';
 
 /**
@@ -11,7 +11,7 @@ import { csvParse, IMPORT_FIELDS } from './csvUtils';
  *   accounts    — array of existing accounts (for name→id matching in contacts/deals)
  */
 export default function CSVImportModal({ entity, onImport, onClose, accounts = [] }) {
-  const fields = IMPORT_FIELDS[entity] || [];
+  const fields = useMemo(() => IMPORT_FIELDS[entity] || [], [entity]);
   const entityLabel = entity.charAt(0).toUpperCase() + entity.slice(1);
 
   // Steps: 'upload' → 'mapping' → 'preview' → 'importing' → 'result'
