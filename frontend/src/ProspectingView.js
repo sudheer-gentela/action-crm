@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
 import OutreachComposer from './OutreachComposer';
 import CoverageScorecard from './CoverageScorecard';
 import './ProspectingView.css';
@@ -25,6 +25,14 @@ const STAGE_ICONS = {
   targeting: '🎯', research: '🔍', outreach: '📤', engagement: '💬',
   qualification: '✅', converted: '🎉', disqualified: '❌', nurture: '🌱', custom: '⚙️',
 };
+
+// ── Stages Context — avoids prop-drilling stages through every child ────────
+const StagesContext = createContext({
+  prospectStages: DEFAULT_PROSPECT_STAGES,
+  terminalStages: DEFAULT_TERMINAL_STAGES,
+  allStages: [...DEFAULT_PROSPECT_STAGES, ...DEFAULT_TERMINAL_STAGES],
+});
+const useStages = () => useContext(StagesContext);
 
 const CHANNEL_ICONS = {
   email:    '✉️',
@@ -204,7 +212,10 @@ export default function ProspectingView() {
   // RENDER
   // ─────────────────────────────────────────────────────────────────────────────
 
+  const stagesCtx = { prospectStages: PROSPECT_STAGES, terminalStages: TERMINAL_STAGES, allStages: ALL_STAGES };
+
   return (
+    <StagesContext.Provider value={stagesCtx}>
     <div className="pv-container">
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="pv-header">
@@ -308,7 +319,6 @@ export default function ProspectingView() {
       ) : viewMode === 'pipeline' ? (
         <PipelineBoard
           stages={PROSPECT_STAGES}
-          terminalStages={TERMINAL_STAGES}
           groupedByStage={groupedByStage}
           onSelect={setSelectedProspect}
           onStageChange={handleStageChange}
@@ -317,13 +327,11 @@ export default function ProspectingView() {
       ) : viewMode === 'list' ? (
         <ListView
           prospects={prospects}
-          allStages={ALL_STAGES}
           onSelect={setSelectedProspect}
         />
       ) : (
         <AccountView
           groups={Object.values(groupedByAccount)}
-          allStages={ALL_STAGES}
           onSelect={setSelectedProspect}
         />
       )}
@@ -340,14 +348,13 @@ export default function ProspectingView() {
       {selectedProspect && (
         <ProspectDetailPanel
           prospectId={selectedProspect.id || selectedProspect}
-          allStages={ALL_STAGES}
-          prospectStages={PROSPECT_STAGES}
           onClose={() => setSelectedProspect(null)}
           onUpdate={fetchProspects}
         />
       )}
 
     </div>
+    </StagesContext.Provider>
   );
 }
 
@@ -355,7 +362,8 @@ export default function ProspectingView() {
 // PIPELINE BOARD
 // ═════════════════════════════════════════════════════════════════════════════
 
-function PipelineBoard({ stages, terminalStages, groupedByStage, onSelect, onStageChange, terminalCounts }) {
+function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, terminalCounts }) {
+  const { terminalStages } = useStages();
   return (
     <div className="pv-pipeline">
       <div className="pv-pipeline-columns">
@@ -436,7 +444,8 @@ function ProspectCard({ prospect: p, onClick }) {
 // LIST VIEW
 // ═════════════════════════════════════════════════════════════════════════════
 
-function ListView({ prospects, allStages, onSelect }) {
+function ListView({ prospects, onSelect }) {
+  const { allStages } = useStages();
   return (
     <div className="pv-list">
       <table className="pv-table">
@@ -488,7 +497,8 @@ function ListView({ prospects, allStages, onSelect }) {
 // ACCOUNT VIEW
 // ═════════════════════════════════════════════════════════════════════════════
 
-function AccountView({ groups, allStages, onSelect }) {
+function AccountView({ groups, onSelect }) {
+  const { allStages } = useStages();
   return (
     <div className="pv-account-view">
       {groups.sort((a, b) => b.prospects.length - a.prospects.length).map((group, idx) => (
@@ -624,7 +634,8 @@ function ProspectCreateModal({ onSave, onClose }) {
 // PROSPECT DETAIL PANEL (slide-out)
 // ═════════════════════════════════════════════════════════════════════════════
 
-function ProspectDetailPanel({ prospectId, allStages, prospectStages, onClose, onUpdate }) {
+function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
+  const { allStages, prospectStages } = useStages();
   const [prospect, setProspect] = useState(null);
   const [actions, setActions] = useState([]);
   const [activities, setActivities] = useState([]);
