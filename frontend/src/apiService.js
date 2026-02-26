@@ -283,7 +283,7 @@ export const apiService = {
 // OUTLOOK & SYNC APIs
 // ============================================================
 
-const API_BASE_URL_SYNC = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+//const API_BASE_URL_SYNC = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 
 // Outlook API
 export const outlookAPI = {
