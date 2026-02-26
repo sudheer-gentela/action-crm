@@ -16,8 +16,6 @@ import { apiService } from './apiService';
  *   onClose        {function} — close the composer
  */
 
-const TEAL = '#0F9D8E';
-
 const CHANNELS = [
   { key: 'email',    icon: '✉️',  label: 'Email' },
   { key: 'linkedin', icon: '🔗', label: 'LinkedIn' },
