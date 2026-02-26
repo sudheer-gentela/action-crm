@@ -993,8 +993,8 @@ function ProspectingPlaybookPanel({ onClose }) {
       setLoading(true);
       const data = await apiFetch('/api/playbooks?type=prospecting');
       setPlaybooks(data.playbooks || []);
-      if (data.playbooks?.length > 0 && !selectedPb) {
-        setSelectedPb(data.playbooks[0].id);
+      if (data.playbooks?.length > 0) {
+        setSelectedPb(prev => prev || data.playbooks[0].id);
       }
     } catch (err) {
       console.error('Fetch prospecting playbooks:', err);
