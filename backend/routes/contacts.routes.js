@@ -8,12 +8,16 @@ router.use(authenticateToken);
 router.use(orgContext);
 
 // ── GET / — list contacts ─────────────────────────────────────
+// Supports ?scope=mine|team|org (default: mine)
+//   mine — contacts on accounts owned by the current user
+//   team — contacts on accounts owned by user + subordinates
+//   org  — all contacts in the org
 // OLD isolation: WHERE acc.owner_id = $1 (broken — contacts can
 //   exist on accounts owned by other users in the same org)
 // NEW isolation: WHERE c.org_id = $1 (correct org-level scope)
 router.get('/', async (req, res) => {
   try {
-    const { roleType, engagementLevel } = req.query;
+    const { roleType, engagementLevel, scope = 'mine' } = req.query;
 
     let query = `
       SELECT
@@ -31,6 +35,19 @@ router.get('/', async (req, res) => {
     `;
 
     const params = [req.orgId];
+
+    // Scope filtering via account ownership
+    if (scope === 'team' && req.subordinateIds?.length > 0) {
+      const teamIds = [req.user.userId, ...req.subordinateIds];
+      query += ` AND (c.account_id IS NULL OR c.account_id IN (SELECT id FROM accounts WHERE org_id = $1 AND owner_id = ANY($${params.length + 1}::int[])))`;
+      params.push(teamIds);
+    } else if (scope === 'org') {
+      // No additional filter — all contacts in org
+    } else {
+      // Default: mine — contacts on my accounts + unassigned contacts
+      query += ` AND (c.account_id IS NULL OR c.account_id IN (SELECT id FROM accounts WHERE org_id = $1 AND owner_id = $${params.length + 1}))`;
+      params.push(req.user.userId);
+    }
 
     if (roleType) {
       query += ` AND c.role_type = $${params.length + 1}`;

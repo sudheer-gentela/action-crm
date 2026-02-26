@@ -12,6 +12,7 @@
 //
 //   router.get('/deals', authenticateToken, orgContext, async (req, res) => {
 //     // req.orgId is guaranteed to be a valid integer here
+//     // req.subordinateIds is an array of user IDs this user manages
 //     const { rows } = await orgQuery(req.orgId, 'SELECT * FROM deals WHERE org_id = $1', [req.orgId]);
 //   });
 //
@@ -20,9 +21,16 @@
 //   2. DB lookup         — fallback during transition period while
 //                          old JWTs without org_id are still in use
 //
+// HIERARCHY:
+//   After resolving orgId, the middleware loads the user's subordinate
+//   IDs from org_hierarchy (recursive CTE) and attaches them as
+//   req.subordinateIds. Routes use this to expand data visibility
+//   (e.g. ?scope=team includes subordinates' records).
+//
 // ─────────────────────────────────────────────────────────────
 
 const { pool } = require('../config/database');
+const hierarchyService = require('../services/hierarchyService');
 
 const orgContext = async (req, res, next) => {
   try {
@@ -67,6 +75,21 @@ const orgContext = async (req, res, next) => {
     // or req.params.org_id (those can be spoofed).
     req.orgId = orgId;
     req.user  = { ...req.user, org_id: orgId }; // keep req.user in sync
+
+    // ── Hierarchy: load subordinate IDs ───────────────────────
+    // This is a lightweight recursive CTE — cached per request.
+    // Returns [] if org_hierarchy table doesn't exist yet.
+    try {
+      const userId = req.user.userId || req.userId;
+      req.subordinateIds = await hierarchyService.getSubordinates(orgId, userId);
+    } catch (err) {
+      // Non-fatal: if hierarchy isn't set up, just empty array
+      console.warn('orgContext: failed to load subordinates, defaulting to []:', err.message);
+      req.subordinateIds = [];
+    }
+
+    // ── Helper: get the "team" user IDs (self + subordinates) ──
+    req.teamUserIds = [req.user.userId || req.userId, ...req.subordinateIds];
 
     next();
   } catch (err) {

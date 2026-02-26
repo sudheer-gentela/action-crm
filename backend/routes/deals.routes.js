@@ -55,9 +55,13 @@ async function resolveDefaultStage(orgId) {
 }
 
 // ── GET / ─────────────────────────────────────────────────────
+// Supports ?scope=mine|team|org (default: mine)
+//   mine — only the current user's deals (original behaviour)
+//   team — current user + all subordinates (hierarchy-based)
+//   org  — all deals in the org (admin/owner only, or if no hierarchy)
 router.get('/', async (req, res) => {
   try {
-    const { stage, health } = req.query;
+    const { stage, health, scope = 'mine' } = req.query;
 
     let query = `
       SELECT
@@ -77,10 +81,25 @@ router.get('/', async (req, res) => {
       LEFT JOIN users u      ON d.owner_id   = u.id
       LEFT JOIN deal_contacts dc ON d.id = dc.deal_id
       LEFT JOIN contacts c ON dc.contact_id = c.id
-      WHERE d.org_id = $1 AND d.owner_id = $2
+      WHERE d.org_id = $1
     `;
 
-    const params = [req.orgId, req.user.userId];
+    const params = [req.orgId];
+
+    // Scope filtering
+    if (scope === 'team' && req.subordinateIds?.length > 0) {
+      // Team = self + all subordinates
+      const teamIds = [req.user.userId, ...req.subordinateIds];
+      query += ` AND d.owner_id = ANY($${params.length + 1}::int[])`;
+      params.push(teamIds);
+    } else if (scope === 'org') {
+      // Org-wide — no owner filter (all deals in org)
+      // No additional WHERE clause needed
+    } else {
+      // Default: mine only
+      query += ` AND d.owner_id = $${params.length + 1}`;
+      params.push(req.user.userId);
+    }
 
     if (stage) {
       query += ` AND d.stage = $${params.length + 1}`;
@@ -130,8 +149,25 @@ router.get('/', async (req, res) => {
 // Updated: joins deal_stages so ordering follows org sort_order instead of
 // a hardcoded CASE WHEN. Backward compatible — falls back to count-only if
 // deal_stages table doesn't exist yet.
+// Supports ?scope=mine|team|org (same as GET /)
 router.get('/pipeline/summary', async (req, res) => {
   try {
+    const { scope = 'mine' } = req.query;
+
+    let ownerFilter;
+    const params = [req.orgId];
+
+    if (scope === 'team' && req.subordinateIds?.length > 0) {
+      const teamIds = [req.user.userId, ...req.subordinateIds];
+      ownerFilter = `AND d.owner_id = ANY($${params.length + 1}::int[])`;
+      params.push(teamIds);
+    } else if (scope === 'org') {
+      ownerFilter = '';
+    } else {
+      ownerFilter = `AND d.owner_id = $${params.length + 1}`;
+      params.push(req.user.userId);
+    }
+
     const result = await db.query(
       `SELECT
          d.stage,
@@ -145,11 +181,11 @@ router.get('/pipeline/summary', async (req, res) => {
        LEFT JOIN deal_stages ds
          ON ds.org_id = d.org_id AND ds.key = d.stage
        WHERE d.org_id   = $1
-         AND d.owner_id = $2
+         ${ownerFilter}
          AND (ds.is_terminal = FALSE OR ds.is_terminal IS NULL)
        GROUP BY d.stage, ds.name, ds.sort_order, ds.stage_type, ds.is_terminal
        ORDER BY COALESCE(ds.sort_order, 999) ASC`,
-      [req.orgId, req.user.userId]
+      params
     );
 
     res.json({
@@ -166,10 +202,23 @@ router.get('/pipeline/summary', async (req, res) => {
     // Fallback: if deal_stages doesn't exist, return legacy format
     if (error.message?.includes('relation "deal_stages" does not exist')) {
       try {
+        const fallbackParams = [req.orgId];
+        let fallbackOwnerFilter;
+        if (scope === 'team' && req.subordinateIds?.length > 0) {
+          const teamIds = [req.user.userId, ...req.subordinateIds];
+          fallbackOwnerFilter = `AND owner_id = ANY($${fallbackParams.length + 1}::int[])`;
+          fallbackParams.push(teamIds);
+        } else if (scope === 'org') {
+          fallbackOwnerFilter = '';
+        } else {
+          fallbackOwnerFilter = `AND owner_id = $${fallbackParams.length + 1}`;
+          fallbackParams.push(req.user.userId);
+        }
+
         const fallback = await db.query(
           `SELECT stage, COUNT(*) as count, SUM(value) as total_value
            FROM deals
-           WHERE org_id = $1 AND owner_id = $2
+           WHERE org_id = $1 ${fallbackOwnerFilter}
              AND stage NOT IN ('closed_won', 'closed_lost')
            GROUP BY stage
            ORDER BY CASE stage
@@ -179,7 +228,7 @@ router.get('/pipeline/summary', async (req, res) => {
              WHEN 'negotiation' THEN 4
              ELSE 5
            END`,
-          [req.orgId, req.user.userId]
+          fallbackParams
         );
         return res.json({
           pipeline: fallback.rows.map(row => ({

@@ -42,6 +42,17 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
   // Dynamic stages state
   const [orgStages, setOrgStages] = useState(FALLBACK_STAGES);
 
+  // ── Scope toggle state ────────────────────────────────────────
+  const [scope, setScope] = useState('mine');   // 'mine' | 'team' | 'org'
+  const [hasTeam, setHasTeam] = useState(false);
+
+  // Detect if user has subordinates (enables the scope toggle)
+  useEffect(() => {
+    apiService.orgAdmin.getMyTeam()
+      .then(r => setHasTeam(r.data.hasTeam))
+      .catch(() => setHasTeam(false));
+  }, []);
+
   // Load org stages once on mount — silent fallback
   useEffect(() => {
     const token = localStorage.getItem('token') || localStorage.getItem('authToken');
@@ -66,7 +77,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
 
   useEffect(() => {
     fetchDeals();
-  }, []);
+  }, [scope]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Open a deal from App.js navigation
   useEffect(() => {
@@ -84,8 +95,8 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
       setError('');
 
       const [dealsRes, accountsRes, meetingsRes] = await Promise.all([
-        apiService.deals.getAll(),
-        apiService.accounts.getAll(),
+        apiService.deals.getAll(scope),
+        apiService.accounts.getAll(scope),
         apiService.meetings.getAll()
       ]);
 
@@ -238,11 +249,37 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
           <h1>Deal Pipeline</h1>
           <p className="deals-subtitle">
             {deals.length} active opportunit{deals.length !== 1 ? 'ies' : 'y'}
+            {scope !== 'mine' && <span style={{ color: '#6366f1', fontWeight: 600 }}> · {scope === 'team' ? 'Team' : 'All Org'}</span>}
           </p>
         </div>
-        <button className="btn-primary" onClick={() => setShowForm(true)}>
-          + New Deal
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {/* Scope toggle — only visible if user has subordinates */}
+          {hasTeam && (
+            <div style={{
+              display: 'inline-flex', borderRadius: '8px', overflow: 'hidden',
+              border: '1px solid #e2e4ea', fontSize: '13px'
+            }}>
+              {['mine', 'team', 'org'].map(s => (
+                <button
+                  key={s}
+                  onClick={() => setScope(s)}
+                  style={{
+                    padding: '6px 14px', border: 'none', cursor: 'pointer',
+                    background: scope === s ? '#4f46e5' : '#fff',
+                    color: scope === s ? '#fff' : '#4b5563',
+                    fontWeight: scope === s ? 600 : 400,
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {s === 'mine' ? 'My Deals' : s === 'team' ? 'My Team' : 'All Org'}
+                </button>
+              ))}
+            </div>
+          )}
+          <button className="btn-primary" onClick={() => setShowForm(true)}>
+            + New Deal
+          </button>
+        </div>
       </div>
 
       {error && <div className="error-banner">⚠️ {error}</div>}

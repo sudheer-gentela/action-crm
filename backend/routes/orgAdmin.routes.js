@@ -412,4 +412,127 @@ router.patch('/integrations/:type', adminOnly, async (req, res) => {
   }
 });
 
+// ── Org Hierarchy ────────────────────────────────────────────────────────────
+
+const hierarchyService = require('../services/hierarchyService');
+
+/**
+ * GET /org/admin/hierarchy
+ * Get the full hierarchy tree for this org.
+ * Available to all authenticated org members (not just admins) so that
+ * scope toggles can detect whether the user has subordinates.
+ */
+router.get('/hierarchy', async (req, res) => {
+  try {
+    const tree = await hierarchyService.getFullTree(req.orgId);
+    res.json({ hierarchy: tree });
+  } catch (err) {
+    console.error('GET /org-admin/hierarchy error:', err);
+    res.status(500).json({ error: { message: 'Failed to fetch hierarchy' } });
+  }
+});
+
+/**
+ * GET /org/admin/hierarchy/my-team
+ * Returns the current user's subordinates (for scope toggle detection).
+ * Available to all members.
+ */
+router.get('/hierarchy/my-team', async (req, res) => {
+  try {
+    const userId = req.user.userId || req.userId;
+    const subordinates = await hierarchyService.getSubordinates(req.orgId, userId);
+    const directReports = await hierarchyService.getDirectReports(req.orgId, userId);
+    res.json({
+      subordinateIds: subordinates,
+      directReports,
+      hasTeam: subordinates.length > 0,
+    });
+  } catch (err) {
+    console.error('GET /org-admin/hierarchy/my-team error:', err);
+    res.status(500).json({ error: { message: 'Failed to fetch team info' } });
+  }
+});
+
+/**
+ * PUT /org/admin/hierarchy/:userId
+ * Set a user's reports_to and hierarchy_role.
+ * Admin-only.
+ */
+router.put('/hierarchy/:userId', adminOnly, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { reportsTo, hierarchyRole } = req.body;
+
+    // Validate target user belongs to this org
+    const memberCheck = await pool.query(
+      `SELECT user_id FROM org_users WHERE org_id = $1 AND user_id = $2 AND is_active = TRUE`,
+      [req.orgId, userId]
+    );
+    if (memberCheck.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'User not found in this org' } });
+    }
+
+    // If reportsTo is set, validate that user also belongs to this org
+    if (reportsTo) {
+      const managerCheck = await pool.query(
+        `SELECT user_id FROM org_users WHERE org_id = $1 AND user_id = $2 AND is_active = TRUE`,
+        [req.orgId, reportsTo]
+      );
+      if (managerCheck.rows.length === 0) {
+        return res.status(400).json({ error: { message: 'Manager not found in this org' } });
+      }
+    }
+
+    const result = await hierarchyService.setReportsTo(
+      req.orgId,
+      parseInt(userId),
+      reportsTo ? parseInt(reportsTo) : null,
+      hierarchyRole || 'rep'
+    );
+
+    res.json({ hierarchy: result });
+  } catch (err) {
+    if (err.message?.includes('Circular reference')) {
+      return res.status(400).json({ error: { message: err.message } });
+    }
+    console.error('PUT /org-admin/hierarchy/:userId error:', err);
+    res.status(500).json({ error: { message: 'Failed to update hierarchy' } });
+  }
+});
+
+/**
+ * POST /org/admin/hierarchy/bulk
+ * Bulk update hierarchy (array of { userId, reportsTo, hierarchyRole }).
+ * Admin-only.
+ */
+router.post('/hierarchy/bulk', adminOnly, async (req, res) => {
+  try {
+    const { entries } = req.body;
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return res.status(400).json({ error: { message: 'entries array is required' } });
+    }
+
+    const results = await hierarchyService.bulkUpdate(req.orgId, entries);
+    res.json({ hierarchy: results });
+  } catch (err) {
+    console.error('POST /org-admin/hierarchy/bulk error:', err);
+    res.status(500).json({ error: { message: 'Failed to bulk update hierarchy' } });
+  }
+});
+
+/**
+ * DELETE /org/admin/hierarchy/:userId
+ * Remove a user from the hierarchy (re-parents their reports).
+ * Admin-only.
+ */
+router.delete('/hierarchy/:userId', adminOnly, async (req, res) => {
+  try {
+    const result = await hierarchyService.removeFromHierarchy(req.orgId, parseInt(req.params.userId));
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('DELETE /org-admin/hierarchy/:userId error:', err);
+    res.status(500).json({ error: { message: 'Failed to remove from hierarchy' } });
+  }
+});
+
 module.exports = router;

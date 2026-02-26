@@ -15,6 +15,7 @@ const NAV_GROUPS = [
     label: 'Team',
     items: [
       { id: 'members',     icon: '👥', label: 'Members' },
+      { id: 'hierarchy',   icon: '🏢', label: 'Hierarchy' },
       { id: 'invitations', icon: '✉️', label: 'Invitations' },
     ],
   },
@@ -56,6 +57,7 @@ const NAV_GROUPS = [
 // Content descriptions for the top bar
 const TAB_META = {
   members:       { title: 'Members',       desc: 'Manage team members, roles, and permissions' },
+  hierarchy:     { title: 'Hierarchy',     desc: 'Reporting structure and team visibility' },
   invitations:   { title: 'Invitations',   desc: 'Invite new members to your organisation' },
   playbooks:     { title: 'Playbooks',     desc: 'Configure deal playbooks and templates' },
   'deal-stages': { title: 'Deal Stages',   desc: 'Customise your pipeline stages' },
@@ -156,6 +158,7 @@ export default function OrgAdminView() {
 
           <div className="oa-tab-content">
             {tab === 'members'     && <OAMembers currentUserId={currentUser.id} />}
+            {tab === 'hierarchy'   && <OAHierarchy />}
             {tab === 'invitations' && <OAInvitations />}
             {tab === 'playbooks'   && <OAPlaybooks />}
             {tab === 'health'      && <DealHealthSettings />}
@@ -340,6 +343,407 @@ function OAMembers({ currentUserId }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// HIERARCHY TAB — visual org tree with reporting-line management
+// ─────────────────────────────────────────────────────────────────
+
+const HIERARCHY_ROLES = [
+  { value: 'vp',       label: 'VP',       color: '#7c3aed' },
+  { value: 'director', label: 'Director', color: '#2563eb' },
+  { value: 'manager',  label: 'Manager',  color: '#059669' },
+  { value: 'rep',      label: 'Rep',      color: '#64748b' },
+];
+
+function HierarchyRoleBadge({ role }) {
+  const r = HIERARCHY_ROLES.find(h => h.value === role) || { label: role || 'Rep', color: '#64748b' };
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 10px', borderRadius: '12px',
+      fontSize: '11px', fontWeight: 600, color: '#fff',
+      background: r.color, letterSpacing: '0.02em',
+    }}>
+      {r.label}
+    </span>
+  );
+}
+
+function OAHierarchy() {
+  const [tree, setTree]         = useState([]);
+  const [members, setMembers]   = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
+  const [success, setSuccess]   = useState('');
+  const [editing, setEditing]   = useState(null); // userId being edited
+  const [editForm, setEditForm] = useState({ reportsTo: '', hierarchyRole: 'rep' });
+  const [saving, setSaving]     = useState(false);
+  const [collapsed, setCollapsed] = useState({});
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const [hierRes, membersRes] = await Promise.all([
+        apiService.orgAdmin.getHierarchy(),
+        apiService.orgAdmin.getMembers(),
+      ]);
+      setTree(hierRes.data.hierarchy || []);
+      setMembers(membersRes.data.members || []);
+    } catch (err) {
+      setError('Failed to load hierarchy');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Build tree structure from flat list
+  const buildTreeNodes = (flatList, allMembers) => {
+    const map = {};
+    const roots = [];
+
+    // Index hierarchy entries by user_id
+    for (const node of flatList) {
+      map[node.user_id] = { ...node, children: [] };
+    }
+
+    // Find members NOT in hierarchy
+    const inHierarchy = new Set(flatList.map(n => n.user_id));
+    const unassigned = allMembers.filter(m => !inHierarchy.has(m.user_id) && m.is_active);
+
+    // Build parent-child relationships
+    for (const node of flatList) {
+      if (node.reports_to && map[node.reports_to]) {
+        map[node.reports_to].children.push(map[node.user_id]);
+      } else {
+        roots.push(map[node.user_id]);
+      }
+    }
+
+    return { roots, unassigned, map };
+  };
+
+  const { roots, unassigned } = buildTreeNodes(tree, members);
+
+  const toggleCollapse = (userId) => {
+    setCollapsed(prev => ({ ...prev, [userId]: !prev[userId] }));
+  };
+
+  const startEdit = (node) => {
+    setEditing(node.user_id);
+    setEditForm({
+      reportsTo: node.reports_to || '',
+      hierarchyRole: node.hierarchy_role || 'rep',
+    });
+  };
+
+  const cancelEdit = () => {
+    setEditing(null);
+    setEditForm({ reportsTo: '', hierarchyRole: 'rep' });
+  };
+
+  const saveEdit = async (userId) => {
+    try {
+      setSaving(true);
+      await apiService.orgAdmin.updateHierarchy(userId, {
+        reportsTo: editForm.reportsTo ? parseInt(editForm.reportsTo) : null,
+        hierarchyRole: editForm.hierarchyRole,
+      });
+      setSuccess('Hierarchy updated');
+      setTimeout(() => setSuccess(''), 2500);
+      setEditing(null);
+      load();
+    } catch (err) {
+      setError(err.response?.data?.error?.message || 'Failed to update');
+      setTimeout(() => setError(''), 3000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addToHierarchy = async (userId) => {
+    try {
+      await apiService.orgAdmin.updateHierarchy(userId, {
+        reportsTo: null,
+        hierarchyRole: 'rep',
+      });
+      setSuccess('Added to hierarchy');
+      setTimeout(() => setSuccess(''), 2000);
+      load();
+    } catch (err) {
+      setError(err.response?.data?.error?.message || 'Failed to add');
+    }
+  };
+
+  const removeFromHierarchy = async (userId, name) => {
+    if (!window.confirm(`Remove ${name} from the hierarchy? Their direct reports will be re-parented.`)) return;
+    try {
+      await apiService.orgAdmin.removeFromHierarchy(userId);
+      setSuccess('Removed from hierarchy');
+      setTimeout(() => setSuccess(''), 2000);
+      load();
+    } catch (err) {
+      setError(err.response?.data?.error?.message || 'Failed to remove');
+    }
+  };
+
+  // Available managers = all members in hierarchy except the user being edited
+  const availableManagers = tree.filter(n => n.user_id !== editing);
+
+  const renderNode = (node, depth = 0) => {
+    const isEditing = editing === node.user_id;
+    const isCollapsed = collapsed[node.user_id];
+    const hasChildren = node.children?.length > 0;
+    const name = `${node.first_name || ''} ${node.last_name || ''}`.trim() || node.email;
+
+    return (
+      <div key={node.user_id} style={{ marginLeft: depth * 28 }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '10px',
+          padding: '10px 14px', margin: '3px 0', borderRadius: '10px',
+          background: isEditing ? '#f0f0ff' : (depth === 0 ? '#f9fafb' : '#fff'),
+          border: isEditing ? '1.5px solid #818cf8' : '1px solid #e8e9ee',
+          transition: 'all 0.15s',
+        }}>
+          {/* Expand/collapse */}
+          <button
+            onClick={() => hasChildren && toggleCollapse(node.user_id)}
+            style={{
+              width: '20px', height: '20px', border: 'none', background: 'none',
+              cursor: hasChildren ? 'pointer' : 'default', fontSize: '12px',
+              color: hasChildren ? '#6366f1' : '#d1d5db', fontWeight: 700,
+            }}
+          >
+            {hasChildren ? (isCollapsed ? '▸' : '▾') : '·'}
+          </button>
+
+          {/* Avatar */}
+          <div style={{
+            width: '32px', height: '32px', borderRadius: '50%',
+            background: '#e0e7ff', color: '#4338ca', fontWeight: 700,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '13px', flexShrink: 0,
+          }}>
+            {(node.first_name?.[0] || '?').toUpperCase()}
+          </div>
+
+          {/* Name + email */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: '13px', color: '#1a1a2e' }}>{name}</div>
+            <div style={{ fontSize: '11px', color: '#9ca3af' }}>{node.email}</div>
+          </div>
+
+          {/* Hierarchy role badge */}
+          <HierarchyRoleBadge role={node.hierarchy_role} />
+
+          {/* Org role */}
+          {node.org_role && (
+            <span style={{
+              fontSize: '10px', color: '#94a3b8', padding: '2px 6px',
+              border: '1px solid #e2e8f0', borderRadius: '6px',
+            }}>
+              {node.org_role}
+            </span>
+          )}
+
+          {/* Direct report count */}
+          {hasChildren && (
+            <span style={{ fontSize: '11px', color: '#6366f1', fontWeight: 500 }}>
+              {node.children.length} report{node.children.length !== 1 ? 's' : ''}
+            </span>
+          )}
+
+          {/* Actions */}
+          <button
+            onClick={() => isEditing ? cancelEdit() : startEdit(node)}
+            style={{
+              padding: '4px 10px', fontSize: '11px', borderRadius: '6px',
+              border: '1px solid #e2e4ea', background: '#fff',
+              cursor: 'pointer', color: '#4b5563',
+            }}
+          >
+            {isEditing ? 'Cancel' : 'Edit'}
+          </button>
+          <button
+            onClick={() => removeFromHierarchy(node.user_id, name)}
+            style={{
+              padding: '4px 8px', fontSize: '11px', borderRadius: '6px',
+              border: '1px solid #fecaca', background: '#fff',
+              cursor: 'pointer', color: '#dc2626',
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Edit form */}
+        {isEditing && (
+          <div style={{
+            marginLeft: '48px', padding: '12px 16px', margin: '4px 0 8px',
+            background: '#f8f7ff', borderRadius: '8px', border: '1px solid #e0e7ff',
+            display: 'flex', gap: '12px', alignItems: 'flex-end',
+          }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: '11px', fontWeight: 600, color: '#4b5563', display: 'block', marginBottom: '4px' }}>
+                Reports To
+              </label>
+              <select
+                value={editForm.reportsTo}
+                onChange={e => setEditForm(prev => ({ ...prev, reportsTo: e.target.value }))}
+                style={{
+                  width: '100%', padding: '7px 10px', borderRadius: '6px',
+                  border: '1px solid #d1d5db', fontSize: '13px',
+                }}
+              >
+                <option value="">— None (top of tree) —</option>
+                {availableManagers.map(m => (
+                  <option key={m.user_id} value={m.user_id}>
+                    {m.first_name} {m.last_name} ({m.email})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: '11px', fontWeight: 600, color: '#4b5563', display: 'block', marginBottom: '4px' }}>
+                Hierarchy Role
+              </label>
+              <select
+                value={editForm.hierarchyRole}
+                onChange={e => setEditForm(prev => ({ ...prev, hierarchyRole: e.target.value }))}
+                style={{
+                  padding: '7px 10px', borderRadius: '6px',
+                  border: '1px solid #d1d5db', fontSize: '13px',
+                }}
+              >
+                {HIERARCHY_ROLES.map(r => (
+                  <option key={r.value} value={r.value}>{r.label}</option>
+                ))}
+              </select>
+            </div>
+            <button
+              onClick={() => saveEdit(node.user_id)}
+              disabled={saving}
+              style={{
+                padding: '7px 18px', fontSize: '13px', borderRadius: '6px',
+                border: 'none', background: '#4f46e5', color: '#fff',
+                cursor: saving ? 'wait' : 'pointer', fontWeight: 600,
+              }}
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        )}
+
+        {/* Children */}
+        {!isCollapsed && node.children?.map(child => renderNode(child, depth + 1))}
+      </div>
+    );
+  };
+
+  if (loading) return <div className="oa-loading">Loading hierarchy…</div>;
+
+  return (
+    <div>
+      {error && <div className="oa-error-banner">{error}</div>}
+      {success && <div className="oa-success-banner">{success}</div>}
+
+      {/* Summary */}
+      <div style={{
+        display: 'flex', gap: '16px', marginBottom: '20px', flexWrap: 'wrap',
+      }}>
+        <div className="oa-stat-card" style={{ flex: '1 1 150px' }}>
+          <div className="oa-stat-card-label">In Hierarchy</div>
+          <div className="oa-stat-card-value" style={{ color: '#4338ca' }}>{tree.length}</div>
+        </div>
+        <div className="oa-stat-card" style={{ flex: '1 1 150px' }}>
+          <div className="oa-stat-card-label">Top-Level</div>
+          <div className="oa-stat-card-value" style={{ color: '#059669' }}>{roots.length}</div>
+        </div>
+        <div className="oa-stat-card" style={{ flex: '1 1 150px' }}>
+          <div className="oa-stat-card-label">Unassigned</div>
+          <div className="oa-stat-card-value" style={{ color: '#d97706' }}>{unassigned.length}</div>
+        </div>
+      </div>
+
+      {/* Info card */}
+      <div style={{
+        padding: '14px 18px', borderRadius: '10px', marginBottom: '20px',
+        background: '#f0f0ff', border: '1px solid #e0e7ff', fontSize: '13px', color: '#4338ca',
+      }}>
+        <strong>How it works:</strong> The hierarchy controls data visibility, not admin access. Managers
+        can see their team's deals, contacts, and accounts via the scope toggle in each view. Admin
+        access (who can manage members, settings, etc.) is still controlled by the <em>org role</em> (Owner / Admin / Member).
+      </div>
+
+      {/* Tree */}
+      <div style={{ marginBottom: '24px' }}>
+        <h3 style={{ fontSize: '14px', fontWeight: 700, marginBottom: '12px', color: '#1a1a2e' }}>
+          Reporting Structure
+        </h3>
+        {roots.length === 0 && tree.length === 0 ? (
+          <div style={{
+            padding: '40px 20px', textAlign: 'center', color: '#9ca3af',
+            border: '2px dashed #e8e9ee', borderRadius: '12px',
+          }}>
+            <p style={{ fontSize: '15px', fontWeight: 500 }}>No hierarchy set up yet</p>
+            <p style={{ fontSize: '13px', marginTop: '6px' }}>
+              Add members from the "Unassigned" list below to start building your org tree.
+            </p>
+          </div>
+        ) : (
+          roots.map(root => renderNode(root, 0))
+        )}
+      </div>
+
+      {/* Unassigned members */}
+      {unassigned.length > 0 && (
+        <div>
+          <h3 style={{ fontSize: '14px', fontWeight: 700, marginBottom: '12px', color: '#1a1a2e' }}>
+            Members Not in Hierarchy ({unassigned.length})
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {unassigned.map(m => (
+              <div key={m.user_id} style={{
+                display: 'flex', alignItems: 'center', gap: '10px',
+                padding: '10px 14px', borderRadius: '10px',
+                background: '#fff', border: '1px solid #e8e9ee',
+              }}>
+                <div style={{
+                  width: '32px', height: '32px', borderRadius: '50%',
+                  background: '#fef3c7', color: '#92400e', fontWeight: 700,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '13px', flexShrink: 0,
+                }}>
+                  {(m.name?.[0] || m.email?.[0] || '?').toUpperCase()}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: '13px' }}>{m.name || m.email}</div>
+                  <div style={{ fontSize: '11px', color: '#9ca3af' }}>{m.email}</div>
+                </div>
+                <span style={{
+                  fontSize: '10px', color: '#94a3b8', padding: '2px 6px',
+                  border: '1px solid #e2e8f0', borderRadius: '6px',
+                }}>
+                  {m.role}
+                </span>
+                <button
+                  onClick={() => addToHierarchy(m.user_id)}
+                  style={{
+                    padding: '5px 14px', fontSize: '12px', borderRadius: '6px',
+                    border: '1px solid #c7d2fe', background: '#eef2ff',
+                    cursor: 'pointer', color: '#4338ca', fontWeight: 600,
+                  }}
+                >
+                  + Add to Hierarchy
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -28,7 +28,17 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
   const [editingField, setEditingField] = useState(null);
   const [savingField, setSavingField] = useState(null);
 
-  useEffect(() => { loadAccounts(); }, []);
+  // ── Scope toggle state ────────────────────────────────────────
+  const [scope, setScope] = useState('mine');
+  const [hasTeam, setHasTeam] = useState(false);
+
+  useEffect(() => {
+    apiService.orgAdmin.getMyTeam()
+      .then(r => setHasTeam(r.data.hasTeam))
+      .catch(() => setHasTeam(false));
+  }, []);
+
+  useEffect(() => { loadAccounts(); }, [scope]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!openAccountId || accounts.length === 0) return;
@@ -46,9 +56,9 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
       setLoading(true);
       setError('');
       const [accountsRes, dealsRes, contactsRes] = await Promise.all([
-        apiService.accounts.getAll().catch(() => ({ data: { accounts: mockData.accounts } })),
-        apiService.deals.getAll().catch(() => ({ data: { deals: mockData.deals } })),
-        apiService.contacts.getAll().catch(() => ({ data: { contacts: mockData.contacts } }))
+        apiService.accounts.getAll(scope).catch(() => ({ data: { accounts: mockData.accounts } })),
+        apiService.deals.getAll(scope).catch(() => ({ data: { deals: mockData.deals } })),
+        apiService.contacts.getAll(scope).catch(() => ({ data: { contacts: mockData.contacts } }))
       ]);
       const enrichedData = enrichData({
         accounts: accountsRes.data.accounts || accountsRes.data || [],
@@ -265,11 +275,36 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
           <h1>Accounts</h1>
           <p className="accounts-subtitle">
             {accounts.length} compan{accounts.length !== 1 ? 'ies' : 'y'} in your CRM
+            {scope !== 'mine' && <span style={{ color: '#6366f1', fontWeight: 600 }}> · {scope === 'team' ? 'Team' : 'All Org'}</span>}
           </p>
         </div>
-        <button className="btn-primary" onClick={() => setShowForm(true)}>
-          + New Account
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {hasTeam && (
+            <div style={{
+              display: 'inline-flex', borderRadius: '8px', overflow: 'hidden',
+              border: '1px solid #e2e4ea', fontSize: '13px'
+            }}>
+              {['mine', 'team', 'org'].map(s => (
+                <button
+                  key={s}
+                  onClick={() => setScope(s)}
+                  style={{
+                    padding: '6px 14px', border: 'none', cursor: 'pointer',
+                    background: scope === s ? '#4f46e5' : '#fff',
+                    color: scope === s ? '#fff' : '#4b5563',
+                    fontWeight: scope === s ? 600 : 400,
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {s === 'mine' ? 'My Accounts' : s === 'team' ? 'My Team' : 'All Org'}
+                </button>
+              ))}
+            </div>
+          )}
+          <button className="btn-primary" onClick={() => setShowForm(true)}>
+            + New Account
+          </button>
+        </div>
       </div>
 
       {error && <div className="info-banner">ℹ️ {error}</div>}

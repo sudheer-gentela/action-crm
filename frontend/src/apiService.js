@@ -35,7 +35,7 @@ api.interceptors.request.use((config) => {
 export const apiService = {
   // Accounts
   accounts: {
-    getAll: () => api.get('/accounts'),
+    getAll: (scope = 'mine') => api.get(`/accounts?scope=${scope}`),
     getById: (id) => api.get(`/accounts/${id}`),
     create: (data) => api.post('/accounts', data),
     update: (id, data) => api.put(`/accounts/${id}`, data),
@@ -47,7 +47,7 @@ export const apiService = {
 
   // Contacts
   contacts: {
-    getAll: () => api.get('/contacts'),
+    getAll: (scope = 'mine') => api.get(`/contacts?scope=${scope}`),
     getById: (id) => api.get(`/contacts/${id}`),
     getByAccount: (accountId) => api.get(`/contacts?account_id=${accountId}`),
     create: (data) => api.post('/contacts', data),
@@ -60,7 +60,7 @@ export const apiService = {
 
   // Deals
   deals: {
-    getAll: () => api.get('/deals'),
+    getAll: (scope = 'mine') => api.get(`/deals?scope=${scope}`),
     getById: (id) => api.get(`/deals/${id}`),
     getByAccount: (accountId) => api.get(`/deals?account_id=${accountId}`),
     create: (data) => api.post('/deals', data),
@@ -275,6 +275,12 @@ export const apiService = {
     // Org-level integrations
     getIntegrations:      ()               => api.get('/org/admin/integrations'),
     updateIntegration:    (type, data)     => api.patch(`/org/admin/integrations/${type}`, data),
+    // Hierarchy
+    getHierarchy:         ()               => api.get('/org/admin/hierarchy'),
+    getMyTeam:            ()               => api.get('/org/admin/hierarchy/my-team'),
+    updateHierarchy:      (userId, data)   => api.put(`/org/admin/hierarchy/${userId}`, data),
+    bulkUpdateHierarchy:  (entries)         => api.post('/org/admin/hierarchy/bulk', { entries }),
+    removeFromHierarchy:  (userId)          => api.delete(`/org/admin/hierarchy/${userId}`),
   },
 };
 

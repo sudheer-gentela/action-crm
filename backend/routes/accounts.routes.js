@@ -8,12 +8,26 @@ router.use(authenticateToken);
 router.use(orgContext);
 
 // ── GET / — list accounts ────────────────────────────────────────────────────
+// Supports ?scope=mine|team|org (default: mine)
 router.get('/', async (req, res) => {
   try {
-    const result = await db.query(
-      'SELECT * FROM accounts WHERE org_id = $1 AND owner_id = $2 ORDER BY name',
-      [req.orgId, req.user.userId]
-    );
+    const { scope = 'mine' } = req.query;
+    let query = 'SELECT * FROM accounts WHERE org_id = $1';
+    const params = [req.orgId];
+
+    if (scope === 'team' && req.subordinateIds?.length > 0) {
+      const teamIds = [req.user.userId, ...req.subordinateIds];
+      query += ` AND owner_id = ANY($${params.length + 1}::int[])`;
+      params.push(teamIds);
+    } else if (scope === 'org') {
+      // No owner filter — all org accounts
+    } else {
+      query += ` AND owner_id = $${params.length + 1}`;
+      params.push(req.user.userId);
+    }
+
+    query += ' ORDER BY name';
+    const result = await db.query(query, params);
     res.json({ accounts: result.rows });
   } catch (error) {
     res.status(500).json({ error: { message: 'Failed to fetch accounts' } });
@@ -166,6 +180,7 @@ router.post('/', async (req, res) => {
 
 // ── POST /merge — merge two accounts ─────────────────────────────────────────
 // ⚠️  Must be declared BEFORE /:id routes so Express doesn't treat "merge" as an id
+// Allows merge if both accounts are owned by user OR their subordinates (team scope)
 router.post('/merge', async (req, res) => {
   const client = await (db.pool ? db.pool.connect() : db.connect());
   try {
@@ -193,6 +208,13 @@ router.post('/merge', async (req, res) => {
     // Double-check org_id matches on both (belt + suspenders)
     if (keepAcct.org_id !== req.orgId || removeAcct.org_id !== req.orgId) {
       return res.status(403).json({ error: { message: 'Cannot merge accounts from different organisations' } });
+    }
+
+    // Authorization: user can merge if they own the accounts OR if the accounts
+    // are owned by their subordinates (team hierarchy scope)
+    const allowedOwnerIds = req.teamUserIds || [req.user.userId];
+    if (!allowedOwnerIds.includes(keepAcct.owner_id) || !allowedOwnerIds.includes(removeAcct.owner_id)) {
+      return res.status(403).json({ error: { message: 'You can only merge accounts owned by you or your team' } });
     }
 
     await client.query('BEGIN');
