@@ -453,6 +453,10 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
                 : 'AI Generated'
             }>🤖 AI</span>
           )}
+          {action.source === 'playbook' && (
+            <span className="av-badge av-badge--playbook" title="Generated from playbook stage guidance"
+              style={{ background: '#ebf8ff', color: '#2b6cb0', border: '1px solid #bee3f8' }}>📘 Playbook</span>
+          )}
           <span className="av-priority-dot" style={{ background: pColor }} title={action.priority} />
         </div>
       </div>
@@ -537,9 +541,10 @@ function FilterBar({ filters, onChange, options }) {
       {/* Source filter */}
       <div className="av-filter-group av-filter-group--source">
         {[
-          { value: 'all',   label: 'All' },
-          { value: 'ai',    label: '🤖 AI' },
-          { value: 'rules', label: '⚙️ Rules' },
+          { value: 'all',      label: 'All' },
+          { value: 'ai',       label: '🤖 AI' },
+          { value: 'rules',    label: '⚙️ Rules' },
+          { value: 'playbook', label: '📘 Playbook' },
         ].map(opt => (
           <button
             key={opt.value}
@@ -744,8 +749,9 @@ export default function ActionsView() {
       let rows = data.actions || [];
 
       // Client-side source filter
-      if (activeFilters.source === 'ai')    rows = rows.filter(a => a.source === 'ai_generated');
-      if (activeFilters.source === 'rules') rows = rows.filter(a => a.source === 'auto_generated');
+      if (activeFilters.source === 'ai')       rows = rows.filter(a => a.source === 'ai_generated');
+      if (activeFilters.source === 'rules')    rows = rows.filter(a => a.source === 'auto_generated');
+      if (activeFilters.source === 'playbook') rows = rows.filter(a => a.source === 'playbook');
 
       // Default view: hide completed and snoozed
       if (!activeFilters.status) {

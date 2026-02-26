@@ -204,6 +204,7 @@ router.get('/pipeline/summary', async (req, res) => {
       try {
         const fallbackParams = [req.orgId];
         let fallbackOwnerFilter;
+        const scope = req.query.scope || 'mine';
         if (scope === 'team' && req.subordinateIds?.length > 0) {
           const teamIds = [req.user.userId, ...req.subordinateIds];
           fallbackOwnerFilter = `AND owner_id = ANY($${fallbackParams.length + 1}::int[])`;
@@ -324,6 +325,53 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// ── GET /:id/playbook-guide ─────────────────────────────────
+// Returns the playbook info + stage guidance for the deal's current stage.
+// Used by the deal detail panel to show the collapsible playbook guide card.
+router.get('/:id/playbook-guide', async (req, res) => {
+  try {
+    const dealResult = await db.query(
+      `SELECT d.stage, d.playbook_id, p.name AS playbook_name, p.type AS playbook_type,
+              p.stage_guidance, p.content
+       FROM deals d
+       LEFT JOIN playbooks p ON d.playbook_id = p.id
+       WHERE d.id = $1 AND d.org_id = $2`,
+      [req.params.id, req.orgId]
+    );
+
+    if (dealResult.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Deal not found' } });
+    }
+
+    const deal = dealResult.rows[0];
+    if (!deal.playbook_id) {
+      return res.json({ guide: null, message: 'No playbook assigned to this deal' });
+    }
+
+    const stageKey = deal.stage;
+    const stageGuidance = deal.stage_guidance?.[stageKey] || null;
+
+    // Also pull company context from playbook content
+    const company = deal.content?.company || null;
+
+    res.json({
+      guide: {
+        playbook: {
+          id:   deal.playbook_id,
+          name: deal.playbook_name,
+          type: deal.playbook_type,
+        },
+        stage: stageKey,
+        guidance: stageGuidance,
+        company,
+      }
+    });
+  } catch (error) {
+    console.error('Get playbook guide error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch playbook guide' } });
+  }
+});
+
 // ── POST / ────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
@@ -379,6 +427,83 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: { message: error.message } });
     }
     res.status(500).json({ error: { message: 'Failed to create deal' } });
+  }
+});
+
+// ── POST /bulk — bulk-create deals from CSV import ───────────────────────────
+// Body: { rows: [{ name, value, stage?, health?, expectedCloseDate?, probability?, notes?, accountId? }] }
+// Returns: { imported: number, deals: [], errors: [{ row, message }] }
+router.post('/bulk', async (req, res) => {
+  try {
+    const { rows } = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: { message: 'rows array is required' } });
+    }
+
+    const MAX_ROWS = 500;
+    if (rows.length > MAX_ROWS) {
+      return res.status(400).json({ error: { message: `Maximum ${MAX_ROWS} rows per import` } });
+    }
+
+    // Resolve the default stage and playbook for this org
+    const defaultStage = await resolveDefaultStage(req.orgId);
+    const defaultPbRes = await db.query(
+      `SELECT id FROM playbooks WHERE org_id = $1 AND is_default = TRUE LIMIT 1`,
+      [req.orgId]
+    );
+    const defaultPlaybookId = defaultPbRes.rows[0]?.id || null;
+
+    const imported = [];
+    const errors = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNum = i + 2;
+      try {
+        if (!row.name?.trim()) {
+          errors.push({ row: rowNum, message: 'Deal name is required' });
+          continue;
+        }
+        const value = parseFloat(String(row.value || '0').replace(/[$,]/g, ''));
+        if (isNaN(value)) {
+          errors.push({ row: rowNum, message: `Invalid deal value: ${row.value}` });
+          continue;
+        }
+
+        // Validate stage if provided
+        let resolvedStage = defaultStage;
+        if (row.stage) {
+          try {
+            await validateStage(req.orgId, row.stage);
+            resolvedStage = row.stage;
+          } catch {
+            // Use default stage if validation fails
+          }
+        }
+
+        const result = await db.query(
+          `INSERT INTO deals
+             (org_id, account_id, owner_id, name, value, stage, health,
+              expected_close_date, original_close_date, probability, notes, playbook_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11)
+           RETURNING *`,
+          [req.orgId, row.accountId || null, req.user.userId,
+           row.name.trim(), value, resolvedStage, row.health || 'healthy',
+           row.expectedCloseDate || null,
+           row.probability ? parseInt(row.probability) : 50,
+           row.notes || null, defaultPlaybookId]
+        );
+        imported.push(result.rows[0]);
+      } catch (err) {
+        errors.push({ row: rowNum, message: err.message });
+      }
+    }
+
+    console.log(`📥 Bulk deal import: ${imported.length} imported, ${errors.length} errors (org ${req.orgId})`);
+    res.json({ imported: imported.length, deals: imported, errors });
+  } catch (error) {
+    console.error('Bulk deal import error:', error);
+    res.status(500).json({ error: { message: 'Failed to bulk import deals' } });
   }
 });
 

@@ -178,6 +178,57 @@ router.post('/', async (req, res) => {
   }
 });
 
+// ── POST /bulk — bulk-create accounts from CSV import ────────────────────────
+// Body: { rows: [{ name, domain?, industry?, size?, location?, description? }] }
+// Returns: { imported: number, accounts: [], errors: [{ row, message }] }
+router.post('/bulk', async (req, res) => {
+  try {
+    const { rows } = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: { message: 'rows array is required' } });
+    }
+
+    const MAX_ROWS = 500;
+    if (rows.length > MAX_ROWS) {
+      return res.status(400).json({ error: { message: `Maximum ${MAX_ROWS} rows per import` } });
+    }
+
+    const imported = [];
+    const errors = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNum = i + 2; // +2 because row 1 is headers, data starts at 2
+      try {
+        if (!row.name || !row.name.trim()) {
+          errors.push({ row: rowNum, message: 'Account name is required' });
+          continue;
+        }
+
+        const result = await db.query(
+          `INSERT INTO accounts (org_id, name, domain, industry, size, location, description, owner_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+          [req.orgId, row.name.trim(), row.domain || null, row.industry || null,
+           row.size || null, row.location || null, row.description || null, req.user.userId]
+        );
+        imported.push(result.rows[0]);
+      } catch (err) {
+        if (err.code === '23505') {
+          errors.push({ row: rowNum, message: `Duplicate: ${row.name}` });
+        } else {
+          errors.push({ row: rowNum, message: err.message });
+        }
+      }
+    }
+
+    console.log(`📥 Bulk account import: ${imported.length} imported, ${errors.length} errors (org ${req.orgId})`);
+    res.json({ imported: imported.length, accounts: imported, errors });
+  } catch (error) {
+    console.error('Bulk account import error:', error);
+    res.status(500).json({ error: { message: 'Failed to bulk import accounts' } });
+  }
+});
+
 // ── POST /merge — merge two accounts ─────────────────────────────────────────
 // ⚠️  Must be declared BEFORE /:id routes so Express doesn't treat "merge" as an id
 // Allows merge if both accounts are owned by user OR their subordinates (team scope)

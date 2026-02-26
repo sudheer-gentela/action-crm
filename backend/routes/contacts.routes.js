@@ -340,6 +340,65 @@ router.post('/merge', async (req, res) => {
   }
 });
 
+// ── POST /bulk — bulk-create contacts from CSV import ────────────────────────
+// Body: { rows: [{ firstName, lastName, email, phone?, title?, roleType?, location?, linkedinUrl?, notes?, accountId? }] }
+// Returns: { imported: number, contacts: [], errors: [{ row, message }] }
+router.post('/bulk', async (req, res) => {
+  try {
+    const { rows } = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: { message: 'rows array is required' } });
+    }
+
+    const MAX_ROWS = 500;
+    if (rows.length > MAX_ROWS) {
+      return res.status(400).json({ error: { message: `Maximum ${MAX_ROWS} rows per import` } });
+    }
+
+    const imported = [];
+    const errors = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNum = i + 2;
+      try {
+        if (!row.firstName?.trim() || !row.lastName?.trim()) {
+          errors.push({ row: rowNum, message: 'First name and last name are required' });
+          continue;
+        }
+        if (!row.email?.trim()) {
+          errors.push({ row: rowNum, message: 'Email is required' });
+          continue;
+        }
+
+        const result = await db.query(
+          `INSERT INTO contacts
+             (org_id, account_id, first_name, last_name, email, phone, title, role_type, location, linkedin_url, notes)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+          [req.orgId, row.accountId || null, row.firstName.trim(), row.lastName.trim(),
+           row.email.trim(), row.phone || null, row.title || null, row.roleType || null,
+           row.location || null, row.linkedinUrl || null, row.notes || null]
+        );
+        imported.push(result.rows[0]);
+      } catch (err) {
+        if (err.code === '23505') {
+          errors.push({ row: rowNum, message: `Duplicate contact: ${row.email}` });
+        } else if (err.code === '23503') {
+          errors.push({ row: rowNum, message: `Invalid account ID: ${row.accountId}` });
+        } else {
+          errors.push({ row: rowNum, message: err.message });
+        }
+      }
+    }
+
+    console.log(`📥 Bulk contact import: ${imported.length} imported, ${errors.length} errors (org ${req.orgId})`);
+    res.json({ imported: imported.length, contacts: imported, errors });
+  } catch (error) {
+    console.error('Bulk contact import error:', error);
+    res.status(500).json({ error: { message: 'Failed to bulk import contacts' } });
+  }
+});
+
 // ── GET /:id ──────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {

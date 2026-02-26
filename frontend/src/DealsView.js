@@ -42,6 +42,30 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
   // Dynamic stages state
   const [orgStages, setOrgStages] = useState(FALLBACK_STAGES);
 
+  // ── Playbook guide state ──────────────────────────────────────
+  const [playbookGuide, setPlaybookGuide]   = useState(null);
+  const [guideExpanded, setGuideExpanded]   = useState(false);
+  const [guideLoading, setGuideLoading]     = useState(false);
+  const [orgPlaybooks, setOrgPlaybooks]     = useState([]);
+
+  // Load org playbooks list (for the picker dropdown)
+  useEffect(() => {
+    apiService.playbooks.getAll()
+      .then(r => setOrgPlaybooks(r.data.playbooks || []))
+      .catch(() => {});
+  }, []);
+
+  // Fetch playbook guide whenever selectedDeal changes (or its stage changes)
+  useEffect(() => {
+    if (!selectedDeal?.id) { setPlaybookGuide(null); return; }
+    setGuideLoading(true);
+    setGuideExpanded(false);
+    apiService.deals.getPlaybookGuide(selectedDeal.id)
+      .then(r => setPlaybookGuide(r.data.guide || null))
+      .catch(() => setPlaybookGuide(null))
+      .finally(() => setGuideLoading(false));
+  }, [selectedDeal?.id, selectedDeal?.stage]);
+
   // ── Scope toggle state ────────────────────────────────────────
   const [scope, setScope] = useState('mine');   // 'mine' | 'team' | 'org'
   const [hasTeam, setHasTeam] = useState(false);
@@ -194,9 +218,10 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
     setSavingField(field);
     try {
       const payload = { [field]: value };
-      if (field === 'value')       payload.value       = parseFloat(value);
-      if (field === 'probability') payload.probability = parseInt(value);
-      if (field === 'account_id')  payload.account_id  = parseInt(value);
+      if (field === 'value')        payload.value        = parseFloat(value);
+      if (field === 'probability')  payload.probability  = parseInt(value);
+      if (field === 'account_id')   payload.account_id   = parseInt(value);
+      if (field === 'playbook_id')  payload.playbookId   = value ? parseInt(value) : null;
 
       const response = await apiService.deals.update(selectedDeal.id, payload);
       const updated  = response.data.deal || response.data;
@@ -576,8 +601,173 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                     )}
                   </div>
 
+                  {/* Playbook — inline select */}
+                  <div className="detail-item">
+                    <span className="detail-label">Playbook</span>
+                    {editingField?.field === 'playbook_id' ? (
+                      <select
+                        className="inline-edit-select"
+                        autoFocus
+                        value={editingField.value || ''}
+                        onChange={async (e) => {
+                          const pbId = e.target.value ? parseInt(e.target.value) : null;
+                          setEditingField(null);
+                          await handleInlineFieldSave('playbook_id', pbId);
+                        }}
+                        onBlur={() => setEditingField(null)}
+                        onKeyDown={e => e.key === 'Escape' && setEditingField(null)}
+                      >
+                        <option value="">None</option>
+                        {orgPlaybooks.map(pb => (
+                          <option key={pb.id} value={pb.id}>{pb.name}{pb.is_default ? ' ★' : ''}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span
+                        className="detail-value--editable"
+                        onClick={() => setEditingField({ field: 'playbook_id', value: selectedDeal.playbook_id || '' })}
+                        title="Click to change playbook"
+                      >
+                        {playbookGuide?.playbook?.name || (selectedDeal.playbook_id ? `Playbook #${selectedDeal.playbook_id}` : 'Not set')} ✏️
+                      </span>
+                    )}
+                  </div>
+
                 </div>
               </div>
+
+              {/* ── 1b. Playbook Guide ───────────────────────────── */}
+              {!guideLoading && playbookGuide && (
+                <div className="detail-section" style={{
+                  background: '#f0f7ff', border: '1px solid #bee3f8', borderRadius: 10,
+                  padding: 0, overflow: 'hidden',
+                }}>
+                  {/* Compact banner — always visible */}
+                  <div
+                    onClick={() => setGuideExpanded(v => !v)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px',
+                      cursor: 'pointer', userSelect: 'none',
+                    }}
+                  >
+                    <span style={{ fontSize: 18 }}>📘</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#2b6cb0' }}>
+                        {playbookGuide.playbook.name}
+                        <span style={{ fontWeight: 400, color: '#4a7ab5', marginLeft: 8 }}>
+                          — {orgStages.find(s => s.key === playbookGuide.stage)?.name || playbookGuide.stage}
+                        </span>
+                      </div>
+                      {playbookGuide.guidance?.goal && (
+                        <div style={{ fontSize: 13, color: '#3a6fa0', marginTop: 2, whiteSpace: guideExpanded ? 'normal' : 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          🎯 {playbookGuide.guidance.goal}
+                        </div>
+                      )}
+                    </div>
+                    <span style={{ color: '#4a7ab5', fontSize: 12 }}>{guideExpanded ? '▲' : '▼'}</span>
+                  </div>
+
+                  {/* Expanded detail */}
+                  {guideExpanded && playbookGuide.guidance && (
+                    <div style={{ padding: '0 16px 16px', borderTop: '1px solid #bee3f8' }}>
+                      {/* Key Actions */}
+                      {Array.isArray(playbookGuide.guidance.key_actions) && playbookGuide.guidance.key_actions.length > 0 && (
+                        <div style={{ marginTop: 12 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: '#2b6cb0', marginBottom: 6 }}>Key Actions</div>
+                          {playbookGuide.guidance.key_actions.map((a, i) => (
+                            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 4, fontSize: 13, color: '#2d4a6f' }}>
+                              <span style={{ color: '#4a7ab5', flexShrink: 0 }}>•</span>
+                              <span>{a}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Success Criteria */}
+                      {Array.isArray(playbookGuide.guidance.success_criteria) && playbookGuide.guidance.success_criteria.length > 0 && (
+                        <div style={{ marginTop: 12 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: '#2b6cb0', marginBottom: 6 }}>Success Criteria</div>
+                          {playbookGuide.guidance.success_criteria.map((c, i) => (
+                            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 4, fontSize: 13, color: '#2d4a6f' }}>
+                              <span style={{ color: '#38a169', flexShrink: 0 }}>✓</span>
+                              <span>{c}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Timeline + Next Step row */}
+                      <div style={{ display: 'flex', gap: 20, marginTop: 12, flexWrap: 'wrap' }}>
+                        {playbookGuide.guidance.timeline && (
+                          <div style={{ fontSize: 13 }}>
+                            <span style={{ fontWeight: 600, color: '#2b6cb0' }}>⏱ Timeline: </span>
+                            <span style={{ color: '#2d4a6f' }}>{playbookGuide.guidance.timeline}</span>
+                          </div>
+                        )}
+                        {playbookGuide.guidance.next_step && (
+                          <div style={{ fontSize: 13 }}>
+                            <span style={{ fontWeight: 600, color: '#2b6cb0' }}>➡️ Next: </span>
+                            <span style={{ color: '#2d4a6f' }}>{playbookGuide.guidance.next_step}</span>
+                          </div>
+                        )}
+                        {playbookGuide.guidance.email_response_time && (
+                          <div style={{ fontSize: 13 }}>
+                            <span style={{ fontWeight: 600, color: '#2b6cb0' }}>📧 Response: </span>
+                            <span style={{ color: '#2d4a6f' }}>{playbookGuide.guidance.email_response_time}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {playbookGuide.guidance.requires_proposal_doc && (
+                        <div style={{ marginTop: 10, fontSize: 12, padding: '6px 10px', background: '#fefcbf', border: '1px solid #f6e05e', borderRadius: 6, color: '#744210' }}>
+                          📄 This stage requires a proposal document
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* No guidance for this stage */}
+                  {guideExpanded && !playbookGuide.guidance && (
+                    <div style={{ padding: '8px 16px 16px', color: '#718096', fontSize: 13, borderTop: '1px solid #bee3f8' }}>
+                      No stage guidance configured for this stage yet. An org admin can add it from Org Admin → Playbooks.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* No playbook assigned info */}
+              {!guideLoading && !playbookGuide && selectedDeal && (
+                <div className="detail-section" style={{
+                  background: '#f7fafc', border: '1px solid #e2e8f0', borderRadius: 10,
+                  padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10,
+                }}>
+                  <span style={{ fontSize: 16 }}>📘</span>
+                  <span style={{ fontSize: 13, color: '#718096' }}>
+                    No playbook assigned —
+                    {orgPlaybooks.length > 0 ? (
+                      <select
+                        style={{ marginLeft: 6, fontSize: 13, border: '1px solid #cbd5e0', borderRadius: 6, padding: '4px 8px', color: '#4a5568' }}
+                        value=""
+                        onChange={async (e) => {
+                          const pbId = parseInt(e.target.value);
+                          if (!pbId) return;
+                          try {
+                            await apiService.deals.update(selectedDeal.id, { playbookId: pbId });
+                            const enriched = { ...selectedDeal, playbook_id: pbId };
+                            setDeals(prev => prev.map(d => d.id === selectedDeal.id ? enriched : d));
+                            setSelectedDeal(enriched);
+                          } catch {}
+                        }}
+                      >
+                        <option value="">assign one</option>
+                        {orgPlaybooks.map(pb => (
+                          <option key={pb.id} value={pb.id}>{pb.name}{pb.is_default ? ' (default)' : ''}</option>
+                        ))}
+                      </select>
+                    ) : ' ask an org admin to create a playbook.'}
+                  </span>
+                </div>
+              )}
 
               {/* ── 2. Actions / Tasks ──────────────────────────── */}
               <div className="detail-section">

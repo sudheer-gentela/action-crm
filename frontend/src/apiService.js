@@ -63,6 +63,7 @@ export const apiService = {
     getAll: (scope = 'mine') => api.get(`/deals?scope=${scope}`),
     getById: (id) => api.get(`/deals/${id}`),
     getByAccount: (accountId) => api.get(`/deals?account_id=${accountId}`),
+    getPlaybookGuide: (id) => api.get(`/deals/${id}/playbook-guide`),
     create: (data) => api.post('/deals', data),
     update: (id, data) => api.put(`/deals/${id}`, data),
     delete: (id) => api.delete(`/deals/${id}`)
