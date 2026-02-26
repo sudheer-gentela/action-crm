@@ -20,9 +20,14 @@ router.use(authenticateToken, orgContext);
 const adminOnly = requireRole('owner', 'admin');
 
 // ── Helper: validate a stage key belongs to this org ─────────────────────────
+// Checks both deal_stages and prospect_stages so guidance can be saved
+// for either sales or prospecting playbooks.
 async function validateStageKey(orgId, stageKey) {
   const result = await db.query(
-    `SELECT key FROM deal_stages WHERE org_id = $1 AND key = $2`,
+    `SELECT key FROM deal_stages WHERE org_id = $1 AND key = $2
+     UNION ALL
+     SELECT key FROM prospect_stages WHERE org_id = $1 AND key = $2
+     LIMIT 1`,
     [orgId, stageKey]
   );
   return result.rows.length > 0;
@@ -156,9 +161,17 @@ router.post('/', adminOnly, async (req, res) => {
       return res.status(400).json({ error: { message: 'Playbook name is required' } });
     }
 
-    const VALID_TYPES = ['market', 'product', 'custom', 'prospecting'];
-    if (!VALID_TYPES.includes(type)) {
-      return res.status(400).json({ error: { message: `type must be one of: ${VALID_TYPES.join(', ')}` } });
+    // Validate type against org's configured playbook types
+    const orgTypesResult = await db.query(
+      `SELECT settings->'playbook_types' AS types FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const orgTypes = orgTypesResult.rows[0]?.types;
+    const validKeys = Array.isArray(orgTypes) && orgTypes.length > 0
+      ? orgTypes.map(t => t.key)
+      : ['market', 'product', 'custom', 'prospecting']; // fallback
+    if (!validKeys.includes(type) && type !== 'custom') {
+      return res.status(400).json({ error: { message: `type must be one of: ${validKeys.join(', ')}` } });
     }
 
     if (is_default) {
@@ -202,9 +215,18 @@ router.put('/:id', adminOnly, async (req, res) => {
       return res.status(404).json({ error: { message: 'Playbook not found' } });
     }
 
-    const VALID_TYPES = ['market', 'product', 'custom', 'prospecting'];
-    if (type && !VALID_TYPES.includes(type)) {
-      return res.status(400).json({ error: { message: `type must be one of: ${VALID_TYPES.join(', ')}` } });
+    if (type) {
+      const orgTypesResult = await db.query(
+        `SELECT settings->'playbook_types' AS types FROM organizations WHERE id = $1`,
+        [req.orgId]
+      );
+      const orgTypes = orgTypesResult.rows[0]?.types;
+      const validKeys = Array.isArray(orgTypes) && orgTypes.length > 0
+        ? orgTypes.map(t => t.key)
+        : ['market', 'product', 'custom', 'prospecting'];
+      if (!validKeys.includes(type) && type !== 'custom') {
+        return res.status(400).json({ error: { message: `type must be one of: ${validKeys.join(', ')}` } });
+      }
     }
 
     const result = await db.query(
@@ -266,7 +288,7 @@ router.put('/:id/stages/:stageKey', adminOnly, async (req, res) => {
     const keyExists = await validateStageKey(req.orgId, stageKey);
     if (!keyExists) {
       return res.status(400).json({
-        error: { message: `Stage key "${stageKey}" does not exist in your organisation's deal stages` },
+        error: { message: `Stage key "${stageKey}" does not exist in your organisation's stages` },
       });
     }
 

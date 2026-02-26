@@ -1250,12 +1250,35 @@ function OAPlaybooks() {
   const TYPE_COLORS = { market: '#3182ce', product: '#38a169', custom: '#718096', prospecting: '#0F9D8E' };
   const TEAL = '#0F9D8E';
 
-  // ── Type filter tab: sales vs prospecting ──────────────────────────────────
-  const [typeFilter, setTypeFilter] = useState('sales'); // 'sales' | 'prospecting'
+  // ── Dynamic playbook types from org settings ────────────────────────────────
+  const [playbookTypes, setPlaybookTypes] = useState([
+    { key: 'sales', label: 'Sales', icon: '📘', color: '#3b82f6', is_system: true },
+    { key: 'prospecting', label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
+  ]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API}/org/admin/playbook-types`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (data.playbook_types?.length) setPlaybookTypes(data.playbook_types);
+      } catch { /* use defaults */ }
+    })();
+  }, [API, token]);
+
+
+  // ── Type filter tab: dynamic from org playbook types ────────────────────────
+  const [typeFilter, setTypeFilter] = useState('sales');
   const isProspecting = typeFilter === 'prospecting';
-  const filteredPlaybooks = isProspecting
-    ? playbooks.filter(p => p.type === 'prospecting')
-    : playbooks.filter(p => p.type !== 'prospecting');
+
+  // "sales" tab catches legacy types (custom, market, product) + explicit sales type
+  // All other tabs filter by exact type key
+  const SALES_LEGACY_TYPES = ['sales', 'custom', 'market', 'product'];
+  const filteredPlaybooks = typeFilter === 'sales'
+    ? playbooks.filter(p => SALES_LEGACY_TYPES.includes(p.type))
+    : playbooks.filter(p => p.type === typeFilter);
 
   // ── Prospect stages (loaded when prospecting tab is active) ────────────────
   const [prospectLiveStages, setProspectLiveStages] = useState([]);
@@ -1281,13 +1304,15 @@ function OAPlaybooks() {
 
   // Re-select on type filter change
   useEffect(() => {
-    const filtered = isProspecting
-      ? playbooks.filter(p => p.type === 'prospecting')
-      : playbooks.filter(p => p.type !== 'prospecting');
+    const filtered = typeFilter === 'sales'
+      ? playbooks.filter(p => SALES_LEGACY_TYPES.includes(p.type))
+      : playbooks.filter(p => p.type === typeFilter);
     const def = filtered.find(p => p.is_default) || filtered[0];
     setSelectedId(def?.id || null);
     setEditingStage(null);
     setShowNewForm(false);
+    // Also clear playbook/guidance so stale data doesn't render
+    if (!def) { setPlaybook(null); setGuidance({}); }
   }, [typeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Which stages to show in the editor
@@ -1307,15 +1332,24 @@ function OAPlaybooks() {
     if (!newPbData.name.trim()) { flash('error', 'Name is required'); return; }
     setCreating(true);
     try {
-      const createPayload = isProspecting
-        ? { name: newPbData.name, type: 'prospecting', description: newPbData.description, content: {}, stage_guidance: {} }
-        : { ...newPbData, content: { company: {} }, stage_guidance: {} };
+      // For sales tab, use the sub-type from the form (or default 'custom')
+      // For all other tabs, use the typeFilter key directly
+      const effectiveType = typeFilter === 'sales'
+        ? (newPbData.type || 'custom')
+        : typeFilter;
+      const createPayload = {
+        name: newPbData.name,
+        type: effectiveType,
+        description: newPbData.description || '',
+        content: typeFilter === 'sales' ? { company: {} } : {},
+        stage_guidance: {},
+      };
       const r  = await apiService.playbooks.create(createPayload);
       const nb = r.data.playbook;
       setPlaybooks(prev => [...prev, nb]);
       setSelectedId(nb.id);
       setShowNewForm(false);
-      setNewPbData({ name: '', type: isProspecting ? 'prospecting' : 'custom', description: '' });
+      setNewPbData({ name: '', type: typeFilter === 'sales' ? 'custom' : typeFilter, description: '' });
       flash('success', 'Playbook created ✓');
     } catch { flash('error', 'Failed to create playbook'); }
     finally  { setCreating(false); }
@@ -1336,48 +1370,57 @@ function OAPlaybooks() {
     finally     { setDeleting(false); }
   };
 
+  // Current type metadata
+  const activeType = playbookTypes.find(t => t.key === typeFilter) || playbookTypes[0];
+
   if (loading) return <div className="sv-loading">Loading playbooks...</div>;
 
   return (
     <div className="sv-panel">
       <div className="sv-panel-header">
         <div>
-          <h2>{isProspecting ? '🎯 Prospecting Playbooks' : '📘 Sales Playbooks'}</h2>
+          <h2>{activeType?.icon || '📋'} {activeType?.label || 'Sales'} Playbooks</h2>
           <p className="sv-panel-desc">
             {isProspecting
               ? 'Manage outreach playbooks — define stage guidance, key actions, and cadences for each prospecting stage.'
-              : 'Stage names and order come from the Deal Stages tab. Edit guidance here to tell the AI what actions to generate for each stage.'}
+              : typeFilter === 'sales'
+                ? 'Stage names and order come from the Deal Stages tab. Edit guidance here to tell the AI what actions to generate for each stage.'
+                : `Manage ${activeType?.label || typeFilter} playbooks and stage guidance.`}
           </p>
         </div>
         <button className="sv-btn-primary" onClick={() => setShowNewForm(true)}>
-          + New {isProspecting ? 'Prospecting' : 'Sales'} Playbook
+          + New {activeType?.label || 'Sales'} Playbook
         </button>
       </div>
 
-      {/* Type toggle tabs */}
-      <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', margin: '0 0 16px' }}>
-        {[
-          { key: 'sales', label: '📘 Sales', color: '#3b82f6' },
-          { key: 'prospecting', label: '🎯 Prospecting', color: TEAL },
-        ].map(t => (
-          <button
-            key={t.key}
-            onClick={() => setTypeFilter(t.key)}
-            style={{
-              padding: '10px 20px',
-              background: 'none',
-              border: 'none',
-              borderBottom: `3px solid ${typeFilter === t.key ? t.color : 'transparent'}`,
-              color: typeFilter === t.key ? t.color : '#6b7280',
-              fontWeight: typeFilter === t.key ? 600 : 400,
-              fontSize: 14,
-              cursor: 'pointer',
-              transition: 'all 0.15s',
+      {/* Dynamic type toggle tabs */}
+      <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', margin: '0 0 16px', flexWrap: 'wrap' }}>
+        {playbookTypes.map(t => {
+          const count = t.key === 'sales'
+            ? playbooks.filter(p => SALES_LEGACY_TYPES.includes(p.type)).length
+            : playbooks.filter(p => p.type === t.key).length;
+          return (
+            <button
+              key={t.key}
+              onClick={() => setTypeFilter(t.key)}
+              style={{
+                padding: '10px 20px',
+                background: 'none',
+                border: 'none',
+                borderBottom: `3px solid ${typeFilter === t.key ? t.color : 'transparent'}`,
+                color: typeFilter === t.key ? t.color : '#6b7280',
+                fontWeight: typeFilter === t.key ? 600 : 400,
+                fontSize: 14,
+                cursor: 'pointer',
+                transition: 'all 0.15s',
+              }}
+            >
+              {t.icon} {t.label} ({count})
+            </button>
+          );
+        })}
             }}
           >
-            {t.label} ({(t.key === 'prospecting' ? playbooks.filter(p => p.type === 'prospecting') : playbooks.filter(p => p.type !== 'prospecting')).length})
-          </button>
-        ))}
       </div>
 
       {error   && <div className="sv-alert sv-alert-error">{error}</div>}
@@ -1385,14 +1428,14 @@ function OAPlaybooks() {
 
       {showNewForm && (
         <div className="sv-card oa-pb-new-form">
-          <h4 style={{ marginTop: 0, marginBottom: 16 }}>New {isProspecting ? 'Prospecting' : 'Sales'} Playbook</h4>
+          <h4 style={{ marginTop: 0, marginBottom: 16 }}>New {activeType?.label || 'Sales'} Playbook</h4>
           <div className="oa-pb-form-grid">
             <div className="sv-field">
               <label>Name</label>
-              <input className="sv-input" placeholder={isProspecting ? 'e.g. Outbound SDR' : 'e.g. EMEA Enterprise'}
+              <input className="sv-input" placeholder={`e.g. ${isProspecting ? 'Outbound SDR' : typeFilter === 'sales' ? 'EMEA Enterprise' : activeType?.label + ' Template'}`}
                 value={newPbData.name} onChange={e => setNewPbData(p => ({ ...p, name: e.target.value }))} />
             </div>
-            {!isProspecting && (
+            {typeFilter === 'sales' && (
               <div className="sv-field">
                 <label>Type</label>
                 <select className="sv-input" value={newPbData.type} onChange={e => setNewPbData(p => ({ ...p, type: e.target.value }))}>
@@ -1405,7 +1448,7 @@ function OAPlaybooks() {
           </div>
           <div className="sv-field" style={{ marginTop: 12 }}>
             <label>Description (optional)</label>
-            <input className="sv-input" placeholder={isProspecting ? 'e.g. Multi-channel outbound sequence' : 'e.g. For deals in EMEA region'}
+            <input className="sv-input" placeholder={`e.g. ${isProspecting ? 'Multi-channel outbound sequence' : typeFilter === 'sales' ? 'For deals in EMEA region' : activeType?.label + ' playbook description'}`}
               value={newPbData.description} onChange={e => setNewPbData(p => ({ ...p, description: e.target.value }))} />
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
@@ -1421,7 +1464,7 @@ function OAPlaybooks() {
         {/* Sidebar */}
         <div className="oa-pb-sidebar">
           {filteredPlaybooks.length === 0
-            ? <div className="sv-empty">No {isProspecting ? 'prospecting' : 'sales'} playbooks yet. Create one above.</div>
+            ? <div className="sv-empty">No {activeType?.label?.toLowerCase() || typeFilter} playbooks yet. Create one above.</div>
             : filteredPlaybooks.map(pb => (
               <div key={pb.id}
                 className={`oa-pb-list-item ${selectedId === pb.id ? 'active' : ''}`}
@@ -1482,7 +1525,7 @@ function OAPlaybooks() {
               </div>
 
               {/* Company context — sales playbooks only */}
-              {!isProspecting && playbook.content && (
+              {typeFilter === 'sales' && playbook.content && (
                 <div className="sv-card" style={{ marginBottom: 16 }}>
                   <div className="oa-pb-section-header" onClick={() => setShowCompany(v => !v)}>
                     <span>🏢 Company Context</span>
@@ -1511,8 +1554,8 @@ function OAPlaybooks() {
               {/* Stage guidance — driven by live stages */}
               <div className="sv-card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                  <h4 style={{ margin: 0, fontSize: 15, color: isProspecting ? TEAL : undefined }}>
-                    {isProspecting ? '🎯 Prospecting Stage Guidance' : '📋 Stage Guidance'}
+                  <h4 style={{ margin: 0, fontSize: 15, color: activeType?.color || undefined }}>
+                    {activeType?.icon || '📋'} {activeType?.label || 'Stage'} Guidance
                   </h4>
                   <span style={{ fontSize: 12, color: '#9ca3af' }}>
                     {isProspecting ? 'Stages from Prospect Stages tab' : 'Stages from Deal Stages tab'} · save each stage individually
@@ -1539,7 +1582,7 @@ function OAPlaybooks() {
                         <div key={stage.id} className="sv-stage-row">
                           <div className="sv-stage-header"
                             onClick={() => setEditingStage(isOpen ? null : stage.id)}>
-                            <span className="sv-stage-num" style={isProspecting ? { background: TEAL + '20', color: TEAL } : undefined}>{i + 1}</span>
+                            <span className="sv-stage-num" style={typeFilter !== 'sales' ? { background: (activeType?.color || TEAL) + '20', color: activeType?.color || TEAL } : undefined}>{i + 1}</span>
                             <span className="sv-stage-name">{stage.name}</span>
                             <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 6 }}>
                               {stageType}
@@ -1731,6 +1774,9 @@ function OASettings() {
             </div>
           )}
 
+          {/* Playbook Types */}
+          <OAPlaybookTypes />
+
           {/* Danger zone */}
           <div className="sv-card oa-danger-card">
             <h3>⚠️ Need to transfer ownership?</h3>
@@ -1741,6 +1787,181 @@ function OASettings() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── OAPlaybookTypes ──────────────────────────────────────────────────────────
+// Manage configurable playbook types (stored in organizations.settings.playbook_types)
+// System types (Sales, Prospecting) cannot be removed. Custom types can be added/removed.
+
+const ICON_OPTIONS = ['📂', '🎧', '🔄', '🤝', '📞', '🚀', '💡', '🛡️', '📊', '🎓', '⚡', '🌐'];
+const COLOR_PRESETS_PB = ['#3b82f6', '#0F9D8E', '#8b5cf6', '#ef4444', '#f59e0b', '#10b981', '#ec4899', '#6366f1', '#14b8a6', '#f97316', '#6b7280', '#1d4ed8'];
+
+function OAPlaybookTypes() {
+  const API   = process.env.REACT_APP_API_URL || '';
+  const token = localStorage.getItem('token');
+
+  const [types, setTypes]       = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [showAdd, setShowAdd]   = useState(false);
+  const [newType, setNewType]   = useState({ label: '', icon: '📂', color: '#6b7280' });
+  const [adding, setAdding]     = useState(false);
+  const [deleting, setDeleting] = useState(null);
+  const [error, setError]       = useState('');
+  const [success, setSuccess]   = useState('');
+
+  const flash = (type, msg) => {
+    if (type === 'error') { setError(msg); setTimeout(() => setError(''), 4000); }
+    else { setSuccess(msg); setTimeout(() => setSuccess(''), 3000); }
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API}/org/admin/playbook-types`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        setTypes(data.playbook_types || []);
+      } catch { flash('error', 'Failed to load playbook types'); }
+      finally { setLoading(false); }
+    })();
+  }, [API, token]);
+
+  const handleAdd = async () => {
+    if (!newType.label.trim()) { flash('error', 'Label is required'); return; }
+    setAdding(true);
+    try {
+      const key = newType.label.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_');
+      const res = await fetch(`${API}/org/admin/playbook-types`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, label: newType.label.trim(), icon: newType.icon, color: newType.color }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Failed');
+      setTypes(data.playbook_types);
+      setNewType({ label: '', icon: '📂', color: '#6b7280' });
+      setShowAdd(false);
+      flash('success', `"${newType.label.trim()}" type added ✓`);
+    } catch (e) { flash('error', e.message); }
+    finally { setAdding(false); }
+  };
+
+  const handleDelete = async (typeKey) => {
+    const t = types.find(x => x.key === typeKey);
+    if (!window.confirm(`Delete "${t?.label || typeKey}" playbook type? Playbooks of this type must be reassigned first.`)) return;
+    setDeleting(typeKey);
+    try {
+      const res = await fetch(`${API}/org/admin/playbook-types/${typeKey}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Failed');
+      setTypes(data.playbook_types);
+      flash('success', `"${t?.label}" removed ✓`);
+    } catch (e) { flash('error', e.message); }
+    finally { setDeleting(null); }
+  };
+
+  if (loading) return <div className="sv-card"><div className="sv-loading" style={{ padding: 16 }}>Loading playbook types…</div></div>;
+
+  return (
+    <div className="sv-card">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <div>
+          <h3 style={{ margin: 0 }}>📋 Playbook Types</h3>
+          <p className="sv-hint" style={{ margin: '4px 0 0' }}>Define the categories of playbooks your org uses. System types cannot be removed.</p>
+        </div>
+        <button className="sv-btn-primary" style={{ fontSize: 13, padding: '6px 14px' }} onClick={() => setShowAdd(true)}>
+          + Add Type
+        </button>
+      </div>
+
+      {error   && <div className="sv-error" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
+      {success && <div className="sv-success" style={{ marginBottom: 12 }}>{success}</div>}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {types.map(t => (
+          <div key={t.key} style={{
+            display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
+            background: '#f9fafb', borderRadius: 8, border: '1px solid #e5e7eb',
+          }}>
+            <span style={{ fontSize: 20 }}>{t.icon}</span>
+            <span style={{
+              width: 14, height: 14, borderRadius: '50%', background: t.color,
+              flexShrink: 0, border: '2px solid #fff', boxShadow: '0 0 0 1px #d1d5db',
+            }} />
+            <span style={{ fontWeight: 600, fontSize: 14, flex: 1 }}>{t.label}</span>
+            <span style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace' }}>{t.key}</span>
+            {t.is_system ? (
+              <span style={{ fontSize: 11, color: '#9ca3af', background: '#f3f4f6', padding: '2px 8px', borderRadius: 4 }}>System</span>
+            ) : (
+              <button
+                onClick={() => handleDelete(t.key)}
+                disabled={deleting === t.key}
+                style={{
+                  background: 'none', border: '1px solid #fca5a5', color: '#dc2626',
+                  padding: '4px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
+                }}
+              >
+                {deleting === t.key ? '…' : '✕ Remove'}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {showAdd && (
+        <div style={{ marginTop: 16, padding: 16, background: '#f0fdf4', borderRadius: 8, border: '1px solid #bbf7d0' }}>
+          <h4 style={{ margin: '0 0 12px', fontSize: 14 }}>Add New Playbook Type</h4>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div className="sv-field" style={{ flex: 1, minWidth: 160 }}>
+              <label style={{ fontSize: 12 }}>Label</label>
+              <input className="sv-input" placeholder="e.g. Customer Support"
+                value={newType.label} onChange={e => setNewType(p => ({ ...p, label: e.target.value }))} />
+            </div>
+            <div className="sv-field" style={{ width: 80 }}>
+              <label style={{ fontSize: 12 }}>Icon</label>
+              <select className="sv-input" value={newType.icon} onChange={e => setNewType(p => ({ ...p, icon: e.target.value }))}>
+                {ICON_OPTIONS.map(ic => <option key={ic} value={ic}>{ic}</option>)}
+              </select>
+            </div>
+            <div className="sv-field">
+              <label style={{ fontSize: 12 }}>Color</label>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {COLOR_PRESETS_PB.map(c => (
+                  <button key={c} onClick={() => setNewType(p => ({ ...p, color: c }))} style={{
+                    width: 22, height: 22, borderRadius: '50%', background: c, border: newType.color === c ? '2px solid #111' : '2px solid transparent',
+                    cursor: 'pointer', padding: 0,
+                  }} />
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Preview */}
+          {newType.label.trim() && (
+            <div style={{ marginTop: 12, padding: '8px 12px', background: '#fff', borderRadius: 6, border: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 16 }}>{newType.icon}</span>
+              <span style={{ width: 10, height: 10, borderRadius: '50%', background: newType.color }} />
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{newType.label}</span>
+              <span style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace' }}>
+                {newType.label.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_')}
+              </span>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="sv-btn-primary" onClick={handleAdd} disabled={adding} style={{ fontSize: 13 }}>
+              {adding ? 'Adding…' : '✓ Add Type'}
+            </button>
+            <button className="sv-btn sv-btn-secondary" onClick={() => setShowAdd(false)} style={{ fontSize: 13 }}>Cancel</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

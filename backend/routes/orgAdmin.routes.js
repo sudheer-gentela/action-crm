@@ -560,4 +560,158 @@ router.delete('/hierarchy/:userId', adminOnly, async (req, res) => {
   }
 });
 
+// ── Playbook Types (configurable per org) ────────────────────────────────────
+// Stored in organizations.settings->'playbook_types' as a JSON array.
+// System types (sales, prospecting) cannot be removed or renamed.
+
+const SYSTEM_PLAYBOOK_TYPES = [
+  { key: 'sales',       label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
+  { key: 'prospecting', label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
+];
+
+// Helper: get org's playbook types (returns system defaults if none configured)
+async function getPlaybookTypes(orgId) {
+  const result = await pool.query(
+    `SELECT settings->'playbook_types' AS types FROM organizations WHERE id = $1`,
+    [orgId]
+  );
+  const types = result.rows[0]?.types;
+  if (!types || !Array.isArray(types) || types.length === 0) {
+    return [...SYSTEM_PLAYBOOK_TYPES];
+  }
+  return types;
+}
+
+// GET — any member can read (needed for playbook create form)
+router.get('/playbook-types', async (req, res) => {
+  try {
+    const types = await getPlaybookTypes(req.orgId);
+    res.json({ playbook_types: types });
+  } catch (err) {
+    console.error('GET /org-admin/playbook-types error:', err);
+    res.status(500).json({ error: { message: 'Failed to fetch playbook types' } });
+  }
+});
+
+// POST — add a new custom type (admin only)
+router.post('/playbook-types', adminOnly, async (req, res) => {
+  try {
+    const { key, label, icon, color } = req.body;
+
+    if (!key?.trim() || !label?.trim()) {
+      return res.status(400).json({ error: { message: 'key and label are required' } });
+    }
+
+    const safeKey = key.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    if (safeKey.length < 2) {
+      return res.status(400).json({ error: { message: 'key must be at least 2 characters (letters, numbers, underscores)' } });
+    }
+
+    const existing = await getPlaybookTypes(req.orgId);
+    if (existing.some(t => t.key === safeKey)) {
+      return res.status(409).json({ error: { message: `A playbook type with key "${safeKey}" already exists` } });
+    }
+
+    const newType = {
+      key: safeKey,
+      label: label.trim(),
+      icon: icon || '📂',
+      color: color || '#6b7280',
+      is_system: false,
+    };
+
+    const updated = [...existing, newType];
+
+    await pool.query(
+      `UPDATE organizations
+       SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{playbook_types}', $1::jsonb),
+           updated_at = NOW()
+       WHERE id = $2`,
+      [JSON.stringify(updated), req.orgId]
+    );
+
+    res.status(201).json({ playbook_types: updated, created: newType });
+  } catch (err) {
+    console.error('POST /org-admin/playbook-types error:', err);
+    res.status(500).json({ error: { message: 'Failed to create playbook type' } });
+  }
+});
+
+// PUT — update a custom type (admin only, cannot edit system types)
+router.put('/playbook-types/:typeKey', adminOnly, async (req, res) => {
+  try {
+    const { typeKey } = req.params;
+    const { label, icon, color } = req.body;
+
+    const existing = await getPlaybookTypes(req.orgId);
+    const idx = existing.findIndex(t => t.key === typeKey);
+    if (idx === -1) {
+      return res.status(404).json({ error: { message: `Playbook type "${typeKey}" not found` } });
+    }
+    if (existing[idx].is_system) {
+      return res.status(403).json({ error: { message: 'System playbook types cannot be modified' } });
+    }
+
+    if (label?.trim())  existing[idx].label = label.trim();
+    if (icon)           existing[idx].icon  = icon;
+    if (color)          existing[idx].color = color;
+
+    await pool.query(
+      `UPDATE organizations
+       SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{playbook_types}', $1::jsonb),
+           updated_at = NOW()
+       WHERE id = $2`,
+      [JSON.stringify(existing), req.orgId]
+    );
+
+    res.json({ playbook_types: existing, updated: existing[idx] });
+  } catch (err) {
+    console.error('PUT /org-admin/playbook-types error:', err);
+    res.status(500).json({ error: { message: 'Failed to update playbook type' } });
+  }
+});
+
+// DELETE — remove a custom type (admin only, cannot delete system types)
+// Blocks deletion if playbooks of this type exist.
+router.delete('/playbook-types/:typeKey', adminOnly, async (req, res) => {
+  try {
+    const { typeKey } = req.params;
+
+    const existing = await getPlaybookTypes(req.orgId);
+    const target = existing.find(t => t.key === typeKey);
+    if (!target) {
+      return res.status(404).json({ error: { message: `Playbook type "${typeKey}" not found` } });
+    }
+    if (target.is_system) {
+      return res.status(403).json({ error: { message: 'System playbook types cannot be deleted' } });
+    }
+
+    // Check if any playbooks use this type
+    const usage = await pool.query(
+      `SELECT COUNT(*) AS count FROM playbooks WHERE org_id = $1 AND type = $2`,
+      [req.orgId, typeKey]
+    );
+    if (parseInt(usage.rows[0].count) > 0) {
+      return res.status(409).json({
+        error: { message: `Cannot delete — ${usage.rows[0].count} playbook(s) are using this type. Reassign them first.` },
+      });
+    }
+
+    const updated = existing.filter(t => t.key !== typeKey);
+
+    await pool.query(
+      `UPDATE organizations
+       SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{playbook_types}', $1::jsonb),
+           updated_at = NOW()
+       WHERE id = $2`,
+      [JSON.stringify(updated), req.orgId]
+    );
+
+    res.json({ playbook_types: updated, deleted: typeKey });
+  } catch (err) {
+    console.error('DELETE /org-admin/playbook-types error:', err);
+    res.status(500).json({ error: { message: 'Failed to delete playbook type' } });
+  }
+});
+
 module.exports = router;
