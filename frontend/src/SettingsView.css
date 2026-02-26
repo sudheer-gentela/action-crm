@@ -520,3 +520,66 @@
   min-height: 36px;
   overflow: hidden;
 }
+
+/* ── Org Integrations section (SettingsView) ──────────────────────────────── */
+
+.sv-section-heading {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1a202c;
+  margin: 0 0 4px;
+}
+
+.sv-org-integrations-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.sv-org-integration-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  background: #fafbfc;
+  transition: all 0.15s;
+}
+
+.sv-org-int--active {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.sv-org-int--inactive {
+  opacity: 0.7;
+}
+
+.sv-org-int-icon {
+  font-size: 24px;
+}
+
+.sv-org-int-info {
+  flex: 1;
+}
+
+.sv-org-int-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a202c;
+}
+
+.sv-org-int-status {
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.sv-org-int-status.enabled {
+  color: #059669;
+  font-weight: 500;
+}
+
+.sv-org-int-status.disabled {
+  color: #9ca3af;
+}

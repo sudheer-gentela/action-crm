@@ -103,7 +103,8 @@ async function getTokenByUserId(userId, provider) {
   );
 
   if (result.rows.length === 0) {
-    throw new Error('No tokens found for user. Please reconnect your Outlook account.');
+    const label = provider === 'google' ? 'Google' : 'Outlook';
+    throw new Error(`No tokens found for user. Please reconnect your ${label} account.`);
   }
 
   const token = result.rows[0];
@@ -114,44 +115,62 @@ async function getTokenByUserId(userId, provider) {
 }
 
 // ── refreshUserToken ───────────────────────────────────────────────────────────
-// Uses direct HTTP POST — MSAL does not reliably expose the new refresh_token.
+// Handles token refresh for both Microsoft and Google providers.
 
 async function refreshUserToken(userId, provider) {
   const currentToken = await getTokenByUserId(userId, provider);
+  const label = provider === 'google' ? 'Google' : 'Outlook';
 
   if (!currentToken.refresh_token) {
-    console.error('❌ No refresh token available for user:', userId);
-    throw new Error('No refresh token available. Please reconnect your Outlook account.');
+    console.error(`❌ No refresh token available for user:`, userId, provider);
+    throw new Error(`No refresh token available. Please reconnect your ${label} account.`);
   }
 
   try {
-    console.log('🔄 Refreshing token for user:', userId);
+    console.log(`🔄 Refreshing ${provider} token for user:`, userId);
 
-    const tenantId = process.env.MICROSOFT_TENANT_ID;
-    const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+    let data;
 
-    const scopes = [
-      'https://graph.microsoft.com/Mail.Read',
-      'https://graph.microsoft.com/Mail.Send',
-      'https://graph.microsoft.com/Calendars.Read',
-      'https://graph.microsoft.com/User.Read',
-      'https://graph.microsoft.com/Files.Read',
-      'offline_access',
-    ].join(' ');
+    if (provider === 'google') {
+      // ── Google refresh ──
+      const params = new URLSearchParams({
+        client_id:     process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        refresh_token: currentToken.refresh_token,
+        grant_type:    'refresh_token',
+      });
 
-    const params = new URLSearchParams({
-      client_id:     process.env.MICROSOFT_CLIENT_ID,
-      client_secret: process.env.MICROSOFT_CLIENT_SECRET,
-      refresh_token: currentToken.refresh_token,
-      grant_type:    'refresh_token',
-      scope:         scopes,
-    });
+      const response = await axios.post('https://oauth2.googleapis.com/token', params.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      });
+      data = response.data;
+    } else {
+      // ── Microsoft refresh ──
+      const tenantId = process.env.MICROSOFT_TENANT_ID;
+      const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
 
-    const response = await axios.post(tokenUrl, params.toString(), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    });
+      const scopes = [
+        'https://graph.microsoft.com/Mail.Read',
+        'https://graph.microsoft.com/Mail.Send',
+        'https://graph.microsoft.com/Calendars.Read',
+        'https://graph.microsoft.com/User.Read',
+        'https://graph.microsoft.com/Files.Read',
+        'offline_access',
+      ].join(' ');
 
-    const data = response.data;
+      const params = new URLSearchParams({
+        client_id:     process.env.MICROSOFT_CLIENT_ID,
+        client_secret: process.env.MICROSOFT_CLIENT_SECRET,
+        refresh_token: currentToken.refresh_token,
+        grant_type:    'refresh_token',
+        scope:         scopes,
+      });
+
+      const response = await axios.post(tokenUrl, params.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      });
+      data = response.data;
+    }
     console.log('✅ Token refreshed successfully');
     console.log('🔄 New refresh_token present:', !!data.refresh_token);
 
@@ -170,10 +189,10 @@ async function refreshUserToken(userId, provider) {
 
     const errData = error.response?.data || {};
     if (errData.error === 'invalid_grant' || error.message?.includes('AADSTS')) {
-      throw new Error('Token expired. Please reconnect your Outlook account.');
+      throw new Error(`Token expired. Please reconnect your ${label} account.`);
     }
 
-    throw new Error(`Failed to refresh token: ${error.message}`);
+    throw new Error(`Failed to refresh ${provider} token: ${error.message}`);
   }
 }
 

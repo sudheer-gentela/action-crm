@@ -47,6 +47,7 @@ const NAV_GROUPS = [
   {
     label: 'General',
     items: [
+      { id: 'integrations', icon: '🔌', label: 'Integrations' },
       { id: 'settings',    icon: '⚙️', label: 'Org Settings' },
     ],
   },
@@ -62,6 +63,7 @@ const TAB_META = {
   health:        { title: 'Deal Health',   desc: 'Configure health scoring parameters' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
+  integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },
   settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
 };
 
@@ -161,6 +163,7 @@ export default function OrgAdminView() {
             {tab === 'deal-roles'  && <OADealRoles />}
             {tab === 'ai-agent'    && <OAAgentSettings />}
             {tab === 'duplicates'  && <OADuplicateSettings />}
+            {tab === 'integrations' && <OAIntegrations />}
             {tab === 'settings'    && <OASettings />}
           </div>
         </div>
@@ -2050,6 +2053,189 @@ function OADuplicateSettings() {
             <option value="own">Own accounts only</option>
           </select>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Integrations (org-level) ──────────────────────────────────────────────────
+
+function OAIntegrations() {
+  const [integrations, setIntegrations] = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [saving, setSaving]     = useState(null);
+  const [flash, setFlash]       = useState(null);
+
+  const PROVIDERS = [
+    {
+      type: 'microsoft',
+      label: 'Microsoft (Outlook + OneDrive)',
+      icon: '📧',
+      desc: 'Enable Outlook email sync, calendar, and OneDrive file access for all org members.',
+      envHint: 'MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET, MICROSOFT_TENANT_ID',
+      scopes: ['Mail.Read', 'Mail.Send', 'Calendars.Read', 'Files.Read', 'User.Read'],
+    },
+    {
+      type: 'google',
+      label: 'Google (Gmail + Drive + Calendar)',
+      icon: '🟢',
+      desc: 'Enable Gmail sync, Google Calendar events, and Google Drive file access for all org members.',
+      envHint: 'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET',
+      scopes: ['Gmail', 'Calendar', 'Drive', 'Profile'],
+    },
+  ];
+
+  useEffect(() => {
+    apiService.orgAdmin.getIntegrations()
+      .then(r => { setIntegrations(r.data.integrations || []); })
+      .catch(() => { setIntegrations([]); })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const getStatus = (type) => {
+    const found = integrations.find(i => i.integration_type === type);
+    return found?.status || 'inactive';
+  };
+
+  const getLastSynced = (type) => {
+    const found = integrations.find(i => i.integration_type === type);
+    return found?.last_synced_at;
+  };
+
+  const handleToggle = async (type, newStatus) => {
+    setSaving(type);
+    setFlash(null);
+    try {
+      const r = await apiService.orgAdmin.updateIntegration(type, { status: newStatus });
+      setIntegrations(prev => {
+        const others = prev.filter(i => i.integration_type !== type);
+        return [...others, r.data.integration];
+      });
+      setFlash({ type: 'success', message: `${type === 'microsoft' ? 'Microsoft' : 'Google'} integration ${newStatus === 'active' ? 'enabled' : 'disabled'}.` });
+    } catch (err) {
+      setFlash({ type: 'error', message: err?.response?.data?.error?.message || 'Failed to update integration.' });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const cardStyle = {
+    background: '#fff',
+    border: '1px solid #e5e7eb',
+    borderRadius: 10,
+    padding: 24,
+    marginBottom: 16,
+  };
+
+  const headerRow = {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 16,
+  };
+
+  const toggleBtn = (active, disabled) => ({
+    padding: '8px 18px',
+    borderRadius: 8,
+    border: active ? '1px solid #dcfce7' : '1px solid #e5e7eb',
+    background: active ? '#dcfce7' : '#f3f4f6',
+    color: active ? '#166534' : '#6b7280',
+    fontWeight: 600,
+    fontSize: 13,
+    cursor: disabled ? 'wait' : 'pointer',
+    transition: 'all 0.15s',
+  });
+
+  if (loading) return <div style={{ padding: 24, color: '#6b7280' }}>Loading integrations...</div>;
+
+  return (
+    <div>
+      {flash && (
+        <div style={{
+          padding: '10px 16px',
+          borderRadius: 8,
+          marginBottom: 16,
+          background: flash.type === 'success' ? '#dcfce7' : '#fef2f2',
+          color: flash.type === 'success' ? '#166534' : '#991b1b',
+          fontSize: 14,
+          fontWeight: 500,
+        }}>
+          {flash.message}
+        </div>
+      )}
+
+      <p style={{ fontSize: 14, color: '#6b7280', marginBottom: 20, lineHeight: 1.6 }}>
+        Enable or disable third-party integrations for your organisation. When enabled, individual
+        team members can connect their personal accounts from <strong>Settings → Integrations</strong>.
+      </p>
+
+      {PROVIDERS.map(provider => {
+        const active = getStatus(provider.type) === 'active';
+        const lastSync = getLastSynced(provider.type);
+        const isSaving = saving === provider.type;
+        return (
+          <div key={provider.type} style={cardStyle}>
+            <div style={headerRow}>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flex: 1 }}>
+                <span style={{ fontSize: 28 }}>{provider.icon}</span>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#1a202c' }}>
+                    {provider.label}
+                  </h3>
+                  <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280', lineHeight: 1.5 }}>
+                    {provider.desc}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                style={toggleBtn(active, isSaving)}
+                disabled={isSaving}
+                onClick={() => handleToggle(provider.type, active ? 'inactive' : 'active')}
+              >
+                {isSaving ? '...' : active ? '✓ Enabled' : 'Enable'}
+              </button>
+            </div>
+
+            {/* Status details */}
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid #f3f4f6' }}>
+              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontSize: 11, textTransform: 'uppercase', color: '#94a3b8', fontWeight: 600, letterSpacing: 0.3 }}>Status</div>
+                  <div style={{ fontSize: 14, fontWeight: 500, color: active ? '#059669' : '#6b7280', marginTop: 2 }}>
+                    {active ? 'Active' : 'Inactive'}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, textTransform: 'uppercase', color: '#94a3b8', fontWeight: 600, letterSpacing: 0.3 }}>Scopes</div>
+                  <div style={{ fontSize: 13, color: '#4b5563', marginTop: 2 }}>
+                    {provider.scopes.join(', ')}
+                  </div>
+                </div>
+                {lastSync && (
+                  <div>
+                    <div style={{ fontSize: 11, textTransform: 'uppercase', color: '#94a3b8', fontWeight: 600, letterSpacing: 0.3 }}>Last synced</div>
+                    <div style={{ fontSize: 13, color: '#4b5563', marginTop: 2 }}>
+                      {new Date(lastSync).toLocaleString()}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Env hint for admin */}
+            <div style={{ marginTop: 12, padding: '8px 12px', background: '#f8fafc', borderRadius: 6, fontSize: 12, color: '#94a3b8' }}>
+              💡 Requires environment variables: <code style={{ background: '#e5e7eb', padding: '1px 4px', borderRadius: 3 }}>{provider.envHint}</code>
+            </div>
+          </div>
+        );
+      })}
+
+      <div style={{ marginTop: 20, padding: 16, background: '#fffbeb', borderRadius: 8, border: '1px solid #fde68a', fontSize: 13, color: '#92400e', lineHeight: 1.6 }}>
+        <strong>How org integrations work:</strong><br />
+        Enabling an integration here allows members to connect their personal accounts.
+        Each member still authorises individually via Settings → Integrations — you are not
+        granting access to a shared mailbox. This switch controls whether the option is <em>available</em> to your team.
       </div>
     </div>
   );

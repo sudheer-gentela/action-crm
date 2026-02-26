@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { apiService } from './apiService';
 import ActionsSettings from './ActionsSettings';
 import OutlookConnect from './OutlookConnect';
+import GoogleConnect from './GoogleConnect';
 import './SettingsView.css';
 import DealHealthSettings from './DealHealthSettings';
 
@@ -494,6 +495,20 @@ function PromptsSettings() {
 
 function IntegrationsSettings() {
   const userId = JSON.parse(localStorage.getItem('user') || '{}').id;
+  const orgRole = sessionStorage.getItem('activeRole') || 'member';
+  const isAdmin = orgRole === 'org-admin' || orgRole === 'super-admin';
+  const [orgIntegrations, setOrgIntegrations] = useState(null);
+
+  useEffect(() => {
+    apiService.orgAdmin.getIntegrations()
+      .then(r => setOrgIntegrations(r.data.integrations || []))
+      .catch(() => setOrgIntegrations([]));
+  }, []);
+
+  const getOrgStatus = (type) => {
+    if (!orgIntegrations) return null;
+    return orgIntegrations.find(i => i.integration_type === type);
+  };
 
   return (
     <div className="sv-panel">
@@ -505,15 +520,21 @@ function IntegrationsSettings() {
       </div>
 
       <div className="sv-panel-body">
-        {/* Microsoft / Outlook */}
+        {/* ── My Connections ─────────────────────────────────── */}
         <div className="sv-section">
+          <h3 className="sv-section-heading">My Connections</h3>
+          <p className="sv-hint" style={{ marginBottom: 16 }}>
+            Connect your personal accounts. These connections are private to you.
+          </p>
+
+          {/* Microsoft / Outlook */}
           <div className="sv-card sv-integration-card">
             <div className="sv-integration-header">
               <div className="sv-integration-logo">📧</div>
               <div>
                 <h3>Microsoft Account</h3>
                 <p className="sv-hint">
-                  Connects Outlook email, calendar sync, and OneDrive file import — all with a single sign-in.
+                  Outlook email, calendar sync, and OneDrive file import — all with a single sign-in.
                 </p>
               </div>
             </div>
@@ -523,26 +544,74 @@ function IntegrationsSettings() {
             <div className="sv-integration-scopes">
               <p className="sv-hint"><strong>Permissions requested:</strong></p>
               <ul className="sv-scope-list">
-                <li>📧 <strong>Mail.Read</strong> — read your Outlook inbox</li>
+                <li>📧 <strong>Mail.Read / Send</strong> — read and send Outlook email</li>
                 <li>📅 <strong>Calendars.Read</strong> — sync calendar events</li>
                 <li>☁️ <strong>Files.Read</strong> — browse and import OneDrive files</li>
                 <li>👤 <strong>User.Read</strong> — identify your account</li>
               </ul>
             </div>
           </div>
-        </div>
 
-        {/* Google Drive — coming soon */}
-        <div className="sv-section">
-          <div className="sv-card sv-integration-card sv-integration-card--disabled">
+          {/* Google */}
+          <div className="sv-card sv-integration-card" style={{ marginTop: 16 }}>
             <div className="sv-integration-header">
               <div className="sv-integration-logo">🟢</div>
               <div>
-                <h3>Google Drive <span className="sv-badge-soon">Coming soon</span></h3>
-                <p className="sv-hint">Browse and import files from Google Drive into your deals.</p>
+                <h3>Google Account</h3>
+                <p className="sv-hint">
+                  Gmail, Google Calendar, and Google Drive — all with a single sign-in.
+                </p>
               </div>
             </div>
+
+            <GoogleConnect userId={userId} />
+
+            <div className="sv-integration-scopes">
+              <p className="sv-hint"><strong>Permissions requested:</strong></p>
+              <ul className="sv-scope-list">
+                <li>📧 <strong>Gmail</strong> — read and send email</li>
+                <li>📅 <strong>Calendar</strong> — view upcoming events</li>
+                <li>📁 <strong>Drive</strong> — browse and import files</li>
+                <li>👤 <strong>Profile</strong> — identify your account</li>
+              </ul>
+            </div>
           </div>
+        </div>
+
+        {/* ── Org-level Integrations ────────────────────────── */}
+        <div className="sv-section" style={{ marginTop: 32 }}>
+          <h3 className="sv-section-heading">Organisation Integrations</h3>
+          <p className="sv-hint" style={{ marginBottom: 16 }}>
+            {isAdmin
+              ? 'Manage integrations enabled for your entire organisation. Go to Org Admin → Integrations for full control.'
+              : 'Integrations enabled by your organisation admin.'}
+          </p>
+
+          <div className="sv-org-integrations-grid">
+            {['microsoft', 'google'].map(type => {
+              const integration = getOrgStatus(type);
+              const enabled = integration?.status === 'active';
+              const label = type === 'microsoft' ? 'Microsoft (Outlook/OneDrive)' : 'Google (Gmail/Drive/Calendar)';
+              const icon = type === 'microsoft' ? '📧' : '🟢';
+              return (
+                <div key={type} className={`sv-org-integration-card ${enabled ? 'sv-org-int--active' : 'sv-org-int--inactive'}`}>
+                  <span className="sv-org-int-icon">{icon}</span>
+                  <div className="sv-org-int-info">
+                    <div className="sv-org-int-name">{label}</div>
+                    <div className={`sv-org-int-status ${enabled ? 'enabled' : 'disabled'}`}>
+                      {enabled ? '✓ Enabled for org' : '○ Not configured'}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {isAdmin && (
+            <p className="sv-hint" style={{ marginTop: 12 }}>
+              💡 Manage org-level integrations in the <strong>Org Admin → Integrations</strong> tab.
+            </p>
+          )}
         </div>
       </div>
     </div>

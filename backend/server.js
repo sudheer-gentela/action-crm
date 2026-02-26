@@ -12,6 +12,7 @@ const PORT = process.env.PORT || 3001;
 // Route imports
 // ─────────────────────────────────────────────────────────────
 const outlookRoutes    = require('./routes/outlook.routes');
+const googleRoutes     = require('./routes/google.routes');
 const syncRoutes       = require('./routes/sync.routes');
 const playbookRoutes   = require('./routes/playbook.routes');
 const aiRoutes         = require('./routes/ai.routes');
@@ -155,6 +156,7 @@ app.use('/api/calendar',  require('./routes/calendar.routes'));
 app.use('/api/dashboard', require('./routes/dashboard.routes'));
 app.use('/api/agent', 	  require('./routes/agent.routes'));
 app.use('/api/outlook',   outlookRoutes);
+app.use('/api/google',    googleRoutes);
 app.use('/api/sync',      syncRoutes);
 app.use('/api/playbook',  playbookRoutes);
 app.use('/api/ai',        aiRoutes);

@@ -272,6 +272,9 @@ export const apiService = {
     cancelInvitation:(id)             => api.delete(`/org/admin/invitations/${id}`),
     getDuplicateSettings: ()          => api.get('/org/admin/duplicate-settings'),
     updateDuplicateSettings: (data)   => api.patch('/org/admin/duplicate-settings', data),
+    // Org-level integrations
+    getIntegrations:      ()               => api.get('/org/admin/integrations'),
+    updateIntegration:    (type, data)     => api.patch(`/org/admin/integrations/${type}`, data),
   },
 };
 
@@ -279,6 +282,8 @@ export const apiService = {
 // ============================================================
 // OUTLOOK & SYNC APIs
 // ============================================================
+
+const API_BASE_URL_SYNC = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 
 // Outlook API
 export const outlookAPI = {
@@ -368,6 +373,38 @@ export const outlookAPI = {
     
     return response.json();
   }
+};
+
+// Google API
+export const googleAPI = {
+  getAuthUrl: async (userId) => {
+    const response = await fetch(`${API_BASE_URL}/google/connect?userId=${userId}`, {
+      headers: { 'Content-Type': 'application/json' }
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || 'Failed to get auth URL');
+    }
+    return response.json();
+  },
+
+  getStatus: async (userId) => {
+    const response = await fetch(`${API_BASE_URL}/google/status?userId=${userId}`, {
+      headers: { 'Content-Type': 'application/json' }
+    });
+    if (!response.ok) throw new Error('Failed to get status');
+    return response.json();
+  },
+
+  disconnect: async (userId) => {
+    const response = await fetch(`${API_BASE_URL}/google/disconnect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId })
+    });
+    if (!response.ok) throw new Error('Failed to disconnect');
+    return response.json();
+  },
 };
 
 // Sync API - ✅ FIXED: Use correct endpoints from sync.routes.js

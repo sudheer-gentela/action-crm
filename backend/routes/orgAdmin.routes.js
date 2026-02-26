@@ -318,4 +318,98 @@ router.patch('/duplicate-settings', adminOnly, async (req, res) => {
   }
 });
 
+// ── Org Integrations ─────────────────────────────────────────────────────────
+
+/**
+ * GET /org/admin/integrations
+ * List all org-level integrations (creates org_integrations table if missing)
+ */
+router.get('/integrations', adminOnly, async (req, res) => {
+  try {
+    // Ensure table exists
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS org_integrations (
+        id             SERIAL PRIMARY KEY,
+        org_id         INTEGER NOT NULL REFERENCES organizations(id),
+        integration_type VARCHAR(50) NOT NULL,
+        credentials    JSONB DEFAULT '{}',
+        config         JSONB DEFAULT '{}',
+        status         VARCHAR(20) DEFAULT 'inactive',
+        last_synced_at TIMESTAMPTZ,
+        created_at     TIMESTAMPTZ DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(org_id, integration_type)
+      )
+    `);
+
+    const result = await pool.query(
+      `SELECT * FROM org_integrations WHERE org_id = $1 ORDER BY integration_type`,
+      [req.orgId]
+    );
+    res.json({ integrations: result.rows });
+  } catch (err) {
+    console.error('GET /org-admin/integrations error:', err);
+    res.status(500).json({ error: { message: 'Failed to fetch integrations' } });
+  }
+});
+
+/**
+ * PATCH /org/admin/integrations/:type
+ * Enable/disable an org-level integration (upsert)
+ */
+router.patch('/integrations/:type', adminOnly, async (req, res) => {
+  try {
+    const { type } = req.params;
+    const { status, config } = req.body;
+
+    const validTypes = ['microsoft', 'google'];
+    if (!validTypes.includes(type)) {
+      return res.status(400).json({ error: { message: `Invalid integration type: ${type}` } });
+    }
+
+    const validStatuses = ['active', 'inactive'];
+    if (status && !validStatuses.includes(status)) {
+      return res.status(400).json({ error: { message: `Invalid status: ${status}` } });
+    }
+
+    // Ensure table exists
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS org_integrations (
+        id             SERIAL PRIMARY KEY,
+        org_id         INTEGER NOT NULL REFERENCES organizations(id),
+        integration_type VARCHAR(50) NOT NULL,
+        credentials    JSONB DEFAULT '{}',
+        config         JSONB DEFAULT '{}',
+        status         VARCHAR(20) DEFAULT 'inactive',
+        last_synced_at TIMESTAMPTZ,
+        created_at     TIMESTAMPTZ DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(org_id, integration_type)
+      )
+    `);
+
+    const result = await pool.query(`
+      INSERT INTO org_integrations (org_id, integration_type, status, config)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (org_id, integration_type)
+      DO UPDATE SET
+        status     = COALESCE($3, org_integrations.status),
+        config     = COALESCE($4, org_integrations.config),
+        updated_at = NOW()
+      RETURNING *
+    `, [
+      req.orgId,
+      type,
+      status || 'inactive',
+      config ? JSON.stringify(config) : '{}',
+    ]);
+
+    console.log(`🔌 Integration ${type} set to ${result.rows[0].status} for org ${req.orgId}`);
+    res.json({ integration: result.rows[0] });
+  } catch (err) {
+    console.error('PATCH /org-admin/integrations/:type error:', err);
+    res.status(500).json({ error: { message: 'Failed to update integration' } });
+  }
+});
+
 module.exports = router;
