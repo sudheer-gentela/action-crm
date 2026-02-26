@@ -455,13 +455,17 @@ router.get('/hierarchy/my-team', async (req, res) => {
 
 /**
  * PUT /org/admin/hierarchy/:userId
- * Set a user's reports_to and hierarchy_role.
+ * Set a user's reports_to, hierarchy_role, and relationship_type.
  * Admin-only.
  */
 router.put('/hierarchy/:userId', adminOnly, async (req, res) => {
   try {
     const { userId } = req.params;
-    const { reportsTo, hierarchyRole } = req.body;
+    const { reportsTo, hierarchyRole, relationshipType = 'solid' } = req.body;
+
+    if (!['solid', 'dotted'].includes(relationshipType)) {
+      return res.status(400).json({ error: { message: 'relationshipType must be solid or dotted' } });
+    }
 
     // Validate target user belongs to this org
     const memberCheck = await pool.query(
@@ -487,7 +491,8 @@ router.put('/hierarchy/:userId', adminOnly, async (req, res) => {
       req.orgId,
       parseInt(userId),
       reportsTo ? parseInt(reportsTo) : null,
-      hierarchyRole || 'rep'
+      hierarchyRole || 'rep',
+      relationshipType
     );
 
     res.json({ hierarchy: result });
@@ -517,6 +522,26 @@ router.post('/hierarchy/bulk', adminOnly, async (req, res) => {
   } catch (err) {
     console.error('POST /org-admin/hierarchy/bulk error:', err);
     res.status(500).json({ error: { message: 'Failed to bulk update hierarchy' } });
+  }
+});
+
+/**
+ * DELETE /org/admin/hierarchy/:userId/dotted/:managerId
+ * Remove a specific dotted-line relationship.
+ * Admin-only.
+ */
+router.delete('/hierarchy/:userId/dotted/:managerId', adminOnly, async (req, res) => {
+  try {
+    const removed = await hierarchyService.removeDottedLine(
+      req.orgId, parseInt(req.params.userId), parseInt(req.params.managerId)
+    );
+    if (!removed) {
+      return res.status(404).json({ error: { message: 'Dotted-line relationship not found' } });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('DELETE /org-admin/hierarchy/:userId/dotted/:managerId error:', err);
+    res.status(500).json({ error: { message: 'Failed to remove dotted line' } });
   }
 });
 

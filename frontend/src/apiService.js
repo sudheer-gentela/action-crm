@@ -281,6 +281,7 @@ export const apiService = {
     updateHierarchy:      (userId, data)   => api.put(`/org/admin/hierarchy/${userId}`, data),
     bulkUpdateHierarchy:  (entries)         => api.post('/org/admin/hierarchy/bulk', { entries }),
     removeFromHierarchy:  (userId)          => api.delete(`/org/admin/hierarchy/${userId}`),
+    removeDottedLine:     (userId, managerId) => api.delete(`/org/admin/hierarchy/${userId}/dotted/${managerId}`),
   },
 };
 
