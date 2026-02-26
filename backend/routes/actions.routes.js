@@ -106,6 +106,10 @@ const ORDER_CLAUSE = `
 `;
 
 // ── GET /  — list actions with full filter support ────────────
+// Supports ?scope=mine|team|org (default: mine)
+//   mine — only current user's actions
+//   team — current user + all subordinates (hierarchy-based)
+//   org  — all actions in the org
 router.get('/', async (req, res) => {
   try {
     const {
@@ -120,12 +124,25 @@ router.get('/', async (req, res) => {
       nextStep,
       dueBefore,
       dueAfter,
+      scope = 'mine',
     } = req.query;
 
     // org_id is the primary isolation filter — always first
-    // user_id scopes to this rep's own actions within the org
-    let query = BASE_QUERY + ' WHERE a.org_id = $1 AND a.user_id = $2';
-    const params = [req.orgId, req.user.userId];
+    let query = BASE_QUERY + ' WHERE a.org_id = $1';
+    const params = [req.orgId];
+
+    // Scope filtering on a.user_id
+    if (scope === 'team' && req.subordinateIds?.length > 0) {
+      const teamIds = [req.user.userId, ...req.subordinateIds];
+      query += ` AND a.user_id = ANY($${params.length + 1}::int[])`;
+      params.push(teamIds);
+    } else if (scope === 'org') {
+      // No user_id filter — all actions in org
+    } else {
+      // Default: mine only
+      query += ` AND a.user_id = $${params.length + 1}`;
+      params.push(req.user.userId);
+    }
 
     if (status) {
       query += ` AND a.status = $${params.length + 1}`;
@@ -204,32 +221,50 @@ router.get('/', async (req, res) => {
 });
 
 // ── GET /filter-options ───────────────────────────────────────
+// Respects ?scope=mine|team|org so filter dropdowns match the active scope
 router.get('/filter-options', async (req, res) => {
   try {
+    const { scope = 'mine' } = req.query;
+
+    // Build user_id filter fragment
+    let userFilter;
+    const baseParams = [req.orgId];
+
+    if (scope === 'team' && req.subordinateIds?.length > 0) {
+      const teamIds = [req.user.userId, ...req.subordinateIds];
+      userFilter = `a.user_id = ANY($2::int[])`;
+      baseParams.push(teamIds);
+    } else if (scope === 'org') {
+      userFilter = 'TRUE'; // no user_id filter
+    } else {
+      userFilter = `a.user_id = $2`;
+      baseParams.push(req.user.userId);
+    }
+
     const [dealsRes, accountsRes, ownersRes] = await Promise.all([
       db.query(
         `SELECT DISTINCT d.id, d.name FROM deals d
          INNER JOIN actions a ON a.deal_id = d.id
-         WHERE a.org_id = $1 AND a.user_id = $2
+         WHERE a.org_id = $1 AND ${userFilter}
          ORDER BY d.name`,
-        [req.orgId, req.user.userId]
+        baseParams
       ),
       db.query(
         `SELECT DISTINCT acc.id, acc.name FROM accounts acc
          INNER JOIN deals d   ON d.account_id = acc.id
          INNER JOIN actions a ON a.deal_id    = d.id
-         WHERE a.org_id = $1 AND a.user_id = $2
+         WHERE a.org_id = $1 AND ${userFilter}
          ORDER BY acc.name`,
-        [req.orgId, req.user.userId]
+        baseParams
       ),
       db.query(
         `SELECT DISTINCT u.id, u.first_name || ' ' || u.last_name AS name
          FROM users u
          INNER JOIN deals d   ON d.owner_id = u.id
          INNER JOIN actions a ON a.deal_id  = d.id
-         WHERE a.org_id = $1 AND a.user_id = $2
+         WHERE a.org_id = $1 AND ${userFilter}
          ORDER BY name`,
-        [req.orgId, req.user.userId]
+        baseParams
       ),
     ]);
     res.json({

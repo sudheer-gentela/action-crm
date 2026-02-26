@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { apiService } from './apiService';
 import './ActionsView.css';
 import EmailComposer from './EmailComposer';
 import SnoozeModal from './SnoozeModal';
@@ -702,17 +703,30 @@ export default function ActionsView() {
   const [logAction,      setLogAction]      = useState(null);
   const [snoozeAction,   setSnoozeAction]   = useState(null);
 
+  // ── Scope toggle state ────────────────────────────────────────
+  const [scope, setScope] = useState('mine');   // 'mine' | 'team' | 'org'
+  const [hasTeam, setHasTeam] = useState(false);
+
   useEffect(() => {
-    apiFetch('/actions/filter-options').then(data => setFilterOptions(data)).catch(() => {});
-    apiFetch('/contacts').then(d => setContacts(d.contacts || [])).catch(() => {});
-    apiFetch('/deals').then(d => setDeals(d.deals || [])).catch(() => {});
+    apiService.orgAdmin.getMyTeam()
+      .then(r => setHasTeam(r.data.hasTeam))
+      .catch(() => setHasTeam(false));
   }, []);
+
+  useEffect(() => {
+    apiFetch(`/actions/filter-options?scope=${scope}`).then(data => setFilterOptions(data)).catch(() => {});
+    apiFetch(`/contacts?scope=${scope}`).then(d => setContacts(d.contacts || [])).catch(() => {});
+    apiFetch(`/deals?scope=${scope}`).then(d => setDeals(d.deals || [])).catch(() => {});
+  }, [scope]);
 
   const fetchActions = useCallback(async (activeFilters) => {
     setLoading(true);
     setError(null);
     try {
       const params = new URLSearchParams();
+
+      // Pass scope to backend
+      params.set('scope', scope);
 
       if (activeFilters.status) {
         params.set('status', activeFilters.status);
@@ -745,11 +759,11 @@ export default function ActionsView() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [scope]);
 
   useEffect(() => {
     fetchActions(filters);
-  }, [filters, fetchActions]);
+  }, [filters, fetchActions, scope]); // re-fetch when scope changes
 
   function handleFilterChange(key, value) {
     if (key === '__reset__') { setFilters(DEFAULT_FILTERS); return; }
@@ -914,15 +928,45 @@ export default function ActionsView() {
               {inProgress > 0 && <span className="av-count av-count--progress">{inProgress} in progress</span>}
               {snoozed    > 0 && <span className="av-count av-count--snoozed">{snoozed} snoozed</span>}
               {completed  > 0 && <span className="av-count av-count--done">{completed} completed</span>}
+              {scope !== 'mine' && (
+                <span className="av-count" style={{ background: '#eef2ff', color: '#4338ca' }}>
+                  {scope === 'team' ? '👥 Team' : '🏢 All Org'}
+                </span>
+              )}
             </div>
           </div>
-          <button
-            className="av-generate-btn"
-            onClick={handleGenerateActions}
-            disabled={generating || loading}
-          >
-            {generating ? '⏳ Generating…' : '⚡ Generate Actions'}
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            {/* Scope toggle — only visible if user has subordinates */}
+            {hasTeam && (
+              <div style={{
+                display: 'inline-flex', borderRadius: '8px', overflow: 'hidden',
+                border: '1px solid #e2e4ea', fontSize: '13px',
+              }}>
+                {['mine', 'team', 'org'].map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setScope(s)}
+                    style={{
+                      padding: '6px 14px', border: 'none', cursor: 'pointer',
+                      background: scope === s ? '#4f46e5' : '#fff',
+                      color: scope === s ? '#fff' : '#4b5563',
+                      fontWeight: scope === s ? 600 : 400,
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {s === 'mine' ? 'My Actions' : s === 'team' ? 'My Team' : 'All Org'}
+                  </button>
+                ))}
+              </div>
+            )}
+            <button
+              className="av-generate-btn"
+              onClick={handleGenerateActions}
+              disabled={generating || loading}
+            >
+              {generating ? '⏳ Generating…' : '⚡ Generate Actions'}
+            </button>
+          </div>
         </div>
 
         {/* Filters */}
