@@ -1242,8 +1242,53 @@ function OAPlaybooks() {
     updateGuidanceField(stageKey, 'key_actions', actions);
   };
 
-  const TYPE_LABELS = { market: '🌍 Market', product: '📦 Product', custom: '⚙️ Custom' };
-  const TYPE_COLORS = { market: '#3182ce', product: '#38a169', custom: '#718096' };
+  const TYPE_LABELS = { market: '🌍 Market', product: '📦 Product', custom: '⚙️ Custom', prospecting: '🎯 Prospecting' };
+  const TYPE_COLORS = { market: '#3182ce', product: '#38a169', custom: '#718096', prospecting: '#0F9D8E' };
+  const TEAL = '#0F9D8E';
+
+  // ── Type filter tab: sales vs prospecting ──────────────────────────────────
+  const [typeFilter, setTypeFilter] = useState('sales'); // 'sales' | 'prospecting'
+  const isProspecting = typeFilter === 'prospecting';
+  const filteredPlaybooks = isProspecting
+    ? playbooks.filter(p => p.type === 'prospecting')
+    : playbooks.filter(p => p.type !== 'prospecting');
+
+  // ── Prospect stages (loaded when prospecting tab is active) ────────────────
+  const [prospectLiveStages, setProspectLiveStages] = useState([]);
+  const [prospectStagesLoading, setProspectStagesLoading] = useState(false);
+
+  useEffect(() => {
+    if (typeFilter !== 'prospecting') return;
+    setProspectStagesLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`${API}/prospect-stages`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        const active = (data.stages || [])
+          .filter(s => s.is_active && !s.is_terminal)
+          .sort((a, b) => a.sort_order - b.sort_order);
+        setProspectLiveStages(active);
+      } catch { /* non-fatal */ }
+      finally { setProspectStagesLoading(false); }
+    })();
+  }, [typeFilter, API, token]);
+
+  // Re-select on type filter change
+  useEffect(() => {
+    const filtered = isProspecting
+      ? playbooks.filter(p => p.type === 'prospecting')
+      : playbooks.filter(p => p.type !== 'prospecting');
+    const def = filtered.find(p => p.is_default) || filtered[0];
+    setSelectedId(def?.id || null);
+    setEditingStage(null);
+    setShowNewForm(false);
+  }, [typeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Which stages to show in the editor
+  const activeLiveStages = isProspecting ? prospectLiveStages : liveStages;
+  const activeStagesLoading = isProspecting ? prospectStagesLoading : stagesLoading;
 
   const handleSetDefault = async (id) => {
     try {
@@ -1258,12 +1303,15 @@ function OAPlaybooks() {
     if (!newPbData.name.trim()) { flash('error', 'Name is required'); return; }
     setCreating(true);
     try {
-      const r  = await apiService.playbooks.create({ ...newPbData, content: { company: {} }, stage_guidance: {} });
+      const createPayload = isProspecting
+        ? { name: newPbData.name, type: 'prospecting', description: newPbData.description, content: {}, stage_guidance: {} }
+        : { ...newPbData, content: { company: {} }, stage_guidance: {} };
+      const r  = await apiService.playbooks.create(createPayload);
       const nb = r.data.playbook;
       setPlaybooks(prev => [...prev, nb]);
       setSelectedId(nb.id);
       setShowNewForm(false);
-      setNewPbData({ name: '', type: 'custom', description: '' });
+      setNewPbData({ name: '', type: isProspecting ? 'prospecting' : 'custom', description: '' });
       flash('success', 'Playbook created ✓');
     } catch { flash('error', 'Failed to create playbook'); }
     finally  { setCreating(false); }
@@ -1290,13 +1338,42 @@ function OAPlaybooks() {
     <div className="sv-panel">
       <div className="sv-panel-header">
         <div>
-          <h2>📘 Sales Playbooks</h2>
+          <h2>{isProspecting ? '🎯 Prospecting Playbooks' : '📘 Sales Playbooks'}</h2>
           <p className="sv-panel-desc">
-            Stage names and order come from the Deal Stages tab. Edit guidance here to tell the
-            AI what actions to generate for each stage.
+            {isProspecting
+              ? 'Manage outreach playbooks — define stage guidance, key actions, and cadences for each prospecting stage.'
+              : 'Stage names and order come from the Deal Stages tab. Edit guidance here to tell the AI what actions to generate for each stage.'}
           </p>
         </div>
-        <button className="sv-btn-primary" onClick={() => setShowNewForm(true)}>+ New Playbook</button>
+        <button className="sv-btn-primary" onClick={() => setShowNewForm(true)}>
+          + New {isProspecting ? 'Prospecting' : 'Sales'} Playbook
+        </button>
+      </div>
+
+      {/* Type toggle tabs */}
+      <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', margin: '0 0 16px' }}>
+        {[
+          { key: 'sales', label: '📘 Sales', color: '#3b82f6' },
+          { key: 'prospecting', label: '🎯 Prospecting', color: TEAL },
+        ].map(t => (
+          <button
+            key={t.key}
+            onClick={() => setTypeFilter(t.key)}
+            style={{
+              padding: '10px 20px',
+              background: 'none',
+              border: 'none',
+              borderBottom: `3px solid ${typeFilter === t.key ? t.color : 'transparent'}`,
+              color: typeFilter === t.key ? t.color : '#6b7280',
+              fontWeight: typeFilter === t.key ? 600 : 400,
+              fontSize: 14,
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+            }}
+          >
+            {t.label} ({(t.key === 'prospecting' ? playbooks.filter(p => p.type === 'prospecting') : playbooks.filter(p => p.type !== 'prospecting')).length})
+          </button>
+        ))}
       </div>
 
       {error   && <div className="sv-alert sv-alert-error">{error}</div>}
@@ -1304,25 +1381,27 @@ function OAPlaybooks() {
 
       {showNewForm && (
         <div className="sv-card oa-pb-new-form">
-          <h4 style={{ marginTop: 0, marginBottom: 16 }}>New Playbook</h4>
+          <h4 style={{ marginTop: 0, marginBottom: 16 }}>New {isProspecting ? 'Prospecting' : 'Sales'} Playbook</h4>
           <div className="oa-pb-form-grid">
             <div className="sv-field">
               <label>Name</label>
-              <input className="sv-input" placeholder="e.g. EMEA Enterprise"
+              <input className="sv-input" placeholder={isProspecting ? 'e.g. Outbound SDR' : 'e.g. EMEA Enterprise'}
                 value={newPbData.name} onChange={e => setNewPbData(p => ({ ...p, name: e.target.value }))} />
             </div>
-            <div className="sv-field">
-              <label>Type</label>
-              <select className="sv-input" value={newPbData.type} onChange={e => setNewPbData(p => ({ ...p, type: e.target.value }))}>
-                <option value="market">🌍 Market</option>
-                <option value="product">📦 Product</option>
-                <option value="custom">⚙️ Custom</option>
-              </select>
-            </div>
+            {!isProspecting && (
+              <div className="sv-field">
+                <label>Type</label>
+                <select className="sv-input" value={newPbData.type} onChange={e => setNewPbData(p => ({ ...p, type: e.target.value }))}>
+                  <option value="market">🌍 Market</option>
+                  <option value="product">📦 Product</option>
+                  <option value="custom">⚙️ Custom</option>
+                </select>
+              </div>
+            )}
           </div>
           <div className="sv-field" style={{ marginTop: 12 }}>
             <label>Description (optional)</label>
-            <input className="sv-input" placeholder="e.g. For deals in EMEA region"
+            <input className="sv-input" placeholder={isProspecting ? 'e.g. Multi-channel outbound sequence' : 'e.g. For deals in EMEA region'}
               value={newPbData.description} onChange={e => setNewPbData(p => ({ ...p, description: e.target.value }))} />
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
@@ -1337,9 +1416,9 @@ function OAPlaybooks() {
       <div className="oa-pb-layout">
         {/* Sidebar */}
         <div className="oa-pb-sidebar">
-          {playbooks.length === 0
-            ? <div className="sv-empty">No playbooks yet. Create one above.</div>
-            : playbooks.map(pb => (
+          {filteredPlaybooks.length === 0
+            ? <div className="sv-empty">No {isProspecting ? 'prospecting' : 'sales'} playbooks yet. Create one above.</div>
+            : filteredPlaybooks.map(pb => (
               <div key={pb.id}
                 className={`oa-pb-list-item ${selectedId === pb.id ? 'active' : ''}`}
                 onClick={() => setSelectedId(pb.id)}>
@@ -1398,8 +1477,8 @@ function OAPlaybooks() {
                 </button>
               </div>
 
-              {/* Company context */}
-              {playbook.content && (
+              {/* Company context — sales playbooks only */}
+              {!isProspecting && playbook.content && (
                 <div className="sv-card" style={{ marginBottom: 16 }}>
                   <div className="oa-pb-section-header" onClick={() => setShowCompany(v => !v)}>
                     <span>🏢 Company Context</span>
@@ -1425,24 +1504,26 @@ function OAPlaybooks() {
                 </div>
               )}
 
-              {/* Stage guidance — driven by live deal_stages */}
+              {/* Stage guidance — driven by live stages */}
               <div className="sv-card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                  <h4 style={{ margin: 0, fontSize: 15 }}>📋 Stage Guidance</h4>
+                  <h4 style={{ margin: 0, fontSize: 15, color: isProspecting ? TEAL : undefined }}>
+                    {isProspecting ? '🎯 Prospecting Stage Guidance' : '📋 Stage Guidance'}
+                  </h4>
                   <span style={{ fontSize: 12, color: '#9ca3af' }}>
-                    Stages from Deal Stages tab · save each stage individually
+                    {isProspecting ? 'Stages from Prospect Stages tab' : 'Stages from Deal Stages tab'} · save each stage individually
                   </span>
                 </div>
 
-                {stagesLoading ? (
+                {activeStagesLoading ? (
                   <div className="sv-loading" style={{ padding: 16 }}>Loading stages…</div>
-                ) : liveStages.length === 0 ? (
+                ) : activeLiveStages.length === 0 ? (
                   <div className="sv-empty">
-                    No active pipeline stages found. Add stages in the Deal Stages tab first.
+                    No active pipeline stages found. Add stages in the {isProspecting ? 'Prospect' : 'Deal'} Stages tab first.
                   </div>
                 ) : (
                   <div className="sv-stages-list">
-                    {liveStages.map((stage, i) => {
+                    {activeLiveStages.map((stage, i) => {
                       const stageType = stage.stage_type;  // semantic label for display only
                       const stageKey  = stage.key;              // guidance lookup key
                       const g         = guidance[stageKey] || {};
@@ -1454,7 +1535,7 @@ function OAPlaybooks() {
                         <div key={stage.id} className="sv-stage-row">
                           <div className="sv-stage-header"
                             onClick={() => setEditingStage(isOpen ? null : stage.id)}>
-                            <span className="sv-stage-num">{i + 1}</span>
+                            <span className="sv-stage-num" style={isProspecting ? { background: TEAL + '20', color: TEAL } : undefined}>{i + 1}</span>
                             <span className="sv-stage-name">{stage.name}</span>
                             <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 6 }}>
                               {stageType}
