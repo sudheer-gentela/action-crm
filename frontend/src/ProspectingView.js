@@ -132,8 +132,8 @@ export default function ProspectingView() {
       if (searchQuery) params.search = searchQuery;
 
       const [prospectsRes, summaryRes] = await Promise.all([
-        apiFetch(`/api/prospects?scope=${scope}${searchQuery ? `&search=${encodeURIComponent(searchQuery)}` : ''}`),
-        apiFetch(`/api/prospects/pipeline/summary?scope=${scope}`),
+        apiFetch(`/prospects?scope=${scope}${searchQuery ? `&search=${encodeURIComponent(searchQuery)}` : ''}`),
+        apiFetch(`/prospects/pipeline/summary?scope=${scope}`),
       ]);
 
       setProspects(prospectsRes.prospects || []);
@@ -151,7 +151,7 @@ export default function ProspectingView() {
 
   const handleStageChange = async (prospectId, newStage, reason) => {
     try {
-      await apiFetch(`/api/prospects/${prospectId}/stage`, {
+      await apiFetch(`/prospects/${prospectId}/stage`, {
         method: 'POST',
         body: JSON.stringify({ stage: newStage, reason }),
       });
@@ -165,7 +165,7 @@ export default function ProspectingView() {
 
   const handleCreateProspect = async (data) => {
     try {
-      await apiFetch('/api/prospects', {
+      await apiFetch('/prospects', {
         method: 'POST',
         body: JSON.stringify(data),
       });
@@ -651,7 +651,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
     const fetchDetail = async () => {
       try {
         setLoading(true);
-        const res = await apiFetch(`/api/prospects/${prospectId}`);
+        const res = await apiFetch(`/prospects/${prospectId}`);
         setProspect(res.prospect);
         setActions(res.actions || []);
         setActivities(res.activities || []);
@@ -671,12 +671,12 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
         reason = prompt('Reason for disqualification:');
         if (reason === null) return;
       }
-      await apiFetch(`/api/prospects/${prospectId}/stage`, {
+      await apiFetch(`/prospects/${prospectId}/stage`, {
         method: 'POST',
         body: JSON.stringify({ stage: newStage, reason }),
       });
       // Refresh
-      const res = await apiFetch(`/api/prospects/${prospectId}`);
+      const res = await apiFetch(`/prospects/${prospectId}`);
       setProspect(res.prospect);
       setActivities(res.activities || []);
       setShowStageMenu(false);
@@ -690,7 +690,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
     const dealName = prompt('Deal name (leave empty for default):');
     if (dealName === null) return;
     try {
-      const res = await apiFetch(`/api/prospects/${prospectId}/convert`, {
+      const res = await apiFetch(`/prospects/${prospectId}/convert`, {
         method: 'POST',
         body: JSON.stringify({ dealName: dealName || undefined, createDeal: true }),
       });
@@ -704,11 +704,11 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
 
   const handleCompleteAction = async (actionId, outcome) => {
     try {
-      await apiFetch(`/api/prospecting-actions/${actionId}/status`, {
+      await apiFetch(`/prospecting-actions/${actionId}/status`, {
         method: 'PATCH',
         body: JSON.stringify({ status: 'completed', outcome }),
       });
-      const res = await apiFetch(`/api/prospects/${prospectId}`);
+      const res = await apiFetch(`/prospects/${prospectId}`);
       setProspect(res.prospect);
       setActions(res.actions || []);
       setActivities(res.activities || []);
@@ -725,7 +725,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
     }
     setGenerating(true);
     try {
-      const res = await apiFetch('/api/prospecting-actions/generate', {
+      const res = await apiFetch('/prospecting-actions/generate', {
         method: 'POST',
         body: JSON.stringify({ prospectId }),
       });
@@ -734,7 +734,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
         alert(msg);
       }
       // Refresh detail
-      const detail = await apiFetch(`/api/prospects/${prospectId}`);
+      const detail = await apiFetch(`/prospects/${prospectId}`);
       setProspect(detail.prospect);
       setActions(detail.actions || []);
       setActivities(detail.activities || []);
@@ -757,7 +757,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
     setOutreachAction(null);
     // Refresh data
     try {
-      const res = await apiFetch(`/api/prospects/${prospectId}`);
+      const res = await apiFetch(`/prospects/${prospectId}`);
       setProspect(res.prospect);
       setActions(res.actions || []);
       setActivities(res.activities || []);
