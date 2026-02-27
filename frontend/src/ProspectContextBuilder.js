@@ -1,4 +1,4 @@
-// ─────────────────────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // ProspectContextBuilder.js
 //
 // Gathers ALL inputs needed for prospecting action generation and outreach
@@ -6,8 +6,8 @@
 //
 //   1. Prospect record (with ICP score, stage, engagement tracking)
 //   2. Account (if linked, or matched by company_domain)
-//   3. Account history — past deals, contacts, team relationships
-//   4. Email history — any emails to/from this prospect's email
+//   3. Account history \u2014 past deals, contacts, team relationships
+//   4. Email history \u2014 any emails to/from this prospect's email
 //   5. Other prospects at the same company
 //   6. Playbook stage guidance for current stage
 //   7. ICP score breakdown
@@ -18,12 +18,11 @@
 //   - Prospecting Actions Generator (action creation)
 //   - Prospect Detail Panel (context display)
 //
-// Follows the same pattern as DealContextBuilder — called once per prospect,
+// Follows the same pattern as DealContextBuilder \u2014 called once per prospect,
 // all downstream services receive this context, no extra DB calls.
-// ─────────────────────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 const db              = require('../config/database');
-const PlaybookService = require('./playbook.service');
 const IcpScoringService = require('./icpScoring.service');
 
 class ProspectContextBuilder {
@@ -31,16 +30,16 @@ class ProspectContextBuilder {
   /**
    * Build full context for a prospect.
    * @param {number} prospectId
-   * @param {number} userId   — the requesting user
+   * @param {number} userId   \u2014 the requesting user
    * @param {number} orgId
    * @returns {Promise<ProspectContext>}
    */
   static async build(prospectId, userId, orgId) {
-    // ── 1. Load prospect ────────────────────────────────────────
+    // \u2500\u2500 1. Load prospect \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     const prospect = await this._getProspect(prospectId, orgId);
     if (!prospect) throw new Error(`Prospect ${prospectId} not found`);
 
-    // ── 2. Parallel fetch all context sources ───────────────────
+    // \u2500\u2500 2. Parallel fetch all context sources \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     const [
       account,
       accountDeals,
@@ -67,14 +66,14 @@ class ProspectContextBuilder {
       IcpScoringService.score(prospect, orgId).catch(() => null),
     ]);
 
-    // ── 3. Derive signals ───────────────────────────────────────
+    // \u2500\u2500 3. Derive signals \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     const derived = this._deriveSignals(
       prospect, account, accountDeals, accountContacts,
       teamEngagement, emailHistory, siblingProspects,
       prospectActions, prospectActivities
     );
 
-    // ── 4. Build the outreach context summary ───────────────────
+    // \u2500\u2500 4. Build the outreach context summary \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     const outreachContext = this._buildOutreachContext(
       prospect, account, derived, stageGuidance
     );
@@ -100,7 +99,7 @@ class ProspectContextBuilder {
     };
   }
 
-  // ── Derived Signals ─────────────────────────────────────────────────────────
+  // \u2500\u2500 Derived Signals \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
   static _deriveSignals(
     prospect, account, accountDeals, accountContacts,
@@ -109,7 +108,7 @@ class ProspectContextBuilder {
   ) {
     const now = Date.now();
 
-    // ── Engagement velocity ──────────────────────────────────────
+    // \u2500\u2500 Engagement velocity \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     const daysSinceLastOutreach = prospect.last_outreach_at
       ? Math.floor((now - new Date(prospect.last_outreach_at)) / 86400000)
       : null;
@@ -134,7 +133,7 @@ class ProspectContextBuilder {
     const isStale = daysSinceLastOutreach !== null && daysSinceLastOutreach > 14;
     const isHotLead = responseRate > 0.3 && daysSinceLastResponse !== null && daysSinceLastResponse <= 3;
 
-    // ── Email signals ────────────────────────────────────────────
+    // \u2500\u2500 Email signals \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     const sentEmails = emailHistory.filter(e => e.direction === 'sent');
     const receivedEmails = emailHistory.filter(e => e.direction === 'received');
     const lastEmail = emailHistory[0] || null; // already sorted DESC
@@ -144,7 +143,7 @@ class ProspectContextBuilder {
       return !receivedEmails.some(r => new Date(r.sent_at) > sentDate);
     }).length;
 
-    // ── Account relationship strength ────────────────────────────
+    // \u2500\u2500 Account relationship strength \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     const hasExistingAccount = !!account;
     const pastDealsWon = accountDeals.filter(d => d.stage === 'closed_won');
     const pastDealsLost = accountDeals.filter(d => d.stage === 'closed_lost');
@@ -158,14 +157,14 @@ class ProspectContextBuilder {
     const knownContactCount = accountContacts.length;
     const teamMembersEngaged = [...new Set(teamEngagement.map(e => e.user_id))].length;
 
-    // ── Sibling prospects ────────────────────────────────────────
+    // \u2500\u2500 Sibling prospects \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     const otherProspectsAtCompany = siblingProspects.filter(p => p.id !== prospect.id);
     const convertedSiblings = otherProspectsAtCompany.filter(p => p.stage === 'converted');
     const engagedSiblings = otherProspectsAtCompany.filter(p =>
       ['engaged', 'qualified', 'converted'].includes(p.stage)
     );
 
-    // ── Action signals ───────────────────────────────────────────
+    // \u2500\u2500 Action signals \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     const pendingActions = prospectActions.filter(a => a.status === 'pending');
     const completedActions = prospectActions.filter(a => a.status === 'completed');
     const overdueActions = pendingActions.filter(a =>
@@ -213,41 +212,41 @@ class ProspectContextBuilder {
     };
   }
 
-  // ── Outreach Context Summary ──────────────────────────────────────────────
+  // \u2500\u2500 Outreach Context Summary \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   // Produces a human-readable (and AI-consumable) summary of everything known
   // about this prospect. Used by the Outreach Composer for AI-generated messages.
 
   static _buildOutreachContext(prospect, account, derived, stageGuidance) {
     const parts = [];
 
-    // ── Who they are ─────────────────────────────────────────────
+    // \u2500\u2500 Who they are \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     parts.push(`**Prospect:** ${prospect.first_name} ${prospect.last_name}, ${prospect.title || 'unknown title'} at ${prospect.company_name || 'unknown company'}`);
 
     if (prospect.company_industry) parts.push(`**Industry:** ${prospect.company_industry}`);
     if (prospect.company_size) parts.push(`**Company size:** ${prospect.company_size} employees`);
     if (prospect.location) parts.push(`**Location:** ${prospect.location}`);
 
-    // ── Current stage + goal ─────────────────────────────────────
-    parts.push(`**Stage:** ${prospect.stage}${stageGuidance?.goal ? ` — Goal: ${stageGuidance.goal}` : ''}`);
+    // \u2500\u2500 Current stage + goal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    parts.push(`**Stage:** ${prospect.stage}${stageGuidance?.goal ? ` \u2014 Goal: ${stageGuidance.goal}` : ''}`);
     if (stageGuidance?.timeline) parts.push(`**Timeline target:** ${stageGuidance.timeline}`);
 
-    // ── Research notes ───────────────────────────────────────────
+    // \u2500\u2500 Research notes \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     if (prospect.research_notes) {
       parts.push(`**Research notes:** ${prospect.research_notes}`);
     }
 
-    // ── Account relationship ─────────────────────────────────────
+    // \u2500\u2500 Account relationship \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     if (derived.isExistingCustomer) {
-      parts.push(`**⚡ Existing customer:** ${derived.pastDealsWon.length} deal(s) won, $${derived.totalAccountRevenue.toLocaleString()} total revenue`);
+      parts.push(`**\u26a1 Existing customer:** ${derived.pastDealsWon.length} deal(s) won, $${derived.totalAccountRevenue.toLocaleString()} total revenue`);
     } else if (derived.isLostAccount) {
       const lastLoss = derived.pastDealsLost[0];
-      parts.push(`**⚠️ Previously lost:** Lost deal "${lastLoss?.name || 'unknown'}"${lastLoss?.stage ? ` at ${lastLoss.stage}` : ''}`);
+      parts.push(`**\u26a0\ufe0f Previously lost:** Lost deal "${lastLoss?.name || 'unknown'}"${lastLoss?.stage ? ` at ${lastLoss.stage}` : ''}`);
     } else if (derived.hasOpenDeal) {
       const openDeal = derived.openDeals[0];
-      parts.push(`**📋 Active deal:** "${openDeal.name}" at ${openDeal.stage} stage ($${parseFloat(openDeal.value || 0).toLocaleString()})`);
+      parts.push(`**\ud83d\udccb Active deal:** "${openDeal.name}" at ${openDeal.stage} stage ($${parseFloat(openDeal.value || 0).toLocaleString()})`);
     }
 
-    // ── Team engagement ──────────────────────────────────────────
+    // \u2500\u2500 Team engagement \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     if (derived.teamMembersEngaged > 0) {
       parts.push(`**Team engaged:** ${derived.teamMembersEngaged} team member(s) have interacted with this account`);
     }
@@ -255,7 +254,7 @@ class ProspectContextBuilder {
       parts.push(`**Known contacts:** ${derived.knownContactCount} contact(s) at this account in CRM`);
     }
 
-    // ── Engagement history ───────────────────────────────────────
+    // \u2500\u2500 Engagement history \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     const engagementParts = [];
     if (prospect.outreach_count > 0) engagementParts.push(`${prospect.outreach_count} outreach touches`);
     if (prospect.response_count > 0) engagementParts.push(`${prospect.response_count} responses`);
@@ -263,28 +262,29 @@ class ProspectContextBuilder {
     if (derived.daysSinceLastResponse !== null) engagementParts.push(`last response ${derived.daysSinceLastResponse}d ago`);
     if (engagementParts.length) parts.push(`**Engagement:** ${engagementParts.join(', ')}`);
 
-    // ── Flags ────────────────────────────────────────────────────
-    if (derived.isGhosting) parts.push(`**🔇 Ghosting:** ${prospect.outreach_count} touches with no response`);
-    if (derived.isHotLead) parts.push(`**🔥 Hot lead:** High response rate, responded recently`);
-    if (derived.hasReplied) parts.push(`**✅ Has replied:** ${derived.receivedEmailCount} email(s) received`);
-    if (derived.overdueActions.length > 0) parts.push(`**⏰ Overdue actions:** ${derived.overdueActions.length} action(s) past due`);
+    // \u2500\u2500 Flags \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    if (derived.isGhosting) parts.push(`**\ud83d\udd07 Ghosting:** ${prospect.outreach_count} touches with no response`);
+    if (derived.isHotLead) parts.push(`**\ud83d\udd25 Hot lead:** High response rate, responded recently`);
+    if (derived.hasReplied) parts.push(`**\u2705 Has replied:** ${derived.receivedEmailCount} email(s) received`);
+    if (derived.overdueActions.length > 0) parts.push(`**\u23f0 Overdue actions:** ${derived.overdueActions.length} action(s) past due`);
 
-    // ── Sibling prospects ────────────────────────────────────────
+    // \u2500\u2500 Sibling prospects \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     if (derived.otherProspectsAtCompany.length > 0) {
       const names = derived.otherProspectsAtCompany.map(p => `${p.first_name} ${p.last_name} (${p.stage})`).join(', ');
       parts.push(`**Other prospects at company:** ${names}`);
     }
 
-    // ── ICP ──────────────────────────────────────────────────────
+    // \u2500\u2500 ICP \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     if (prospect.icp_score) parts.push(`**ICP score:** ${prospect.icp_score}/100`);
 
-    // ── Preferred channel ────────────────────────────────────────
+    // \u2500\u2500 Preferred channel \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     if (prospect.preferred_channel) parts.push(`**Preferred channel:** ${prospect.preferred_channel}`);
 
-    return parts.join('\n');
+    return parts.join('\
+');
   }
 
-  // ── DB Fetchers ─────────────────────────────────────────────────────────────
+  // \u2500\u2500 DB Fetchers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
   static async _getProspect(prospectId, orgId) {
     const r = await db.query(

@@ -1,9 +1,9 @@
-// ─────────────────────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // prospect-context.routes.js
 //
 // Exposes ProspectContextBuilder and IcpScoringService to the frontend.
 // Mount in server.js: app.use('/api/prospect-context', require('./routes/prospect-context.routes'));
-// ─────────────────────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 const express = require('express');
 const router  = express.Router();
@@ -16,7 +16,7 @@ router.use(authenticateToken, orgContext);
 
 const adminOnly = requireRole('owner', 'admin');
 
-// ── GET /:prospectId — full context for a prospect ──────────────────────────
+// \u2500\u2500 GET /:prospectId \u2014 full context for a prospect \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // Returns the assembled context used by the Outreach Composer and detail panel.
 // Includes: prospect, account, deals, contacts, email history, siblings,
 //           stage guidance, ICP breakdown, derived signals, outreach summary.
@@ -87,7 +87,7 @@ router.get('/:prospectId', async (req, res) => {
   }
 });
 
-// ── POST /:prospectId/score — recalculate ICP score for one prospect ────────
+// \u2500\u2500 POST /:prospectId/score \u2014 recalculate ICP score for one prospect \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 router.post('/:prospectId/score', async (req, res) => {
   try {
@@ -107,7 +107,7 @@ router.post('/:prospectId/score', async (req, res) => {
   }
 });
 
-// ── POST /score-all — bulk score all unscored prospects (admin only) ────────
+// \u2500\u2500 POST /score-all \u2014 bulk score all unscored prospects (admin only) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 router.post('/score-all', adminOnly, async (req, res) => {
   try {
@@ -119,7 +119,7 @@ router.post('/score-all', adminOnly, async (req, res) => {
   }
 });
 
-// ── GET /icp-config — get org's ICP scoring config ──────────────────────────
+// \u2500\u2500 GET /icp-config \u2014 get org's ICP scoring config \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 router.get('/icp-config/current', async (req, res) => {
   try {
@@ -130,7 +130,7 @@ router.get('/icp-config/current', async (req, res) => {
   }
 });
 
-// ── PUT /icp-config — update org's ICP scoring config (admin only) ──────────
+// \u2500\u2500 PUT /icp-config \u2014 update org's ICP scoring config (admin only) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 router.put('/icp-config/current', adminOnly, async (req, res) => {
   try {

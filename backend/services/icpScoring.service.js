@@ -1,25 +1,25 @@
-// ─────────────────────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // icpScoring.service.js
 //
 // Scores a prospect against the org's Ideal Customer Profile (ICP).
 // Configuration is stored in organizations.settings.icp_config JSONB.
 //
 // Score categories (default weights):
-//   1. Firmographic Fit   (40%) — company size, industry, geography
-//   2. Persona Fit        (25%) — title seniority, function alignment
-//   3. Engagement Signals (20%) — response rate, outreach engagement
-//   4. Timing Signals     (15%) — account relationship, prospect recency
+//   1. Firmographic Fit   (40%) \u2014 company size, industry, geography
+//   2. Persona Fit        (25%) \u2014 title seniority, function alignment
+//   3. Engagement Signals (20%) \u2014 response rate, outreach engagement
+//   4. Timing Signals     (15%) \u2014 account relationship, prospect recency
 //
-// Each category scores 0–100, then weighted into a composite 0–100 score.
+// Each category scores 0\u2013100, then weighted into a composite 0\u2013100 score.
 // Orgs can customise: target industries, target sizes, target titles,
 // category weights, and scoring thresholds.
 //
 // The breakdown is returned as a JSONB object and stored in prospects.icp_signals.
-// ─────────────────────────────────────────────────────────────────────────────
+// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 const db = require('../config/database');
 
-// ── Default ICP Config (used when org has no custom config) ─────────────────
+// \u2500\u2500 Default ICP Config (used when org has no custom config) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 const DEFAULT_ICP_CONFIG = {
   weights: {
@@ -52,7 +52,7 @@ class IcpScoringService {
 
   /**
    * Score a prospect against the org's ICP config.
-   * @param {object} prospect — full prospect row
+   * @param {object} prospect \u2014 full prospect row
    * @param {number} orgId
    * @returns {Promise<{score: number, breakdown: object}>}
    */
@@ -147,7 +147,7 @@ class IcpScoringService {
     return config;
   }
 
-  // ── Category Scorers ──────────────────────────────────────────────────────
+  // \u2500\u2500 Category Scorers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
   /**
    * Firmographic Fit: company size, industry, geography
@@ -327,11 +327,11 @@ class IcpScoringService {
         if (stages.includes('closed_won')) {
           const bonus = config.existing_customer_bonus || DEFAULT_ICP_CONFIG.existing_customer_bonus;
           score += bonus;
-          signals.push({ factor: 'existing_customer', match: true, detail: `Account has won deal(s) — +${bonus} bonus` });
+          signals.push({ factor: 'existing_customer', match: true, detail: `Account has won deal(s) \u2014 +${bonus} bonus` });
         } else if (stages.includes('closed_lost')) {
           const penalty = config.lost_deal_penalty || DEFAULT_ICP_CONFIG.lost_deal_penalty;
           score += penalty; // negative value
-          signals.push({ factor: 'lost_account', match: false, detail: `Account has lost deal(s) — ${penalty} penalty` });
+          signals.push({ factor: 'lost_account', match: false, detail: `Account has lost deal(s) \u2014 ${penalty} penalty` });
         }
 
         if (stages.some(s => !['closed_won', 'closed_lost'].includes(s))) {
@@ -348,17 +348,17 @@ class IcpScoringService {
       const daysSinceCreated = Math.floor((Date.now() - new Date(prospect.created_at)) / 86400000);
       if (daysSinceCreated <= 7) {
         score += 10;
-        signals.push({ factor: 'freshness', match: true, detail: `Created ${daysSinceCreated}d ago — fresh lead` });
+        signals.push({ factor: 'freshness', match: true, detail: `Created ${daysSinceCreated}d ago \u2014 fresh lead` });
       } else if (daysSinceCreated > 60) {
         score -= 10;
-        signals.push({ factor: 'freshness', match: false, detail: `Created ${daysSinceCreated}d ago — aging lead` });
+        signals.push({ factor: 'freshness', match: false, detail: `Created ${daysSinceCreated}d ago \u2014 aging lead` });
       }
     }
 
     return { score: clamp(score), signals };
   }
 
-  // ── Persistence ─────────────────────────────────────────────────────────────
+  // \u2500\u2500 Persistence \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
   static async _persistScore(prospectId, score, breakdown) {
     await db.query(
@@ -372,7 +372,7 @@ class IcpScoringService {
   }
 }
 
-// ── Utility ──────────────────────────────────────────────────────────────────
+// \u2500\u2500 Utility \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 function clamp(score) {
   return Math.max(0, Math.min(100, Math.round(score)));
