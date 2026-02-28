@@ -968,7 +968,7 @@ function OATeams() {
   const [dimDraft, setDimDraft]       = useState([]);
   const [assigningUser, setAssigningUser] = useState(null);
 
-  const load = useCallback(async () => {
+  const load = async () => {
     try {
       setLoading(true);
       const [dimRes, teamsRes, membersRes, membershipRes] = await Promise.all([
@@ -982,17 +982,23 @@ function OATeams() {
       setTeams(teamsRes.data.teams || []);
       setMembers(membersRes.data.members || []);
       setMemberships(membershipRes.data.memberships || []);
-      if (!activeDim && dims.length > 0) setActiveDim(dims[0].key);
+      // Set active dimension if none selected or current one no longer exists
+      setActiveDim(prev => {
+        if (!prev || !dims.find(d => d.key === prev)) {
+          return dims.length > 0 ? dims[0].key : null;
+        }
+        return prev;
+      });
     } catch (err) {
       setError('Failed to load teams data');
       console.error(err);
     } finally {
       setLoading(false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  };
 
-  useEffect(() => { load(); }, [load]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []);
 
   const flash = (msg) => { setSuccess(msg); setTimeout(() => setSuccess(''), 3000); };
 
