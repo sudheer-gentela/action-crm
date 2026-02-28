@@ -2,8 +2,9 @@
 // routes/teams.routes.js
 //
 // Admin-only routes for managing teams and team memberships.
-// All routes require authenticateToken + orgContext middleware,
-// plus admin/owner role check.
+// Follows the same middleware pattern as orgAdmin.routes.js:
+//   router.use(authenticateToken, orgContext) at router level
+//   adminOnly = requireRole('owner', 'admin') per route
 //
 // Mount under: /api/org/admin/
 //   GET    /team-dimensions          — get org's dimension config
@@ -21,23 +22,19 @@
 
 const express = require('express');
 const router = express.Router();
+const authenticateToken = require('../middleware/auth.middleware');
+const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
 const teamService = require('../services/teamService');
 
-// ── Middleware: require admin/owner role ───────────────────────────────
-function requireAdmin(req, res, next) {
-  if (!['admin', 'owner'].includes(req.orgRole)) {
-    return res.status(403).json({ error: { message: 'Admin access required' } });
-  }
-  next();
-}
+// Apply auth + org context to all routes in this file
+router.use(authenticateToken, orgContext);
 
-// All routes in this file require admin
-router.use(requireAdmin);
+const adminOnly = requireRole('owner', 'admin');
 
 
 // ── Dimension Configuration ───────────────────────────────────────────
 
-router.get('/team-dimensions', async (req, res) => {
+router.get('/team-dimensions', adminOnly, async (req, res) => {
   try {
     const dimensions = await teamService.getDimensions(req.orgId);
     res.json({ data: { dimensions } });
@@ -47,7 +44,7 @@ router.get('/team-dimensions', async (req, res) => {
   }
 });
 
-router.put('/team-dimensions', async (req, res) => {
+router.put('/team-dimensions', adminOnly, async (req, res) => {
   try {
     const { dimensions } = req.body;
     if (!dimensions) return res.status(400).json({ error: { message: 'dimensions is required' } });
@@ -63,7 +60,7 @@ router.put('/team-dimensions', async (req, res) => {
 
 // ── Teams CRUD ────────────────────────────────────────────────────────
 
-router.get('/teams', async (req, res) => {
+router.get('/teams', adminOnly, async (req, res) => {
   try {
     const { dimension } = req.query;
     const teams = await teamService.getTeams(req.orgId, dimension || null);
@@ -74,7 +71,7 @@ router.get('/teams', async (req, res) => {
   }
 });
 
-router.post('/teams', async (req, res) => {
+router.post('/teams', adminOnly, async (req, res) => {
   try {
     const { name, dimension, description, parentTeamId, settings } = req.body;
     const team = await teamService.createTeam(req.orgId, {
@@ -89,7 +86,7 @@ router.post('/teams', async (req, res) => {
   }
 });
 
-router.put('/teams/:id', async (req, res) => {
+router.put('/teams/:id', adminOnly, async (req, res) => {
   try {
     const team = await teamService.updateTeam(req.orgId, parseInt(req.params.id), req.body);
     res.json({ data: { team } });
@@ -99,7 +96,7 @@ router.put('/teams/:id', async (req, res) => {
   }
 });
 
-router.delete('/teams/:id', async (req, res) => {
+router.delete('/teams/:id', adminOnly, async (req, res) => {
   try {
     const deleted = await teamService.deleteTeam(req.orgId, parseInt(req.params.id));
     if (!deleted) return res.status(404).json({ error: { message: 'Team not found' } });
@@ -113,7 +110,7 @@ router.delete('/teams/:id', async (req, res) => {
 
 // ── Team Memberships ──────────────────────────────────────────────────
 
-router.get('/team-memberships', async (req, res) => {
+router.get('/team-memberships', adminOnly, async (req, res) => {
   try {
     const memberships = await teamService.getAllMemberships(req.orgId);
     res.json({ data: { memberships } });
@@ -123,7 +120,7 @@ router.get('/team-memberships', async (req, res) => {
   }
 });
 
-router.post('/team-memberships', async (req, res) => {
+router.post('/team-memberships', adminOnly, async (req, res) => {
   try {
     const { userId, teamId, role, isPrimary } = req.body;
     if (!userId || !teamId) return res.status(400).json({ error: { message: 'userId and teamId are required' } });
@@ -136,7 +133,7 @@ router.post('/team-memberships', async (req, res) => {
   }
 });
 
-router.delete('/team-memberships/:userId/:teamId', async (req, res) => {
+router.delete('/team-memberships/:userId/:teamId', adminOnly, async (req, res) => {
   try {
     const removed = await teamService.removeMembership(
       req.orgId,
@@ -151,7 +148,7 @@ router.delete('/team-memberships/:userId/:teamId', async (req, res) => {
   }
 });
 
-router.get('/team-profile/:userId', async (req, res) => {
+router.get('/team-profile/:userId', adminOnly, async (req, res) => {
   try {
     const profile = await teamService.getUserProfile(parseInt(req.params.userId), req.orgId);
     res.json({ data: { profile } });
@@ -161,7 +158,7 @@ router.get('/team-profile/:userId', async (req, res) => {
   }
 });
 
-router.post('/team-memberships/bulk', async (req, res) => {
+router.post('/team-memberships/bulk', adminOnly, async (req, res) => {
   try {
     const { assignments } = req.body;
     if (!Array.isArray(assignments)) return res.status(400).json({ error: { message: 'assignments must be an array' } });
