@@ -1049,8 +1049,8 @@ function OATeams() {
   const updateDimDraft = (idx, field, value) => {
     const updated = [...dimDraft];
     updated[idx] = { ...updated[idx], [field]: value };
-    // Auto-generate key from label if key is empty
-    if (field === 'label' && !updated[idx].key) {
+    // Always auto-generate key from label
+    if (field === 'label') {
       updated[idx].key = value.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
     }
     setDimDraft(updated);
@@ -1191,8 +1191,12 @@ function OATeams() {
           {showNewTeam && (
             <div style={{
               padding: 16, marginBottom: 12, borderRadius: 8,
-              background: '#fff', border: '1px solid #e5e7eb',
+              background: '#fff', border: `1px solid ${getDimColor(activeDim)}30`,
+              borderLeft: `3px solid ${getDimColor(activeDim)}`,
             }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: getDimColor(activeDim), marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                New {activeDimLabel} Team
+              </div>
               <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                 <input
                   type="text"
@@ -1392,9 +1396,9 @@ function OATeams() {
                   <input
                     type="text"
                     value={dim.key}
-                    onChange={e => updateDimDraft(idx, 'key', e.target.value)}
-                    placeholder="key"
-                    style={{ width: 130, padding: '6px 10px', borderRadius: 4, border: '1px solid #d1d5db', fontSize: 11, fontFamily: 'monospace', color: '#6b7280' }}
+                    readOnly
+                    style={{ width: 130, padding: '6px 10px', borderRadius: 4, border: '1px solid #e5e7eb', fontSize: 11, fontFamily: 'monospace', color: '#9ca3af', background: '#f9fafb' }}
+                    title="Auto-generated from label"
                   />
                   <button
                     onClick={() => removeDimension(idx)}
