@@ -35,6 +35,7 @@ const prospectingActionsRoutes  = require('./routes/prospecting-actions.routes')
 const accountProspectingRoutes  = require('./routes/account-prospecting.routes');
 const unifiedActionsRoutes      = require('./routes/unified-actions.routes');
 const prospectContextRoutes     = require('./routes/prospect-context.routes');
+const teamsRoutes               = require('./routes/teams.routes');
 
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
@@ -173,6 +174,7 @@ app.use('/api',           dealHealthRoutes);
 app.use('/api/storage',   storageRoutes);
 app.use('/api/super',      superAdminRoutes);
 app.use('/api/org/admin',  orgAdminRoutes);
+app.use('/api/org/admin',  teamsRoutes);        // Teams & team memberships
 app.use('/api/playbooks',  playbooksRoutes);
 app.use('/api/ai',         aiContextRoutes);
 app.use('/api/deal-roles', dealRolesRoutes);

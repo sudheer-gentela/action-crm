@@ -646,6 +646,8 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   const [outreachChannel, setOutreachChannel] = useState(null);
   const [outreachAction, setOutreachAction] = useState(null);
   const [generating, setGenerating] = useState(false);
+  const [contextData, setContextData] = useState(null);
+  const [contextLoading, setContextLoading] = useState(false);
 
   useEffect(() => {
     const fetchDetail = async () => {
@@ -663,6 +665,24 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
     };
     fetchDetail();
   }, [prospectId]);
+
+  const fetchContext = useCallback(async () => {
+    if (contextData || contextLoading) return;
+    setContextLoading(true);
+    try {
+      const res = await apiFetch(`/prospect-context/${prospectId}`);
+      setContextData(res);
+    } catch (err) {
+      console.error('Failed to load prospect context:', err);
+    } finally {
+      setContextLoading(false);
+    }
+  }, [prospectId, contextData, contextLoading]);
+
+  const handleTabChange = (t) => {
+    setActiveTab(t);
+    if (t === 'intel') fetchContext();
+  };
 
   const handleStageChange = async (newStage) => {
     try {
@@ -845,13 +865,13 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
 
         {/* Tabs */}
         <div className="pv-detail-tabs">
-          {['overview', 'actions', 'activity'].map(t => (
+          {['overview', 'intel', 'actions', 'activity'].map(t => (
             <button
               key={t}
               className={`pv-detail-tab ${activeTab === t ? 'active' : ''}`}
-              onClick={() => setActiveTab(t)}
+              onClick={() => handleTabChange(t)}
             >
-              {t === 'overview' ? 'Overview' : t === 'actions' ? `Actions (${actions.filter(a => a.status === 'pending').length})` : 'Activity'}
+              {t === 'overview' ? 'Overview' : t === 'intel' ? '🎯 Intel' : t === 'actions' ? `Actions (${actions.filter(a => a.status === 'pending').length})` : 'Activity'}
             </button>
           ))}
         </div>
@@ -899,6 +919,15 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                 </div>
               )}
             </div>
+          )}
+
+          {activeTab === 'intel' && (
+            <ProspectIntelCard
+              contextData={contextData}
+              loading={contextLoading}
+              prospect={prospect}
+              onOpenOutreach={(channel) => openOutreach(channel)}
+            />
           )}
 
           {activeTab === 'actions' && (
@@ -1000,6 +1029,274 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
     </div>
   );
 }
+
+function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
+  const [expanded, setExpanded] = useState({});
+  const toggle = (k) => setExpanded(prev => ({ ...prev, [k]: !prev[k] }));
+
+  if (loading) {
+    return <div className="pv-empty-state" style={{ textAlign: 'center', padding: 32 }}>⏳ Loading intelligence...</div>;
+  }
+  if (!contextData) {
+    return <div className="pv-empty-state">No context data available. Try refreshing.</div>;
+  }
+
+  const { derived, icpBreakdown, stageGuidance, account, teamEngagement } = contextData;
+  const d = derived || {};
+  const icp = icpBreakdown || {};
+
+  // Build situation lines
+  const situationLines = [];
+  if (d.isExistingCustomer) situationLines.push({ text: `Existing customer — $${((d.totalAccountRevenue || 0) / 1000).toFixed(0)}K lifetime`, type: 'positive' });
+  if (d.hasOpenDeal && d.openDeals?.length > 0) situationLines.push({ text: `Open deal: ${d.openDeals[0].name} ($${(parseFloat(d.openDeals[0].value || 0) / 1000).toFixed(0)}K at ${d.openDeals[0].stage})`, type: 'info' });
+  if (d.isLostAccount) situationLines.push({ text: `Previously lost account`, type: 'warning' });
+  if (d.isGhosting) situationLines.push({ text: `Ghosting — ${prospect.outreach_count || 0} touches with no response`, type: 'warning' });
+  if (d.isHotLead) situationLines.push({ text: `Hot lead — responded ${d.daysSinceLastResponse}d ago`, type: 'positive' });
+  if (d.isStale) situationLines.push({ text: `Going stale — last outreach ${d.daysSinceLastOutreach}d ago`, type: 'warning' });
+  if (d.engagedSiblings?.length > 0) situationLines.push({ text: `${d.engagedSiblings.length} other contact(s) engaged at this company`, type: 'info' });
+  if (d.hasReplied && !d.isHotLead) situationLines.push({ text: `Has replied (${Math.round((d.responseRate || 0) * 100)}% response rate)`, type: 'positive' });
+  if (d.unansweredCount > 0) situationLines.push({ text: `${d.unansweredCount} unanswered outreach`, type: 'neutral' });
+  if (d.overdueActions?.length > 0) situationLines.push({ text: `${d.overdueActions.length} overdue action(s)`, type: 'warning' });
+
+  const lineColors = { positive: '#059669', warning: '#d97706', info: '#2563eb', neutral: '#6b7280' };
+  const lineBgs = { positive: '#ecfdf5', warning: '#fffbeb', info: '#eff6ff', neutral: '#f9fafb' };
+  const scoreColor = (s) => s >= 70 ? '#059669' : s >= 40 ? '#d97706' : '#dc2626';
+
+  const icpCategories = [
+    { key: 'firmographic', label: 'Firm' },
+    { key: 'persona', label: 'Persona' },
+    { key: 'engagement', label: 'Engage' },
+    { key: 'timing', label: 'Timing' },
+  ];
+
+  return (
+    <div className="pv-intel-card">
+      {/* Situation summary */}
+      {situationLines.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div className="pv-intel-section-label">Situation</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {situationLines.map((line, i) => (
+              <div key={i} style={{
+                fontSize: 12, padding: '6px 10px', borderRadius: 6,
+                background: lineBgs[line.type], color: lineColors[line.type],
+                fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6,
+              }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: lineColors[line.type], flexShrink: 0 }} />
+                {line.text}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Playbook guidance */}
+      {stageGuidance && (
+        <div style={{
+          padding: '12px 16px', background: '#f0fdfa', borderRadius: 8,
+          border: '1px solid #ccfbf1', marginBottom: 16,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#0F9D8E', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            Next Move — {prospect.stage}
+          </div>
+          <div style={{ fontSize: 13, color: '#065f46', fontWeight: 500, marginBottom: 6 }}>
+            {stageGuidance.goal}
+          </div>
+          {stageGuidance.timeline && (
+            <div style={{ fontSize: 11, color: '#0F9D8E', marginBottom: 8 }}>
+              ⏱ {stageGuidance.timeline}
+            </div>
+          )}
+          {(stageGuidance.key_actions || []).slice(0, 3).map((a, i) => (
+            <div key={i} style={{
+              fontSize: 12, color: '#115e59', padding: '4px 0 4px 14px',
+              position: 'relative', lineHeight: 1.5,
+            }}>
+              <span style={{ position: 'absolute', left: 0, top: 4, fontSize: 8, color: '#0F9D8E' }}>▸</span>
+              {a}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ICP Score breakdown */}
+      {icp.score != null && (
+        <div style={{ marginBottom: 16 }}>
+          <button onClick={() => toggle('icp')} style={{
+            width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '8px 0', background: 'none', border: 'none', cursor: 'pointer',
+            fontSize: 11, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.8,
+          }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              ICP Score
+              <span style={{
+                fontSize: 14, fontWeight: 700, color: scoreColor(icp.score),
+                padding: '2px 8px', borderRadius: 12,
+                background: scoreColor(icp.score) + '12', border: `1px solid ${scoreColor(icp.score)}30`,
+              }}>
+                {icp.score}
+              </span>
+            </span>
+            <span style={{ fontSize: 9, transition: 'transform 0.2s', transform: expanded.icp ? 'rotate(180deg)' : 'none' }}>▼</span>
+          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {icpCategories.map(c => {
+              const cat = icp[c.key];
+              if (!cat) return null;
+              return (
+                <div key={c.key} style={{ flex: 1, textAlign: 'center' }}>
+                  <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 4 }}>{c.label}</div>
+                  <div style={{ height: 4, background: '#f3f4f6', borderRadius: 2, overflow: 'hidden', marginBottom: 2 }}>
+                    <div style={{ width: `${cat.score}%`, height: '100%', background: scoreColor(cat.score), borderRadius: 2, transition: 'width 0.5s ease' }} />
+                  </div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: scoreColor(cat.score) }}>{cat.score}</div>
+                </div>
+              );
+            })}
+          </div>
+          {expanded.icp && (
+            <div style={{ padding: '8px 0', marginTop: 4 }}>
+              {icpCategories.map(c => {
+                const cat = icp[c.key];
+                if (!cat?.signals?.length) return null;
+                return (
+                  <div key={c.key} style={{ marginBottom: 6 }}>
+                    {cat.signals.map((s, i) => (
+                      <div key={i} style={{
+                        fontSize: 11, color: '#6b7280', paddingLeft: 10, lineHeight: 1.7,
+                        display: 'flex', alignItems: 'center', gap: 5,
+                      }}>
+                        <span style={{
+                          fontSize: 11,
+                          color: s.match === true ? '#22c55e' : s.match === 'partial' ? '#eab308' : '#64748b',
+                        }}>
+                          {s.match === true ? '●' : s.match === 'partial' ? '◐' : '○'}
+                        </span>
+                        {s.detail}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Account & Relationships */}
+      <div style={{ borderTop: '1px solid #f3f4f6', paddingTop: 12, marginBottom: 16 }}>
+        <button onClick={() => toggle('account')} style={{
+          width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '4px 0 8px', background: 'none', border: 'none', cursor: 'pointer',
+          fontSize: 11, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.8,
+        }}>
+          <span>Account & Relationships</span>
+          <span style={{ fontSize: 9, transition: 'transform 0.2s', transform: expanded.account ? 'rotate(180deg)' : 'none' }}>▼</span>
+        </button>
+        <div style={{ fontSize: 12, color: '#374151' }}>
+          {account ? account.name : (prospect.company_name || 'No account linked')}
+          {' · '}{d.knownContactCount || 0} contacts · {d.teamMembersEngaged || 0} team engaged
+        </div>
+        {expanded.account && (
+          <div style={{ paddingTop: 10 }}>
+            {(d.pastDealsWon || []).map((deal, i) => (
+              <div key={i} style={{ fontSize: 11, color: '#059669', paddingLeft: 10, lineHeight: 1.7 }}>
+                ✓ Won: {deal.name} — ${(parseFloat(deal.value || 0) / 1000).toFixed(0)}K
+              </div>
+            ))}
+            {(d.pastDealsLost || []).map((deal, i) => (
+              <div key={i} style={{ fontSize: 11, color: '#dc2626', paddingLeft: 10, lineHeight: 1.7 }}>
+                ✗ Lost: {deal.name}
+              </div>
+            ))}
+            {(d.openDeals || []).map((deal, i) => (
+              <div key={i} style={{ fontSize: 11, color: '#2563eb', paddingLeft: 10, lineHeight: 1.7 }}>
+                ◎ Open: {deal.name} — ${(parseFloat(deal.value || 0) / 1000).toFixed(0)}K at {deal.stage}
+              </div>
+            ))}
+            {(teamEngagement || []).length > 0 && (
+              <div style={{ marginTop: 6, fontSize: 11, color: '#6b7280' }}>
+                Team engaged: {teamEngagement.map(t => `${t.first_name} ${t.last_name}`).join(', ')}
+              </div>
+            )}
+            {(d.otherProspectsAtCompany || []).length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 4, fontWeight: 600 }}>
+                  OTHER PROSPECTS AT {(prospect.company_name || '').toUpperCase()}
+                </div>
+                {d.otherProspectsAtCompany.map((p, i) => (
+                  <div key={i} style={{
+                    display: 'flex', justifyContent: 'space-between', fontSize: 12,
+                    padding: '4px 0', color: '#374151',
+                  }}>
+                    <span>{p.first_name} {p.last_name} <span style={{ color: '#9ca3af' }}>· {p.title}</span></span>
+                    <span style={{
+                      fontSize: 10, padding: '1px 6px', borderRadius: 3,
+                      background: ['engaged', 'qualified', 'converted'].includes(p.stage) ? '#eff6ff' : '#f3f4f6',
+                      color: ['engaged', 'qualified', 'converted'].includes(p.stage) ? '#2563eb' : '#6b7280',
+                    }}>
+                      {p.stage}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Engagement stats */}
+      <div style={{ borderTop: '1px solid #f3f4f6', paddingTop: 12, marginBottom: 16 }}>
+        <button onClick={() => toggle('engagement')} style={{
+          width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '4px 0 8px', background: 'none', border: 'none', cursor: 'pointer',
+          fontSize: 11, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.8,
+        }}>
+          <span>Engagement</span>
+          <span style={{ fontSize: 9, transition: 'transform 0.2s', transform: expanded.engagement ? 'rotate(180deg)' : 'none' }}>▼</span>
+        </button>
+        <div style={{ fontSize: 12, color: '#374151' }}>
+          {d.sentEmailCount || 0} sent · {d.receivedEmailCount || 0} received · {Math.round((d.responseRate || 0) * 100)}% response rate
+        </div>
+        {expanded.engagement && (
+          <div style={{ paddingTop: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 6 }}>
+              {[
+                { label: 'Sent', value: d.sentEmailCount || 0 },
+                { label: 'Received', value: d.receivedEmailCount || 0 },
+                { label: 'Unanswered', value: d.unansweredCount || 0 },
+                { label: 'Response', value: `${Math.round((d.responseRate || 0) * 100)}%` },
+              ].map((m, i) => (
+                <div key={i} style={{ textAlign: 'center', padding: 8, background: '#f9fafb', borderRadius: 6, border: '1px solid #f3f4f6' }}>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: '#111827' }}>{m.value}</div>
+                  <div style={{ fontSize: 9, color: '#9ca3af', marginTop: 2 }}>{m.label}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 6, fontSize: 11, color: '#6b7280' }}>
+              {d.daysSinceLastOutreach != null && `Last outreach ${d.daysSinceLastOutreach}d ago`}
+              {d.daysSinceLastOutreach != null && d.daysSinceLastResponse != null && ' · '}
+              {d.daysSinceLastResponse != null && `Last reply ${d.daysSinceLastResponse}d ago`}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* AI Outreach CTA */}
+      <button
+        onClick={() => onOpenOutreach && onOpenOutreach()}
+        style={{
+          width: '100%', padding: '10px 16px', background: '#0F9D8E',
+          border: 'none', borderRadius: 8, color: '#fff', fontSize: 13,
+          fontWeight: 600, cursor: 'pointer',
+        }}
+      >
+        ✨ Generate AI Outreach
+      </button>
+    </div>
+  );
+}
+
 
 function InfoRow({ label, value }) {
   if (!value && value !== 0) return null;

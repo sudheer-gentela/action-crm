@@ -281,6 +281,7 @@ export const apiService = {
     linkContact:      (id, contactId)             => api.post(`/prospects/${id}/link-contact`, { contactId }),
     getActivities:    (id)                        => api.get(`/prospects/${id}/activities`),
     getPipelineSummary: (scope = 'mine')           => api.get(`/prospects/pipeline/summary?scope=${scope}`),
+    getContext:        (id)                        => api.get(`/prospect-context/${id}`),
   },
 
   // ── Prospecting Actions ─────────────────────────────────────
@@ -339,6 +340,18 @@ export const apiService = {
     createPlaybookType:   (data)           => api.post('/org/admin/playbook-types', data),
     updatePlaybookType:   (key, data)      => api.put(`/org/admin/playbook-types/${key}`, data),
     deletePlaybookType:   (key)            => api.delete(`/org/admin/playbook-types/${key}`),
+    // Teams
+    getTeamDimensions:    ()               => api.get('/org/admin/team-dimensions'),
+    updateTeamDimensions: (dimensions)     => api.put('/org/admin/team-dimensions', { dimensions }),
+    getTeams:             (dimension)      => api.get(`/org/admin/teams${dimension ? '?dimension=' + dimension : ''}`),
+    createTeam:           (data)           => api.post('/org/admin/teams', data),
+    updateTeam:           (id, data)       => api.put(`/org/admin/teams/${id}`, data),
+    deleteTeam:           (id)             => api.delete(`/org/admin/teams/${id}`),
+    getTeamMemberships:   ()               => api.get('/org/admin/team-memberships'),
+    setTeamMembership:    (userId, teamId) => api.post('/org/admin/team-memberships', { userId, teamId }),
+    removeTeamMembership: (userId, teamId) => api.delete(`/org/admin/team-memberships/${userId}/${teamId}`),
+    getUserTeamProfile:   (userId)         => api.get(`/org/admin/team-profile/${userId}`),
+    bulkAssignTeams:      (assignments)    => api.post('/org/admin/team-memberships/bulk', { assignments }),
   },
 };
 
