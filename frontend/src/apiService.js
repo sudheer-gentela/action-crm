@@ -488,64 +488,22 @@ export const googleAPI = {
     if (!response.ok) throw new Error('Failed to disconnect');
     return response.json();
   },
-};
 
-// Sync API - ✅ FIXED: Use correct endpoints from sync.routes.js
-export const syncAPI = {
-  // ✅ FIXED: Changed from /sync/trigger to /sync/emails
-  triggerSync: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/sync/emails`, {
-      method: 'POST',
+  fetchEmails: async (userId, options = {}) => {
+    const params = new URLSearchParams({
+      top: options.top || 50,
+      skip: options.skip || 0,
+    });
+    const response = await fetch(`${API_BASE_URL}/emails/gmail?${params}`, {
       headers: getAuthHeaders()
     });
-    
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error || 'Failed to trigger sync');
-    }
-    
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   },
-
-  // ✅ FIXED: Changed from /sync/status to /sync/emails/status
-  getStatus: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/sync/emails/status`, {
-      headers: getAuthHeaders()
-    });
-    
-    if (!response.ok) {
-      throw new Error('Failed to get sync status');
-    }
-    
-    return response.json();
-  },
-
-  // ✅ NEW: Get sync configuration
-  getConfig: async () => {
-    const response = await fetch(`${API_BASE_URL}/sync/config`, {
-      headers: getAuthHeaders()
-    });
-    
-    if (!response.ok) {
-      throw new Error('Failed to get sync config');
-    }
-    
-    return response.json();
-  }
 };
-
-
-/**
- * apiService-additions.js
- *
- * ADD THESE to the BOTTOM of your existing frontend/src/apiService.js
- * (before the final 'export default api;' line)
- *
- * This adds the unifiedEmailAPI and updates syncAPI.
- */
 
 // ============================================================
-// UNIFIED EMAIL API (add this section)
+// UNIFIED EMAIL API
 // ============================================================
 
 export const unifiedEmailAPI = {
@@ -554,10 +512,10 @@ export const unifiedEmailAPI = {
       top: options.top || 50,
       ...(options.dealId && { dealId: options.dealId }),
     });
-    const response = await fetch(API_BASE_URL + '/emails/unified?' + params, {
+    const response = await fetch(`${API_BASE_URL}/emails/unified?${params}`, {
       headers: getAuthHeaders()
     });
-    if (!response.ok) throw new Error('HTTP ' + response.status + ': ' + response.statusText);
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     return response.json();
   },
 
@@ -581,16 +539,13 @@ export const unifiedEmailAPI = {
   },
 };
 
-
 // ============================================================
-// UPDATE syncAPI.triggerSync to accept provider (replace existing)
+// SYNC API (unified - supports Outlook + Gmail)
 // ============================================================
-// Replace the existing syncAPI object with this one:
-
 
 export const syncAPI = {
   triggerSync: async (userId, provider = 'outlook') => {
-    const response = await fetch(API_BASE_URL + '/sync/emails', {
+    const response = await fetch(`${API_BASE_URL}/sync/emails`, {
       method: 'POST',
       headers: getAuthHeaders(),
       body: JSON.stringify({ provider }),
@@ -617,7 +572,7 @@ export const syncAPI = {
   },
 
   getStatus: async (userId) => {
-    const response = await fetch(API_BASE_URL + '/sync/emails/status', {
+    const response = await fetch(`${API_BASE_URL}/sync/emails/status`, {
       headers: getAuthHeaders()
     });
     if (!response.ok) throw new Error('Failed to get sync status');
@@ -625,33 +580,12 @@ export const syncAPI = {
   },
 
   getConfig: async () => {
-    const response = await fetch(API_BASE_URL + '/sync/config', {
+    const response = await fetch(`${API_BASE_URL}/sync/config`, {
       headers: getAuthHeaders()
     });
     if (!response.ok) throw new Error('Failed to get sync config');
     return response.json();
   },
 };
-
-
-
-// ============================================================
-// ADD to googleAPI (add fetchEmails method)
-// ============================================================
-// Add this method inside the existing googleAPI object:
-
-
-  fetchEmails: async (userId, options = {}) => {
-    const params = new URLSearchParams({
-      top: options.top || 50,
-      skip: options.skip || 0,
-    });
-    const response = await fetch(API_BASE_URL + '/emails/gmail?' + params, {
-      headers: getAuthHeaders()
-    });
-    if (!response.ok) throw new Error('HTTP ' + response.status);
-    return response.json();
-  },
-
 
 export default api;
