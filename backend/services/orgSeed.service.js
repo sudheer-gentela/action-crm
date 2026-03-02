@@ -81,7 +81,7 @@ const PROSPECTING_GUIDANCE = {
 
 const SALES_GUIDANCE = {
   discovery: {
-    goal: 'Understand the prospect's pain points, goals, and buying process',
+    goal: 'Understand the prospect\'s pain points, goals, and buying process',
     key_actions: ['discovery_call', 'identify_stakeholders', 'map_org_chart'],
     success_criteria: ['Pain points documented', 'Decision process mapped', 'Budget range confirmed'],
     timeline: '1-2 weeks',
