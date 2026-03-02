@@ -137,7 +137,29 @@ router.put('/icp-config/current', adminOnly, async (req, res) => {
     const config = await IcpScoringService.saveConfig(req.orgId, req.body);
     res.json({ config, message: 'ICP config updated' });
   } catch (error) {
-    res.status(500).json({ error: { message: 'Failed to update ICP config' } });
+    res.status(500).json({ error: { message: error.message || 'Failed to update ICP config' } });
+  }
+});
+
+// ── GET /icp-config/fields — field definitions + match types for admin UI ──
+
+router.get('/icp-config/fields', async (req, res) => {
+  try {
+    const defs = IcpScoringService.getFieldDefinitions();
+    res.json(defs);
+  } catch (error) {
+    res.status(500).json({ error: { message: 'Failed to fetch field definitions' } });
+  }
+});
+
+// ── GET /icp-config/defaults — default category presets ────────────────────
+
+router.get('/icp-config/defaults', async (req, res) => {
+  try {
+    const categories = IcpScoringService.getDefaultCategories();
+    res.json({ categories });
+  } catch (error) {
+    res.status(500).json({ error: { message: 'Failed to fetch defaults' } });
   }
 });
 

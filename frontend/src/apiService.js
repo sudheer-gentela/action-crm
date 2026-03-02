@@ -286,6 +286,8 @@ export const apiService = {
     scoreAllIcp:      ()                          => api.post('/prospect-context/score-all'),
     getIcpConfig:     ()                          => api.get('/prospect-context/icp-config/current'),
     updateIcpConfig:  (config)                    => api.put('/prospect-context/icp-config/current', config),
+    getIcpFields:     ()                          => api.get('/prospect-context/icp-config/fields'),
+    getIcpDefaults:   ()                          => api.get('/prospect-context/icp-config/defaults'),
   },
 
   // ── Prospecting Actions ─────────────────────────────────────

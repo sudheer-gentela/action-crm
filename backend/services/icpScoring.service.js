@@ -1,98 +1,314 @@
-// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ─────────────────────────────────────────────────────────────────────────
 // icpScoring.service.js
 //
-// Scores a prospect against the org's Ideal Customer Profile (ICP).
-// Configuration is stored in organizations.settings.icp_config JSONB.
+// Generic, configurable ICP scoring engine.
 //
-// Score categories (default weights):
-//   1. Firmographic Fit   (40%) \u2014 company size, industry, geography
-//   2. Persona Fit        (25%) \u2014 title seniority, function alignment
-//   3. Engagement Signals (20%) \u2014 response rate, outreach engagement
-//   4. Timing Signals     (15%) \u2014 account relationship, prospect recency
+// Categories and rules are fully admin-configurable via
+// organizations.settings.icp_config.  The 4 original categories
+// (Firmographic, Persona, Engagement, Timing) ship as defaults that
+// admins can rename, disable, reweight, or delete entirely.
 //
-// Each category scores 0\u2013100, then weighted into a composite 0\u2013100 score.
-// Orgs can customise: target industries, target sizes, target titles,
-// category weights, and scoring thresholds.
+// Config shape:
+//   {
+//     categories: [
+//       {
+//         key:            "firmographic",
+//         label:          "Firmographic Fit",
+//         enabled:        true,
+//         weight:         40,
+//         baseline_score: 50,
+//         rules: [
+//           {
+//             field:              "company_industry",
+//             match_type:         "contains_any",
+//             target_values:      ["SaaS","Fintech"],
+//             points_if_match:    25,
+//             points_if_no_match: -5,
+//             points_if_empty:    -10,
+//             label:              "Industry match"
+//           }, ...
+//         ]
+//       }, ...
+//     ]
+//   }
 //
-// The breakdown is returned as a JSONB object and stored in prospects.icp_signals.
-// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Match types:
+//   contains_any   — prospect field value is in the target_values list (case-insensitive)
+//   contains_text  — prospect field contains any target_value as substring
+//   greater_than   — numeric field > target_values[0]
+//   less_than      — numeric field < target_values[0]
+//   exists         — field is non-null and non-empty (for booleans: truthy)
+//   tag_any        — jsonb array field contains any of the target values
+//
+// Built-in derived rule fields (prefixed with _) require DB lookups:
+//   _response_rate, _days_since_response, _days_since_created,
+//   _account_has_won_deal, _account_has_lost_deal, _account_has_active_deal
+// ─────────────────────────────────────────────────────────────────────────
 
 const db = require('../config/database');
 
-// \u2500\u2500 Default ICP Config (used when org has no custom config) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// ── Default categories (shipped as presets) ──────────────────────────────
 
-const DEFAULT_ICP_CONFIG = {
-  weights: {
-    firmographic: 40,
-    persona: 25,
-    engagement: 20,
-    timing: 15,
+const DEFAULT_CATEGORIES = [
+  {
+    key: 'firmographic',
+    label: 'Firmographic Fit',
+    enabled: true,
+    weight: 40,
+    baseline_score: 50,
+    rules: [
+      { field: 'company_size',     match_type: 'contains_any',  target_values: ['50-200', '200-500', '500-1000'], points_if_match: 25, points_if_no_match: -10, points_if_empty: -15, label: 'Company size' },
+      { field: 'company_industry', match_type: 'contains_any',  target_values: [],                                points_if_match: 25, points_if_no_match: -5,  points_if_empty: -10, label: 'Industry' },
+      { field: 'location',         match_type: 'contains_text', target_values: [],                                points_if_match: 10, points_if_no_match: 0,   points_if_empty: 0,   label: 'Geography' },
+    ],
   },
+  {
+    key: 'persona',
+    label: 'Persona Fit',
+    enabled: true,
+    weight: 25,
+    baseline_score: 40,
+    rules: [
+      { field: 'title', match_type: 'contains_text', target_values: ['C-Suite', 'VP', 'Director', 'Head of'],                                         points_if_match: 30, points_if_no_match: -10, points_if_empty: -10, label: 'Seniority' },
+      { field: 'title', match_type: 'contains_text', target_values: ['Sales', 'Revenue', 'Business Development', 'Growth', 'Operations'],              points_if_match: 25, points_if_no_match: 0,   points_if_empty: 0,   label: 'Function alignment' },
+      { field: 'title', match_type: 'contains_text', target_values: ['CEO', 'CRO', 'CTO', 'COO', 'VP', 'SVP', 'EVP', 'Director', 'Head of'],         points_if_match: 10, points_if_no_match: 0,   points_if_empty: 0,   label: 'Decision maker' },
+    ],
+  },
+  {
+    key: 'engagement',
+    label: 'Engagement Signals',
+    enabled: true,
+    weight: 20,
+    baseline_score: 30,
+    rules: [
+      { field: '_response_rate',       match_type: 'greater_than', target_values: [0.3],  points_if_match: 40, points_if_no_match: 0,   points_if_empty: 20, label: 'High response rate' },
+      { field: '_response_rate',       match_type: 'greater_than', target_values: [0],    points_if_match: 20, points_if_no_match: -10, points_if_empty: 0,  label: 'Any response' },
+      { field: '_days_since_response', match_type: 'less_than',    target_values: [7],    points_if_match: 20, points_if_no_match: 5,   points_if_empty: 0,  label: 'Recent response' },
+    ],
+  },
+  {
+    key: 'timing',
+    label: 'Timing Signals',
+    enabled: true,
+    weight: 15,
+    baseline_score: 50,
+    rules: [
+      { field: '_account_has_won_deal',    match_type: 'exists', target_values: [], points_if_match: 20,  points_if_no_match: 0, points_if_empty: 0, label: 'Existing customer' },
+      { field: '_account_has_lost_deal',   match_type: 'exists', target_values: [], points_if_match: -10, points_if_no_match: 0, points_if_empty: 0, label: 'Lost deal penalty' },
+      { field: '_account_has_active_deal', match_type: 'exists', target_values: [], points_if_match: 10,  points_if_no_match: 0, points_if_empty: 0, label: 'Active deal bonus' },
+      { field: '_days_since_created',      match_type: 'less_than',    target_values: [7],  points_if_match: 10,  points_if_no_match: 0, points_if_empty: 0, label: 'Fresh lead' },
+      { field: '_days_since_created',      match_type: 'greater_than', target_values: [60], points_if_match: -10, points_if_no_match: 0, points_if_empty: 0, label: 'Aging lead penalty' },
+    ],
+  },
+];
 
-  // Firmographic criteria
-  target_industries: [], // empty = all industries score equally
-  target_company_sizes: ['50-200', '200-500', '500-1000'], // ideal ranges
-  target_geographies: [], // empty = all geographies score equally
+// ── Field & match-type metadata (exposed to admin UI) ────────────────────
 
-  // Persona criteria
-  target_seniority: ['C-Suite', 'VP', 'Director', 'Head of'],
-  target_functions: ['Sales', 'Revenue', 'Business Development', 'Growth', 'Operations'],
-  decision_maker_titles: ['CEO', 'CRO', 'CTO', 'COO', 'VP', 'SVP', 'EVP', 'Director', 'Head of'],
+const AVAILABLE_FIELDS = [
+  { key: 'title',            label: 'Title',            type: 'text',    group: 'Prospect' },
+  { key: 'company_size',     label: 'Company Size',     type: 'text',    group: 'Company' },
+  { key: 'company_industry', label: 'Industry',         type: 'text',    group: 'Company' },
+  { key: 'company_name',     label: 'Company Name',     type: 'text',    group: 'Company' },
+  { key: 'company_domain',   label: 'Company Domain',   type: 'text',    group: 'Company' },
+  { key: 'location',         label: 'Location',         type: 'text',    group: 'Prospect' },
+  { key: 'source',           label: 'Lead Source',      type: 'text',    group: 'Prospect' },
+  { key: 'tags',             label: 'Tags',             type: 'tags',    group: 'Prospect' },
+  { key: 'outreach_count',   label: 'Outreach Count',   type: 'number',  group: 'Engagement' },
+  { key: 'response_count',   label: 'Response Count',   type: 'number',  group: 'Engagement' },
+  { key: '_response_rate',          label: 'Response Rate',          type: 'number',  group: 'Derived' },
+  { key: '_days_since_response',    label: 'Days Since Response',    type: 'number',  group: 'Derived' },
+  { key: '_days_since_created',     label: 'Days Since Created',     type: 'number',  group: 'Derived' },
+  { key: '_account_has_won_deal',   label: 'Account Has Won Deal',   type: 'boolean', group: 'Derived' },
+  { key: '_account_has_lost_deal',  label: 'Account Has Lost Deal',  type: 'boolean', group: 'Derived' },
+  { key: '_account_has_active_deal',label: 'Account Has Active Deal',type: 'boolean', group: 'Derived' },
+];
 
-  // Engagement thresholds
-  high_response_rate: 0.3,    // 30%+ response rate = high score
-  recent_response_days: 7,    // responded within 7 days = bonus
+const MATCH_TYPES = [
+  { key: 'contains_any',  label: 'Is any of',           for_types: ['text'] },
+  { key: 'contains_text', label: 'Contains text',       for_types: ['text'] },
+  { key: 'greater_than',  label: 'Greater than',        for_types: ['number'] },
+  { key: 'less_than',     label: 'Less than',           for_types: ['number'] },
+  { key: 'exists',        label: 'Has value / Is true', for_types: ['text', 'number', 'boolean', 'tags'] },
+  { key: 'tag_any',       label: 'Has any tag',         for_types: ['tags'] },
+];
 
-  // Timing thresholds
-  existing_customer_bonus: 20, // bonus points for existing customers
-  lost_deal_penalty: -10,      // penalty for previously lost deals
-};
 
 class IcpScoringService {
 
-  /**
-   * Score a prospect against the org's ICP config.
-   * @param {object} prospect \u2014 full prospect row
-   * @param {number} orgId
-   * @returns {Promise<{score: number, breakdown: object}>}
-   */
+  // ── Score a single prospect ──────────────────────────────────────────
+
   static async score(prospect, orgId) {
     const config = await this.getConfig(orgId);
+    const categories = (config.categories || []).filter(c => c.enabled);
 
-    const firmographic = this._scoreFirmographic(prospect, config);
-    const persona      = this._scorePersona(prospect, config);
-    const engagement   = this._scoreEngagement(prospect, config);
-    const timing       = await this._scoreTiming(prospect, orgId, config);
+    if (categories.length === 0) {
+      const breakdown = { score: 0, categories: [], scoredAt: new Date().toISOString() };
+      await this._persistScore(prospect.id, 0, breakdown);
+      return breakdown;
+    }
 
-    const weights = config.weights || DEFAULT_ICP_CONFIG.weights;
-    const totalWeight = weights.firmographic + weights.persona + weights.engagement + weights.timing;
+    // Pre-compute derived fields once
+    const derived = await this._computeDerived(prospect, orgId);
 
-    const compositeScore = Math.round(
-      (firmographic.score * weights.firmographic +
-       persona.score      * weights.persona +
-       engagement.score   * weights.engagement +
-       timing.score       * weights.timing) / totalWeight
-    );
+    // Score each enabled category
+    const scoredCategories = [];
+    for (const cat of categories) {
+      scoredCategories.push(this._scoreCategory(prospect, cat, derived));
+    }
+
+    // Weighted average
+    const totalWeight = scoredCategories.reduce((sum, c) => sum + c.weight, 0);
+    const compositeScore = totalWeight > 0
+      ? Math.round(scoredCategories.reduce((sum, c) => sum + c.score * c.weight, 0) / totalWeight)
+      : 0;
 
     const breakdown = {
       score: compositeScore,
-      firmographic,
-      persona,
-      engagement,
-      timing,
-      weights,
+      categories: scoredCategories,
       scoredAt: new Date().toISOString(),
     };
 
-    // Persist the score and breakdown
     await this._persistScore(prospect.id, compositeScore, breakdown);
-
     return breakdown;
   }
 
-  /**
-   * Bulk score all unscored prospects in an org.
-   */
+  // ── Score one category ───────────────────────────────────────────────
+
+  static _scoreCategory(prospect, category, derived) {
+    let score = category.baseline_score ?? 50;
+    const signals = [];
+
+    for (const rule of (category.rules || [])) {
+      const fieldValue = this._getFieldValue(prospect, rule.field, derived);
+      const result = this._evaluateRule(rule, fieldValue);
+      score += result.points;
+      signals.push({
+        label: rule.label || rule.field,
+        field: rule.field,
+        match: result.match,
+        points: result.points,
+        detail: result.detail,
+      });
+    }
+
+    return {
+      key: category.key,
+      label: category.label,
+      weight: category.weight,
+      score: clamp(score),
+      signals,
+    };
+  }
+
+  // ── Rule evaluator ───────────────────────────────────────────────────
+
+  static _evaluateRule(rule, fieldValue) {
+    const isEmpty = fieldValue === null || fieldValue === undefined || fieldValue === '';
+    const targets = rule.target_values || [];
+    const label = rule.label || rule.field;
+
+    if (isEmpty) {
+      return { match: 'empty', points: rule.points_if_empty || 0, detail: `${label}: no data` };
+    }
+
+    let matched = false;
+    const strVal = String(fieldValue).toLowerCase();
+
+    switch (rule.match_type) {
+      case 'contains_any':
+        matched = targets.length === 0 || targets.some(t => strVal === String(t).toLowerCase());
+        break;
+      case 'contains_text':
+        matched = targets.length === 0 || targets.some(t => strVal.includes(String(t).toLowerCase()));
+        break;
+      case 'greater_than': {
+        const num = parseFloat(fieldValue);
+        matched = !isNaN(num) && targets.length > 0 && num > parseFloat(targets[0]);
+        break;
+      }
+      case 'less_than': {
+        const num = parseFloat(fieldValue);
+        matched = !isNaN(num) && targets.length > 0 && num < parseFloat(targets[0]);
+        break;
+      }
+      case 'exists':
+        matched = !!fieldValue;
+        break;
+      case 'tag_any': {
+        const tags = Array.isArray(fieldValue) ? fieldValue.map(t => String(t).toLowerCase()) : [];
+        matched = targets.some(t => tags.includes(String(t).toLowerCase()));
+        break;
+      }
+      default:
+        matched = false;
+    }
+
+    return {
+      match: matched,
+      points: matched ? (rule.points_if_match || 0) : (rule.points_if_no_match || 0),
+      detail: matched ? `${label}: matched` : `${label}: no match`,
+    };
+  }
+
+  // ── Field value resolver ─────────────────────────────────────────────
+
+  static _getFieldValue(prospect, field, derived) {
+    if (field.startsWith('_')) return derived[field] ?? null;
+    return prospect[field] ?? null;
+  }
+
+  // ── Compute derived fields ───────────────────────────────────────────
+
+  static async _computeDerived(prospect, orgId) {
+    const derived = {};
+
+    // Response rate
+    derived._response_rate = prospect.outreach_count > 0
+      ? prospect.response_count / prospect.outreach_count
+      : null;
+
+    // Days since response
+    derived._days_since_response = prospect.last_response_at
+      ? Math.floor((Date.now() - new Date(prospect.last_response_at)) / 86400000)
+      : null;
+
+    // Days since created
+    derived._days_since_created = prospect.created_at
+      ? Math.floor((Date.now() - new Date(prospect.created_at)) / 86400000)
+      : null;
+
+    // Account deal status
+    derived._account_has_won_deal = false;
+    derived._account_has_lost_deal = false;
+    derived._account_has_active_deal = false;
+
+    if (prospect.account_id || prospect.company_domain) {
+      try {
+        let query, params;
+        if (prospect.account_id) {
+          query = `SELECT stage FROM deals WHERE account_id = $1 AND org_id = $2`;
+          params = [prospect.account_id, orgId];
+        } else {
+          query = `SELECT d.stage FROM deals d
+                   JOIN accounts a ON d.account_id = a.id
+                   WHERE a.org_id = $1 AND LOWER(a.domain) = LOWER($2)`;
+          params = [orgId, prospect.company_domain];
+        }
+        const r = await db.query(query, params);
+        const stages = r.rows.map(d => d.stage);
+        derived._account_has_won_deal = stages.includes('closed_won');
+        derived._account_has_lost_deal = stages.includes('closed_lost');
+        derived._account_has_active_deal = stages.some(s => !['closed_won', 'closed_lost'].includes(s));
+      } catch (err) {
+        console.error('ICP derived fields — deal lookup error:', err.message);
+      }
+    }
+
+    return derived;
+  }
+
+  // ── Bulk scoring ─────────────────────────────────────────────────────
+
   static async scoreAll(orgId) {
     const result = await db.query(
       `SELECT * FROM prospects
@@ -114,9 +330,8 @@ class IcpScoringService {
     return { scored, total: result.rows.length };
   }
 
-  /**
-   * Get the org's ICP config, falling back to defaults.
-   */
+  // ── Config management ────────────────────────────────────────────────
+
   static async getConfig(orgId) {
     try {
       const r = await db.query(
@@ -124,19 +339,30 @@ class IcpScoringService {
         [orgId]
       );
       const config = r.rows[0]?.icp_config;
-      if (config && typeof config === 'object' && Object.keys(config).length > 0) {
-        return { ...DEFAULT_ICP_CONFIG, ...config };
+      if (config && typeof config === 'object') {
+        if (Array.isArray(config.categories) && config.categories.length > 0) {
+          return config;
+        }
+        // Legacy flat config — migrate on read
+        if (config.weights && !config.categories) {
+          return this._migrateLegacyConfig(config);
+        }
       }
     } catch (err) {
       console.error('IcpScoringService.getConfig error:', err.message);
     }
-    return { ...DEFAULT_ICP_CONFIG };
+    return { categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)) };
   }
 
-  /**
-   * Save org's ICP config.
-   */
   static async saveConfig(orgId, config) {
+    if (!config.categories || !Array.isArray(config.categories)) {
+      throw new Error('config.categories must be an array');
+    }
+    for (const cat of config.categories) {
+      if (!cat.key || !cat.label) throw new Error('Each category must have a key and label');
+      if (typeof cat.weight !== 'number' || cat.weight < 0) throw new Error(`Invalid weight for "${cat.label}"`);
+    }
+
     await db.query(
       `UPDATE organizations
        SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{icp_config}', $1::jsonb),
@@ -147,232 +373,75 @@ class IcpScoringService {
     return config;
   }
 
-  // \u2500\u2500 Category Scorers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-
-  /**
-   * Firmographic Fit: company size, industry, geography
-   */
-  static _scoreFirmographic(prospect, config) {
-    let score = 50; // baseline
-    const signals = [];
-
-    // Company size match
-    if (prospect.company_size) {
-      const targetSizes = config.target_company_sizes || DEFAULT_ICP_CONFIG.target_company_sizes;
-      if (targetSizes.length > 0) {
-        if (targetSizes.includes(prospect.company_size)) {
-          score += 25;
-          signals.push({ factor: 'company_size', match: true, detail: `${prospect.company_size} is in target range` });
-        } else {
-          score -= 10;
-          signals.push({ factor: 'company_size', match: false, detail: `${prospect.company_size} outside target range` });
-        }
-      }
-    } else {
-      score -= 15;
-      signals.push({ factor: 'company_size', match: false, detail: 'Unknown company size' });
-    }
-
-    // Industry match
-    if (prospect.company_industry) {
-      const targetIndustries = (config.target_industries || []).map(i => i.toLowerCase());
-      if (targetIndustries.length > 0) {
-        if (targetIndustries.includes(prospect.company_industry.toLowerCase())) {
-          score += 25;
-          signals.push({ factor: 'industry', match: true, detail: `${prospect.company_industry} is a target industry` });
-        } else {
-          score -= 5;
-          signals.push({ factor: 'industry', match: false, detail: `${prospect.company_industry} not in target list` });
-        }
-      } else {
-        score += 10; // no target filter = neutral positive
-      }
-    } else {
-      score -= 10;
-      signals.push({ factor: 'industry', match: false, detail: 'Unknown industry' });
-    }
-
-    // Geography match
-    if (prospect.location) {
-      const targetGeos = (config.target_geographies || []).map(g => g.toLowerCase());
-      if (targetGeos.length > 0) {
-        const locationLower = prospect.location.toLowerCase();
-        if (targetGeos.some(g => locationLower.includes(g))) {
-          score += 10;
-          signals.push({ factor: 'geography', match: true, detail: `${prospect.location} matches target geography` });
-        }
-      }
-    }
-
-    return { score: clamp(score), signals };
+  static getFieldDefinitions() {
+    return { fields: AVAILABLE_FIELDS, matchTypes: MATCH_TYPES };
   }
 
-  /**
-   * Persona Fit: title seniority, function alignment
-   */
-  static _scorePersona(prospect, config) {
-    let score = 40; // baseline
-    const signals = [];
-    const title = (prospect.title || '').toLowerCase();
-
-    if (!title) {
-      return { score: 30, signals: [{ factor: 'title', match: false, detail: 'No title provided' }] };
-    }
-
-    // Seniority check
-    const seniorityKeywords = (config.target_seniority || DEFAULT_ICP_CONFIG.target_seniority)
-      .map(s => s.toLowerCase());
-    const isSenior = seniorityKeywords.some(k => title.includes(k.toLowerCase()));
-
-    if (isSenior) {
-      score += 30;
-      signals.push({ factor: 'seniority', match: true, detail: `"${prospect.title}" matches target seniority` });
-    } else if (title.includes('manager') || title.includes('lead')) {
-      score += 10;
-      signals.push({ factor: 'seniority', match: 'partial', detail: `"${prospect.title}" is mid-level` });
-    } else {
-      score -= 10;
-      signals.push({ factor: 'seniority', match: false, detail: `"${prospect.title}" below target seniority` });
-    }
-
-    // Function alignment
-    const targetFunctions = (config.target_functions || DEFAULT_ICP_CONFIG.target_functions)
-      .map(f => f.toLowerCase());
-    const functionMatch = targetFunctions.some(f => title.includes(f));
-
-    if (functionMatch) {
-      score += 25;
-      signals.push({ factor: 'function', match: true, detail: `Title aligns with target function` });
-    }
-
-    // Decision maker check
-    const dmTitles = (config.decision_maker_titles || DEFAULT_ICP_CONFIG.decision_maker_titles)
-      .map(t => t.toLowerCase());
-    const isDecisionMaker = dmTitles.some(t => title.includes(t));
-
-    if (isDecisionMaker) {
-      score += 10;
-      signals.push({ factor: 'decision_maker', match: true, detail: 'Likely decision maker' });
-    }
-
-    return { score: clamp(score), signals };
+  static getDefaultCategories() {
+    return JSON.parse(JSON.stringify(DEFAULT_CATEGORIES));
   }
 
-  /**
-   * Engagement Signals: response rate, outreach engagement
-   */
-  static _scoreEngagement(prospect, config) {
-    let score = 30; // baseline for no engagement
-    const signals = [];
+  // ── Legacy config migration ──────────────────────────────────────────
 
-    const highResponseRate = config.high_response_rate || DEFAULT_ICP_CONFIG.high_response_rate;
+  static _migrateLegacyConfig(old) {
+    const categories = JSON.parse(JSON.stringify(DEFAULT_CATEGORIES));
 
-    // Never contacted = neutral (not negative)
-    if (prospect.outreach_count === 0) {
-      return { score: 50, signals: [{ factor: 'engagement', detail: 'Not yet contacted' }] };
-    }
-
-    // Response rate
-    const responseRate = prospect.response_count / prospect.outreach_count;
-    if (responseRate >= highResponseRate) {
-      score += 40;
-      signals.push({ factor: 'response_rate', match: true, detail: `${Math.round(responseRate * 100)}% response rate (above ${Math.round(highResponseRate * 100)}% target)` });
-    } else if (responseRate > 0) {
-      score += 20;
-      signals.push({ factor: 'response_rate', match: 'partial', detail: `${Math.round(responseRate * 100)}% response rate` });
-    } else {
-      score -= 10;
-      signals.push({ factor: 'response_rate', match: false, detail: `0% response rate after ${prospect.outreach_count} touches` });
-    }
-
-    // Recency of response
-    if (prospect.last_response_at) {
-      const daysSince = Math.floor((Date.now() - new Date(prospect.last_response_at)) / 86400000);
-      const recentDays = config.recent_response_days || DEFAULT_ICP_CONFIG.recent_response_days;
-      if (daysSince <= recentDays) {
-        score += 20;
-        signals.push({ factor: 'recency', match: true, detail: `Responded ${daysSince}d ago` });
-      } else {
-        score += 5;
-        signals.push({ factor: 'recency', match: 'partial', detail: `Last response ${daysSince}d ago` });
+    if (old.weights) {
+      for (const cat of categories) {
+        if (old.weights[cat.key] !== undefined) cat.weight = old.weights[cat.key];
       }
     }
 
-    return { score: clamp(score), signals };
-  }
-
-  /**
-   * Timing Signals: account relationship, prospect recency
-   */
-  static async _scoreTiming(prospect, orgId, config) {
-    let score = 50; // baseline
-    const signals = [];
-
-    // Check account history
-    if (prospect.account_id || prospect.company_domain) {
-      try {
-        let dealsQuery, dealsParams;
-        if (prospect.account_id) {
-          dealsQuery = `SELECT stage FROM deals WHERE account_id = $1 AND org_id = $2`;
-          dealsParams = [prospect.account_id, orgId];
-        } else {
-          dealsQuery = `SELECT d.stage FROM deals d
-                        JOIN accounts a ON d.account_id = a.id
-                        WHERE a.org_id = $1 AND LOWER(a.domain) = LOWER($2)`;
-          dealsParams = [orgId, prospect.company_domain];
-        }
-        const r = await db.query(dealsQuery, dealsParams);
-        const stages = r.rows.map(d => d.stage);
-
-        if (stages.includes('closed_won')) {
-          const bonus = config.existing_customer_bonus || DEFAULT_ICP_CONFIG.existing_customer_bonus;
-          score += bonus;
-          signals.push({ factor: 'existing_customer', match: true, detail: `Account has won deal(s) \u2014 +${bonus} bonus` });
-        } else if (stages.includes('closed_lost')) {
-          const penalty = config.lost_deal_penalty || DEFAULT_ICP_CONFIG.lost_deal_penalty;
-          score += penalty; // negative value
-          signals.push({ factor: 'lost_account', match: false, detail: `Account has lost deal(s) \u2014 ${penalty} penalty` });
-        }
-
-        if (stages.some(s => !['closed_won', 'closed_lost'].includes(s))) {
-          score += 10;
-          signals.push({ factor: 'active_deal', match: true, detail: 'Account has active deal(s)' });
-        }
-      } catch (err) {
-        console.error('ICP timing score - deal lookup error:', err.message);
-      }
+    const firmo = categories.find(c => c.key === 'firmographic');
+    if (firmo) {
+      const sizeRule = firmo.rules.find(r => r.field === 'company_size');
+      if (sizeRule && Array.isArray(old.target_company_sizes)) sizeRule.target_values = old.target_company_sizes;
+      const indRule = firmo.rules.find(r => r.field === 'company_industry');
+      if (indRule && Array.isArray(old.target_industries)) indRule.target_values = old.target_industries;
+      const geoRule = firmo.rules.find(r => r.field === 'location');
+      if (geoRule && Array.isArray(old.target_geographies)) geoRule.target_values = old.target_geographies;
     }
 
-    // Prospect freshness
-    if (prospect.created_at) {
-      const daysSinceCreated = Math.floor((Date.now() - new Date(prospect.created_at)) / 86400000);
-      if (daysSinceCreated <= 7) {
-        score += 10;
-        signals.push({ factor: 'freshness', match: true, detail: `Created ${daysSinceCreated}d ago \u2014 fresh lead` });
-      } else if (daysSinceCreated > 60) {
-        score -= 10;
-        signals.push({ factor: 'freshness', match: false, detail: `Created ${daysSinceCreated}d ago \u2014 aging lead` });
-      }
+    const persona = categories.find(c => c.key === 'persona');
+    if (persona) {
+      const senRule = persona.rules.find(r => r.label === 'Seniority');
+      if (senRule && Array.isArray(old.target_seniority)) senRule.target_values = old.target_seniority;
+      const funcRule = persona.rules.find(r => r.label === 'Function alignment');
+      if (funcRule && Array.isArray(old.target_functions)) funcRule.target_values = old.target_functions;
+      const dmRule = persona.rules.find(r => r.label === 'Decision maker');
+      if (dmRule && Array.isArray(old.decision_maker_titles)) dmRule.target_values = old.decision_maker_titles;
     }
 
-    return { score: clamp(score), signals };
+    const eng = categories.find(c => c.key === 'engagement');
+    if (eng) {
+      const rrRule = eng.rules.find(r => r.label === 'High response rate');
+      if (rrRule && old.high_response_rate) rrRule.target_values = [old.high_response_rate];
+      const recRule = eng.rules.find(r => r.label === 'Recent response');
+      if (recRule && old.recent_response_days) recRule.target_values = [old.recent_response_days];
+    }
+
+    const timing = categories.find(c => c.key === 'timing');
+    if (timing) {
+      const wonRule = timing.rules.find(r => r.label === 'Existing customer');
+      if (wonRule && old.existing_customer_bonus) wonRule.points_if_match = old.existing_customer_bonus;
+      const lostRule = timing.rules.find(r => r.label === 'Lost deal penalty');
+      if (lostRule && old.lost_deal_penalty) lostRule.points_if_match = old.lost_deal_penalty;
+    }
+
+    return { categories };
   }
 
-  // \u2500\u2500 Persistence \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // ── Persistence ──────────────────────────────────────────────────────
 
   static async _persistScore(prospectId, score, breakdown) {
     await db.query(
       `UPDATE prospects
-       SET icp_score = $1,
-           icp_signals = $2,
-           updated_at = NOW()
+       SET icp_score = $1, icp_signals = $2, updated_at = NOW()
        WHERE id = $3`,
       [score, JSON.stringify(breakdown), prospectId]
     );
   }
 }
-
-// \u2500\u2500 Utility \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 function clamp(score) {
   return Math.max(0, Math.min(100, Math.round(score)));
