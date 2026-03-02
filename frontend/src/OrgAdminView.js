@@ -2160,7 +2160,6 @@ function OAIcpScoring() {
                 )}
 
                 {(cat.rules || []).map((rule, ri) => {
-                  const fieldDef = getField(rule.field);
                   const validMatchTypes = getMatchTypesFor(rule.field);
                   const needsTargetValues = !['exists'].includes(rule.match_type);
                   const isSingleValue = ['greater_than', 'less_than'].includes(rule.match_type);
