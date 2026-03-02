@@ -14,6 +14,7 @@ const crypto  = require('crypto');
 const { pool } = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { requireSuperAdmin, auditLog } = require('../middleware/superAdmin.middleware');
+const { seedOrg } = require('../services/orgSeed.service');
 
 // Apply auth + super admin guard to ALL routes in this file
 router.use(authenticateToken, requireSuperAdmin);
@@ -181,6 +182,10 @@ router.post('/orgs', async (req, res) => {
     `, [name.trim(), slug, plan, max_users, notes]);
 
     await auditLog(req, 'create_org', 'org', result.rows[0].id, { name, plan });
+
+    // Seed default stages, playbooks, etc.
+    await seedOrg(result.rows[0].id);
+
     res.status(201).json({ org: result.rows[0] });
   } catch (err) {
     console.error('POST /super/orgs error:', err);
