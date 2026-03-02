@@ -951,6 +951,269 @@ function getDimColor(key) {
   return DIMENSION_COLORS[key] || '#6b7280';
 }
 
+// ─────────────────────────────────────────────────────────────────
+// OATeamRoster — read-only view of user assignments across dimensions
+// Filterable by dimension and team, with search and summary stats.
+// ─────────────────────────────────────────────────────────────────
+
+function OATeamRoster({ dimensions, teams, members, memberships, rosterDimFilter, setRosterDimFilter, rosterTeamFilter, setRosterTeamFilter, rosterSearch, setRosterSearch, getDimColor }) {
+
+  // Build user → dimension → team mapping
+  const userTeamMap = {};
+  for (const m of memberships) {
+    if (!userTeamMap[m.user_id]) userTeamMap[m.user_id] = {};
+    userTeamMap[m.user_id][m.dimension] = { teamId: m.team_id, teamName: m.team_name };
+  }
+
+  // Compute assignment coverage stats
+  const assignedUserIds = new Set(memberships.map(m => m.user_id));
+  const fullyAssigned = members.filter(m => {
+    const ut = userTeamMap[m.user_id];
+    return ut && dimensions.every(d => ut[d.key]);
+  });
+  const partiallyAssigned = members.filter(m => {
+    const ut = userTeamMap[m.user_id];
+    return ut && Object.keys(ut).length > 0 && !dimensions.every(d => ut[d.key]);
+  });
+  const unassigned = members.filter(m => !assignedUserIds.has(m.user_id));
+
+  // Filter members
+  const filteredMembers = members.filter(m => {
+    // Search filter
+    if (rosterSearch) {
+      const q = rosterSearch.toLowerCase();
+      const name = `${m.first_name} ${m.last_name}`.toLowerCase();
+      const email = (m.email || '').toLowerCase();
+      if (!name.includes(q) && !email.includes(q)) return false;
+    }
+
+    const ut = userTeamMap[m.user_id] || {};
+
+    // Dimension filter
+    if (rosterDimFilter === 'unassigned') {
+      return Object.keys(ut).length === 0;
+    }
+    if (rosterDimFilter === 'partial') {
+      return Object.keys(ut).length > 0 && !dimensions.every(d => ut[d.key]);
+    }
+    if (rosterDimFilter === 'complete') {
+      return dimensions.every(d => ut[d.key]);
+    }
+    if (rosterDimFilter !== 'all') {
+      // A specific dimension key — show users who have an assignment in that dimension
+      if (!ut[rosterDimFilter]) return false;
+    }
+
+    // Team filter (only when a specific dimension is selected)
+    if (rosterTeamFilter !== 'all' && rosterDimFilter !== 'all' &&
+        rosterDimFilter !== 'unassigned' && rosterDimFilter !== 'partial' && rosterDimFilter !== 'complete') {
+      if (ut[rosterDimFilter]?.teamId !== parseInt(rosterTeamFilter)) return false;
+    }
+
+    return true;
+  });
+
+  // Reset team filter when dimension filter changes
+  const handleDimFilterChange = (val) => {
+    setRosterDimFilter(val);
+    setRosterTeamFilter('all');
+  };
+
+  // Teams for the selected dimension filter
+  const filteredDimTeams = (rosterDimFilter !== 'all' && rosterDimFilter !== 'unassigned' &&
+    rosterDimFilter !== 'partial' && rosterDimFilter !== 'complete')
+    ? teams.filter(t => t.dimension === rosterDimFilter)
+    : [];
+
+  // CSV export
+  const handleExport = () => {
+    const header = ['Name', 'Email', ...dimensions.map(d => d.label)];
+    const rows = filteredMembers.map(m => {
+      const ut = userTeamMap[m.user_id] || {};
+      return [
+        `${m.first_name} ${m.last_name}`,
+        m.email,
+        ...dimensions.map(d => ut[d.key]?.teamName || ''),
+      ];
+    });
+    const csv = [header, ...rows].map(r => r.map(c => `"${(c || '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `team-roster-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div>
+      {/* Coverage summary cards */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
+        <button onClick={() => handleDimFilterChange('all')} style={{
+          flex: '1 1 100px', padding: '12px 16px', borderRadius: 8, border: rosterDimFilter === 'all' ? '2px solid #111827' : '1px solid #e5e7eb',
+          background: '#fff', cursor: 'pointer', textAlign: 'left', minWidth: 100,
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5 }}>All Users</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: '#111827' }}>{members.length}</div>
+        </button>
+        <button onClick={() => handleDimFilterChange('complete')} style={{
+          flex: '1 1 100px', padding: '12px 16px', borderRadius: 8, border: rosterDimFilter === 'complete' ? '2px solid #059669' : '1px solid #e5e7eb',
+          background: '#fff', cursor: 'pointer', textAlign: 'left', minWidth: 100,
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: '#059669', textTransform: 'uppercase', letterSpacing: 0.5 }}>Fully Assigned</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: '#059669' }}>{fullyAssigned.length}</div>
+        </button>
+        <button onClick={() => handleDimFilterChange('partial')} style={{
+          flex: '1 1 100px', padding: '12px 16px', borderRadius: 8, border: rosterDimFilter === 'partial' ? '2px solid #d97706' : '1px solid #e5e7eb',
+          background: '#fff', cursor: 'pointer', textAlign: 'left', minWidth: 100,
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: '#d97706', textTransform: 'uppercase', letterSpacing: 0.5 }}>Partially Assigned</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: '#d97706' }}>{partiallyAssigned.length}</div>
+        </button>
+        <button onClick={() => handleDimFilterChange('unassigned')} style={{
+          flex: '1 1 100px', padding: '12px 16px', borderRadius: 8, border: rosterDimFilter === 'unassigned' ? '2px solid #dc2626' : '1px solid #e5e7eb',
+          background: '#fff', cursor: 'pointer', textAlign: 'left', minWidth: 100,
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: '#dc2626', textTransform: 'uppercase', letterSpacing: 0.5 }}>Unassigned</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: '#dc2626' }}>{unassigned.length}</div>
+        </button>
+      </div>
+
+      {/* Filters row */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input
+          type="text"
+          value={rosterSearch}
+          onChange={e => setRosterSearch(e.target.value)}
+          placeholder="Search by name or email…"
+          style={{ padding: '7px 12px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12, width: 220 }}
+        />
+        <select
+          value={rosterDimFilter}
+          onChange={e => handleDimFilterChange(e.target.value)}
+          style={{ padding: '7px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12 }}
+        >
+          <option value="all">All dimensions</option>
+          <optgroup label="Status">
+            <option value="complete">Fully assigned</option>
+            <option value="partial">Partially assigned</option>
+            <option value="unassigned">Unassigned</option>
+          </optgroup>
+          <optgroup label="By Dimension">
+            {dimensions.map(d => (
+              <option key={d.key} value={d.key}>{d.label}</option>
+            ))}
+          </optgroup>
+        </select>
+        {filteredDimTeams.length > 0 && (
+          <select
+            value={rosterTeamFilter}
+            onChange={e => setRosterTeamFilter(e.target.value)}
+            style={{ padding: '7px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12 }}
+          >
+            <option value="all">All teams</option>
+            {filteredDimTeams.map(t => (
+              <option key={t.id} value={t.id}>{t.name}</option>
+            ))}
+          </select>
+        )}
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 11, color: '#6b7280' }}>{filteredMembers.length} user{filteredMembers.length !== 1 ? 's' : ''}</span>
+        <button
+          onClick={handleExport}
+          style={{
+            padding: '6px 12px', borderRadius: 6, fontSize: 11, fontWeight: 500,
+            background: '#f3f4f6', border: '1px solid #d1d5db', cursor: 'pointer', color: '#374151',
+          }}
+        >
+          Export CSV
+        </button>
+      </div>
+
+      {/* Roster table */}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ borderBottom: '2px solid #e5e7eb' }}>
+              <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600, color: '#374151', minWidth: 180 }}>User</th>
+              {dimensions.map(dim => (
+                <th key={dim.key} style={{
+                  textAlign: 'left', padding: '8px 12px', fontWeight: 600, minWidth: 120,
+                  color: getDimColor(dim.key),
+                }}>
+                  {dim.label}
+                </th>
+              ))}
+              <th style={{ textAlign: 'center', padding: '8px 12px', fontWeight: 600, color: '#374151', width: 80 }}>Coverage</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredMembers.map(member => {
+              const ut = userTeamMap[member.user_id] || {};
+              const assignedCount = dimensions.filter(d => ut[d.key]).length;
+              const coveragePct = dimensions.length > 0 ? Math.round((assignedCount / dimensions.length) * 100) : 0;
+              return (
+                <tr key={member.user_id} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                  <td style={{ padding: '8px 12px' }}>
+                    <div style={{ fontWeight: 500, color: '#111827' }}>{member.first_name} {member.last_name}</div>
+                    <div style={{ fontSize: 10, color: '#9ca3af' }}>{member.email}</div>
+                  </td>
+                  {dimensions.map(dim => {
+                    const assignment = ut[dim.key];
+                    return (
+                      <td key={dim.key} style={{ padding: '6px 12px' }}>
+                        {assignment ? (
+                          <span style={{
+                            padding: '3px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+                            background: getDimColor(dim.key) + '10', color: getDimColor(dim.key),
+                            border: `1px solid ${getDimColor(dim.key)}25`,
+                          }}>
+                            {assignment.teamName}
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: 11, color: '#d1d5db' }}>—</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                  <td style={{ textAlign: 'center', padding: '6px 12px' }}>
+                    <div style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                    }}>
+                      <div style={{
+                        width: 40, height: 6, borderRadius: 3, background: '#e5e7eb', overflow: 'hidden',
+                      }}>
+                        <div style={{
+                          width: `${coveragePct}%`, height: '100%', borderRadius: 3,
+                          background: coveragePct === 100 ? '#059669' : coveragePct > 0 ? '#d97706' : '#dc2626',
+                        }} />
+                      </div>
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, minWidth: 26,
+                        color: coveragePct === 100 ? '#059669' : coveragePct > 0 ? '#d97706' : '#dc2626',
+                      }}>
+                        {assignedCount}/{dimensions.length}
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {filteredMembers.length === 0 && (
+        <div style={{ padding: 32, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
+          No users match the current filters.
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function OATeams() {
   const [dimensions, setDimensions]   = useState([]);
   const [teams, setTeams]             = useState([]);
@@ -961,12 +1224,15 @@ function OATeams() {
   const [success, setSuccess]         = useState('');
   const [activeDim, setActiveDim]     = useState(null);
   const [showNewTeam, setShowNewTeam] = useState(false);
-  const [newTeamName, setNewTeamName] = useState('');
-  const [newTeamDesc, setNewTeamDesc] = useState('');
+  const [newTeamLines, setNewTeamLines] = useState('');
   const [saving, setSaving]           = useState(false);
   const [showDimConfig, setShowDimConfig] = useState(false);
   const [dimDraft, setDimDraft]       = useState([]);
   const [assigningUser, setAssigningUser] = useState(null);
+  const [subTab, setSubTab] = useState('setup'); // 'setup' | 'roster'
+  const [rosterDimFilter, setRosterDimFilter] = useState('all');
+  const [rosterTeamFilter, setRosterTeamFilter] = useState('all');
+  const [rosterSearch, setRosterSearch] = useState('');
 
   const load = async () => {
     try {
@@ -1004,26 +1270,52 @@ function OATeams() {
 
   // ── Team CRUD ─────────────────────────────────────────────────
 
-  const handleCreateTeam = async () => {
-    if (!newTeamName.trim() || !activeDim) return;
+  const handleCreateTeams = async () => {
+    if (!activeDim) return;
+    const names = newTeamLines
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.length > 0);
+    if (names.length === 0) return;
+
+    // Deduplicate input and skip names that already exist
+    const uniqueNames = [...new Set(names)];
+    const existingNames = new Set(activeTeams.map(t => t.name.toLowerCase()));
+    const toCreate = uniqueNames.filter(n => !existingNames.has(n.toLowerCase()));
+
+    if (toCreate.length === 0) {
+      setError('All entered team names already exist in this dimension');
+      return;
+    }
+
     setSaving(true);
     setError('');
-    try {
-      await apiService.orgAdmin.createTeam({
-        name: newTeamName.trim(),
-        dimension: activeDim,
-        description: newTeamDesc.trim() || null,
-      });
-      flash(`Team "${newTeamName.trim()}" created`);
-      setNewTeamName('');
-      setNewTeamDesc('');
-      setShowNewTeam(false);
-      await load();
-    } catch (err) {
-      setError(err.response?.data?.error?.message || err.message || 'Failed to create team');
-    } finally {
-      setSaving(false);
+    const created = [];
+    const failed = [];
+    for (const name of toCreate) {
+      try {
+        await apiService.orgAdmin.createTeam({
+          name,
+          dimension: activeDim,
+        });
+        created.push(name);
+      } catch (err) {
+        const msg = err.response?.data?.error?.message || err.message;
+        failed.push(`${name}: ${msg}`);
+      }
     }
+
+    if (created.length > 0) {
+      flash(`Created ${created.length} team${created.length > 1 ? 's' : ''}`);
+    }
+    if (failed.length > 0) {
+      setError(`Failed to create: ${failed.join('; ')}`);
+    }
+
+    setNewTeamLines('');
+    setShowNewTeam(false);
+    await load();
+    setSaving(false);
   };
 
   const handleDeleteTeam = async (team) => {
@@ -1126,6 +1418,28 @@ function OATeams() {
       {error && <div className="oa-error">{error} <button onClick={() => setError('')}>×</button></div>}
       {success && <div className="oa-success">{success}</div>}
 
+      {/* Sub-tab switcher */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #e5e7eb', paddingBottom: 0 }}>
+        {[
+          { id: 'setup', label: 'Setup', icon: '⚙️' },
+          { id: 'roster', label: 'Team Roster', icon: '👥' },
+        ].map(t => (
+          <button
+            key={t.id}
+            onClick={() => setSubTab(t.id)}
+            style={{
+              padding: '8px 16px', fontSize: 12, fontWeight: subTab === t.id ? 600 : 400,
+              cursor: 'pointer', border: 'none', borderBottom: subTab === t.id ? '2px solid #111827' : '2px solid transparent',
+              background: 'none', color: subTab === t.id ? '#111827' : '#6b7280',
+              marginBottom: -1, transition: 'all 0.15s',
+            }}
+          >
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      {subTab === 'setup' && (<>
       {/* Header with stats */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 20 }}>
         <div className="oa-stat-card">
@@ -1195,11 +1509,11 @@ function OATeams() {
                 background: getDimColor(activeDim), color: '#fff', border: 'none', cursor: 'pointer',
               }}
             >
-              + New Team
+              + Add Teams
             </button>
           </div>
 
-          {/* New team form */}
+          {/* New team form — batch */}
           {showNewTeam && (
             <div style={{
               padding: 16, marginBottom: 12, borderRadius: 8,
@@ -1207,42 +1521,53 @@ function OATeams() {
               borderLeft: `3px solid ${getDimColor(activeDim)}`,
             }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: getDimColor(activeDim), marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                New {activeDimLabel} Team
+                Add {activeDimLabel} Teams
               </div>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-                <input
-                  type="text"
-                  value={newTeamName}
-                  onChange={e => setNewTeamName(e.target.value)}
-                  placeholder={`Team name (e.g. ${activeDim === 'market_segment' ? 'Enterprise' : activeDim === 'geo' ? 'EMEA' : activeDim === 'seller_role' ? 'AE' : 'New Team'})`}
-                  style={{ flex: 1, padding: '8px 12px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 }}
-                  onKeyDown={e => e.key === 'Enter' && handleCreateTeam()}
-                />
+              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 8 }}>
+                Enter one team name per line. You can paste a list.
+              </div>
+              <textarea
+                value={newTeamLines}
+                onChange={e => setNewTeamLines(e.target.value)}
+                placeholder={`e.g.\n${activeDim === 'market_segment' ? 'Enterprise\nMid-Market\nSMB' : activeDim === 'geo' ? 'AMER\nEMEA\nAPAC' : activeDim === 'seller_role' ? 'AE\nSDR\nSE' : 'Team Alpha\nTeam Beta\nTeam Gamma'}`}
+                rows={5}
+                style={{
+                  width: '100%', padding: '8px 12px', borderRadius: 6,
+                  border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'inherit',
+                  resize: 'vertical', lineHeight: 1.5,
+                }}
+              />
+              {(() => {
+                const names = newTeamLines.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+                const uniqueCount = new Set(names).size;
+                const existingNames = new Set(activeTeams.map(t => t.name.toLowerCase()));
+                const dupeCount = names.filter(n => existingNames.has(n.toLowerCase())).length;
+                return names.length > 0 ? (
+                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>
+                    {uniqueCount} team{uniqueCount !== 1 ? 's' : ''} to create
+                    {dupeCount > 0 && <span style={{ color: '#d97706' }}> · {dupeCount} already exist (will be skipped)</span>}
+                  </div>
+                ) : null;
+              })()}
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                 <button
-                  onClick={handleCreateTeam}
-                  disabled={!newTeamName.trim() || saving}
+                  onClick={handleCreateTeams}
+                  disabled={!newTeamLines.trim() || saving}
                   style={{
                     padding: '8px 16px', borderRadius: 6, fontSize: 12, fontWeight: 600,
-                    background: newTeamName.trim() ? getDimColor(activeDim) : '#d1d5db',
-                    color: '#fff', border: 'none', cursor: newTeamName.trim() ? 'pointer' : 'default',
+                    background: newTeamLines.trim() ? getDimColor(activeDim) : '#d1d5db',
+                    color: '#fff', border: 'none', cursor: newTeamLines.trim() ? 'pointer' : 'default',
                   }}
                 >
-                  {saving ? 'Creating…' : 'Create'}
+                  {saving ? 'Creating…' : 'Create Teams'}
                 </button>
                 <button
-                  onClick={() => { setShowNewTeam(false); setNewTeamName(''); setNewTeamDesc(''); }}
+                  onClick={() => { setShowNewTeam(false); setNewTeamLines(''); }}
                   style={{ padding: '8px 12px', borderRadius: 6, fontSize: 12, background: '#f3f4f6', border: 'none', cursor: 'pointer', color: '#6b7280' }}
                 >
                   Cancel
                 </button>
               </div>
-              <input
-                type="text"
-                value={newTeamDesc}
-                onChange={e => setNewTeamDesc(e.target.value)}
-                placeholder="Description (optional)"
-                style={{ width: '100%', padding: '6px 12px', borderRadius: 6, border: '1px solid #e5e7eb', fontSize: 12, color: '#6b7280' }}
-              />
             </div>
           )}
 
@@ -1373,6 +1698,24 @@ function OATeams() {
           </div>
         )}
       </div>
+      </>)}
+
+      {/* ── Roster Sub-Tab ─────────────────────────────────────── */}
+      {subTab === 'roster' && (
+        <OATeamRoster
+          dimensions={dimensions}
+          teams={teams}
+          members={activeMembers}
+          memberships={memberships}
+          rosterDimFilter={rosterDimFilter}
+          setRosterDimFilter={setRosterDimFilter}
+          rosterTeamFilter={rosterTeamFilter}
+          setRosterTeamFilter={setRosterTeamFilter}
+          rosterSearch={rosterSearch}
+          setRosterSearch={setRosterSearch}
+          getDimColor={getDimColor}
+        />
+      )}
 
       {/* ── Dimension Config Modal ──────────────────────────────── */}
       {showDimConfig && (
