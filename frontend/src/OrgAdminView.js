@@ -33,6 +33,7 @@ const NAV_GROUPS = [
     label: 'Sales Execution Insights',
     items: [
       { id: 'health',      icon: '🏥', label: 'Deal Health' },
+      { id: 'icp-scoring', icon: '🎯', label: 'ICP Scoring' },
     ],
   },
   {
@@ -66,6 +67,7 @@ const TAB_META = {
   'stages':      { title: 'Stages',       desc: 'Customise your deal and prospecting pipeline stages' },
   'deal-roles':  { title: 'Deal Roles',    desc: 'Define contact roles in deals' },
   health:        { title: 'Deal Health',   desc: 'Configure health scoring parameters' },
+  'icp-scoring': { title: 'ICP Scoring',   desc: 'Define your Ideal Customer Profile and scoring criteria' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
   integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },
@@ -166,6 +168,7 @@ export default function OrgAdminView() {
             {tab === 'invitations' && <OAInvitations />}
             {tab === 'playbooks'   && <OAPlaybooks />}
             {tab === 'health'      && <DealHealthSettings />}
+            {tab === 'icp-scoring' && <OAIcpScoring />}
             {tab === 'stages'      && <OAStages />}
             {tab === 'deal-roles'  && <OADealRoles />}
             {tab === 'ai-agent'    && <OAAgentSettings />}
@@ -1789,6 +1792,391 @@ function OATeams() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+// ICP SCORING CONFIG TAB
+// Configures the Ideal Customer Profile scoring model.
+// Reads/writes organizations.settings.icp_config via the
+// existing icpScoring.service.js GET/PUT /icp-config/current.
+// ─────────────────────────────────────────────────────────────────
+
+const ICP_CATEGORY_META = {
+  firmographic: { label: 'Firmographic Fit', icon: '🏢', color: '#7c3aed', desc: 'Company size, industry, geography' },
+  persona:      { label: 'Persona Fit',      icon: '👤', color: '#2563eb', desc: 'Title seniority, function alignment, decision-maker signals' },
+  engagement:   { label: 'Engagement',       icon: '📬', color: '#059669', desc: 'Response rate & recency of engagement' },
+  timing:       { label: 'Timing',           icon: '⏱️', color: '#d97706', desc: 'Account history, prospect freshness' },
+};
+
+function OAIcpScoring() {
+  const [config, setConfig]     = useState(null);
+  const [draft, setDraft]       = useState(null);
+  const [loading, setLoading]   = useState(true);
+  const [saving, setSaving]     = useState(false);
+  const [scoring, setScoring]   = useState(false);
+  const [error, setError]       = useState('');
+  const [success, setSuccess]   = useState('');
+  const [dirty, setDirty]       = useState(false);
+
+  const flash = (msg) => { setSuccess(msg); setTimeout(() => setSuccess(''), 3000); };
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const r = await apiService.prospects.getIcpConfig();
+      const cfg = r.data.config || {};
+      setConfig(cfg);
+      setDraft(JSON.parse(JSON.stringify(cfg)));
+      setDirty(false);
+    } catch (err) {
+      setError('Failed to load ICP config');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const updateDraft = (path, value) => {
+    setDraft(prev => {
+      const next = JSON.parse(JSON.stringify(prev));
+      const keys = path.split('.');
+      let obj = next;
+      for (let i = 0; i < keys.length - 1; i++) obj = obj[keys[i]];
+      obj[keys[keys.length - 1]] = value;
+      return next;
+    });
+    setDirty(true);
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      const r = await apiService.prospects.updateIcpConfig(draft);
+      setConfig(r.data.config || draft);
+      setDraft(JSON.parse(JSON.stringify(r.data.config || draft)));
+      setDirty(false);
+      flash('ICP config saved');
+    } catch (err) {
+      setError(err.response?.data?.error?.message || err.message || 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = () => {
+    setDraft(JSON.parse(JSON.stringify(config)));
+    setDirty(false);
+  };
+
+  const handleBulkScore = async () => {
+    if (!window.confirm('Re-score all unscored prospects? This may take a moment.')) return;
+    setScoring(true);
+    setError('');
+    try {
+      const r = await apiService.prospects.scoreAllIcp();
+      flash(r.data.message || 'Scoring complete');
+    } catch (err) {
+      setError(err.response?.data?.error?.message || err.message || 'Scoring failed');
+    } finally {
+      setScoring(false);
+    }
+  };
+
+  if (loading || !draft) return <div className="oa-loading">Loading ICP config…</div>;
+
+  const weights = draft.weights || {};
+  const totalWeight = (weights.firmographic || 0) + (weights.persona || 0) + (weights.engagement || 0) + (weights.timing || 0);
+
+  // ── Tag-list helpers ──────────────────────────────────────────
+
+  const TagList = ({ items, onChange, placeholder, color }) => {
+    const [input, setInput] = useState('');
+    const add = () => {
+      const val = input.trim();
+      if (val && !items.includes(val)) { onChange([...items, val]); }
+      setInput('');
+    };
+    return (
+      <div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6, minHeight: 28 }}>
+          {items.map((item, i) => (
+            <span key={i} style={{
+              padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+              background: (color || '#6b7280') + '12', color: color || '#6b7280',
+              border: `1px solid ${(color || '#6b7280')}25`, display: 'inline-flex', alignItems: 'center', gap: 4,
+            }}>
+              {item}
+              <button onClick={() => onChange(items.filter((_, j) => j !== i))}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#dc2626', fontSize: 12, padding: 0, lineHeight: 1 }}>×</button>
+            </span>
+          ))}
+          {items.length === 0 && <span style={{ fontSize: 11, color: '#9ca3af', fontStyle: 'italic' }}>None configured — all values score equally</span>}
+        </div>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <input
+            type="text" value={input} onChange={e => setInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
+            placeholder={placeholder || 'Type and press Enter'}
+            style={{ flex: 1, padding: '5px 10px', borderRadius: 4, border: '1px solid #d1d5db', fontSize: 12 }}
+          />
+          <button onClick={add} disabled={!input.trim()}
+            style={{ padding: '5px 10px', borderRadius: 4, fontSize: 11, fontWeight: 600, background: input.trim() ? '#111827' : '#e5e7eb', color: '#fff', border: 'none', cursor: input.trim() ? 'pointer' : 'default' }}>
+            Add
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // ── Render ────────────────────────────────────────────────────
+
+  return (
+    <div>
+      {error && <div className="oa-error">{error} <button onClick={() => setError('')}>×</button></div>}
+      {success && <div className="oa-success">{success}</div>}
+
+      {/* Header with save/actions */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+        <div>
+          <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>
+            Define how prospects are scored against your Ideal Customer Profile. Each prospect gets a 0–100 composite score based on four weighted categories.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={handleBulkScore} disabled={scoring}
+            style={{ padding: '7px 14px', borderRadius: 6, fontSize: 12, fontWeight: 500, background: '#f3f4f6', border: '1px solid #d1d5db', cursor: 'pointer', color: '#374151' }}>
+            {scoring ? 'Scoring…' : '⚡ Score All Unscored'}
+          </button>
+          {dirty && (
+            <button onClick={handleReset}
+              style={{ padding: '7px 14px', borderRadius: 6, fontSize: 12, background: '#f3f4f6', border: '1px solid #d1d5db', cursor: 'pointer', color: '#6b7280' }}>
+              Discard
+            </button>
+          )}
+          <button onClick={handleSave} disabled={!dirty || saving}
+            style={{ padding: '7px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600, background: dirty ? '#111827' : '#e5e7eb', color: '#fff', border: 'none', cursor: dirty ? 'pointer' : 'default' }}>
+            {saving ? 'Saving…' : 'Save Config'}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Category Weights ─────────────────────────────────── */}
+      <div style={{ padding: 16, borderRadius: 8, background: '#fff', border: '1px solid #e5e7eb', marginBottom: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <h4 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#111827' }}>Category Weights</h4>
+          <span style={{ fontSize: 11, color: totalWeight === 100 ? '#059669' : '#dc2626', fontWeight: 600 }}>
+            Total: {totalWeight}% {totalWeight !== 100 && '(should be 100%)'}
+          </span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          {Object.entries(ICP_CATEGORY_META).map(([key, meta]) => (
+            <div key={key} style={{ padding: 12, borderRadius: 8, background: meta.color + '08', border: `1px solid ${meta.color}20` }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: meta.color, marginBottom: 4 }}>{meta.icon} {meta.label}</div>
+              <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 8 }}>{meta.desc}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="range" min={0} max={100} step={5}
+                  value={weights[key] || 0}
+                  onChange={e => updateDraft(`weights.${key}`, parseInt(e.target.value))}
+                  style={{ flex: 1, accentColor: meta.color }}
+                />
+                <span style={{ fontSize: 13, fontWeight: 700, color: meta.color, minWidth: 32, textAlign: 'right' }}>
+                  {weights[key] || 0}%
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Firmographic Criteria ─────────────────────────────── */}
+      <div style={{ padding: 16, borderRadius: 8, background: '#fff', border: '1px solid #e5e7eb', marginBottom: 16 }}>
+        <h4 style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 600, color: '#7c3aed' }}>🏢 Firmographic Criteria</h4>
+        <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 12px' }}>
+          Prospects matching these attributes score higher. Leave a list empty to score all values equally.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' }}>Target Industries</label>
+            <TagList
+              items={draft.target_industries || []}
+              onChange={v => updateDraft('target_industries', v)}
+              placeholder="e.g. SaaS, Fintech, Healthcare"
+              color="#7c3aed"
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' }}>Target Company Sizes</label>
+            <TagList
+              items={draft.target_company_sizes || []}
+              onChange={v => updateDraft('target_company_sizes', v)}
+              placeholder="e.g. 50-200, 200-500, 1000+"
+              color="#7c3aed"
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' }}>Target Geographies</label>
+            <TagList
+              items={draft.target_geographies || []}
+              onChange={v => updateDraft('target_geographies', v)}
+              placeholder="e.g. US, EMEA, APAC"
+              color="#7c3aed"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* ── Persona Criteria ──────────────────────────────────── */}
+      <div style={{ padding: 16, borderRadius: 8, background: '#fff', border: '1px solid #e5e7eb', marginBottom: 16 }}>
+        <h4 style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 600, color: '#2563eb' }}>👤 Persona Criteria</h4>
+        <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 12px' }}>
+          Define the seniority levels, functions, and decision-maker titles that match your ICP.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' }}>Target Seniority</label>
+            <TagList
+              items={draft.target_seniority || []}
+              onChange={v => updateDraft('target_seniority', v)}
+              placeholder="e.g. C-Suite, VP, Director"
+              color="#2563eb"
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' }}>Target Functions</label>
+            <TagList
+              items={draft.target_functions || []}
+              onChange={v => updateDraft('target_functions', v)}
+              placeholder="e.g. Sales, Engineering, Product"
+              color="#2563eb"
+            />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' }}>Decision-Maker Titles</label>
+            <TagList
+              items={draft.decision_maker_titles || []}
+              onChange={v => updateDraft('decision_maker_titles', v)}
+              placeholder="e.g. CEO, CTO, VP"
+              color="#2563eb"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* ── Engagement Thresholds ─────────────────────────────── */}
+      <div style={{ padding: 16, borderRadius: 8, background: '#fff', border: '1px solid #e5e7eb', marginBottom: 16 }}>
+        <h4 style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 600, color: '#059669' }}>📬 Engagement Thresholds</h4>
+        <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 12px' }}>
+          How response rate and recency of replies affect the engagement score.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' }}>
+              High Response Rate Threshold
+            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="range" min={0.05} max={1} step={0.05}
+                value={draft.high_response_rate || 0.3}
+                onChange={e => updateDraft('high_response_rate', parseFloat(e.target.value))}
+                style={{ flex: 1, accentColor: '#059669' }}
+              />
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#059669', minWidth: 40 }}>
+                {Math.round((draft.high_response_rate || 0.3) * 100)}%
+              </span>
+            </div>
+            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>Prospects above this rate get the highest engagement score</div>
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' }}>
+              Recent Response Window (days)
+            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="number" min={1} max={60}
+                value={draft.recent_response_days || 7}
+                onChange={e => updateDraft('recent_response_days', parseInt(e.target.value) || 7)}
+                style={{ width: 80, padding: '6px 10px', borderRadius: 4, border: '1px solid #d1d5db', fontSize: 13, textAlign: 'center' }}
+              />
+              <span style={{ fontSize: 11, color: '#6b7280' }}>days</span>
+            </div>
+            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>Responses within this window earn a recency bonus</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Timing Modifiers ──────────────────────────────────── */}
+      <div style={{ padding: 16, borderRadius: 8, background: '#fff', border: '1px solid #e5e7eb', marginBottom: 16 }}>
+        <h4 style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 600, color: '#d97706' }}>⏱️ Timing Modifiers</h4>
+        <p style={{ fontSize: 11, color: '#6b7280', margin: '0 0 12px' }}>
+          Bonus or penalty points based on account relationship history.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' }}>
+              Existing Customer Bonus
+            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="number" min={0} max={50}
+                value={draft.existing_customer_bonus ?? 20}
+                onChange={e => updateDraft('existing_customer_bonus', parseInt(e.target.value) || 0)}
+                style={{ width: 80, padding: '6px 10px', borderRadius: 4, border: '1px solid #d1d5db', fontSize: 13, textAlign: 'center' }}
+              />
+              <span style={{ fontSize: 11, color: '#059669', fontWeight: 600 }}>+{draft.existing_customer_bonus ?? 20} points</span>
+            </div>
+            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>Added when the prospect's account has a closed-won deal</div>
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 4, display: 'block' }}>
+              Lost Deal Penalty
+            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="number" min={-50} max={0}
+                value={draft.lost_deal_penalty ?? -10}
+                onChange={e => updateDraft('lost_deal_penalty', parseInt(e.target.value) || 0)}
+                style={{ width: 80, padding: '6px 10px', borderRadius: 4, border: '1px solid #d1d5db', fontSize: 13, textAlign: 'center' }}
+              />
+              <span style={{ fontSize: 11, color: '#dc2626', fontWeight: 600 }}>{draft.lost_deal_penalty ?? -10} points</span>
+            </div>
+            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>Applied when the prospect's account has a closed-lost deal</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── How Scoring Works (collapsible) ───────────────────── */}
+      <details style={{ padding: 16, borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0' }}>
+        <summary style={{ fontSize: 12, fontWeight: 600, color: '#374151', cursor: 'pointer' }}>
+          How ICP scoring works
+        </summary>
+        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 10, lineHeight: 1.6 }}>
+          Each prospect is scored across four categories, each producing a 0–100 sub-score.
+          These are combined using the weights above into a single composite score (0–100).
+          <br /><br />
+          <strong>Firmographic Fit</strong> checks the prospect's company size, industry, and geography against your target lists.
+          A match adds points; unknowns and mismatches reduce the score.
+          <br /><br />
+          <strong>Persona Fit</strong> evaluates the prospect's title for seniority level, functional alignment, and decision-maker keywords.
+          <br /><br />
+          <strong>Engagement</strong> measures how responsive the prospect has been — response rate relative to your threshold,
+          and how recently they last replied.
+          <br /><br />
+          <strong>Timing</strong> considers account history (existing customer bonus, lost deal penalty) and how fresh the prospect record is.
+          <br /><br />
+          Scores are persisted on each prospect and visible in the Intel Card and prospect list. Use "Score All Unscored" to backfill prospects that don't have scores yet.
+        </div>
+      </details>
     </div>
   );
 }

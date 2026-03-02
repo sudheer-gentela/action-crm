@@ -282,6 +282,10 @@ export const apiService = {
     getActivities:    (id)                        => api.get(`/prospects/${id}/activities`),
     getPipelineSummary: (scope = 'mine')           => api.get(`/prospects/pipeline/summary?scope=${scope}`),
     getContext:        (id)                        => api.get(`/prospect-context/${id}`),
+    scoreIcp:         (id)                        => api.post(`/prospect-context/${id}/score`),
+    scoreAllIcp:      ()                          => api.post('/prospect-context/score-all'),
+    getIcpConfig:     ()                          => api.get('/prospect-context/icp-config/current'),
+    updateIcpConfig:  (config)                    => api.put('/prospect-context/icp-config/current', config),
   },
 
   // ── Prospecting Actions ─────────────────────────────────────
