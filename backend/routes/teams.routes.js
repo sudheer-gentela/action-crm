@@ -37,7 +37,7 @@ const adminOnly = requireRole('owner', 'admin');
 router.get('/team-dimensions', adminOnly, async (req, res) => {
   try {
     const dimensions = await teamService.getDimensions(req.orgId);
-    res.json({ data: { dimensions } });
+    res.json({ dimensions });
   } catch (err) {
     console.error('GET /team-dimensions error:', err);
     res.status(500).json({ error: { message: err.message } });
@@ -50,7 +50,7 @@ router.put('/team-dimensions', adminOnly, async (req, res) => {
     if (!dimensions) return res.status(400).json({ error: { message: 'dimensions is required' } });
 
     const saved = await teamService.saveDimensions(req.orgId, dimensions);
-    res.json({ data: { dimensions: saved } });
+    res.json({ dimensions: saved });
   } catch (err) {
     console.error('PUT /team-dimensions error:', err);
     res.status(400).json({ error: { message: err.message } });
@@ -64,7 +64,7 @@ router.get('/teams', adminOnly, async (req, res) => {
   try {
     const { dimension } = req.query;
     const teams = await teamService.getTeams(req.orgId, dimension || null);
-    res.json({ data: { teams } });
+    res.json({ teams });
   } catch (err) {
     console.error('GET /teams error:', err);
     res.status(500).json({ error: { message: err.message } });
@@ -78,7 +78,7 @@ router.post('/teams', adminOnly, async (req, res) => {
       name, dimension, description, parentTeamId, settings,
       createdBy: req.userId,
     });
-    res.status(201).json({ data: { team } });
+    res.status(201).json({ team });
   } catch (err) {
     console.error('POST /teams error:', err);
     const status = err.message.includes('duplicate') || err.message.includes('unique') ? 409 : 400;
@@ -89,7 +89,7 @@ router.post('/teams', adminOnly, async (req, res) => {
 router.put('/teams/:id', adminOnly, async (req, res) => {
   try {
     const team = await teamService.updateTeam(req.orgId, parseInt(req.params.id), req.body);
-    res.json({ data: { team } });
+    res.json({ team });
   } catch (err) {
     console.error('PUT /teams/:id error:', err);
     res.status(400).json({ error: { message: err.message } });
@@ -100,7 +100,7 @@ router.delete('/teams/:id', adminOnly, async (req, res) => {
   try {
     const deleted = await teamService.deleteTeam(req.orgId, parseInt(req.params.id));
     if (!deleted) return res.status(404).json({ error: { message: 'Team not found' } });
-    res.json({ data: { deleted: true } });
+    res.json({ deleted: true });
   } catch (err) {
     console.error('DELETE /teams/:id error:', err);
     res.status(500).json({ error: { message: err.message } });
@@ -113,7 +113,7 @@ router.delete('/teams/:id', adminOnly, async (req, res) => {
 router.get('/team-memberships', adminOnly, async (req, res) => {
   try {
     const memberships = await teamService.getAllMemberships(req.orgId);
-    res.json({ data: { memberships } });
+    res.json({ memberships });
   } catch (err) {
     console.error('GET /team-memberships error:', err);
     res.status(500).json({ error: { message: err.message } });
@@ -126,7 +126,7 @@ router.post('/team-memberships', adminOnly, async (req, res) => {
     if (!userId || !teamId) return res.status(400).json({ error: { message: 'userId and teamId are required' } });
 
     const membership = await teamService.setMembership(req.orgId, userId, teamId, { role, isPrimary });
-    res.status(201).json({ data: { membership } });
+    res.status(201).json({ membership });
   } catch (err) {
     console.error('POST /team-memberships error:', err);
     res.status(400).json({ error: { message: err.message } });
@@ -141,7 +141,7 @@ router.delete('/team-memberships/:userId/:teamId', adminOnly, async (req, res) =
       parseInt(req.params.teamId)
     );
     if (!removed) return res.status(404).json({ error: { message: 'Membership not found' } });
-    res.json({ data: { removed: true } });
+    res.json({ removed: true });
   } catch (err) {
     console.error('DELETE /team-memberships error:', err);
     res.status(500).json({ error: { message: err.message } });
@@ -151,7 +151,7 @@ router.delete('/team-memberships/:userId/:teamId', adminOnly, async (req, res) =
 router.get('/team-profile/:userId', adminOnly, async (req, res) => {
   try {
     const profile = await teamService.getUserProfile(parseInt(req.params.userId), req.orgId);
-    res.json({ data: { profile } });
+    res.json({ profile });
   } catch (err) {
     console.error('GET /team-profile error:', err);
     res.status(500).json({ error: { message: err.message } });
@@ -166,10 +166,8 @@ router.post('/team-memberships/bulk', adminOnly, async (req, res) => {
     const results = await teamService.bulkAssign(req.orgId, assignments);
     const failed = results.filter(r => !r.success);
     res.json({
-      data: {
-        results,
-        summary: { total: results.length, succeeded: results.length - failed.length, failed: failed.length },
-      },
+      results,
+      summary: { total: results.length, succeeded: results.length - failed.length, failed: failed.length },
     });
   } catch (err) {
     console.error('POST /team-memberships/bulk error:', err);

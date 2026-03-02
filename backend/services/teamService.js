@@ -45,10 +45,12 @@ const teamService = {
         [orgId]
       );
       const dims = r.rows[0]?.dims;
+      console.log(`[teamService] getDimensions org=${orgId}, fromDB type=${typeof dims}, isArray=${Array.isArray(dims)}, length=${dims?.length}, value=`, JSON.stringify(dims)?.substring(0, 200));
       if (Array.isArray(dims) && dims.length > 0) return dims;
     } catch (err) {
       console.error('teamService.getDimensions error:', err.message);
     }
+    console.log(`[teamService] getDimensions org=${orgId} — falling back to DEFAULT_DIMENSIONS`);
     return [...DEFAULT_DIMENSIONS];
   },
 
@@ -62,7 +64,7 @@ const teamService = {
     // Validate each dimension has a key and label
     for (const dim of dimensions) {
       if (!dim.key || !dim.label) throw new Error('Each dimension must have a key and label');
-      if (!/^[a-z_]+$/.test(dim.key)) throw new Error(`Invalid dimension key: "${dim.key}" — use lowercase + underscores only`);
+      if (!/^[a-z][a-z_]*$/.test(dim.key)) throw new Error(`Invalid dimension key: "${dim.key}" — use lowercase letters + underscores only, must start with a letter`);
     }
 
     // Check for orphaned teams — teams whose dimension is being removed
@@ -82,13 +84,18 @@ const teamService = {
       );
     }
 
-    await pool.query(
+    console.log(`[teamService] saveDimensions org=${orgId}, saving ${dimensions.length} dimensions:`, dimensions.map(d => d.key).join(', '));
+
+    const result = await pool.query(
       `UPDATE organizations
        SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{team_dimensions}', $1::jsonb),
            updated_at = NOW()
-       WHERE id = $2`,
+       WHERE id = $2
+       RETURNING settings->'team_dimensions' AS saved_dims`,
       [JSON.stringify(dimensions), orgId]
     );
+
+    console.log(`[teamService] saveDimensions result: rowCount=${result.rowCount}, savedDims=`, JSON.stringify(result.rows[0]?.saved_dims)?.substring(0, 200));
 
     return dimensions;
   },

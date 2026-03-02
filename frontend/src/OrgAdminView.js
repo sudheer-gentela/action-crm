@@ -1057,16 +1057,22 @@ function OATeams() {
     updated[idx] = { ...updated[idx], [field]: value };
     // Always auto-generate key from label
     if (field === 'label') {
-      updated[idx].key = value.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+      updated[idx].key = value.toLowerCase().replace(/[^a-z]+/g, '_').replace(/^_|_$/g, '');
     }
     setDimDraft(updated);
   };
 
   const saveDimConfig = async () => {
+    // Filter out any dimensions with empty key or label
+    const validDims = dimDraft.filter(d => d.key && d.key.trim() && d.label && d.label.trim());
+    if (validDims.length === 0) {
+      setError('At least one dimension with a name is required');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
-      await apiService.orgAdmin.updateTeamDimensions(dimDraft);
+      await apiService.orgAdmin.updateTeamDimensions(validDims);
       flash('Dimensions updated');
       setShowDimConfig(false);
       await load();
