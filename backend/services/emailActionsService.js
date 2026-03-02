@@ -1,26 +1,33 @@
 /**
- * emailActionsService.js
- * Creates actions from email AI analysis (Outlook email processor path).
+ * emailActionsService.js (REPLACEMENT)
  *
- * MULTI-ORG changes:
- *   - createActionsFromEmail(userId, orgId, emailData, analysis)
- *   - INSERT INTO actions now includes org_id as the first data column
- *   - linkEmailContacts now queries contacts WHERE email = $1 AND org_id = $2
- *     (contacts table has no user_id column — it's org-scoped, not user-scoped)
+ * DROP-IN LOCATION: backend/services/emailActionsService.js
+ *
+ * Key changes from original:
+ *   - createActionsFromEmail accepts provider parameter (5th arg)
+ *   - Source is provider-specific: 'outlook_email' or 'gmail_email'
+ *   - Provider tracked in action metadata
+ *   - Handles both Outlook and normalized address formats
  */
 
 const { pool } = require('../config/database');
 
-async function createActionsFromEmail(userId, orgId, emailData, analysis) {
+async function createActionsFromEmail(userId, orgId, emailData, analysis, provider) {
+  // Default provider for backward compat with existing callers
+  if (!provider) provider = 'outlook';
+  const source = provider === 'gmail' ? 'gmail_email' : 'outlook_email';
+
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
-
     const createdActions = [];
 
     if (analysis.action_items && analysis.action_items.length > 0) {
       for (const item of analysis.action_items) {
+        // Handle both Outlook-shape and normalized-shape from addresses
+        const fromAddr = emailData.from?.emailAddress?.address || emailData.from?.address || '';
+
         const result = await client.query(
           `INSERT INTO actions (
             org_id, user_id, title, description, priority,
@@ -32,15 +39,16 @@ async function createActionsFromEmail(userId, orgId, emailData, analysis) {
             orgId,
             userId,
             item.description.substring(0, 255),
-            `From: ${emailData.from?.emailAddress?.address}\nSubject: ${emailData.subject}\n\n${analysis.summary}`,
+            'From: ' + fromAddr + '\nSubject: ' + emailData.subject + '\n\n' + (analysis.summary || ''),
             item.priority || 'medium',
             item.deadline || null,
-            'outlook_email',
+            source,
             emailData.id,
             JSON.stringify({
               email_subject:     emailData.subject,
-              email_from:        emailData.from?.emailAddress?.address,
+              email_from:        fromAddr,
               email_date:        emailData.receivedDateTime,
+              email_provider:    provider,
               requires_response: analysis.requires_response,
               sentiment:         analysis.sentiment,
               category:          analysis.category,
@@ -71,14 +79,11 @@ async function createActionsFromEmail(userId, orgId, emailData, analysis) {
 
 async function linkEmailContacts(client, actionId, contactEmails, orgId) {
   for (const email of contactEmails) {
-    // Handle "Name <email@example.com>" format
     let emailAddress = email;
     const emailMatch = email.match(/<(.+?)>/);
     if (emailMatch) emailAddress = emailMatch[1];
-
     if (!emailAddress.includes('@')) continue;
 
-    // contacts are org-scoped, not user-scoped
     const contactResult = await client.query(
       'SELECT id FROM contacts WHERE email = $1 AND org_id = $2',
       [emailAddress, orgId]
@@ -87,13 +92,11 @@ async function linkEmailContacts(client, actionId, contactEmails, orgId) {
     if (contactResult.rows.length > 0) {
       try {
         await client.query(
-          `INSERT INTO action_contacts (action_id, contact_id)
-           VALUES ($1, $2)
-           ON CONFLICT DO NOTHING`,
+          'INSERT INTO action_contacts (action_id, contact_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
           [actionId, contactResult.rows[0].id]
         );
-      } catch {
-        // action_contacts table may not exist — safe to skip
+      } catch (e) {
+        // action_contacts table may not exist -- safe to skip
       }
     }
   }

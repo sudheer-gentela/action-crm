@@ -1,23 +1,24 @@
 /**
- * StorageProviderFactory.js
- * Resolves the correct storage provider per request.
- * Only file that imports concrete provider implementations.
+ * StorageProviderFactory.js (REPLACEMENT)
+ *
+ * DROP-IN LOCATION: backend/services/StorageProviderFactory.js
+ *
+ * Key change: Google Drive is now ENABLED (uncommented).
  */
 
-const OneDriveProvider = require('./OneDriveProvider');
-// const GoogleDriveProvider = require('./GoogleDriveProvider'); // uncomment when ready
+const OneDriveProvider     = require('./OneDriveProvider');
+const GoogleDriveProvider  = require('./GoogleDriveProvider');
 
-// Explicit metadata array — id/displayName never depend on base class property assignment
 const REGISTERED_PROVIDERS = [
-  { id: 'onedrive', displayName: 'OneDrive', instance: new OneDriveProvider() },
-  // { id: 'googledrive', displayName: 'Google Drive', instance: new GoogleDriveProvider() },
+  { id: 'onedrive',     displayName: 'OneDrive',      instance: new OneDriveProvider() },
+  { id: 'googledrive',  displayName: 'Google Drive',  instance: new GoogleDriveProvider() },
 ];
 
 function getProvider(providerId) {
   const entry = REGISTERED_PROVIDERS.find((p) => p.id === providerId);
   if (!entry) {
     const available = REGISTERED_PROVIDERS.map((p) => p.id).join(', ');
-    throw new Error(`Unknown storage provider "${providerId}". Available: ${available}`);
+    throw new Error('Unknown storage provider "' + providerId + '". Available: ' + available);
   }
   return entry.instance;
 }

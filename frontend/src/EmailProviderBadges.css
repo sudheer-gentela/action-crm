@@ -1,0 +1,51 @@
+.email-provider-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-left: 8px;
+  letter-spacing: 0.02em;
+}
+
+.provider-outlook {
+  background: #e8f0fe;
+  color: #1a56db;
+}
+
+.provider-gmail {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+/* Provider filter buttons */
+.email-provider-filter {
+  display: flex;
+  gap: 4px;
+  background: #f3f4f6;
+  padding: 3px;
+  border-radius: 8px;
+}
+
+.provider-filter-btn {
+  padding: 4px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #6b7280;
+  transition: all 0.15s;
+}
+
+.provider-filter-btn.active {
+  background: white;
+  color: #111827;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  font-weight: 600;
+}
+
+.provider-filter-btn:hover:not(.active) {
+  color: #374151;
+}
