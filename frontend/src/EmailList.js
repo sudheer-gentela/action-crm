@@ -46,7 +46,7 @@ function EmailList({ userId, dealId, connectedProviders = [] }) {
     } finally {
       setIsLoading(false);
     }
-  }, [userId, dealId, providerFilter]);
+  }, [dealId, providerFilter]);
 
   useEffect(() => {
     if (userId) fetchEmails();
