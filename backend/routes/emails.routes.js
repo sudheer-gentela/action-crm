@@ -169,6 +169,83 @@ router.post('/process', async (req, res) => {
   }
 });
 
+
+// ── GET /gmail — fetch from Gmail inbox ─────────────────────
+router.get('/gmail', async (req, res) => {
+  try {
+    const { top = 50, skip = 0, dealId } = req.query;
+    const UnifiedEmailProvider = require('../services/UnifiedEmailProvider');
+
+    const result = await UnifiedEmailProvider.fetchEmails(
+      req.user.userId, 'gmail', { top: parseInt(top), skip: parseInt(skip) }
+    );
+
+    let emails = result.emails;
+
+    if (dealId) {
+      const dbResult = await db.query(
+        "SELECT external_id FROM emails WHERE deal_id = $1 AND user_id = $2 AND org_id = $3 AND provider = 'gmail'",
+        [dealId, req.user.userId, req.orgId]
+      );
+      const dealEmailIds = new Set(dbResult.rows.map(r => r.external_id));
+      emails = emails.filter(e => dealEmailIds.has(e.id));
+    }
+
+    res.json({ success: true, data: emails });
+  } catch (error) {
+    console.error('Error fetching Gmail emails:', error);
+    if (error.message.includes('No tokens found')) {
+      return res.status(403).json({ success: false, error: 'Gmail not connected' });
+    }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ── GET /unified — fetch from ALL connected providers ────────
+router.get('/unified', async (req, res) => {
+  try {
+    const { top = 50, dealId } = req.query;
+    const UnifiedEmailProvider = require('../services/UnifiedEmailProvider');
+    const providers = await UnifiedEmailProvider.getConnectedProviders(req.user.userId);
+
+    const allEmails = [];
+
+    for (const provider of providers) {
+      try {
+        const result = await UnifiedEmailProvider.fetchEmails(
+          req.user.userId, provider, { top: parseInt(top) }
+        );
+        allEmails.push(...result.emails);
+      } catch (err) {
+        console.warn('Failed to fetch ' + provider + ' emails:', err.message);
+      }
+    }
+
+    // Sort by date descending
+    allEmails.sort((a, b) => new Date(b.receivedDateTime) - new Date(a.receivedDateTime));
+
+    // Optionally filter by deal
+    let filtered = allEmails;
+    if (dealId) {
+      const dbResult = await db.query(
+        'SELECT external_id, provider FROM emails WHERE deal_id = $1 AND user_id = $2 AND org_id = $3',
+        [dealId, req.user.userId, req.orgId]
+      );
+      const dealEmailIds = new Set(dbResult.rows.map(r => r.external_id));
+      filtered = allEmails.filter(e => dealEmailIds.has(e.id));
+    }
+
+    res.json({
+      success:   true,
+      data:      filtered.slice(0, parseInt(top)),
+      providers: providers,
+    });
+  } catch (error) {
+    console.error('Error fetching unified emails:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ── GET /deal/:dealId — emails for a deal including team members' emails ────────
 // Fetches from DB only (not Outlook). Includes emails from all deal team members.
 // Returns threads grouped by conversation_id, ordered newest first.
