@@ -30,6 +30,10 @@ const INTERNAL_SOURCE_RULES = new Set([
   'health_5a_competitive', 'health_5b_price', 'health_5c_discount',
   'no_contacts', 'close_imminent', 'past_close_date',
   'meeting_prep', 'health_2c_single_thread',
+  // STRAP source rules
+  'strap_close_date', 'strap_buyer_engagement', 'strap_competitive',
+  'strap_momentum', 'strap_contact_coverage', 'strap_process',
+  'strap_deal_size', 'strap_stage_progression',
 ]);
 
 const INTERNAL_TYPES = new Set(['document_prep', 'task_complete', 'review', 'meeting_prep']);

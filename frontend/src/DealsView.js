@@ -6,6 +6,7 @@ import AIAnalyzeButton from './AIAnalyzeButton';
 import TranscriptUpload from './TranscriptUpload';
 import TranscriptAnalysis from './TranscriptAnalysis';
 import DealActionsPanel from './DealActionsPanel';
+import DealStrapPanel from './DealStrapPanel';
 import DealTeamPanel from './DealTeamPanel';
 import DealContactsPanel from './DealContactsPanel';
 import DealEmailHistory from './DealEmailHistory';
@@ -793,7 +794,13 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
                 </div>
               )}
 
-              {/* ── 2. Actions / Tasks ──────────────────────────── */}
+              {/* ── 2. STRAP — Strategy & Action Plan ──────────── */}
+              <div className="detail-section">
+                <h3>🎯 STRAP — Strategy & Action Plan</h3>
+                <DealStrapPanel deal={selectedDeal} />
+              </div>
+
+              {/* ── 3. Actions / Tasks ──────────────────────────── */}
               <div className="detail-section">
                 <h3>⚡ Actions & Tasks</h3>
                 <DealActionsPanel deal={selectedDeal} />

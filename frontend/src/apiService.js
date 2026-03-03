@@ -241,6 +241,17 @@ export const apiService = {
 
 
 
+  // ── STRAP Framework ─────────────────────────────────────────
+  straps: {
+    getActive:  (dealId)                       => api.get(`/straps/deal/${dealId}`),
+    getHistory: (dealId)                       => api.get(`/straps/deal/${dealId}/history`),
+    generate:   (dealId, useAI = true)         => api.post(`/straps/deal/${dealId}/generate`, { useAI }),
+    override:   (dealId, data)                 => api.post(`/straps/deal/${dealId}/override`, data),
+    getById:    (strapId)                      => api.get(`/straps/${strapId}`),
+    resolve:    (strapId, data)                => api.put(`/straps/${strapId}/resolve`, data),
+    reassess:   (strapId)                      => api.put(`/straps/${strapId}/reassess`),
+  },
+
   // ── Super Admin (platform-level) ─────────────────────────────
   superAdmin: {
     getStats:          ()                        => api.get('/super/stats'),

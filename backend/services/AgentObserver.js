@@ -15,6 +15,7 @@
  */
 
 const AgentProposalService = require('./AgentProposalService');
+const StrapResolutionDetector = require('./StrapResolutionDetector');
 
 class AgentObserver {
 
@@ -39,6 +40,11 @@ class AgentObserver {
       for (const action of (actions || [])) {
         await this._analyzeActionForProposals(action, dealId, context, orgId, userId);
       }
+
+      // STRAP hook: check if generated actions resolve an active STRAP hurdle
+      StrapResolutionDetector.checkFromEmail(dealId, orgId, userId)
+        .catch(err => console.error('🎯 STRAP resolution check error:', err.message));
+
     } catch (err) {
       console.error('AgentObserver.onActionsGenerated error:', err.message);
     }
@@ -105,6 +111,12 @@ class AgentObserver {
         });
       }
 
+      // STRAP hook: email may resolve an active STRAP hurdle (momentum, close_date, competitive)
+      if (dealId) {
+        StrapResolutionDetector.checkFromEmail(dealId, orgId, userId)
+          .catch(err => console.error('🎯 STRAP email resolution check error:', err.message));
+      }
+
     } catch (err) {
       console.error('AgentObserver.onEmailReceived error:', err.message);
     }
@@ -169,6 +181,10 @@ class AgentObserver {
           dealId,
         });
       }
+
+      // STRAP hook: health score change may resolve active STRAP
+      StrapResolutionDetector.checkFromHealthChange(dealId, orgId, userId, oldNum, newNum)
+        .catch(err => console.error('🎯 STRAP health resolution check error:', err.message));
 
     } catch (err) {
       console.error('AgentObserver.onHealthScoreChanged error:', err.message);
