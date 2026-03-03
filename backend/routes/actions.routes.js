@@ -605,6 +605,28 @@ router.get('/unified', async (req, res) => {
       const mappedStatus = statusMap[status] || status;
       prospectWhere += ` AND pa.status = $${ppIdx}`; prospectParams.push(mappedStatus); ppIdx++;
     }
+    if (actionType) {
+      // Map deal action types to prospecting equivalents
+      const prospectTypeMap = {
+        'meeting':       ['meeting_schedule'],
+        'follow_up':     ['outreach', 'follow_up'],
+        'email_send':    ['outreach'],
+        'document_prep': ['document_prep'],
+        'meeting_prep':  ['meeting_prep'],
+      };
+      if (actionType === 'internal') {
+        // Prospecting actions don't have is_internal, skip them
+        prospectWhere += ` AND FALSE`;
+      } else if (prospectTypeMap[actionType]) {
+        prospectWhere += ` AND pa.action_type = ANY($${ppIdx}::varchar[])`; prospectParams.push(prospectTypeMap[actionType]); ppIdx++;
+      } else {
+        prospectWhere += ` AND pa.action_type = $${ppIdx}`; prospectParams.push(actionType); ppIdx++;
+      }
+    }
+    if (nextStep) {
+      // nextStep maps to pa.channel in prospecting_actions
+      prospectWhere += ` AND pa.channel = $${ppIdx}`; prospectParams.push(nextStep); ppIdx++;
+    }
     if (dueBefore) { prospectWhere += ` AND pa.due_date <= $${ppIdx}`; prospectParams.push(dueBefore); ppIdx++; }
     if (dueAfter) { prospectWhere += ` AND pa.due_date >= $${ppIdx}`; prospectParams.push(dueAfter); ppIdx++; }
 
@@ -637,8 +659,8 @@ router.get('/unified', async (req, res) => {
     const [dealResult, prospectResult] = await Promise.all([
       db.query(dealQuery, dealParams),
       // Skip prospecting query when deal-specific filters are active
-      // (prospects don't have deal_id, account_id, or owner_id)
-      (dealId || accountId || ownerId)
+      // (prospects don't have deal_id, account_id, owner_id, or is_internal)
+      (dealId || accountId || ownerId || isInternal === 'true')
         ? Promise.resolve({ rows: [] })
         : db.query(prospectQuery, prospectParams),
     ]);
