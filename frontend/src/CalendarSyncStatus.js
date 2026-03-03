@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './CalendarSyncStatus.css';
 
 /**
@@ -20,14 +20,7 @@ function CalendarSyncStatus({ userId }) {
   const [connectedProviders, setConnectedProviders] = useState([]);
   const [syncingProvider, setSyncingProvider] = useState(null);
 
-  useEffect(() => {
-    if (userId) {
-      fetchSyncStatus();
-      detectConnectedProviders();
-    }
-  }, [userId]);
-
-  const detectConnectedProviders = async () => {
+  const detectConnectedProviders = useCallback(async () => {
     const providers = [];
     const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 
@@ -54,7 +47,14 @@ function CalendarSyncStatus({ userId }) {
     } catch (e) { /* Google status endpoint may not exist */ }
 
     setConnectedProviders(providers);
-  };
+  }, [userId]);
+
+  useEffect(() => {
+    if (userId) {
+      fetchSyncStatus();
+      detectConnectedProviders();
+    }
+  }, [userId, detectConnectedProviders]);
 
   const fetchSyncStatus = async () => {
     try {
