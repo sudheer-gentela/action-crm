@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
 import OutreachComposer from './OutreachComposer';
 import CoverageScorecard from './CoverageScorecard';
+import StrapPanel from './StrapPanel';
 import './ProspectingView.css';
 import './OutreachComposer.css';
 
@@ -918,6 +919,11 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                   👤 Linked Contact: <strong>{prospect.linkedContact.first_name} {prospect.linkedContact.last_name}</strong>
                 </div>
               )}
+
+              {/* STRAP — Strategy & Action Plan */}
+              <div style={{ marginTop: 16 }}>
+                <StrapPanel entityType="prospect" entityId={prospect.id} />
+              </div>
             </div>
           )}
 

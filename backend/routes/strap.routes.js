@@ -17,12 +17,20 @@
 const express = require('express');
 const router  = express.Router();
 
-const { authenticateToken } = require('../middleware/auth.middleware');
-const { orgContext }        = require('../middleware/orgContext.middleware');
-const StrapEngine           = require('../services/StrapEngine');
+const authenticateToken = require('../middleware/auth.middleware');
+const orgContext        = require('../middleware/orgContext.middleware');
+const StrapEngine       = require('../services/StrapEngine');
 
-router.use(authenticateToken);
-router.use(orgContext);
+// Handle both `module.exports = fn` and `module.exports = { authenticateToken: fn }` patterns
+const authMiddleware = typeof authenticateToken === 'function'
+  ? authenticateToken
+  : authenticateToken.authenticateToken || authenticateToken.default;
+const orgMiddleware = typeof orgContext === 'function'
+  ? orgContext
+  : orgContext.orgContext || orgContext.default;
+
+router.use(authMiddleware);
+router.use(orgMiddleware);
 
 // ── Validation ──────────────────────────────────────────────────────────────
 

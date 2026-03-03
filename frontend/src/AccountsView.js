@@ -6,6 +6,7 @@ import AccountMergeBanner from './AccountMergeBanner';
 import CoverageScorecard from './CoverageScorecard';
 import { csvExport, EXPORT_COLUMNS } from './csvUtils';
 import CSVImportModal from './CSVImportModal';
+import StrapPanel from './StrapPanel';
 import './AccountsView.css';
 
 const EDITABLE_FIELDS = {
@@ -409,7 +410,13 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
                 {renderEditableField('description', selectedAccount)}
               </div>
 
-              {/* ── 3. Active Deals (clickable → DealsView) ────────── */}
+              {/* ── 3. STRAP — Strategy & Action Plan ─────────── */}
+              <div className="detail-section">
+                <h3>🎯 STRAP — Strategy & Action Plan</h3>
+                <StrapPanel entityType="account" entityId={selectedAccount.id} />
+              </div>
+
+              {/* ── 4. Active Deals (clickable → DealsView) ────────── */}
               <div className="detail-section">
                 <h3>💼 Active Deals ({getAccountDeals(selectedAccount.id).length})</h3>
                 {getAccountDeals(selectedAccount.id).length === 0 ? (
@@ -442,7 +449,7 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
                 )}
               </div>
 
-              {/* ── 4. Contacts (clickable → ContactsView) ─────────── */}
+              {/* ── 5. Contacts (clickable → ContactsView) ─────────── */}
               <div className="detail-section">
                 <h3>👤 Contacts ({getAccountContacts(selectedAccount.id).length})</h3>
                 {getAccountContacts(selectedAccount.id).length === 0 ? (
@@ -472,15 +479,15 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
                 )}
               </div>
 
-              {/* ── 5. Prospecting ─────────────────────────────────── */}
+              {/* ── 6. Prospecting ─────────────────────────────────── */}
               <AccountProspectingSection accountId={selectedAccount.id} />
 
-              {/* ── 6. Coverage Scorecard ──────────────────────────── */}
+              {/* ── 7. Coverage Scorecard ──────────────────────────── */}
               <div className="detail-section">
                 <CoverageScorecard accountId={selectedAccount.id} />
               </div>
 
-              {/* ── 6. Quick Actions ────────────────────────────────── */}
+              {/* ── 8. Quick Actions ────────────────────────────────── */}
               <div className="detail-section">
                 <h3>⚡ Quick Actions</h3>
                 <div className="quick-actions">
