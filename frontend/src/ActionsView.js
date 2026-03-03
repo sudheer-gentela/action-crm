@@ -574,12 +574,17 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
   const ent = STRAP_ENTITY_CONFIG[strap.entity_type] || STRAP_ENTITY_CONFIG.deal;
   const ctx = strap.entityContext || {};
 
-  // Fetch progress when expanded
+  // Fetch progress when expanded (only once per expand)
+  const progressFetched = React.useRef(false);
   useEffect(() => {
-    if (expanded && !progress) {
+    if (expanded && !progressFetched.current) {
+      progressFetched.current = true;
       apiService.straps.getProgress(strap.id)
         .then(res => setProgress(res.data?.progress || null))
         .catch(() => setProgress(null));
+    }
+    if (!expanded) {
+      progressFetched.current = false;
     }
   }, [expanded, strap.id]);
 
