@@ -1,21 +1,72 @@
 /**
- * Calendar Sync Scheduler
- * Fetches calendar events from Outlook and stores to database
+ * Calendar Sync Scheduler (REPLACEMENT)
  *
- * MULTI-ORG changes:
- *   - findContactByEmail(client, orgId, email)
- *     contacts table has no user_id — scoped by org_id only
- *   - findActiveDeal(client, userId, orgId, accountId)
- *     deals scoped by user_id AND org_id
- *   - storeMeetingToDatabase(client, userId, orgId, meeting)
- *     dedup query includes org_id; meetings INSERT includes org_id
- *   - triggerCalendarSync(userId, options) — options.orgId required
- *     calendar_sync_history INSERT includes org_id
- *   - getCalendarSyncStatus(userId, orgId) — history scoped by org_id
+ * DROP-IN LOCATION: backend/jobs/calendarSync.js
+ *
+ * Key changes from original:
+ *   - triggerCalendarSync now accepts options.provider ('outlook' | 'google')
+ *   - When provider === 'google', uses googleService.fetchCalendarEvents()
+ *   - New parseGoogleEventToMeeting() maps Google Calendar shape to meetings table
+ *   - Default provider = 'outlook' for backward compatibility
+ *   - calendar_sync_history now records provider in sync_type column
+ *
+ * MULTI-ORG: All org scoping from the original is preserved.
  */
 
 const { pool } = require('../config/database');
-const { fetchCalendarEvents, parseEventToMeeting } = require('../services/calendarService');
+const { fetchCalendarEvents: fetchOutlookEvents, parseEventToMeeting: parseOutlookEvent } = require('../services/calendarService');
+const { fetchCalendarEvents: fetchGoogleEvents } = require('../services/googleService');
+
+// ── Google Calendar → meetings table mapper ──────────────────────────────────
+// googleService.fetchCalendarEvents returns:
+//   { id, title, description, start, end, location, attendees: [{email,name,status}], htmlLink, status }
+//
+// storeMeetingToDatabase expects:
+//   { external_id, source, title, description, start_time, end_time, location,
+//     meeting_type, status, attendees: [email_strings], organizer, external_data }
+
+function parseGoogleEventToMeeting(event) {
+  // Determine if all-day event (start is date-only string like '2025-06-15')
+  const isAllDay = event.start && !event.start.includes('T');
+
+  return {
+    external_id: event.id,
+    source: 'google',
+    title: event.title || '(No title)',
+    description: event.description || '',
+    start_time: isAllDay
+      ? new Date(event.start + 'T00:00:00')
+      : new Date(event.start),
+    end_time: isAllDay
+      ? new Date(event.end + 'T23:59:59')
+      : new Date(event.end),
+    location: event.location || null,
+    meeting_type: inferMeetingType(event),
+    status: event.status === 'cancelled' ? 'cancelled'
+      : (event.attendees || []).some(a => a.status === 'accepted') ? 'confirmed'
+      : 'scheduled',
+    attendees: (event.attendees || []).map(a => a.email).filter(Boolean),
+    organizer: (event.attendees || []).find(a => a.organizer)?.email || null,
+    external_data: {
+      htmlLink: event.htmlLink,
+      attendeeDetails: event.attendees,
+      isAllDay,
+    },
+  };
+}
+
+/**
+ * Infer meeting type from event content (best-effort heuristic).
+ */
+function inferMeetingType(event) {
+  const text = ((event.title || '') + ' ' + (event.description || '')).toLowerCase();
+  if (text.includes('demo'))                                      return 'demo';
+  if (text.includes('discovery') || text.includes('intro'))       return 'discovery';
+  if (text.includes('negotiat'))                                  return 'negotiation';
+  if (text.includes('follow up') || text.includes('follow-up'))   return 'follow_up';
+  if (text.includes('closing') || text.includes('sign'))          return 'closing';
+  return 'other';
+}
 
 /**
  * Find contact by email address.
@@ -124,7 +175,7 @@ async function storeMeetingToDatabase(client, userId, orgId, meeting) {
   );
 
   const newMeetingId = insertResult.rows[0].id;
-  console.log(`✅ Stored meeting ${newMeetingId}: ${meeting.title}`);
+  console.log(`✅ Stored meeting ${newMeetingId}: ${meeting.title} (${meeting.source})`);
 
   return { stored: true, meetingId: newMeetingId, dealId };
 }
@@ -132,24 +183,32 @@ async function storeMeetingToDatabase(client, userId, orgId, meeting) {
 /**
  * Trigger calendar sync for a user.
  * @param {number} userId
- * @param {{ orgId: number, startDate?: string, endDate?: string, top?: number }} options
+ * @param {{
+ *   orgId: number,
+ *   provider?: 'outlook' | 'google',
+ *   startDate?: string,
+ *   endDate?: string,
+ *   top?: number
+ * }} options
  */
 async function triggerCalendarSync(userId, options = {}) {
   const { orgId } = options;
+  const provider = options.provider || 'outlook';
   const client = await pool.connect();
 
   try {
-    console.log(`📅 Triggering calendar sync for user ${userId} org ${orgId}`);
+    const providerLabel = provider === 'google' ? 'Google Calendar' : 'Outlook Calendar';
+    console.log(`📅 Triggering ${providerLabel} sync for user ${userId} org ${orgId}`);
 
     await client.query('BEGIN');
 
-    // Create sync history record — includes org_id
+    // Create sync history record — includes org_id and provider
     const syncHistoryResult = await client.query(
       `INSERT INTO calendar_sync_history
        (user_id, org_id, sync_type, status, created_at)
-       VALUES ($1, $2, 'calendar', 'in_progress', NOW())
+       VALUES ($1, $2, $3, 'in_progress', NOW())
        RETURNING id`,
-      [userId, orgId]
+      [userId, orgId, 'calendar_' + provider]
     );
     const syncHistoryId = syncHistoryResult.rows[0].id;
 
@@ -157,28 +216,47 @@ async function triggerCalendarSync(userId, options = {}) {
     const startDate = options.startDate || new Date().toISOString();
     const endDate   = options.endDate   || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
-    // Fetch calendar events from Outlook
-    const result = await fetchCalendarEvents(userId, {
-      top:           options.top || 100,
-      startDateTime: startDate,
-      endDateTime:   endDate,
-    });
+    // ── Fetch events based on provider ──────────────────────────
+    let rawEvents = [];
+    let parseFn;
 
-    console.log(`📅 Found ${result.events.length} calendar events for user ${userId}`);
+    if (provider === 'google') {
+      // googleService.fetchCalendarEvents returns pre-mapped objects
+      const googleEvents = await fetchGoogleEvents(userId, {
+        maxResults: options.top || 100,
+        timeMin: startDate,
+        timeMax: endDate,
+      });
+      rawEvents = googleEvents;
+      parseFn = parseGoogleEventToMeeting;
+
+    } else {
+      // calendarService (Outlook) returns { events: [...raw graph objects] }
+      const result = await fetchOutlookEvents(userId, {
+        top:           options.top || 100,
+        startDateTime: startDate,
+        endDateTime:   endDate,
+      });
+      rawEvents = result.events || [];
+      parseFn = parseOutlookEvent;
+    }
+
+    console.log(`📅 Found ${rawEvents.length} ${providerLabel} events for user ${userId}`);
 
     let stored  = 0;
     let skipped = 0;
     let failed  = 0;
 
-    for (const event of result.events) {
+    for (const event of rawEvents) {
       try {
-        const meeting     = parseEventToMeeting(event);
+        const meeting     = parseFn(event);
         const storeResult = await storeMeetingToDatabase(client, userId, orgId, meeting);
 
         if (storeResult.skipped) skipped++;
         else if (storeResult.stored) stored++;
       } catch (error) {
-        console.error(`❌ Error processing event "${event.subject}":`, error.message);
+        const eventTitle = event.subject || event.title || event.summary || '(unknown)';
+        console.error(`❌ Error processing event "${eventTitle}":`, error.message);
         failed++;
       }
     }
@@ -196,13 +274,13 @@ async function triggerCalendarSync(userId, options = {}) {
 
     await client.query('COMMIT');
 
-    console.log(`✅ Calendar sync completed: ${stored} stored, ${skipped} skipped, ${failed} failed`);
+    console.log(`✅ ${providerLabel} sync completed: ${stored} stored, ${skipped} skipped, ${failed} failed`);
 
-    return { success: true, eventsFound: result.events.length, stored, skipped, failed };
+    return { success: true, provider, eventsFound: rawEvents.length, stored, skipped, failed };
 
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error(`❌ Calendar sync failed for user ${userId}:`, error);
+    console.error(`❌ Calendar sync failed for user ${userId} (${provider}):`, error);
 
     try {
       await client.query(

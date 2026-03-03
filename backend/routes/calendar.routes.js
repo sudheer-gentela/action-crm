@@ -1,3 +1,15 @@
+/**
+ * calendar.routes.js (REPLACEMENT)
+ *
+ * DROP-IN LOCATION: backend/routes/calendar.routes.js
+ *
+ * Key changes from original:
+ *   - POST /sync now accepts optional 'provider' in body ('outlook' | 'google')
+ *   - Error messages are provider-aware
+ *   - GET /week unchanged
+ *   - GET /sync/status unchanged
+ */
+
 const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
@@ -29,28 +41,65 @@ router.get('/week', async (req, res) => {
 });
 
 // ── POST /sync ────────────────────────────────────────────────
+// Now accepts: { provider: 'outlook' | 'google', startDate, endDate, top }
 router.post('/sync', async (req, res) => {
   try {
-    const { startDate, endDate, top } = req.body;
-    console.log(`📅 Manual calendar sync triggered for user ${req.user.userId} org ${req.orgId}`);
+    const { startDate, endDate, top, provider } = req.body;
 
-    const result = await triggerCalendarSync(req.user.userId, { startDate, endDate, top, orgId: req.orgId });
+    // Validate provider
+    const resolvedProvider = provider || 'outlook';
+    if (!['outlook', 'google'].includes(resolvedProvider)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid provider. Use "outlook" or "google".',
+      });
+    }
+
+    const providerLabel = resolvedProvider === 'google' ? 'Google Calendar' : 'Outlook Calendar';
+    console.log(`📅 Manual ${providerLabel} sync triggered for user ${req.user.userId} org ${req.orgId}`);
+
+    const result = await triggerCalendarSync(req.user.userId, {
+      startDate,
+      endDate,
+      top,
+      orgId: req.orgId,
+      provider: resolvedProvider,
+    });
 
     if (!result.success) {
-      return res.status(200).json({ success: false, message: result.message || 'Calendar sync failed' });
+      return res.status(200).json({
+        success: false,
+        message: result.message || `${providerLabel} sync failed`,
+      });
     }
 
     res.json({
       success: true,
-      message: 'Calendar sync completed',
-      data: { found: result.eventsFound, stored: result.stored, skipped: result.skipped, failed: result.failed }
+      message: `${providerLabel} sync completed`,
+      data: {
+        provider: resolvedProvider,
+        found: result.eventsFound,
+        stored: result.stored,
+        skipped: result.skipped,
+        failed: result.failed,
+      },
     });
   } catch (error) {
     console.error('❌ Calendar sync error:', error);
-    if (error.message.includes('No tokens found') || error.message.includes('Outlook not connected')) {
+
+    const provider = req.body.provider || 'outlook';
+    const providerLabel = provider === 'google' ? 'Google' : 'Outlook';
+
+    if (
+      error.message.includes('No tokens found') ||
+      error.message.includes('not connected') ||
+      error.message.includes('Please reconnect')
+    ) {
       return res.status(403).json({
-        success: false, error: 'Outlook not connected',
-        message: 'Please connect your Outlook account first', code: 'NOT_CONNECTED'
+        success: false,
+        error: `${providerLabel} not connected`,
+        message: `Please connect your ${providerLabel} account first`,
+        code: 'NOT_CONNECTED',
       });
     }
     res.status(500).json({ success: false, error: error.message });

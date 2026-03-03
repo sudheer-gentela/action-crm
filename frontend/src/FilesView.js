@@ -1,3 +1,16 @@
+/**
+ * FilesView.js (REPLACEMENT)
+ *
+ * DROP-IN LOCATION: frontend/src/FilesView.js
+ *
+ * Key changes from original:
+ *   - All hardcoded "OneDrive" strings replaced with dynamic provider labels
+ *   - Connection banner shows all connected providers (OneDrive, Google Drive, or both)
+ *   - Import button text and empty state are provider-aware
+ *   - File links say "Open in cloud storage" or use provider-specific labels
+ *   - Delete confirmation no longer says "OneDrive" — uses generic cloud wording
+ */
+
 import React, { useState, useEffect, useCallback } from 'react';
 import CloudFilePicker from './CloudFilePicker';
 import './FilesView.css';
@@ -6,7 +19,7 @@ const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 
 // ── Auth helper — matches App.js which saves under 'token' ────────────────
 async function apiFetch(path, options = {}) {
-  const token = localStorage.getItem('token'); // was 'authToken' — wrong key
+  const token = localStorage.getItem('token');
   const res = await fetch(`${API_BASE}${path.replace('/api/', '/')}`, {
     headers: {
       'Content-Type': 'application/json',
@@ -53,6 +66,16 @@ const CATEGORY_COLORS = {
   image:       '#ec4899',
 };
 
+const PROVIDER_LABELS = {
+  onedrive:    'OneDrive',
+  googledrive: 'Google Drive',
+};
+
+const PROVIDER_OPEN_LABELS = {
+  onedrive:    'Open in OneDrive',
+  googledrive: 'Open in Google Drive',
+};
+
 export default function FilesView() {
   const [importedFiles, setImportedFiles]   = useState([]);
   const [deals, setDeals]                   = useState([]);
@@ -82,11 +105,13 @@ export default function FilesView() {
       ]);
 
       if (statusRes.status === 'fulfilled') {
-        const connected = statusRes.value.providers?.find(p => p.connected);
+        const allProviders = statusRes.value.providers || [];
+        const connectedProviders = allProviders.filter(p => p.connected);
         setConnectionStatus({
-          providers: statusRes.value.providers || [],
-          anyConnected: !!connected,
-          connectedProvider: connected,
+          providers: allProviders,
+          anyConnected: connectedProviders.length > 0,
+          connectedProviders,
+          connectedNames: connectedProviders.map(p => PROVIDER_LABELS[p.id] || p.displayName || p.id).join(' & '),
         });
       }
 
@@ -97,7 +122,6 @@ export default function FilesView() {
       if (filesRes.status === 'fulfilled') {
         setImportedFiles(filesRes.value.files || []);
       } else {
-        // Fallback: /imported/all doesn't exist yet — load empty
         setImportedFiles([]);
       }
     } catch (e) {
@@ -116,7 +140,7 @@ export default function FilesView() {
   }, []);
 
   const handleDelete = async (recordId, fileName) => {
-    if (!window.confirm(`Remove the import record for "${fileName}"?\n\nThe original file in OneDrive will not be deleted.`)) return;
+    if (!window.confirm(`Remove the import record for "${fileName}"?\n\nThe original file in your cloud storage will not be deleted.`)) return;
     setDeletingId(recordId);
     try {
       await apiFetch(`/storage/imported/${recordId}`, { method: 'DELETE' });
@@ -167,6 +191,12 @@ export default function FilesView() {
     );
   }
 
+  // Build dynamic label for connected providers
+  const connectedNames = connectionStatus?.connectedNames || 'cloud storage';
+  const importButtonLabel = connectionStatus?.anyConnected
+    ? `+ Import from ${connectedNames}`
+    : '+ Import from Cloud Storage';
+
   return (
     <div className="files-view">
 
@@ -174,16 +204,16 @@ export default function FilesView() {
       <div className="files-header">
         <div className="files-header-left">
           <h2>☁️ Cloud Files</h2>
-          <p className="files-subtitle">Files imported from OneDrive and linked to your deals</p>
+          <p className="files-subtitle">Files imported from cloud storage and linked to your deals</p>
         </div>
         <div className="files-header-right">
           <button
             className="files-btn files-btn--primary"
             onClick={() => setShowPicker(true)}
             disabled={!connectionStatus?.anyConnected}
-            title={!connectionStatus?.anyConnected ? 'Connect Microsoft account in Settings first' : ''}
+            title={!connectionStatus?.anyConnected ? 'Connect a cloud storage provider in Settings first' : ''}
           >
-            + Import from OneDrive
+            {importButtonLabel}
           </button>
         </div>
       </div>
@@ -192,13 +222,13 @@ export default function FilesView() {
       {connectionStatus && !connectionStatus.anyConnected && (
         <div className="files-banner files-banner--warn">
           <span>⚠️ No cloud storage connected.</span>
-          <span>Connect your Microsoft account via <strong>Settings → Integrations</strong> to import files from OneDrive.</span>
+          <span>Connect your Google or Microsoft account via <strong>Settings → Integrations</strong> to import files.</span>
         </div>
       )}
 
       {connectionStatus?.anyConnected && (
         <div className="files-banner files-banner--ok">
-          <span>✅ OneDrive connected via Microsoft account</span>
+          <span>✅ Connected: {connectedNames}</span>
         </div>
       )}
 
@@ -264,6 +294,7 @@ export default function FilesView() {
           hasFiles={importedFiles.length > 0}
           isFiltered={filteredFiles.length !== importedFiles.length}
           connected={connectionStatus?.anyConnected}
+          connectedNames={connectedNames}
           onImport={() => setShowPicker(true)}
           onClearFilters={() => { setFilterDeal('all'); setFilterCategory('all'); setSearchQuery(''); }}
         />
@@ -286,6 +317,7 @@ export default function FilesView() {
                 const deal = deals.find(d => String(d.id) === String(file.deal_id));
                 const catColor = CATEGORY_COLORS[file.category] || '#6b7280';
                 const catIcon  = CATEGORY_ICONS[file.category]  || '📄';
+                const openLabel = PROVIDER_OPEN_LABELS[file.provider] || 'Open in cloud storage';
                 return (
                   <tr key={file.id} className="files-row">
                     <td className="files-cell files-cell--name">
@@ -300,7 +332,7 @@ export default function FilesView() {
                             className="files-open-link"
                             onClick={e => e.stopPropagation()}
                           >
-                            Open in OneDrive ↗
+                            {openLabel} ↗
                           </a>
                         )}
                       </div>
@@ -332,7 +364,7 @@ export default function FilesView() {
 
                     <td className="files-cell">
                       <span className="files-source-badge">
-                        ☁️ {file.source_label || file.provider || 'OneDrive'}
+                        ☁️ {file.source_label || PROVIDER_LABELS[file.provider] || file.provider || 'Cloud'}
                       </span>
                     </td>
 
@@ -343,7 +375,7 @@ export default function FilesView() {
                           target="_blank"
                           rel="noopener noreferrer"
                           className="files-icon-btn"
-                          title="Open in OneDrive"
+                          title={openLabel}
                         >
                           ↗
                         </a>
@@ -377,7 +409,7 @@ export default function FilesView() {
   );
 }
 
-function EmptyState({ hasFiles, isFiltered, connected, onImport, onClearFilters }) {
+function EmptyState({ hasFiles, isFiltered, connected, connectedNames, onImport, onClearFilters }) {
   if (isFiltered) {
     return (
       <div className="files-empty">
@@ -396,14 +428,14 @@ function EmptyState({ hasFiles, isFiltered, connected, onImport, onClearFilters 
       <h3>No files imported yet</h3>
       {connected ? (
         <>
-          <p>Import files from OneDrive to link them to your deals and run AI analysis</p>
+          <p>Import files from {connectedNames} to link them to your deals and run AI analysis</p>
           <button className="files-btn files-btn--primary" onClick={onImport}>
-            + Import from OneDrive
+            + Import from {connectedNames}
           </button>
         </>
       ) : (
         <>
-          <p>Connect your Microsoft account in <strong>Settings → Integrations</strong> to get started</p>
+          <p>Connect your Google or Microsoft account in <strong>Settings → Integrations</strong> to get started</p>
         </>
       )}
     </div>

@@ -1,9 +1,11 @@
-// CloudFilePicker.js
+// CloudFilePicker.js (REPLACEMENT)
 //
-// Provider-agnostic file picker. Replaces OneDriveFilePicker.js.
-// Shows a tab/switcher for each connected provider.
-// File browsing, search, selection, and pipeline config work identically
-// regardless of which provider is active.
+// DROP-IN LOCATION: frontend/src/CloudFilePicker.js
+//
+// Key changes from original:
+//   - BUGFIX: apiFetch() now reads localStorage.getItem('token') instead of 'authToken'
+//     (matches App.js, CalendarSyncStatus.js, DealFilesPanel.js, FilesView.js)
+//   - No other logic changes — the component was already provider-agnostic
 //
 // Props:
 //   dealId      {string}
@@ -476,7 +478,8 @@ export default function CloudFilePicker({ dealId: dealIdProp, contactId, onCompl
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 async function apiFetch(path, options = {}) {
-  const token = localStorage.getItem('authToken');
+  // ✅ FIXED: was 'authToken' — now matches App.js which stores under 'token'
+  const token = localStorage.getItem('token');
   const res = await fetch(`${API_BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
