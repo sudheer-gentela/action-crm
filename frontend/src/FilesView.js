@@ -77,7 +77,7 @@ const PROVIDER_OPEN_LABELS = {
   googledrive: 'Open in Google Drive',
 };
 
-export default function FilesView() {
+export default function FilesView({ pendingDealId, onDealOpened } = {}) {
   const [importedFiles, setImportedFiles]   = useState([]);
   const [deals, setDeals]                   = useState([]);
   const [loading, setLoading]               = useState(true);
@@ -89,6 +89,14 @@ export default function FilesView() {
   const [searchQuery, setSearchQuery]       = useState('');
   const [sortBy, setSortBy]                 = useState('date_desc');
   const [deletingId, setDeletingId]         = useState(null);
+
+  // Auto-filter to a specific deal when navigated from Actions
+  useEffect(() => {
+    if (pendingDealId) {
+      setFilterDeal(String(pendingDealId));
+      if (onDealOpened) onDealOpened();
+    }
+  }, [pendingDealId, onDealOpened]);
   const [successMsg, setSuccessMsg]         = useState('');
 
   useEffect(() => {

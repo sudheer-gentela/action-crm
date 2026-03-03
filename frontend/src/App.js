@@ -353,7 +353,7 @@ function Dashboard({ user, onLogout }) {
         const { tab, dealId } = detail;
         if (tab === 'email') {
           setPendingEmailDealId(dealId);
-        } else if (tab === 'deals') {
+        } else if (tab === 'deals' || tab === 'files') {
           setPendingDealId(dealId);
         }
       }
@@ -465,7 +465,7 @@ function Dashboard({ user, onLogout }) {
               onDealFilterApplied={() => setPendingEmailDealId(null)}
             />
           )}
-          {currentTab === 'files'        && <FilesView />}
+          {currentTab === 'files'        && <FilesView pendingDealId={pendingDealId} onDealOpened={() => setPendingDealId(null)} />}
           {currentTab === 'calendar'     && (
             <CalendarView
               openMeetingId={pendingMeetingId}

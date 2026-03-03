@@ -385,7 +385,7 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
           {action.nextStep === 'document' && dealId && (
             <button className="av-log-resource-nav" onClick={() => {
               window.dispatchEvent(new CustomEvent('navigate', {
-                detail: { tab: 'files', dealId, resume: true },
+                detail: { tab: 'deals', dealId, resume: true },
               }));
             }}>
               \ud83d\udcc1 Open Files for {action.deal?.name || 'this deal'} \u2192
@@ -1220,10 +1220,28 @@ export default function ActionsView() {
         window.open(`https://wa.me/${cleanPhone}`, '_blank');
       }
     } else if (nextStep === 'document') {
-      // Navigate to Files tab for this deal
-      window.dispatchEvent(new CustomEvent('navigate', {
-        detail: { tab: 'files', dealId, resume: true },
-      }));
+      // Best: go to deal detail page which has DealFilesPanel with deal-specific files
+      if (dealId) {
+        window.dispatchEvent(new CustomEvent('navigate', {
+          detail: { tab: 'deals', dealId, resume: true },
+        }));
+      } else if (action.deal?.account) {
+        // Account-level STRAP: go to accounts tab which shows all related deals
+        const accountId = action.deal?.accountId || null;
+        if (accountId) {
+          window.dispatchEvent(new CustomEvent('navigate', {
+            detail: { tab: 'accounts', accountId, resume: true },
+          }));
+        } else {
+          window.dispatchEvent(new CustomEvent('navigate', {
+            detail: { tab: 'files', resume: true },
+          }));
+        }
+      } else {
+        window.dispatchEvent(new CustomEvent('navigate', {
+          detail: { tab: 'files', resume: true },
+        }));
+      }
     }
 
     // Set status to in_progress (async, non-blocking)
