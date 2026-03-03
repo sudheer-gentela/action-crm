@@ -30,10 +30,21 @@ const INTERNAL_SOURCE_RULES = new Set([
   'health_5a_competitive', 'health_5b_price', 'health_5c_discount',
   'no_contacts', 'close_imminent', 'past_close_date',
   'meeting_prep', 'health_2c_single_thread',
-  // STRAP source rules
+  // Deal STRAP source rules
   'strap_close_date', 'strap_buyer_engagement', 'strap_competitive',
   'strap_momentum', 'strap_contact_coverage', 'strap_process',
   'strap_deal_size', 'strap_stage_progression',
+  // Account STRAP source rules
+  'strap_stale_account', 'strap_renewal_risk', 'strap_champion_gap',
+  'strap_no_exec_relationship', 'strap_expansion_blocked',
+  'strap_revenue_concentration', 'strap_whitespace', 'strap_single_product',
+  // Prospect STRAP source rules
+  'strap_ghosting', 'strap_stale_outreach', 'strap_no_research',
+  'strap_wrong_channel', 'strap_low_icp', 'strap_no_meeting',
+  'strap_multi_thread_needed', 'strap_conversion_ready',
+  // Implementation STRAP source rules
+  'strap_kickoff_delayed', 'strap_stakeholder_gap', 'strap_milestone_blocked',
+  'strap_adoption_risk', 'strap_escalation_needed', 'strap_handoff_incomplete',
 ]);
 
 const INTERNAL_TYPES = new Set(['document_prep', 'task_complete', 'review', 'meeting_prep']);

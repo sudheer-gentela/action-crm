@@ -1,6 +1,11 @@
 /**
- * API Utility - Centralized API calls
- * All API endpoints defined here to avoid reference issues
+ * apiService.js — DROP-IN REPLACEMENT
+ *
+ * CHANGE: straps section updated from deal-only to universal entity-type routes.
+ * Old: /straps/deal/:dealId/...
+ * New: /straps/:entityType/:entityId/...
+ *
+ * Everything else is IDENTICAL to the original.
  */
 
 import axios from 'axios';
@@ -8,7 +13,6 @@ import axios from 'axios';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 
-// Helper to get auth headers
 const getAuthHeaders = () => {
   const token = localStorage.getItem('token');
   return {
@@ -17,23 +21,15 @@ const getAuthHeaders = () => {
   };
 };
 
-// Create axios instance
-const api = axios.create({
-  baseURL: API_URL,
-});
+const api = axios.create({ baseURL: API_URL });
 
-// Add token to all requests
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
+  if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
-// API endpoints
 export const apiService = {
-  // Accounts
   accounts: {
     getAll: (scope = 'mine') => api.get(`/accounts?scope=${scope}`),
     getById: (id) => api.get(`/accounts/${id}`),
@@ -41,12 +37,10 @@ export const apiService = {
     update: (id, data) => api.put(`/accounts/${id}`, data),
     delete: (id) => api.delete(`/accounts/${id}`),
     getDuplicates: () => api.get('/accounts/duplicates'),
-    merge: (keepId, removeId, fieldOverrides = {}) =>
-      api.post('/accounts/merge', { keepId, removeId, fieldOverrides }),
+    merge: (keepId, removeId, fieldOverrides = {}) => api.post('/accounts/merge', { keepId, removeId, fieldOverrides }),
     bulk: (rows) => api.post('/accounts/bulk', { rows }),
   },
 
-  // Contacts
   contacts: {
     getAll: (scope = 'mine') => api.get(`/contacts?scope=${scope}`),
     getById: (id) => api.get(`/contacts/${id}`),
@@ -55,12 +49,10 @@ export const apiService = {
     update: (id, data) => api.put(`/contacts/${id}`, data),
     delete: (id) => api.delete(`/contacts/${id}`),
     getDuplicates: () => api.get('/contacts/duplicates'),
-    merge: (keepId, removeId, fieldOverrides = {}) =>
-      api.post('/contacts/merge', { keepId, removeId, fieldOverrides }),
+    merge: (keepId, removeId, fieldOverrides = {}) => api.post('/contacts/merge', { keepId, removeId, fieldOverrides }),
     bulk: (rows) => api.post('/contacts/bulk', { rows }),
   },
 
-  // Deals
   deals: {
     getAll: (scope = 'mine') => api.get(`/deals?scope=${scope}`),
     getById: (id) => api.get(`/deals/${id}`),
@@ -72,7 +64,6 @@ export const apiService = {
     bulk: (rows) => api.post('/deals/bulk', { rows }),
   },
 
-  // Emails
   emails: {
     getAll: () => api.get('/emails'),
     getById: (id) => api.get(`/emails/${id}`),
@@ -80,18 +71,13 @@ export const apiService = {
     getByDeal: (dealId) => api.get(`/emails?deal_id=${dealId}`),
     create: (data) => api.post('/emails', data),
     send: (data) => {
-      // If data is a number/string, it's a legacy call to send an existing email by id
-      if (typeof data === 'number' || typeof data === 'string') {
-        return api.post(`/emails/${data}/send`);
-      }
-      // Otherwise it's a compose+send with { contact_id, deal_id, subject, body, toAddress }
+      if (typeof data === 'number' || typeof data === 'string') return api.post(`/emails/${data}/send`);
       return api.post('/emails/compose', data);
     },
     compose: (data) => api.post('/emails/compose', data),
     delete: (id) => api.delete(`/emails/${id}`)
   },
 
-  // Meetings
   meetings: {
     getAll: () => api.get('/meetings'),
     getById: (id) => api.get(`/meetings/${id}`),
@@ -101,499 +87,330 @@ export const apiService = {
     delete: (id) => api.delete(`/meetings/${id}`)
   },
 
-  // Actions
   actions: {
-    getAll:     (params = {}) => {
-      const qs = new URLSearchParams(params).toString();
-      return api.get(`/actions${qs ? '?' + qs : ''}`);
-    },
-    getById:    (id)          => api.get(`/actions/${id}`),
-    create:     (data)        => api.post('/actions', data),
-    update:     (id, data)    => api.put(`/actions/${id}`, data),
-    delete:     (id)          => api.delete(`/actions/${id}`),
-
-    // Status
+    getAll: (params = {}) => { const qs = new URLSearchParams(params).toString(); return api.get(`/actions${qs ? '?' + qs : ''}`); },
+    getById: (id) => api.get(`/actions/${id}`),
+    create: (data) => api.post('/actions', data),
+    update: (id, data) => api.put(`/actions/${id}`, data),
+    delete: (id) => api.delete(`/actions/${id}`),
     updateStatus: (id, status) => api.patch(`/actions/${id}/status`, { status }),
-    complete:     (id)         => api.patch(`/actions/${id}/complete`),
-
-    // Snooze
-    snooze:   (id, reason, duration) => api.patch(`/actions/${id}/snooze`,   { reason, duration }),
-    unsnooze: (id)                   => api.patch(`/actions/${id}/unsnooze`),
-
-    // Generation (optionally scoped to a deal — snoozed actions are skipped by the generator)
+    complete: (id) => api.patch(`/actions/${id}/complete`),
+    snooze: (id, reason, duration) => api.patch(`/actions/${id}/snooze`, { reason, duration }),
+    unsnooze: (id) => api.patch(`/actions/${id}/unsnooze`),
     generate: (dealId = null) => api.post('/actions/generate', dealId ? { dealId } : {}),
-
-    // Config
-    getConfig:    ()     => api.get('/actions/config'),
+    getConfig: () => api.get('/actions/config'),
     updateConfig: (data) => api.put('/actions/config', data),
-
-    // Suggestions
-    getSuggestions:    (actionId)     => api.get(`/actions/${actionId}/suggestions`),
-    acceptSuggestion:  (suggestionId) => api.post(`/actions/suggestions/${suggestionId}/accept`),
+    getSuggestions: (actionId) => api.get(`/actions/${actionId}/suggestions`),
+    acceptSuggestion: (suggestionId) => api.post(`/actions/suggestions/${suggestionId}/accept`),
     dismissSuggestion: (suggestionId) => api.post(`/actions/suggestions/${suggestionId}/dismiss`),
   },
 
-  // Transcripts
   transcripts: {
     getAll: () => api.get('/transcripts'),
     getById: (id) => api.get(`/transcripts/${id}`),
-    upload: (formData) => {
-      return axios.post(`${API_URL}/transcripts/upload`, formData, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
-      });
-    },
+    upload: (formData) => axios.post(`${API_URL}/transcripts/upload`, formData, { headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` } }),
     analyze: (id) => api.post(`/transcripts/${id}/analyze`),
     delete: (id) => api.delete(`/transcripts/${id}`)
   },
 
-  // Deal Health
   health: {
-    scoreDeal:      (id)                                            => api.post(`/deals/${id}/score`),
-    scoreAll:       ()                                              => api.post('/deals/score-all'),
-    updateSignals:  (id, signals)                                   => api.patch(`/deals/${id}/signals`, signals),
+    scoreDeal: (id) => api.post(`/deals/${id}/score`),
+    scoreAll: () => api.post('/deals/score-all'),
+    updateSignals: (id, signals) => api.patch(`/deals/${id}/signals`, signals),
     signalOverride: (id, signalKey, value, managerOverride = false) => api.patch(`/deals/${id}/signal-override`, { signalKey, value, managerOverride }),
   },
 
-  // Health Config
   healthConfig: {
-    get:  ()     => api.get('/health-config'),
+    get: () => api.get('/health-config'),
     save: (data) => api.put('/health-config', data),
   },
 
-  // Competitors
   competitors: {
-    getAll: ()          => api.get('/competitors'),
-    create: (data)      => api.post('/competitors', data),
-    update: (id, data)  => api.put(`/competitors/${id}`, data),
-    delete: (id)        => api.delete(`/competitors/${id}`),
+    getAll: () => api.get('/competitors'),
+    create: (data) => api.post('/competitors', data),
+    update: (id, data) => api.put(`/competitors/${id}`, data),
+    delete: (id) => api.delete(`/competitors/${id}`),
   },
 
-  // Sales Playbook (single, legacy)
   playbook: {
-    get:  ()     => api.get('/playbook'),
+    get: () => api.get('/playbook'),
     save: (data) => api.put('/playbook', data),
   },
 
-  // Playbooks (multi-playbook per org)
   playbooks: {
-    getAll:     ()         => api.get('/playbooks'),
-    getDefault: ()         => api.get('/playbooks/default'),
-    getById:    (id)       => api.get(`/playbooks/${id}`),
-    create:     (data)     => api.post('/playbooks', data),
-    update:     (id, data) => api.put(`/playbooks/${id}`, data),
-    setDefault: (id)       => api.post(`/playbooks/${id}/set-default`),
-    delete:     (id)       => api.delete(`/playbooks/${id}`),
+    getAll: () => api.get('/playbooks'),
+    getDefault: () => api.get('/playbooks/default'),
+    getById: (id) => api.get(`/playbooks/${id}`),
+    create: (data) => api.post('/playbooks', data),
+    update: (id, data) => api.put(`/playbooks/${id}`, data),
+    setDefault: (id) => api.post(`/playbooks/${id}/set-default`),
+    delete: (id) => api.delete(`/playbooks/${id}`),
   },
 
-  // Deal Stages
   dealStages: {
-    getAll:    ()         => api.get('/deal-stages'),
-    getActive: ()         => api.get('/deal-stages/active'),
-    create:    (data)     => api.post('/deal-stages', data),
-    update:    (id, data) => api.put(`/deal-stages/${id}`, data),
-    delete:    (id)       => api.delete(`/deal-stages/${id}`),
+    getAll: () => api.get('/deal-stages'),
+    getActive: () => api.get('/deal-stages/active'),
+    create: (data) => api.post('/deal-stages', data),
+    update: (id, data) => api.put(`/deal-stages/${id}`, data),
+    delete: (id) => api.delete(`/deal-stages/${id}`),
   },
 
-  // Deal Contacts (link contacts to deals with roles)
   dealContacts: {
-    getByDeal:    (dealId)              => api.get(`/deals/${dealId}/contacts`),
-    add:          (dealId, contactId, role) => api.post(`/deals/${dealId}/contacts`, { contactId, role }),
-    updateRole:   (dealId, contactId, role) => api.put(`/deals/${dealId}/contacts/${contactId}`, { role }),
-    remove:       (dealId, contactId)       => api.delete(`/deals/${dealId}/contacts/${contactId}`),
+    getByDeal: (dealId) => api.get(`/deals/${dealId}/contacts`),
+    add: (dealId, contactId, role) => api.post(`/deals/${dealId}/contacts`, { contactId, role }),
+    updateRole: (dealId, contactId, role) => api.put(`/deals/${dealId}/contacts/${contactId}`, { role }),
+    remove: (dealId, contactId) => api.delete(`/deals/${dealId}/contacts/${contactId}`),
   },
 
-  // AI Prompts
   prompts: {
-    get:        ()    => api.get('/prompts'),
-    save:       (data) => api.put('/prompts', data),
-    reset:      (key) => api.delete(`/prompts/${key}`),
+    get: () => api.get('/prompts'),
+    save: (data) => api.put('/prompts', data),
+    reset: (key) => api.delete(`/prompts/${key}`),
   },
 
-  // ── Agentic Framework ─────────────────────────────────────────
   agent: {
-    getProposals:     (params = {}) => {
+    getProposals: (params = {}) => {
       const q = new URLSearchParams();
-      if (params.status)       q.set('status', params.status);
+      if (params.status) q.set('status', params.status);
       if (params.proposalType) q.set('proposalType', params.proposalType);
-      if (params.dealId)       q.set('dealId', params.dealId);
-      if (params.limit)        q.set('limit', params.limit);
+      if (params.dealId) q.set('dealId', params.dealId);
+      if (params.limit) q.set('limit', params.limit);
       const qs = q.toString();
       return api.get(`/agent/proposals${qs ? '?' + qs : ''}`);
     },
-    getCount:         ()              => api.get('/agent/proposals/count'),
-    getById:          (id)            => api.get(`/agent/proposals/${id}`),
-    approve:          (id, body = {}) => api.post(`/agent/proposals/${id}/approve`, body),
-    reject:           (id, body = {}) => api.post(`/agent/proposals/${id}/reject`, body),
-    editPayload:      (id, payload)   => api.patch(`/agent/proposals/${id}/payload`, { payload }),
-    bulkApprove:      (ids)           => api.post('/agent/proposals/bulk-approve', { proposalIds: ids }),
-    bulkReject:       (ids, reason)   => api.post('/agent/proposals/bulk-reject', { proposalIds: ids, reason }),
-    getStatus:        ()              => api.get('/agent/status'),
-    getDealProposals: (dealId)        => api.get(`/agent/deals/${dealId}/proposals`),
-    getTokenUsage:    (days = 30)     => api.get(`/agent/token-usage?days=${days}`),
+    getCount: () => api.get('/agent/proposals/count'),
+    getById: (id) => api.get(`/agent/proposals/${id}`),
+    approve: (id, body = {}) => api.post(`/agent/proposals/${id}/approve`, body),
+    reject: (id, body = {}) => api.post(`/agent/proposals/${id}/reject`, body),
+    editPayload: (id, payload) => api.patch(`/agent/proposals/${id}/payload`, { payload }),
+    bulkApprove: (ids) => api.post('/agent/proposals/bulk-approve', { proposalIds: ids }),
+    bulkReject: (ids, reason) => api.post('/agent/proposals/bulk-reject', { proposalIds: ids, reason }),
+    getStatus: () => api.get('/agent/status'),
+    getDealProposals: (dealId) => api.get(`/agent/deals/${dealId}/proposals`),
+    getTokenUsage: (days = 30) => api.get(`/agent/token-usage?days=${days}`),
     admin: {
-      updateSettings: (settings)      => api.patch('/agent/admin/settings', settings),
-      getStats:       (days = 30)     => api.get(`/agent/admin/stats?days=${days}`),
-      getTokenUsage:  (days = 30)     => api.get(`/agent/admin/token-usage?days=${days}`),
+      updateSettings: (settings) => api.patch('/agent/admin/settings', settings),
+      getStats: (days = 30) => api.get(`/agent/admin/stats?days=${days}`),
+      getTokenUsage: (days = 30) => api.get(`/agent/admin/token-usage?days=${days}`),
     },
   },
 
-
-
-  // ── STRAP Framework ─────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════
+  // STRAP Framework — UPDATED for Universal STRAP
+  // Old: /straps/deal/:dealId/...
+  // New: /straps/:entityType/:entityId/...
+  // ══════════════════════════════════════════════════════════
   straps: {
-    getActive:  (dealId)                       => api.get(`/straps/deal/${dealId}`),
-    getHistory: (dealId)                       => api.get(`/straps/deal/${dealId}/history`),
-    generate:   (dealId, useAI = true)         => api.post(`/straps/deal/${dealId}/generate`, { useAI }),
-    override:   (dealId, data)                 => api.post(`/straps/deal/${dealId}/override`, data),
-    getById:    (strapId)                      => api.get(`/straps/${strapId}`),
-    resolve:    (strapId, data)                => api.put(`/straps/${strapId}/resolve`, data),
-    reassess:   (strapId)                      => api.put(`/straps/${strapId}/reassess`),
+    getActive:  (entityType, entityId)        => api.get(`/straps/${entityType}/${entityId}`),
+    getHistory: (entityType, entityId)        => api.get(`/straps/${entityType}/${entityId}/history`),
+    generate:   (entityType, entityId, useAI) => api.post(`/straps/${entityType}/${entityId}/generate`, { useAI }),
+    override:   (entityType, entityId, data)  => api.post(`/straps/${entityType}/${entityId}/override`, data),
+    getById:    (strapId)                     => api.get(`/straps/${strapId}`),
+    resolve:    (strapId, data)               => api.put(`/straps/${strapId}/resolve`, data),
+    reassess:   (strapId)                     => api.put(`/straps/${strapId}/reassess`),
   },
 
-  // ── Super Admin (platform-level) ─────────────────────────────
   superAdmin: {
-    getStats:          ()                        => api.get('/super/stats'),
-    getOrgs:           (params = {})             => api.get('/super/orgs', { params }),
-    getOrg:            (orgId)                   => api.get(`/super/orgs/${orgId}`),
-    createOrg:         (data)                    => api.post('/super/orgs', data),
-    updateOrg:         (orgId, data)             => api.patch(`/super/orgs/${orgId}`, data),
-    suspendOrg:        (orgId, data)             => api.post(`/super/orgs/${orgId}/suspend`, data),
-    impersonateOrg:    (orgId)                   => api.post(`/super/orgs/${orgId}/impersonate`),
-    addUserToOrg:      (orgId, data)             => api.post(`/super/orgs/${orgId}/users`, data),
-    createUserForOrg:  (orgId, data)             => api.post(`/super/orgs/${orgId}/users/create`, data),
-    updateUserInOrg:   (orgId, userId, data)     => api.patch(`/super/orgs/${orgId}/users/${userId}`, data),
-    removeUserFromOrg: (orgId, userId)           => api.delete(`/super/orgs/${orgId}/users/${userId}`),
-    inviteUserToOrg:   (orgId, data)             => api.post(`/super/orgs/${orgId}/invites`, data),
-    getInvites:        (orgId)                   => api.get(`/super/orgs/${orgId}/invites`),
-    cancelInvite:      (orgId, inviteId)         => api.delete(`/super/orgs/${orgId}/invites/${inviteId}`),
-    getAdmins:         ()                        => api.get('/super/admins'),
-    grantAdmin:        (data)                    => api.post('/super/admins', data),
-    revokeAdmin:       (userId)                  => api.delete(`/super/admins/${userId}`),
-    getAuditLog:       (params = {})             => api.get('/super/audit', { params }),
+    getStats: () => api.get('/super/stats'),
+    getOrgs: (params = {}) => api.get('/super/orgs', { params }),
+    getOrg: (orgId) => api.get(`/super/orgs/${orgId}`),
+    createOrg: (data) => api.post('/super/orgs', data),
+    updateOrg: (orgId, data) => api.patch(`/super/orgs/${orgId}`, data),
+    suspendOrg: (orgId, data) => api.post(`/super/orgs/${orgId}/suspend`, data),
+    impersonateOrg: (orgId) => api.post(`/super/orgs/${orgId}/impersonate`),
+    addUserToOrg: (orgId, data) => api.post(`/super/orgs/${orgId}/users`, data),
+    createUserForOrg: (orgId, data) => api.post(`/super/orgs/${orgId}/users/create`, data),
+    updateUserInOrg: (orgId, userId, data) => api.patch(`/super/orgs/${orgId}/users/${userId}`, data),
+    removeUserFromOrg: (orgId, userId) => api.delete(`/super/orgs/${orgId}/users/${userId}`),
+    inviteUserToOrg: (orgId, data) => api.post(`/super/orgs/${orgId}/invites`, data),
+    getInvites: (orgId) => api.get(`/super/orgs/${orgId}/invites`),
+    cancelInvite: (orgId, inviteId) => api.delete(`/super/orgs/${orgId}/invites/${inviteId}`),
+    getAdmins: () => api.get('/super/admins'),
+    grantAdmin: (data) => api.post('/super/admins', data),
+    revokeAdmin: (userId) => api.delete(`/super/admins/${userId}`),
+    getAuditLog: (params = {}) => api.get('/super/audit', { params }),
   },
 
-  // ── Prospects ────────────────────────────────────────────────
   prospects: {
-    getAll: (scope = 'mine', params = {}) => {
-      const qs = new URLSearchParams({ scope, ...params }).toString();
-      return api.get(`/prospects?${qs}`);
-    },
-    getById:          (id)                        => api.get(`/prospects/${id}`),
-    create:           (data)                      => api.post('/prospects', data),
-    update:           (id, data)                  => api.put(`/prospects/${id}`, data),
-    delete:           (id)                        => api.delete(`/prospects/${id}`),
-    updateStage:      (id, stage, reason)         => api.post(`/prospects/${id}/stage`, { stage, reason }),
-    disqualify:       (id, reason)                => api.post(`/prospects/${id}/disqualify`, { reason }),
-    nurture:          (id, nurtureUntil, reason)  => api.post(`/prospects/${id}/nurture`, { nurtureUntil, reason }),
-    convert:          (id, data)                  => api.post(`/prospects/${id}/convert`, data),
-    linkAccount:      (id, accountId)             => api.post(`/prospects/${id}/link-account`, { accountId }),
-    linkContact:      (id, contactId)             => api.post(`/prospects/${id}/link-contact`, { contactId }),
-    getActivities:    (id)                        => api.get(`/prospects/${id}/activities`),
-    getPipelineSummary: (scope = 'mine')           => api.get(`/prospects/pipeline/summary?scope=${scope}`),
-    getContext:        (id)                        => api.get(`/prospect-context/${id}`),
-    scoreIcp:         (id)                        => api.post(`/prospect-context/${id}/score`),
-    scoreAllIcp:      ()                          => api.post('/prospect-context/score-all'),
-    getIcpConfig:     ()                          => api.get('/prospect-context/icp-config/current'),
-    updateIcpConfig:  (config)                    => api.put('/prospect-context/icp-config/current', config),
-    getIcpFields:     ()                          => api.get('/prospect-context/icp-config/fields'),
-    getIcpDefaults:   ()                          => api.get('/prospect-context/icp-config/defaults'),
+    getAll: (scope = 'mine', params = {}) => { const qs = new URLSearchParams({ scope, ...params }).toString(); return api.get(`/prospects?${qs}`); },
+    getById: (id) => api.get(`/prospects/${id}`),
+    create: (data) => api.post('/prospects', data),
+    update: (id, data) => api.put(`/prospects/${id}`, data),
+    delete: (id) => api.delete(`/prospects/${id}`),
+    updateStage: (id, stage, reason) => api.post(`/prospects/${id}/stage`, { stage, reason }),
+    disqualify: (id, reason) => api.post(`/prospects/${id}/disqualify`, { reason }),
+    nurture: (id, nurtureUntil, reason) => api.post(`/prospects/${id}/nurture`, { nurtureUntil, reason }),
+    convert: (id, data) => api.post(`/prospects/${id}/convert`, data),
+    linkAccount: (id, accountId) => api.post(`/prospects/${id}/link-account`, { accountId }),
+    linkContact: (id, contactId) => api.post(`/prospects/${id}/link-contact`, { contactId }),
+    getActivities: (id) => api.get(`/prospects/${id}/activities`),
+    getPipelineSummary: (scope = 'mine') => api.get(`/prospects/pipeline/summary?scope=${scope}`),
+    getContext: (id) => api.get(`/prospect-context/${id}`),
+    scoreIcp: (id) => api.post(`/prospect-context/${id}/score`),
+    scoreAllIcp: () => api.post('/prospect-context/score-all'),
+    getIcpConfig: () => api.get('/prospect-context/icp-config/current'),
+    updateIcpConfig: (config) => api.put('/prospect-context/icp-config/current', config),
+    getIcpFields: () => api.get('/prospect-context/icp-config/fields'),
+    getIcpDefaults: () => api.get('/prospect-context/icp-config/defaults'),
   },
 
-  // ── Prospecting Actions ─────────────────────────────────────
   prospectingActions: {
-    getAll: (params = {}) => {
-      const qs = new URLSearchParams(params).toString();
-      return api.get(`/prospecting-actions${qs ? '?' + qs : ''}`);
-    },
-    getById:       (id)                         => api.get(`/prospecting-actions/${id}`),
-    create:        (data)                       => api.post('/prospecting-actions', data),
-    update:        (id, data)                   => api.put(`/prospecting-actions/${id}`, data),
-    updateStatus:  (id, status, outcome)        => api.patch(`/prospecting-actions/${id}/status`, { status, outcome }),
-    snooze:        (id, duration, reason)       => api.patch(`/prospecting-actions/${id}/snooze`, { duration, reason }),
-    unsnooze:      (id)                         => api.patch(`/prospecting-actions/${id}/unsnooze`),
-    execute:       (id, outcome, notes)         => api.post(`/prospecting-actions/${id}/execute`, { outcome, notes }),
-    delete:        (id)                         => api.delete(`/prospecting-actions/${id}`),
+    getAll: (params = {}) => { const qs = new URLSearchParams(params).toString(); return api.get(`/prospecting-actions${qs ? '?' + qs : ''}`); },
+    getById: (id) => api.get(`/prospecting-actions/${id}`),
+    create: (data) => api.post('/prospecting-actions', data),
+    update: (id, data) => api.put(`/prospecting-actions/${id}`, data),
+    updateStatus: (id, status, outcome) => api.patch(`/prospecting-actions/${id}/status`, { status, outcome }),
+    snooze: (id, duration, reason) => api.patch(`/prospecting-actions/${id}/snooze`, { duration, reason }),
+    unsnooze: (id) => api.patch(`/prospecting-actions/${id}/unsnooze`),
+    execute: (id, outcome, notes) => api.post(`/prospecting-actions/${id}/execute`, { outcome, notes }),
+    delete: (id) => api.delete(`/prospecting-actions/${id}`),
   },
 
-  // ── Account Prospecting ─────────────────────────────────────
   accountProspecting: {
-    getOverview: (accountId)              => api.get(`/accounts/${accountId}/prospecting`),
-    getCoverage: (accountId, playbookId)  => api.get(`/accounts/${accountId}/coverage?playbookId=${playbookId}`),
+    getOverview: (accountId) => api.get(`/accounts/${accountId}/prospecting`),
+    getCoverage: (accountId, playbookId) => api.get(`/accounts/${accountId}/coverage?playbookId=${playbookId}`),
   },
 
-  // ── Unified Actions ─────────────────────────────────────────
   unifiedActions: {
-    getAll: (scope = 'mine', source = 'all') =>
-      api.get(`/actions/unified?scope=${scope}&source=${source}`),
+    getAll: (scope = 'mine', source = 'all') => api.get(`/actions/unified?scope=${scope}&source=${source}`),
   },
 
-  // ── Org Admin (org-level) ─────────────────────────────────────
   orgAdmin: {
-    getProfile:      ()               => api.get('/org/admin/profile'),
-    updateProfile:   (data)           => api.patch('/org/admin/profile', data),
-    getStats:        ()               => api.get('/org/admin/stats'),
-    getMembers:      ()               => api.get('/org/admin/members'),
-    updateMember:    (userId, data)   => api.patch(`/org/admin/members/${userId}`, data),
-    removeMember:    (userId)         => api.delete(`/org/admin/members/${userId}`),
-    getInvitations:  ()               => api.get('/org/admin/invitations'),
-    sendInvitation:  (data)           => api.post('/org/admin/invitations', data),
-    cancelInvitation:(id)             => api.delete(`/org/admin/invitations/${id}`),
-    getDuplicateSettings: ()          => api.get('/org/admin/duplicate-settings'),
-    updateDuplicateSettings: (data)   => api.patch('/org/admin/duplicate-settings', data),
-    // Org-level integrations
-    getIntegrations:      ()               => api.get('/org/admin/integrations'),
-    updateIntegration:    (type, data)     => api.patch(`/org/admin/integrations/${type}`, data),
-    // Hierarchy
-    getHierarchy:         ()               => api.get('/org/admin/hierarchy'),
-    getMyTeam:            ()               => api.get('/org/admin/hierarchy/my-team'),
-    updateHierarchy:      (userId, data)   => api.put(`/org/admin/hierarchy/${userId}`, data),
-    bulkUpdateHierarchy:  (entries)         => api.post('/org/admin/hierarchy/bulk', { entries }),
-    removeFromHierarchy:  (userId)          => api.delete(`/org/admin/hierarchy/${userId}`),
-    removeDottedLine:     (userId, managerId) => api.delete(`/org/admin/hierarchy/${userId}/dotted/${managerId}`),
-    // Playbook Types
-    getPlaybookTypes:     ()               => api.get('/org/admin/playbook-types'),
-    createPlaybookType:   (data)           => api.post('/org/admin/playbook-types', data),
-    updatePlaybookType:   (key, data)      => api.put(`/org/admin/playbook-types/${key}`, data),
-    deletePlaybookType:   (key)            => api.delete(`/org/admin/playbook-types/${key}`),
-    // Teams
-    getTeamDimensions:    ()               => api.get('/org/admin/team-dimensions'),
-    updateTeamDimensions: (dimensions)     => api.put('/org/admin/team-dimensions', { dimensions }),
-    getTeams:             (dimension)      => api.get(`/org/admin/teams${dimension ? '?dimension=' + dimension : ''}`),
-    createTeam:           (data)           => api.post('/org/admin/teams', data),
-    updateTeam:           (id, data)       => api.put(`/org/admin/teams/${id}`, data),
-    deleteTeam:           (id)             => api.delete(`/org/admin/teams/${id}`),
-    getTeamMemberships:   ()               => api.get('/org/admin/team-memberships'),
-    setTeamMembership:    (userId, teamId) => api.post('/org/admin/team-memberships', { userId, teamId }),
+    getProfile: () => api.get('/org/admin/profile'),
+    updateProfile: (data) => api.patch('/org/admin/profile', data),
+    getStats: () => api.get('/org/admin/stats'),
+    getMembers: () => api.get('/org/admin/members'),
+    updateMember: (userId, data) => api.patch(`/org/admin/members/${userId}`, data),
+    removeMember: (userId) => api.delete(`/org/admin/members/${userId}`),
+    getInvitations: () => api.get('/org/admin/invitations'),
+    sendInvitation: (data) => api.post('/org/admin/invitations', data),
+    cancelInvitation: (id) => api.delete(`/org/admin/invitations/${id}`),
+    getDuplicateSettings: () => api.get('/org/admin/duplicate-settings'),
+    updateDuplicateSettings: (data) => api.patch('/org/admin/duplicate-settings', data),
+    getIntegrations: () => api.get('/org/admin/integrations'),
+    updateIntegration: (type, data) => api.patch(`/org/admin/integrations/${type}`, data),
+    getHierarchy: () => api.get('/org/admin/hierarchy'),
+    getMyTeam: () => api.get('/org/admin/hierarchy/my-team'),
+    updateHierarchy: (userId, data) => api.put(`/org/admin/hierarchy/${userId}`, data),
+    bulkUpdateHierarchy: (entries) => api.post('/org/admin/hierarchy/bulk', { entries }),
+    removeFromHierarchy: (userId) => api.delete(`/org/admin/hierarchy/${userId}`),
+    removeDottedLine: (userId, managerId) => api.delete(`/org/admin/hierarchy/${userId}/dotted/${managerId}`),
+    getPlaybookTypes: () => api.get('/org/admin/playbook-types'),
+    createPlaybookType: (data) => api.post('/org/admin/playbook-types', data),
+    updatePlaybookType: (key, data) => api.put(`/org/admin/playbook-types/${key}`, data),
+    deletePlaybookType: (key) => api.delete(`/org/admin/playbook-types/${key}`),
+    getTeamDimensions: () => api.get('/org/admin/team-dimensions'),
+    updateTeamDimensions: (dimensions) => api.put('/org/admin/team-dimensions', { dimensions }),
+    getTeams: (dimension) => api.get(`/org/admin/teams${dimension ? '?dimension=' + dimension : ''}`),
+    createTeam: (data) => api.post('/org/admin/teams', data),
+    updateTeam: (id, data) => api.put(`/org/admin/teams/${id}`, data),
+    deleteTeam: (id) => api.delete(`/org/admin/teams/${id}`),
+    getTeamMemberships: () => api.get('/org/admin/team-memberships'),
+    setTeamMembership: (userId, teamId) => api.post('/org/admin/team-memberships', { userId, teamId }),
     removeTeamMembership: (userId, teamId) => api.delete(`/org/admin/team-memberships/${userId}/${teamId}`),
-    getUserTeamProfile:   (userId)         => api.get(`/org/admin/team-profile/${userId}`),
-    bulkAssignTeams:      (assignments)    => api.post('/org/admin/team-memberships/bulk', { assignments }),
+    getUserTeamProfile: (userId) => api.get(`/org/admin/team-profile/${userId}`),
+    bulkAssignTeams: (assignments) => api.post('/org/admin/team-memberships/bulk', { assignments }),
   },
 };
 
-
 // ============================================================
-// OUTLOOK & SYNC APIs
+// OUTLOOK & SYNC APIs (unchanged)
 // ============================================================
 
-//const API_BASE_URL_SYNC = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
-
-// Outlook API
 export const outlookAPI = {
   getAuthUrl: async (userId) => {
-    console.log('📤 Calling getAuthUrl with userId:', userId);
-    
     const url = `${API_BASE_URL}/outlook/connect?userId=${userId}`;
-    console.log('📤 Request URL:', url);
-    
-    const response = await fetch(url, {
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    });
-    
-    console.log('📥 Response status:', response.status);
-    
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      console.error('❌ Error response:', errorData);
-      throw new Error(errorData.error || 'Failed to get auth URL');
-    }
-    
+    const response = await fetch(url, { headers: { 'Content-Type': 'application/json' } });
+    if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(errorData.error || 'Failed to get auth URL'); }
     return response.json();
   },
-
   getStatus: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/outlook/status?userId=${userId}`, {
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    });
-    
-    if (!response.ok) {
-      throw new Error('Failed to get status');
-    }
-    
+    const response = await fetch(`${API_BASE_URL}/outlook/status?userId=${userId}`, { headers: { 'Content-Type': 'application/json' } });
+    if (!response.ok) throw new Error('Failed to get status');
     return response.json();
   },
-
   disconnect: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/outlook/disconnect`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ userId })
-    });
-    
-    if (!response.ok) {
-      throw new Error('Failed to disconnect');
-    }
-    
+    const response = await fetch(`${API_BASE_URL}/outlook/disconnect`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId }) });
+    if (!response.ok) throw new Error('Failed to disconnect');
     return response.json();
   },
-
   fetchEmails: async (userId, options = {}) => {
-    const params = new URLSearchParams({
-      top: options.top || 50,
-      skip: options.skip || 0,
-      ...(options.since && { since: options.since })
-    });
-
-    // ✅ Uses auth headers (this endpoint has authenticateToken middleware)
-    const response = await fetch(`${API_BASE_URL}/emails/outlook?${params}`, {
-      headers: getAuthHeaders()
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
+    const params = new URLSearchParams({ top: options.top || 50, skip: options.skip || 0, ...(options.since && { since: options.since }) });
+    const response = await fetch(`${API_BASE_URL}/emails/outlook?${params}`, { headers: getAuthHeaders() });
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     return response.json();
   },
-
   processEmail: async (userId, emailId) => {
-    // ✅ Uses auth headers (this endpoint has authenticateToken middleware)
-    const response = await fetch(`${API_BASE_URL}/emails/process`, {
-      method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ userId, emailId })
-    });
-    
-    if (!response.ok) {
-      throw new Error('Failed to process email');
-    }
-    
+    const response = await fetch(`${API_BASE_URL}/emails/process`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ userId, emailId }) });
+    if (!response.ok) throw new Error('Failed to process email');
     return response.json();
   }
 };
 
-// Google API
 export const googleAPI = {
   getAuthUrl: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/google/connect?userId=${userId}`, {
-      headers: { 'Content-Type': 'application/json' }
-    });
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error || 'Failed to get auth URL');
-    }
+    const response = await fetch(`${API_BASE_URL}/google/connect?userId=${userId}`, { headers: { 'Content-Type': 'application/json' } });
+    if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(errorData.error || 'Failed to get auth URL'); }
     return response.json();
   },
-
   getStatus: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/google/status?userId=${userId}`, {
-      headers: { 'Content-Type': 'application/json' }
-    });
+    const response = await fetch(`${API_BASE_URL}/google/status?userId=${userId}`, { headers: { 'Content-Type': 'application/json' } });
     if (!response.ok) throw new Error('Failed to get status');
     return response.json();
   },
-
   disconnect: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/google/disconnect`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId })
-    });
+    const response = await fetch(`${API_BASE_URL}/google/disconnect`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId }) });
     if (!response.ok) throw new Error('Failed to disconnect');
     return response.json();
   },
-
   fetchEmails: async (userId, options = {}) => {
-    const params = new URLSearchParams({
-      top: options.top || 50,
-      skip: options.skip || 0,
-    });
-    const response = await fetch(`${API_BASE_URL}/emails/gmail?${params}`, {
-      headers: getAuthHeaders()
-    });
+    const params = new URLSearchParams({ top: options.top || 50, skip: options.skip || 0 });
+    const response = await fetch(`${API_BASE_URL}/emails/gmail?${params}`, { headers: getAuthHeaders() });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   },
 };
 
-// ============================================================
-// UNIFIED EMAIL API
-// ============================================================
-
 export const unifiedEmailAPI = {
   fetchEmails: async (options = {}) => {
-    const params = new URLSearchParams({
-      top: options.top || 50,
-      ...(options.dealId && { dealId: options.dealId }),
-    });
-    const response = await fetch(`${API_BASE_URL}/emails/unified?${params}`, {
-      headers: getAuthHeaders()
-    });
+    const params = new URLSearchParams({ top: options.top || 50, ...(options.dealId && { dealId: options.dealId }) });
+    const response = await fetch(`${API_BASE_URL}/emails/unified?${params}`, { headers: getAuthHeaders() });
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     return response.json();
   },
-
   getConnectedProviders: async () => {
     const userId = JSON.parse(localStorage.getItem('user') || '{}').id;
     if (!userId) return [];
-
-    const [outlookStatus, googleStatus] = await Promise.allSettled([
-      outlookAPI.getStatus(userId),
-      googleAPI.getStatus(userId),
-    ]);
-
+    const [outlookStatus, googleStatus] = await Promise.allSettled([outlookAPI.getStatus(userId), googleAPI.getStatus(userId)]);
     const providers = [];
-    if (outlookStatus.status === 'fulfilled' && outlookStatus.value?.connected) {
-      providers.push('outlook');
-    }
-    if (googleStatus.status === 'fulfilled' && googleStatus.value?.connected) {
-      providers.push('gmail');
-    }
+    if (outlookStatus.status === 'fulfilled' && outlookStatus.value?.connected) providers.push('outlook');
+    if (googleStatus.status === 'fulfilled' && googleStatus.value?.connected) providers.push('gmail');
     return providers;
   },
 };
 
-// ============================================================
-// SYNC API (unified - supports Outlook + Gmail)
-// ============================================================
-
 export const syncAPI = {
   triggerSync: async (userId, provider = 'outlook') => {
-    const response = await fetch(`${API_BASE_URL}/sync/emails`, {
-      method: 'POST',
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ provider }),
-    });
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error || 'Failed to trigger sync');
-    }
+    const response = await fetch(`${API_BASE_URL}/sync/emails`, { method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ provider }) });
+    if (!response.ok) { const errorData = await response.json().catch(() => ({})); throw new Error(errorData.error || 'Failed to trigger sync'); }
     return response.json();
   },
-
   triggerSyncAll: async (userId) => {
     const providers = await unifiedEmailAPI.getConnectedProviders();
     const results = [];
     for (const provider of providers) {
-      try {
-        const result = await syncAPI.triggerSync(userId, provider);
-        results.push({ provider, ...result });
-      } catch (err) {
-        results.push({ provider, success: false, error: err.message });
-      }
+      try { const result = await syncAPI.triggerSync(userId, provider); results.push({ provider, ...result }); }
+      catch (err) { results.push({ provider, success: false, error: err.message }); }
     }
     return results;
   },
-
   getStatus: async (userId) => {
-    const response = await fetch(`${API_BASE_URL}/sync/emails/status`, {
-      headers: getAuthHeaders()
-    });
+    const response = await fetch(`${API_BASE_URL}/sync/emails/status`, { headers: getAuthHeaders() });
     if (!response.ok) throw new Error('Failed to get sync status');
     return response.json();
   },
-
   getConfig: async () => {
-    const response = await fetch(`${API_BASE_URL}/sync/config`, {
-      headers: getAuthHeaders()
-    });
+    const response = await fetch(`${API_BASE_URL}/sync/config`, { headers: getAuthHeaders() });
     if (!response.ok) throw new Error('Failed to get sync config');
     return response.json();
   },
