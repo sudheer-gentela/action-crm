@@ -940,30 +940,50 @@ export default function ActionsView() {
       .catch(() => setHasTeam(false));
   }, []);
 
+  // ── Fetch filter options, contacts, deals when scope changes ──
+  const lastScopeFetch = React.useRef('');
   useEffect(() => {
+    if (lastScopeFetch.current === scope) return;
+    lastScopeFetch.current = scope;
+
     apiFetch(`/actions/filter-options?scope=${scope}`).then(data => setFilterOptions(data)).catch(() => {});
     apiFetch(`/contacts?scope=${scope}`).then(d => setContacts(d.contacts || [])).catch(() => {});
     apiFetch(`/deals?scope=${scope}`).then(d => setDeals(d.deals || [])).catch(() => {});
   }, [scope]);
 
   // ── Fetch STRAPs ────────────────────────────────────────────────
-  const fetchStraps = useCallback(async () => {
-    setStrapsLoading(true);
-    try {
-      const params = { scope };
-      if (actionSource === 'deals')       params.entityType = 'deal';
-      if (actionSource === 'prospecting') params.entityType = 'prospect';
-      const res = await apiService.straps.getAllActive(scope, params);
-      setStraps(res.data?.straps || res.data || []);
-    } catch (err) {
-      console.error('Failed to fetch STRAPs:', err);
-      setStraps([]);
-    } finally {
-      setStrapsLoading(false);
-    }
-  }, [scope, actionSource]);
+  // Uses a ref to avoid re-creating the callback and to skip duplicate fetches
+  const strapsFetchKey = `${scope}|${actionSource}`;
+  const lastStrapsFetch = React.useRef('');
 
-  useEffect(() => { fetchStraps(); }, [fetchStraps]);
+  useEffect(() => {
+    // Skip if we already fetched for this exact key
+    if (lastStrapsFetch.current === strapsFetchKey) return;
+    lastStrapsFetch.current = strapsFetchKey;
+
+    let cancelled = false;
+    setStrapsLoading(true);
+
+    const params = { scope };
+    if (actionSource === 'deals')       params.entityType = 'deal';
+    if (actionSource === 'prospecting') params.entityType = 'prospect';
+
+    apiService.straps.getAllActive(scope, params)
+      .then(res => {
+        if (!cancelled) setStraps(res.data?.straps || res.data || []);
+      })
+      .catch(err => {
+        if (!cancelled) {
+          console.error('Failed to fetch STRAPs:', err);
+          setStraps([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setStrapsLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [strapsFetchKey, scope, actionSource]);
 
   // ── Filter STRAPs client-side to match active action filters ────
   const filteredStraps = straps.filter(s => {
@@ -1015,7 +1035,13 @@ export default function ActionsView() {
     }
   }
 
-  const fetchActions = useCallback(async (activeFilters) => {
+  // ── Fetch actions (unified) ───────────────────────────────────
+  // Uses a key-based dedup to prevent duplicate fetches on re-renders.
+  // actionsFetchKey changes only when scope, actionSource, or filters actually change.
+  const actionsFetchKey = `${scope}|${actionSource}|${JSON.stringify(filters)}`;
+  const lastActionsFetch = React.useRef('');
+
+  const fetchActionsImpl = useCallback(async (activeFilters) => {
     setLoading(true);
     setError(null);
     try {
@@ -1062,9 +1088,19 @@ export default function ActionsView() {
     }
   }, [scope, actionSource]);
 
+  // Expose fetchActions for manual re-fetches (e.g. after generate)
+  const fetchActions = useCallback((f) => {
+    lastActionsFetch.current = ''; // force re-fetch
+    return fetchActionsImpl(f);
+  }, [fetchActionsImpl]);
+
   useEffect(() => {
-    fetchActions(filters);
-  }, [filters, fetchActions, scope, actionSource]); // re-fetch when scope or actionSource changes
+    // Skip if we already fetched for this exact combination
+    if (lastActionsFetch.current === actionsFetchKey) return;
+    lastActionsFetch.current = actionsFetchKey;
+
+    fetchActionsImpl(filters);
+  }, [actionsFetchKey, filters, fetchActionsImpl]);
 
   function handleFilterChange(key, value) {
     if (key === '__reset__') { setFilters(DEFAULT_FILTERS); return; }

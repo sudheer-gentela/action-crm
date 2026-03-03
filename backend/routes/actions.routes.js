@@ -636,7 +636,11 @@ router.get('/unified', async (req, res) => {
 
     const [dealResult, prospectResult] = await Promise.all([
       db.query(dealQuery, dealParams),
-      db.query(prospectQuery, prospectParams),
+      // Skip prospecting query when deal-specific filters are active
+      // (prospects don't have deal_id, account_id, or owner_id)
+      (dealId || accountId || ownerId)
+        ? Promise.resolve({ rows: [] })
+        : db.query(prospectQuery, prospectParams),
     ]);
 
     const allActions = [
