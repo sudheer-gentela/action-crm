@@ -840,17 +840,12 @@ function MeetingCard({ meeting, attendees, onEdit, onDelete, onSelect, isSelecte
         {meeting.description && <p className="meeting-description">{meeting.description}</p>}
         <div className="meeting-meta">
           <span className={`meeting-type ${meeting.meeting_type}`}>{meeting.meeting_type}</span>
- //         {meeting.source && meeting.source !== 'manual' && (
- //           <span className={`meeting-source-badge ${meeting.source}`}>
- //             {meeting.source === 'outlook' ? '📧 Outlook' : '📅 ' + meeting.source}
- //           </span>
-
-	{meeting.source && meeting.source !== 'manual' && (
- 	   		<span className={`meeting-source-badge ${meeting.source}`}>
-          		{meeting.source === 'outlook' ? '📧 Outlook'
-            				: meeting.source === 'google' ? '📅 Google Calendar'
- :			 '📅 ' + meeting.source}
-        </span>
+          {meeting.source && meeting.source !== 'manual' && (
+            <span className={`meeting-source-badge ${meeting.source}`}>
+              {meeting.source === 'outlook' ? '📧 Outlook'
+                : meeting.source === 'google' ? '📅 Google Calendar'
+                : '📅 ' + meeting.source}
+            </span>
           )}
           {meeting.location && <span className="meeting-location">📍 {meeting.location}</span>}
           {meeting.deal && <span className="meeting-deal">💼 {meeting.deal.name}</span>}
