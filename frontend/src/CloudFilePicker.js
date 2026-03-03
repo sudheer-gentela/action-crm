@@ -16,7 +16,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import './CloudFilePicker.css';
 
-const API_BASE = process.env.REACT_APP_API_URL || '';
+const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 
 const PROVIDER_ICONS = {
   onedrive:    '☁️',
@@ -480,7 +480,9 @@ export default function CloudFilePicker({ dealId: dealIdProp, contactId, onCompl
 async function apiFetch(path, options = {}) {
   // ✅ FIXED: was 'authToken' — now matches App.js which stores under 'token'
   const token = localStorage.getItem('token');
-  const res = await fetch(`${API_BASE}${path}`, {
+  // ✅ FIXED: strip /api/ from path if API_BASE already ends with /api
+  const cleanPath = path.replace(/^\/api\//, '/');
+  const res = await fetch(`${API_BASE}${cleanPath}`, {
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,

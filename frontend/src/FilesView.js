@@ -36,10 +36,11 @@ async function apiFetch(path, options = {}) {
 }
 
 function formatFileSize(bytes) {
-  if (!bytes) return '—';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  const b = parseInt(bytes, 10);
+  if (!b || isNaN(b)) return '—';
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+  return `${(b / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function formatDate(iso) {
@@ -169,14 +170,14 @@ export default function FilesView() {
       if (sortBy === 'date_desc') return new Date(b.imported_at || b.created_at) - new Date(a.imported_at || a.created_at);
       if (sortBy === 'date_asc')  return new Date(a.imported_at || a.created_at) - new Date(b.imported_at || b.created_at);
       if (sortBy === 'name')      return (a.file_name || '').localeCompare(b.file_name || '');
-      if (sortBy === 'size_desc') return (b.file_size || 0) - (a.file_size || 0);
+      if (sortBy === 'size_desc') return (parseInt(b.file_size, 10) || 0) - (parseInt(a.file_size, 10) || 0);
       return 0;
     });
 
   const categories = [...new Set(importedFiles.map(f => f.category).filter(Boolean))];
 
   // ── Stats ──────────────────────────────────────────────────────────────────
-  const totalSize = importedFiles.reduce((sum, f) => sum + (f.file_size || 0), 0);
+  const totalSize = importedFiles.reduce((sum, f) => sum + (parseInt(f.file_size, 10) || 0), 0);
   const dealCount = new Set(importedFiles.map(f => f.deal_id).filter(Boolean)).size;
 
   // ── Render ─────────────────────────────────────────────────────────────────
