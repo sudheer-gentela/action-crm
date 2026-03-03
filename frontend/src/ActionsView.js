@@ -37,6 +37,20 @@ const PRIORITY_COLORS = {
   low:      '#10b981',
 };
 
+const STRAP_ENTITY_CONFIG = {
+  deal:           { icon: '💼', color: '#4f46e5', bg: '#eef2ff', label: 'Deal' },
+  prospect:       { icon: '🎯', color: '#0F9D8E', bg: '#f0fdfa', label: 'Prospect' },
+  account:        { icon: '🏢', color: '#7c3aed', bg: '#f5f3ff', label: 'Account' },
+  implementation: { icon: '🚀', color: '#0369a1', bg: '#f0f9ff', label: 'Implementation' },
+};
+
+const STRAP_SECTIONS = [
+  { key: 'S', field: 'situation',   label: 'Situation',   color: '#3b82f6' },
+  { key: 'T', field: 'target',      label: 'Target',      color: '#10b981' },
+  { key: 'R', field: 'response',    label: 'Response',    color: '#f59e0b' },
+  { key: 'A', field: 'action_plan', label: 'Action Plan', color: '#8b5cf6' },
+];
+
 const STATUS_CONFIG = {
   yet_to_start: { label: 'Yet to Start', icon: '○', color: '#6b7280', next: 'in_progress' },
   in_progress:  { label: 'In Progress',  icon: '◑', color: '#3b82f6', next: 'completed'  },
@@ -547,6 +561,188 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
   );
 }
 
+// ── STRAP Pinned Card ────────────────────────────────────────────────────────
+
+function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onUpdate }) {
+  const [editingSection, setEditingSection] = useState(null);
+  const [editValue, setEditValue] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [resolveMode, setResolveMode] = useState(false);
+  const [progress, setProgress] = useState(null);
+
+  const pri = PRIORITY_COLORS[strap.priority] || PRIORITY_COLORS.medium;
+  const ent = STRAP_ENTITY_CONFIG[strap.entity_type] || STRAP_ENTITY_CONFIG.deal;
+  const ctx = strap.entityContext || {};
+
+  // Fetch progress when expanded
+  useEffect(() => {
+    if (expanded && !progress) {
+      apiService.straps.getProgress(strap.id)
+        .then(res => setProgress(res.data?.progress || null))
+        .catch(() => setProgress(null));
+    }
+  }, [expanded, strap.id]);
+
+  function startEdit(field, currentValue) {
+    setEditingSection(field);
+    setEditValue(currentValue || '');
+  }
+
+  async function saveEdit(field) {
+    setSaving(true);
+    try {
+      await onUpdate(strap.id, { [field]: editValue });
+      setEditingSection(null);
+    } catch (err) {
+      alert('Failed to save: ' + err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function navigateToEntity() {
+    const tabMap = { deal: 'deals', account: 'accounts', prospect: 'prospecting', implementation: 'deals' };
+    const tab = tabMap[strap.entity_type] || 'deals';
+    const detail = { tab };
+    if (strap.entity_type === 'deal' || strap.entity_type === 'implementation') detail.dealId = strap.entity_id;
+    if (strap.entity_type === 'account') detail.accountId = strap.entity_id;
+    window.dispatchEvent(new CustomEvent('navigate', { detail }));
+  }
+
+  return (
+    <div className={`av-strap-card ${expanded ? 'av-strap-card--expanded' : ''}`}
+         style={{ borderLeftColor: pri }}>
+      {/* Collapsed header */}
+      <div className="av-strap-header" onClick={onToggle}>
+        <span className="av-strap-icon">S</span>
+        <span className="av-strap-priority" style={{ background: pri + '14', color: pri, borderColor: pri + '40' }}>
+          {strap.priority}
+        </span>
+        <span className="av-strap-entity-badge" style={{ background: ent.bg, color: ent.color }}>
+          {ent.icon} {strap.entity_type}
+        </span>
+        <span className="av-strap-hurdle-title">{strap.hurdle_title}</span>
+        {progress && progress.total > 0 && (
+          <span className="av-strap-progress">
+            <span className="av-strap-progress-bar">
+              <span className="av-strap-progress-fill"
+                style={{ width: `${progress.percent}%`, background: progress.percent === 100 ? '#10b981' : '#4f46e5' }}
+              />
+            </span>
+            <span className="av-strap-progress-label" style={{ color: progress.percent === 100 ? '#059669' : '#6b7280' }}>
+              {progress.completed}/{progress.total}
+            </span>
+          </span>
+        )}
+        <span className="av-strap-entity-name">{ctx.entityName}</span>
+        <span className="av-strap-chevron">{expanded ? '▲' : '▼'}</span>
+      </div>
+
+      {/* Expanded body */}
+      {expanded && (
+        <div className="av-strap-body">
+          {/* S-T-R-A sections */}
+          {STRAP_SECTIONS.map(sec => {
+            const value = strap[sec.field] || '';
+            const isEditing = editingSection === sec.field;
+            return (
+              <div key={sec.key} className="av-strap-section">
+                <div className="av-strap-section-header">
+                  <span className="av-strap-section-icon" style={{ background: sec.color }}>{sec.key}</span>
+                  <span className="av-strap-section-label" style={{ color: sec.color }}>{sec.label}</span>
+                  {!isEditing && (
+                    <button className="av-strap-edit-btn" onClick={(e) => { e.stopPropagation(); startEdit(sec.field, value); }}>
+                      ✎ Edit
+                    </button>
+                  )}
+                </div>
+                {isEditing ? (
+                  <div className="av-strap-edit-area">
+                    <textarea
+                      className="av-strap-textarea"
+                      value={editValue}
+                      onChange={e => setEditValue(e.target.value)}
+                      rows={sec.key === 'A' ? 5 : 3}
+                      autoFocus
+                    />
+                    <div className="av-strap-edit-actions">
+                      <button className="av-strap-save-btn" onClick={() => saveEdit(sec.field)} disabled={saving}>
+                        {saving ? '…' : 'Save'}
+                      </button>
+                      <button className="av-strap-cancel-btn" onClick={() => setEditingSection(null)}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className={`av-strap-section-content ${sec.key === 'A' ? 'av-strap-pre' : ''}`}>
+                    {value || <span className="av-strap-empty">Not set</span>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Meta */}
+          <div className="av-strap-meta">
+            <span>{strap.hurdle_type?.replace(/_/g, ' ')}</span>
+            <span>{new Date(strap.created_at).toLocaleDateString()}</span>
+            {strap.ai_model && <span>AI: {strap.ai_model}</span>}
+            {strap.source === 'manual' && <span className="av-strap-manual-badge">Manual</span>}
+            {strap.created_by_name && <span>By: {strap.created_by_name}</span>}
+          </div>
+
+          {/* Progress tracking */}
+          {progress && progress.total > 0 && (
+            <div className="av-strap-progress-section">
+              <span className="av-strap-progress-section-label">📋 Action Progress</span>
+              <span className="av-strap-progress-bar av-strap-progress-bar--large">
+                <span className="av-strap-progress-fill"
+                  style={{ width: `${progress.percent}%`, background: progress.percent === 100 ? '#10b981' : '#4f46e5' }}
+                />
+              </span>
+              <span className="av-strap-progress-detail">
+                {progress.completed} done · {progress.inProgress} in progress · {progress.pending} to do
+              </span>
+              {progress.percent === 100 && (
+                <span className="av-strap-progress-complete">✓ All actions complete — ready to resolve</span>
+              )}
+            </div>
+          )}
+
+          {/* Footer actions */}
+          <div className="av-strap-footer">
+            {!resolveMode ? (
+              <>
+                <button className="av-strap-resolve-btn" onClick={() => setResolveMode(true)}>✓ Resolve</button>
+                <button className="av-strap-action-btn" onClick={() => onReassess(strap.id)}>↻ Reassess</button>
+                <button className="av-strap-action-btn" onClick={navigateToEntity}>
+                  Open {strap.entity_type} →
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="av-strap-resolve-label">How resolved?</span>
+                <button className="av-strap-resolve-opt av-strap-resolve-opt--cleared"
+                  onClick={() => { onResolve(strap.id, 'manual', 'Hurdle cleared'); setResolveMode(false); }}>
+                  ✓ Hurdle Cleared
+                </button>
+                <button className="av-strap-resolve-opt av-strap-resolve-opt--superseded"
+                  onClick={() => { onResolve(strap.id, 'superseded', 'New hurdle identified'); setResolveMode(false); }}>
+                  ↻ Superseded
+                </button>
+                <button className="av-strap-resolve-opt av-strap-resolve-opt--irrelevant"
+                  onClick={() => { onResolve(strap.id, 'manual', 'No longer relevant'); setResolveMode(false); }}>
+                  🚫 Not Relevant
+                </button>
+                <button className="av-strap-cancel-btn" onClick={() => setResolveMode(false)}>Cancel</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Filter Bar ────────────────────────────────────────────────────────────────
 
 function FilterBar({ filters, onChange, options }) {
@@ -559,6 +755,7 @@ function FilterBar({ filters, onChange, options }) {
           { value: 'ai',       label: '🤖 AI' },
           { value: 'rules',    label: '⚙️ Rules' },
           { value: 'playbook', label: '📘 Playbook' },
+          { value: 'strap',    label: '🎯 STRAP' },
         ].map(opt => (
           <button
             key={opt.value}
@@ -727,6 +924,11 @@ export default function ActionsView() {
   const [actionSource, setActionSource] = useState('all'); // 'all' | 'deals' | 'prospecting'
   const [hasTeam, setHasTeam] = useState(false);
 
+  // ── STRAP state ────────────────────────────────────────────────
+  const [straps, setStraps]               = useState([]);
+  const [strapsLoading, setStrapsLoading] = useState(false);
+  const [expandedStrap, setExpandedStrap] = useState(null);
+
   useEffect(() => {
     apiService.orgAdmin.getMyTeam()
       .then(r => setHasTeam(r.data.hasTeam))
@@ -738,6 +940,75 @@ export default function ActionsView() {
     apiFetch(`/contacts?scope=${scope}`).then(d => setContacts(d.contacts || [])).catch(() => {});
     apiFetch(`/deals?scope=${scope}`).then(d => setDeals(d.deals || [])).catch(() => {});
   }, [scope]);
+
+  // ── Fetch STRAPs ────────────────────────────────────────────────
+  const fetchStraps = useCallback(async () => {
+    setStrapsLoading(true);
+    try {
+      const params = { scope };
+      if (actionSource === 'deals')       params.entityType = 'deal';
+      if (actionSource === 'prospecting') params.entityType = 'prospect';
+      const res = await apiService.straps.getAllActive(scope, params);
+      setStraps(res.data?.straps || res.data || []);
+    } catch (err) {
+      console.error('Failed to fetch STRAPs:', err);
+      setStraps([]);
+    } finally {
+      setStrapsLoading(false);
+    }
+  }, [scope, actionSource]);
+
+  useEffect(() => { fetchStraps(); }, [fetchStraps]);
+
+  // ── Filter STRAPs client-side to match active action filters ────
+  const filteredStraps = straps.filter(s => {
+    if (filters.dealId) {
+      const did = parseInt(filters.dealId);
+      if (s.entity_type === 'deal' && s.entity_id !== did) return false;
+      if (s.entity_type === 'account' && s.entityContext?.accountId !== did) return false;
+      if (s.entity_type !== 'deal' && s.entity_type !== 'account') return false;
+    }
+    if (filters.accountId) {
+      const aid = parseInt(filters.accountId);
+      if (s.entity_type === 'account' && s.entity_id !== aid) return false;
+      if (s.entity_type === 'deal' && s.entityContext?.accountId !== aid) return false;
+      if (s.entity_type !== 'deal' && s.entity_type !== 'account') return false;
+    }
+    return true;
+  });
+
+  // ── STRAP actions: resolve, reassess, update ────────────────────
+  async function handleStrapResolve(strapId, resolutionType, note) {
+    try {
+      await apiService.straps.resolve(strapId, { resolutionType, note });
+      setStraps(prev => prev.filter(s => s.id !== strapId));
+      setExpandedStrap(null);
+    } catch (err) {
+      alert('Failed to resolve STRAP: ' + err.message);
+    }
+  }
+
+  async function handleStrapReassess(strapId) {
+    try {
+      const res = await apiService.straps.reassess(strapId);
+      const newStrap = res.data?.strap;
+      if (newStrap) {
+        setStraps(prev => prev.map(s => s.id === strapId ? { ...newStrap, entityContext: s.entityContext } : s));
+      } else {
+        setStraps(prev => prev.filter(s => s.id !== strapId));
+      }
+    } catch (err) {
+      alert('Failed to reassess STRAP: ' + err.message);
+    }
+  }
+
+  async function handleStrapUpdate(strapId, updates) {
+    const res = await apiService.straps.update(strapId, updates);
+    const updated = res.data?.strap;
+    if (updated) {
+      setStraps(prev => prev.map(s => s.id === strapId ? { ...s, ...updated } : s));
+    }
+  }
 
   const fetchActions = useCallback(async (activeFilters) => {
     setLoading(true);
@@ -1010,31 +1281,17 @@ export default function ActionsView() {
                 ))}
               </div>
             )}
-            {/* Source filter — Deals vs Prospecting */}
-            <div style={{
-              display: 'inline-flex', borderRadius: '8px', overflow: 'hidden',
-              border: '1px solid #e2e4ea', fontSize: '13px',
-            }}>
-              {[
-                { key: 'all',         label: 'All' },
-                { key: 'deals',       label: '💼 Deals' },
-                { key: 'prospecting', label: '🎯 Prospecting' },
-              ].map(s => (
-                <button
-                  key={s.key}
-                  onClick={() => setActionSource(s.key)}
-                  style={{
-                    padding: '6px 14px', border: 'none', cursor: 'pointer',
-                    background: actionSource === s.key ? (s.key === 'prospecting' ? '#0F9D8E' : '#4f46e5') : '#fff',
-                    color: actionSource === s.key ? '#fff' : '#4b5563',
-                    fontWeight: actionSource === s.key ? 600 : 400,
-                    transition: 'all 0.15s',
-                  }}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
+            {/* Source filter — Deals vs Prospecting (dropdown to save space) */}
+            <select
+              className="av-filter-select"
+              value={actionSource}
+              onChange={e => setActionSource(e.target.value)}
+              style={{ minWidth: 140 }}
+            >
+              <option value="all">All Sources</option>
+              <option value="deals">💼 Deals</option>
+              <option value="prospecting">🎯 Prospecting</option>
+            </select>
             <button
               className="av-generate-btn"
               onClick={handleGenerateActions}
@@ -1053,6 +1310,40 @@ export default function ActionsView() {
         {/* Filters */}
         <FilterBar filters={filters} onChange={handleFilterChange} options={filterOptions} />
 
+        {/* ── STRAP Pinned Section ──────────────────────────────────── */}
+        {(filters.source === 'all' || filters.source === 'strap') && filteredStraps.length > 0 && (
+          <div className="av-strap-section">
+            <div className="av-strap-section-header">
+              <div className="av-strap-section-title">
+                <span>🎯 Active STRAPs</span>
+                <span className="av-strap-count">{filteredStraps.length}</span>
+              </div>
+            </div>
+            <div className="av-strap-list">
+              {filteredStraps.map(s => (
+                <StrapPinnedCard
+                  key={s.id}
+                  strap={s}
+                  expanded={expandedStrap === s.id}
+                  onToggle={() => setExpandedStrap(expandedStrap === s.id ? null : s.id)}
+                  onResolve={handleStrapResolve}
+                  onReassess={handleStrapReassess}
+                  onUpdate={handleStrapUpdate}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* No STRAPs when filtered */}
+        {filters.source === 'strap' && filteredStraps.length === 0 && !strapsLoading && (
+          <div className="av-empty">
+            <div className="av-empty-icon">🎯</div>
+            <p>No active STRAPs{filters.dealId || filters.accountId ? ' matching filters' : ''}.</p>
+            <p style={{ fontSize: 13, color: '#9ca3af' }}>Generate STRAPs from deal, account, or prospect detail pages.</p>
+          </div>
+        )}
+
         {/* Loading */}
         {loading && (
           <div className="av-loading">
@@ -1070,7 +1361,7 @@ export default function ActionsView() {
         )}
 
         {/* Empty state */}
-        {!loading && !error && actions.length === 0 && (
+        {!loading && !error && actions.length === 0 && filters.source !== 'strap' && (
           <div className="av-empty">
             <div className="av-empty-icon">
               {filters.status === 'snoozed' ? '😴' : '🎯'}
@@ -1088,8 +1379,8 @@ export default function ActionsView() {
           </div>
         )}
 
-        {/* Action grid */}
-        {!loading && !error && actions.length > 0 && (
+        {/* Action grid — hidden when source filter is strap only */}
+        {!loading && !error && actions.length > 0 && filters.source !== 'strap' && (
           <div className="av-grid">
             {actions.map(action => (
               <ActionCard

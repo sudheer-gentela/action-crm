@@ -201,13 +201,19 @@ export const apiService = {
   // New: /straps/:entityType/:entityId/...
   // ══════════════════════════════════════════════════════════
   straps: {
-    getActive:  (entityType, entityId)        => api.get(`/straps/${entityType}/${entityId}`),
-    getHistory: (entityType, entityId)        => api.get(`/straps/${entityType}/${entityId}/history`),
-    generate:   (entityType, entityId, useAI) => api.post(`/straps/${entityType}/${entityId}/generate`, { useAI }),
-    override:   (entityType, entityId, data)  => api.post(`/straps/${entityType}/${entityId}/override`, data),
-    getById:    (strapId)                     => api.get(`/straps/${strapId}`),
-    resolve:    (strapId, data)               => api.put(`/straps/${strapId}/resolve`, data),
-    reassess:   (strapId)                     => api.put(`/straps/${strapId}/reassess`),
+    getActive:    (entityType, entityId)        => api.get(`/straps/${entityType}/${entityId}`),
+    getHistory:   (entityType, entityId)        => api.get(`/straps/${entityType}/${entityId}/history`),
+    generate:     (entityType, entityId, useAI) => api.post(`/straps/${entityType}/${entityId}/generate`, { useAI }),
+    override:     (entityType, entityId, data)  => api.post(`/straps/${entityType}/${entityId}/override`, data),
+    getById:      (strapId)                     => api.get(`/straps/${strapId}`),
+    resolve:      (strapId, data)               => api.put(`/straps/${strapId}/resolve`, data),
+    reassess:     (strapId)                     => api.put(`/straps/${strapId}/reassess`),
+    getAllActive:  (scope = 'mine', filters = {}) => {
+      const params = new URLSearchParams({ scope, ...filters });
+      return api.get(`/actions/straps?${params.toString()}`);
+    },
+    update:       (strapId, data)               => api.patch(`/actions/straps/${strapId}`, data),
+    getProgress:  (strapId)                     => api.get(`/actions/straps/${strapId}/progress`),
   },
 
   superAdmin: {

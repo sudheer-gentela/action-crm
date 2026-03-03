@@ -6,6 +6,8 @@ const { orgContext } = require('../middleware/orgContext.middleware');
 const ActionsGenerator = require('../services/actionsGenerator');
 const ActionConfigService = require('../services/actionConfig.service');
 const ActionCompletionDetector = require('../services/actionCompletionDetector.service');
+const StrapEngine = require('../services/StrapEngine');
+const StrapActionGenerator = require('../services/StrapActionGenerator');
 
 // ── Auth + org context on every route in this file ───────────
 // authenticateToken  → validates JWT, sets req.userId + req.user
@@ -217,6 +219,55 @@ router.get('/', async (req, res) => {
   } catch (error) {
     console.error('Get actions error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch actions' } });
+  }
+});
+
+// ── GET /straps — list all active STRAPs for the user's scope ───
+// Used by ActionsView pinned STRAP section.
+// Supports ?scope=mine|team|org, ?entityType, ?dealId, ?accountId
+router.get('/straps', async (req, res) => {
+  try {
+    const { scope = 'mine', entityType, dealId, accountId } = req.query;
+    const straps = await StrapEngine.getAllActive(req.user.userId, req.orgId, {
+      scope,
+      subordinateIds: req.subordinateIds || [],
+      entityType: entityType || null,
+      dealId: dealId || null,
+      accountId: accountId || null,
+    });
+    res.json({ straps });
+  } catch (error) {
+    console.error('List active STRAPs error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch active STRAPs' } });
+  }
+});
+
+// ── PATCH /straps/:id — partially update a STRAP ─────────────
+// Body: { situation?, target?, response?, action_plan?, hurdle_title?, priority? }
+router.patch('/straps/:id', async (req, res) => {
+  try {
+    const result = await StrapEngine.update(
+      parseInt(req.params.id),
+      req.user.userId,
+      req.orgId,
+      req.body
+    );
+    res.json(result);
+  } catch (error) {
+    console.error('Update STRAP error:', error);
+    const status = error.message.includes('not found') ? 404 : error.message.includes('Access denied') ? 403 : 400;
+    res.status(status).json({ error: { message: error.message } });
+  }
+});
+
+// ── GET /straps/:id/progress — get action completion progress ─
+router.get('/straps/:id/progress', async (req, res) => {
+  try {
+    const progress = await StrapActionGenerator.getProgress(parseInt(req.params.id));
+    res.json({ progress });
+  } catch (error) {
+    console.error('STRAP progress error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch STRAP progress' } });
   }
 });
 
@@ -714,6 +765,13 @@ router.patch('/:id/status', async (req, res) => {
       [status, isCompleting, req.user.userId, req.params.id, req.orgId]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: { message: 'Action not found' } });
+
+    // If completed and action has a strap_id, check if STRAP should auto-resolve
+    if (isCompleting && result.rows[0].strap_id) {
+      StrapActionGenerator.checkAutoResolve(result.rows[0].strap_id, req.user.userId, req.orgId)
+        .catch(err => console.error('STRAP auto-resolve check error:', err.message));
+    }
+
     res.json({ action: result.rows[0] });
   } catch (error) {
     console.error('Status update error:', error);
