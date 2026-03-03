@@ -78,12 +78,12 @@ const SOURCE_RULE_LABELS = {
 };
 
 const MANUAL_LOG_CONFIG = {
-  call:          { icon: '📞', label: 'Log Call',          placeholder: 'What was discussed? Any next steps agreed?' },
-  whatsapp:      { icon: '💬', label: 'Log WhatsApp',      placeholder: 'What was the outcome of the conversation?' },
-  linkedin:      { icon: '🔗', label: 'Log LinkedIn',      placeholder: 'What message did you send / receive?' },
-  slack:         { icon: '💬', label: 'Log Slack Message', placeholder: 'What was the key point of the exchange?' },
-  document:      { icon: '📄', label: 'Log Document Sent', placeholder: 'Which document? Any response from the prospect?' },
-  internal_task: { icon: '🔧', label: 'Log Internal Task', placeholder: 'What did you complete or decide?' },
+  call:          { icon: '📞', label: 'Log Call',          placeholder: 'What was discussed? Any next steps agreed?',    resourceLabel: 'Call',       opensExternal: true },
+  whatsapp:      { icon: '💬', label: 'Log WhatsApp',      placeholder: 'What was the outcome of the conversation?',     resourceLabel: 'WhatsApp',   opensExternal: true },
+  linkedin:      { icon: '🔗', label: 'Log LinkedIn',      placeholder: 'What message did you send / receive?',          resourceLabel: 'LinkedIn',   opensExternal: true },
+  slack:         { icon: '💬', label: 'Log Slack Message', placeholder: 'What was the key point of the exchange?',       resourceLabel: 'Slack',      opensExternal: false },
+  document:      { icon: '📄', label: 'Log Document Sent', placeholder: 'Which document? Any response from the prospect?', resourceLabel: 'Files',    navigateTab: 'files' },
+  internal_task: { icon: '🔧', label: 'Log Internal Task', placeholder: 'What did you complete or decide?',             resourceLabel: 'Task',       opensExternal: false },
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -327,6 +327,11 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
   const [notes, setNotes]   = useState('');
   const [saving, setSaving] = useState(false);
   const cfg = MANUAL_LOG_CONFIG[action.nextStep] || MANUAL_LOG_CONFIG.internal_task;
+  const person = action.contact || action.prospect || {};
+  const personName = [person.firstName, person.lastName].filter(Boolean).join(' ');
+  const phone = person.phone;
+  const linkedinUrl = person.linkedinUrl;
+  const dealId = action.deal?.id || null;
 
   async function handleDone() {
     setSaving(true);
@@ -343,10 +348,50 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
       <div className="modal-content av-log-modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <h2>{cfg.icon} {cfg.label}</h2>
-          <button className="close-button" onClick={onClose}>×</button>
+          <button className="close-button" onClick={onClose}>\u00d7</button>
         </div>
         <div className="av-log-modal-body">
           <div className="av-log-action-title">{action.title}</div>
+
+          {/* Resource links */}
+          {personName && (
+            <div className="av-log-resource-bar">
+              <span className="av-log-resource-person">{personName}</span>
+              {phone && (
+                <a href={`tel:${phone.replace(/\s/g, '')}`} className="av-log-resource-link av-log-resource-link--call">
+                  \ud83d\udcde {phone}
+                </a>
+              )}
+              {linkedinUrl && (
+                <a href={linkedinUrl.startsWith('http') ? linkedinUrl : `https://${linkedinUrl}`}
+                   target="_blank" rel="noreferrer" className="av-log-resource-link av-log-resource-link--linkedin">
+                  \ud83d\udd17 LinkedIn \u2197
+                </a>
+              )}
+              {phone && (
+                <a href={`https://wa.me/${phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '')}`}
+                   target="_blank" rel="noreferrer" className="av-log-resource-link av-log-resource-link--whatsapp">
+                  \ud83d\udcac WhatsApp \u2197
+                </a>
+              )}
+              {person.email && (
+                <a href={`mailto:${person.email}`} className="av-log-resource-link av-log-resource-link--email">
+                  \u2709\ufe0f {person.email}
+                </a>
+              )}
+            </div>
+          )}
+
+          {action.nextStep === 'document' && dealId && (
+            <button className="av-log-resource-nav" onClick={() => {
+              window.dispatchEvent(new CustomEvent('navigate', {
+                detail: { tab: 'files', dealId, resume: true },
+              }));
+            }}>
+              \ud83d\udcc1 Open Files for {action.deal?.name || 'this deal'} \u2192
+            </button>
+          )}
+
           {action.suggestedAction && (
             <div className="av-log-suggested">
               <span className="av-log-suggested-label">Suggested approach</span>
@@ -367,10 +412,10 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
         <div className="av-log-modal-footer">
           <button className="btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="av-log-btn-progress" onClick={handleInProgress} disabled={saving}>
-            {saving ? '…' : '◑ Still in Progress'}
+            {saving ? '\u2026' : '\u25d1 Still in Progress'}
           </button>
           <button className="av-log-btn-done" onClick={handleDone} disabled={saving}>
-            {saving ? '…' : '✓ Mark Done'}
+            {saving ? '\u2026' : '\u2713 Mark Done'}
           </button>
         </div>
       </div>
@@ -1144,12 +1189,49 @@ export default function ActionsView() {
   }
 
   function handleStart(action) {
+    const nextStep = action.nextStep || 'email';
     const emailNextSteps = ['email', 'follow_up'];
-    if (emailNextSteps.includes(action.nextStep)) {
+
+    if (emailNextSteps.includes(nextStep)) {
+      // Email → opens composer (existing flow)
       setComposerAction(action);
-    } else {
-      setLogAction(action);
+      return;
     }
+
+    // For all other channels: set status to in_progress, then open resource
+    const person = action.contact || action.prospect || {};
+    const personName = [person.firstName, person.lastName].filter(Boolean).join(' ');
+    const dealId = action.deal?.id || null;
+
+    // Attempt external navigation based on channel
+    if (nextStep === 'call') {
+      const phone = person.phone;
+      if (phone) {
+        window.open(`tel:${phone.replace(/\s/g, '')}`, '_self');
+      }
+    } else if (nextStep === 'linkedin') {
+      const url = person.linkedinUrl;
+      if (url) {
+        window.open(url.startsWith('http') ? url : `https://${url}`, '_blank');
+      }
+    } else if (nextStep === 'whatsapp') {
+      const phone = person.phone;
+      if (phone) {
+        const cleanPhone = phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+        window.open(`https://wa.me/${cleanPhone}`, '_blank');
+      }
+    } else if (nextStep === 'document') {
+      // Navigate to Files tab for this deal
+      window.dispatchEvent(new CustomEvent('navigate', {
+        detail: { tab: 'files', dealId, resume: true },
+      }));
+    }
+
+    // Set status to in_progress (async, non-blocking)
+    handleStatusChange(action.id, 'in_progress').catch(() => {});
+
+    // Open log modal so they can record the outcome
+    setLogAction(action);
   }
 
   async function handleEmailSent(emailData) {

@@ -581,11 +581,13 @@ router.get('/unified', async (req, res) => {
         d.owner_id AS deal_owner_id,
         du.first_name || ' ' || du.last_name AS deal_owner_name,
         c.first_name AS contact_first_name, c.last_name AS contact_last_name, c.email AS contact_email,
+        c.phone AS contact_phone, c.linkedin_url AS contact_linkedin_url,
         acc.name AS account_name,
         ev.subject AS evidence_subject, LEFT(ev.body, 300) AS evidence_snippet,
         ev.direction AS evidence_direction, ev.sent_at AS evidence_sent_at,
         NULL::integer AS prospect_id, NULL AS prospect_first_name, NULL AS prospect_last_name,
-        NULL AS prospect_email, NULL AS prospect_company_name, NULL AS prospect_stage, NULL AS channel
+        NULL AS prospect_email, NULL AS prospect_company_name, NULL AS prospect_stage,
+        NULL AS prospect_phone, NULL AS prospect_linkedin_url, NULL AS channel
       FROM actions a
       LEFT JOIN deals d ON a.deal_id = d.id AND d.org_id = a.org_id
       LEFT JOIN users du ON d.owner_id = du.id
@@ -645,11 +647,13 @@ router.get('/unified', async (req, res) => {
         NULL AS deal_name, NULL::numeric AS deal_value, NULL AS deal_stage,
         NULL::integer AS deal_owner_id, NULL AS deal_owner_name,
         NULL AS contact_first_name, NULL AS contact_last_name, NULL AS contact_email,
+        NULL AS contact_phone, NULL AS contact_linkedin_url,
         NULL AS account_name,
         NULL AS evidence_subject, NULL AS evidence_snippet,
         NULL AS evidence_direction, NULL::timestamp AS evidence_sent_at,
         pa.prospect_id, p.first_name AS prospect_first_name, p.last_name AS prospect_last_name,
         p.email AS prospect_email, p.company_name AS prospect_company_name, p.stage AS prospect_stage,
+        p.phone AS prospect_phone, p.linkedin_url AS prospect_linkedin_url,
         pa.channel
       FROM prospecting_actions pa
       LEFT JOIN prospects p ON pa.prospect_id = p.id
@@ -996,6 +1000,8 @@ function mapUnifiedAction(row, source) {
       firstName: row.contact_first_name,
       lastName:  row.contact_last_name,
       email:     row.contact_email,
+      phone:     row.contact_phone,
+      linkedinUrl: row.contact_linkedin_url,
     } : null,
     prospect: row.prospect_id ? {
       id:          row.prospect_id,
@@ -1004,6 +1010,8 @@ function mapUnifiedAction(row, source) {
       email:       row.prospect_email,
       companyName: row.prospect_company_name,
       stage:       row.prospect_stage,
+      phone:       row.prospect_phone,
+      linkedinUrl: row.prospect_linkedin_url,
     } : null,
     evidenceEmail: row.evidence_subject ? {
       subject:   row.evidence_subject,
