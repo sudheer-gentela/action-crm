@@ -369,7 +369,7 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
                 </a>
               )}
               {phone && (
-                <a href={`https://wa.me/${phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '')}`}
+                <a href={`https://wa.me/${phone.replace(/[\s\-()]/g, '').replace(/^\+/, '')}`}
                    target="_blank" rel="noreferrer" className="av-log-resource-link av-log-resource-link--whatsapp">
                   \ud83d\udcac WhatsApp \u2197
                 </a>
@@ -1200,7 +1200,6 @@ export default function ActionsView() {
 
     // For all other channels: set status to in_progress, then open resource
     const person = action.contact || action.prospect || {};
-    const personName = [person.firstName, person.lastName].filter(Boolean).join(' ');
     const dealId = action.deal?.id || null;
 
     // Attempt external navigation based on channel
@@ -1217,7 +1216,7 @@ export default function ActionsView() {
     } else if (nextStep === 'whatsapp') {
       const phone = person.phone;
       if (phone) {
-        const cleanPhone = phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+        const cleanPhone = phone.replace(/[\s\-()]/g, '').replace(/^\+/, '');
         window.open(`https://wa.me/${cleanPhone}`, '_blank');
       }
     } else if (nextStep === 'document') {
