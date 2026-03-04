@@ -1128,7 +1128,10 @@
   align-items: center;
   gap: 10px;
   padding: 10px 0;
-  position: relative;
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: #fff;
 }
 
 .av-table-result-count {
@@ -1195,6 +1198,9 @@
   background: #f8fafc;
   border-bottom: 2px solid #e2e8f0;
   border-radius: 8px 8px 0 0;
+  position: sticky;
+  top: 40px;
+  z-index: 5;
 }
 
 .av-table-th {
