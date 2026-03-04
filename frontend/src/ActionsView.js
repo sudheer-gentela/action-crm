@@ -1155,66 +1155,9 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
 // ── Filter Bar ────────────────────────────────────────────────────────────────
 
 function FilterBar({ filters, onChange, options }) {
+  const hasFilters = filters.dealId || filters.accountId;
   return (
     <div className="av-filters">
-      {/* Source filter */}
-      <div className="av-filter-group av-filter-group--source">
-        {[
-          { value: 'all',      label: 'All' },
-          { value: 'ai',       label: '🤖 AI' },
-          { value: 'rules',    label: '⚙️ Rules' },
-          { value: 'playbook', label: '📘 Playbook' },
-          { value: 'strap',    label: '🎯 STRAP' },
-        ].map(opt => (
-          <button
-            key={opt.value}
-            className={`av-filter-pill ${filters.source === opt.value ? 'active' : ''}`}
-            onClick={() => onChange('source', opt.value)}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Internal / External */}
-      <div className="av-filter-group av-filter-group--internal">
-        {[
-          { value: '',      label: 'All' },
-          { value: 'false', label: '🌐 External' },
-          { value: 'true',  label: '🏠 Internal' },
-        ].map(opt => (
-          <button
-            key={opt.value}
-            className={`av-filter-pill ${filters.isInternal === opt.value ? 'active' : ''}`}
-            onClick={() => onChange('isInternal', opt.value)}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Action Type */}
-      <select
-        className="av-filter-select"
-        value={filters.actionType}
-        onChange={e => onChange('actionType', e.target.value)}
-      >
-        {ACTION_TYPE_OPTIONS.map(o => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
-
-      {/* Next Step / Channel */}
-      <select
-        className="av-filter-select"
-        value={filters.nextStep}
-        onChange={e => onChange('nextStep', e.target.value)}
-      >
-        {NEXT_STEP_OPTIONS.map(o => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
-
       {/* Deal */}
       <select
         className="av-filter-select"
@@ -1239,59 +1182,12 @@ function FilterBar({ filters, onChange, options }) {
         ))}
       </select>
 
-      {/* Owner */}
-      <select
-        className="av-filter-select"
-        value={filters.ownerId}
-        onChange={e => onChange('ownerId', e.target.value)}
-      >
-        <option value="">All Owners</option>
-        {options.owners.map(o => (
-          <option key={o.id} value={o.id}>{o.name}</option>
-        ))}
-      </select>
-
-      {/* Date range */}
-      <div className="av-filter-dates">
-        <input
-          type="date"
-          className="av-filter-date"
-          value={filters.dueAfter}
-          onChange={e => onChange('dueAfter', e.target.value)}
-          title="Due after"
-        />
-        <span className="av-filter-date-sep">→</span>
-        <input
-          type="date"
-          className="av-filter-date"
-          value={filters.dueBefore}
-          onChange={e => onChange('dueBefore', e.target.value)}
-          title="Due before"
-        />
-      </div>
-
-      {/* Status tabs — now includes Snoozed */}
-      <div className="av-filter-group av-filter-group--status">
-        {[
-          { value: '',            label: 'Open' },
-          { value: 'in_progress', label: '◑ In Progress' },
-          { value: 'snoozed',     label: '😴 Snoozed' },
-          { value: 'completed',   label: '● Completed' },
-        ].map(opt => (
-          <button
-            key={opt.value}
-            className={`av-filter-pill ${filters.status === opt.value ? 'active' : ''}`}
-            onClick={() => onChange('status', opt.value)}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Clear all */}
-      <button className="av-filter-clear" onClick={() => onChange('__reset__', null)}>
-        ✕ Clear
-      </button>
+      {/* Clear */}
+      {hasFilters && (
+        <button className="av-filter-clear" onClick={() => onChange('__reset__', null)}>
+          ✕ Clear
+        </button>
+      )}
     </div>
   );
 }
@@ -1781,17 +1677,6 @@ export default function ActionsView() {
                 ))}
               </div>
             )}
-            {/* Source filter — Deals vs Prospecting (dropdown to save space) */}
-            <select
-              className="av-filter-select"
-              value={actionSource}
-              onChange={e => setActionSource(e.target.value)}
-              style={{ minWidth: 140 }}
-            >
-              <option value="all">All Sources</option>
-              <option value="deals">💼 Deals</option>
-              <option value="prospecting">🎯 Prospecting</option>
-            </select>
             <button
               className="av-generate-btn"
               onClick={handleGenerateActions}
