@@ -7,6 +7,7 @@ import CoverageScorecard from './CoverageScorecard';
 import { csvExport, EXPORT_COLUMNS } from './csvUtils';
 import CSVImportModal from './CSVImportModal';
 import StrapPanel from './StrapPanel';
+import { OrgChartPanel } from './OrgChartPanel';
 import './AccountsView.css';
 
 const EDITABLE_FIELDS = {
@@ -32,6 +33,7 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
   const [editingField, setEditingField] = useState(null);
   const [savingField, setSavingField] = useState(null);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [detailTab, setDetailTab] = useState('overview'); // 'overview' | 'orgchart'
 
   // ── Scope toggle state ────────────────────────────────────────
   const [scope, setScope] = useState('mine');
@@ -54,7 +56,7 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
     }
   }, [openAccountId, accounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { setEditingField(null); }, [selectedAccount?.id]);
+  useEffect(() => { setEditingField(null); setDetailTab('overview'); }, [selectedAccount?.id]);
 
   const loadAccounts = async () => {
     try {
@@ -375,6 +377,40 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
               </div>
             </div>
 
+            {/* ── Detail tab bar ──────────────────────────────────── */}
+            <div style={{
+              display: 'flex', borderBottom: '1px solid #e5e7eb',
+              padding: '0 24px', background: '#fafafa', flexShrink: 0,
+            }}>
+              {[
+                { key: 'overview', label: '📋 Overview' },
+                { key: 'orgchart', label: '🌳 Org Chart' },
+              ].map(t => (
+                <button
+                  key={t.key}
+                  onClick={() => setDetailTab(t.key)}
+                  style={{
+                    padding: '10px 14px', background: 'none', border: 'none',
+                    borderBottom: `2px solid ${detailTab === t.key ? '#6366f1' : 'transparent'}`,
+                    color: detailTab === t.key ? '#6366f1' : '#64748b',
+                    fontSize: '12px', fontWeight: detailTab === t.key ? 600 : 500,
+                    cursor: 'pointer', marginBottom: '-1px', fontFamily: 'inherit',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {detailTab === 'orgchart' ? (
+              <OrgChartPanel
+                accountId={selectedAccount.id}
+                accountName={selectedAccount.name}
+                allAccountContacts={getAccountContacts(selectedAccount.id)}
+                onNavigateToContact={(contactId) => nav('contacts', { contactId })}
+              />
+            ) : (
             <div className="panel-content">
 
               {/* ── 1. Company Information (inline-editable) ──────── */}
@@ -506,6 +542,7 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
               </div>
 
             </div>
+            )} {/* end detailTab === 'overview' */}
           </div>
         )}
       </div>

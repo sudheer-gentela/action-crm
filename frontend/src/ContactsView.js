@@ -6,6 +6,7 @@ import EmailComposer from './EmailComposer';
 import ContactMergeBanner from './ContactMergeBanner';
 import { csvExport, EXPORT_COLUMNS } from './csvUtils';
 import CSVImportModal from './CSVImportModal';
+import { ContactOrgPosition } from './OrgChartPanel';
 import './ContactsView.css';
 
 // Fields that can be inline-edited on the contact detail panel
@@ -33,6 +34,7 @@ const EDITABLE_FIELDS = {
   location:         { label: 'Location',         type: 'text' },
   linkedin_url:     { label: 'LinkedIn',         type: 'url' },
   notes:            { label: 'Notes',            type: 'textarea' },
+  reports_to_contact_id: { label: 'Reports To', type: 'reportsTo' },
 };
 
 function ContactsView({ openContactId = null, onContactOpened = null }) {
@@ -670,6 +672,26 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
                     <span className="detail-label">LinkedIn</span>
                     {renderEditableField('linkedin_url', selectedContact)}
                   </div>
+                  <div className="detail-item">
+                    <span className="detail-label">Reports To</span>
+                    <ReportsToField
+                      contact={selectedContact}
+                      accountContacts={contacts.filter(c =>
+                        c.account_id === selectedContact.account_id && c.id !== selectedContact.id
+                      )}
+                      onSave={async (managerId) => {
+                        try {
+                          await apiService.orgHierarchy.setReportsTo(selectedContact.id, managerId);
+                          setSelectedContact(prev => ({ ...prev, reports_to_contact_id: managerId }));
+                          setContacts(prev => prev.map(c =>
+                            c.id === selectedContact.id ? { ...c, reports_to_contact_id: managerId } : c
+                          ));
+                        } catch (err) {
+                          console.error('ReportsTo save error:', err);
+                        }
+                      }}
+                    />
+                  </div>
                   {selectedContact.last_contact_date && (
                     <div className="detail-item">
                       <span className="detail-label">Last Contact</span>
@@ -678,6 +700,24 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
                   )}
                 </div>
               </div>
+
+              {/* ── 1b. Org Chart Position ───────────────────────────── */}
+              {selectedContact.account_id && (
+                <div className="detail-section">
+                  <h3>🌳 Org Chart Position</h3>
+                  <ContactOrgPosition
+                    contactId={selectedContact.id}
+                    accountId={selectedContact.account_id}
+                    onNavigateToContact={(contactId) => {
+                      const target = contacts.find(c => c.id === contactId);
+                      if (target) setSelectedContact(target);
+                    }}
+                    onViewFullChart={() =>
+                      nav('accounts', { accountId: selectedContact.account_id })
+                    }
+                  />
+                </div>
+              )}
 
               {/* ── 2. Related Deals ──────────────────────────────── */}
               <div className="detail-section">
@@ -987,5 +1027,68 @@ function ContactCard({ contact, linkedDeals, onEdit, onDelete, onSelect, isSelec
     </div>
   );
 }
+
+// ── ReportsToField — inline "Reports To" picker on Contact detail panel ──────
+
+function ReportsToField({ contact, accountContacts, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const manager = accountContacts.find(c => c.id === contact.reports_to_contact_id);
+
+  const handleChange = async (e) => {
+    const newManagerId = e.target.value ? parseInt(e.target.value) : null;
+    setSaving(true);
+    try {
+      await onSave(newManagerId);
+    } catch (err) {
+      console.error('ReportsTo save error:', err);
+    } finally {
+      setSaving(false);
+      setEditing(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <select
+        className="inline-edit-select"
+        autoFocus
+        defaultValue={contact.reports_to_contact_id || ''}
+        onChange={handleChange}
+        onBlur={() => setEditing(false)}
+        disabled={saving}
+        style={{
+          padding: '6px 10px', border: '1.5px solid #6366f1', borderRadius: '6px',
+          fontSize: '14px', fontFamily: 'inherit', outline: 'none',
+          background: '#fff', boxShadow: '0 0 0 2px rgba(99,102,241,.12)',
+        }}
+      >
+        <option value="">— No manager (root) —</option>
+        {accountContacts.map(c => (
+          <option key={c.id} value={c.id}>
+            {c.first_name} {c.last_name}{c.title ? ` · ${c.title}` : ''}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  return (
+    <span
+      className="detail-value--editable"
+      onClick={() => !saving && setEditing(true)}
+      title="Click to change reporting line"
+    >
+      {saving
+        ? 'Saving…'
+        : manager
+          ? `${manager.first_name} ${manager.last_name}${manager.title ? ` (${manager.title})` : ''} ✏️`
+          : <span style={{ color: '#94a3b8' }}>Not set ✏️</span>
+      }
+    </span>
+  );
+}
+
 
 export default ContactsView;

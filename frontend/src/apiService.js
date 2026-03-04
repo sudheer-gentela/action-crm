@@ -317,6 +317,44 @@ export const apiService = {
     getUserTeamProfile: (userId) => api.get(`/org/admin/team-profile/${userId}`),
     bulkAssignTeams: (assignments) => api.post('/org/admin/team-memberships/bulk', { assignments }),
   },
+
+  // ══════════════════════════════════════════════════════════
+  // ORG HIERARCHY — Feature 2
+  // Contact reporting structure + Account parent/subsidiary
+  // ══════════════════════════════════════════════════════════
+  orgHierarchy: {
+    // Contact org chart — full tree for an account
+    getContactTree: (accountId) =>
+      api.get(`/org-hierarchy/contacts/account/${accountId}`),
+
+    // Contact mini-position — manager + self + direct reports
+    getContactPosition: (contactId) =>
+      api.get(`/org-hierarchy/contacts/${contactId}/position`),
+
+    // Set who a contact reports to (pass null to make them root)
+    setReportsTo: (contactId, reportsToContactId) =>
+      api.patch(`/org-hierarchy/contacts/${contactId}/reports-to`, { reportsToContactId }),
+
+    // Update org chart display title / seniority level
+    updateContactMeta: (contactId, data) =>
+      api.patch(`/org-hierarchy/contacts/${contactId}/meta`, data),
+
+    // Account hierarchy — full tree centred on an account
+    getAccountHierarchy: (accountId) =>
+      api.get(`/org-hierarchy/accounts/${accountId}`),
+
+    // Add parent→child relationship between accounts
+    addAccountRelationship: (parentAccountId, childAccountId, relationshipType) =>
+      api.post('/org-hierarchy/accounts/relationship', { parentAccountId, childAccountId, relationshipType }),
+
+    // Remove a parent→child relationship
+    removeAccountRelationship: (parentAccountId, childAccountId) =>
+      api.delete('/org-hierarchy/accounts/relationship', { data: { parentAccountId, childAccountId } }),
+
+    // Admin only — toggle visibility between 'whole_org' | 'deal_team'
+    setVisibility: (visibility) =>
+      api.patch('/org-hierarchy/settings/visibility', { visibility }),
+  },
 };
 
 // ============================================================

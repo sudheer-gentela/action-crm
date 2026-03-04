@@ -1,0 +1,361 @@
+/* OrgChartPanel.css — matches Action CRM's #6366f1 / #f4f5f7 aesthetic */
+
+/* ── Shared utilities ───────────────────────────────────────────────────────── */
+.och-spinner {
+  width: 28px; height: 28px;
+  border: 2.5px solid #e5e7eb;
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: och-spin 0.65s linear infinite;
+}
+.och-spinner--sm { width: 18px; height: 18px; border-width: 2px; }
+@keyframes och-spin { to { transform: rotate(360deg); } }
+
+.och-loading, .och-mini-loading {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; padding: 40px 20px;
+  color: #64748b; font-size: 13px;
+}
+
+.och-error {
+  background: #fef2f2; border: 1px solid #fecaca;
+  color: #991b1b; border-radius: 8px;
+  padding: 10px 14px; font-size: 13px; margin: 12px 16px;
+}
+
+/* ── Panel shell ────────────────────────────────────────────────────────────── */
+.och-panel {
+  display: flex; flex-direction: column;
+  min-height: 200px;
+}
+
+/* ── Sub-tabs (contacts vs accounts) ────────────────────────────────────────── */
+.och-subtabs {
+  display: flex; gap: 0;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 0 16px;
+  background: #fafafa;
+}
+.och-subtab {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 14px;
+  font-size: 12px; font-weight: 500; color: #64748b;
+  background: none; border: none; border-bottom: 2px solid transparent;
+  cursor: pointer; transition: all .15s;
+  margin-bottom: -1px;
+}
+.och-subtab:hover { color: #0f172a; }
+.och-subtab--active { color: #6366f1; border-bottom-color: #6366f1; font-weight: 600; }
+.och-subtab-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: #e0e7ff; color: #4338ca;
+  font-size: 10px; font-weight: 700;
+  min-width: 18px; height: 18px; border-radius: 9px; padding: 0 4px;
+}
+
+/* ── Tree area ──────────────────────────────────────────────────────────────── */
+.och-tree-area {
+  padding: 16px;
+  overflow-x: auto;
+}
+
+.och-roots {
+  display: flex; flex-direction: column; gap: 8px;
+}
+
+/* ── Contact node ────────────────────────────────────────────────────────────── */
+.och-node-wrapper {
+  display: flex; flex-direction: column;
+}
+
+.och-card {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 9px;
+  transition: box-shadow .15s, border-color .15s;
+  position: relative;
+}
+.och-card:hover {
+  border-color: #c7d2fe;
+  box-shadow: 0 2px 8px rgba(99,102,241,.08);
+}
+
+.och-avatar {
+  width: 36px; height: 36px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: #fff;
+  flex-shrink: 0;
+}
+
+.och-info { flex: 1; min-width: 0; }
+
+.och-name {
+  font-size: 13px; font-weight: 600; color: #0f172a;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+}
+.och-name:hover { color: #6366f1; }
+.och-nav-arrow {
+  font-size: 11px; color: #6366f1; opacity: 0;
+  transition: opacity .12s;
+}
+.och-name:hover .och-nav-arrow { opacity: 1; }
+
+.och-title { font-size: 11px; color: #64748b; margin-top: 1px; }
+
+.och-badges { display: flex; align-items: center; gap: 5px; margin-top: 5px; flex-wrap: wrap; }
+.och-badge {
+  font-size: 10px; font-weight: 600;
+  padding: 2px 7px; border-radius: 5px;
+}
+.och-engagement-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+}
+
+.och-reports-to-btn {
+  margin-top: 5px;
+  background: none; border: none; padding: 0;
+  font-size: 10px; color: #94a3b8; cursor: pointer;
+  font-family: inherit; transition: color .12s;
+}
+.och-reports-to-btn:hover { color: #6366f1; }
+
+.och-reports-edit { margin-top: 6px; display: flex; align-items: center; gap: 6px; }
+.och-select {
+  padding: 5px 8px;
+  border: 1.5px solid #6366f1; border-radius: 6px;
+  font-size: 12px; font-family: inherit; outline: none;
+  background: #fff; color: #0f172a;
+  box-shadow: 0 0 0 2px rgba(99,102,241,.1);
+}
+.och-saving { font-size: 11px; color: #6366f1; }
+
+.och-toggle {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: #eef2ff; border: 1px solid #c7d2fe;
+  color: #6366f1; font-size: 10px; font-weight: 700;
+  cursor: pointer; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .15s; margin-top: 2px;
+}
+.och-toggle:hover { background: #6366f1; color: #fff; border-color: #6366f1; }
+.och-toggle--open { background: #6366f1; color: #fff; border-color: #6366f1; }
+
+/* ── Children connector ──────────────────────────────────────────────────────── */
+.och-children {
+  display: flex; margin-top: 0; margin-left: 18px;
+  position: relative;
+}
+.och-branch-line {
+  width: 2px; background: #e2e8f0;
+  position: absolute; left: 0; top: 0; bottom: 0;
+  border-radius: 1px;
+}
+.och-children-list {
+  flex: 1; padding: 6px 0 6px 16px;
+  display: flex; flex-direction: column; gap: 6px;
+  position: relative;
+}
+.och-children-list::before {
+  /* horizontal stubs to each child */
+  content: none;
+}
+
+/* ── Empty states ────────────────────────────────────────────────────────────── */
+.och-empty {
+  text-align: center; padding: 40px 20px;
+  color: #64748b; font-size: 13px;
+}
+.och-empty-icon { font-size: 40px; opacity: .4; margin-bottom: 10px; }
+.och-empty p { margin: 4px 0; }
+.och-empty-hint { font-size: 12px; color: #94a3b8; }
+
+.och-unlinked-list {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-top: 20px; text-align: left;
+  max-width: 320px; margin-left: auto; margin-right: auto;
+}
+.och-unlinked-label { font-size: 11px; color: #94a3b8; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; }
+.och-unlinked-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: #f8fafc; border-radius: 7px; border: 1px solid #f1f5f9; }
+.och-unlinked-avatar { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #fff; flex-shrink: 0; }
+.och-unlinked-name { font-size: 12px; font-weight: 600; color: #0f172a; }
+.och-unlinked-title { font-size: 11px; color: #64748b; }
+
+/* ── Account hierarchy ──────────────────────────────────────────────────────── */
+.och-acct-area { padding: 16px; }
+.och-acct-toolbar { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+.och-add-btn {
+  padding: 7px 14px; border-radius: 7px;
+  border: 1.5px solid #6366f1; background: #eef2ff;
+  color: #6366f1; font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all .15s;
+}
+.och-add-btn:hover { background: #6366f1; color: #fff; }
+
+.och-add-form {
+  background: #f8fafc; border: 1px solid #e5e7eb;
+  border-radius: 9px; padding: 14px 16px; margin-bottom: 16px;
+}
+.och-add-form-title { font-size: 12px; font-weight: 700; color: #0f172a; margin-bottom: 10px; }
+.och-add-form-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.och-add-form-field { display: flex; flex-direction: column; gap: 4px; }
+.och-add-form-field label { font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: .05em; }
+
+.och-save-btn {
+  padding: 7px 14px; border-radius: 6px;
+  border: none; background: #6366f1; color: #fff;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: background .12s;
+}
+.och-save-btn:hover:not(:disabled) { background: #4f46e5; }
+.och-save-btn:disabled { opacity: .5; cursor: not-allowed; }
+.och-cancel-btn {
+  padding: 7px 12px; border-radius: 6px;
+  border: 1px solid #e5e7eb; background: #fff;
+  font-size: 12px; color: #64748b; cursor: pointer;
+  transition: all .12s;
+}
+.och-cancel-btn:hover { background: #f1f5f9; }
+
+.och-acct-tree { display: flex; flex-direction: column; gap: 0; }
+
+.och-ancestors { margin-bottom: 8px; }
+.och-ancestors-label { font-size: 10px; color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+.och-ancestor-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #f8fafc; border: 1px solid #e5e7eb;
+  border-radius: 20px; padding: 4px 10px;
+  font-size: 12px; color: #0f172a; margin-bottom: 4px;
+}
+
+.och-acct-node { display: flex; flex-direction: column; }
+.och-acct-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+  margin-left: calc(var(--depth, 0) * 24px);
+  transition: box-shadow .15s;
+}
+.och-acct-card:hover { border-color: #c7d2fe; box-shadow: 0 2px 6px rgba(99,102,241,.07); }
+.och-acct-card--current { border-color: #6366f1; background: #eef2ff; }
+
+.och-acct-logo {
+  width: 34px; height: 34px; border-radius: 8px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
+.och-acct-info { flex: 1; min-width: 0; }
+.och-acct-name { font-size: 13px; font-weight: 600; color: #0f172a; }
+.och-acct-industry { font-size: 11px; color: #64748b; }
+.och-acct-stats { display: flex; gap: 8px; margin-top: 2px; }
+.och-acct-stats span { font-size: 11px; color: #6366f1; font-weight: 500; }
+
+.och-rel-badge {
+  font-size: 10px; font-weight: 600;
+  padding: 2px 7px; border-radius: 5px;
+  background: #f1f5f9; color: #475569;
+  text-transform: capitalize;
+}
+.och-remove-rel {
+  background: none; border: none; cursor: pointer;
+  font-size: 12px; color: #94a3b8; padding: 4px;
+  border-radius: 4px; transition: all .12s;
+}
+.och-remove-rel:hover { background: #fee2e2; color: #dc2626; }
+
+.och-acct-children {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-top: 6px; position: relative;
+  padding-left: 12px;
+}
+.och-acct-children::before {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 2px; background: #e2e8f0; border-radius: 1px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   Mini contact position widget (ContactsView)
+══════════════════════════════════════════════════════════════════════════════ */
+
+.och-mini {
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 0;
+}
+
+.och-mini-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px;
+  background: #fff; border-bottom: 1px solid #f1f5f9;
+}
+.och-mini-title { font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .05em; }
+.och-mini-view-all {
+  background: none; border: none; cursor: pointer;
+  font-size: 12px; color: #6366f1; font-weight: 500;
+  padding: 0; transition: opacity .12s;
+}
+.och-mini-view-all:hover { opacity: .7; }
+
+.och-mini-tree {
+  padding: 12px 14px;
+  display: flex; flex-direction: column;
+}
+
+.och-mini-vline {
+  width: 1px; height: 10px;
+  background: #d1d5db;
+  margin-left: 18px;
+  flex-shrink: 0;
+}
+
+.och-mini-reports {
+  display: flex; flex-direction: column; gap: 4px;
+  position: relative; padding-left: 10px;
+}
+.och-mini-reports::before {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 2px; background: #e5e7eb; border-radius: 1px;
+}
+
+.och-mini-node {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-radius: 7px;
+  transition: background .12s;
+}
+.och-mini-node--manager { background: #f8fafc; border: 1px solid #f1f5f9; }
+.och-mini-node--self    { background: #eef2ff; border: 1.5px solid #c7d2fe; }
+.och-mini-node--report  { background: #fff;    border: 1px solid #f1f5f9; }
+.och-mini-node--clickable { cursor: pointer; }
+.och-mini-node--clickable:hover { background: #f0f4ff; border-color: #c7d2fe; }
+
+.och-mini-avatar {
+  width: 28px; height: 28px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
+
+.och-mini-node-info { flex: 1; min-width: 0; }
+.och-mini-node-name { font-size: 12px; font-weight: 600; color: #0f172a; display: flex; align-items: center; gap: 5px; }
+.och-mini-you {
+  font-size: 9px; font-weight: 700;
+  background: #6366f1; color: #fff;
+  padding: 1px 5px; border-radius: 3px;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.och-mini-node-title { font-size: 10px; color: #94a3b8; }
+
+.och-mini-badge {
+  font-size: 9px; font-weight: 700;
+  padding: 2px 6px; border-radius: 4px;
+  white-space: nowrap; flex-shrink: 0;
+}
+.och-mini-more {
+  font-size: 11px; color: #6366f1; font-weight: 500;
+  padding: 4px 10px;
+}
