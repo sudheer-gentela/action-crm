@@ -374,7 +374,14 @@ function AccountHierarchyView({ accountId, hierarchy, onRefresh, showAddRelation
           {node.id !== accountId && (
             <button
               className="och-remove-rel"
-              onClick={() => handleRemove(parseInt(node.parent_id || accountId, 10), parseInt(node.id, 10))}
+              onClick={() => {
+                // If node.parent_id is null, this is an ancestor node above the current account
+                // relationship is stored as (ancestor -> currentAccount), not (currentAccount -> ancestor)
+                const isAncestor = !node.parent_id;
+                const pId = isAncestor ? parseInt(node.id, 10) : parseInt(node.parent_id, 10);
+                const cId = isAncestor ? parseInt(accountId, 10) : parseInt(node.id, 10);
+                handleRemove(pId, cId);
+              }}
               title="Remove relationship"
             >✕</button>
           )}
