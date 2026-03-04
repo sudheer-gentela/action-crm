@@ -223,7 +223,9 @@ export default function DealPlaysPanel({ deal, stageKey }) {
   const [viewMode, setViewMode]       = useState('all'); // 'all' or 'mine'
 
   const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
-  const isAdmin = currentUser.orgRole === 'admin' || currentUser.orgRole === 'owner';
+  const activeRole = sessionStorage.getItem('activeRole') || '';
+  const isAdmin = activeRole === 'org-admin' || activeRole === 'super-admin'
+    || currentUser.orgRole === 'admin' || currentUser.orgRole === 'owner';
   const isDealOwner = deal?.user_id === currentUser.id;
   const canManage = isAdmin || isDealOwner;
 

@@ -331,7 +331,9 @@ export default function PlaybookPlaysEditor({ playbookId }) {
   const [error, setError]           = useState('');
 
   const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
-  const isAdmin = currentUser.orgRole === 'admin' || currentUser.orgRole === 'owner';
+  const activeRole = sessionStorage.getItem('activeRole') || '';
+  const isAdmin = activeRole === 'org-admin' || activeRole === 'super-admin'
+    || currentUser.orgRole === 'admin' || currentUser.orgRole === 'owner';
 
   const fetchData = useCallback(async () => {
     if (!playbookId) return;
