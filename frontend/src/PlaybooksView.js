@@ -33,7 +33,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
   const [error, setError]               = useState('');
   const [success, setSuccess]           = useState('');
   const [showNewForm, setShowNewForm]   = useState(false);
-  const [newPbData, setNewPbData]       = useState({ name: '', type: 'custom', description: '' });
+  const [newPbData, setNewPbData]       = useState({ name: '', type: 'sales', description: '' });
   const [editingStage, setEditingStage] = useState(null);
   const [creating, setCreating]         = useState(false);
   const [deleting, setDeleting]         = useState(false);
@@ -164,7 +164,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
       setPlaybooks(prev => [...prev, nb]);
       setSelectedId(nb.id);
       setShowNewForm(false);
-      setNewPbData({ name: '', type: typeFilter === 'prospecting' ? 'prospecting' : 'custom', description: '' });
+      setNewPbData({ name: '', type: typeFilter === 'prospecting' ? 'prospecting' : 'sales', description: '' });
       flash('success', 'Playbook created ✓');
     } catch { flash('error', 'Failed to create playbook'); }
     finally  { setCreating(false); }
@@ -215,8 +215,8 @@ export default function PlaybooksView({ initialTypeFilter }) {
     }));
   };
 
-  const TYPE_LABELS = { market: '\u{1F30D} Market', product: '\u{1F4E6} Product', custom: '\u2699\uFE0F Custom', prospecting: '🎯 Prospecting' };
-  const TYPE_COLORS = { market: '#3182ce', product: '#38a169', custom: '#718096', prospecting: TEAL };
+  const TYPE_LABELS = { sales: '📘 Sales', market: '\u{1F30D} Market', product: '\u{1F4E6} Product', custom: '\u2699\uFE0F Custom', prospecting: '🎯 Prospecting' };
+  const TYPE_COLORS = { sales: '#3b82f6', market: '#3182ce', product: '#38a169', custom: '#718096', prospecting: TEAL };
 
   // ── Render ───────────────────────────────────────────────
   if (loading) return <div className="sv-loading">Loading playbooks...</div>;
@@ -288,6 +288,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
                 <div className="sv-field">
                   <label>Type</label>
                   <select className="sv-input" value={newPbData.type} onChange={e => setNewPbData(p => ({ ...p, type: e.target.value }))}>
+                    <option value="sales">📘 Sales</option>
                     <option value="market">🌍 Market</option>
                     <option value="product">📦 Product</option>
                     <option value="custom">⚙️ Custom</option>

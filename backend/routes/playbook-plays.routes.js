@@ -348,15 +348,21 @@ router.post('/reorder', adminOnly, async (req, res) => {
 
 router.get('/playbook/:playbookId/roles', async (req, res) => {
   try {
-    // Check for playbook-specific roles
-    const pbRoles = await db.query(
-      `SELECT pr.role_id, pr.sort_order, dr.name, dr.key, dr.is_system
-       FROM playbook_roles pr
-       JOIN deal_roles dr ON dr.id = pr.role_id
-       WHERE pr.playbook_id = $1 AND dr.is_active = true
-       ORDER BY pr.sort_order ASC`,
-      [req.params.playbookId]
-    );
+    // Check for playbook-specific roles (gracefully handle missing table)
+    let pbRoles = { rows: [] };
+    try {
+      pbRoles = await db.query(
+        `SELECT pr.role_id, pr.sort_order, dr.name, dr.key, dr.is_system
+         FROM playbook_roles pr
+         JOIN deal_roles dr ON dr.id = pr.role_id
+         WHERE pr.playbook_id = $1 AND dr.is_active = true
+         ORDER BY pr.sort_order ASC`,
+        [req.params.playbookId]
+      );
+    } catch (tableErr) {
+      // Table may not exist yet — fall through to org defaults
+      console.warn('playbook_roles query failed (table may not exist yet):', tableErr.message);
+    }
 
     if (pbRoles.rows.length > 0) {
       return res.json({
@@ -401,6 +407,18 @@ router.put('/playbook/:playbookId/roles', adminOnly, async (req, res) => {
     if (check.rows.length === 0) {
       return res.status(404).json({ error: { message: 'Playbook not found' } });
     }
+
+    // Ensure table exists
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS playbook_roles (
+        id          SERIAL PRIMARY KEY,
+        playbook_id INTEGER NOT NULL REFERENCES playbooks(id) ON DELETE CASCADE,
+        role_id     INTEGER NOT NULL REFERENCES deal_roles(id) ON DELETE CASCADE,
+        sort_order  INTEGER NOT NULL DEFAULT 0,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(playbook_id, role_id)
+      )
+    `);
 
     // Clear existing
     await db.query(`DELETE FROM playbook_roles WHERE playbook_id = $1`, [req.params.playbookId]);
