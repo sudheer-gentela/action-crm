@@ -346,7 +346,7 @@ export default function PlaybookPlaysEditor({ playbookId }) {
       const [playsRes, pbRolesRes, allRolesRes, stagesRes] = await Promise.all([
         apiFetch(`/playbook-plays/playbook/${playbookId}/all`),
         apiFetch(`/playbook-plays/playbook/${playbookId}/roles`),
-        apiFetch('/deal-roles'),
+        apiFetch('/org-roles'),
         isProspecting
           ? apiFetch('/prospect-stages')
           : apiFetch('/deal-stages'),

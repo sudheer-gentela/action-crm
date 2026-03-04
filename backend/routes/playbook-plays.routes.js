@@ -34,7 +34,7 @@ router.get('/playbook/:playbookId/stages/:stageKey', async (req, res) => {
               ) AS roles
        FROM playbook_plays pp
        LEFT JOIN playbook_play_roles ppr ON ppr.play_id = pp.id
-       LEFT JOIN deal_roles dr ON dr.id = ppr.role_id
+       LEFT JOIN org_roles dr ON dr.id = ppr.role_id
        WHERE pp.playbook_id = $1 AND pp.stage_key = $2 AND pp.org_id = $3
        GROUP BY pp.id
        ORDER BY pp.sort_order ASC`,
@@ -73,7 +73,7 @@ router.get('/playbook/:playbookId/all', async (req, res) => {
               ) AS roles
        FROM playbook_plays pp
        LEFT JOIN playbook_play_roles ppr ON ppr.play_id = pp.id
-       LEFT JOIN deal_roles dr ON dr.id = ppr.role_id
+       LEFT JOIN org_roles dr ON dr.id = ppr.role_id
        WHERE pp.playbook_id = $1 AND pp.org_id = $2
        GROUP BY pp.id
        ORDER BY pp.stage_key, pp.sort_order ASC`,
@@ -170,7 +170,7 @@ router.post('/', adminOnly, async (req, res) => {
               ) AS roles
        FROM playbook_plays pp
        LEFT JOIN playbook_play_roles ppr ON ppr.play_id = pp.id
-       LEFT JOIN deal_roles dr ON dr.id = ppr.role_id
+       LEFT JOIN org_roles dr ON dr.id = ppr.role_id
        WHERE pp.id = $1
        GROUP BY pp.id`,
       [play.id]
@@ -282,7 +282,7 @@ router.put('/:playId/roles', adminOnly, async (req, res) => {
     const result = await db.query(
       `SELECT ppr.*, dr.name AS role_name, dr.key AS role_key
        FROM playbook_play_roles ppr
-       JOIN deal_roles dr ON dr.id = ppr.role_id
+       JOIN org_roles dr ON dr.id = ppr.role_id
        WHERE ppr.play_id = $1`,
       [req.params.playId]
     );
@@ -340,7 +340,7 @@ router.post('/reorder', adminOnly, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// PLAYBOOK ROLES — which deal_roles are relevant to this playbook
+// PLAYBOOK ROLES — which org_roles are relevant to this playbook
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── GET /playbook/:playbookId/roles ─────────────────────────────────────────
@@ -354,7 +354,7 @@ router.get('/playbook/:playbookId/roles', async (req, res) => {
       pbRoles = await db.query(
         `SELECT pr.role_id, pr.sort_order, dr.name, dr.key, dr.is_system
          FROM playbook_roles pr
-         JOIN deal_roles dr ON dr.id = pr.role_id
+         JOIN org_roles dr ON dr.id = pr.role_id
          WHERE pr.playbook_id = $1 AND dr.is_active = true
          ORDER BY pr.sort_order ASC`,
         [req.params.playbookId]
@@ -373,7 +373,7 @@ router.get('/playbook/:playbookId/roles', async (req, res) => {
 
     // Fallback: all org roles
     const allRoles = await db.query(
-      `SELECT id, name, key, is_system, sort_order FROM deal_roles
+      `SELECT id, name, key, is_system, sort_order FROM org_roles
        WHERE org_id = $1 AND is_active = true ORDER BY sort_order ASC`,
       [req.orgId]
     );
@@ -413,7 +413,7 @@ router.put('/playbook/:playbookId/roles', adminOnly, async (req, res) => {
       CREATE TABLE IF NOT EXISTS playbook_roles (
         id          SERIAL PRIMARY KEY,
         playbook_id INTEGER NOT NULL REFERENCES playbooks(id) ON DELETE CASCADE,
-        role_id     INTEGER NOT NULL REFERENCES deal_roles(id) ON DELETE CASCADE,
+        role_id     INTEGER NOT NULL REFERENCES org_roles(id) ON DELETE CASCADE,
         sort_order  INTEGER NOT NULL DEFAULT 0,
         created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE(playbook_id, role_id)
@@ -436,7 +436,7 @@ router.put('/playbook/:playbookId/roles', adminOnly, async (req, res) => {
     const result = await db.query(
       `SELECT pr.role_id AS id, pr.sort_order, dr.name, dr.key, dr.is_system
        FROM playbook_roles pr
-       JOIN deal_roles dr ON dr.id = pr.role_id
+       JOIN org_roles dr ON dr.id = pr.role_id
        WHERE pr.playbook_id = $1 AND dr.is_active = true
        ORDER BY pr.sort_order ASC`,
       [req.params.playbookId]

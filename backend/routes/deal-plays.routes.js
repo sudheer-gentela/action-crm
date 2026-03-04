@@ -177,7 +177,7 @@ router.post('/:dealId/instances/:instanceId/assignees', async (req, res) => {
       `SELECT dpa.*, u.first_name || ' ' || u.last_name AS name, dr.name AS role_name, dr.key AS role_key
        FROM deal_play_assignees dpa
        JOIN users u ON u.id = dpa.user_id
-       LEFT JOIN deal_roles dr ON dr.id = dpa.role_id
+       LEFT JOIN org_roles dr ON dr.id = dpa.role_id
        WHERE dpa.instance_id = $1`,
       [req.params.instanceId]
     );

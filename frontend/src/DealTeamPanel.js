@@ -71,7 +71,7 @@ export default function DealTeamPanel({ deal }) {
     try {
       const [teamRes, rolesRes, eligibleRes] = await Promise.all([
         apiFetch(`/deal-team/${deal.id}/members`),
-        apiFetch('/deal-roles'),
+        apiFetch('/org-roles'),
         apiFetch(`/deal-team/${deal.id}/eligible`),
       ]);
       const memberIds = new Set((teamRes.members || []).map(m => m.userId));

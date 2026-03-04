@@ -54,7 +54,7 @@ router.get('/:dealId/members', async (req, res) => {
          ab.last_name  AS added_by_last
        FROM deal_team_members dtm
        JOIN users      u  ON u.id  = dtm.user_id
-       LEFT JOIN deal_roles  dr ON dr.id = dtm.role_id
+       LEFT JOIN org_roles  dr ON dr.id = dtm.role_id
        LEFT JOIN users      ab ON ab.id = dtm.added_by
        WHERE dtm.deal_id = $1 AND dtm.org_id = $2
        ORDER BY dtm.created_at`,
@@ -108,7 +108,7 @@ router.post('/:dealId/members', async (req, res) => {
     // Validate roleId belongs to this org if provided
     if (roleId) {
       const roleCheck = await db.query(
-        `SELECT id FROM deal_roles WHERE id = $1 AND org_id = $2 AND is_active = true`,
+        `SELECT id FROM org_roles WHERE id = $1 AND org_id = $2 AND is_active = true`,
         [roleId, req.orgId]
       );
       if (roleCheck.rows.length === 0) {
@@ -131,7 +131,7 @@ router.post('/:dealId/members', async (req, res) => {
       `SELECT dtm.*, u.first_name, u.last_name, u.email, dr.name AS role_name, dr.key AS role_key
        FROM deal_team_members dtm
        JOIN users u ON u.id = dtm.user_id
-       LEFT JOIN deal_roles dr ON dr.id = dtm.role_id
+       LEFT JOIN org_roles dr ON dr.id = dtm.role_id
        WHERE dtm.id = $1`,
       [result.rows[0].id]
     );

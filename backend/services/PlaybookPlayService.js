@@ -67,7 +67,7 @@ class PlaybookPlayService {
               ) AS roles
        FROM playbook_plays pp
        LEFT JOIN playbook_play_roles ppr ON ppr.play_id = pp.id
-       LEFT JOIN deal_roles dr ON dr.id = ppr.role_id
+       LEFT JOIN org_roles dr ON dr.id = ppr.role_id
        WHERE pp.playbook_id = $1 AND pp.stage_key = $2 AND pp.is_active = TRUE
        GROUP BY pp.id
        ORDER BY pp.sort_order ASC`,
@@ -85,7 +85,7 @@ class PlaybookPlayService {
               dr.key AS role_key
        FROM deal_team_members dtm
        JOIN users u ON u.id = dtm.user_id
-       LEFT JOIN deal_roles dr ON dr.id = dtm.role_id
+       LEFT JOIN org_roles dr ON dr.id = dtm.role_id
        WHERE dtm.deal_id = $1 AND dtm.org_id = $2`,
       [dealId, orgId]
     );
@@ -386,7 +386,7 @@ class PlaybookPlayService {
       FROM deal_play_instances dpi
       LEFT JOIN deal_play_assignees dpa ON dpa.instance_id = dpi.id
       LEFT JOIN users u ON u.id = dpa.user_id
-      LEFT JOIN deal_roles dr ON dr.id = dpa.role_id
+      LEFT JOIN org_roles dr ON dr.id = dpa.role_id
       WHERE dpi.deal_id = $1 AND dpi.org_id = $2
     `;
     const params = [dealId, orgId];

@@ -23,7 +23,7 @@ const superAdminRoutes  = require('./routes/superAdmin.routes');
 const orgAdminRoutes    = require('./routes/orgAdmin.routes');
 const playbooksRoutes   = require('./routes/playbooks.routes');
 const aiContextRoutes  = require('./routes/ai-context.routes');
-const dealRolesRoutes  = require('./routes/deal-roles.routes');
+const orgRolesRoutes   = require('./routes/org-roles.routes');
 const dealTeamRoutes   = require('./routes/deal-team.routes');
 const dealContactsRoutes = require('./routes/deal-contacts.routes');
 const dealStagesRoutes = require('./routes/deal-stages.routes');
@@ -184,7 +184,8 @@ app.use('/api/org/admin',  orgAdminRoutes);
 app.use('/api/org/admin',  teamsRoutes);        // Teams & team memberships
 app.use('/api/playbooks',  playbooksRoutes);
 app.use('/api/ai',         aiContextRoutes);
-app.use('/api/deal-roles', dealRolesRoutes);
+app.use('/api/org-roles', orgRolesRoutes);
+app.use('/api/deal-roles', orgRolesRoutes);    // backward compat alias
 app.use('/api/deal-team',  dealTeamRoutes);
 app.use('/api/deal-contacts', dealContactsRoutes);
 app.use('/api/deal-stages',      dealStagesRoutes);
