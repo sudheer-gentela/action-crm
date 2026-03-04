@@ -169,16 +169,24 @@ router.post('/', adminOnly, async (req, res) => {
     const orgTypes = orgTypesResult.rows[0]?.types;
     const validKeys = Array.isArray(orgTypes) && orgTypes.length > 0
       ? orgTypes.map(t => t.key)
-      : ['market', 'product', 'custom', 'prospecting']; // fallback
-    if (!validKeys.includes(type) && type !== 'custom') {
+      : ['sales', 'market', 'product', 'custom', 'prospecting']; // fallback
+    if (!validKeys.includes(type) && type !== 'custom' && type !== 'sales') {
       return res.status(400).json({ error: { message: `type must be one of: ${validKeys.join(', ')}` } });
     }
 
     if (is_default) {
-      await db.query(
-        'UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND is_default = TRUE',
-        [req.orgId]
-      );
+      // Only clear defaults within the same type group
+      if (type === 'prospecting') {
+        await db.query(
+          `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND type = 'prospecting' AND is_default = TRUE`,
+          [req.orgId]
+        );
+      } else {
+        await db.query(
+          `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND type != 'prospecting' AND is_default = TRUE`,
+          [req.orgId]
+        );
+      }
     }
 
     // Auto-populate stage_guidance from salesPlaybook defaults when none provided
@@ -403,18 +411,33 @@ router.post('/:id/seed-guidance', adminOnly, async (req, res) => {
 });
 
 // ── POST /:id/set-default — mark as org default (admin only) ─────────────────
+// Scoped by type: setting a prospecting default won't clear the sales default.
 router.post('/:id/set-default', adminOnly, async (req, res) => {
   try {
     const existing = await db.query(
-      'SELECT id FROM playbooks WHERE id = $1 AND org_id = $2',
+      'SELECT id, type FROM playbooks WHERE id = $1 AND org_id = $2',
       [req.params.id, req.orgId]
     );
     if (existing.rows.length === 0) {
       return res.status(404).json({ error: { message: 'Playbook not found' } });
     }
 
+    const pbType = existing.rows[0].type;
+    const isProspecting = pbType === 'prospecting';
+
     await db.query('BEGIN');
-    await db.query('UPDATE playbooks SET is_default = FALSE WHERE org_id = $1', [req.orgId]);
+    // Only clear defaults within the same type group
+    if (isProspecting) {
+      await db.query(
+        `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND type = 'prospecting'`,
+        [req.orgId]
+      );
+    } else {
+      await db.query(
+        `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND type != 'prospecting'`,
+        [req.orgId]
+      );
+    }
     const result = await db.query(
       `UPDATE playbooks SET is_default = TRUE, updated_at = NOW()
        WHERE id = $1 AND org_id = $2 RETURNING *`,

@@ -147,7 +147,15 @@ export default function PlaybooksView({ initialTypeFilter }) {
     if (!canEdit) return;
     try {
       await apiService.playbooks.setDefault(id);
-      setPlaybooks(prev => prev.map(p => ({ ...p, is_default: p.id === id })));
+      // Only toggle default within the same type
+      const targetPb = playbooks.find(p => p.id === id);
+      const targetType = targetPb?.type || 'sales';
+      setPlaybooks(prev => prev.map(p => {
+        if (p.type === targetType || (p.type !== 'prospecting' && targetType !== 'prospecting')) {
+          return { ...p, is_default: p.id === id };
+        }
+        return p;
+      }));
       flash('success', 'Default playbook updated ✓');
     } catch { flash('error', 'Failed to set default'); }
   };
