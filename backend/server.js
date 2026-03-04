@@ -192,6 +192,9 @@ app.use('/api/deal-stages',      dealStagesRoutes);
 app.use('/api/straps',            strapRoutes);              // STRAP Framework
 app.use('/api/prospect-stages', prospectStagesRoutes);
 
+const pipelineStagesRoutes = require('./routes/pipeline-stages.routes');
+app.use('/api/pipeline-stages', pipelineStagesRoutes);
+
 // ─── Playbook Plays (role-based) ─────────────────────────────
 app.use('/api/playbook-plays', playbookPlaysRoutes);   // Play definitions (admin CRUD)
 app.use('/api/deal-plays',     dealPlaysRoutes);        // Deal play instances (execution)

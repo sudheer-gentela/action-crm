@@ -2689,11 +2689,10 @@ function OAPlaybooks() {
   useEffect(() => {
     if (isSalesType || isProspecting) return;
     setCustomStagesLoading(true);
-    // Custom types use deal stages as default pipeline
-    // (future: support custom stage pipelines per type)
+    // Custom types use their own pipeline stages
     (async () => {
       try {
-        const res = await fetch(`${API}/deal-stages`, {
+        const res = await fetch(`${API}/pipeline-stages/${typeFilter}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json();
@@ -3004,7 +3003,7 @@ function OAPlaybooks() {
                   <span style={{ fontSize: 12, color: '#9ca3af' }}>
                     {isProspecting ? 'Stages from Prospect Stages tab'
                       : isSalesType ? 'Stages from Deal Stages tab'
-                      : 'Using deal stages as pipeline (custom stage pipelines coming soon)'}
+                      : `Stages from ${activeType?.label || typeFilter} Stages tab`}
                     {' · save each stage individually'}
                   </span>
                 </div>

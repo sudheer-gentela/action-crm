@@ -1,14 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // OAStages.js
 //
-// Unified Stages management — combines Deal Stages and Prospect Stages
-// into a single tabbed component under one OrgAdmin menu item.
-//
-// Replace the separate OADealStages and OAProspectStages imports/tabs
-// with this single component:
-//   import OAStages from './OAStages';
-//   { id: 'stages', icon: '🏷️', label: 'Stages' }
-//   {tab === 'stages' && <OAStages />}
+// Unified Stages management — dynamically shows tabs for every playbook type.
+// Deal stages and Prospect stages use their dedicated tables/routes.
+// Custom types (customer_success, implementation, etc.) use pipeline_stages.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -30,7 +25,8 @@ function apiFetch(path, options = {}) {
   });
 }
 
-// ── Deal stage types ────────────────────────────────────────────────────────
+// ── Stage type options per pipeline ───────────────────────────────────────────
+
 const DEAL_STAGE_TYPE_OPTIONS = [
   { value: 'awareness',   label: 'Awareness',             desc: 'Top of funnel / inbound interest' },
   { value: 'discovery',   label: 'Discovery',             desc: 'Qualification / needs analysis' },
@@ -43,7 +39,6 @@ const DEAL_STAGE_TYPE_OPTIONS = [
   { value: 'custom',      label: 'Custom (no mapping)',   desc: 'Org-specific stage — AI uses general guidance' },
 ];
 
-// ── Prospect stage types ────────────────────────────────────────────────────
 const PROSPECT_STAGE_TYPE_OPTIONS = [
   { value: 'targeting',      label: 'Targeting',       desc: 'Identified as potential fit — not yet researched' },
   { value: 'research',       label: 'Research',        desc: 'Gathering intel, ICP scoring, account mapping' },
@@ -56,20 +51,57 @@ const PROSPECT_STAGE_TYPE_OPTIONS = [
   { value: 'custom',         label: 'Custom',          desc: 'Org-specific stage — AI uses general guidance' },
 ];
 
+const GENERIC_STAGE_TYPE_OPTIONS = [
+  { value: 'intake',        label: 'Intake',         desc: 'New item entering the pipeline' },
+  { value: 'in_progress',   label: 'In Progress',    desc: 'Actively being worked on' },
+  { value: 'review',        label: 'Review',         desc: 'Awaiting review or approval' },
+  { value: 'blocked',       label: 'Blocked',        desc: 'Stalled — awaiting external input' },
+  { value: 'completed',     label: 'Completed',      desc: 'Successfully finished — terminal stage' },
+  { value: 'cancelled',     label: 'Cancelled',      desc: 'Cancelled or abandoned — terminal stage' },
+  { value: 'custom',        label: 'Custom',         desc: 'Org-specific stage' },
+];
+
 const COLOR_PRESETS = [
   '#6B7280', '#3B82F6', '#8B5CF6', '#F59E0B',
   '#10B981', '#059669', '#EF4444', '#6366F1',
   '#EC4899', '#14B8A6', '#F97316', '#84CC16',
 ];
 
-const TEAL = '#0F9D8E';
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Main Component
 // ═══════════════════════════════════════════════════════════════════════════
 
 export default function OAStages() {
-  const [activeTab, setActiveTab] = useState('deal'); // 'deal' | 'prospect'
+  const [activeTab, setActiveTab] = useState('deal');
+  const [playbookTypes, setPlaybookTypes] = useState([]);
+
+  // Fetch org's playbook types
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch('/org/admin/playbook-types');
+        setPlaybookTypes(res.playbook_types || []);
+      } catch { /* use defaults */ }
+    })();
+  }, []);
+
+  // Build tab list: always start with deal + prospect, then add custom types
+  const tabs = [
+    { key: 'deal',     label: 'Deal Stages',     icon: '💼', color: '#4f46e5' },
+    { key: 'prospect', label: 'Prospect Stages',  icon: '🎯', color: '#0F9D8E' },
+  ];
+
+  // Add tabs for custom playbook types (exclude sales + prospecting which are handled above)
+  playbookTypes
+    .filter(t => t.key !== 'sales' && t.key !== 'prospecting')
+    .forEach(t => {
+      tabs.push({
+        key: t.key,
+        label: `${t.label} Stages`,
+        icon: t.icon || '📂',
+        color: t.color || '#6b7280',
+      });
+    });
 
   return (
     <div className="sv-panel">
@@ -77,18 +109,15 @@ export default function OAStages() {
         <div>
           <h2>🏷️ Stages</h2>
           <p className="sv-panel-desc">
-            Configure the stages in your sales and prospecting pipelines. System stages can
-            be renamed or deactivated. Custom stages can be fully managed.
+            Configure the stages in your pipelines. Each playbook type can have its own set of stages.
+            Add new playbook types in Org Settings → Playbook Types.
           </p>
         </div>
       </div>
 
-      {/* Tab toggle */}
-      <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb' }}>
-        {[
-          { key: 'deal',     label: '💼 Deal Stages',     color: '#4f46e5' },
-          { key: 'prospect', label: '🎯 Prospect Stages', color: TEAL },
-        ].map(t => (
+      {/* Dynamic tab toggle */}
+      <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', flexWrap: 'wrap' }}>
+        {tabs.map(t => (
           <button
             key={t.key}
             onClick={() => setActiveTab(t.key)}
@@ -104,19 +133,25 @@ export default function OAStages() {
               transition: 'all 0.15s',
             }}
           >
-            {t.label}
+            {t.icon} {t.label}
           </button>
         ))}
       </div>
 
       {activeTab === 'deal'     && <DealStagesPanel />}
       {activeTab === 'prospect' && <ProspectStagesPanel />}
+      {activeTab !== 'deal' && activeTab !== 'prospect' && (
+        <PipelineStagesPanel
+          pipeline={activeTab}
+          tabInfo={tabs.find(t => t.key === activeTab)}
+        />
+      )}
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Deal Stages Panel
+// Deal Stages Panel (uses /deal-stages)
 // ═══════════════════════════════════════════════════════════════════════════
 
 function DealStagesPanel() {
@@ -172,16 +207,21 @@ function DealStagesPanel() {
     try {
       const r = await apiFetch(`/deal-stages/${stage.id}`, { method: 'PUT', body: JSON.stringify({ name: editName.trim() }) });
       setStages(prev => prev.map(s => s.id === stage.id ? r.stage : s));
-      setEditId(null); flash('success', 'Stage renamed');
+      setEditId(null);
+      flash('success', 'Stage renamed');
     } catch (e) { flash('error', e.message); }
   }
 
   async function handleDelete(stage) {
-    if (!window.confirm(`Delete stage "${stage.name}"?\n\nDeals in this stage must be moved first.`)) return;
+    if (!window.confirm(`Delete "${stage.name}"? This cannot be undone if no deals reference it.`)) return;
     try {
-      await apiFetch(`/deal-stages/${stage.id}`, { method: 'DELETE' });
-      setStages(prev => prev.filter(s => s.id !== stage.id));
-      flash('success', `"${stage.name}" deleted`);
+      const r = await apiFetch(`/deal-stages/${stage.id}`, { method: 'DELETE' });
+      if (r.action === 'deactivated') {
+        setStages(prev => prev.map(s => s.id === stage.id ? { ...s, is_active: false } : s));
+      } else {
+        setStages(prev => prev.filter(s => s.id !== stage.id));
+      }
+      flash('success', r.message);
     } catch (e) { flash('error', e.message); }
   }
 
@@ -189,14 +229,18 @@ function DealStagesPanel() {
     if (!newName.trim()) return;
     setSubmitting(true);
     try {
-      const r = await apiFetch('/deal-stages', { method: 'POST', body: JSON.stringify({ name: newName.trim(), stage_type: newType, is_terminal: newTerminal }) });
+      const r = await apiFetch('/deal-stages', {
+        method: 'POST',
+        body: JSON.stringify({ name: newName.trim(), stage_type: newType, is_terminal: newTerminal }),
+      });
       setStages(prev => [...prev, r.stage]);
       setNewName(''); setNewType('custom'); setNewTerminal(false); setAdding(false);
-      flash('success', `"${r.stage.name}" created`);
-    } catch (e) { flash('error', e.message); } finally { setSubmitting(false); }
+      flash('success', 'Stage created');
+    } catch (e) { flash('error', e.message); }
+    finally { setSubmitting(false); }
   }
 
-  if (loading) return <div className="sv-loading">Loading deal stages…</div>;
+  if (loading) return <div className="sv-loading" style={{ padding: 24 }}>Loading deal stages…</div>;
 
   const sorted = [...stages].sort((a, b) => a.sort_order - b.sort_order);
   const systemStages = sorted.filter(s => s.is_system);
@@ -208,7 +252,7 @@ function DealStagesPanel() {
       {success && <div className="sv-success">✓ {success}</div>}
 
       <StagesSection
-        title="Default Stages" hint="Built-in stages. Can be renamed and reordered. Cannot be deleted."
+        title="System Stages" hint="Built-in deal stages. Can be renamed and reordered. Cannot be deleted."
         stages={systemStages} editId={editId} editName={editName}
         onEditStart={(s) => { setEditId(s.id); setEditName(s.name); }} onEditChange={setEditName}
         onEditCommit={(s) => handleRename(s)} onEditCancel={() => setEditId(null)}
@@ -225,31 +269,29 @@ function DealStagesPanel() {
         stageTypeLabels={STAGE_TYPE_LABELS}
       />
 
-      {/* Add form */}
       {adding ? (
         <AddStageForm
           name={newName} onNameChange={setNewName}
           type={newType} onTypeChange={setNewType}
           terminal={newTerminal} onTerminalChange={setNewTerminal}
-          typeOptions={STAGE_TYPE_OPTIONS}
+          typeOptions={DEAL_STAGE_TYPE_OPTIONS}
           submitting={submitting}
           onSubmit={handleAdd} onCancel={() => { setAdding(false); setNewName(''); }}
-          placeholder="Stage name (e.g. Legal Review)…"
+          placeholder="Stage name (e.g. Technical Review)…"
           terminalLabel="Terminal stage (deals here are excluded from AI action generation)"
         />
       ) : (
         <button className="sv-btn-primary" style={{ marginTop: 12 }} onClick={() => setAdding(true)}>+ Add Custom Stage</button>
       )}
 
-      {/* Type reference */}
-      <StageTypeGrid title="Stage Type Reference" options={STAGE_TYPE_OPTIONS}
-        hint="Stage type tells the AI what kind of sales activity is expected." />
+      <StageTypeGrid title="Stage Type Reference" options={DEAL_STAGE_TYPE_OPTIONS}
+        hint="Stage type tells the AI what kind of deal activity is expected." />
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Prospect Stages Panel
+// Prospect Stages Panel (uses /prospect-stages)
 // ═══════════════════════════════════════════════════════════════════════════
 
 function ProspectStagesPanel() {
@@ -306,16 +348,21 @@ function ProspectStagesPanel() {
     try {
       const r = await apiFetch(`/prospect-stages/${stage.id}`, { method: 'PUT', body: JSON.stringify({ name: editName.trim() }) });
       setStages(prev => prev.map(s => s.id === stage.id ? r.stage : s));
-      setEditId(null); flash('success', 'Stage renamed');
+      setEditId(null);
+      flash('success', 'Stage renamed');
     } catch (e) { flash('error', e.message); }
   }
 
   async function handleDelete(stage) {
-    if (!window.confirm(`Delete stage "${stage.name}"?\n\nProspects in this stage must be moved first.`)) return;
+    if (!window.confirm(`Delete "${stage.name}"?`)) return;
     try {
-      await apiFetch(`/prospect-stages/${stage.id}`, { method: 'DELETE' });
-      setStages(prev => prev.filter(s => s.id !== stage.id));
-      flash('success', `"${stage.name}" deleted`);
+      const r = await apiFetch(`/prospect-stages/${stage.id}`, { method: 'DELETE' });
+      if (r.action === 'deactivated') {
+        setStages(prev => prev.map(s => s.id === stage.id ? { ...s, is_active: false } : s));
+      } else {
+        setStages(prev => prev.filter(s => s.id !== stage.id));
+      }
+      flash('success', r.message);
     } catch (e) { flash('error', e.message); }
   }
 
@@ -323,14 +370,18 @@ function ProspectStagesPanel() {
     if (!newName.trim()) return;
     setSubmitting(true);
     try {
-      const r = await apiFetch('/prospect-stages', { method: 'POST', body: JSON.stringify({ name: newName.trim(), stage_type: newType, is_terminal: newTerminal, color: newColor }) });
+      const r = await apiFetch('/prospect-stages', {
+        method: 'POST',
+        body: JSON.stringify({ name: newName.trim(), stage_type: newType, is_terminal: newTerminal, color: newColor }),
+      });
       setStages(prev => [...prev, r.stage]);
-      setNewName(''); setNewType('custom'); setNewTerminal(false); setNewColor('#6B7280'); setAdding(false);
-      flash('success', `"${r.stage.name}" created`);
-    } catch (e) { flash('error', e.message); } finally { setSubmitting(false); }
+      setNewName(''); setNewType('custom'); setNewTerminal(false); setAdding(false);
+      flash('success', 'Stage created');
+    } catch (e) { flash('error', e.message); }
+    finally { setSubmitting(false); }
   }
 
-  if (loading) return <div className="sv-loading">Loading prospect stages…</div>;
+  if (loading) return <div className="sv-loading" style={{ padding: 24 }}>Loading prospect stages…</div>;
 
   const sorted = [...stages].sort((a, b) => a.sort_order - b.sort_order);
   const systemStages = sorted.filter(s => s.is_system);
@@ -342,7 +393,7 @@ function ProspectStagesPanel() {
       {success && <div className="sv-success">✓ {success}</div>}
 
       <StagesSection
-        title="Default Stages" hint="Built-in prospect lifecycle stages. Can be renamed and reordered. Cannot be deleted."
+        title="Default Stages" hint="Built-in prospect lifecycle stages. Can be renamed and reordered."
         stages={systemStages} editId={editId} editName={editName}
         onEditStart={(s) => { setEditId(s.id); setEditName(s.name); }} onEditChange={setEditName}
         onEditCommit={(s) => handleRename(s)} onEditCancel={() => setEditId(null)}
@@ -351,7 +402,7 @@ function ProspectStagesPanel() {
       />
 
       <StagesSection
-        title="Custom Stages" hint="Click a name to rename. Cannot be deleted if prospects are in that stage."
+        title="Custom Stages" hint="Click a name to rename."
         stages={customStages} editId={editId} editName={editName}
         onEditStart={(s) => { setEditId(s.id); setEditName(s.name); }} onEditChange={setEditName}
         onEditCommit={(s) => handleRename(s)} onEditCancel={() => setEditId(null)}
@@ -359,13 +410,12 @@ function ProspectStagesPanel() {
         stageTypeLabels={STAGE_TYPE_LABELS} showColor
       />
 
-      {/* Add form with color picker */}
       {adding ? (
         <AddStageForm
           name={newName} onNameChange={setNewName}
           type={newType} onTypeChange={setNewType}
           terminal={newTerminal} onTerminalChange={setNewTerminal}
-          typeOptions={STAGE_TYPE_OPTIONS}
+          typeOptions={PROSPECT_STAGE_TYPE_OPTIONS}
           submitting={submitting}
           onSubmit={handleAdd} onCancel={() => { setAdding(false); setNewName(''); }}
           placeholder="Stage name (e.g. Cold Outreach)…"
@@ -376,8 +426,159 @@ function ProspectStagesPanel() {
         <button className="sv-btn-primary" style={{ marginTop: 12 }} onClick={() => setAdding(true)}>+ Add Custom Stage</button>
       )}
 
-      <StageTypeGrid title="Stage Type Reference" options={STAGE_TYPE_OPTIONS}
+      <StageTypeGrid title="Stage Type Reference" options={PROSPECT_STAGE_TYPE_OPTIONS}
         hint="Stage type tells the AI what kind of prospecting activity is expected." />
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Generic Pipeline Stages Panel (uses /pipeline-stages/:pipeline)
+// For custom types: Customer Success, Implementation, etc.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function PipelineStagesPanel({ pipeline, tabInfo }) {
+  const [stages, setStages]     = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
+  const [success, setSuccess]   = useState('');
+  const [adding, setAdding]         = useState(false);
+  const [newName, setNewName]       = useState('');
+  const [newType, setNewType]       = useState('custom');
+  const [newTerminal, setNewTerminal] = useState(false);
+  const [newColor, setNewColor]     = useState('#6B7280');
+  const [submitting, setSubmitting] = useState(false);
+  const [editId, setEditId]     = useState(null);
+  const [editName, setEditName] = useState('');
+
+  const STAGE_TYPE_OPTIONS = GENERIC_STAGE_TYPE_OPTIONS;
+  const STAGE_TYPE_LABELS = Object.fromEntries(STAGE_TYPE_OPTIONS.map(o => [o.value, o.label]));
+  const pipelineLabel = tabInfo?.label?.replace(' Stages', '') || pipeline;
+
+  function flash(type, msg) {
+    if (type === 'success') { setSuccess(msg); setTimeout(() => setSuccess(''), 3000); }
+    else                    { setError(msg);   setTimeout(() => setError(''),   4000); }
+  }
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const r = await apiFetch(`/pipeline-stages/${pipeline}`);
+      setStages(r.stages || []);
+    }
+    catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, [pipeline]);
+  useEffect(() => { load(); }, [load]);
+
+  async function moveStage(stage, direction) {
+    const sorted = [...stages].sort((a, b) => a.sort_order - b.sort_order);
+    const idx = sorted.findIndex(s => s.id === stage.id);
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= sorted.length) return;
+    const newOrder = sorted.map(s => s.id);
+    [newOrder[idx], newOrder[swapIdx]] = [newOrder[swapIdx], newOrder[idx]];
+    try {
+      const r = await apiFetch(`/pipeline-stages/${pipeline}/reorder`, { method: 'PATCH', body: JSON.stringify({ order: newOrder }) });
+      setStages(r.stages || []);
+    } catch (e) { flash('error', e.message); }
+  }
+
+  async function handleToggle(stage) {
+    try {
+      const r = await apiFetch(`/pipeline-stages/${pipeline}/${stage.id}`, {
+        method: 'PUT', body: JSON.stringify({ is_active: !stage.is_active }),
+      });
+      setStages(prev => prev.map(s => s.id === stage.id ? r.stage : s));
+      flash('success', `"${stage.name}" ${r.stage.is_active ? 'activated' : 'deactivated'}`);
+    } catch (e) { flash('error', e.message); }
+  }
+
+  async function handleRename(stage) {
+    if (!editName.trim() || editName.trim() === stage.name) { setEditId(null); return; }
+    try {
+      const r = await apiFetch(`/pipeline-stages/${pipeline}/${stage.id}`, {
+        method: 'PUT', body: JSON.stringify({ name: editName.trim() }),
+      });
+      setStages(prev => prev.map(s => s.id === stage.id ? r.stage : s));
+      setEditId(null);
+      flash('success', 'Stage renamed');
+    } catch (e) { flash('error', e.message); }
+  }
+
+  async function handleDelete(stage) {
+    if (!window.confirm(`Delete "${stage.name}"?`)) return;
+    try {
+      await apiFetch(`/pipeline-stages/${pipeline}/${stage.id}`, { method: 'DELETE' });
+      setStages(prev => prev.filter(s => s.id !== stage.id));
+      flash('success', `"${stage.name}" deleted`);
+    } catch (e) { flash('error', e.message); }
+  }
+
+  async function handleAdd() {
+    if (!newName.trim()) return;
+    setSubmitting(true);
+    try {
+      const r = await apiFetch(`/pipeline-stages/${pipeline}`, {
+        method: 'POST',
+        body: JSON.stringify({ name: newName.trim(), stage_type: newType, is_terminal: newTerminal, color: newColor }),
+      });
+      setStages(prev => [...prev, r.stage]);
+      setNewName(''); setNewType('custom'); setNewTerminal(false); setAdding(false);
+      flash('success', 'Stage created');
+    } catch (e) { flash('error', e.message); }
+    finally { setSubmitting(false); }
+  }
+
+  if (loading) return <div className="sv-loading" style={{ padding: 24 }}>Loading {pipelineLabel.toLowerCase()} stages…</div>;
+
+  const sorted = [...stages].sort((a, b) => a.sort_order - b.sort_order);
+
+  return (
+    <div className="sv-panel-body">
+      {error   && <div className="sv-error">⚠️ {error}</div>}
+      {success && <div className="sv-success">✓ {success}</div>}
+
+      {sorted.length === 0 && !adding && (
+        <div className="sv-empty" style={{ padding: 32, textAlign: 'center' }}>
+          <p style={{ fontSize: 15, marginBottom: 8 }}>No stages defined for {pipelineLabel} yet.</p>
+          <p style={{ fontSize: 13, color: '#9ca3af', marginBottom: 16 }}>
+            Create stages to define your {pipelineLabel.toLowerCase()} pipeline. These stages will appear
+            in {pipelineLabel} playbooks under Stage Guidance and Plays by Role.
+          </p>
+        </div>
+      )}
+
+      {sorted.length > 0 && (
+        <StagesSection
+          title={`${pipelineLabel} Stages`}
+          hint={`Define the stages in your ${pipelineLabel.toLowerCase()} pipeline. Click a name to rename.`}
+          stages={sorted} editId={editId} editName={editName}
+          onEditStart={(s) => { setEditId(s.id); setEditName(s.name); }} onEditChange={setEditName}
+          onEditCommit={(s) => handleRename(s)} onEditCancel={() => setEditId(null)}
+          onToggle={handleToggle} onMove={moveStage} onDelete={handleDelete}
+          stageTypeLabels={STAGE_TYPE_LABELS} showColor
+        />
+      )}
+
+      {adding ? (
+        <AddStageForm
+          name={newName} onNameChange={setNewName}
+          type={newType} onTypeChange={setNewType}
+          terminal={newTerminal} onTerminalChange={setNewTerminal}
+          typeOptions={GENERIC_STAGE_TYPE_OPTIONS}
+          submitting={submitting}
+          onSubmit={handleAdd} onCancel={() => { setAdding(false); setNewName(''); }}
+          placeholder={`Stage name (e.g. Onboarding, Handoff Review)…`}
+          terminalLabel="Terminal stage (items here are considered complete)"
+          color={newColor} onColorChange={setNewColor}
+        />
+      ) : (
+        <button className="sv-btn-primary" style={{ marginTop: 12 }} onClick={() => setAdding(true)}>+ Add Stage</button>
+      )}
+
+      <StageTypeGrid title="Stage Type Reference" options={GENERIC_STAGE_TYPE_OPTIONS}
+        hint="Stage type helps the AI understand what activity is expected at each stage." />
     </div>
   );
 }
