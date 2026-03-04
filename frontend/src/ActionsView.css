@@ -19,7 +19,6 @@
   padding: 20px 24px 16px;
   background: #fff;
   border-bottom: 1px solid #e5e7eb;
-  flex-shrink: 0;
 }
 .av-header-left { display: flex; align-items: baseline; gap: 14px; }
 .av-title { margin: 0; font-size: 20px; font-weight: 700; color: #111827; }
@@ -1119,12 +1118,7 @@
 /* ── Actions Table Layout ──────────────────────────────────────────────────── */
 
 .av-table-root {
-  display: flex;
-  flex-direction: column;
-  padding: 0 24px 0;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
+  padding: 0 24px 20px;
 }
 
 .av-table-toolbar {
@@ -1132,8 +1126,10 @@
   align-items: center;
   gap: 10px;
   padding: 10px 0;
-  position: relative;
-  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: #fff;
 }
 
 .av-table-result-count {
@@ -1204,10 +1200,7 @@
 }
 
 .av-table-body {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
-  padding-bottom: 20px;
+  /* Rows container — no special scroll; page scrolls naturally */
 }
 
 .av-table-th {
