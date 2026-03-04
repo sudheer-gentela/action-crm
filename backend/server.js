@@ -37,7 +37,7 @@ const playbookPlaysRoutes = require('./routes/playbook-plays.routes');
 const dealPlaysRoutes     = require('./routes/deal-plays.routes');
 
 // Org Hierarchy (Feature 2 — contact reporting structure + account parent/subsidiary)
-const orgHierarchyRoutes        = require('./routes/orgHierarchy');
+const orgHierarchyRoutes        = require('./routes/orgHierarchy.routes');
 
 // Prospecting Module
 const prospectsRoutes           = require('./routes/prospects.routes');
