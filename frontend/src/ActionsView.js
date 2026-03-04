@@ -1182,10 +1182,24 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
 
 // ── Filter Bar ────────────────────────────────────────────────────────────────
 
-function FilterBar({ filters, onChange, options }) {
-  const hasFilters = filters.dealId || filters.accountId;
+function FilterBar({ filters, onChange, options, scope }) {
+  const hasFilters = filters.dealId || filters.accountId || filters.ownerId;
   return (
     <div className="av-filters">
+      {/* Team member — only visible on team/org scope */}
+      {(scope === 'team' || scope === 'org') && options.owners?.length > 0 && (
+        <select
+          className="av-filter-select"
+          value={filters.ownerId}
+          onChange={e => onChange('ownerId', e.target.value)}
+        >
+          <option value="">{scope === 'team' ? 'All Team Members' : 'All People'}</option>
+          {options.owners.map(o => (
+            <option key={o.id} value={o.id}>{o.name}</option>
+          ))}
+        </select>
+      )}
+
       {/* Deal */}
       <select
         className="av-filter-select"
@@ -1274,6 +1288,11 @@ export default function ActionsView() {
   useEffect(() => {
     if (lastScopeFetch.current === scope) return;
     lastScopeFetch.current = scope;
+
+    // Clear person filter when switching back to mine
+    if (scope === 'mine') {
+      setFilters(prev => ({ ...prev, ownerId: '' }));
+    }
 
     apiFetch(`/actions/filter-options?scope=${scope}`).then(data => setFilterOptions(data)).catch(() => {});
     apiFetch(`/contacts?scope=${scope}`).then(d => setContacts(d.contacts || [])).catch(() => {});
@@ -1748,7 +1767,7 @@ export default function ActionsView() {
         </div>
 
         {/* Filters */}
-        <FilterBar filters={filters} onChange={handleFilterChange} options={filterOptions} />
+        <FilterBar filters={filters} onChange={handleFilterChange} options={filterOptions} scope={scope} />
 
         {/* ── STRAP Pinned Section ──────────────────────────────────── */}
         {(filters.source === 'all' || filters.source === 'strap') && filteredStraps.length > 0 && (
