@@ -229,7 +229,7 @@ async function buildAccountTree(orgId, rootId) {
   const { rows: dealStats } = await pool.query(
     `SELECT account_id,
             COUNT(*) FILTER (WHERE stage NOT IN ('closed_won','closed_lost')) AS active_deals,
-            SUM(amount) FILTER (WHERE stage NOT IN ('closed_lost')) AS total_arr
+            SUM(value) FILTER (WHERE stage NOT IN ('closed_lost')) AS total_arr
      FROM deals
      WHERE org_id = $1 AND account_id = ANY($2)
      GROUP BY account_id`,
