@@ -1335,6 +1335,10 @@ export default function ActionsView() {
 
   // ── Filter STRAPs client-side to match active action filters ────
   const filteredStraps = straps.filter(s => {
+    if (filters.ownerId) {
+      const oid = parseInt(filters.ownerId);
+      if (s.created_by !== oid) return false;
+    }
     if (filters.dealId) {
       const did = parseInt(filters.dealId);
       if (s.entity_type === 'deal' && s.entity_id !== did) return false;
