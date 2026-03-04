@@ -343,7 +343,7 @@ export default function PlaybookPlaysEditor({ playbookId }) {
       const pbRes = await apiFetch(`/playbooks/${playbookId}`);
       const pb = pbRes.playbook || pbRes;
       const isProspecting = pb.type === 'prospecting';
-      setPlaybookType(isProspecting ? 'prospecting' : 'sales');
+      setPlaybookType(pb.type || 'sales');
 
       // Fetch plays, playbook-specific roles, all org roles, and correct stages in parallel
       const [playsRes, pbRolesRes, stagesRes] = await Promise.all([
@@ -351,7 +351,7 @@ export default function PlaybookPlaysEditor({ playbookId }) {
         apiFetch(`/playbook-plays/playbook/${playbookId}/roles`),
         isProspecting
           ? apiFetch('/prospect-stages')
-          : apiFetch('/deal-stages'),
+          : apiFetch('/deal-stages'),  // sales + custom types use deal stages
       ]);
 
       // Roles: try /org-roles first, fall back to /deal-roles for backward compat
@@ -475,7 +475,7 @@ export default function PlaybookPlaysEditor({ playbookId }) {
     return <div className="ppe-loading">Loading playbook plays…</div>;
   }
 
-  const stageNoun = playbookType === 'prospecting' ? 'prospect stage' : 'deal stage';
+  const stageNoun = playbookType === 'prospecting' ? 'prospect stage' : 'stage';
 
   return (
     <div className="ppe-root">

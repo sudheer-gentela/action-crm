@@ -2648,6 +2648,8 @@ function OAPlaybooks() {
   // ── Type filter tab: dynamic from org playbook types ────────────────────────
   const [typeFilter, setTypeFilter] = useState('sales');
   const isProspecting = typeFilter === 'prospecting';
+  const isSalesType = typeFilter === 'sales';
+  const isCustomType = !isSalesType && !isProspecting;
 
   // "sales" tab catches legacy types (custom, market, product) + explicit sales type
   // All other tabs filter by exact type key
@@ -2678,6 +2680,32 @@ function OAPlaybooks() {
     })();
   }, [typeFilter, API, token]);
 
+  // ── Custom type stages (loaded when a custom type tab is active) ───────────
+  // Custom types default to using deal stages but PlaybookPlaysEditor handles
+  // stage loading independently per playbook type via its own fetchData.
+  const [customLiveStages, setCustomLiveStages] = useState([]);
+  const [customStagesLoading, setCustomStagesLoading] = useState(false);
+
+  useEffect(() => {
+    if (isSalesType || isProspecting) return;
+    setCustomStagesLoading(true);
+    // Custom types use deal stages as default pipeline
+    // (future: support custom stage pipelines per type)
+    (async () => {
+      try {
+        const res = await fetch(`${API}/deal-stages`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        const active = (data.stages || [])
+          .filter(s => s.is_active && !s.is_terminal)
+          .sort((a, b) => a.sort_order - b.sort_order);
+        setCustomLiveStages(active);
+      } catch { /* non-fatal */ }
+      finally { setCustomStagesLoading(false); }
+    })();
+  }, [typeFilter, API, token, isSalesType, isProspecting]);
+
   // Re-select on type filter change
   useEffect(() => {
     const filtered = typeFilter === 'sales'
@@ -2692,13 +2720,25 @@ function OAPlaybooks() {
   }, [typeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Which stages to show in the editor
-  const activeLiveStages = isProspecting ? prospectLiveStages : liveStages;
-  const activeStagesLoading = isProspecting ? prospectStagesLoading : stagesLoading;
+  const activeLiveStages = isProspecting ? prospectLiveStages
+    : isCustomType ? customLiveStages
+    : liveStages;
+  const activeStagesLoading = isProspecting ? prospectStagesLoading
+    : isCustomType ? customStagesLoading
+    : stagesLoading;
 
   const handleSetDefault = async (id) => {
     try {
       await apiService.playbooks.setDefault(id);
-      setPlaybooks(prev => prev.map(p => ({ ...p, is_default: p.id === id })));
+      // Only toggle default within the same type group
+      const targetPb = playbooks.find(p => p.id === id);
+      const targetType = targetPb?.type || 'sales';
+      setPlaybooks(prev => prev.map(p => {
+        if (p.type === targetType || (p.type !== 'prospecting' && targetType !== 'prospecting' && !isCustomType)) {
+          return { ...p, is_default: p.id === id };
+        }
+        return p;
+      }));
       if (playbook && playbook.id === id) setPlaybook({ ...playbook, is_default: true });
       flash('success', 'Default playbook updated ✓');
     } catch { flash('error', 'Failed to set default'); }
@@ -2795,8 +2835,6 @@ function OAPlaybooks() {
             </button>
           );
         })}
-            }}
-          >
       </div>
 
       {error   && <div className="sv-alert sv-alert-error">{error}</div>}
@@ -2964,7 +3002,10 @@ function OAPlaybooks() {
                     {activeType?.icon || '📋'} {activeType?.label || 'Stage'} Guidance
                   </h4>
                   <span style={{ fontSize: 12, color: '#9ca3af' }}>
-                    {isProspecting ? 'Stages from Prospect Stages tab' : 'Stages from Deal Stages tab'} · save each stage individually
+                    {isProspecting ? 'Stages from Prospect Stages tab'
+                      : isSalesType ? 'Stages from Deal Stages tab'
+                      : 'Using deal stages as pipeline (custom stage pipelines coming soon)'}
+                    {' · save each stage individually'}
                   </span>
                 </div>
 
