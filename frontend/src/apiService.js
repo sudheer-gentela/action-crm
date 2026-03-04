@@ -323,21 +323,29 @@ export const apiService = {
   // Contact reporting structure + Account parent/subsidiary
   // ══════════════════════════════════════════════════════════
   orgHierarchy: {
-    // Contact org chart — full tree for an account
+    // Contact org chart — full tree + unplaced contacts for an account
     getContactTree: (accountId) =>
       api.get(`/org-hierarchy/contacts/account/${accountId}`),
 
-    // Contact mini-position — manager + self + direct reports
+    // Contact mini-position — manager + self + direct reports + dotted lines
     getContactPosition: (contactId) =>
       api.get(`/org-hierarchy/contacts/${contactId}/position`),
 
-    // Set who a contact reports to (pass null to make them root)
-    setReportsTo: (contactId, reportsToContactId) =>
-      api.patch(`/org-hierarchy/contacts/${contactId}/reports-to`, { reportsToContactId }),
+    // Set who a contact reports to
+    // confidence: 'confirmed' (default) | 'best_guess'
+    // Pass reportsToContactId = null to make them unplaced
+    setReportsTo: (contactId, reportsToContactId, confidence = 'confirmed') =>
+      api.patch(`/org-hierarchy/contacts/${contactId}/reports-to`, { reportsToContactId, confidence }),
 
     // Update org chart display title / seniority level
     updateContactMeta: (contactId, data) =>
       api.patch(`/org-hierarchy/contacts/${contactId}/meta`, data),
+
+    // Dotted-line relationships (cross-account secondary reporting)
+    addDottedLine: (contactId, dottedManagerId, notes) =>
+      api.post(`/org-hierarchy/contacts/${contactId}/dotted-lines`, { dottedManagerId, notes }),
+    removeDottedLine: (contactId, dottedManagerId) =>
+      api.delete(`/org-hierarchy/contacts/${contactId}/dotted-lines?dottedManagerId=${dottedManagerId}`),
 
     // Account hierarchy — full tree centred on an account
     getAccountHierarchy: (accountId) =>

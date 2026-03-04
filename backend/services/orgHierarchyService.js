@@ -1,5 +1,10 @@
 // services/orgHierarchyService.js
 // Handles contact reporting structure + account parent/subsidiary hierarchy
+//
+// v2 additions:
+//   - reports_to_confidence ('confirmed' | 'best_guess') on contact reporting lines
+//   - contact_dotted_lines table for secondary/matrix/cross-team reporting
+//   - unplaced contacts returned separately from tree roots
 
 const { pool } = require('../config/database');
 
@@ -8,61 +13,102 @@ const { pool } = require('../config/database');
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Returns the full contact tree for an account, structured as a nested array.
- * Root nodes are contacts with no reports_to_contact_id within this account.
+ * Returns the full contact tree for an account plus unplaced contacts.
+ * Also enriches each contact with their dotted-line managers (cross-account).
  */
 async function getContactOrgChart(orgId, accountId) {
-  // Fetch all contacts for this account with their reporting relationships
   const { rows } = await pool.query(
     `SELECT
        c.id, c.first_name, c.last_name, c.email, c.title,
        c.org_chart_title, c.org_chart_seniority,
-       c.reports_to_contact_id, c.role_type, c.engagement_level,
+       c.reports_to_contact_id, c.reports_to_confidence,
+       c.role_type, c.engagement_level,
        c.account_id, c.linkedin_url
      FROM contacts c
-     WHERE c.org_id = $1 AND c.account_id = $2
+     WHERE c.org_id = $1 AND c.account_id = $2 AND c.deleted_at IS NULL
      ORDER BY c.org_chart_seniority DESC NULLS LAST, c.last_name`,
     [orgId, accountId]
   );
 
-  return buildTree(rows);
+  // Enrich with dotted-line managers (cross-account supported)
+  const contactIds = rows.map(r => r.id);
+  const dottedMap = {};
+  if (contactIds.length > 0) {
+    const { rows: dottedRows } = await pool.query(
+      `SELECT
+         cdl.contact_id,
+         cdl.notes,
+         m.id           AS manager_id,
+         m.first_name   AS manager_first_name,
+         m.last_name    AS manager_last_name,
+         m.org_chart_title AS manager_org_chart_title,
+         m.title        AS manager_title,
+         a.name         AS manager_account_name
+       FROM contact_dotted_lines cdl
+       JOIN contacts m ON m.id = cdl.dotted_manager_id AND m.deleted_at IS NULL
+       LEFT JOIN accounts a ON a.id = m.account_id
+       WHERE cdl.org_id = $1 AND cdl.contact_id = ANY($2)
+       ORDER BY m.last_name`,
+      [orgId, contactIds]
+    );
+    dottedRows.forEach(d => {
+      if (!dottedMap[d.contact_id]) dottedMap[d.contact_id] = [];
+      dottedMap[d.contact_id].push({
+        id:           d.manager_id,
+        first_name:   d.manager_first_name,
+        last_name:    d.manager_last_name,
+        title:        d.manager_org_chart_title || d.manager_title,
+        account_name: d.manager_account_name,
+        notes:        d.notes,
+      });
+    });
+  }
+
+  const enriched = rows.map(r => ({ ...r, dotted_line_managers: dottedMap[r.id] || [] }));
+  const { tree, unplaced } = buildTree(enriched);
+  return { tree, unplaced };
 }
 
 /**
  * Build nested tree from flat rows.
- * Returns array of root nodes, each with a `children` array (recursive).
+ * unplaced = contacts where reports_to_contact_id IS NULL (no manager assigned at all)
+ * roots    = contacts whose manager is outside this account (shown as tree roots)
  */
 function buildTree(rows) {
   const map = {};
   rows.forEach(r => { map[r.id] = { ...r, children: [] }; });
 
-  const roots = [];
+  const roots    = [];
+  const unplaced = [];
+
   rows.forEach(r => {
     const parentId = r.reports_to_contact_id;
-    if (parentId && map[parentId]) {
+    if (!parentId) {
+      unplaced.push(map[r.id]);
+    } else if (map[parentId]) {
       map[parentId].children.push(map[r.id]);
     } else {
+      // Manager exists but is in a different account — treat as tree root
       roots.push(map[r.id]);
     }
   });
 
-  return roots;
+  return { tree: roots, unplaced };
 }
 
 /**
- * Returns the "position" of a single contact within the org chart:
- * their manager, their direct reports, and their siblings.
+ * Returns position of a single contact: manager, direct reports, dotted lines.
  * Used for the mini-tree on the Contact detail panel.
  */
 async function getContactPosition(orgId, contactId) {
   const { rows: [contact] } = await pool.query(
     `SELECT c.id, c.first_name, c.last_name, c.title, c.org_chart_title,
-            c.reports_to_contact_id, c.account_id, c.role_type, c.engagement_level
+            c.reports_to_contact_id, c.reports_to_confidence,
+            c.account_id, c.role_type, c.engagement_level
      FROM contacts c
-     WHERE c.org_id = $1 AND c.id = $2`,
+     WHERE c.org_id = $1 AND c.id = $2 AND c.deleted_at IS NULL`,
     [orgId, contactId]
   );
-
   if (!contact) return null;
 
   // Manager
@@ -71,7 +117,8 @@ async function getContactPosition(orgId, contactId) {
     const { rows: [mgr] } = await pool.query(
       `SELECT id, first_name, last_name, title, org_chart_title, role_type,
               reports_to_contact_id
-       FROM contacts WHERE org_id = $1 AND id = $2`,
+       FROM contacts
+       WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL`,
       [orgId, contact.reports_to_contact_id]
     );
     manager = mgr || null;
@@ -81,12 +128,12 @@ async function getContactPosition(orgId, contactId) {
   const { rows: directReports } = await pool.query(
     `SELECT id, first_name, last_name, title, org_chart_title, role_type, engagement_level
      FROM contacts
-     WHERE org_id = $1 AND reports_to_contact_id = $2
+     WHERE org_id = $1 AND reports_to_contact_id = $2 AND deleted_at IS NULL
      ORDER BY org_chart_seniority DESC NULLS LAST, last_name`,
     [orgId, contactId]
   );
 
-  // Peers (same manager, excluding self) — only show if ≤ 5 to keep mini-tree clean
+  // Peers (same manager, max 5)
   let peers = [];
   if (contact.reports_to_contact_id) {
     const { rows } = await pool.query(
@@ -95,22 +142,50 @@ async function getContactPosition(orgId, contactId) {
        WHERE org_id = $1
          AND reports_to_contact_id = $2
          AND id != $3
-       ORDER BY last_name
-       LIMIT 5`,
+         AND deleted_at IS NULL
+       ORDER BY last_name LIMIT 5`,
       [orgId, contact.reports_to_contact_id, contactId]
     );
     peers = rows;
   }
 
-  return { contact, manager, directReports, peers };
+  // Dotted-line managers this contact reports to (cross-account)
+  const { rows: dottedManagers } = await pool.query(
+    `SELECT
+       m.id, m.first_name, m.last_name, m.title, m.org_chart_title,
+       m.role_type, cdl.notes,
+       a.name AS account_name
+     FROM contact_dotted_lines cdl
+     JOIN contacts m ON m.id = cdl.dotted_manager_id AND m.deleted_at IS NULL
+     LEFT JOIN accounts a ON a.id = m.account_id
+     WHERE cdl.org_id = $1 AND cdl.contact_id = $2
+     ORDER BY m.last_name`,
+    [orgId, contactId]
+  );
+
+  // Dotted-line reports — who reports dotted-line TO this contact
+  const { rows: dottedReports } = await pool.query(
+    `SELECT
+       c.id, c.first_name, c.last_name, c.title, c.org_chart_title,
+       c.role_type, cdl.notes,
+       a.name AS account_name
+     FROM contact_dotted_lines cdl
+     JOIN contacts c ON c.id = cdl.contact_id AND c.deleted_at IS NULL
+     LEFT JOIN accounts a ON a.id = c.account_id
+     WHERE cdl.org_id = $1 AND cdl.dotted_manager_id = $2
+     ORDER BY c.last_name`,
+    [orgId, contactId]
+  );
+
+  return { contact, manager, directReports, peers, dottedManagers, dottedReports };
 }
 
 /**
  * Update a contact's reporting relationship.
- * Pass reportsToContactId = null to make them a root node.
+ * confidence: 'confirmed' (default) | 'best_guess'
+ * Pass reportsToContactId = null to make them unplaced.
  */
-async function setReportsTo(orgId, contactId, reportsToContactId) {
-  // Guard: prevent cycles (can't report to yourself or to a report of yours)
+async function setReportsTo(orgId, contactId, reportsToContactId, confidence = 'confirmed') {
   if (reportsToContactId) {
     if (reportsToContactId === contactId) {
       throw new Error('A contact cannot report to themselves');
@@ -121,14 +196,57 @@ async function setReportsTo(orgId, contactId, reportsToContactId) {
     }
   }
 
+  const safeConfidence = ['confirmed', 'best_guess'].includes(confidence) ? confidence : 'confirmed';
+
   const { rows: [updated] } = await pool.query(
     `UPDATE contacts
-     SET reports_to_contact_id = $1
-     WHERE org_id = $2 AND id = $3
-     RETURNING id, first_name, last_name, reports_to_contact_id`,
-    [reportsToContactId || null, orgId, contactId]
+     SET reports_to_contact_id = $1,
+         reports_to_confidence  = $2
+     WHERE org_id = $3 AND id = $4
+     RETURNING id, first_name, last_name, reports_to_contact_id, reports_to_confidence`,
+    [reportsToContactId || null, safeConfidence, orgId, contactId]
   );
   return updated;
+}
+
+/**
+ * Add or update a dotted-line relationship between two contacts.
+ * Both contacts must be in the same org; they can be in different accounts.
+ */
+async function addDottedLine(orgId, contactId, dottedManagerId, notes) {
+  if (contactId === dottedManagerId) {
+    throw new Error('A contact cannot dotted-line report to themselves');
+  }
+  const { rows: found } = await pool.query(
+    `SELECT id FROM contacts
+     WHERE org_id = $1 AND id = ANY($2) AND deleted_at IS NULL`,
+    [orgId, [contactId, dottedManagerId]]
+  );
+  if (found.length < 2) {
+    throw new Error('One or both contacts not found in this organisation');
+  }
+  const { rows: [row] } = await pool.query(
+    `INSERT INTO contact_dotted_lines (org_id, contact_id, dotted_manager_id, notes)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (org_id, contact_id, dotted_manager_id)
+     DO UPDATE SET notes = EXCLUDED.notes, updated_at = NOW()
+     RETURNING *`,
+    [orgId, contactId, dottedManagerId, notes || null]
+  );
+  return row;
+}
+
+/**
+ * Remove a dotted-line relationship.
+ */
+async function removeDottedLine(orgId, contactId, dottedManagerId) {
+  const result = await pool.query(
+    `DELETE FROM contact_dotted_lines
+     WHERE org_id = $1 AND contact_id = $2 AND dotted_manager_id = $3
+     RETURNING id`,
+    [orgId, contactId, dottedManagerId]
+  );
+  return result.rowCount > 0;
 }
 
 /**
@@ -137,8 +255,8 @@ async function setReportsTo(orgId, contactId, reportsToContactId) {
 async function updateOrgChartMeta(orgId, contactId, { orgChartTitle, orgChartSeniority }) {
   const { rows: [updated] } = await pool.query(
     `UPDATE contacts
-     SET org_chart_title      = COALESCE($1, org_chart_title),
-         org_chart_seniority  = COALESCE($2, org_chart_seniority)
+     SET org_chart_title     = COALESCE($1, org_chart_title),
+         org_chart_seniority = COALESCE($2, org_chart_seniority)
      WHERE org_id = $3 AND id = $4
      RETURNING id, org_chart_title, org_chart_seniority`,
     [orgChartTitle ?? null, orgChartSeniority ?? null, orgId, contactId]
@@ -148,16 +266,16 @@ async function updateOrgChartMeta(orgId, contactId, { orgChartTitle, orgChartSen
 
 /**
  * DFS check: is targetId a descendant of rootId?
- * Used to prevent circular hierarchies.
+ * Prevents circular reporting hierarchies.
  */
 async function checkIsDescendant(orgId, rootId, targetId) {
   const { rows } = await pool.query(
     `WITH RECURSIVE descendants AS (
-       SELECT id FROM contacts WHERE org_id = $1 AND id = $2
+       SELECT id FROM contacts WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL
        UNION ALL
        SELECT c.id FROM contacts c
        INNER JOIN descendants d ON c.reports_to_contact_id = d.id
-       WHERE c.org_id = $1
+       WHERE c.org_id = $1 AND c.deleted_at IS NULL
      )
      SELECT 1 FROM descendants WHERE id = $3 LIMIT 1`,
     [orgId, rootId, targetId]
@@ -166,18 +284,12 @@ async function checkIsDescendant(orgId, rootId, targetId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ACCOUNT HIERARCHY
+// ACCOUNT HIERARCHY — unchanged from v1
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Get full account hierarchy tree for an account (up = parents, down = children).
- */
 async function getAccountHierarchy(orgId, accountId) {
-  // Walk up to find ultimate parent
   const ancestors = await getAccountAncestors(orgId, accountId);
   const rootAccountId = ancestors.length > 0 ? ancestors[ancestors.length - 1].id : accountId;
-
-  // Walk down from root to get full tree
   const tree = await buildAccountTree(orgId, rootAccountId);
   return { rootAccountId, ancestors, tree };
 }
@@ -203,7 +315,6 @@ async function getAccountAncestors(orgId, accountId) {
 }
 
 async function buildAccountTree(orgId, rootId) {
-  // Fetch all descendants
   const { rows } = await pool.query(
     `WITH RECURSIVE tree AS (
        SELECT a.id, a.name, a.industry, a.domain,
@@ -223,7 +334,6 @@ async function buildAccountTree(orgId, rootId) {
     [orgId, rootId]
   );
 
-  // Enrich with deal counts + ARR
   if (rows.length === 0) return null;
   const accountIds = rows.map(r => r.id);
   const { rows: dealStats } = await pool.query(
@@ -243,8 +353,8 @@ async function buildAccountTree(orgId, rootId) {
     map[r.id] = {
       ...r,
       activeDeals: parseInt(statsMap[r.id]?.active_deals || 0),
-      totalArr: parseFloat(statsMap[r.id]?.total_arr || 0),
-      children: []
+      totalArr:    parseFloat(statsMap[r.id]?.total_arr || 0),
+      children:    [],
     };
   });
 
@@ -259,15 +369,10 @@ async function buildAccountTree(orgId, rootId) {
   return root;
 }
 
-/**
- * Add a parent→child relationship between two accounts.
- */
 async function addAccountRelationship(orgId, parentAccountId, childAccountId, relationshipType, createdBy) {
-  // Prevent self-relationship
   if (parentAccountId === childAccountId) {
     throw new Error('An account cannot be its own parent');
   }
-
   const { rows: [row] } = await pool.query(
     `INSERT INTO account_hierarchy (org_id, parent_account_id, child_account_id, relationship_type, created_by)
      VALUES ($1, $2, $3, $4, $5)
@@ -279,9 +384,6 @@ async function addAccountRelationship(orgId, parentAccountId, childAccountId, re
   return row;
 }
 
-/**
- * Remove a parent→child relationship.
- */
 async function removeAccountRelationship(orgId, parentAccountId, childAccountId) {
   await pool.query(
     `DELETE FROM account_hierarchy
@@ -294,20 +396,13 @@ async function removeAccountRelationship(orgId, parentAccountId, childAccountId)
 // VISIBILITY CHECK
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Check if a user can view the org chart for a given account.
- * Respects org-level visibility setting (whole_org vs deal_team).
- */
 async function canViewOrgChart(orgId, userId, accountId) {
   const { rows: [org] } = await pool.query(
-    `SELECT settings FROM organizations WHERE id = $1`,
-    [orgId]
+    `SELECT settings FROM organizations WHERE id = $1`, [orgId]
   );
   const visibility = org?.settings?.org_chart_visibility || 'whole_org';
-
   if (visibility === 'whole_org') return true;
 
-  // 'deal_team' — user must be on a deal team for a deal associated with this account
   const { rows } = await pool.query(
     `SELECT 1
      FROM deal_team_members dtm
@@ -323,6 +418,8 @@ module.exports = {
   getContactOrgChart,
   getContactPosition,
   setReportsTo,
+  addDottedLine,
+  removeDottedLine,
   updateOrgChartMeta,
   getAccountHierarchy,
   addAccountRelationship,

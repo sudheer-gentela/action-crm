@@ -359,3 +359,192 @@
   font-size: 11px; color: #6366f1; font-weight: 500;
   padding: 4px 10px;
 }
+
+/* ── v2 additions ────────────────────────────────────────────────────────────── */
+
+/* Best-guess card — amber left border */
+.och-card--best-guess {
+  border-left: 3px solid #f59e0b;
+  background: #fffdf7;
+}
+
+/* Best-guess badge (inline with role badges) */
+.och-badge--best-guess {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  font-size: 10px; font-weight: 700;
+  padding: 2px 7px; border-radius: 5px;
+}
+
+/* Dotted branch line */
+.och-branch-line--dashed {
+  background: repeating-linear-gradient(
+    to bottom,
+    #94a3b8 0px, #94a3b8 4px,
+    transparent 4px, transparent 8px
+  );
+  background-color: transparent !important;
+}
+
+/* Avatar dotted-badge overlay */
+.och-avatar-dotted-badge {
+  position: absolute;
+  bottom: -2px; right: -2px;
+  width: 13px; height: 13px; border-radius: 50%;
+  background: #f59e0b;
+  border: 2px solid #fff;
+  font-size: 7px; font-weight: 700; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  line-height: 1;
+}
+
+/* Confidence select — smaller, inline */
+.och-select--confidence {
+  font-size: 11px !important;
+  padding: 3px 6px !important;
+  color: #92400e !important;
+  border-color: #fde68a !important;
+  background: #fffbeb !important;
+}
+
+/* Reports-to row */
+.och-reports-to-row {
+  display: flex; align-items: center; gap: 6px;
+}
+
+/* ── Dotted-line section ────────────────────────────────────────────────────── */
+.och-dotted-section {
+  margin-top: 5px;
+}
+
+.och-dotted-toggle {
+  background: none; border: none; cursor: pointer; padding: 0;
+  font-size: 10px; color: #94a3b8; font-family: inherit;
+  display: flex; align-items: center; gap: 3px;
+  transition: color .12s;
+}
+.och-dotted-toggle:hover { color: #6366f1; }
+.och-dotted-line-icon { font-size: 12px; }
+
+.och-dotted-list {
+  margin-top: 6px;
+  display: flex; flex-direction: column; gap: 5px;
+  padding-left: 4px;
+  border-left: 2px dashed #e2e8f0;
+}
+
+.och-dotted-item {
+  display: flex; align-items: flex-start; gap: 7px;
+  padding: 6px 8px;
+  background: #f8fafc; border: 1px dashed #e2e8f0; border-radius: 7px;
+  position: relative;
+}
+.och-dotted-avatar {
+  width: 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
+.och-dotted-info { flex: 1; min-width: 0; }
+.och-dotted-name { font-size: 11px; font-weight: 600; color: #0f172a; }
+.och-dotted-meta { display: flex; align-items: center; gap: 4px; font-size: 10px; color: #64748b; margin-top: 1px; }
+.och-dotted-account { color: #6366f1; }
+.och-dotted-notes { font-size: 10px; color: #94a3b8; font-style: italic; margin-top: 2px; }
+.och-dotted-remove {
+  background: none; border: none; cursor: pointer;
+  font-size: 11px; color: #cbd5e1; padding: 2px 4px;
+  border-radius: 3px; transition: all .12s; flex-shrink: 0;
+}
+.och-dotted-remove:hover { background: #fee2e2; color: #dc2626; }
+
+.och-dotted-add-form {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 8px; background: #f0f4ff; border: 1px solid #c7d2fe; border-radius: 7px;
+}
+.och-dotted-notes-input {
+  padding: 5px 8px; border: 1.5px solid #e5e7eb; border-radius: 6px;
+  font-size: 12px; font-family: inherit; outline: none; background: #fff;
+}
+.och-dotted-notes-input:focus { border-color: #6366f1; }
+.och-dotted-form-actions { display: flex; gap: 5px; }
+.och-dotted-add-btn {
+  background: none; border: 1px dashed #c7d2fe; border-radius: 6px;
+  padding: 5px 10px; font-size: 11px; color: #6366f1; cursor: pointer;
+  font-family: inherit; width: 100%; transition: all .12s;
+}
+.och-dotted-add-btn:hover { background: #eef2ff; border-style: solid; }
+
+/* ── Legend ────────────────────────────────────────────────────────────────── */
+.och-legend {
+  display: flex; align-items: center; gap: 14px;
+  padding: 6px 0 10px;
+  font-size: 11px; color: #64748b;
+}
+.och-legend-item {
+  display: flex; align-items: center; gap: 5px;
+}
+.och-legend-line {
+  display: inline-block; width: 24px; height: 2px; border-radius: 1px;
+}
+.och-legend-line--solid  { background: #d1d5db; }
+.och-legend-line--dashed {
+  background: repeating-linear-gradient(to right, #94a3b8 0px, #94a3b8 4px, transparent 4px, transparent 8px);
+}
+.och-legend-dotted-icon { font-size: 13px; color: #94a3b8; }
+
+/* ── Unplaced section ───────────────────────────────────────────────────────── */
+.och-unplaced-section {
+  margin-top: 24px;
+  border: 2px dashed #e2e8f0; border-radius: 10px;
+  overflow: hidden;
+}
+.och-unplaced-header {
+  display: flex; align-items: center; gap: 7px;
+  width: 100%; padding: 10px 14px;
+  background: #f8fafc; border: none; cursor: pointer;
+  font-family: inherit; font-size: 12px; color: #64748b;
+  transition: background .12s; text-align: left;
+}
+.och-unplaced-header:hover { background: #f1f5f9; }
+.och-unplaced-icon { font-size: 14px; }
+.och-unplaced-title { font-weight: 700; color: #475569; }
+.och-unplaced-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: #e2e8f0; color: #475569;
+  font-size: 10px; font-weight: 700; min-width: 18px; height: 18px;
+  border-radius: 9px; padding: 0 4px;
+}
+.och-unplaced-hint { font-size: 11px; color: #94a3b8; flex: 1; }
+.och-unplaced-chevron { font-size: 9px; color: #94a3b8; }
+.och-unplaced-list {
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px;
+  background: #fafbfc;
+}
+
+/* ── Mini widget v2 additions ───────────────────────────────────────────────── */
+.och-mini-vline--dashed {
+  border-left: 1px dashed #94a3b8;
+  background: transparent !important;
+}
+.och-mini-best-guess {
+  font-size: 10px; color: #92400e; background: #fef3c7;
+  border: 1px solid #fde68a; border-radius: 4px;
+  padding: 2px 7px; margin: 2px 0 6px 36px;
+  display: inline-block;
+}
+.och-mini-dotted-section {
+  margin-top: 8px; padding-left: 10px;
+  border-left: 2px dashed #e2e8f0;
+}
+.och-mini-dotted-label {
+  font-size: 10px; color: #94a3b8; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px;
+}
+.och-mini-node--dotted {
+  background: #f8fafc !important;
+  border: 1px dashed #e2e8f0 !important;
+}
+.och-mini-node-account {
+  color: #6366f1; font-size: 10px;
+}
