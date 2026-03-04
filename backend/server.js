@@ -36,6 +36,9 @@ const strapRoutes = require('./routes/strap.routes');
 const playbookPlaysRoutes = require('./routes/playbook-plays.routes');
 const dealPlaysRoutes     = require('./routes/deal-plays.routes');
 
+// Org Hierarchy (Feature 2 — contact reporting structure + account parent/subsidiary)
+const orgHierarchyRoutes        = require('./routes/orgHierarchy');
+
 // Prospecting Module
 const prospectsRoutes           = require('./routes/prospects.routes');
 const prospectingActionsRoutes  = require('./routes/prospecting-actions.routes');
@@ -205,6 +208,7 @@ app.use('/api/prospecting-actions', prospectingActionsRoutes);
 app.use('/api/accounts',            accountProspectingRoutes); // /:id/prospecting, /:id/coverage
 app.use('/api/actions',             unifiedActionsRoutes);     // /unified
 app.use('/api/prospect-context',    prospectContextRoutes);    // /:prospectId, /icp-config/current
+app.use('/api/org-hierarchy',        orgHierarchyRoutes);        // Feature 2: contact org chart + account hierarchy
 
 // ─────────────────────────────────────────────────────────────
 // Error handling
