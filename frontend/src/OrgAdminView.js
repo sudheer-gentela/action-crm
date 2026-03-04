@@ -3,6 +3,7 @@ import { apiService } from './apiService';
 import './OrgAdminView.css';
 import DealHealthSettings from './DealHealthSettings';
 import OAStages from './OAStages';
+import PlaybookPlaysEditor from './PlaybookPlaysEditor';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -2472,11 +2473,12 @@ function OAPlaybooks() {
   const [error,        setError]        = useState('');
   const [success,      setSuccess]      = useState('');
   const [showNewForm,  setShowNewForm]  = useState(false);
-  const [newPbData,    setNewPbData]    = useState({ name: '', type: 'custom', description: '' });
+  const [newPbData,    setNewPbData]    = useState({ name: '', type: 'sales', description: '' });
   const [editingStage, setEditingStage] = useState(null);   // stage_type being expanded
   const [creating,     setCreating]     = useState(false);
   const [deleting,     setDeleting]     = useState(false);
   const [showCompany,  setShowCompany]  = useState(false);
+  const [showPlaysTab, setShowPlaysTab] = useState(false);
 
   const flash = (type, msg) => {
     if (type === 'success') { setSuccess(msg); setError(''); }
@@ -2533,6 +2535,7 @@ function OAPlaybooks() {
     setGuidance({});
     setEditingStage(null);
     setShowCompany(false);
+    setShowPlaysTab(false);
     (async () => {
       try {
         const r   = await apiService.playbooks.getById(selectedId);
@@ -2897,6 +2900,36 @@ function OAPlaybooks() {
                 </button>
               </div>
 
+              {/* ── Sub-tabs: Stage Guidance | Plays by Role ──────── */}
+              <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16 }}>
+                {[
+                  { key: false, label: `${activeType?.icon || '📋'} Stage Guidance` },
+                  { key: true,  label: '🎭 Plays by Role' },
+                ].map(t => (
+                  <button
+                    key={String(t.key)}
+                    onClick={() => setShowPlaysTab(t.key)}
+                    style={{
+                      padding: '8px 16px', background: 'none', border: 'none',
+                      borderBottom: `3px solid ${showPlaysTab === t.key ? (activeType?.color || '#3b82f6') : 'transparent'}`,
+                      color: showPlaysTab === t.key ? (activeType?.color || '#3b82f6') : '#6b7280',
+                      fontWeight: showPlaysTab === t.key ? 600 : 400,
+                      fontSize: 13, cursor: 'pointer', transition: 'all 0.15s',
+                    }}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* ── Plays by Role sub-tab ──────────────────────── */}
+              {showPlaysTab && (
+                <PlaybookPlaysEditor playbookId={playbook.id} />
+              )}
+
+              {/* ── Stage Guidance sub-tab ─────────────────────── */}
+              {!showPlaysTab && (
+              <>
               {/* Company context — sales playbooks only */}
               {typeFilter === 'sales' && playbook.content && (
                 <div className="sv-card" style={{ marginBottom: 16 }}>
@@ -3052,6 +3085,8 @@ function OAPlaybooks() {
                   </div>
                 )}
               </div>
+              </>
+              )}
             </>
           )}
         </div>
