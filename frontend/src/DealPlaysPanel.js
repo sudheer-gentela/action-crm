@@ -317,7 +317,6 @@ export default function DealPlaysPanel({ deal, stageKey }) {
 
   const total     = instances.length;
   const completed = instances.filter(i => i.status === 'completed').length;
-  const active    = instances.filter(i => i.status === 'active').length;
   const gates     = instances.filter(i => i.is_gate && i.status !== 'completed' && i.status !== 'skipped').length;
   const pct       = total > 0 ? Math.round((completed / total) * 100) : 0;
 
