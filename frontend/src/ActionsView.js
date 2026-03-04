@@ -26,9 +26,9 @@ const STRAP_ENTITY_CONFIG = {
 };
 
 const STRAP_SECTIONS = [
-  { key: 'S', field: 'situation',   label: 'Situation',   color: '#3b82f6' },
-  { key: 'T', field: 'target',      label: 'Target',      color: '#10b981' },
-  { key: 'R', field: 'response',    label: 'Response',    color: '#f59e0b' },
+  { key: 'S', field: 'situation',   label: 'Hurdle',      color: '#3b82f6' },
+  { key: 'T', field: 'target',      label: 'Goal',        color: '#10b981' },
+  { key: 'R', field: 'response',    label: 'Strategy',    color: '#f59e0b' },
   { key: 'A', field: 'action_plan', label: 'Action Plan', color: '#8b5cf6' },
 ];
 
@@ -1001,6 +1001,9 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
   const [saving, setSaving] = useState(false);
   const [resolveMode, setResolveMode] = useState(false);
   const [progress, setProgress] = useState(null);
+  const [strapActions, setStrapActions] = useState([]);
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [assigningId, setAssigningId] = useState(null);
 
   const pri = PRIORITY_COLORS[strap.priority] || PRIORITY_COLORS.medium;
   const ent = STRAP_ENTITY_CONFIG[strap.entity_type] || STRAP_ENTITY_CONFIG.deal;
@@ -1014,6 +1017,14 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
       apiService.straps.getProgress(strap.id)
         .then(res => setProgress(res.data?.progress || null))
         .catch(() => setProgress(null));
+      // Fetch individual STRAP actions with assignees
+      apiFetch(`/straps/${strap.id}/actions`)
+        .then(data => setStrapActions(data.actions || []))
+        .catch(() => setStrapActions([]));
+      // Fetch team members for assignee dropdown
+      apiFetch('/actions/filter-options?scope=org')
+        .then(data => setTeamMembers(data.owners || []))
+        .catch(() => setTeamMembers([]));
     }
     if (!expanded) {
       progressFetched.current = false;
@@ -1034,6 +1045,26 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
       alert('Failed to save: ' + err.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleReassign(actionId, actionTable, newUserId) {
+    setAssigningId(actionId);
+    try {
+      const res = await apiFetch(`/straps/actions/${actionId}/assign`, {
+        method: 'PATCH',
+        body: JSON.stringify({ userId: parseInt(newUserId), actionTable }),
+      });
+      if (res.success) {
+        // Update local state
+        setStrapActions(prev => prev.map(a =>
+          a.action_id === actionId ? { ...a, user_id: parseInt(newUserId), assignee_name: res.assignee.name } : a
+        ));
+      }
+    } catch (err) {
+      alert('Failed to reassign: ' + err.message);
+    } finally {
+      setAssigningId(null);
     }
   }
 
@@ -1108,6 +1139,44 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
                       </button>
                       <button className="av-strap-cancel-btn" onClick={() => setEditingSection(null)}>Cancel</button>
                     </div>
+                  </div>
+                ) : sec.key === 'A' && strapActions.length > 0 ? (
+                  <div className="av-strap-actions-list">
+                    {strapActions.map(act => {
+                      const stMeta = STATUS_META[act.status] || STATUS_META.yet_to_start;
+                      const chMeta = CHANNEL_META[act.next_step] || CHANNEL_META.email;
+                      return (
+                        <div key={`${act.action_table}-${act.action_id}`}
+                          className={`av-strap-action-row ${act.status === 'completed' ? 'av-strap-action-row--done' : ''}`}>
+                          <span className="av-strap-action-status" style={{ color: stMeta.color }} title={stMeta.label}>
+                            {stMeta.icon}
+                          </span>
+                          <span className="av-strap-action-channel" style={{ background: chMeta.color + '14', color: chMeta.color }}>
+                            {chMeta.icon}
+                          </span>
+                          <span className={`av-strap-action-title ${act.status === 'completed' ? 'av-strap-action-title--done' : ''}`}>
+                            {act.title}
+                          </span>
+                          {act.due_date && (
+                            <span className="av-strap-action-due">
+                              {new Date(act.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                            </span>
+                          )}
+                          <select
+                            className="av-strap-action-assignee"
+                            value={act.user_id || ''}
+                            onChange={e => handleReassign(act.action_id, act.action_table, e.target.value)}
+                            disabled={assigningId === act.action_id}
+                            title={act.assignee_name || 'Unassigned'}
+                          >
+                            <option value="">Unassigned</option>
+                            {teamMembers.map(m => (
+                              <option key={m.id} value={m.id}>{m.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className={`av-strap-section-content ${sec.key === 'A' ? 'av-strap-pre' : ''}`}>
