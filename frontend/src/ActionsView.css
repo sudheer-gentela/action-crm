@@ -1363,3 +1363,19 @@
   }
   .av-table-cell { padding: 2px 0; }
 }
+
+/* ── Clickable table cells ─────────────────────────────────────────────────── */
+
+.av-table-cell--clickable {
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  border-radius: 4px;
+}
+.av-table-cell--clickable:hover {
+  background: #eef2ff;
+  color: #4338ca;
+}
+.av-table-cell--clickable .av-table-deal-name:hover,
+.av-table-cell--clickable .av-table-prospect-name:hover {
+  text-decoration: underline;
+}

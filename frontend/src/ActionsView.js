@@ -611,6 +611,51 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
   }
 
   const activeCols = ALL_COLUMNS.filter(c => visibleCols.includes(c.key));
+
+  // Navigation helpers for clickable cells
+  function navToDeal(action) {
+    const dealId = action.deal?.id;
+    if (dealId) {
+      window.dispatchEvent(new CustomEvent('navigate', {
+        detail: { tab: 'deals', dealId, resume: true },
+      }));
+    }
+  }
+
+  function navToContact(action) {
+    const contactId = action.contact?.id;
+    if (contactId) {
+      window.dispatchEvent(new CustomEvent('navigate', {
+        detail: { tab: 'deals', dealId: action.deal?.id, contactId, resume: true },
+      }));
+    } else if (action.prospect?.id) {
+      window.dispatchEvent(new CustomEvent('navigate', {
+        detail: { tab: 'prospecting' },
+      }));
+    }
+  }
+
+  function navToAction(action) {
+    // Same as clicking the Start button — routes to the right resource
+    onStart(action);
+  }
+
+  async function navToInProgress(action) {
+    if (action.status !== 'in_progress') return;
+    // Use resolveResumeTarget to find where to go
+    try {
+      const target = await resolveResumeTarget(action);
+      window.dispatchEvent(new CustomEvent('navigate', {
+        detail: {
+          tab: target.tab,
+          dealId: target.dealId || null,
+          resume: true,
+        },
+      }));
+    } catch (err) {
+      console.error('Navigate to in-progress failed:', err);
+    }
+  }
   const gridCols = activeCols.map(c => c.width ? `${c.width}px` : '1fr').join(' ');
 
   return (
@@ -707,14 +752,14 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
                   );
                 case 'title':
                   return (
-                    <div key={col.key} className="av-table-cell av-table-cell--title">
+                    <div key={col.key} className="av-table-cell av-table-cell--title av-table-cell--clickable" onClick={() => navToAction(action)} title="Start this action">
                       {action.isInternal && <span className="av-table-internal-icon">🏠</span>}
                       <span className={isComplete ? 'av-table-strikethrough' : ''}>{action.title}</span>
                     </div>
                   );
                 case 'deal':
                   return (
-                    <div key={col.key} className="av-table-cell av-table-cell--truncate">
+                    <div key={col.key} className={`av-table-cell av-table-cell--truncate ${action.deal ? 'av-table-cell--clickable' : ''}`} onClick={() => action.deal && navToDeal(action)} title={action.deal ? 'Open deal' : ''}>
                       {action.deal ? (
                         <span className="av-table-deal-name">💼 {action.deal.name}</span>
                       ) : action.prospect ? (
@@ -726,7 +771,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
                   );
                 case 'contact':
                   return (
-                    <div key={col.key} className="av-table-cell av-table-cell--truncate">
+                    <div key={col.key} className={`av-table-cell av-table-cell--truncate ${(action.contact || action.prospect) ? 'av-table-cell--clickable' : ''}`} onClick={() => (action.contact || action.prospect) && navToContact(action)} title={action.contact ? 'Open contact' : action.prospect ? 'Open prospect' : ''}>
                       {action.contact ? (
                         <span>👤 {action.contact.firstName} {action.contact.lastName}</span>
                       ) : action.prospect ? (
@@ -751,7 +796,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
                   );
                 case 'status':
                   return (
-                    <div key={col.key} className="av-table-cell">
+                    <div key={col.key} className={`av-table-cell ${action.status === 'in_progress' ? 'av-table-cell--clickable' : ''}`} onClick={() => action.status === 'in_progress' && navToInProgress(action)} title={action.status === 'in_progress' ? 'Resume — go to where this action is in progress' : ''}>
                       <span className="av-table-status-badge" style={{ background: st.color + '14', color: st.color }}>
                         {st.icon} {st.label}
                       </span>
@@ -1776,30 +1821,28 @@ export default function ActionsView() {
 
         {/* Action list — hidden when source filter is strap only */}
         {!loading && !error && actions.length > 0 && filters.source !== 'strap' && (
-          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            {viewLayout === 'table' ? (
-              <ActionsTable
-                actions={actions}
-                onStatusChange={handleStatusChange}
-                onStart={handleStart}
-                onSnoozeClick={setSnoozeAction}
-                onUnsnooze={handleUnsnooze}
-              />
-            ) : (
-              <div className="av-grid">
-                {actions.map(action => (
-                  <ActionCard
-                    key={action.id}
-                    action={action}
-                    onStatusChange={handleStatusChange}
-                    onStart={handleStart}
-                    onSnoozeClick={setSnoozeAction}
-                    onUnsnooze={handleUnsnooze}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
+          viewLayout === 'table' ? (
+            <ActionsTable
+              actions={actions}
+              onStatusChange={handleStatusChange}
+              onStart={handleStart}
+              onSnoozeClick={setSnoozeAction}
+              onUnsnooze={handleUnsnooze}
+            />
+          ) : (
+            <div className="av-grid">
+              {actions.map(action => (
+                <ActionCard
+                  key={action.id}
+                  action={action}
+                  onStatusChange={handleStatusChange}
+                  onStart={handleStart}
+                  onSnoozeClick={setSnoozeAction}
+                  onUnsnooze={handleUnsnooze}
+                />
+              ))}
+            </div>
+          )
         )}
 
       </div>
