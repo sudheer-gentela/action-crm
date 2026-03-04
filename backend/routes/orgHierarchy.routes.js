@@ -154,10 +154,12 @@ router.post('/accounts/relationship', async (req, res) => {
  */
 router.delete('/accounts/relationship', async (req, res) => {
   try {
-    const parentAccountId = parseInt(req.query.parentAccountId);
-    const childAccountId  = parseInt(req.query.childAccountId);
+    const parentAccountId = parseInt(req.query.parentAccountId, 10);
+    const childAccountId  = parseInt(req.query.childAccountId, 10);
+    console.log('DELETE relationship:', { raw: req.query, parsed: { parentAccountId, childAccountId } });
     if (isNaN(parentAccountId) || isNaN(childAccountId)) {
-      return res.status(400).json({ error: { message: 'parentAccountId and childAccountId are required' } });
+      console.error('DELETE relationship: invalid IDs', req.query);
+      return res.status(400).json({ error: { message: `parentAccountId and childAccountId are required (got: ${JSON.stringify(req.query)})` } });
     }
     await svc.removeAccountRelationship(req.orgId, parentAccountId, childAccountId);
     res.json({ success: true });

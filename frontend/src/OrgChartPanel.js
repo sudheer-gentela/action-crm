@@ -342,7 +342,13 @@ function AccountHierarchyView({ accountId, hierarchy, onRefresh, showAddRelation
 
   const handleRemove = async (parentId, childId) => {
     if (!window.confirm('Remove this relationship?')) return;
-    await apiFetch(`/org-hierarchy/accounts/relationship?parentAccountId=${parentId}&childAccountId=${childId}`, {
+    const pid = parseInt(parentId, 10);
+    const cid = parseInt(childId, 10);
+    if (isNaN(pid) || isNaN(cid)) {
+      console.error('handleRemove: invalid IDs', { parentId, childId });
+      return;
+    }
+    await apiFetch(`/org-hierarchy/accounts/relationship?parentAccountId=${pid}&childAccountId=${cid}`, {
       method: 'DELETE',
     });
     onRefresh();
@@ -368,7 +374,7 @@ function AccountHierarchyView({ accountId, hierarchy, onRefresh, showAddRelation
           {node.id !== accountId && (
             <button
               className="och-remove-rel"
-              onClick={() => handleRemove(node.parent_id || accountId, node.id)}
+              onClick={() => handleRemove(parseInt(node.parent_id || accountId, 10), parseInt(node.id, 10))}
               title="Remove relationship"
             >✕</button>
           )}
