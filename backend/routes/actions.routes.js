@@ -271,6 +271,170 @@ router.get('/straps/:id/progress', async (req, res) => {
   }
 });
 
+// ── GET /straps/:id/actions — detailed STRAP actions with assignees ──────
+router.get('/straps/:id/actions', async (req, res) => {
+  try {
+    const strapId = parseInt(req.params.id);
+    const orgId = req.orgId;
+
+    const result = await db.query(`
+      SELECT
+        sa.action_table,
+        sa.action_id,
+        CASE sa.action_table
+          WHEN 'actions' THEN a.title
+          WHEN 'prospecting_actions' THEN pa.title
+        END AS title,
+        CASE sa.action_table
+          WHEN 'actions' THEN a.status
+          WHEN 'prospecting_actions' THEN
+            CASE pa.status WHEN 'pending' THEN 'yet_to_start' ELSE pa.status END
+        END AS status,
+        CASE sa.action_table
+          WHEN 'actions' THEN a.next_step
+          WHEN 'prospecting_actions' THEN pa.channel
+        END AS next_step,
+        CASE sa.action_table
+          WHEN 'actions' THEN a.priority
+          WHEN 'prospecting_actions' THEN pa.priority
+        END AS priority,
+        CASE sa.action_table
+          WHEN 'actions' THEN a.due_date
+          WHEN 'prospecting_actions' THEN pa.due_date
+        END AS due_date,
+        CASE sa.action_table
+          WHEN 'actions' THEN a.user_id
+          WHEN 'prospecting_actions' THEN pa.user_id
+        END AS user_id,
+        u.first_name || ' ' || u.last_name AS assignee_name
+      FROM strap_actions sa
+      LEFT JOIN actions a ON sa.action_table = 'actions' AND sa.action_id = a.id
+      LEFT JOIN prospecting_actions pa ON sa.action_table = 'prospecting_actions' AND sa.action_id = pa.id
+      LEFT JOIN users u ON u.id = CASE sa.action_table
+        WHEN 'actions' THEN a.user_id
+        WHEN 'prospecting_actions' THEN pa.user_id
+      END
+      WHERE sa.strap_id = $1
+      ORDER BY
+        CASE
+          WHEN COALESCE(a.status, pa.status) = 'completed' THEN 3
+          WHEN COALESCE(a.status, pa.status) = 'in_progress' THEN 1
+          ELSE 2
+        END,
+        COALESCE(a.due_date, pa.due_date) ASC NULLS LAST
+    `, [strapId]);
+
+    res.json({ actions: result.rows });
+  } catch (error) {
+    console.error('STRAP actions error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch STRAP actions' } });
+  }
+});
+
+// ── PATCH /straps/actions/:actionId/assign — reassign a STRAP action ─────
+router.patch('/straps/actions/:actionId/assign', async (req, res) => {
+  try {
+    const actionId = parseInt(req.params.actionId);
+    const { userId, actionTable = 'actions' } = req.body;
+    const orgId = req.orgId;
+
+    if (!userId) {
+      return res.status(400).json({ error: { message: 'userId is required' } });
+    }
+
+    // Verify user exists in org
+    const userCheck = await db.query(
+      'SELECT id, first_name, last_name, email FROM users WHERE id = $1 AND org_id = $2',
+      [userId, orgId]
+    );
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'User not found in this org' } });
+    }
+
+    const assignee = userCheck.rows[0];
+    let actionRow;
+
+    // Update the action's user_id and fetch action details
+    if (actionTable === 'prospecting_actions') {
+      const result = await db.query(
+        `UPDATE prospecting_actions SET user_id = $1 WHERE id = $2 AND org_id = $3
+         RETURNING id, title, due_date, channel, priority, prospect_id, strap_id`,
+        [userId, actionId, orgId]
+      );
+      actionRow = result.rows[0];
+    } else {
+      const result = await db.query(
+        `UPDATE actions SET user_id = $1 WHERE id = $2 AND org_id = $3
+         RETURNING id, title, due_date, next_step, priority, deal_id, strap_id`,
+        [userId, actionId, orgId]
+      );
+      actionRow = result.rows[0];
+    }
+
+    if (!actionRow) {
+      return res.status(404).json({ error: { message: 'Action not found' } });
+    }
+
+    // Create a calendar entry (meeting) for the assignee so it shows in CalendarView
+    let meetingId = null;
+    if (actionRow.due_date) {
+      try {
+        const dueDate = new Date(actionRow.due_date);
+        // Default to a 30-min block at 9:00 AM on the due date
+        const startTime = new Date(dueDate);
+        startTime.setHours(9, 0, 0, 0);
+        const endTime = new Date(startTime);
+        endTime.setMinutes(endTime.getMinutes() + 30);
+
+        const channel = actionRow.next_step || actionRow.channel || 'internal_task';
+        const channelLabel = {
+          email: 'Email', call: 'Call', linkedin: 'LinkedIn',
+          whatsapp: 'WhatsApp', document: 'Document Prep',
+          internal_task: 'Task', slack: 'Slack',
+        }[channel] || 'Task';
+
+        const meetingResult = await db.query(
+          `INSERT INTO meetings (
+             org_id, user_id, deal_id,
+             title, description,
+             start_time, end_time,
+             meeting_type, source, status,
+             created_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'strap','scheduled',NOW())
+           ON CONFLICT DO NOTHING
+           RETURNING id`,
+          [
+            orgId,
+            userId,
+            actionRow.deal_id || null,
+            `[STRAP ${channelLabel}] ${actionRow.title}`,
+            `Auto-created from STRAP action assignment. Priority: ${actionRow.priority || 'medium'}.`,
+            startTime,
+            endTime,
+            channel === 'call' ? 'call' : channel === 'email' ? 'virtual' : 'task',
+          ]
+        );
+        meetingId = meetingResult.rows[0]?.id || null;
+      } catch (calErr) {
+        // Calendar entry is best-effort — don't fail the assignment
+        console.error('📅 STRAP calendar entry creation failed (non-blocking):', calErr.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      assignee: {
+        id: assignee.id,
+        name: `${assignee.first_name} ${assignee.last_name}`,
+      },
+      meetingCreated: !!meetingId,
+    });
+  } catch (error) {
+    console.error('STRAP action assign error:', error);
+    res.status(500).json({ error: { message: 'Failed to assign action' } });
+  }
+});
+
 // ── GET /filter-options ───────────────────────────────────────
 // Respects ?scope=mine|team|org so filter dropdowns match the active scope
 router.get('/filter-options', async (req, res) => {

@@ -220,6 +220,48 @@ class StrapActionGenerator {
         );
 
         createdActions.push({ id: actionId, table: actionTable, title: step.text, step: step.stepNumber });
+
+        // Create calendar entry so this shows up in the assignee's CalendarView
+        try {
+          const startTime = new Date(dueDate);
+          startTime.setHours(9, 0, 0, 0);
+          const endTime = new Date(startTime);
+          endTime.setMinutes(endTime.getMinutes() + 30);
+
+          const channelLabel = {
+            email: 'Email', call: 'Call', linkedin: 'LinkedIn',
+            whatsapp: 'WhatsApp', document: 'Document Prep',
+            internal_task: 'Task', slack: 'Slack',
+          }[channel] || 'Task';
+
+          const dealIdForCal = isProspect ? null
+            : ((strap.entity_type === 'deal' || strap.entity_type === 'implementation')
+                ? strap.entity_id
+                : (context?.deal?.id || null));
+
+          await db.query(
+            `INSERT INTO meetings (
+               org_id, user_id, deal_id,
+               title, description,
+               start_time, end_time,
+               meeting_type, source, status,
+               created_at
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'strap','scheduled',NOW())`,
+            [
+              orgId,
+              userId,
+              dealIdForCal,
+              `[STRAP ${channelLabel}] ${step.text}`,
+              `Auto-created from STRAP action plan. Step ${step.stepNumber}: ${strap.hurdle_title}. Priority: ${priority}.`,
+              startTime,
+              endTime,
+              channel === 'call' ? 'call' : channel === 'email' ? 'virtual' : 'task',
+            ]
+          );
+        } catch (calErr) {
+          // Calendar entry is best-effort
+          console.error(`  📅 Calendar entry for step ${step.stepNumber} failed (non-blocking):`, calErr.message);
+        }
       } catch (err) {
         console.error(`  ❌ STRAP action insert failed (step ${step.stepNumber}):`, err.message);
       }
