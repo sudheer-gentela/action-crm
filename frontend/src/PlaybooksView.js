@@ -489,6 +489,36 @@ export default function PlaybooksView({ initialTypeFilter }) {
                 {/* ── PROSPECTING playbook content ─────────── */}
                 {playbook.type === 'prospecting' && (
                   <>
+                    {/* Sub-tabs: Stage Guidance | Plays */}
+                    <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16 }}>
+                      {[
+                        { key: false, label: '🎯 Stage Guidance' },
+                        { key: true,  label: '🎭 Plays by Role' },
+                      ].map(t => (
+                        <button
+                          key={String(t.key)}
+                          onClick={() => setShowPlaysTab(t.key)}
+                          style={{
+                            padding: '8px 16px', background: 'none', border: 'none',
+                            borderBottom: `3px solid ${showPlaysTab === t.key ? TEAL : 'transparent'}`,
+                            color: showPlaysTab === t.key ? TEAL : '#6b7280',
+                            fontWeight: showPlaysTab === t.key ? 600 : 400,
+                            fontSize: 13, cursor: 'pointer', transition: 'all 0.15s',
+                          }}
+                        >
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Plays sub-tab */}
+                    {showPlaysTab && (
+                      <PlaybookPlaysEditor playbookId={playbook.id} />
+                    )}
+
+                    {/* Stage Guidance sub-tab (original prospecting content) */}
+                    {!showPlaysTab && (
+                    <>
                     {/* Account-based config */}
                     <div className="sv-card" style={{ marginBottom: 16 }}>
                       <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: canEdit ? 'pointer' : 'default', fontSize: 13 }}>
@@ -617,6 +647,8 @@ export default function PlaybooksView({ initialTypeFilter }) {
                           <div style={{ color: '#9ca3af', fontSize: 12, fontStyle: 'italic' }}>No role requirements defined yet.</div>
                         )}
                       </div>
+                    )}
+                    </>
                     )}
                   </>
                 )}

@@ -38,6 +38,10 @@
 
 .ppe-header {
   margin-bottom: 20px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .ppe-header__title {
@@ -51,6 +55,78 @@
   margin: 0;
   font-size: 13px;
   color: #6b7280;
+}
+
+/* ── Roles config panel ──────────────────────────────────────── */
+
+.ppe-roles-config {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.ppe-roles-config__header {
+  margin-bottom: 12px;
+}
+
+.ppe-roles-config__title {
+  display: block;
+  font-weight: 700;
+  font-size: 14px;
+  color: #111827;
+  margin-bottom: 4px;
+}
+
+.ppe-roles-config__hint {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.ppe-roles-config__grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.ppe-roles-config__system {
+  font-size: 9px;
+  color: #9ca3af;
+  margin-left: 4px;
+  font-weight: 400;
+}
+
+.ppe-roles-config__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.ppe-btn--roles {
+  background: #f3f0ff;
+  color: #6d28d9;
+  border: 1px solid #ddd6fe;
+}
+
+.ppe-btn--roles:hover {
+  background: #ede9fe;
+}
+
+.ppe-btn--tiny-text {
+  padding: 4px 8px;
+  font-size: 11px;
+  background: none;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.ppe-btn--tiny-text:hover {
+  color: #374151;
+  background: #f3f4f6;
 }
 
 /* ── Stage tabs ──────────────────────────────────────────────── */

@@ -250,15 +250,82 @@ function PlayCard({ play, index, canEdit, onEdit, onDelete }) {
   );
 }
 
+// ── Roles Config Panel ──────────────────────────────────────────────────────
+
+function RolesConfigPanel({ allOrgRoles, currentRoleIds, rolesSource, onSave, onCancel, saving }) {
+  const [selected, setSelected] = useState(
+    currentRoleIds.length > 0 ? new Set(currentRoleIds) : new Set()
+  );
+  const isUsingDefaults = rolesSource === 'org_default' && selected.size === 0;
+
+  function toggle(roleId) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(roleId)) next.delete(roleId);
+      else next.add(roleId);
+      return next;
+    });
+  }
+
+  function selectAll() {
+    setSelected(new Set(allOrgRoles.map(r => r.id)));
+  }
+
+  function clearAll() {
+    setSelected(new Set());
+  }
+
+  return (
+    <div className="ppe-roles-config">
+      <div className="ppe-roles-config__header">
+        <span className="ppe-roles-config__title">Configure Playbook Roles</span>
+        <span className="ppe-roles-config__hint">
+          {isUsingDefaults
+            ? 'Currently using all org roles. Select specific roles to customize this playbook.'
+            : `${selected.size} role${selected.size !== 1 ? 's' : ''} selected. Clear all to revert to org defaults.`}
+        </span>
+      </div>
+
+      <div className="ppe-roles-config__grid">
+        {allOrgRoles.map(role => (
+          <label
+            key={role.id}
+            className={`ppe-role-chip ${selected.has(role.id) ? 'ppe-role-chip--selected' : ''}`}
+          >
+            <input type="checkbox" checked={selected.has(role.id)} onChange={() => toggle(role.id)} />
+            {role.name}
+            {role.is_system && <span className="ppe-roles-config__system">system</span>}
+          </label>
+        ))}
+      </div>
+
+      <div className="ppe-roles-config__actions">
+        <button className="ppe-btn ppe-btn--primary" onClick={() => onSave([...selected])} disabled={saving}>
+          {saving ? 'Saving…' : selected.size > 0 ? `Save ${selected.size} Roles` : 'Use All Org Roles'}
+        </button>
+        <button className="ppe-btn ppe-btn--secondary" onClick={onCancel}>Cancel</button>
+        <div style={{ flex: 1 }} />
+        <button className="ppe-btn ppe-btn--tiny-text" onClick={selectAll}>Select All</button>
+        <button className="ppe-btn ppe-btn--tiny-text" onClick={clearAll}>Clear All</button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main: PlaybookPlaysEditor ───────────────────────────────────────────────
 
 export default function PlaybookPlaysEditor({ playbookId }) {
   const [stages, setStages]         = useState([]);
   const [playsByStage, setPlaysByStage] = useState({});
-  const [roles, setRoles]           = useState([]);
+  const [roles, setRoles]           = useState([]);         // roles available for this playbook
+  const [allOrgRoles, setAllOrgRoles] = useState([]);       // all org roles (for config)
+  const [rolesSource, setRolesSource] = useState('org_default'); // 'playbook' or 'org_default'
+  const [playbookType, setPlaybookType] = useState(null);   // 'sales' or 'prospecting'
   const [activeStage, setActiveStage] = useState('');
   const [editingPlay, setEditingPlay] = useState(null);   // null | 'new' | play object
   const [filterRole, setFilterRole]   = useState('all');
+  const [showRolesConfig, setShowRolesConfig] = useState(false);
+  const [savingRoles, setSavingRoles] = useState(false);
   const [loading, setLoading]       = useState(true);
   const [saving, setSaving]         = useState(false);
   const [error, setError]           = useState('');
@@ -269,16 +336,32 @@ export default function PlaybookPlaysEditor({ playbookId }) {
   const fetchData = useCallback(async () => {
     if (!playbookId) return;
     try {
-      const [playsRes, rolesRes, stagesRes] = await Promise.all([
+      // First get playbook info to determine type
+      const pbRes = await apiFetch(`/playbooks/${playbookId}`);
+      const pb = pbRes.playbook || pbRes;
+      const isProspecting = pb.type === 'prospecting';
+      setPlaybookType(isProspecting ? 'prospecting' : 'sales');
+
+      // Fetch plays, playbook-specific roles, all org roles, and correct stages in parallel
+      const [playsRes, pbRolesRes, allRolesRes, stagesRes] = await Promise.all([
         apiFetch(`/playbook-plays/playbook/${playbookId}/all`),
+        apiFetch(`/playbook-plays/playbook/${playbookId}/roles`),
         apiFetch('/deal-roles'),
-        apiFetch('/deal-stages'),
+        isProspecting
+          ? apiFetch('/prospect-stages')
+          : apiFetch('/deal-stages'),
       ]);
 
       const allStages = (stagesRes.stages || []).filter(s => s.is_active && !s.is_terminal);
       setStages(allStages);
       setPlaysByStage(playsRes.plays || {});
-      setRoles((rolesRes.roles || []).filter(r => r.is_active));
+
+      // Roles: use playbook-specific if configured, else all org roles
+      const pbRoles = pbRolesRes.roles || [];
+      const orgRoles = (allRolesRes.roles || []).filter(r => r.is_active);
+      setAllOrgRoles(orgRoles);
+      setRoles(pbRoles.length > 0 ? pbRoles : orgRoles);
+      setRolesSource(pbRolesRes.source || 'org_default');
 
       if (!activeStage && allStages.length > 0) {
         setActiveStage(allStages[0].key);
@@ -355,21 +438,66 @@ export default function PlaybookPlaysEditor({ playbookId }) {
     }
   }
 
+  // ── Save playbook roles config ─────────────────────────────────────────────
+
+  async function handleSavePlaybookRoles(selectedRoleIds) {
+    setSavingRoles(true);
+    setError('');
+    try {
+      const res = await apiFetch(`/playbook-plays/playbook/${playbookId}/roles`, {
+        method: 'PUT',
+        body: JSON.stringify({ roleIds: selectedRoleIds }),
+      });
+      const newRoles = res.roles || [];
+      setRoles(newRoles.length > 0 ? newRoles : allOrgRoles);
+      setRolesSource(res.source || (newRoles.length > 0 ? 'playbook' : 'org_default'));
+      setShowRolesConfig(false);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingRoles(false);
+    }
+  }
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   if (loading) {
     return <div className="ppe-loading">Loading playbook plays…</div>;
   }
 
+  const stageNoun = playbookType === 'prospecting' ? 'prospect stage' : 'deal stage';
+
   return (
     <div className="ppe-root">
       <div className="ppe-header">
-        <h3 className="ppe-header__title">Plays by Stage</h3>
-        <p className="ppe-header__subtitle">
-          Define the plays each role executes at every deal stage.
-          {!isAdmin && ' You can view plays but only admins can edit.'}
-        </p>
+        <div>
+          <h3 className="ppe-header__title">Plays by Stage</h3>
+          <p className="ppe-header__subtitle">
+            Define the plays each role executes at every {stageNoun}.
+            {!isAdmin && ' You can view plays but only admins can edit.'}
+          </p>
+        </div>
+        {isAdmin && (
+          <button
+            className={`ppe-btn ${showRolesConfig ? 'ppe-btn--secondary' : 'ppe-btn--roles'}`}
+            onClick={() => setShowRolesConfig(v => !v)}
+          >
+            {showRolesConfig ? 'Close' : `⚙ Roles (${roles.length})`}
+          </button>
+        )}
       </div>
+
+      {/* Roles config panel */}
+      {showRolesConfig && isAdmin && (
+        <RolesConfigPanel
+          allOrgRoles={allOrgRoles}
+          currentRoleIds={rolesSource === 'playbook' ? roles.map(r => r.id) : []}
+          rolesSource={rolesSource}
+          onSave={handleSavePlaybookRoles}
+          onCancel={() => setShowRolesConfig(false)}
+          saving={savingRoles}
+        />
+      )}
 
       {error && <div className="ppe-error">{error} <button onClick={() => setError('')}>✕</button></div>}
 

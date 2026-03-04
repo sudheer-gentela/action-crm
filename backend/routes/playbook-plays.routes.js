@@ -339,4 +339,99 @@ router.post('/reorder', adminOnly, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════════════════
+// PLAYBOOK ROLES — which deal_roles are relevant to this playbook
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── GET /playbook/:playbookId/roles ─────────────────────────────────────────
+// Returns roles configured for this playbook. Falls back to all org roles if none set.
+
+router.get('/playbook/:playbookId/roles', async (req, res) => {
+  try {
+    // Check for playbook-specific roles
+    const pbRoles = await db.query(
+      `SELECT pr.role_id, pr.sort_order, dr.name, dr.key, dr.is_system
+       FROM playbook_roles pr
+       JOIN deal_roles dr ON dr.id = pr.role_id
+       WHERE pr.playbook_id = $1 AND dr.is_active = true
+       ORDER BY pr.sort_order ASC`,
+      [req.params.playbookId]
+    );
+
+    if (pbRoles.rows.length > 0) {
+      return res.json({
+        roles: pbRoles.rows.map(r => ({ id: r.role_id, name: r.name, key: r.key, is_system: r.is_system, sort_order: r.sort_order })),
+        source: 'playbook',
+      });
+    }
+
+    // Fallback: all org roles
+    const allRoles = await db.query(
+      `SELECT id, name, key, is_system, sort_order FROM deal_roles
+       WHERE org_id = $1 AND is_active = true ORDER BY sort_order ASC`,
+      [req.orgId]
+    );
+
+    res.json({
+      roles: allRoles.rows,
+      source: 'org_default',
+    });
+  } catch (err) {
+    console.error('Get playbook roles error:', err);
+    res.status(500).json({ error: { message: 'Failed to fetch playbook roles' } });
+  }
+});
+
+// ── PUT /playbook/:playbookId/roles ─────────────────────────────────────────
+// Replace all roles for a playbook. Send empty array to clear (fall back to org defaults).
+
+router.put('/playbook/:playbookId/roles', adminOnly, async (req, res) => {
+  try {
+    const { roleIds } = req.body;   // [1, 3, 7, 11]
+
+    if (!Array.isArray(roleIds)) {
+      return res.status(400).json({ error: { message: 'roleIds array is required' } });
+    }
+
+    // Verify playbook belongs to org
+    const check = await db.query(
+      `SELECT id FROM playbooks WHERE id = $1 AND org_id = $2`,
+      [req.params.playbookId, req.orgId]
+    );
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Playbook not found' } });
+    }
+
+    // Clear existing
+    await db.query(`DELETE FROM playbook_roles WHERE playbook_id = $1`, [req.params.playbookId]);
+
+    // Insert new
+    for (let i = 0; i < roleIds.length; i++) {
+      await db.query(
+        `INSERT INTO playbook_roles (playbook_id, role_id, sort_order)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [req.params.playbookId, roleIds[i], i]
+      );
+    }
+
+    // Return updated
+    const result = await db.query(
+      `SELECT pr.role_id AS id, pr.sort_order, dr.name, dr.key, dr.is_system
+       FROM playbook_roles pr
+       JOIN deal_roles dr ON dr.id = pr.role_id
+       WHERE pr.playbook_id = $1 AND dr.is_active = true
+       ORDER BY pr.sort_order ASC`,
+      [req.params.playbookId]
+    );
+
+    res.json({
+      roles: result.rows,
+      source: result.rows.length > 0 ? 'playbook' : 'org_default',
+    });
+  } catch (err) {
+    console.error('Set playbook roles error:', err);
+    res.status(500).json({ error: { message: 'Failed to set playbook roles' } });
+  }
+});
+
 module.exports = router;
