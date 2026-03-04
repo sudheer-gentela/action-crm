@@ -3,18 +3,15 @@
 // Exports: OrgChartPanel (full), ContactOrgPosition (mini)
 
 import React, { useState, useEffect, useCallback } from 'react';
+import api from './apiService';
 import './OrgChartPanel.css';
 
-const API = process.env.REACT_APP_API_URL || '';
-function apiFetch(path, options = {}) {
-  const token = localStorage.getItem('token') || localStorage.getItem('authToken');
-  return fetch(`${API}${path}`, {
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(options.headers || {}) },
-    ...options,
-  }).then(r => {
-    if (!r.ok) return r.json().then(e => Promise.reject(new Error(e?.error?.message || r.statusText)));
-    return r.json();
-  });
+// Thin wrapper — uses same axios instance (baseURL already = .../api) as the rest of the app.
+async function apiFetch(path, options = {}) {
+  const method = (options.method || 'GET').toLowerCase();
+  const body   = options.body ? JSON.parse(options.body) : undefined;
+  const response = await api[method](path, body);
+  return response.data;
 }
 
 // ── Role badge config ────────────────────────────────────────────────────────
@@ -194,8 +191,8 @@ export function OrgChartPanel({ accountId, accountName, allAccountContacts, onNa
     setError('');
     try {
       const [chartRes, hierarchyRes] = await Promise.all([
-        apiFetch(`/api/org-hierarchy/contacts/account/${accountId}`),
-        apiFetch(`/api/org-hierarchy/accounts/${accountId}`).catch(() => ({ hierarchy: null })),
+        apiFetch(`/org-hierarchy/contacts/account/${accountId}`),
+        apiFetch(`/org-hierarchy/accounts/${accountId}`).catch(() => ({ hierarchy: null })),
       ]);
       setTree(chartRes.tree || []);
       setAccountHierarchy(hierarchyRes.hierarchy || null);
@@ -209,7 +206,7 @@ export function OrgChartPanel({ accountId, accountName, allAccountContacts, onNa
   useEffect(() => { loadOrgChart(); }, [loadOrgChart]);
 
   const handleReportsToChange = async (contactId, newManagerId) => {
-    await apiFetch(`/api/org-hierarchy/contacts/${contactId}/reports-to`, {
+    await apiFetch(`/org-hierarchy/contacts/${contactId}/reports-to`, {
       method: 'PATCH',
       body: JSON.stringify({ reportsToContactId: newManagerId }),
     });
@@ -322,14 +319,14 @@ function AccountHierarchyView({ accountId, hierarchy, onRefresh, showAddRelation
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    apiFetch('/api/accounts').then(r => setAllAccounts(r.accounts || r.data?.accounts || [])).catch(() => {});
+    apiFetch('/accounts').then(r => setAllAccounts(r.accounts || r.data?.accounts || [])).catch(() => {});
   }, []);
 
   const handleAddRelationship = async () => {
     if (!newParentId || !newChildId) return;
     setSaving(true);
     try {
-      await apiFetch('/api/org-hierarchy/accounts/relationship', {
+      await apiFetch('/org-hierarchy/accounts/relationship', {
         method: 'POST',
         body: JSON.stringify({ parentAccountId: newParentId, childAccountId: newChildId, relationshipType: relType }),
       });
@@ -345,7 +342,7 @@ function AccountHierarchyView({ accountId, hierarchy, onRefresh, showAddRelation
 
   const handleRemove = async (parentId, childId) => {
     if (!window.confirm('Remove this relationship?')) return;
-    await apiFetch('/api/org-hierarchy/accounts/relationship', {
+    await apiFetch('/org-hierarchy/accounts/relationship', {
       method: 'DELETE',
       body: JSON.stringify({ parentAccountId: parentId, childAccountId: childId }),
     });
@@ -471,7 +468,7 @@ export function ContactOrgPosition({ contactId, accountId, onNavigateToContact, 
     if (!contactId) return;
     setLoading(true);
     setError('');
-    apiFetch(`/api/org-hierarchy/contacts/${contactId}/position`)
+    apiFetch(`/org-hierarchy/contacts/${contactId}/position`)
       .then(r => setPosition(r.position))
       .catch(err => {
         if (err.message?.includes('403')) setError('restricted');
