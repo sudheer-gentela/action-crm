@@ -349,7 +349,7 @@ export const apiService = {
 
     // Remove a parent→child relationship
     removeAccountRelationship: (parentAccountId, childAccountId) =>
-      api.delete('/org-hierarchy/accounts/relationship', { data: { parentAccountId, childAccountId } }),
+      api.delete(`/org-hierarchy/accounts/relationship?parentAccountId=${parentAccountId}&childAccountId=${childAccountId}`),
 
     // Admin only — toggle visibility between 'whole_org' | 'deal_team'
     setVisibility: (visibility) =>

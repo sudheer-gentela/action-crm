@@ -150,16 +150,16 @@ router.post('/accounts/relationship', async (req, res) => {
 
 /**
  * DELETE /api/org-hierarchy/accounts/relationship
- * Body: { parentAccountId, childAccountId }
+ * Query params: ?parentAccountId=X&childAccountId=Y
  */
 router.delete('/accounts/relationship', async (req, res) => {
   try {
-    const { parentAccountId, childAccountId } = req.body;
-    await svc.removeAccountRelationship(
-      req.orgId,
-      parseInt(parentAccountId),
-      parseInt(childAccountId)
-    );
+    const parentAccountId = parseInt(req.query.parentAccountId);
+    const childAccountId  = parseInt(req.query.childAccountId);
+    if (isNaN(parentAccountId) || isNaN(childAccountId)) {
+      return res.status(400).json({ error: { message: 'parentAccountId and childAccountId are required' } });
+    }
+    await svc.removeAccountRelationship(req.orgId, parentAccountId, childAccountId);
     res.json({ success: true });
   } catch (err) {
     console.error('DELETE account relationship error:', err);

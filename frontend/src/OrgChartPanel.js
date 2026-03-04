@@ -342,9 +342,8 @@ function AccountHierarchyView({ accountId, hierarchy, onRefresh, showAddRelation
 
   const handleRemove = async (parentId, childId) => {
     if (!window.confirm('Remove this relationship?')) return;
-    await apiFetch('/org-hierarchy/accounts/relationship', {
+    await apiFetch(`/org-hierarchy/accounts/relationship?parentAccountId=${parentId}&childAccountId=${childId}`, {
       method: 'DELETE',
-      body: JSON.stringify({ parentAccountId: parentId, childAccountId: childId }),
     });
     onRefresh();
   };
