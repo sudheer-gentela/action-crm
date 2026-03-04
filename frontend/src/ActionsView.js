@@ -615,7 +615,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
 
   return (
     <div className="av-table-root">
-      {/* Column config toggle */}
+      {/* Column config toggle — fixed at top */}
       <div className="av-table-toolbar">
         <span className="av-table-result-count">{sorted.length} action{sorted.length !== 1 ? 's' : ''}</span>
         {Object.keys(colFilters).some(k => colFilters[k]) && (
@@ -645,7 +645,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
         )}
       </div>
 
-      {/* Header row */}
+      {/* Header row — fixed at top */}
       <div className="av-table-header" style={{ gridTemplateColumns: gridCols }}>
         {activeCols.map(col => {
           const isSorted = sortKey === col.key;
@@ -679,8 +679,9 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
         })}
       </div>
 
-      {/* Rows */}
-      {sorted.map((action, i) => {
+      {/* Scrollable rows */}
+      <div className="av-table-body">
+        {sorted.map((action, i) => {
         const ch = CHANNEL_META[action.nextStep] || CHANNEL_META.email;
         const pri = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
         const st = STATUS_META[action.status] || STATUS_META.yet_to_start;
@@ -816,6 +817,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
       {sorted.length === 0 && (
         <div className="av-table-empty-state">No actions match the current filters.</div>
       )}
+      </div>{/* end av-table-body */}
     </div>
   );
 }
@@ -1774,28 +1776,30 @@ export default function ActionsView() {
 
         {/* Action list — hidden when source filter is strap only */}
         {!loading && !error && actions.length > 0 && filters.source !== 'strap' && (
-          viewLayout === 'table' ? (
-            <ActionsTable
-              actions={actions}
-              onStatusChange={handleStatusChange}
-              onStart={handleStart}
-              onSnoozeClick={setSnoozeAction}
-              onUnsnooze={handleUnsnooze}
-            />
-          ) : (
-            <div className="av-grid">
-              {actions.map(action => (
-                <ActionCard
-                  key={action.id}
-                  action={action}
-                  onStatusChange={handleStatusChange}
-                  onStart={handleStart}
-                  onSnoozeClick={setSnoozeAction}
-                  onUnsnooze={handleUnsnooze}
-                />
-              ))}
-            </div>
-          )
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            {viewLayout === 'table' ? (
+              <ActionsTable
+                actions={actions}
+                onStatusChange={handleStatusChange}
+                onStart={handleStart}
+                onSnoozeClick={setSnoozeAction}
+                onUnsnooze={handleUnsnooze}
+              />
+            ) : (
+              <div className="av-grid">
+                {actions.map(action => (
+                  <ActionCard
+                    key={action.id}
+                    action={action}
+                    onStatusChange={handleStatusChange}
+                    onStart={handleStart}
+                    onSnoozeClick={setSnoozeAction}
+                    onUnsnooze={handleUnsnooze}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
       </div>
