@@ -403,7 +403,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
 
                     {/* Plays sub-tab */}
                     {showPlaysTab && (
-                      <PlaybookPlaysEditor playbookId={playbook.id} />
+                      <PlaybookPlaysEditor playbookId={playbook.id} readOnly />
                     )}
 
                     {/* Stage Guidance sub-tab (original content) */}
@@ -522,7 +522,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
 
                     {/* Plays sub-tab */}
                     {showPlaysTab && (
-                      <PlaybookPlaysEditor playbookId={playbook.id} />
+                      <PlaybookPlaysEditor playbookId={playbook.id} readOnly />
                     )}
 
                     {/* Stage Guidance sub-tab (original prospecting content) */}

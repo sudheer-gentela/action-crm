@@ -314,7 +314,7 @@ function RolesConfigPanel({ allOrgRoles, currentRoleIds, rolesSource, onSave, on
 
 // ── Main: PlaybookPlaysEditor ───────────────────────────────────────────────
 
-export default function PlaybookPlaysEditor({ playbookId }) {
+export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
   const [stages, setStages]         = useState([]);
   const [playsByStage, setPlaysByStage] = useState({});
   const [roles, setRoles]           = useState([]);         // roles available for this playbook
@@ -333,8 +333,8 @@ export default function PlaybookPlaysEditor({ playbookId }) {
   const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
   const userOrgRole = currentUser.org_role || currentUser.role || currentUser.orgRole || '';
   const activeNavRole = sessionStorage.getItem('activeRole') || '';
-  const isAdmin = userOrgRole === 'owner' || userOrgRole === 'admin'
-    || activeNavRole === 'org-admin' || activeNavRole === 'super-admin';
+  const isAdmin = !readOnly && (userOrgRole === 'owner' || userOrgRole === 'admin'
+    || activeNavRole === 'org-admin' || activeNavRole === 'super-admin');
 
   const fetchData = useCallback(async () => {
     if (!playbookId) return;
@@ -343,15 +343,25 @@ export default function PlaybookPlaysEditor({ playbookId }) {
       const pbRes = await apiFetch(`/playbooks/${playbookId}`);
       const pb = pbRes.playbook || pbRes;
       const isProspecting = pb.type === 'prospecting';
+      const isSalesType = !pb.type || ['sales', 'custom', 'market', 'product'].includes(pb.type);
       setPlaybookType(pb.type || 'sales');
 
-      // Fetch plays, playbook-specific roles, all org roles, and correct stages in parallel
+      // Determine stage source based on playbook type
+      let stagesPromise;
+      if (isProspecting) {
+        stagesPromise = apiFetch('/prospect-stages');
+      } else if (isSalesType) {
+        stagesPromise = apiFetch('/deal-stages');
+      } else {
+        // Custom pipeline type — try pipeline-stages, fall back to deal-stages
+        stagesPromise = apiFetch(`/pipeline-stages/${pb.type}`).catch(() => apiFetch('/deal-stages'));
+      }
+
+      // Fetch plays, playbook-specific roles, and correct stages in parallel
       const [playsRes, pbRolesRes, stagesRes] = await Promise.all([
         apiFetch(`/playbook-plays/playbook/${playbookId}/all`),
         apiFetch(`/playbook-plays/playbook/${playbookId}/roles`),
-        isProspecting
-          ? apiFetch('/prospect-stages')
-          : apiFetch('/deal-stages'),  // sales + custom types use deal stages
+        stagesPromise,
       ]);
 
       // Roles: try /org-roles first, fall back to /deal-roles for backward compat
