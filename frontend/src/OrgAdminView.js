@@ -26,7 +26,7 @@ const NAV_GROUPS = [
     items: [
       { id: 'playbooks',   icon: '📘', label: 'Playbooks' },
       { id: 'stages',      icon: '🏷️', label: 'Stages' },
-      { id: 'deal-roles',  icon: '🎭', label: 'Deal Roles' },
+      { id: 'org-roles',   icon: '🎭', label: 'Org Roles' },
     ],
   },
   {
@@ -65,7 +65,7 @@ const TAB_META = {
   invitations:   { title: 'Invitations',   desc: 'Invite new members to your organisation' },
   playbooks:     { title: 'Playbooks',     desc: 'Configure deal playbooks and templates' },
   'stages':      { title: 'Stages',       desc: 'Customise your deal and prospecting pipeline stages' },
-  'deal-roles':  { title: 'Deal Roles',    desc: 'Define contact roles in deals' },
+  'org-roles':   { title: 'Organization Roles', desc: 'Manage roles used across deals, prospecting, and all playbooks' },
   health:        { title: 'Deal Health',   desc: 'Configure health scoring parameters' },
   'icp-scoring': { title: 'ICP Scoring',   desc: 'Define your Ideal Customer Profile and scoring criteria' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
@@ -170,7 +170,7 @@ export default function OrgAdminView() {
             {tab === 'health'      && <DealHealthSettings />}
             {tab === 'icp-scoring' && <OAIcpScoring />}
             {tab === 'stages'      && <OAStages />}
-            {tab === 'deal-roles'  && <OADealRoles />}
+            {tab === 'org-roles'   && <OADealRoles />}
             {tab === 'ai-agent'    && <OAAgentSettings />}
             {tab === 'duplicates'  && <OADuplicateSettings />}
             {tab === 'integrations' && <OAIntegrations />}
@@ -3339,8 +3339,8 @@ function OAPlaybookTypes() {
   );
 }
 
-// ── OADealRoles ───────────────────────────────────────────────────────────────
-// Lets org admins manage which deal team roles are available in their org.
+// ── OADealRoles (Organization Roles) ──────────────────────────────────────────
+// Lets org admins manage roles available across all playbooks and workflows.
 // System roles can be toggled active/inactive but not renamed or deleted.
 // Custom roles can be created, renamed, and deleted.
 
@@ -3361,6 +3361,12 @@ function apiFetchOA(path, options = {}) {
   });
 }
 
+// Helper: try /org-roles, fall back to /deal-roles for backward compat
+async function oaRolesApi(path, options) {
+  try { return await apiFetchOA(`/org-roles${path}`, options); }
+  catch { return await apiFetchOA(`/deal-roles${path}`, options); }
+}
+
 function OADealRoles() {
   const [roles,    setRoles]    = React.useState([]);
   const [loading,  setLoading]  = React.useState(true);
@@ -3372,7 +3378,7 @@ function OADealRoles() {
   const [editName, setEditName] = React.useState('');
 
   React.useEffect(() => {
-    apiFetchOA('/deal-roles')
+    oaRolesApi('')
       .then(r => setRoles(r.roles || []))
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
@@ -3385,7 +3391,7 @@ function OADealRoles() {
 
   async function handleToggle(role) {
     try {
-      const r = await apiFetchOA(`/deal-roles/${role.id}`, {
+      const r = await oaRolesApi(`/${role.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ is_active: !role.is_active }),
       });
@@ -3397,7 +3403,7 @@ function OADealRoles() {
   async function handleRename(role) {
     if (!editName.trim() || editName.trim() === role.name) { setEditId(null); return; }
     try {
-      const r = await apiFetchOA(`/deal-roles/${role.id}`, {
+      const r = await oaRolesApi(`/${role.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ name: editName.trim() }),
       });
@@ -3410,7 +3416,7 @@ function OADealRoles() {
   async function handleDelete(role) {
     if (!window.confirm(`Delete "${role.name}"? Team members with this role will have it cleared.`)) return;
     try {
-      await apiFetchOA(`/deal-roles/${role.id}`, { method: 'DELETE' });
+      await oaRolesApi(`/${role.id}`, { method: 'DELETE' });
       setRoles(prev => prev.filter(ro => ro.id !== role.id));
       flash('success', 'Role deleted');
     } catch (e) { flash('error', e.message); }
@@ -3420,7 +3426,7 @@ function OADealRoles() {
     if (!newName.trim()) return;
     setAdding(true);
     try {
-      const r = await apiFetchOA('/deal-roles', {
+      const r = await oaRolesApi('', {
         method: 'POST',
         body: JSON.stringify({ name: newName.trim() }),
       });
@@ -3440,9 +3446,10 @@ function OADealRoles() {
     <div className="sv-panel">
       <div className="sv-panel-header">
         <div>
-          <h2>🎭 Deal Team Roles</h2>
+          <h2>🎭 Organization Roles</h2>
           <p className="sv-panel-desc">
-            Define the roles available when adding members to a deal team.
+            Roles are used across your entire organization — in deal teams, prospecting playbooks,
+            and any future workflows. Each playbook selects which roles are relevant via its ⚙ Roles config.
             System roles can be activated or deactivated. Custom roles can be renamed or deleted.
           </p>
         </div>
@@ -3457,7 +3464,7 @@ function OADealRoles() {
         <div className="sv-section">
           <div className="sv-card">
             <h3>System Roles</h3>
-            <p className="sv-hint">Built-in roles. Toggle to hide from the role picker — cannot be renamed or deleted.</p>
+            <p className="sv-hint">Built-in roles used across deals and prospecting. Toggle to hide from role pickers — cannot be renamed or deleted.</p>
             <div className="oa-roles-list">
               {systemRoles.map(role => (
                 <div key={role.id} className={`oa-role-row ${!role.is_active ? 'oa-role-row--inactive' : ''}`}>
@@ -3481,7 +3488,7 @@ function OADealRoles() {
         <div className="sv-section">
           <div className="sv-card">
             <h3>Custom Roles</h3>
-            <p className="sv-hint">Create roles specific to your organisation. Click a name to rename it.</p>
+            <p className="sv-hint">Create roles specific to your organisation's workflows. Click a name to rename it.</p>
 
             {customRoles.length === 0 && (
               <p className="sv-empty">No custom roles yet. Add one below.</p>
