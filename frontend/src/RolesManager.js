@@ -18,6 +18,15 @@ function apiFetch(path, options = {}) {
   });
 }
 
+// Helper: try /org-roles, fall back to /deal-roles for backward compat
+async function rolesApi(path, options) {
+  try {
+    return await apiFetch(`/org-roles${path}`, options);
+  } catch {
+    return await apiFetch(`/deal-roles${path}`, options);
+  }
+}
+
 // ── Main Component ──────────────────────────────────────────────────────────
 
 export default function RolesManager() {
@@ -40,12 +49,11 @@ export default function RolesManager() {
 
   const fetchRoles = useCallback(async () => {
     try {
-      const res = await apiFetch('/org-roles/all');
+      const res = await rolesApi('/all');
       setRoles(res.roles || []);
-    } catch (err) {
-      // Fallback to active-only endpoint
+    } catch {
       try {
-        const res = await apiFetch('/org-roles');
+        const res = await rolesApi('');
         setRoles(res.roles || []);
       } catch (e) {
         setError(e.message);
@@ -63,7 +71,7 @@ export default function RolesManager() {
     if (!newRoleName.trim()) { flash('error', 'Role name is required'); return; }
     setCreating(true);
     try {
-      await apiFetch('/org-roles', {
+      await rolesApi('', {
         method: 'POST',
         body: JSON.stringify({ name: newRoleName.trim() }),
       });
@@ -83,7 +91,7 @@ export default function RolesManager() {
   async function handleRename(roleId) {
     if (!editName.trim()) return;
     try {
-      await apiFetch(`/org-roles/${roleId}`, {
+      await rolesApi(`/${roleId}`, {
         method: 'PATCH',
         body: JSON.stringify({ name: editName.trim() }),
       });
@@ -99,7 +107,7 @@ export default function RolesManager() {
 
   async function handleToggleActive(role) {
     try {
-      await apiFetch(`/org-roles/${role.id}`, {
+      await rolesApi(`/${role.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ is_active: !role.is_active }),
       });
@@ -118,7 +126,7 @@ export default function RolesManager() {
       : `Delete "${role.name}"? If it's in use, it will be deactivated instead.`;
     if (!window.confirm(msg)) return;
     try {
-      const res = await apiFetch(`/org-roles/${role.id}`, { method: 'DELETE' });
+      const res = await rolesApi(`/${role.id}`, { method: 'DELETE' });
       if (res.soft_deleted) {
         flash('success', res.message);
       } else {

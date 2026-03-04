@@ -343,14 +343,21 @@ export default function PlaybookPlaysEditor({ playbookId }) {
       setPlaybookType(isProspecting ? 'prospecting' : 'sales');
 
       // Fetch plays, playbook-specific roles, all org roles, and correct stages in parallel
-      const [playsRes, pbRolesRes, allRolesRes, stagesRes] = await Promise.all([
+      const [playsRes, pbRolesRes, stagesRes] = await Promise.all([
         apiFetch(`/playbook-plays/playbook/${playbookId}/all`),
         apiFetch(`/playbook-plays/playbook/${playbookId}/roles`),
-        apiFetch('/org-roles'),
         isProspecting
           ? apiFetch('/prospect-stages')
           : apiFetch('/deal-stages'),
       ]);
+
+      // Roles: try /org-roles first, fall back to /deal-roles for backward compat
+      let allRolesRes;
+      try {
+        allRolesRes = await apiFetch('/org-roles');
+      } catch {
+        allRolesRes = await apiFetch('/deal-roles');
+      }
 
       const allStages = (stagesRes.stages || []).filter(s => s.is_active && !s.is_terminal);
       setStages(allStages);
