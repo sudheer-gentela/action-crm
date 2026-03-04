@@ -9,26 +9,7 @@ const API = process.env.REACT_APP_API_URL || '';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const ACTION_TYPE_OPTIONS = [
-  { value: '',              label: 'All Types' },
-  { value: 'meeting',       label: '📅 Meeting' },
-  { value: 'follow_up',     label: '🔄 Follow Up' },
-  { value: 'email_send',    label: '✉️ Email to Send' },
-  { value: 'document_prep', label: '📄 Document Prep' },
-  { value: 'meeting_prep',  label: '📋 Meeting Prep' },
-  { value: 'internal',      label: '🏠 Internal' },
-];
 
-const NEXT_STEP_OPTIONS = [
-  { value: '',              label: 'All Channels' },
-  { value: 'email',         label: '✉️ Email' },
-  { value: 'call',          label: '📞 Call' },
-  { value: 'whatsapp',      label: '💬 WhatsApp' },
-  { value: 'linkedin',      label: '🔗 LinkedIn' },
-  { value: 'slack',         label: '💬 Slack' },
-  { value: 'document',      label: '📄 Document' },
-  { value: 'internal_task', label: '🔧 Internal Task' },
-];
 
 const PRIORITY_COLORS = {
   critical: '#dc2626',
@@ -1226,7 +1207,7 @@ export default function ActionsView() {
 
   // ── Scope toggle state ────────────────────────────────────────
   const [scope, setScope] = useState('mine');   // 'mine' | 'team' | 'org'
-  const [actionSource, setActionSource] = useState('all'); // 'all' | 'deals' | 'prospecting'
+  const actionSource = 'all'; // simplified — column filters handle source filtering
   const [viewLayout, setViewLayout] = useState('table'); // 'table' | 'cards'
   const [hasTeam, setHasTeam] = useState(false);
 
