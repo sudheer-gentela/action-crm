@@ -118,9 +118,9 @@
 
 /* ── Card Grid ────────────────────────────────────────────────────────────── */
 .av-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-  gap: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   padding: 20px 24px;
   overflow-y: auto;
   flex: 1;
@@ -1114,4 +1114,246 @@
 }
 .av-log-resource-nav:hover {
   background: #dbeafe;
+}
+
+/* ── Actions Table Layout ──────────────────────────────────────────────────── */
+
+.av-table-root {
+  padding: 0 24px 20px;
+  overflow-x: auto;
+}
+
+.av-table-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  position: relative;
+}
+
+.av-table-result-count {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.av-table-clear-filters {
+  font-size: 11px;
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.av-table-col-config-btn {
+  margin-left: auto;
+  font-size: 12px;
+  color: #64748b;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-weight: 500;
+}
+.av-table-col-config-btn:hover { background: #f1f5f9; }
+
+.av-table-col-config {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.1);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 20;
+  min-width: 180px;
+}
+
+.av-table-col-config-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+  padding: 3px 0;
+}
+.av-table-col-config-item input { accent-color: #4f46e5; }
+
+.av-table-header {
+  display: grid;
+  gap: 0;
+  padding: 0 12px;
+  background: #f8fafc;
+  border-bottom: 2px solid #e2e8f0;
+  border-radius: 8px 8px 0 0;
+}
+
+.av-table-th {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 6px;
+}
+
+.av-table-th-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: default;
+  white-space: nowrap;
+  user-select: none;
+}
+.av-table-th-label[onClick] { cursor: pointer; }
+.av-table-th-label--active { color: #4f46e5; }
+
+.av-table-th-filter {
+  font-size: 11px;
+  padding: 2px 4px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  background: #fff;
+  color: #374151;
+  max-width: 100%;
+}
+
+.av-table-row {
+  display: grid;
+  gap: 0;
+  padding: 0 12px;
+  border-bottom: 1px solid #f1f5f9;
+  align-items: center;
+  transition: background 0.1s;
+  cursor: pointer;
+  min-height: 44px;
+}
+.av-table-row:hover { background: #f0f4ff !important; }
+.av-table-row--even { background: #fafbfc; }
+.av-table-row--completed { opacity: 0.5; }
+
+.av-table-cell {
+  font-size: 13px;
+  color: #374151;
+  padding: 8px 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.av-table-cell--title {
+  font-weight: 500;
+  color: #1e293b;
+  overflow: hidden;
+}
+.av-table-cell--title > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.av-table-cell--truncate {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.av-table-cell--overdue { color: #dc2626; font-weight: 600; }
+.av-table-cell--today { color: #ea580c; font-weight: 600; }
+
+.av-table-cell--actions {
+  justify-content: flex-end;
+}
+
+.av-table-channel-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+.av-table-priority-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.av-table-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+.av-table-source-badge {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+
+.av-table-deal-name { font-weight: 500; color: #374151; }
+.av-table-prospect-name { font-weight: 500; color: #0f9d8e; }
+.av-table-stage {
+  font-size: 11px;
+  padding: 1px 6px;
+  background: #f1f5f9;
+  border-radius: 4px;
+  color: #64748b;
+  text-transform: capitalize;
+}
+.av-table-internal-icon { margin-right: 4px; }
+.av-table-strikethrough { text-decoration: line-through; color: #94a3b8; }
+.av-table-empty { color: #cbd5e1; }
+
+.av-table-start-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid;
+  cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: opacity 0.15s;
+}
+.av-table-start-btn:hover { opacity: 0.8; }
+
+.av-table-empty-state {
+  padding: 40px 20px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+/* Responsive: stack on small screens */
+@media (max-width: 900px) {
+  .av-table-header { display: none; }
+  .av-table-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 12px;
+  }
+  .av-table-cell { padding: 2px 0; }
 }

@@ -481,6 +481,365 @@ function StatusStepper({ action, onStatusChange, onStart }) {
   );
 }
 
+// ── Column Definitions ──────────────────────────────────────────────────────
+
+const ALL_COLUMNS = [
+  { key: 'channel',  label: 'Channel',  width: 90,  defaultVisible: true,  sortable: true,  filterable: true  },
+  { key: 'title',    label: 'Action',   width: 0,   defaultVisible: true,  sortable: true,  filterable: false },
+  { key: 'deal',     label: 'Deal',     width: 160, defaultVisible: true,  sortable: true,  filterable: true  },
+  { key: 'contact',  label: 'Contact',  width: 130, defaultVisible: true,  sortable: true,  filterable: false },
+  { key: 'due',      label: 'Due',      width: 100, defaultVisible: true,  sortable: true,  filterable: false },
+  { key: 'priority', label: 'Priority', width: 90,  defaultVisible: true,  sortable: true,  filterable: true  },
+  { key: 'status',   label: 'Status',   width: 110, defaultVisible: true,  sortable: true,  filterable: true  },
+  { key: 'source',   label: 'Source',   width: 80,  defaultVisible: true,  sortable: true,  filterable: true  },
+  { key: 'account',  label: 'Account',  width: 130, defaultVisible: false, sortable: true,  filterable: true  },
+  { key: 'stage',    label: 'Stage',    width: 100, defaultVisible: false, sortable: true,  filterable: true  },
+  { key: 'internal', label: 'Type',     width: 80,  defaultVisible: false, sortable: true,  filterable: true  },
+  { key: 'actions',  label: '',         width: 60,  defaultVisible: true,  sortable: false, filterable: false },
+];
+
+const CHANNEL_META = {
+  email:         { icon: '\u2709\ufe0f', label: 'Email',     color: '#f59e0b' },
+  call:          { icon: '\ud83d\udcde', label: 'Call',       color: '#10b981' },
+  follow_up:     { icon: '\u2709\ufe0f', label: 'Follow Up', color: '#f59e0b' },
+  linkedin:      { icon: '\ud83d\udd17', label: 'LinkedIn',   color: '#2563eb' },
+  whatsapp:      { icon: '\ud83d\udcac', label: 'WhatsApp',   color: '#16a34a' },
+  document:      { icon: '\ud83d\udcc4', label: 'Document',   color: '#8b5cf6' },
+  slack:         { icon: '\ud83d\udcac', label: 'Slack',       color: '#e11d48' },
+  internal_task: { icon: '\ud83d\udd27', label: 'Task',       color: '#6b7280' },
+};
+
+const SOURCE_META = {
+  strap:           { label: '\ud83c\udfaf STRAP',   bg: '#faf5ff', color: '#7c3aed', border: '#e9d5ff' },
+  ai_generated:    { label: '\ud83e\udd16 AI',      bg: '#f0fdf4', color: '#15803d', border: '#bbf7d0' },
+  playbook:        { label: '\ud83d\udcd8 Play',    bg: '#eff6ff', color: '#2563eb', border: '#bfdbfe' },
+  auto_generated:  { label: '\u2699\ufe0f Rules',   bg: '#fefce8', color: '#a16207', border: '#fde68a' },
+};
+
+const STATUS_META = {
+  yet_to_start: { icon: '\u25cb', label: 'To Start',    color: '#9ca3af' },
+  in_progress:  { icon: '\u25d1', label: 'In Progress', color: '#f59e0b' },
+  completed:    { icon: '\u25cf', label: 'Done',        color: '#10b981' },
+  snoozed:      { icon: '\ud83d\ude34', label: 'Snoozed', color: '#8b5cf6' },
+};
+
+function tableDueLabel(d) {
+  if (!d) return { text: '\u2014', overdue: false, today: false };
+  const now = new Date(); now.setHours(0,0,0,0);
+  const due = new Date(d); due.setHours(0,0,0,0);
+  const diff = Math.ceil((due - now) / 86400000);
+  if (diff < 0) return { text: `${Math.abs(diff)}d overdue`, overdue: true };
+  if (diff === 0) return { text: 'Today', today: true };
+  if (diff === 1) return { text: 'Tomorrow' };
+  return { text: due.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) };
+}
+
+function getColumnValue(action, colKey) {
+  switch (colKey) {
+    case 'channel':  return action.nextStep || 'email';
+    case 'title':    return action.title || '';
+    case 'deal':     return action.deal?.name || '';
+    case 'contact':  return action.contact ? `${action.contact.firstName || ''} ${action.contact.lastName || ''}`.trim() : (action.prospect ? `${action.prospect.firstName || ''} ${action.prospect.lastName || ''}`.trim() : '');
+    case 'due':      return action.dueDate || '';
+    case 'priority': return action.priority || 'medium';
+    case 'status':   return action.status || 'yet_to_start';
+    case 'source':   return action.source || '';
+    case 'account':  return action.deal?.account || action.prospect?.companyName || '';
+    case 'stage':    return action.deal?.stage || action.prospect?.stage || '';
+    case 'internal': return action.isInternal ? 'Internal' : 'External';
+    default:         return '';
+  }
+}
+
+// ── Actions Table Component ─────────────────────────────────────────────────
+
+function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsnooze }) {
+  const [visibleCols, setVisibleCols] = useState(() =>
+    ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.key)
+  );
+  const [sortKey, setSortKey] = useState('due');
+  const [sortDir, setSortDir] = useState('asc');
+  const [colFilters, setColFilters] = useState({});
+  const [showColConfig, setShowColConfig] = useState(false);
+
+  // Unique values for filterable columns
+  const filterOptions = {};
+  ALL_COLUMNS.filter(c => c.filterable).forEach(col => {
+    const vals = new Set();
+    actions.forEach(a => {
+      const v = getColumnValue(a, col.key);
+      if (v) vals.add(v);
+    });
+    filterOptions[col.key] = Array.from(vals).sort();
+  });
+
+  // Apply column-level filters
+  let filtered = actions;
+  Object.entries(colFilters).forEach(([key, val]) => {
+    if (val) {
+      filtered = filtered.filter(a => getColumnValue(a, key) === val);
+    }
+  });
+
+  // Sort
+  const sorted = [...filtered].sort((a, b) => {
+    let aVal = getColumnValue(a, sortKey);
+    let bVal = getColumnValue(b, sortKey);
+
+    // Priority sort order
+    if (sortKey === 'priority') {
+      const order = { critical: 1, high: 2, medium: 3, low: 4 };
+      aVal = order[aVal] || 3;
+      bVal = order[bVal] || 3;
+      return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
+    }
+    // Status sort order
+    if (sortKey === 'status') {
+      const order = { yet_to_start: 1, in_progress: 2, snoozed: 3, completed: 4 };
+      aVal = order[aVal] || 1;
+      bVal = order[bVal] || 1;
+      return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
+    }
+    // Date sort
+    if (sortKey === 'due') {
+      const da = aVal ? new Date(aVal).getTime() : 9999999999999;
+      const db = bVal ? new Date(bVal).getTime() : 9999999999999;
+      return sortDir === 'asc' ? da - db : db - da;
+    }
+    // String sort
+    aVal = String(aVal).toLowerCase();
+    bVal = String(bVal).toLowerCase();
+    if (aVal < bVal) return sortDir === 'asc' ? -1 : 1;
+    if (aVal > bVal) return sortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  function handleSort(key) {
+    if (sortKey === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+  }
+
+  function toggleCol(key) {
+    setVisibleCols(prev =>
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+    );
+  }
+
+  const activeCols = ALL_COLUMNS.filter(c => visibleCols.includes(c.key));
+  const gridCols = activeCols.map(c => c.width ? `${c.width}px` : '1fr').join(' ');
+
+  return (
+    <div className="av-table-root">
+      {/* Column config toggle */}
+      <div className="av-table-toolbar">
+        <span className="av-table-result-count">{sorted.length} action{sorted.length !== 1 ? 's' : ''}</span>
+        {Object.keys(colFilters).some(k => colFilters[k]) && (
+          <button className="av-table-clear-filters" onClick={() => setColFilters({})}>
+            \u2715 Clear column filters
+          </button>
+        )}
+        <button
+          className="av-table-col-config-btn"
+          onClick={() => setShowColConfig(p => !p)}
+        >
+          \u2699\ufe0f Columns
+        </button>
+        {showColConfig && (
+          <div className="av-table-col-config">
+            {ALL_COLUMNS.filter(c => c.key !== 'actions').map(col => (
+              <label key={col.key} className="av-table-col-config-item">
+                <input
+                  type="checkbox"
+                  checked={visibleCols.includes(col.key)}
+                  onChange={() => toggleCol(col.key)}
+                />
+                {col.label}
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Header row */}
+      <div className="av-table-header" style={{ gridTemplateColumns: gridCols }}>
+        {activeCols.map(col => {
+          const isSorted = sortKey === col.key;
+          const arrow = isSorted ? (sortDir === 'asc' ? ' \u25b2' : ' \u25bc') : '';
+          return (
+            <div key={col.key} className="av-table-th">
+              {col.sortable ? (
+                <span
+                  className={`av-table-th-label ${isSorted ? 'av-table-th-label--active' : ''}`}
+                  onClick={() => handleSort(col.key)}
+                >
+                  {col.label}{arrow}
+                </span>
+              ) : (
+                <span className="av-table-th-label">{col.label}</span>
+              )}
+              {col.filterable && filterOptions[col.key]?.length > 1 && (
+                <select
+                  className="av-table-th-filter"
+                  value={colFilters[col.key] || ''}
+                  onChange={e => setColFilters(p => ({ ...p, [col.key]: e.target.value }))}
+                >
+                  <option value="">All</option>
+                  {filterOptions[col.key].map(v => (
+                    <option key={v} value={v}>{col.key === 'channel' ? (CHANNEL_META[v]?.label || v) : col.key === 'source' ? (SOURCE_META[v]?.label || v).replace(/[^\w\s]/g, '').trim() : col.key === 'status' ? (STATUS_META[v]?.label || v) : col.key === 'priority' ? v.charAt(0).toUpperCase() + v.slice(1) : v}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Rows */}
+      {sorted.map((action, i) => {
+        const ch = CHANNEL_META[action.nextStep] || CHANNEL_META.email;
+        const pri = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
+        const st = STATUS_META[action.status] || STATUS_META.yet_to_start;
+        const due = tableDueLabel(action.dueDate);
+        const src = SOURCE_META[action.source] || SOURCE_META.ai_generated;
+        const isComplete = action.status === 'completed';
+
+        return (
+          <div
+            key={action.id}
+            className={`av-table-row ${isComplete ? 'av-table-row--completed' : ''} ${i % 2 === 0 ? 'av-table-row--even' : ''}`}
+            style={{ gridTemplateColumns: gridCols }}
+          >
+            {activeCols.map(col => {
+              switch (col.key) {
+                case 'channel':
+                  return (
+                    <div key={col.key} className="av-table-cell">
+                      <span className="av-table-channel-badge" style={{ background: ch.color + '14', color: ch.color }}>
+                        {ch.icon} {ch.label}
+                      </span>
+                    </div>
+                  );
+                case 'title':
+                  return (
+                    <div key={col.key} className="av-table-cell av-table-cell--title">
+                      {action.isInternal && <span className="av-table-internal-icon">\ud83c\udfe0</span>}
+                      <span className={isComplete ? 'av-table-strikethrough' : ''}>{action.title}</span>
+                    </div>
+                  );
+                case 'deal':
+                  return (
+                    <div key={col.key} className="av-table-cell av-table-cell--truncate">
+                      {action.deal ? (
+                        <span className="av-table-deal-name">\ud83d\udcbc {action.deal.name}</span>
+                      ) : action.prospect ? (
+                        <span className="av-table-prospect-name">\ud83c\udfaf {action.prospect.firstName} {action.prospect.lastName}</span>
+                      ) : (
+                        <span className="av-table-empty">\u2014</span>
+                      )}
+                    </div>
+                  );
+                case 'contact':
+                  return (
+                    <div key={col.key} className="av-table-cell av-table-cell--truncate">
+                      {action.contact ? (
+                        <span>\ud83d\udc64 {action.contact.firstName} {action.contact.lastName}</span>
+                      ) : action.prospect ? (
+                        <span>\ud83c\udfaf {action.prospect.firstName} {action.prospect.lastName}</span>
+                      ) : (
+                        <span className="av-table-empty">\u2014</span>
+                      )}
+                    </div>
+                  );
+                case 'due':
+                  return (
+                    <div key={col.key} className={`av-table-cell ${due.overdue ? 'av-table-cell--overdue' : due.today ? 'av-table-cell--today' : ''}`}>
+                      {due.text}
+                    </div>
+                  );
+                case 'priority':
+                  return (
+                    <div key={col.key} className="av-table-cell">
+                      <span className="av-table-priority-dot" style={{ background: pri }} />
+                      <span style={{ textTransform: 'capitalize' }}>{action.priority}</span>
+                    </div>
+                  );
+                case 'status':
+                  return (
+                    <div key={col.key} className="av-table-cell">
+                      <span className="av-table-status-badge" style={{ background: st.color + '14', color: st.color }}>
+                        {st.icon} {st.label}
+                      </span>
+                    </div>
+                  );
+                case 'source':
+                  return (
+                    <div key={col.key} className="av-table-cell">
+                      <span className="av-table-source-badge" style={{ background: src.bg, color: src.color, borderColor: src.border }}>
+                        {src.label}
+                      </span>
+                    </div>
+                  );
+                case 'account':
+                  return (
+                    <div key={col.key} className="av-table-cell av-table-cell--truncate">
+                      {action.deal?.account || action.prospect?.companyName || <span className="av-table-empty">\u2014</span>}
+                    </div>
+                  );
+                case 'stage':
+                  return (
+                    <div key={col.key} className="av-table-cell">
+                      <span className="av-table-stage">{action.deal?.stage?.replace(/_/g, ' ') || action.prospect?.stage?.replace(/_/g, ' ') || '\u2014'}</span>
+                    </div>
+                  );
+                case 'internal':
+                  return (
+                    <div key={col.key} className="av-table-cell">
+                      {action.isInternal ? '\ud83c\udfe0 Internal' : '\ud83c\udf10 External'}
+                    </div>
+                  );
+                case 'actions':
+                  return (
+                    <div key={col.key} className="av-table-cell av-table-cell--actions">
+                      {!isComplete && action.status !== 'snoozed' && (
+                        <button
+                          className="av-table-start-btn"
+                          style={{ background: ch.color + '14', color: ch.color, borderColor: ch.color + '40' }}
+                          onClick={() => onStart(action)}
+                        >
+                          {ch.icon} \u2192
+                        </button>
+                      )}
+                      {action.status === 'snoozed' && (
+                        <button
+                          className="av-table-start-btn"
+                          style={{ background: '#8b5cf614', color: '#8b5cf6', borderColor: '#8b5cf640' }}
+                          onClick={() => onUnsnooze(action.id)}
+                        >
+                          \u2191 Wake
+                        </button>
+                      )}
+                    </div>
+                  );
+                default:
+                  return <div key={col.key} className="av-table-cell">\u2014</div>;
+              }
+            })}
+          </div>
+        );
+      })}
+
+      {sorted.length === 0 && (
+        <div className="av-table-empty-state">No actions match the current filters.</div>
+      )}
+    </div>
+  );
+}
+
+
 // ── Action Card ───────────────────────────────────────────────────────────────
 
 function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze }) {
@@ -972,6 +1331,7 @@ export default function ActionsView() {
   // ── Scope toggle state ────────────────────────────────────────
   const [scope, setScope] = useState('mine');   // 'mine' | 'team' | 'org'
   const [actionSource, setActionSource] = useState('all'); // 'all' | 'deals' | 'prospecting'
+  const [viewLayout, setViewLayout] = useState('table'); // 'table' | 'cards'
   const [hasTeam, setHasTeam] = useState(false);
 
   // ── STRAP state ────────────────────────────────────────────────
@@ -1444,6 +1804,33 @@ export default function ActionsView() {
                        background: '#fff', fontSize: 13, cursor: 'pointer' }}>
               📤 Export
             </button>
+            <div style={{
+              display: 'inline-flex', borderRadius: 8, overflow: 'hidden',
+              border: '1px solid #e2e4ea', fontSize: 13,
+            }}>
+              <button
+                onClick={() => setViewLayout('table')}
+                title="Table view"
+                style={{
+                  padding: '6px 12px', border: 'none', cursor: 'pointer',
+                  background: viewLayout === 'table' ? '#4f46e5' : '#fff',
+                  color: viewLayout === 'table' ? '#fff' : '#4b5563',
+                  fontWeight: viewLayout === 'table' ? 600 : 400,
+                }}>
+                ☰
+              </button>
+              <button
+                onClick={() => setViewLayout('cards')}
+                title="Card view"
+                style={{
+                  padding: '6px 12px', border: 'none', cursor: 'pointer',
+                  background: viewLayout === 'cards' ? '#4f46e5' : '#fff',
+                  color: viewLayout === 'cards' ? '#fff' : '#4b5563',
+                  fontWeight: viewLayout === 'cards' ? 600 : 400,
+                }}>
+                ▦
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1519,20 +1906,30 @@ export default function ActionsView() {
           </div>
         )}
 
-        {/* Action grid — hidden when source filter is strap only */}
+        {/* Action list — hidden when source filter is strap only */}
         {!loading && !error && actions.length > 0 && filters.source !== 'strap' && (
-          <div className="av-grid">
-            {actions.map(action => (
-              <ActionCard
-                key={action.id}
-                action={action}
-                onStatusChange={handleStatusChange}
-                onStart={handleStart}
-                onSnoozeClick={setSnoozeAction}
-                onUnsnooze={handleUnsnooze}
-              />
-            ))}
-          </div>
+          viewLayout === 'table' ? (
+            <ActionsTable
+              actions={actions}
+              onStatusChange={handleStatusChange}
+              onStart={handleStart}
+              onSnoozeClick={setSnoozeAction}
+              onUnsnooze={handleUnsnooze}
+            />
+          ) : (
+            <div className="av-grid">
+              {actions.map(action => (
+                <ActionCard
+                  key={action.id}
+                  action={action}
+                  onStatusChange={handleStatusChange}
+                  onStart={handleStart}
+                  onSnoozeClick={setSnoozeAction}
+                  onUnsnooze={handleUnsnooze}
+                />
+              ))}
+            </div>
+          )
         )}
 
       </div>
