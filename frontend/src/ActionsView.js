@@ -348,7 +348,7 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
       <div className="modal-content av-log-modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <h2>{cfg.icon} {cfg.label}</h2>
-          <button className="close-button" onClick={onClose}>\u00d7</button>
+          <button className="close-button" onClick={onClose}>×</button>
         </div>
         <div className="av-log-modal-body">
           <div className="av-log-action-title">{action.title}</div>
@@ -359,24 +359,24 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
               <span className="av-log-resource-person">{personName}</span>
               {phone && (
                 <a href={`tel:${phone.replace(/\s/g, '')}`} className="av-log-resource-link av-log-resource-link--call">
-                  \ud83d\udcde {phone}
+                  📞 {phone}
                 </a>
               )}
               {linkedinUrl && (
                 <a href={linkedinUrl.startsWith('http') ? linkedinUrl : `https://${linkedinUrl}`}
                    target="_blank" rel="noreferrer" className="av-log-resource-link av-log-resource-link--linkedin">
-                  \ud83d\udd17 LinkedIn \u2197
+                  🔗 LinkedIn ↗
                 </a>
               )}
               {phone && (
                 <a href={`https://wa.me/${phone.replace(/[\s\-()]/g, '').replace(/^\+/, '')}`}
                    target="_blank" rel="noreferrer" className="av-log-resource-link av-log-resource-link--whatsapp">
-                  \ud83d\udcac WhatsApp \u2197
+                  💬 WhatsApp ↗
                 </a>
               )}
               {person.email && (
                 <a href={`mailto:${person.email}`} className="av-log-resource-link av-log-resource-link--email">
-                  \u2709\ufe0f {person.email}
+                  ✉️ {person.email}
                 </a>
               )}
             </div>
@@ -388,7 +388,7 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
                 detail: { tab: 'deals', dealId, resume: true },
               }));
             }}>
-              \ud83d\udcc1 Open Files for {action.deal?.name || 'this deal'} \u2192
+              📁 Open Files for {action.deal?.name || 'this deal'} →
             </button>
           )}
 
@@ -412,10 +412,10 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
         <div className="av-log-modal-footer">
           <button className="btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="av-log-btn-progress" onClick={handleInProgress} disabled={saving}>
-            {saving ? '\u2026' : '\u25d1 Still in Progress'}
+            {saving ? '…' : '◑ Still in Progress'}
           </button>
           <button className="av-log-btn-done" onClick={handleDone} disabled={saving}>
-            {saving ? '\u2026' : '\u2713 Mark Done'}
+            {saving ? '…' : '✓ Mark Done'}
           </button>
         </div>
       </div>
@@ -499,32 +499,32 @@ const ALL_COLUMNS = [
 ];
 
 const CHANNEL_META = {
-  email:         { icon: '\u2709\ufe0f', label: 'Email',     color: '#f59e0b' },
-  call:          { icon: '\ud83d\udcde', label: 'Call',       color: '#10b981' },
-  follow_up:     { icon: '\u2709\ufe0f', label: 'Follow Up', color: '#f59e0b' },
-  linkedin:      { icon: '\ud83d\udd17', label: 'LinkedIn',   color: '#2563eb' },
-  whatsapp:      { icon: '\ud83d\udcac', label: 'WhatsApp',   color: '#16a34a' },
-  document:      { icon: '\ud83d\udcc4', label: 'Document',   color: '#8b5cf6' },
-  slack:         { icon: '\ud83d\udcac', label: 'Slack',       color: '#e11d48' },
-  internal_task: { icon: '\ud83d\udd27', label: 'Task',       color: '#6b7280' },
+  email:         { icon: '✉️', label: 'Email',     color: '#f59e0b' },
+  call:          { icon: '📞', label: 'Call',       color: '#10b981' },
+  follow_up:     { icon: '✉️', label: 'Follow Up', color: '#f59e0b' },
+  linkedin:      { icon: '🔗', label: 'LinkedIn',   color: '#2563eb' },
+  whatsapp:      { icon: '💬', label: 'WhatsApp',   color: '#16a34a' },
+  document:      { icon: '📄', label: 'Document',   color: '#8b5cf6' },
+  slack:         { icon: '💬', label: 'Slack',       color: '#e11d48' },
+  internal_task: { icon: '🔧', label: 'Task',       color: '#6b7280' },
 };
 
 const SOURCE_META = {
-  strap:           { label: '\ud83c\udfaf STRAP',   bg: '#faf5ff', color: '#7c3aed', border: '#e9d5ff' },
-  ai_generated:    { label: '\ud83e\udd16 AI',      bg: '#f0fdf4', color: '#15803d', border: '#bbf7d0' },
-  playbook:        { label: '\ud83d\udcd8 Play',    bg: '#eff6ff', color: '#2563eb', border: '#bfdbfe' },
-  auto_generated:  { label: '\u2699\ufe0f Rules',   bg: '#fefce8', color: '#a16207', border: '#fde68a' },
+  strap:           { label: '🎯 STRAP',   bg: '#faf5ff', color: '#7c3aed', border: '#e9d5ff' },
+  ai_generated:    { label: '🤖 AI',      bg: '#f0fdf4', color: '#15803d', border: '#bbf7d0' },
+  playbook:        { label: '📘 Play',    bg: '#eff6ff', color: '#2563eb', border: '#bfdbfe' },
+  auto_generated:  { label: '⚙️ Rules',   bg: '#fefce8', color: '#a16207', border: '#fde68a' },
 };
 
 const STATUS_META = {
-  yet_to_start: { icon: '\u25cb', label: 'To Start',    color: '#9ca3af' },
-  in_progress:  { icon: '\u25d1', label: 'In Progress', color: '#f59e0b' },
-  completed:    { icon: '\u25cf', label: 'Done',        color: '#10b981' },
-  snoozed:      { icon: '\ud83d\ude34', label: 'Snoozed', color: '#8b5cf6' },
+  yet_to_start: { icon: '○', label: 'To Start',    color: '#9ca3af' },
+  in_progress:  { icon: '◑', label: 'In Progress', color: '#f59e0b' },
+  completed:    { icon: '●', label: 'Done',        color: '#10b981' },
+  snoozed:      { icon: '😴', label: 'Snoozed', color: '#8b5cf6' },
 };
 
 function tableDueLabel(d) {
-  if (!d) return { text: '\u2014', overdue: false, today: false };
+  if (!d) return { text: '—', overdue: false, today: false };
   const now = new Date(); now.setHours(0,0,0,0);
   const due = new Date(d); due.setHours(0,0,0,0);
   const diff = Math.ceil((due - now) / 86400000);
@@ -639,14 +639,14 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
         <span className="av-table-result-count">{sorted.length} action{sorted.length !== 1 ? 's' : ''}</span>
         {Object.keys(colFilters).some(k => colFilters[k]) && (
           <button className="av-table-clear-filters" onClick={() => setColFilters({})}>
-            \u2715 Clear column filters
+            ✕ Clear column filters
           </button>
         )}
         <button
           className="av-table-col-config-btn"
           onClick={() => setShowColConfig(p => !p)}
         >
-          \u2699\ufe0f Columns
+          ⚙️ Columns
         </button>
         {showColConfig && (
           <div className="av-table-col-config">
@@ -668,7 +668,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
       <div className="av-table-header" style={{ gridTemplateColumns: gridCols }}>
         {activeCols.map(col => {
           const isSorted = sortKey === col.key;
-          const arrow = isSorted ? (sortDir === 'asc' ? ' \u25b2' : ' \u25bc') : '';
+          const arrow = isSorted ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
           return (
             <div key={col.key} className="av-table-th">
               {col.sortable ? (
@@ -726,7 +726,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
                 case 'title':
                   return (
                     <div key={col.key} className="av-table-cell av-table-cell--title">
-                      {action.isInternal && <span className="av-table-internal-icon">\ud83c\udfe0</span>}
+                      {action.isInternal && <span className="av-table-internal-icon">🏠</span>}
                       <span className={isComplete ? 'av-table-strikethrough' : ''}>{action.title}</span>
                     </div>
                   );
@@ -734,11 +734,11 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
                   return (
                     <div key={col.key} className="av-table-cell av-table-cell--truncate">
                       {action.deal ? (
-                        <span className="av-table-deal-name">\ud83d\udcbc {action.deal.name}</span>
+                        <span className="av-table-deal-name">💼 {action.deal.name}</span>
                       ) : action.prospect ? (
-                        <span className="av-table-prospect-name">\ud83c\udfaf {action.prospect.firstName} {action.prospect.lastName}</span>
+                        <span className="av-table-prospect-name">🎯 {action.prospect.firstName} {action.prospect.lastName}</span>
                       ) : (
-                        <span className="av-table-empty">\u2014</span>
+                        <span className="av-table-empty">—</span>
                       )}
                     </div>
                   );
@@ -746,11 +746,11 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
                   return (
                     <div key={col.key} className="av-table-cell av-table-cell--truncate">
                       {action.contact ? (
-                        <span>\ud83d\udc64 {action.contact.firstName} {action.contact.lastName}</span>
+                        <span>👤 {action.contact.firstName} {action.contact.lastName}</span>
                       ) : action.prospect ? (
-                        <span>\ud83c\udfaf {action.prospect.firstName} {action.prospect.lastName}</span>
+                        <span>🎯 {action.prospect.firstName} {action.prospect.lastName}</span>
                       ) : (
-                        <span className="av-table-empty">\u2014</span>
+                        <span className="av-table-empty">—</span>
                       )}
                     </div>
                   );
@@ -786,19 +786,19 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
                 case 'account':
                   return (
                     <div key={col.key} className="av-table-cell av-table-cell--truncate">
-                      {action.deal?.account || action.prospect?.companyName || <span className="av-table-empty">\u2014</span>}
+                      {action.deal?.account || action.prospect?.companyName || <span className="av-table-empty">—</span>}
                     </div>
                   );
                 case 'stage':
                   return (
                     <div key={col.key} className="av-table-cell">
-                      <span className="av-table-stage">{action.deal?.stage?.replace(/_/g, ' ') || action.prospect?.stage?.replace(/_/g, ' ') || '\u2014'}</span>
+                      <span className="av-table-stage">{action.deal?.stage?.replace(/_/g, ' ') || action.prospect?.stage?.replace(/_/g, ' ') || '—'}</span>
                     </div>
                   );
                 case 'internal':
                   return (
                     <div key={col.key} className="av-table-cell">
-                      {action.isInternal ? '\ud83c\udfe0 Internal' : '\ud83c\udf10 External'}
+                      {action.isInternal ? '🏠 Internal' : '🌐 External'}
                     </div>
                   );
                 case 'actions':
@@ -810,7 +810,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
                           style={{ background: ch.color + '14', color: ch.color, borderColor: ch.color + '40' }}
                           onClick={() => onStart(action)}
                         >
-                          {ch.icon} \u2192
+                          {ch.icon} →
                         </button>
                       )}
                       {action.status === 'snoozed' && (
@@ -819,13 +819,13 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
                           style={{ background: '#8b5cf614', color: '#8b5cf6', borderColor: '#8b5cf640' }}
                           onClick={() => onUnsnooze(action.id)}
                         >
-                          \u2191 Wake
+                          ↑ Wake
                         </button>
                       )}
                     </div>
                   );
                 default:
-                  return <div key={col.key} className="av-table-cell">\u2014</div>;
+                  return <div key={col.key} className="av-table-cell">—</div>;
               }
             })}
           </div>
