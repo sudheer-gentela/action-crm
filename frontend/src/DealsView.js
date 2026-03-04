@@ -18,6 +18,7 @@ import TranscriptAnalysis from './TranscriptAnalysis';
 import DealActionsPanel from './DealActionsPanel';
 import StrapPanel from './StrapPanel';               // ← CHANGED: was DealStrapPanel
 import DealTeamPanel from './DealTeamPanel';
+import DealPlaysPanel from './DealPlaysPanel';
 import DealContactsPanel from './DealContactsPanel';
 import DealEmailHistory from './DealEmailHistory';
 import DealFilesPanel from './DealFilesPanel';
@@ -404,6 +405,14 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
               <div className="detail-section">
                 <h3>STRAP &mdash; Strategy &amp; Action Plan</h3>
                 <StrapPanel entityType="deal" entityId={selectedDeal.id} />
+              </div>
+
+              {/* ══════════════════════════════════════════════════
+                  2b. PLAYS — Role-based playbook plays
+                  ══════════════════════════════════════════════════ */}
+              <div className="detail-section">
+                <h3>Plays &mdash; Playbook Execution</h3>
+                <DealPlaysPanel deal={selectedDeal} stageKey={selectedDeal.stage} />
               </div>
 
               {/* 3. Actions */}

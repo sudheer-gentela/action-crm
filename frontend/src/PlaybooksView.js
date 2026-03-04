@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiService } from './apiService';
+import PlaybookPlaysEditor from './PlaybookPlaysEditor';
 import './SettingsView.css';
 
 // ════════════════════════════════════════════════════════════
@@ -37,6 +38,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
   const [creating, setCreating]         = useState(false);
   const [deleting, setDeleting]         = useState(false);
   const [showCompany, setShowCompany]   = useState(false);
+  const [showPlaysTab, setShowPlaysTab] = useState(false);
 
   // Type filter: 'sales' | 'prospecting'
   const [typeFilter, setTypeFilter]     = useState(initialTypeFilter || 'sales');
@@ -368,6 +370,36 @@ export default function PlaybooksView({ initialTypeFilter }) {
                 {/* ── SALES playbook content ────────────────── */}
                 {playbook.type !== 'prospecting' && (
                   <>
+                    {/* Sub-tabs: Stage Guidance | Plays */}
+                    <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16 }}>
+                      {[
+                        { key: false, label: '📋 Stage Guidance' },
+                        { key: true,  label: '🎭 Plays by Role' },
+                      ].map(t => (
+                        <button
+                          key={String(t.key)}
+                          onClick={() => setShowPlaysTab(t.key)}
+                          style={{
+                            padding: '8px 16px', background: 'none', border: 'none',
+                            borderBottom: `3px solid ${showPlaysTab === t.key ? '#3b82f6' : 'transparent'}`,
+                            color: showPlaysTab === t.key ? '#3b82f6' : '#6b7280',
+                            fontWeight: showPlaysTab === t.key ? 600 : 400,
+                            fontSize: 13, cursor: 'pointer', transition: 'all 0.15s',
+                          }}
+                        >
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Plays sub-tab */}
+                    {showPlaysTab && (
+                      <PlaybookPlaysEditor playbookId={playbook.id} />
+                    )}
+
+                    {/* Stage Guidance sub-tab (original content) */}
+                    {!showPlaysTab && (
+                    <>
                     {playbook.content && (
                       <div className="sv-card" style={{ marginBottom: 20 }}>
                         <div className="pb-company-header" onClick={() => setShowCompany(v => !v)}>
@@ -448,6 +480,8 @@ export default function PlaybooksView({ initialTypeFilter }) {
 
                     {stagesArray.length === 0 && (
                       <div className="sv-empty">No stages defined in this playbook yet.</div>
+                    )}
+                    </>
                     )}
                   </>
                 )}

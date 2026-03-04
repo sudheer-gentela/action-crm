@@ -1,0 +1,722 @@
+/* ─────────────────────────────────────────────────────────────
+   DealPlaysPanel.css — Deal-level play execution
+   ───────────────────────────────────────────────────────────── */
+
+.dpp-root {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  color: #1f2937;
+}
+
+/* ── Loading / Error ─────────────────────────────────────────── */
+
+.dpp-loading {
+  padding: 32px;
+  text-align: center;
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.dpp-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #e5e7eb;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: dpp-spin 0.6s linear infinite;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+@keyframes dpp-spin { to { transform: rotate(360deg); } }
+
+.dpp-error {
+  margin: 8px 0;
+  padding: 10px 14px;
+  background: #fef2f2;
+  color: #dc2626;
+  border-radius: 6px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dpp-error-dismiss {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #dc2626;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+/* ── Header ──────────────────────────────────────────────────── */
+
+.dpp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dpp-header__left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dpp-header__title {
+  font-weight: 700;
+  font-size: 15px;
+  color: #111827;
+}
+
+.dpp-header__stats {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.dpp-gate-count {
+  color: #d97706;
+  font-weight: 600;
+}
+
+.dpp-header__right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── View toggle ─────────────────────────────────────────────── */
+
+.dpp-view-toggle {
+  display: flex;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.dpp-view-btn {
+  padding: 5px 12px;
+  font-size: 12px;
+  border: none;
+  background: #fff;
+  color: #6b7280;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.dpp-view-btn:not(:last-child) {
+  border-right: 1px solid #e5e7eb;
+}
+
+.dpp-view-btn--active {
+  background: #eff6ff;
+  color: #2563eb;
+  font-weight: 600;
+}
+
+.dpp-view-btn:hover:not(.dpp-view-btn--active) {
+  background: #f9fafb;
+}
+
+/* ── Role filter ─────────────────────────────────────────────── */
+
+.dpp-role-filter {
+  padding: 5px 10px;
+  font-size: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  color: #374151;
+  cursor: pointer;
+}
+
+/* ── Progress bar ────────────────────────────────────────────── */
+
+.dpp-progress {
+  height: 4px;
+  background: #e5e7eb;
+  border-radius: 2px;
+  margin: 4px 0 12px;
+  overflow: hidden;
+}
+
+.dpp-progress__bar {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #10b981);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+/* ── Gate warnings ───────────────────────────────────────────── */
+
+.dpp-gate-warning {
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dpp-gate-warning--strict {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+
+.dpp-gate-warning--advisory {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+
+.dpp-gate-warning__item {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  background: rgba(255,255,255,0.6);
+  border-radius: 4px;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+/* ── Empty state ─────────────────────────────────────────────── */
+
+.dpp-empty {
+  text-align: center;
+  padding: 32px 16px;
+  color: #6b7280;
+}
+
+.dpp-empty p {
+  margin: 0 0 12px;
+}
+
+/* ── Play list ───────────────────────────────────────────────── */
+
+.dpp-plays {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dpp-play {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid #f3f4f6;
+  background: #fff;
+  transition: all 0.15s;
+}
+
+.dpp-play:hover {
+  border-color: #e0e7ff;
+  background: #fafbff;
+}
+
+.dpp-play--completed {
+  opacity: 0.7;
+  background: #f8fdf9;
+}
+
+.dpp-play--skipped {
+  opacity: 0.5;
+}
+
+.dpp-play--overdue {
+  border-color: #fecaca;
+  background: #fffbfb;
+}
+
+/* ── Play left (order + sequence line) ───────────────────────── */
+
+.dpp-play__left {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 28px;
+  padding-top: 2px;
+}
+
+.dpp-play__order {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #f3f4f6;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dpp-play--completed .dpp-play__order {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.dpp-play__seq-line {
+  width: 2px;
+  flex: 1;
+  min-height: 12px;
+  background: #d1d5db;
+  margin-top: 4px;
+  border-radius: 1px;
+}
+
+/* ── Play content ────────────────────────────────────────────── */
+
+.dpp-play__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.dpp-play__title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.dpp-play__channel {
+  font-size: 14px;
+}
+
+.dpp-play__title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #111827;
+}
+
+.dpp-play__title--done {
+  text-decoration: line-through;
+  color: #6b7280;
+}
+
+.dpp-play__gate {
+  font-size: 11px;
+  padding: 1px 6px;
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.dpp-play__manual {
+  font-size: 11px;
+  padding: 1px 6px;
+  background: #f3f4f6;
+  color: #6b7280;
+  border-radius: 4px;
+}
+
+.dpp-play__desc {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+/* ── Meta row ────────────────────────────────────────────────── */
+
+.dpp-play__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.dpp-status-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.dpp-play__priority {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 8px;
+  border-radius: 10px;
+  text-transform: capitalize;
+}
+
+.dpp-play__due {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.dpp-play__due--overdue {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.dpp-dep-tag {
+  font-size: 11px;
+  color: #9ca3af;
+  font-style: italic;
+}
+
+/* ── Assignees ───────────────────────────────────────────────── */
+
+.dpp-play__assignee-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dpp-assignees {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.dpp-assignee-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: #f3f4f6;
+  border-radius: 12px;
+  font-size: 11px;
+  color: #374151;
+  cursor: default;
+}
+
+.dpp-assignee-name {
+  font-weight: 500;
+}
+
+.dpp-assignee-role {
+  color: #9ca3af;
+  font-size: 10px;
+}
+
+.dpp-no-assignee {
+  font-size: 12px;
+  color: #d1d5db;
+  font-style: italic;
+}
+
+/* ── Reassign dropdown ───────────────────────────────────────── */
+
+.dpp-reassign {
+  position: relative;
+}
+
+.dpp-reassign-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  min-width: 220px;
+  padding: 4px;
+  margin-top: 4px;
+}
+
+.dpp-reassign-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 13px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 4px;
+  color: #374151;
+}
+
+.dpp-reassign-option:hover {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+/* ── Play actions (right side) ───────────────────────────────── */
+
+.dpp-play__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+  min-width: 90px;
+}
+
+.dpp-play__done-label {
+  font-size: 12px;
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.dpp-play__skipped-label {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+
+.dpp-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.dpp-btn--add {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.dpp-btn--add:hover {
+  background: #dbeafe;
+}
+
+.dpp-btn--activate {
+  background: #3b82f6;
+  color: #fff;
+  padding: 8px 20px;
+  font-size: 13px;
+}
+
+.dpp-btn--activate:hover {
+  background: #2563eb;
+}
+
+.dpp-btn--complete {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.dpp-btn--complete:hover {
+  background: #bbf7d0;
+}
+
+.dpp-btn--skip {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.dpp-btn--skip:hover {
+  background: #e5e7eb;
+}
+
+.dpp-btn--tiny {
+  padding: 3px 8px;
+  font-size: 11px;
+  background: #f3f4f6;
+  color: #6b7280;
+  border-radius: 4px;
+}
+
+.dpp-btn--tiny:hover {
+  background: #e5e7eb;
+}
+
+.dpp-btn--save {
+  background: #3b82f6;
+  color: #fff;
+}
+
+.dpp-btn--save:hover {
+  background: #2563eb;
+}
+
+.dpp-btn--save:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+.dpp-btn--cancel {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.dpp-btn--cancel:hover {
+  background: #e5e7eb;
+}
+
+.dpp-btn--subtle {
+  background: none;
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.dpp-btn--subtle:hover {
+  color: #6b7280;
+  background: #f9fafb;
+}
+
+/* ── Add form ────────────────────────────────────────────────── */
+
+.dpp-add-form {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.dpp-add-form__title {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 12px;
+  color: #111827;
+}
+
+.dpp-add-form__row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.dpp-add-form__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.dpp-add-form__assignees {
+  margin-top: 10px;
+}
+
+.dpp-add-form__assignees-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 6px;
+}
+
+.dpp-add-form__assignees-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dpp-assignee-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.dpp-assignee-check--selected {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
+.dpp-assignee-check input {
+  display: none;
+}
+
+/* ── Inputs ──────────────────────────────────────────────────── */
+
+.dpp-input {
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  width: 100%;
+  transition: border-color 0.15s;
+}
+
+.dpp-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59,130,246,0.1);
+}
+
+.dpp-input--date {
+  width: auto;
+}
+
+.dpp-select {
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.dpp-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* ── Footer ──────────────────────────────────────────────────── */
+
+.dpp-footer {
+  padding: 8px 0;
+  text-align: center;
+  border-top: 1px solid #f3f4f6;
+  margin-top: 8px;
+}
+
+/* ── Responsive ──────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .dpp-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .dpp-header__right {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .dpp-play {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .dpp-play__left {
+    flex-direction: row;
+    gap: 8px;
+  }
+
+  .dpp-play__seq-line {
+    width: 12px;
+    height: 2px;
+    min-height: auto;
+  }
+
+  .dpp-play__actions {
+    flex-direction: row;
+    min-width: auto;
+  }
+
+  .dpp-add-form__row {
+    flex-direction: column;
+  }
+}

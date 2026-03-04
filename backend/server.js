@@ -32,6 +32,10 @@ const prospectStagesRoutes = require('./routes/prospect-stages.routes');
 // STRAP Framework
 const strapRoutes = require('./routes/strap.routes');
 
+// Playbook Plays (role-based)
+const playbookPlaysRoutes = require('./routes/playbook-plays.routes');
+const dealPlaysRoutes     = require('./routes/deal-plays.routes');
+
 // Prospecting Module
 const prospectsRoutes           = require('./routes/prospects.routes');
 const prospectingActionsRoutes  = require('./routes/prospecting-actions.routes');
@@ -186,6 +190,10 @@ app.use('/api/deal-contacts', dealContactsRoutes);
 app.use('/api/deal-stages',      dealStagesRoutes);
 app.use('/api/straps',            strapRoutes);              // STRAP Framework
 app.use('/api/prospect-stages', prospectStagesRoutes);
+
+// ─── Playbook Plays (role-based) ─────────────────────────────
+app.use('/api/playbook-plays', playbookPlaysRoutes);   // Play definitions (admin CRUD)
+app.use('/api/deal-plays',     dealPlaysRoutes);        // Deal play instances (execution)
 
 // ─── Prospecting Module ──────────────────────────────────────
 app.use('/api/prospects',           prospectsRoutes);

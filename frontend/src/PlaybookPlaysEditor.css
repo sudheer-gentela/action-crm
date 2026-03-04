@@ -1,0 +1,559 @@
+/* ─────────────────────────────────────────────────────────────
+   PlaybookPlaysEditor.css — Admin UI for defining plays
+   ───────────────────────────────────────────────────────────── */
+
+.ppe-root {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  color: #1f2937;
+}
+
+.ppe-loading {
+  padding: 40px;
+  text-align: center;
+  color: #6b7280;
+}
+
+.ppe-error {
+  margin: 8px 0;
+  padding: 10px 14px;
+  background: #fef2f2;
+  color: #dc2626;
+  border-radius: 6px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ppe-error button {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #dc2626;
+  cursor: pointer;
+}
+
+/* ── Header ──────────────────────────────────────────────────── */
+
+.ppe-header {
+  margin-bottom: 20px;
+}
+
+.ppe-header__title {
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.ppe-header__subtitle {
+  margin: 0;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+/* ── Stage tabs ──────────────────────────────────────────────── */
+
+.ppe-stage-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 2px solid #e5e7eb;
+  margin-bottom: 20px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.ppe-stage-tab {
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  background: none;
+  color: #6b7280;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: all 0.15s;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ppe-stage-tab:hover {
+  color: #3b82f6;
+  background: #f8fafc;
+}
+
+.ppe-stage-tab--active {
+  color: #2563eb;
+  border-bottom-color: #2563eb;
+  font-weight: 700;
+}
+
+.ppe-stage-tab__count {
+  font-size: 11px;
+  background: #f3f4f6;
+  color: #6b7280;
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
+.ppe-stage-tab--active .ppe-stage-tab__count {
+  background: #dbeafe;
+  color: #2563eb;
+}
+
+/* ── Stage content ───────────────────────────────────────────── */
+
+.ppe-stage-content__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.ppe-stage-content__label {
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.ppe-empty {
+  text-align: center;
+  padding: 32px;
+  color: #9ca3af;
+  font-size: 14px;
+}
+
+/* ── Play cards ──────────────────────────────────────────────── */
+
+.ppe-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.ppe-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  transition: all 0.15s;
+}
+
+.ppe-card:hover {
+  border-color: #c7d2fe;
+  box-shadow: 0 1px 4px rgba(99,102,241,0.06);
+}
+
+.ppe-card--gate {
+  border-left: 3px solid #f59e0b;
+}
+
+.ppe-card--inactive {
+  opacity: 0.5;
+}
+
+.ppe-card__order {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #f3f4f6;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.ppe-card__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.ppe-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.ppe-card__channel {
+  font-size: 14px;
+}
+
+.ppe-card__title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #111827;
+}
+
+.ppe-card__gate-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 4px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.ppe-card__exec-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.ppe-card__exec-badge--parallel {
+  background: #ecfdf5;
+  color: #059669;
+}
+
+.ppe-card__exec-badge--sequential {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.ppe-card__desc {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+
+.ppe-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ppe-card__priority {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 10px;
+  text-transform: capitalize;
+}
+
+.ppe-card__priority[data-priority="high"] {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.ppe-card__priority[data-priority="medium"] {
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.ppe-card__priority[data-priority="low"] {
+  background: #f9fafb;
+  color: #6b7280;
+}
+
+.ppe-card__due {
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.ppe-card__deps {
+  font-size: 11px;
+  color: #818cf8;
+  font-style: italic;
+}
+
+.ppe-card__roles {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.ppe-card__role-pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: #ede9fe;
+  color: #6d28d9;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.ppe-card__actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* ── Form ────────────────────────────────────────────────────── */
+
+.ppe-form {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 20px;
+  margin-top: 12px;
+}
+
+.ppe-form__group {
+  margin-bottom: 14px;
+}
+
+.ppe-form__group--sm {
+  flex: 1;
+  min-width: 140px;
+}
+
+.ppe-form__group label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 5px;
+}
+
+.ppe-form__row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ppe-form__hint {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: 4px;
+}
+
+.ppe-form__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.ppe-required {
+  color: #ef4444;
+}
+
+/* ── Inputs ──────────────────────────────────────────────────── */
+
+.ppe-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+
+.ppe-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59,130,246,0.1);
+}
+
+.ppe-textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  resize: vertical;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.ppe-textarea:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59,130,246,0.1);
+}
+
+.ppe-select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.ppe-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.ppe-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #374151;
+  cursor: pointer;
+  padding: 8px 0;
+}
+
+/* ── Role chips ──────────────────────────────────────────────── */
+
+.ppe-role-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ppe-role-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.ppe-role-chip:hover {
+  border-color: #c4b5fd;
+}
+
+.ppe-role-chip--selected {
+  background: #ede9fe;
+  border-color: #a78bfa;
+  color: #6d28d9;
+  font-weight: 600;
+}
+
+.ppe-role-chip input {
+  display: none;
+}
+
+/* ── Dependency chips ────────────────────────────────────────── */
+
+.ppe-dep-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ppe-dep-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.ppe-dep-chip:hover {
+  border-color: #93c5fd;
+}
+
+.ppe-dep-chip--selected {
+  background: #eff6ff;
+  border-color: #60a5fa;
+  color: #1d4ed8;
+}
+
+.ppe-dep-chip input {
+  display: none;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+
+.ppe-btn {
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.ppe-btn--primary {
+  background: #3b82f6;
+  color: #fff;
+}
+
+.ppe-btn--primary:hover {
+  background: #2563eb;
+}
+
+.ppe-btn--primary:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+.ppe-btn--secondary {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.ppe-btn--secondary:hover {
+  background: #e5e7eb;
+}
+
+.ppe-btn--icon {
+  padding: 4px 6px;
+  font-size: 13px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+
+.ppe-btn--icon:hover {
+  opacity: 1;
+  background: #f3f4f6;
+}
+
+.ppe-btn--danger:hover {
+  background: #fef2f2;
+}
+
+/* ── Responsive ──────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .ppe-stage-tabs {
+    gap: 0;
+  }
+
+  .ppe-stage-tab {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+
+  .ppe-form__row {
+    flex-direction: column;
+  }
+
+  .ppe-card {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .ppe-card__order {
+    align-self: flex-start;
+  }
+}
