@@ -258,6 +258,7 @@ export default function PlaybookPlaysEditor({ playbookId }) {
   const [roles, setRoles]           = useState([]);
   const [activeStage, setActiveStage] = useState('');
   const [editingPlay, setEditingPlay] = useState(null);   // null | 'new' | play object
+  const [filterRole, setFilterRole]   = useState('all');
   const [loading, setLoading]       = useState(true);
   const [saving, setSaving]         = useState(false);
   const [error, setError]           = useState('');
@@ -292,6 +293,25 @@ export default function PlaybookPlaysEditor({ playbookId }) {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const currentPlays = playsByStage[activeStage] || [];
+
+  // ── Role filter ────────────────────────────────────────────────────────────
+  const filteredPlays = filterRole === 'all'
+    ? currentPlays
+    : currentPlays.filter(p =>
+        (p.roles || []).some(r => String(r.role_id) === String(filterRole))
+      );
+
+  // Collect unique roles across ALL plays in the active stage for the dropdown
+  const stageRoles = [];
+  const seenRoleIds = new Set();
+  for (const p of currentPlays) {
+    for (const r of (p.roles || [])) {
+      if (r.role_id && !seenRoleIds.has(r.role_id)) {
+        seenRoleIds.add(r.role_id);
+        stageRoles.push({ id: r.role_id, name: r.role_name, key: r.role_key });
+      }
+    }
+  }
 
   // ── CRUD ───────────────────────────────────────────────────────────────────
 
@@ -362,7 +382,7 @@ export default function PlaybookPlaysEditor({ playbookId }) {
             <button
               key={stage.key}
               className={`ppe-stage-tab ${activeStage === stage.key ? 'ppe-stage-tab--active' : ''}`}
-              onClick={() => { setActiveStage(stage.key); setEditingPlay(null); }}
+              onClick={() => { setActiveStage(stage.key); setEditingPlay(null); setFilterRole('all'); }}
             >
               {stage.name}
               {count > 0 && (
@@ -381,25 +401,46 @@ export default function PlaybookPlaysEditor({ playbookId }) {
           <>
             <div className="ppe-stage-content__header">
               <span className="ppe-stage-content__label">
-                {currentPlays.length} play{currentPlays.length !== 1 ? 's' : ''} in {stages.find(s => s.key === activeStage)?.name || activeStage}
+                {filterRole === 'all'
+                  ? `${currentPlays.length} play${currentPlays.length !== 1 ? 's' : ''} in ${stages.find(s => s.key === activeStage)?.name || activeStage}`
+                  : `${filteredPlays.length} of ${currentPlays.length} plays for ${stageRoles.find(r => String(r.id) === String(filterRole))?.name || 'role'}`
+                }
               </span>
-              {isAdmin && !editingPlay && (
-                <button className="ppe-btn ppe-btn--primary" onClick={() => setEditingPlay('new')}>
-                  + Add Play
-                </button>
-              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {stageRoles.length > 1 && (
+                  <select
+                    className="ppe-select"
+                    style={{ width: 'auto', minWidth: 160, fontSize: 12, padding: '5px 10px' }}
+                    value={filterRole}
+                    onChange={e => setFilterRole(e.target.value)}
+                  >
+                    <option value="all">All Roles ({currentPlays.length})</option>
+                    {stageRoles.map(r => {
+                      const count = currentPlays.filter(p => (p.roles || []).some(pr => String(pr.role_id) === String(r.id))).length;
+                      return <option key={r.id} value={r.id}>{r.name} ({count})</option>;
+                    })}
+                  </select>
+                )}
+                {isAdmin && !editingPlay && (
+                  <button className="ppe-btn ppe-btn--primary" onClick={() => setEditingPlay('new')}>
+                    + Add Play
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Play cards */}
-            {currentPlays.length === 0 && !editingPlay && (
+            {filteredPlays.length === 0 && !editingPlay && (
               <div className="ppe-empty">
-                No plays defined for this stage.
-                {isAdmin && ' Click "+ Add Play" to create one.'}
+                {filterRole === 'all'
+                  ? <>No plays defined for this stage.{isAdmin && ' Click "+ Add Play" to create one.'}</>
+                  : <>No plays assigned to {stageRoles.find(r => String(r.id) === String(filterRole))?.name || 'this role'} in this stage.</>
+                }
               </div>
             )}
 
             <div className="ppe-cards">
-              {currentPlays.map((play, idx) => (
+              {filteredPlays.map((play, idx) => (
                 <PlayCard
                   key={play.id}
                   play={play}
