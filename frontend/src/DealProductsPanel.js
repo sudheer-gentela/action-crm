@@ -1,8 +1,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // DealProductsPanel.js — Deal line items (products/services)
 //
-// Pattern: matches DealTeamPanel.js / DealPlaysPanel.js — apiFetch helper,
-// CSS classes with dpp-* prefix, deal prop, loading/error states.
+// Uses recursive product_groups for catalog picker and group_path for display.
+// Pattern: matches DealTeamPanel.js / DealPlaysPanel.js.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -33,11 +33,35 @@ const EMPTY_ITEM = {
   revenue_type: 'one_time', notes: '',
 };
 
+// Build tree from flat groups
+function buildTree(flatGroups) {
+  const map = {};
+  const roots = [];
+  flatGroups.forEach(g => { map[g.id] = { ...g, children: [] }; });
+  flatGroups.forEach(g => {
+    if (g.parent_id && map[g.parent_id]) {
+      map[g.parent_id].children.push(map[g.id]);
+    } else {
+      roots.push(map[g.id]);
+    }
+  });
+  return { roots, map };
+}
+
+function flattenTree(roots, depth = 0) {
+  const result = [];
+  roots.forEach(node => {
+    result.push({ ...node, depth });
+    if (node.children?.length) result.push(...flattenTree(node.children, depth + 1));
+  });
+  return result;
+}
+
 export default function DealProductsPanel({ deal }) {
   const [items, setItems]         = useState([]);
   const [totals, setTotals]       = useState({ total: 0, one_time: 0, recurring: 0 });
   const [catalog, setCatalog]     = useState([]);
-  const [categories, setCategories] = useState([]);
+  const [groups, setGroups]       = useState([]);
   const [loading, setLoading]     = useState(true);
   const [editing, setEditing]     = useState(null);
   const [form, setForm]           = useState({ ...EMPTY_ITEM });
@@ -48,31 +72,30 @@ export default function DealProductsPanel({ deal }) {
     if (!deal?.id) return;
     try {
       setLoading(true);
-      const [itemsRes, catRes, catsRes] = await Promise.all([
+      const [itemsRes, catRes, grpRes] = await Promise.all([
         apiFetch(`/products/deals/${deal.id}/items`),
         apiFetch('/products?status=active'),
-        apiFetch('/products/categories'),
+        apiFetch('/products/groups'),
       ]);
       setItems(itemsRes.data?.items || []);
       setTotals(itemsRes.data?.totals || { total: 0, one_time: 0, recurring: 0 });
       setCatalog(catRes.data?.products || []);
-      setCategories(catsRes.data?.categories || []);
+      setGroups(grpRes.data?.groups || []);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }, [deal?.id]);
 
   useEffect(() => { loadItems(); }, [loadItems]);
 
-  // When user picks a catalog product, pre-fill fields
+  const { roots: treeRoots, map: groupMap } = buildTree(groups);
+  const flatTree = flattenTree(treeRoots);
+
   const handleProductSelect = (productId) => {
     const pid = parseInt(productId);
     if (!pid) { setForm({ ...form, product_id: '', product_name: '', unit_price: '', revenue_type: 'one_time' }); return; }
     const p = catalog.find(c => c.id === pid);
     if (p) {
-      setForm({
-        ...form, product_id: p.id, product_name: p.name,
-        unit_price: p.list_price, revenue_type: p.product_type || 'one_time',
-      });
+      setForm({ ...form, product_id: p.id, product_name: p.name, unit_price: p.list_price, revenue_type: p.product_type || 'one_time' });
     }
   };
 
@@ -80,8 +103,7 @@ export default function DealProductsPanel({ deal }) {
   const startEdit = (item) => {
     setForm({
       product_id: item.product_id || '', product_name: item.product_name,
-      quantity: item.quantity, unit_price: item.unit_price,
-      discount_pct: item.discount_pct,
+      quantity: item.quantity, unit_price: item.unit_price, discount_pct: item.discount_pct,
       contract_term: item.contract_term || '', effective_date: item.effective_date ? item.effective_date.slice(0, 10) : '',
       renewal_date: item.renewal_date ? item.renewal_date.slice(0, 10) : '',
       revenue_type: item.revenue_type, notes: item.notes || '',
@@ -107,18 +129,15 @@ export default function DealProductsPanel({ deal }) {
       } else {
         await apiFetch(`/products/deals/${deal.id}/items/${editing}`, { method: 'PUT', body: JSON.stringify(payload) });
       }
-      cancelEdit();
-      loadItems();
+      cancelEdit(); loadItems();
     } catch (e) { setError(e.message); }
     finally { setSaving(false); }
   };
 
   const deleteItem = async (item) => {
     if (!window.confirm(`Remove "${item.product_name}" from this deal?`)) return;
-    try {
-      await apiFetch(`/products/deals/${deal.id}/items/${item.id}`, { method: 'DELETE' });
-      loadItems();
-    } catch (e) { setError(e.message); }
+    try { await apiFetch(`/products/deals/${deal.id}/items/${item.id}`, { method: 'DELETE' }); loadItems(); }
+    catch (e) { setError(e.message); }
   };
 
   const syncDealValue = async () => {
@@ -136,47 +155,46 @@ export default function DealProductsPanel({ deal }) {
     return (q * p * (1 - d / 100)).toFixed(2);
   };
 
-  // Group items by category
+  // Group items by group_path (or category_name fallback)
   const grouped = {};
-  const uncategorized = [];
+  const ungrouped = [];
   items.forEach(item => {
-    if (item.category_name) {
-      if (!grouped[item.category_name]) grouped[item.category_name] = [];
-      grouped[item.category_name].push(item);
+    const groupKey = item.group_path || item.category_name;
+    if (groupKey) {
+      if (!grouped[groupKey]) grouped[groupKey] = [];
+      grouped[groupKey].push(item);
     } else {
-      uncategorized.push(item);
+      ungrouped.push(item);
+    }
+  });
+
+  // Build optgroups for catalog picker
+  const productsByGroupId = {};
+  const ungroupedCatalog = [];
+  catalog.forEach(p => {
+    if (p.group_id) {
+      if (!productsByGroupId[p.group_id]) productsByGroupId[p.group_id] = [];
+      productsByGroupId[p.group_id].push(p);
+    } else {
+      ungroupedCatalog.push(p);
     }
   });
 
   if (!deal?.id) return null;
-
-  if (loading) {
-    return <div className="dprod-loading"><span className="dprod-spinner" /> Loading line items…</div>;
-  }
+  if (loading) return <div className="dprod-loading"><span className="dprod-spinner" /> Loading line items…</div>;
 
   return (
     <div className="dprod-root">
-
-      {/* Header */}
       <div className="dprod-header">
-        <span className="dprod-count">
-          {items.length === 0
-            ? 'No line items yet'
-            : `${items.length} item${items.length !== 1 ? 's' : ''}`}
-        </span>
+        <span className="dprod-count">{items.length === 0 ? 'No line items yet' : `${items.length} item${items.length !== 1 ? 's' : ''}`}</span>
         <div className="dprod-header__right">
-          {totals.total > 0 && (
-            <span className="dprod-total">${parseFloat(totals.total).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-          )}
-          <button className="dprod-btn dprod-btn--add" onClick={() => { editing ? cancelEdit() : startAdd(); }}>
-            {editing ? 'Cancel' : '+ Add Product'}
-          </button>
+          {totals.total > 0 && <span className="dprod-total">${parseFloat(totals.total).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>}
+          <button className="dprod-btn dprod-btn--add" onClick={() => { editing ? cancelEdit() : startAdd(); }}>{editing ? 'Cancel' : '+ Add Product'}</button>
         </div>
       </div>
 
       {error && <div className="dprod-error">⚠️ {error} <button className="dprod-error-dismiss" onClick={() => setError('')}>✕</button></div>}
 
-      {/* Totals bar */}
       {items.length > 0 && (
         <div className="dprod-totals">
           <span className="dprod-totals__item"><span className="dprod-totals__label">Total:</span> <span className="dprod-totals__val">${parseFloat(totals.total).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></span>
@@ -186,28 +204,28 @@ export default function DealProductsPanel({ deal }) {
         </div>
       )}
 
-      {/* Add / edit form */}
       {editing && (
         <div className="dprod-add-form">
           <div className="dprod-add-form__title">{editing === 'new' ? '+ Add Line Item' : 'Edit Line Item'}</div>
-
           <div className="dprod-form-row dprod-form-row--2">
             <div>
               <label className="dprod-label">From Catalog</label>
               <select className="dprod-select" value={form.product_id} onChange={e => handleProductSelect(e.target.value)}>
                 <option value="">— custom / manual —</option>
-                {categories.map((cat, ci) => {
-                  const catProducts = catalog.filter(p => p.category_id === cat.id);
-                  if (!catProducts.length) return null;
+                {flatTree.map(g => {
+                  const prods = productsByGroupId[g.id];
+                  if (!prods?.length) return null;
                   return (
-                    <optgroup key={cat.id} label={cat.name}>
-                      {catProducts.map(p => <option key={p.id} value={p.id}>{p.name} (${parseFloat(p.list_price).toLocaleString()})</option>)}
+                    <optgroup key={g.id} label={'  '.repeat(g.depth) + g.name}>
+                      {prods.map(p => <option key={p.id} value={p.id}>{p.name} (${parseFloat(p.list_price).toLocaleString()})</option>)}
                     </optgroup>
                   );
                 })}
-                {(() => { const uncatProds = catalog.filter(p => !p.category_id); return uncatProds.length > 0 ? (
-                  <optgroup label="Uncategorised">{uncatProds.map(p => <option key={p.id} value={p.id}>{p.name} (${parseFloat(p.list_price).toLocaleString()})</option>)}</optgroup>
-                ) : null; })()}
+                {ungroupedCatalog.length > 0 && (
+                  <optgroup label="Ungrouped">
+                    {ungroupedCatalog.map(p => <option key={p.id} value={p.id}>{p.name} (${parseFloat(p.list_price).toLocaleString()})</option>)}
+                  </optgroup>
+                )}
               </select>
             </div>
             <div>
@@ -215,31 +233,21 @@ export default function DealProductsPanel({ deal }) {
               <input className="dprod-input" value={form.product_name} onChange={e => setForm({ ...form, product_name: e.target.value })} placeholder="Or type a custom name" />
             </div>
           </div>
-
           <div className="dprod-form-row dprod-form-row--4">
             <div><label className="dprod-label">Quantity</label><input className="dprod-input" type="number" step="0.01" min="0" value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })} /></div>
             <div><label className="dprod-label">Unit Price</label><input className="dprod-input" type="number" step="0.01" min="0" value={form.unit_price} onChange={e => setForm({ ...form, unit_price: e.target.value })} /></div>
             <div><label className="dprod-label">Discount %</label><input className="dprod-input" type="number" step="0.5" min="0" max="100" value={form.discount_pct} onChange={e => setForm({ ...form, discount_pct: e.target.value })} /></div>
             <div><label className="dprod-label">Line Total</label><div className="dprod-preview-total">${parseFloat(previewTotal()).toLocaleString(undefined, { minimumFractionDigits: 2 })}</div></div>
           </div>
-
           <div className="dprod-form-row dprod-form-row--3">
-            <div>
-              <label className="dprod-label">Revenue Type</label>
-              <select className="dprod-select" value={form.revenue_type} onChange={e => setForm({ ...form, revenue_type: e.target.value })}>
-                <option value="one_time">One-time</option>
-                <option value="recurring">Recurring</option>
-              </select>
-            </div>
+            <div><label className="dprod-label">Revenue Type</label><select className="dprod-select" value={form.revenue_type} onChange={e => setForm({ ...form, revenue_type: e.target.value })}><option value="one_time">One-time</option><option value="recurring">Recurring</option></select></div>
             <div><label className="dprod-label">Contract Term (months)</label><input className="dprod-input" type="number" min="0" value={form.contract_term} onChange={e => setForm({ ...form, contract_term: e.target.value })} /></div>
             <div><label className="dprod-label">Effective Date</label><input className="dprod-input dprod-input--date" type="date" value={form.effective_date} onChange={e => setForm({ ...form, effective_date: e.target.value })} /></div>
           </div>
-
           <div className="dprod-form-row dprod-form-row--2">
             <div><label className="dprod-label">Renewal Date</label><input className="dprod-input dprod-input--date" type="date" value={form.renewal_date} onChange={e => setForm({ ...form, renewal_date: e.target.value })} /></div>
             <div><label className="dprod-label">Notes</label><input className="dprod-input" value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Optional notes" /></div>
           </div>
-
           <div className="dprod-add-form__actions">
             <button className="dprod-btn dprod-btn--save" onClick={saveItem} disabled={saving}>{saving ? '…' : 'Save'}</button>
             <button className="dprod-btn dprod-btn--cancel" onClick={cancelEdit}>Cancel</button>
@@ -247,39 +255,36 @@ export default function DealProductsPanel({ deal }) {
         </div>
       )}
 
-      {/* Line items — grouped by category */}
-      {items.length === 0 && !editing && (
-        <p className="dprod-empty">Add products to track deal value and contract details.</p>
-      )}
+      {items.length === 0 && !editing && <p className="dprod-empty">Add products to track deal value and contract details.</p>}
 
-      {Object.entries(grouped).map(([catName, catItems], gi) => {
+      {Object.entries(grouped).map(([groupKey, groupItems], gi) => {
         const catColor = CAT_COLORS[gi % CAT_COLORS.length];
-        const catTotal = catItems.reduce((sum, i) => sum + parseFloat(i.total_value || 0), 0);
+        const catTotal = groupItems.reduce((sum, i) => sum + parseFloat(i.total_value || 0), 0);
         return (
-          <div key={catName} className="dprod-category-group">
+          <div key={groupKey} className="dprod-category-group">
             <div className="dprod-category-header">
               <span className="dprod-category-dot" style={{ background: catColor }} />
-              <span className="dprod-category-name">{catName}</span>
-              <span className="dprod-category-count">({catItems.length})</span>
+              <span className="dprod-category-name">{groupKey}</span>
+              <span className="dprod-category-count">({groupItems.length})</span>
               <span className="dprod-category-total">${catTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
             </div>
-            {catItems.map(item => (
+            {groupItems.map(item => (
               <LineItemCard key={item.id} item={item} catColor={catColor} onEdit={() => startEdit(item)} onDelete={() => deleteItem(item)} />
             ))}
           </div>
         );
       })}
 
-      {uncategorized.length > 0 && (
+      {ungrouped.length > 0 && (
         <div className="dprod-category-group">
           {Object.keys(grouped).length > 0 && (
             <div className="dprod-category-header">
               <span className="dprod-category-dot" style={{ background: '#94a3b8' }} />
-              <span className="dprod-category-name" style={{ color: '#64748b' }}>Uncategorised</span>
-              <span className="dprod-category-count">({uncategorized.length})</span>
+              <span className="dprod-category-name" style={{ color: '#64748b' }}>Ungrouped</span>
+              <span className="dprod-category-count">({ungrouped.length})</span>
             </div>
           )}
-          {uncategorized.map(item => (
+          {ungrouped.map(item => (
             <LineItemCard key={item.id} item={item} catColor="#94a3b8" onEdit={() => startEdit(item)} onDelete={() => deleteItem(item)} />
           ))}
         </div>

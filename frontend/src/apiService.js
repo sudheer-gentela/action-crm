@@ -325,10 +325,11 @@ export const apiService = {
     create:           (data) => api.post('/products', data),
     update:           (id, data) => api.put(`/products/${id}`, data),
     delete:           (id) => api.delete(`/products/${id}`),
-    getCategories:    () => api.get('/products/categories'),
-    createCategory:   (data) => api.post('/products/categories', data),
-    updateCategory:   (id, data) => api.put(`/products/categories/${id}`, data),
-    deleteCategory:   (id) => api.delete(`/products/categories/${id}`),
+    // Recursive groups (replaces flat categories)
+    getGroups:        () => api.get('/products/groups'),
+    createGroup:      (data) => api.post('/products/groups', data),
+    updateGroup:      (id, data) => api.put(`/products/groups/${id}`, data),
+    deleteGroup:      (id) => api.delete(`/products/groups/${id}`),
   },
 
   // ── Deal Products (line items) ───────────────────────────────────
