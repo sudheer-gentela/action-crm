@@ -50,6 +50,9 @@ const unifiedActionsRoutes      = require('./routes/unified-actions.routes');
 const prospectContextRoutes     = require('./routes/prospect-context.routes');
 const teamsRoutes               = require('./routes/teams.routes');
 
+// Product Catalog + Deal Products
+const productsRoutes            = require('./routes/products.routes');
+
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
 // auth middleware is used inside individual route files.
@@ -197,6 +200,7 @@ app.use('/api/deal-contacts', dealContactsRoutes);
 app.use('/api/deal-stages',      dealStagesRoutes);
 app.use('/api/straps',            strapRoutes);              // STRAP Framework
 app.use('/api/prospect-stages', prospectStagesRoutes);
+app.use('/api/products',        productsRoutes);           // Product Catalog + Deal Line Items
 
 const pipelineStagesRoutes = require('./routes/pipeline-stages.routes');
 app.use('/api/pipeline-stages', pipelineStagesRoutes);

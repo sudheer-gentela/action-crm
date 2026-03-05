@@ -19,6 +19,7 @@ import DealActionsPanel from './DealActionsPanel';
 import StrapPanel from './StrapPanel';               // ← CHANGED: was DealStrapPanel
 import DealTeamPanel from './DealTeamPanel';
 import DealPlaysPanel from './DealPlaysPanel';
+import DealProductsPanel from './DealProductsPanel';
 import DealContactsPanel from './DealContactsPanel';
 import DealEmailHistory from './DealEmailHistory';
 import DealFilesPanel from './DealFilesPanel';
@@ -416,6 +417,9 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
               </div>
 
               {/* 3. Actions */}
+              <div className="detail-section"><h3>Products &amp; Line Items</h3><DealProductsPanel deal={selectedDeal} /></div>
+
+              {/* 4. Actions */}
               <div className="detail-section"><h3>Actions &amp; Tasks</h3><DealActionsPanel deal={selectedDeal} /></div>
 
               {/* 4. Email History */}

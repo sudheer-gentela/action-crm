@@ -4,6 +4,7 @@ import './OrgAdminView.css';
 import DealHealthSettings from './DealHealthSettings';
 import OAStages from './OAStages';
 import PlaybookPlaysEditor from './PlaybookPlaysEditor';
+import OAProducts from './OAProducts';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -28,6 +29,7 @@ const NAV_GROUPS = [
       { id: 'playbooks',   icon: '📘', label: 'Playbooks' },
       { id: 'stages',      icon: '🏷️', label: 'Stages' },
       { id: 'org-roles',   icon: '🎭', label: 'Org Roles' },
+      { id: 'products',    icon: '📦', label: 'Products' },
     ],
   },
   {
@@ -67,6 +69,7 @@ const TAB_META = {
   playbooks:     { title: 'Playbooks',     desc: 'Configure deal playbooks and templates' },
   'stages':      { title: 'Stages',       desc: 'Customise your deal and prospecting pipeline stages' },
   'org-roles':   { title: 'Organization Roles', desc: 'Manage roles used across deals, prospecting, and all playbooks' },
+  'products':    { title: 'Product Catalog', desc: 'Manage products and services available for deal line items' },
   health:        { title: 'Deal Health',   desc: 'Configure health scoring parameters' },
   'icp-scoring': { title: 'ICP Scoring',   desc: 'Define your Ideal Customer Profile and scoring criteria' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
@@ -172,6 +175,7 @@ export default function OrgAdminView() {
             {tab === 'icp-scoring' && <OAIcpScoring />}
             {tab === 'stages'      && <OAStages />}
             {tab === 'org-roles'   && <OADealRoles />}
+            {tab === 'products'    && <OAProducts />}
             {tab === 'ai-agent'    && <OAAgentSettings />}
             {tab === 'duplicates'  && <OADuplicateSettings />}
             {tab === 'integrations' && <OAIntegrations />}

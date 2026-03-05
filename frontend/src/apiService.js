@@ -318,6 +318,28 @@ export const apiService = {
     bulkAssignTeams: (assignments) => api.post('/org/admin/team-memberships/bulk', { assignments }),
   },
 
+  // ── Product Catalog (org-level) ──────────────────────────────────
+  products: {
+    getAll:           (status) => api.get(`/products${status ? '?status=' + status : ''}`),
+    getById:          (id) => api.get(`/products/${id}`),
+    create:           (data) => api.post('/products', data),
+    update:           (id, data) => api.put(`/products/${id}`, data),
+    delete:           (id) => api.delete(`/products/${id}`),
+    getCategories:    () => api.get('/products/categories'),
+    createCategory:   (data) => api.post('/products/categories', data),
+    updateCategory:   (id, data) => api.put(`/products/categories/${id}`, data),
+    deleteCategory:   (id) => api.delete(`/products/categories/${id}`),
+  },
+
+  // ── Deal Products (line items) ───────────────────────────────────
+  dealProducts: {
+    getByDeal:  (dealId) => api.get(`/products/deals/${dealId}/items`),
+    add:        (dealId, data) => api.post(`/products/deals/${dealId}/items`, data),
+    update:     (dealId, itemId, data) => api.put(`/products/deals/${dealId}/items/${itemId}`, data),
+    remove:     (dealId, itemId) => api.delete(`/products/deals/${dealId}/items/${itemId}`),
+    syncValue:  (dealId) => api.post(`/products/deals/${dealId}/items/sync-value`),
+  },
+
   // ══════════════════════════════════════════════════════════
   // ORG HIERARCHY — Feature 2
   // Contact reporting structure + Account parent/subsidiary
@@ -338,9 +360,6 @@ export const apiService = {
       api.get('/team-notifications/org-members'),
 
     // Admin: manually trigger notification scans (for testing)
-    getMyTeams: () =>
-      api.get('/team-notifications/my-teams'),
-
     triggerImmediate: () =>
       api.post('/team-notifications/trigger/immediate'),
     triggerDigest: () =>
