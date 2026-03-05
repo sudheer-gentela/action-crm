@@ -2,14 +2,14 @@
 // Bell icon with unread badge + dropdown notification inbox.
 // Placed in Sidebar.js next to existing nav icons.
 //
-// Polls GET /api/notifications every 60s for unread count.
+// Polls GET /api/team-notifications every 60s for unread count.
 // Click on notification → marks read + navigates to related entity.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import api from './apiService';
 import './NotificationBell.css';
 
-const POLL_INTERVAL_MS = 60_000; // 1 minute
+const POLL_INTERVAL_MS = 300_000; // 5 minutes (configurable — change this value to adjust polling frequency)
 
 // ── Relative time formatter ───────────────────────────────────────────────────
 function timeAgo(dateStr) {
@@ -26,8 +26,8 @@ function timeAgo(dateStr) {
 
 // ── Notification type config ──────────────────────────────────────────────────
 const TYPE_CONFIG = {
-  escalation_immediate: { icon: '🚨', label: 'Overdue',      color: '#dc2626' },
-  escalation_digest:    { icon: '📋', label: 'Daily Digest', color: '#d97706' },
+  notification_immediate: { icon: '🚨', label: 'Overdue',      color: '#dc2626' },
+  notification_digest:    { icon: '📋', label: 'Daily Digest', color: '#d97706' },
 };
 function getTypeConfig(type) {
   return TYPE_CONFIG[type] || { icon: '🔔', label: 'Notification', color: '#6366f1' };
@@ -49,7 +49,7 @@ export default function NotificationBell({ onNavigateToAction }) {
   const fetchNotifications = useCallback(async (quietly = false) => {
     if (!quietly) setLoading(true);
     try {
-      const res = await api.get('/notifications?limit=30');
+      const res = await api.get('/team-notifications?limit=30');
       setNotifications(res.data.notifications || []);
       setUnreadCount(res.data.unread || 0);
     } catch (err) {
@@ -90,7 +90,7 @@ export default function NotificationBell({ onNavigateToAction }) {
   const handleNotifClick = async (notif) => {
     if (!notif.read_at) {
       try {
-        await api.patch(`/notifications/${notif.id}/read`);
+        await api.patch(`/team-notifications/${notif.id}/read`);
         setNotifications(prev =>
           prev.map(n => n.id === notif.id ? { ...n, read_at: new Date().toISOString() } : n)
         );
@@ -114,7 +114,7 @@ export default function NotificationBell({ onNavigateToAction }) {
   // ── Mark all read ─────────────────────────────────────────────────────────
   const handleMarkAllRead = async () => {
     try {
-      await api.patch('/notifications/read', { ids: [] });
+      await api.patch('/team-notifications/read', { ids: [] });
       setNotifications(prev => prev.map(n => ({ ...n, read_at: n.read_at || new Date().toISOString() })));
       setUnreadCount(0);
     } catch (err) {

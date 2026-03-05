@@ -1,35 +1,30 @@
-// EscalationSettings.js
-// User preference panel for escalation notifications.
+// NotificationSettings.js
+// User preference panel for notification notifications.
 // Rendered as a section inside SettingsView.js.
 //
-// GET  /api/escalation/preferences  → load current prefs
-// PATCH /api/escalation/preferences → save
-// GET  /api/escalation/org-members  → load members for specific_users selector
+// GET  /api/team-notifications/preferences  → load current prefs
+// PATCH /api/team-notifications/preferences → save
+// GET  /api/team-notifications/org-members  → load members for specific_users selector
 
 import React, { useState, useEffect, useCallback } from 'react';
 import api from './apiService';
-import './EscalationSettings.css';
+import './NotificationSettings.css';
 
 const RECIPIENT_MODES = [
   {
     value: 'reporting_manager',
     label: 'Reporting manager',
-    description: 'Notify your direct manager in the org hierarchy',
-  },
-  {
-    value: 'team',
-    label: 'My team',
-    description: 'Notify your manager and all teammates who share the same manager',
+    description: 'If no deal team: notify your direct manager in the org hierarchy',
   },
   {
     value: 'specific_users',
     label: 'Specific people',
-    description: 'Always notify a fixed list of people',
+    description: 'If no deal team: always notify a fixed list of people',
   },
   {
     value: 'none',
     label: 'Just me',
-    description: 'Only notify you — no escalation to others',
+    description: 'Only notify you — no notification to others',
   },
 ];
 
@@ -44,7 +39,7 @@ const HOURS_OPTIONS = [
   { value: 168, label: '1 week' },
 ];
 
-export default function EscalationSettings() {
+export default function NotificationSettings() {
   const [prefs,       setPrefs]       = useState(null);
   const [members,     setMembers]     = useState([]);
   const [loading,     setLoading]     = useState(true);
@@ -58,13 +53,13 @@ export default function EscalationSettings() {
     setError('');
     try {
       const [prefsRes, membersRes] = await Promise.all([
-        api.get('/escalation/preferences'),
-        api.get('/escalation/org-members'),
+        api.get('/team-notifications/preferences'),
+        api.get('/team-notifications/org-members'),
       ]);
       setPrefs(prefsRes.data.preferences);
       setMembers(membersRes.data.members || []);
     } catch (err) {
-      setError('Failed to load escalation settings');
+      setError('Failed to load notification settings');
       console.error(err);
     } finally {
       setLoading(false);
@@ -79,7 +74,7 @@ export default function EscalationSettings() {
     setSaved(false);
     setError('');
     try {
-      const res = await api.patch('/escalation/preferences', prefs);
+      const res = await api.patch('/team-notifications/preferences', prefs);
       setPrefs(res.data.preferences);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
@@ -105,7 +100,7 @@ export default function EscalationSettings() {
     return (
       <div className="esc-loading">
         <div className="esc-spinner" />
-        <span>Loading escalation settings…</span>
+        <span>Loading notification settings…</span>
       </div>
     );
   }
@@ -119,7 +114,7 @@ export default function EscalationSettings() {
       <div className="esc-header">
         <div className="esc-header-icon">🚨</div>
         <div>
-          <h3 className="esc-title">Action Escalation</h3>
+          <h3 className="esc-title">Action Notification</h3>
           <p className="esc-subtitle">
             Get notified when actions are overdue and not completed.
           </p>
@@ -193,7 +188,13 @@ export default function EscalationSettings() {
         <div className="esc-section">
           <div className="esc-section-title">Who gets notified</div>
           <div className="esc-section-desc" style={{ marginBottom: 12 }}>
-            When one of your actions is overdue, who should be alerted in addition to you?
+            When an action tied to a <strong>deal</strong> is overdue, the <strong>deal team</strong> is always notified automatically.
+            The setting below applies when an action has no deal — for example, a standalone task or prospecting action.
+          </div>
+
+          <div className="esc-deal-team-banner">
+            🤝 <strong>Deal actions</strong> → deal team notified automatically
+            <span className="esc-deal-team-fallback"> · Fallback for non-deal actions:</span>
           </div>
 
           <div className="esc-radio-group">

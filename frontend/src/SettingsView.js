@@ -5,7 +5,7 @@ import OutlookConnect from './OutlookConnect';
 import GoogleConnect from './GoogleConnect';
 import './SettingsView.css';
 import DealHealthSettings from './DealHealthSettings';
-import EscalationSettings from './EscalationSettings';
+import NotificationSettings from './NotificationSettings';
 
 // ── Sub-imports for existing editors ────────────────────────
 // SettingsView hosts the content directly — no modal wrappers needed
@@ -18,7 +18,7 @@ const SETTINGS_TABS = [
   { id: 'prompts',      label: 'AI Prompts',    icon: '🤖' },
   { id: 'actions',      label: 'Actions',       icon: '🎯' },
   { id: 'ai-agent',     label: 'AI Agent',      icon: '🤖' },
-  { id: 'escalation',   label: 'Escalation',    icon: '🚨' },
+  { id: 'notifications',   label: 'Notifications',    icon: '🔔' },
 ];
 
 
@@ -56,7 +56,7 @@ export default function SettingsView({ initialTab }) {
         {settingsTab === 'prompts'      && <PromptsSettings />}
         {settingsTab === 'actions'      && <ActionsSettings />}
         {settingsTab === 'ai-agent'     && <AgentUserSettings />}
-        {settingsTab === 'escalation'   && <EscalationSettings />}
+        {settingsTab === 'notifications'   && <NotificationSettings />}
       </div>
     </div>
   );

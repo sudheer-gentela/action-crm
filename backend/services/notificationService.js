@@ -1,13 +1,13 @@
-// services/escalationService.js
+// services/notificationService.js
 //
-// Core logic for action escalation.
-// Called by escalationJob.js (Bull processor) and escalationScheduler.js (cron).
+// Core logic for action notification.
+// Called by notificationJob.js (Bull processor) and notificationScheduler.js (cron).
 //
 // Responsibilities:
 //   1. Find overdue actions — by org or across all orgs
 //   2. Resolve notification recipients — manager / team / specific users
 //   3. Create in-app notifications
-//   4. Mark immediate escalations as sent (so they only fire once)
+//   4. Mark immediate notifications as sent (so they only fire once)
 
 const { pool } = require('../config/database');
 
@@ -16,7 +16,7 @@ const { pool } = require('../config/database');
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Returns all orgs that have at least one active org member with escalation enabled.
+ * Returns all orgs that have at least one active org member with notification enabled.
  * Used by the scheduler to know which orgs to scan.
  */
 async function getActiveOrgIds() {
@@ -29,18 +29,18 @@ async function getActiveOrgIds() {
 }
 
 /**
- * Find actions eligible for an IMMEDIATE escalation alert.
+ * Find actions eligible for an IMMEDIATE notification alert.
  *
  * Rules:
  *   - status = 'pending'
  *   - due_date IS NOT NULL and has passed
- *   - escalation_sent_at IS NULL (never escalated before)
+ *   - notification_sent_at IS NULL (never escalated before)
  *   - The action owner has immediate_alert enabled in their prefs
  *   - The action passed due_date more than `immediate_hours` ago
  *
  * Returns rows grouped by user, enriched with user prefs.
  */
-async function findActionsForImmediateEscalation(orgId) {
+async function findActionsForImmediateNotification(orgId) {
   const { rows } = await pool.query(`
     SELECT
       a.id           AS action_id,
@@ -53,7 +53,7 @@ async function findActionsForImmediateEscalation(orgId) {
       u.first_name,
       u.last_name,
       u.email,
-      COALESCE(up.preferences->'escalation', '{}'::jsonb) AS esc_prefs
+      COALESCE(up.preferences->'notification', '{}'::jsonb) AS esc_prefs
     FROM actions a
     JOIN users u ON u.id = a.user_id
     LEFT JOIN user_preferences up ON up.user_id = a.user_id
@@ -61,11 +61,11 @@ async function findActionsForImmediateEscalation(orgId) {
       AND a.status  = 'pending'
       AND a.due_date IS NOT NULL
       AND a.due_date < NOW()
-      AND a.escalation_sent_at IS NULL
+      AND a.notification_sent_at IS NULL
       AND a.deleted_at IS NULL
-      AND COALESCE((up.preferences->'escalation'->>'immediate_alert')::boolean, true) = true
+      AND COALESCE((up.preferences->'notification'->>'immediate_alert')::boolean, true) = true
       AND a.due_date < NOW() - (
-        COALESCE((up.preferences->'escalation'->>'immediate_hours')::int, 24)
+        COALESCE((up.preferences->'notification'->>'immediate_hours')::int, 24)
         * INTERVAL '1 hour'
       )
     ORDER BY a.user_id, a.due_date ASC
@@ -93,7 +93,7 @@ async function findActionsForDailyDigest(orgId) {
       u.first_name,
       u.last_name,
       u.email,
-      COALESCE(up.preferences->'escalation', '{}'::jsonb) AS esc_prefs
+      COALESCE(up.preferences->'notification', '{}'::jsonb) AS esc_prefs
     FROM actions a
     JOIN users u ON u.id = a.user_id
     LEFT JOIN user_preferences up ON up.user_id = a.user_id
@@ -102,7 +102,7 @@ async function findActionsForDailyDigest(orgId) {
       AND a.due_date IS NOT NULL
       AND a.due_date < NOW()
       AND a.deleted_at IS NULL
-      AND COALESCE((up.preferences->'escalation'->>'daily_digest')::boolean, true) = true
+      AND COALESCE((up.preferences->'notification'->>'daily_digest')::boolean, true) = true
     ORDER BY a.user_id, a.due_date ASC
   `, [orgId]);
 
@@ -114,22 +114,43 @@ async function findActionsForDailyDigest(orgId) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Resolve who should be notified for an escalation event.
+ * Resolve who should be notified for an notification event.
  *
- * recipientMode:
- *   'reporting_manager' — the user's solid-line manager in org_hierarchy
- *   'team'              — all of the user's solid-line subordinates
- *   'specific_users'    — the specificUserIds array
- *   'none'              — only the action owner
+ * Resolution order:
+ *   1. If action has a deal_id  → notify all deal team members (deal_team_members table)
+ *   2. If action has no deal_id → fall back to configured recipientMode:
+ *        'reporting_manager' — the user's solid-line manager in org_hierarchy
+ *        'specific_users'    — the specificUserIds list
+ *        'none'              — only the action owner
  *
- * Always returns a de-duped array of user IDs to notify.
- * The action owner is always included.
+ * The action owner is always included regardless of mode.
+ * All returned user IDs are validated as active org members.
  */
-async function resolveRecipients(orgId, actionOwnerId, recipientMode, specificUserIds = []) {
+async function resolveRecipients(orgId, actionOwnerId, recipientMode, specificUserIds = [], dealId = null) {
   const recipients = new Set([actionOwnerId]);
 
+  // ── Priority 1: deal team (when action belongs to a deal) ────────────────
+  if (dealId) {
+    const { rows } = await pool.query(`
+      SELECT dtm.user_id
+      FROM deal_team_members dtm
+      JOIN org_users ou ON ou.user_id = dtm.user_id AND ou.org_id = dtm.org_id
+      WHERE dtm.deal_id = $1
+        AND dtm.org_id  = $2
+        AND ou.is_active = TRUE
+    `, [dealId, orgId]);
+
+    rows.forEach(r => recipients.add(r.user_id));
+
+    // If we found a deal team, we're done — no need to check fallback mode
+    if (rows.length > 0) {
+      return Array.from(recipients);
+    }
+    // If deal has no team members yet, fall through to the configured fallback below
+  }
+
+  // ── Fallback: no deal, or deal has no team members ────────────────────────
   if (recipientMode === 'reporting_manager') {
-    // Look up solid-line manager in org_hierarchy
     const { rows } = await pool.query(`
       SELECT reports_to AS manager_id
       FROM org_hierarchy
@@ -144,30 +165,7 @@ async function resolveRecipients(orgId, actionOwnerId, recipientMode, specificUs
       recipients.add(rows[0].manager_id);
     }
 
-  } else if (recipientMode === 'team') {
-    // Everyone who reports (solid) to the same manager, plus the manager
-    const { rows: managerRows } = await pool.query(`
-      SELECT reports_to AS manager_id
-      FROM org_hierarchy
-      WHERE org_id = $1 AND user_id = $2 AND relationship_type = 'solid'
-      LIMIT 1
-    `, [orgId, actionOwnerId]);
-
-    if (managerRows[0]?.manager_id) {
-      const managerId = managerRows[0].manager_id;
-      recipients.add(managerId);
-
-      // All solid-line direct reports of that manager
-      const { rows: teamRows } = await pool.query(`
-        SELECT user_id FROM org_hierarchy
-        WHERE org_id = $1 AND reports_to = $2 AND relationship_type = 'solid'
-      `, [orgId, managerId]);
-
-      teamRows.forEach(r => recipients.add(r.user_id));
-    }
-
   } else if (recipientMode === 'specific_users' && specificUserIds.length > 0) {
-    // Validate they all belong to this org before adding
     const { rows } = await pool.query(`
       SELECT user_id FROM org_users
       WHERE org_id = $1 AND user_id = ANY($2) AND is_active = TRUE
@@ -177,7 +175,6 @@ async function resolveRecipients(orgId, actionOwnerId, recipientMode, specificUs
   }
 
   // 'none' mode: only action owner (already in set)
-
   return Array.from(recipients);
 }
 
@@ -198,13 +195,13 @@ async function createNotification(orgId, userId, type, title, body, entityType, 
 }
 
 /**
- * Mark a single action's immediate escalation as sent.
+ * Mark a single action's immediate notification as sent.
  * Prevents duplicate immediate alerts.
  */
-async function markEscalationSent(actionId) {
+async function markNotificationSent(actionId) {
   await pool.query(`
-    UPDATE actions SET escalation_sent_at = NOW()
-    WHERE id = $1 AND escalation_sent_at IS NULL
+    UPDATE actions SET notification_sent_at = NOW()
+    WHERE id = $1 AND notification_sent_at IS NULL
   `, [actionId]);
 }
 
@@ -213,14 +210,14 @@ async function markEscalationSent(actionId) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Process immediate escalation for a single action.
- * Called by escalationJob processor for type='immediate'.
+ * Process immediate notification for a single action.
+ * Called by notificationJob processor for type='immediate'.
  */
-async function processImmediateEscalation(orgId, actionId) {
+async function processImmediateNotification(orgId, actionId) {
   // Re-fetch action to confirm it's still pending and not already escalated
   const { rows: [action] } = await pool.query(`
     SELECT a.*, u.first_name, u.last_name,
-           COALESCE(up.preferences->'escalation', '{}'::jsonb) AS esc_prefs
+           COALESCE(up.preferences->'notification', '{}'::jsonb) AS esc_prefs
     FROM actions a
     JOIN users u ON u.id = a.user_id
     LEFT JOIN user_preferences up ON up.user_id = a.user_id
@@ -229,7 +226,7 @@ async function processImmediateEscalation(orgId, actionId) {
 
   if (!action) return { skipped: true, reason: 'action_not_found' };
   if (action.status !== 'pending') return { skipped: true, reason: 'not_pending' };
-  if (action.escalation_sent_at) return { skipped: true, reason: 'already_escalated' };
+  if (action.notification_sent_at) return { skipped: true, reason: 'already_escalated' };
 
   const escPrefs = typeof action.esc_prefs === 'string'
     ? JSON.parse(action.esc_prefs)
@@ -238,25 +235,37 @@ async function processImmediateEscalation(orgId, actionId) {
   const recipientMode   = escPrefs.recipient_mode || 'reporting_manager';
   const specificUserIds = escPrefs.specific_user_ids || [];
 
-  const recipients = await resolveRecipients(orgId, action.user_id, recipientMode, specificUserIds);
+  const recipients = await resolveRecipients(orgId, action.user_id, recipientMode, specificUserIds, action.deal_id || null);
 
   const overdueHours  = Math.round((Date.now() - new Date(action.due_date).getTime()) / 3600000);
   const ownerName     = `${action.first_name} ${action.last_name}`;
   const dueStr        = new Date(action.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 
+  // Fetch deal name if action is deal-linked (used in notification body)
+  let dealName = null;
+  if (action.deal_id) {
+    const { rows: [deal] } = await pool.query(
+      `SELECT name FROM deals WHERE id = $1 AND org_id = $2`,
+      [action.deal_id, orgId]
+    );
+    dealName = deal?.name || null;
+  }
+
+  const dealContext = dealName ? ` (Deal: ${dealName})` : '';
+
   const notifCount = { created: 0 };
   for (const recipientId of recipients) {
     const isOwner = recipientId === action.user_id;
     const title   = isOwner
-      ? `Overdue action: ${action.title}`
-      : `Overdue action from ${ownerName}: ${action.title}`;
+      ? `Overdue action: ${action.title}${dealContext}`
+      : `Overdue action from ${ownerName}: ${action.title}${dealContext}`;
     const body    = isOwner
       ? `This action was due on ${dueStr} (${overdueHours}h ago) and hasn't been completed.`
       : `${ownerName}'s action "${action.title}" was due on ${dueStr} (${overdueHours}h ago) and hasn't been completed.`;
 
     await createNotification(
       orgId, recipientId,
-      'escalation_immediate',
+      'notification_immediate',
       title, body,
       'action', action.id,
       { action_user_id: action.user_id, deal_id: action.deal_id, overdue_hours: overdueHours }
@@ -264,7 +273,7 @@ async function processImmediateEscalation(orgId, actionId) {
     notifCount.created++;
   }
 
-  await markEscalationSent(action.id);
+  await markNotificationSent(action.id);
 
   return {
     actionId,
@@ -276,7 +285,7 @@ async function processImmediateEscalation(orgId, actionId) {
 
 /**
  * Process daily digest for a single user.
- * Called by escalationJob processor for type='daily_digest'.
+ * Called by notificationJob processor for type='daily_digest'.
  * overdueActions: array of action rows for this user.
  */
 async function processDailyDigest(orgId, userId, overdueActions) {
@@ -289,7 +298,12 @@ async function processDailyDigest(orgId, userId, overdueActions) {
   const recipientMode   = escPrefs.recipient_mode || 'reporting_manager';
   const specificUserIds = escPrefs.specific_user_ids || [];
 
-  const recipients = await resolveRecipients(orgId, userId, recipientMode, specificUserIds);
+  // If all overdue actions belong to the same deal, notify that deal's team.
+  // If actions span multiple deals (or no deal), fall back to configured mode.
+  const dealIds = [...new Set(overdueActions.map(a => a.deal_id).filter(Boolean))];
+  const singleDealId = dealIds.length === 1 ? dealIds[0] : null;
+
+  const recipients = await resolveRecipients(orgId, userId, recipientMode, specificUserIds, singleDealId);
 
   const ownerName = `${overdueActions[0].first_name} ${overdueActions[0].last_name}`;
   const count     = overdueActions.length;
@@ -311,7 +325,7 @@ async function processDailyDigest(orgId, userId, overdueActions) {
 
     await createNotification(
       orgId, recipientId,
-      'escalation_digest',
+      'notification_digest',
       title, body,
       'action', null,
       { action_user_id: userId, action_ids: overdueActions.map(a => a.action_id), count }
@@ -339,9 +353,9 @@ const DEFAULT_PREFS = {
   specific_user_ids: [],
 };
 
-async function getUserEscalationPrefs(userId) {
+async function getUserNotificationPrefs(userId) {
   const { rows: [row] } = await pool.query(`
-    SELECT preferences->'escalation' AS esc
+    SELECT preferences->'notification' AS esc
     FROM user_preferences
     WHERE user_id = $1
   `, [userId]);
@@ -350,7 +364,7 @@ async function getUserEscalationPrefs(userId) {
   return { ...DEFAULT_PREFS, ...saved };
 }
 
-async function setUserEscalationPrefs(userId, patch) {
+async function setUserNotificationPrefs(userId, patch) {
   const allowed = ['immediate_alert', 'immediate_hours', 'daily_digest', 'recipient_mode', 'specific_user_ids'];
   const safe    = {};
   for (const key of allowed) {
@@ -374,16 +388,16 @@ async function setUserEscalationPrefs(userId, patch) {
   // Upsert user_preferences row if missing
   await pool.query(`
     INSERT INTO user_preferences (user_id, preferences)
-    VALUES ($1, jsonb_build_object('escalation', $2::jsonb))
+    VALUES ($1, jsonb_build_object('notification', $2::jsonb))
     ON CONFLICT (user_id) DO UPDATE
     SET preferences = jsonb_set(
       COALESCE(user_preferences.preferences, '{}'::jsonb),
-      '{escalation}',
-      COALESCE(user_preferences.preferences->'escalation', '{}'::jsonb) || $2::jsonb
+      '{notification}',
+      COALESCE(user_preferences.preferences->'notification', '{}'::jsonb) || $2::jsonb
     )
   `, [userId, JSON.stringify(safe)]);
 
-  return getUserEscalationPrefs(userId);
+  return getUserNotificationPrefs(userId);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -437,15 +451,15 @@ async function markNotificationsRead(userId, notificationIds) {
 
 module.exports = {
   getActiveOrgIds,
-  findActionsForImmediateEscalation,
+  findActionsForImmediateNotification,
   findActionsForDailyDigest,
   resolveRecipients,
   createNotification,
-  markEscalationSent,
-  processImmediateEscalation,
+  markNotificationSent,
+  processImmediateNotification,
   processDailyDigest,
-  getUserEscalationPrefs,
-  setUserEscalationPrefs,
+  getUserNotificationPrefs,
+  setUserNotificationPrefs,
   getNotifications,
   markNotificationsRead,
 };

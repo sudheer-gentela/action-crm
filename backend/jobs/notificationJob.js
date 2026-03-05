@@ -1,6 +1,6 @@
-// jobs/escalationJob.js
+// jobs/notificationJob.js
 //
-// Bull queue for action escalation processing.
+// Bull queue for action notification processing.
 // Follows the exact same pattern as emailProcessor.js.
 //
 // Job types:
@@ -8,10 +8,10 @@
 //   type='daily_digest' — process a daily digest for a single user
 
 const Queue = require('bull');
-const escalationService = require('../services/escalationService');
+const notificationService = require('../services/notificationService');
 
 // ── Queue setup ───────────────────────────────────────────────────────────────
-const escalationQueue = new Queue('action-escalation', process.env.REDIS_URL, {
+const notificationQueue = new Queue('team-notifications', process.env.REDIS_URL, {
   defaultJobOptions: {
     attempts:         3,
     backoff:          { type: 'exponential', delay: 2000 },
@@ -21,52 +21,52 @@ const escalationQueue = new Queue('action-escalation', process.env.REDIS_URL, {
 });
 
 // ── Job processor ─────────────────────────────────────────────────────────────
-escalationQueue.process(async (job) => {
+notificationQueue.process(async (job) => {
   const { type, orgId, actionId, userId, overdueActions } = job.data;
 
-  console.log(`[escalation] Processing job ${job.id}: type=${type} org=${orgId}`);
+  console.log(`[notifications] Processing job ${job.id}: type=${type} org=${orgId}`);
 
   if (type === 'immediate') {
     // Single action immediate alert
     job.progress(20);
-    const result = await escalationService.processImmediateEscalation(orgId, actionId);
+    const result = await notificationService.processImmediateNotification(orgId, actionId);
     job.progress(100);
     return result;
 
   } else if (type === 'daily_digest') {
     // Daily digest for a single user's overdue actions
     job.progress(20);
-    const result = await escalationService.processDailyDigest(orgId, userId, overdueActions);
+    const result = await notificationService.processDailyDigest(orgId, userId, overdueActions);
     job.progress(100);
     return result;
 
   } else {
-    console.warn(`[escalation] Unknown job type: ${type}`);
+    console.warn(`[notifications] Unknown job type: ${type}`);
     return { skipped: true, reason: 'unknown_type' };
   }
 });
 
 // ── Event listeners ───────────────────────────────────────────────────────────
-escalationQueue.on('completed', (job, result) => {
+notificationQueue.on('completed', (job, result) => {
   if (result?.skipped) {
-    console.log(`[escalation] Job ${job.id} skipped: ${result.reason}`);
+    console.log(`[notifications] Job ${job.id} skipped: ${result.reason}`);
   } else if (job.data.type === 'immediate') {
-    console.log(`[escalation] Job ${job.id} (immediate): action ${result?.actionId}, ${result?.recipientCount} notifications`);
+    console.log(`[notifications] Job ${job.id} (immediate): action ${result?.actionId}, ${result?.recipientCount} notifications`);
   } else if (job.data.type === 'daily_digest') {
-    console.log(`[escalation] Job ${job.id} (digest): user ${result?.userId}, ${result?.overdueCount} overdue, ${result?.recipientCount} notifications`);
+    console.log(`[notifications] Job ${job.id} (digest): user ${result?.userId}, ${result?.overdueCount} overdue, ${result?.recipientCount} notifications`);
   }
 });
 
-escalationQueue.on('failed', (job, err) => {
-  console.error(`[escalation] Job ${job.id} (${job.data.type}) failed:`, err.message);
+notificationQueue.on('failed', (job, err) => {
+  console.error(`[notifications] Job ${job.id} (${job.data.type}) failed:`, err.message);
 });
 
-escalationQueue.on('stalled', (job) => {
-  console.warn(`[escalation] Job ${job.id} stalled`);
+notificationQueue.on('stalled', (job) => {
+  console.warn(`[notifications] Job ${job.id} stalled`);
 });
 
-escalationQueue.on('active', (job) => {
-  console.log(`[escalation] Job ${job.id} (${job.data.type}) started`);
+notificationQueue.on('active', (job) => {
+  console.log(`[notifications] Job ${job.id} (${job.data.type}) started`);
 });
 
-module.exports = { escalationQueue };
+module.exports = { notificationQueue };

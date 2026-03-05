@@ -322,26 +322,26 @@ export const apiService = {
   // ORG HIERARCHY — Feature 2
   // Contact reporting structure + Account parent/subsidiary
   // ══════════════════════════════════════════════════════════
-  // ── Escalation preferences ──────────────────────────────────────────────
-  escalation: {
-    // Get current user's escalation notification preferences
+  // ── Notification preferences ──────────────────────────────────────────────
+  teamNotifications: {
+    // Get current user's notification notification preferences
     getPreferences: () =>
-      api.get('/escalation/preferences'),
+      api.get('/team-notifications/preferences'),
 
-    // Update escalation preferences (partial update supported)
+    // Update notification preferences (partial update supported)
     // body: { immediate_alert, immediate_hours, daily_digest, recipient_mode, specific_user_ids }
     updatePreferences: (data) =>
-      api.patch('/escalation/preferences', data),
+      api.patch('/team-notifications/preferences', data),
 
     // Get org members for the specific_users recipient selector
     getOrgMembers: () =>
-      api.get('/escalation/org-members'),
+      api.get('/team-notifications/org-members'),
 
-    // Admin: manually trigger escalation scans (for testing)
+    // Admin: manually trigger notification scans (for testing)
     triggerImmediate: () =>
-      api.post('/escalation/trigger/immediate'),
+      api.post('/team-notifications/trigger/immediate'),
     triggerDigest: () =>
-      api.post('/escalation/trigger/digest'),
+      api.post('/team-notifications/trigger/digest'),
   },
 
   // ── In-app notifications ─────────────────────────────────────────────────
@@ -352,17 +352,17 @@ export const apiService = {
       if (params.unread)  qs.set('unread',  'true');
       if (params.limit)   qs.set('limit',   params.limit);
       if (params.offset)  qs.set('offset',  params.offset);
-      return api.get(`/notifications?${qs.toString()}`);
+      return api.get(`/team-notifications?${qs.toString()}`);
     },
 
     // Mark specific notifications as read (pass ids array)
     // Pass empty array to mark ALL as read
     markRead: (ids = []) =>
-      api.patch('/notifications/read', { ids }),
+      api.patch('/team-notifications/read', { ids }),
 
     // Mark a single notification as read
     markOneRead: (id) =>
-      api.patch(`/notifications/${id}/read`),
+      api.patch(`/team-notifications/${id}/read`),
   },
 
   orgHierarchy: {
