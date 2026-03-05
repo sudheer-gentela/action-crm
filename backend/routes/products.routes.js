@@ -3,9 +3,9 @@
 // ═══════════════════════════════════════════════════════════════════
 const express = require('express');
 const router  = express.Router();
-const { authenticateToken } = require('../middleware/auth.middleware');
-const { orgContext }        = require('../middleware/orgContext.middleware');
-const pool                  = require('../config/database');
+const authenticateToken = require('../middleware/auth.middleware');
+const { orgContext }   = require('../middleware/orgContext.middleware');
+const { pool }         = require('../config/database');
 
 router.use(authenticateToken, orgContext);
 
