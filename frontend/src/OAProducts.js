@@ -66,16 +66,6 @@ function flattenTree(roots, depth = 0) {
   return result;
 }
 
-function getAncestorPath(map, groupId) {
-  const parts = [];
-  let current = map[groupId];
-  while (current) {
-    parts.unshift(current.name);
-    current = current.parent_id ? map[current.parent_id] : null;
-  }
-  return parts.join(' > ');
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Main Component
 // ═══════════════════════════════════════════════════════════════════════════
@@ -222,15 +212,6 @@ export default function OAProducts() {
   const toggleGroup = (gid) => setCollapsedGroups(prev => ({ ...prev, [gid]: !prev[gid] }));
 
   // Check if a group or any of its descendants are collapsed
-  function isGroupVisible(groupId) {
-    let current = groupMap[groupId];
-    while (current && current.parent_id) {
-      if (collapsedGroups[current.parent_id]) return false;
-      current = groupMap[current.parent_id];
-    }
-    return true;
-  }
-
   if (loading) return <div className="sv-loading" style={{ padding: 24 }}>Loading product catalog…</div>;
 
   return (

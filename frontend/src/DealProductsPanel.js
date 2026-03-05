@@ -87,7 +87,7 @@ export default function DealProductsPanel({ deal }) {
 
   useEffect(() => { loadItems(); }, [loadItems]);
 
-  const { roots: treeRoots, map: groupMap } = buildTree(groups);
+  const { roots: treeRoots } = buildTree(groups);
   const flatTree = flattenTree(treeRoots);
 
   const handleProductSelect = (productId) => {
