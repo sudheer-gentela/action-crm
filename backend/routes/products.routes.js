@@ -264,7 +264,7 @@ router.put('/deals/:dealId/items/:itemId', async (req, res) => {
         revenue_type = COALESCE($8, revenue_type), notes = $9, sort_order = COALESCE($10, sort_order)
        WHERE id = $11 AND deal_id = $12 AND org_id = $13 RETURNING *`,
       [product_name?.trim(), quantity, unit_price, discount_pct,
-       contract_term ?? null, effective_date ?? null, renewal_date ?? null,
+       contract_term || null, effective_date || null, renewal_date || null,
        revenue_type, notes ?? null, sort_order,
        req.params.itemId, req.params.dealId, req.orgId]
     );
