@@ -39,6 +39,10 @@ const dealPlaysRoutes     = require('./routes/deal-plays.routes');
 // Org Hierarchy (Feature 2 — contact reporting structure + account parent/subsidiary)
 const orgHierarchyRoutes        = require('./routes/orgHierarchy.routes');
 
+// Feature 1 — Action Escalation + In-App Notifications
+const notificationsRoutes = require('./routes/notifications.routes');
+const escalationRoutes    = require('./routes/escalation.routes');
+
 // Prospecting Module
 const prospectsRoutes           = require('./routes/prospects.routes');
 const prospectingActionsRoutes  = require('./routes/prospecting-actions.routes');
@@ -209,6 +213,8 @@ app.use('/api/accounts',            accountProspectingRoutes); // /:id/prospecti
 app.use('/api/actions',             unifiedActionsRoutes);     // /unified
 app.use('/api/prospect-context',    prospectContextRoutes);    // /:prospectId, /icp-config/current
 app.use('/api/org-hierarchy',        orgHierarchyRoutes);        // Feature 2: contact org chart + account hierarchy
+app.use('/api/notifications',        notificationsRoutes);       // Feature 1: in-app notification inbox
+app.use('/api/escalation',           escalationRoutes);           // Feature 1: escalation preferences + triggers
 
 // ─────────────────────────────────────────────────────────────
 // Error handling

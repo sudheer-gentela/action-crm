@@ -322,30 +322,65 @@ export const apiService = {
   // ORG HIERARCHY — Feature 2
   // Contact reporting structure + Account parent/subsidiary
   // ══════════════════════════════════════════════════════════
+  // ── Escalation preferences ──────────────────────────────────────────────
+  escalation: {
+    // Get current user's escalation notification preferences
+    getPreferences: () =>
+      api.get('/escalation/preferences'),
+
+    // Update escalation preferences (partial update supported)
+    // body: { immediate_alert, immediate_hours, daily_digest, recipient_mode, specific_user_ids }
+    updatePreferences: (data) =>
+      api.patch('/escalation/preferences', data),
+
+    // Get org members for the specific_users recipient selector
+    getOrgMembers: () =>
+      api.get('/escalation/org-members'),
+
+    // Admin: manually trigger escalation scans (for testing)
+    triggerImmediate: () =>
+      api.post('/escalation/trigger/immediate'),
+    triggerDigest: () =>
+      api.post('/escalation/trigger/digest'),
+  },
+
+  // ── In-app notifications ─────────────────────────────────────────────────
+  notifications: {
+    // Get notifications. options: { unread: true, limit: 30, offset: 0 }
+    getAll: (params = {}) => {
+      const qs = new URLSearchParams();
+      if (params.unread)  qs.set('unread',  'true');
+      if (params.limit)   qs.set('limit',   params.limit);
+      if (params.offset)  qs.set('offset',  params.offset);
+      return api.get(`/notifications?${qs.toString()}`);
+    },
+
+    // Mark specific notifications as read (pass ids array)
+    // Pass empty array to mark ALL as read
+    markRead: (ids = []) =>
+      api.patch('/notifications/read', { ids }),
+
+    // Mark a single notification as read
+    markOneRead: (id) =>
+      api.patch(`/notifications/${id}/read`),
+  },
+
   orgHierarchy: {
-    // Contact org chart — full tree + unplaced contacts for an account
+    // Contact org chart — full tree for an account
     getContactTree: (accountId) =>
       api.get(`/org-hierarchy/contacts/account/${accountId}`),
 
-    // Contact mini-position — manager + self + direct reports + dotted lines
+    // Contact mini-position — manager + self + direct reports
     getContactPosition: (contactId) =>
       api.get(`/org-hierarchy/contacts/${contactId}/position`),
 
-    // Set who a contact reports to
-    // confidence: 'confirmed' (default) | 'best_guess'
-    // Pass reportsToContactId = null to make them unplaced
-    setReportsTo: (contactId, reportsToContactId, confidence = 'confirmed') =>
-      api.patch(`/org-hierarchy/contacts/${contactId}/reports-to`, { reportsToContactId, confidence }),
+    // Set who a contact reports to (pass null to make them root)
+    setReportsTo: (contactId, reportsToContactId) =>
+      api.patch(`/org-hierarchy/contacts/${contactId}/reports-to`, { reportsToContactId }),
 
     // Update org chart display title / seniority level
     updateContactMeta: (contactId, data) =>
       api.patch(`/org-hierarchy/contacts/${contactId}/meta`, data),
-
-    // Dotted-line relationships (cross-account secondary reporting)
-    addDottedLine: (contactId, dottedManagerId, notes) =>
-      api.post(`/org-hierarchy/contacts/${contactId}/dotted-lines`, { dottedManagerId, notes }),
-    removeDottedLine: (contactId, dottedManagerId) =>
-      api.delete(`/org-hierarchy/contacts/${contactId}/dotted-lines?dottedManagerId=${dottedManagerId}`),
 
     // Account hierarchy — full tree centred on an account
     getAccountHierarchy: (accountId) =>
