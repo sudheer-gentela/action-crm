@@ -338,6 +338,9 @@ export const apiService = {
       api.get('/team-notifications/org-members'),
 
     // Admin: manually trigger notification scans (for testing)
+    getMyTeams: () =>
+      api.get('/team-notifications/my-teams'),
+
     triggerImmediate: () =>
       api.post('/team-notifications/trigger/immediate'),
     triggerDigest: () =>

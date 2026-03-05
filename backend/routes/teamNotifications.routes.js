@@ -216,4 +216,97 @@ router.post('/trigger/digest', adminOnly, async (req, res) => {
   }
 });
 
+
+// ── My teams — single call for the NotificationSettings popup ─────────────────
+//
+// GET /api/team-notifications/my-teams
+// Returns:
+//   orgTeams:  [{ id, name, dimension, myRole, isPrimary, memberCount, description }]
+//   dealTeams: [{ dealId, dealName, accountName, stage, myRole, members[] }]
+
+router.get('/my-teams', async (req, res) => {
+  const userId = req.user.userId;
+  const orgId  = req.orgId;
+
+  try {
+    // Org teams this user belongs to
+    const { rows: orgRows } = await pool.query(`
+      SELECT
+        t.id, t.name, t.dimension, t.description,
+        tm.role        AS my_role,
+        tm.is_primary,
+        (SELECT COUNT(*)::int FROM team_memberships tm2
+         WHERE tm2.team_id = t.id AND tm2.org_id = $2) AS member_count
+      FROM team_memberships tm
+      JOIN teams t ON t.id = tm.team_id
+      WHERE tm.user_id = $1
+        AND tm.org_id  = $2
+        AND t.is_active = TRUE
+        AND t.org_id   = $2
+      ORDER BY tm.is_primary DESC, t.name
+    `, [userId, orgId]);
+
+    // Active deals the user is on (exclude closed)
+    const { rows: dealRows } = await pool.query(`
+      SELECT
+        d.id          AS deal_id,
+        d.name        AS deal_name,
+        d.stage,
+        a.name        AS account_name,
+        COALESCE(dtm.custom_role, r.name, 'Team member') AS my_role
+      FROM deal_team_members dtm
+      JOIN deals d      ON d.id  = dtm.deal_id
+      LEFT JOIN accounts  a ON a.id  = d.account_id
+      LEFT JOIN org_roles r ON r.id  = dtm.role_id
+      WHERE dtm.user_id  = $1
+        AND dtm.org_id   = $2
+        AND d.deleted_at IS NULL
+        AND d.stage NOT IN ('closed_won', 'closed_lost')
+      ORDER BY d.name
+    `, [userId, orgId]);
+
+    // For each deal fetch the full member list so the popup can show teammates
+    const dealTeams = [];
+    for (const deal of dealRows) {
+      const { rows: members } = await pool.query(`
+        SELECT
+          u.first_name || ' ' || u.last_name AS name,
+          u.email,
+          COALESCE(dtm.custom_role, r.name, 'Team member') AS role,
+          (dtm.user_id = $1)                               AS is_me
+        FROM deal_team_members dtm
+        JOIN users u        ON u.id  = dtm.user_id
+        LEFT JOIN org_roles r ON r.id  = dtm.role_id
+        WHERE dtm.deal_id = $2 AND dtm.org_id = $3
+        ORDER BY (dtm.user_id = $1) DESC, u.first_name
+      `, [userId, deal.deal_id, orgId]);
+
+      dealTeams.push({
+        dealId:      deal.deal_id,
+        dealName:    deal.deal_name,
+        accountName: deal.account_name,
+        stage:       deal.stage,
+        myRole:      deal.my_role,
+        members,
+      });
+    }
+
+    res.json({
+      orgTeams: orgRows.map(t => ({
+        id:          t.id,
+        name:        t.name,
+        dimension:   t.dimension,
+        description: t.description,
+        myRole:      t.my_role || 'Member',
+        isPrimary:   t.is_primary,
+        memberCount: t.member_count,
+      })),
+      dealTeams,
+    });
+  } catch (err) {
+    console.error('GET /team-notifications/my-teams error:', err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
 module.exports = router;

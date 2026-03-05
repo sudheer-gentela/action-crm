@@ -1,7 +1,8 @@
 /* NotificationSettings.css */
 
+/* Loading / error */
 .ns-loading { display:flex; align-items:center; gap:10px; padding:32px 20px; color:#64748b; font-size:13px; }
-.ns-spinner { width:20px; height:20px; border:2.5px solid #e5e7eb; border-top-color:#6366f1; border-radius:50%; animation:ns-spin .65s linear infinite; }
+.ns-spinner { width:20px; height:20px; border:2.5px solid #e5e7eb; border-top-color:#6366f1; border-radius:50%; animation:ns-spin .65s linear infinite; flex-shrink:0; }
 @keyframes ns-spin { to { transform:rotate(360deg); } }
 .ns-error { color:#dc2626; font-size:13px; padding:16px; }
 .ns-error-banner { background:#fef2f2; border:1px solid #fecaca; color:#991b1b; border-radius:8px; padding:10px 14px; font-size:13px; margin-bottom:16px; }
@@ -9,9 +10,10 @@
 /* Panel */
 .ns-panel { max-width:580px; }
 
+/* Header */
 .ns-header { display:flex; align-items:flex-start; gap:14px; margin-bottom:24px; }
 .ns-header-icon { font-size:28px; line-height:1; margin-top:2px; }
-.ns-title { font-size:16px; font-weight:700; color:#0f172a; margin:0 0 4px; }
+.ns-title    { font-size:16px; font-weight:700; color:#0f172a; margin:0 0 4px; }
 .ns-subtitle { font-size:13px; color:#64748b; margin:0; }
 
 /* Section label */
@@ -19,11 +21,10 @@
 
 /* Card */
 .ns-card { background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:14px 16px; margin-bottom:10px; }
-
 .ns-card-title { font-size:14px; font-weight:600; color:#0f172a; display:flex; align-items:center; gap:8px; margin-bottom:3px; }
 .ns-card-desc  { font-size:12px; color:#64748b; line-height:1.5; }
 
-/* Inline tags */
+/* Tags */
 .ns-tag { font-size:10px; font-weight:700; padding:2px 7px; border-radius:10px; text-transform:uppercase; letter-spacing:.04em; flex-shrink:0; }
 .ns-tag--blue   { background:#dbeafe; color:#1e40af; }
 .ns-tag--purple { background:#ede9fe; color:#6d28d9; }
@@ -31,50 +32,98 @@
 
 /* Toggle */
 .ns-toggle-row { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
-.ns-toggle { display:flex; align-items:center; cursor:pointer; flex-shrink:0; }
+.ns-toggle { display:flex; cursor:pointer; flex-shrink:0; }
 .ns-toggle input { display:none; }
 .ns-toggle-track { width:40px; height:22px; border-radius:11px; background:#d1d5db; transition:background .2s; position:relative; }
 .ns-toggle-track::after { content:''; position:absolute; top:3px; left:3px; width:16px; height:16px; border-radius:50%; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.2); transition:transform .2s; }
 .ns-toggle input:checked + .ns-toggle-track { background:#6366f1; }
 .ns-toggle input:checked + .ns-toggle-track::after { transform:translateX(18px); }
 
-/* Sub-field (hours selector) */
+/* Sub-field */
 .ns-sub-field { display:flex; align-items:center; gap:10px; margin-top:12px; padding-top:12px; border-top:1px solid #e5e7eb; }
 .ns-sub-label { font-size:12px; color:#64748b; white-space:nowrap; }
-.ns-select { padding:6px 10px; border:1.5px solid #e5e7eb; border-radius:7px; font-size:13px; font-family:inherit; outline:none; background:#fff; color:#0f172a; cursor:pointer; }
+.ns-select { padding:6px 10px; border:1.5px solid #e5e7eb; border-radius:7px; font-size:13px; font-family:inherit; background:#fff; color:#0f172a; cursor:pointer; outline:none; }
 .ns-select:focus { border-color:#6366f1; box-shadow:0 0 0 2px rgba(99,102,241,.1); }
 
-/* Info row (teams note) */
-.ns-info-row { margin-top:12px; padding:9px 12px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; font-size:12px; color:#1e40af; line-height:1.5; }
+/* Info row */
+.ns-info-row { margin-top:10px; padding:8px 12px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; font-size:12px; color:#1e40af; line-height:1.5; }
+
+/* View teams link */
+.ns-view-link { display:inline-flex; align-items:center; gap:4px; margin-top:10px; padding:0; background:none; border:none; cursor:pointer; font-size:12px; font-weight:600; color:#6366f1; font-family:inherit; text-decoration:none; transition:opacity .12s; }
+.ns-view-link:hover:not(:disabled) { opacity:.7; text-decoration:underline; }
+.ns-view-link:disabled { color:#94a3b8; cursor:not-allowed; }
 
 /* Radio group */
 .ns-radio-group { display:flex; flex-direction:column; gap:8px; }
 .ns-radio-item { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; background:#fff; border:1.5px solid #e5e7eb; border-radius:8px; cursor:pointer; transition:border-color .12s; }
 .ns-radio-item:hover { border-color:#c7d2fe; }
 .ns-radio-item:has(input:checked) { border-color:#6366f1; background:#eef2ff; }
-.ns-radio-item input[type="radio"] { margin-top:3px; accent-color:#6366f1; flex-shrink:0; }
+.ns-radio-item input { margin-top:3px; accent-color:#6366f1; flex-shrink:0; }
 .ns-radio-content { display:flex; flex-direction:column; gap:2px; }
 .ns-radio-label { font-size:13px; font-weight:600; color:#0f172a; }
 .ns-radio-desc  { font-size:11px; color:#64748b; }
 
 /* Specific users */
-.ns-specific-users { margin-top:14px; padding-top:14px; border-top:1px solid #e5e7eb; }
-.ns-specific-label { font-size:12px; font-weight:600; color:#475569; text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px; }
-.ns-no-members { font-size:12px; color:#94a3b8; }
-.ns-members-list { display:flex; flex-direction:column; gap:6px; }
-.ns-member-item { display:flex; align-items:center; gap:10px; padding:8px 10px; background:#f8fafc; border:1.5px solid #e5e7eb; border-radius:8px; cursor:pointer; transition:all .12s; }
+.ns-specific-users  { margin-top:14px; padding-top:14px; border-top:1px solid #e5e7eb; }
+.ns-specific-label  { font-size:11px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px; }
+.ns-no-members      { font-size:12px; color:#94a3b8; }
+.ns-members-list    { display:flex; flex-direction:column; gap:6px; }
+.ns-member-item     { display:flex; align-items:center; gap:10px; padding:8px 10px; background:#f8fafc; border:1.5px solid #e5e7eb; border-radius:8px; cursor:pointer; transition:all .12s; }
 .ns-member-item:hover { border-color:#c7d2fe; }
 .ns-member-item--on { border-color:#6366f1; background:#eef2ff; }
 .ns-member-item input { display:none; }
 .ns-avatar { width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#fff; flex-shrink:0; }
-.ns-member-info { flex:1; min-width:0; }
+.ns-member-info  { flex:1; min-width:0; }
 .ns-member-name  { display:block; font-size:13px; font-weight:600; color:#0f172a; }
 .ns-member-email { display:block; font-size:11px; color:#64748b; }
-.ns-check { font-size:12px; color:#6366f1; font-weight:700; flex-shrink:0; }
+.ns-check { font-size:13px; color:#6366f1; font-weight:700; flex-shrink:0; }
 
 /* Footer */
-.ns-footer { display:flex; align-items:center; gap:12px; margin-top:20px; }
+.ns-footer   { display:flex; align-items:center; gap:12px; margin-top:20px; }
 .ns-save-btn { padding:9px 20px; border-radius:8px; border:none; background:#6366f1; color:#fff; font-size:13px; font-weight:600; cursor:pointer; transition:background .12s; font-family:inherit; }
 .ns-save-btn:hover:not(:disabled) { background:#4f46e5; }
 .ns-save-btn:disabled { opacity:.55; cursor:not-allowed; }
 .ns-saved-msg { font-size:12px; color:#059669; font-weight:500; }
+
+/* ── TeamsModal ───────────────────────────────────────────────────────────── */
+.ns-overlay { position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:10000; padding:20px; }
+.ns-modal   { background:#fff; border-radius:14px; box-shadow:0 20px 60px rgba(0,0,0,.18); width:100%; max-width:480px; max-height:82vh; display:flex; flex-direction:column; overflow:hidden; }
+
+.ns-modal-header { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid #f1f5f9; flex-shrink:0; }
+.ns-modal-title  { font-size:15px; font-weight:700; color:#0f172a; }
+.ns-modal-close  { background:none; border:none; cursor:pointer; font-size:16px; color:#94a3b8; padding:4px 8px; border-radius:6px; transition:background .12s; line-height:1; }
+.ns-modal-close:hover { background:#f1f5f9; color:#374151; }
+
+.ns-modal-tabs { display:flex; border-bottom:1px solid #f1f5f9; flex-shrink:0; }
+.ns-modal-tab  { flex:1; padding:10px 16px; background:none; border:none; border-bottom:2px solid transparent; cursor:pointer; font-size:13px; font-weight:500; color:#64748b; font-family:inherit; display:flex; align-items:center; justify-content:center; gap:6px; transition:all .12s; }
+.ns-modal-tab:hover { color:#0f172a; background:#f8fafc; }
+.ns-modal-tab.active { color:#6366f1; border-bottom-color:#6366f1; }
+.ns-tab-pill { background:#e0e7ff; color:#4338ca; font-size:10px; font-weight:700; padding:1px 6px; border-radius:8px; }
+
+.ns-modal-body  { flex:1; overflow-y:auto; padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
+.ns-modal-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:48px 20px; gap:10px; color:#64748b; text-align:center; }
+.ns-modal-empty p { margin:0; font-size:13px; }
+.ns-modal-empty-hint { font-size:11px; color:#94a3b8; }
+
+/* Team card inside modal */
+.ns-team-card      { border:1px solid #e5e7eb; border-radius:10px; padding:12px 14px; background:#fafbff; }
+.ns-team-card-row  { display:flex; align-items:flex-start; gap:10px; }
+.ns-team-icon      { font-size:20px; flex-shrink:0; margin-top:1px; }
+.ns-team-card-info { flex:1; min-width:0; }
+.ns-team-name      { font-size:13px; font-weight:700; color:#0f172a; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.ns-team-dim       { font-size:11px; color:#64748b; margin-top:2px; text-transform:capitalize; }
+.ns-team-desc      { font-size:12px; color:#64748b; margin-top:8px; line-height:1.5; }
+.ns-team-foot      { font-size:11px; color:#94a3b8; margin-top:8px; padding-top:8px; border-top:1px solid #f1f5f9; }
+.ns-role-pill      { font-size:11px; font-weight:600; background:#eef2ff; color:#4338ca; padding:3px 9px; border-radius:10px; flex-shrink:0; white-space:nowrap; }
+.ns-badge          { font-size:9px; font-weight:700; padding:2px 6px; border-radius:6px; text-transform:uppercase; letter-spacing:.04em; }
+.ns-badge--amber   { background:#fef3c7; color:#92400e; }
+
+/* Deal member list inside modal */
+.ns-member-list    { display:flex; flex-direction:column; gap:7px; margin-top:10px; padding-top:10px; border-top:1px solid #f1f5f9; }
+.ns-member-row     { display:flex; align-items:center; gap:9px; }
+.ns-member-row--me .ns-member-name { color:#4338ca; }
+.ns-member-avatar  { width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; color:#fff; flex-shrink:0; }
+.ns-member-text    { flex:1; display:flex; align-items:baseline; gap:6px; min-width:0; }
+.ns-member-name    { font-size:12px; font-weight:600; color:#0f172a; display:flex; align-items:center; gap:5px; }
+.ns-member-role    { font-size:11px; color:#94a3b8; }
+.ns-you            { font-size:9px; font-weight:700; background:#dbeafe; color:#1e40af; padding:1px 5px; border-radius:5px; }
