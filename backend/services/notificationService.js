@@ -53,7 +53,7 @@ async function findActionsForImmediateNotification(orgId) {
       u.first_name,
       u.last_name,
       u.email,
-      COALESCE(up.preferences->'notification', '{}'::jsonb) AS esc_prefs
+      COALESCE(up.preferences->'notifications', '{}'::jsonb) AS esc_prefs
     FROM actions a
     JOIN users u ON u.id = a.user_id
     LEFT JOIN user_preferences up ON up.user_id = a.user_id
@@ -63,9 +63,9 @@ async function findActionsForImmediateNotification(orgId) {
       AND a.due_date < NOW()
       AND a.notification_sent_at IS NULL
       AND a.deleted_at IS NULL
-      AND COALESCE((up.preferences->'notification'->>'immediate_alert')::boolean, true) = true
+      AND COALESCE((up.preferences->'notifications'->>'immediate_alert')::boolean, true) = true
       AND a.due_date < NOW() - (
-        COALESCE((up.preferences->'notification'->>'immediate_hours')::int, 24)
+        COALESCE((up.preferences->'notifications'->>'immediate_hours')::int, 24)
         * INTERVAL '1 hour'
       )
     ORDER BY a.user_id, a.due_date ASC
@@ -93,7 +93,7 @@ async function findActionsForDailyDigest(orgId) {
       u.first_name,
       u.last_name,
       u.email,
-      COALESCE(up.preferences->'notification', '{}'::jsonb) AS esc_prefs
+      COALESCE(up.preferences->'notifications', '{}'::jsonb) AS esc_prefs
     FROM actions a
     JOIN users u ON u.id = a.user_id
     LEFT JOIN user_preferences up ON up.user_id = a.user_id
@@ -102,7 +102,7 @@ async function findActionsForDailyDigest(orgId) {
       AND a.due_date IS NOT NULL
       AND a.due_date < NOW()
       AND a.deleted_at IS NULL
-      AND COALESCE((up.preferences->'notification'->>'daily_digest')::boolean, true) = true
+      AND COALESCE((up.preferences->'notifications'->>'daily_digest')::boolean, true) = true
     ORDER BY a.user_id, a.due_date ASC
   `, [orgId]);
 
@@ -114,23 +114,30 @@ async function findActionsForDailyDigest(orgId) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Resolve who should be notified for an notification event.
+ * Resolve who should be notified for a notification event.
  *
- * Resolution order:
- *   1. If action has a deal_id  → notify all deal team members (deal_team_members table)
- *   2. If action has no deal_id → fall back to configured recipientMode:
- *        'reporting_manager' — the user's solid-line manager in org_hierarchy
- *        'specific_users'    — the specificUserIds list
- *        'none'              — only the action owner
+ * prefs shape: { notify_deal_team, notify_my_teams, fallback_mode, specific_user_ids }
  *
- * The action owner is always included regardless of mode.
- * All returned user IDs are validated as active org members.
+ * Resolution order — each step is additive (recipients accumulate):
+ *   1. Action owner — always included
+ *   2. Deal team    — if action has deal_id AND notify_deal_team=true
+ *   3. Org teams    — if notify_my_teams=true, all members of every team the owner belongs to
+ *   4. Fallback     — only if steps 2+3 added nobody new:
+ *                       'reporting_manager' | 'specific_users' | 'none'
  */
-async function resolveRecipients(orgId, actionOwnerId, recipientMode, specificUserIds = [], dealId = null) {
-  const recipients = new Set([actionOwnerId]);
+async function resolveRecipients(orgId, actionOwnerId, prefs = {}, dealId = null) {
+  const {
+    notify_deal_team  = true,
+    notify_my_teams   = true,
+    fallback_mode     = 'reporting_manager',
+    specific_user_ids = [],
+  } = prefs;
 
-  // ── Priority 1: deal team (when action belongs to a deal) ────────────────
-  if (dealId) {
+  const recipients   = new Set([actionOwnerId]);
+  let addedFromTeams = false;
+
+  // ── Step 2: Deal team ─────────────────────────────────────────────────────
+  if (dealId && notify_deal_team) {
     const { rows } = await pool.query(`
       SELECT dtm.user_id
       FROM deal_team_members dtm
@@ -140,41 +147,68 @@ async function resolveRecipients(orgId, actionOwnerId, recipientMode, specificUs
         AND ou.is_active = TRUE
     `, [dealId, orgId]);
 
-    rows.forEach(r => recipients.add(r.user_id));
-
-    // If we found a deal team, we're done — no need to check fallback mode
-    if (rows.length > 0) {
-      return Array.from(recipients);
-    }
-    // If deal has no team members yet, fall through to the configured fallback below
+    rows.forEach(r => {
+      recipients.add(r.user_id);
+      if (r.user_id !== actionOwnerId) addedFromTeams = true;
+    });
   }
 
-  // ── Fallback: no deal, or deal has no team members ────────────────────────
-  if (recipientMode === 'reporting_manager') {
-    const { rows } = await pool.query(`
-      SELECT reports_to AS manager_id
-      FROM org_hierarchy
-      WHERE org_id = $1
-        AND user_id = $2
-        AND relationship_type = 'solid'
-        AND reports_to IS NOT NULL
-      LIMIT 1
-    `, [orgId, actionOwnerId]);
+  // ── Step 3: Org teams the owner belongs to ────────────────────────────────
+  if (notify_my_teams) {
+    const { rows: teamRows } = await pool.query(`
+      SELECT tm.team_id
+      FROM team_memberships tm
+      JOIN teams t ON t.id = tm.team_id
+      WHERE tm.user_id  = $1
+        AND tm.org_id   = $2
+        AND t.is_active = TRUE
+        AND t.org_id    = $2
+    `, [actionOwnerId, orgId]);
 
-    if (rows[0]?.manager_id) {
-      recipients.add(rows[0].manager_id);
+    if (teamRows.length > 0) {
+      const teamIds = teamRows.map(r => r.team_id);
+      const { rows: memberRows } = await pool.query(`
+        SELECT DISTINCT tm.user_id
+        FROM team_memberships tm
+        JOIN org_users ou ON ou.user_id = tm.user_id AND ou.org_id = tm.org_id
+        WHERE tm.team_id = ANY($1)
+          AND tm.org_id  = $2
+          AND ou.is_active = TRUE
+      `, [teamIds, orgId]);
+
+      memberRows.forEach(r => {
+        recipients.add(r.user_id);
+        if (r.user_id !== actionOwnerId) addedFromTeams = true;
+      });
     }
-
-  } else if (recipientMode === 'specific_users' && specificUserIds.length > 0) {
-    const { rows } = await pool.query(`
-      SELECT user_id FROM org_users
-      WHERE org_id = $1 AND user_id = ANY($2) AND is_active = TRUE
-    `, [orgId, specificUserIds]);
-
-    rows.forEach(r => recipients.add(r.user_id));
   }
 
-  // 'none' mode: only action owner (already in set)
+  // ── Step 4: Fallback — only if nothing was added beyond the owner ─────────
+  if (!addedFromTeams) {
+    if (fallback_mode === 'reporting_manager') {
+      const { rows } = await pool.query(`
+        SELECT reports_to AS manager_id
+        FROM org_hierarchy
+        WHERE org_id = $1
+          AND user_id = $2
+          AND relationship_type = 'solid'
+          AND reports_to IS NOT NULL
+        LIMIT 1
+      `, [orgId, actionOwnerId]);
+
+      if (rows[0]?.manager_id) recipients.add(rows[0].manager_id);
+
+    } else if (fallback_mode === 'specific_users' && specific_user_ids.length > 0) {
+      const { rows } = await pool.query(`
+        SELECT user_id FROM org_users
+        WHERE org_id = $1 AND user_id = ANY($2) AND is_active = TRUE
+      `, [orgId, specific_user_ids]);
+
+      rows.forEach(r => recipients.add(r.user_id));
+    }
+    // 'none': only owner already in set
+  }
+
   return Array.from(recipients);
 }
 
@@ -217,7 +251,7 @@ async function processImmediateNotification(orgId, actionId) {
   // Re-fetch action to confirm it's still pending and not already escalated
   const { rows: [action] } = await pool.query(`
     SELECT a.*, u.first_name, u.last_name,
-           COALESCE(up.preferences->'notification', '{}'::jsonb) AS esc_prefs
+           COALESCE(up.preferences->'notifications', '{}'::jsonb) AS esc_prefs
     FROM actions a
     JOIN users u ON u.id = a.user_id
     LEFT JOIN user_preferences up ON up.user_id = a.user_id
@@ -228,14 +262,11 @@ async function processImmediateNotification(orgId, actionId) {
   if (action.status !== 'pending') return { skipped: true, reason: 'not_pending' };
   if (action.notification_sent_at) return { skipped: true, reason: 'already_escalated' };
 
-  const escPrefs = typeof action.esc_prefs === 'string'
+  const notifPrefs = typeof action.esc_prefs === 'string'
     ? JSON.parse(action.esc_prefs)
-    : action.esc_prefs;
+    : (action.esc_prefs || {});
 
-  const recipientMode   = escPrefs.recipient_mode || 'reporting_manager';
-  const specificUserIds = escPrefs.specific_user_ids || [];
-
-  const recipients = await resolveRecipients(orgId, action.user_id, recipientMode, specificUserIds, action.deal_id || null);
+  const recipients = await resolveRecipients(orgId, action.user_id, notifPrefs, action.deal_id || null);
 
   const overdueHours  = Math.round((Date.now() - new Date(action.due_date).getTime()) / 3600000);
   const ownerName     = `${action.first_name} ${action.last_name}`;
@@ -291,19 +322,13 @@ async function processImmediateNotification(orgId, actionId) {
 async function processDailyDigest(orgId, userId, overdueActions) {
   if (!overdueActions.length) return { skipped: true, reason: 'no_overdue' };
 
-  const escPrefs = typeof overdueActions[0].esc_prefs === 'string'
+  const notifPrefs = typeof overdueActions[0].esc_prefs === 'string'
     ? JSON.parse(overdueActions[0].esc_prefs)
-    : overdueActions[0].esc_prefs;
+    : (overdueActions[0].esc_prefs || {});
 
-  const recipientMode   = escPrefs.recipient_mode || 'reporting_manager';
-  const specificUserIds = escPrefs.specific_user_ids || [];
-
-  // If all overdue actions belong to the same deal, notify that deal's team.
-  // If actions span multiple deals (or no deal), fall back to configured mode.
-  const dealIds = [...new Set(overdueActions.map(a => a.deal_id).filter(Boolean))];
-  const singleDealId = dealIds.length === 1 ? dealIds[0] : null;
-
-  const recipients = await resolveRecipients(orgId, userId, recipientMode, specificUserIds, singleDealId);
+  // For digest: pass null dealId — the digest covers all overdue actions which may
+  // span multiple deals. Team membership + fallback handles routing correctly.
+  const recipients = await resolveRecipients(orgId, userId, notifPrefs, null);
 
   const ownerName = `${overdueActions[0].first_name} ${overdueActions[0].last_name}`;
   const count     = overdueActions.length;
@@ -349,13 +374,15 @@ const DEFAULT_PREFS = {
   immediate_alert:   true,
   immediate_hours:   24,
   daily_digest:      true,
-  recipient_mode:    'reporting_manager',
+  notify_deal_team:  true,               // notify deal team members when a deal action is overdue
+  notify_my_teams:   true,               // notify all org teams the user belongs to
+  fallback_mode:     'reporting_manager', // used when no deal + no teams (or both toggled off)
   specific_user_ids: [],
 };
 
 async function getUserNotificationPrefs(userId) {
   const { rows: [row] } = await pool.query(`
-    SELECT preferences->'notification' AS esc
+    SELECT preferences->'notifications' AS esc
     FROM user_preferences
     WHERE user_id = $1
   `, [userId]);
@@ -365,7 +392,7 @@ async function getUserNotificationPrefs(userId) {
 }
 
 async function setUserNotificationPrefs(userId, patch) {
-  const allowed = ['immediate_alert', 'immediate_hours', 'daily_digest', 'recipient_mode', 'specific_user_ids'];
+  const allowed = ['immediate_alert', 'immediate_hours', 'daily_digest', 'notify_deal_team', 'notify_my_teams', 'fallback_mode', 'specific_user_ids'];
   const safe    = {};
   for (const key of allowed) {
     if (patch[key] !== undefined) safe[key] = patch[key];
@@ -375,9 +402,9 @@ async function setUserNotificationPrefs(userId, patch) {
   if (safe.immediate_hours !== undefined) {
     safe.immediate_hours = Math.max(1, Math.min(168, parseInt(safe.immediate_hours) || 24));
   }
-  if (safe.recipient_mode !== undefined) {
-    const valid = ['reporting_manager', 'team', 'specific_users', 'none'];
-    if (!valid.includes(safe.recipient_mode)) safe.recipient_mode = 'reporting_manager';
+  if (safe.fallback_mode !== undefined) {
+    const valid = ['reporting_manager', 'specific_users', 'none'];
+    if (!valid.includes(safe.fallback_mode)) safe.fallback_mode = 'reporting_manager';
   }
   if (safe.specific_user_ids !== undefined) {
     safe.specific_user_ids = Array.isArray(safe.specific_user_ids)
@@ -388,12 +415,12 @@ async function setUserNotificationPrefs(userId, patch) {
   // Upsert user_preferences row if missing
   await pool.query(`
     INSERT INTO user_preferences (user_id, preferences)
-    VALUES ($1, jsonb_build_object('notification', $2::jsonb))
+    VALUES ($1, jsonb_build_object('notifications', $2::jsonb))
     ON CONFLICT (user_id) DO UPDATE
     SET preferences = jsonb_set(
       COALESCE(user_preferences.preferences, '{}'::jsonb),
-      '{notification}',
-      COALESCE(user_preferences.preferences->'notification', '{}'::jsonb) || $2::jsonb
+      '{notifications}',
+      COALESCE(user_preferences.preferences->'notifications', '{}'::jsonb) || $2::jsonb
     )
   `, [userId, JSON.stringify(safe)]);
 
