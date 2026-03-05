@@ -463,4 +463,3 @@ function ProductRow({ product: p, onEdit, onDelete }) {
   );
 }
 
-const STATUS_OPTS_REF = STATUS_OPTS; // keep lint happy
