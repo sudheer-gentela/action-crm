@@ -217,13 +217,13 @@ export default function DealProductsPanel({ deal }) {
                   if (!prods?.length) return null;
                   return (
                     <optgroup key={g.id} label={'  '.repeat(g.depth) + g.name}>
-                      {prods.map(p => <option key={p.id} value={p.id}>{p.name} (${parseFloat(p.list_price).toLocaleString()})</option>)}
+                      {prods.map(p => <option key={p.id} value={p.id}>{p.name} (${parseFloat(p.list_price).toLocaleString()}{p.unit_label ? `/${p.unit_label}` : ''})</option>)}
                     </optgroup>
                   );
                 })}
                 {ungroupedCatalog.length > 0 && (
                   <optgroup label="Ungrouped">
-                    {ungroupedCatalog.map(p => <option key={p.id} value={p.id}>{p.name} (${parseFloat(p.list_price).toLocaleString()})</option>)}
+                    {ungroupedCatalog.map(p => <option key={p.id} value={p.id}>{p.name} (${parseFloat(p.list_price).toLocaleString()}{p.unit_label ? `/${p.unit_label}` : ''})</option>)}
                   </optgroup>
                 )}
               </select>
@@ -299,7 +299,7 @@ function LineItemCard({ item, catColor, onEdit, onDelete }) {
       <div className="dprod-item__content">
         <div className="dprod-item__name">{item.product_name}</div>
         <div className="dprod-item__pricing">
-          <span>Qty: {item.quantity}</span>
+          <span>Qty: {item.quantity}{item.unit_label ? ` ${item.unit_label}` : ''}</span>
           <span>@ ${parseFloat(item.unit_price).toLocaleString()}</span>
           {parseFloat(item.discount_pct) > 0 && <span className="dprod-item__discount">-{item.discount_pct}%</span>}
           <span className="dprod-item__line-total">= ${parseFloat(item.total_value).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>

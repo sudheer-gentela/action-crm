@@ -37,6 +37,7 @@ const EMPTY_PRODUCT = {
   name: '', sku: '', description: '', group_id: '',
   product_type: 'one_time', billing_frequency: '', fee_type: '',
   list_price: '', is_taxable: false, status: 'active', sort_order: 0,
+  unit_label: '',
 };
 
 // ── Tree helpers ─────────────────────────────────────────────────────────────
@@ -121,6 +122,7 @@ export default function OAProducts() {
       group_id: p.group_id || '', product_type: p.product_type,
       billing_frequency: p.billing_frequency || '', fee_type: p.fee_type || '',
       list_price: p.list_price, is_taxable: p.is_taxable, status: p.status, sort_order: p.sort_order,
+      unit_label: p.unit_label || '',
     });
     setEditing(p.id);
   };
@@ -339,6 +341,7 @@ export default function OAProducts() {
               )}
               <div><label className="oa-stage-label">Fee Type</label><select className="oa-select" value={form.fee_type} onChange={e => setForm({ ...form, fee_type: e.target.value })}>{FEE_TYPES.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}</select></div>
               <div><label className="oa-stage-label">List Price</label><input className="oa-input" type="number" step="0.01" value={form.list_price} onChange={e => setForm({ ...form, list_price: e.target.value })} /></div>
+              <div><label className="oa-stage-label">Unit Label</label><input className="oa-input" value={form.unit_label} onChange={e => setForm({ ...form, unit_label: e.target.value })} placeholder="e.g. seats, licenses, hours" /></div>
               <div><label className="oa-stage-label">Status</label><select className="oa-select" value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>{STATUS_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select></div>
             </div>
 
@@ -364,7 +367,7 @@ export default function OAProducts() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
               <thead>
                 <tr style={{ borderBottom: '2px solid #e5e7eb' }}>
-                  {['Name', 'SKU', 'Type', 'Fee', 'Price', 'Status', ''].map(h => (
+                  {['Name', 'SKU', 'Type', 'Fee', 'Price / Unit', 'Status', ''].map(h => (
                     <th key={h} style={{ textAlign: 'left', padding: '10px 8px', fontSize: 11, fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{h}</th>
                   ))}
                 </tr>
@@ -475,7 +478,10 @@ function ProductRow({ product: p, indent, onEdit, onDelete }) {
         </span>
       </td>
       <td style={{ padding: '10px 8px', color: '#6b7280', fontSize: 12 }}>{p.fee_type || '—'}</td>
-      <td style={{ padding: '10px 8px', fontWeight: 600, color: '#059669' }}>${parseFloat(p.list_price).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+      <td style={{ padding: '10px 8px', fontWeight: 600, color: '#059669' }}>
+        ${parseFloat(p.list_price).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+        {p.unit_label && <span style={{ fontWeight: 400, color: '#9ca3af', fontSize: 12 }}> / {p.unit_label}</span>}
+      </td>
       <td style={{ padding: '10px 8px' }}>
         <span style={{ background: statusMeta.color, color: '#fff', borderRadius: 12, padding: '2px 10px', fontSize: 11, fontWeight: 600, display: 'inline-block' }}>
           {statusMeta.label}

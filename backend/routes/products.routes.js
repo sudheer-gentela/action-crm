@@ -158,18 +158,19 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { name, sku, description, group_id, product_type, billing_frequency,
-            fee_type, list_price, is_taxable, status, sort_order } = req.body;
+            fee_type, list_price, is_taxable, status, sort_order, unit_label } = req.body;
     if (!name?.trim()) return res.status(400).json({ success: false, error: { message: 'Product name is required' } });
     const { rows } = await pool.query(
       `INSERT INTO product_catalog
         (org_id, name, sku, description, group_id, product_type, billing_frequency,
-         fee_type, list_price, is_taxable, status, sort_order)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         fee_type, list_price, is_taxable, status, sort_order, unit_label)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [req.orgId, name.trim(), sku?.trim() || null, description || null,
        group_id || null, product_type || 'one_time',
        billing_frequency || null, fee_type || null,
-       list_price || 0, is_taxable ?? false, status || 'active', sort_order || 0]
+       list_price || 0, is_taxable ?? false, status || 'active', sort_order || 0,
+       unit_label?.trim() || null]
     );
     res.status(201).json({ success: true, data: { product: rows[0] } });
   } catch (err) {
@@ -182,18 +183,18 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { name, sku, description, group_id, product_type, billing_frequency,
-            fee_type, list_price, is_taxable, status, sort_order } = req.body;
+            fee_type, list_price, is_taxable, status, sort_order, unit_label } = req.body;
     const { rows } = await pool.query(
       `UPDATE product_catalog SET
         name = COALESCE($1, name), sku = $2, description = $3, group_id = $4,
         product_type = COALESCE($5, product_type), billing_frequency = $6,
         fee_type = $7, list_price = COALESCE($8, list_price),
         is_taxable = COALESCE($9, is_taxable), status = COALESCE($10, status),
-        sort_order = COALESCE($11, sort_order)
-       WHERE id = $12 AND org_id = $13 RETURNING *`,
+        sort_order = COALESCE($11, sort_order), unit_label = $12
+       WHERE id = $13 AND org_id = $14 RETURNING *`,
       [name?.trim(), sku?.trim() || null, description ?? null, group_id || null,
        product_type, billing_frequency || null, fee_type || null, list_price, is_taxable,
-       status, sort_order, req.params.id, req.orgId]
+       status, sort_order, unit_label?.trim() || null, req.params.id, req.orgId]
     );
     if (!rows.length) return res.status(404).json({ success: false, error: { message: 'Product not found' } });
     res.json({ success: true, data: { product: rows[0] } });
@@ -234,7 +235,7 @@ router.delete('/:id', async (req, res) => {
 router.get('/deals/:dealId/items', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT dp.*, pc.sku, pc.status AS catalog_status
+      `SELECT dp.*, pc.sku, pc.status AS catalog_status, pc.unit_label
        FROM deal_products dp
        LEFT JOIN product_catalog pc ON pc.id = dp.product_id
        WHERE dp.deal_id = $1 AND dp.org_id = $2
