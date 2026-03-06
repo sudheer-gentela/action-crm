@@ -1,5 +1,5 @@
 // LegalReviewPanel.js
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { apiService } from './apiService';
 
 function fmt(dt) {
