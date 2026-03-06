@@ -1,11 +1,8 @@
 /**
  * apiService.js — DROP-IN REPLACEMENT
  *
- * CHANGE: straps section updated from deal-only to universal entity-type routes.
- * Old: /straps/deal/:dealId/...
- * New: /straps/:entityType/:entityId/...
- *
- * Everything else is IDENTICAL to the original.
+ * CLM added: contracts section with all 22 endpoints.
+ * Everything else is IDENTICAL to the previous version.
  */
 
 import axios from 'axios';
@@ -195,11 +192,6 @@ export const apiService = {
     },
   },
 
-  // ══════════════════════════════════════════════════════════
-  // STRAP Framework — UPDATED for Universal STRAP
-  // Old: /straps/deal/:dealId/...
-  // New: /straps/:entityType/:entityId/...
-  // ══════════════════════════════════════════════════════════
   straps: {
     getActive:    (entityType, entityId)        => api.get(`/straps/${entityType}/${entityId}`),
     getHistory:   (entityType, entityId)        => api.get(`/straps/${entityType}/${entityId}/history`),
@@ -318,108 +310,108 @@ export const apiService = {
     bulkAssignTeams: (assignments) => api.post('/org/admin/team-memberships/bulk', { assignments }),
   },
 
-  // ── Product Catalog (org-level) ──────────────────────────────────
   products: {
-    getAll:           (status) => api.get(`/products${status ? '?status=' + status : ''}`),
-    getById:          (id) => api.get(`/products/${id}`),
-    create:           (data) => api.post('/products', data),
-    update:           (id, data) => api.put(`/products/${id}`, data),
-    delete:           (id) => api.delete(`/products/${id}`),
-    // Recursive groups (replaces flat categories)
-    getGroups:        () => api.get('/products/groups'),
-    createGroup:      (data) => api.post('/products/groups', data),
-    updateGroup:      (id, data) => api.put(`/products/groups/${id}`, data),
-    deleteGroup:      (id) => api.delete(`/products/groups/${id}`),
+    getAll:      (status) => api.get(`/products${status ? '?status=' + status : ''}`),
+    getById:     (id) => api.get(`/products/${id}`),
+    create:      (data) => api.post('/products', data),
+    update:      (id, data) => api.put(`/products/${id}`, data),
+    delete:      (id) => api.delete(`/products/${id}`),
+    getGroups:   () => api.get('/products/groups'),
+    createGroup: (data) => api.post('/products/groups', data),
+    updateGroup: (id, data) => api.put(`/products/groups/${id}`, data),
+    deleteGroup: (id) => api.delete(`/products/groups/${id}`),
   },
 
-  // ── Deal Products (line items) ───────────────────────────────────
   dealProducts: {
-    getByDeal:  (dealId) => api.get(`/products/deals/${dealId}/items`),
-    add:        (dealId, data) => api.post(`/products/deals/${dealId}/items`, data),
-    update:     (dealId, itemId, data) => api.put(`/products/deals/${dealId}/items/${itemId}`, data),
-    remove:     (dealId, itemId) => api.delete(`/products/deals/${dealId}/items/${itemId}`),
-    syncValue:  (dealId) => api.post(`/products/deals/${dealId}/items/sync-value`),
+    getByDeal: (dealId) => api.get(`/products/deals/${dealId}/items`),
+    add:       (dealId, data) => api.post(`/products/deals/${dealId}/items`, data),
+    update:    (dealId, itemId, data) => api.put(`/products/deals/${dealId}/items/${itemId}`, data),
+    remove:    (dealId, itemId) => api.delete(`/products/deals/${dealId}/items/${itemId}`),
+    syncValue: (dealId) => api.post(`/products/deals/${dealId}/items/sync-value`),
   },
 
-  // ══════════════════════════════════════════════════════════
-  // ORG HIERARCHY — Feature 2
-  // Contact reporting structure + Account parent/subsidiary
-  // ══════════════════════════════════════════════════════════
-  // ── Notification preferences ──────────────────────────────────────────────
   teamNotifications: {
-    // Get current user's notification notification preferences
-    getPreferences: () =>
-      api.get('/team-notifications/preferences'),
-
-    // Update notification preferences (partial update supported)
-    // body: { immediate_alert, immediate_hours, daily_digest, recipient_mode, specific_user_ids }
-    updatePreferences: (data) =>
-      api.patch('/team-notifications/preferences', data),
-
-    // Get org members for the specific_users recipient selector
-    getOrgMembers: () =>
-      api.get('/team-notifications/org-members'),
-
-    // Admin: manually trigger notification scans (for testing)
-    triggerImmediate: () =>
-      api.post('/team-notifications/trigger/immediate'),
-    triggerDigest: () =>
-      api.post('/team-notifications/trigger/digest'),
+    getPreferences:   () => api.get('/team-notifications/preferences'),
+    updatePreferences:(data) => api.patch('/team-notifications/preferences', data),
+    getOrgMembers:    () => api.get('/team-notifications/org-members'),
+    triggerImmediate: () => api.post('/team-notifications/trigger/immediate'),
+    triggerDigest:    () => api.post('/team-notifications/trigger/digest'),
   },
 
-  // ── In-app notifications ─────────────────────────────────────────────────
   notifications: {
-    // Get notifications. options: { unread: true, limit: 30, offset: 0 }
     getAll: (params = {}) => {
       const qs = new URLSearchParams();
-      if (params.unread)  qs.set('unread',  'true');
-      if (params.limit)   qs.set('limit',   params.limit);
-      if (params.offset)  qs.set('offset',  params.offset);
+      if (params.unread) qs.set('unread', 'true');
+      if (params.limit)  qs.set('limit',  params.limit);
+      if (params.offset) qs.set('offset', params.offset);
       return api.get(`/team-notifications?${qs.toString()}`);
     },
-
-    // Mark specific notifications as read (pass ids array)
-    // Pass empty array to mark ALL as read
-    markRead: (ids = []) =>
-      api.patch('/team-notifications/read', { ids }),
-
-    // Mark a single notification as read
-    markOneRead: (id) =>
-      api.patch(`/team-notifications/${id}/read`),
+    markRead:    (ids = []) => api.patch('/team-notifications/read', { ids }),
+    markOneRead: (id) => api.patch(`/team-notifications/${id}/read`),
   },
 
   orgHierarchy: {
-    // Contact org chart — full tree for an account
-    getContactTree: (accountId) =>
-      api.get(`/org-hierarchy/contacts/account/${accountId}`),
+    getContactTree:         (accountId) => api.get(`/org-hierarchy/contacts/account/${accountId}`),
+    getContactPosition:     (contactId) => api.get(`/org-hierarchy/contacts/${contactId}/position`),
+    setReportsTo:           (contactId, reportsToContactId) => api.patch(`/org-hierarchy/contacts/${contactId}/reports-to`, { reportsToContactId }),
+    updateContactMeta:      (contactId, data) => api.patch(`/org-hierarchy/contacts/${contactId}/meta`, data),
+    getAccountHierarchy:    (accountId) => api.get(`/org-hierarchy/accounts/${accountId}`),
+    addAccountRelationship: (parentAccountId, childAccountId, relationshipType) => api.post('/org-hierarchy/accounts/relationship', { parentAccountId, childAccountId, relationshipType }),
+    removeAccountRelationship: (parentAccountId, childAccountId) => api.delete(`/org-hierarchy/accounts/relationship?parentAccountId=${parentAccountId}&childAccountId=${childAccountId}`),
+    setVisibility:          (visibility) => api.patch('/org-hierarchy/settings/visibility', { visibility }),
+  },
 
-    // Contact mini-position — manager + self + direct reports
-    getContactPosition: (contactId) =>
-      api.get(`/org-hierarchy/contacts/${contactId}/position`),
+  // ══════════════════════════════════════════════════════════
+  // CLM — Contract Lifecycle Management
+  // ══════════════════════════════════════════════════════════
+  contracts: {
+    // Admin
+    toggleModule:       (enabled) => api.patch('/contracts/admin/module', { enabled }),
+    getWorkflowConfig:  () => api.get('/contracts/admin/workflow-config'),
+    saveWorkflowConfig: (data) => api.put('/contracts/admin/workflow-config', data),
+    getApprovalConfig:  () => api.get('/contracts/admin/approval-config'),
+    saveApprovalConfig: (rules) => api.put('/contracts/admin/approval-config', { rules }),
 
-    // Set who a contact reports to (pass null to make them root)
-    setReportsTo: (contactId, reportsToContactId) =>
-      api.patch(`/org-hierarchy/contacts/${contactId}/reports-to`, { reportsToContactId }),
+    // Legal inbox
+    getLegalTeamStatus: () => api.get('/contracts/legal/team-status'),
+    getLegalQueue:      () => api.get('/contracts/legal/queue'),
+    getLegalAssigned:   () => api.get('/contracts/legal/assigned'),
 
-    // Update org chart display title / seniority level
-    updateContactMeta: (contactId, data) =>
-      api.patch(`/org-hierarchy/contacts/${contactId}/meta`, data),
+    // Approvals
+    getPendingApprovals: () => api.get('/contracts/approvals/pending'),
+    decideApproval:      (id, decision, note) => api.post(`/contracts/approvals/${id}/decide`, { decision, note }),
 
-    // Account hierarchy — full tree centred on an account
-    getAccountHierarchy: (accountId) =>
-      api.get(`/org-hierarchy/accounts/${accountId}`),
+    // CRUD
+    getAll:   (params = {}) => { const qs = new URLSearchParams(params).toString(); return api.get(`/contracts${qs ? '?' + qs : ''}`); },
+    getById:  (id) => api.get(`/contracts/${id}`),
+    create:   (data) => api.post('/contracts', data),
+    update:   (id, data) => api.put(`/contracts/${id}`, data),
+    delete:   (id) => api.delete(`/contracts/${id}`),
 
-    // Add parent→child relationship between accounts
-    addAccountRelationship: (parentAccountId, childAccountId, relationshipType) =>
-      api.post('/org-hierarchy/accounts/relationship', { parentAccountId, childAccountId, relationshipType }),
+    // Document versions
+    getVersions:   (id) => api.get(`/contracts/${id}/versions`),
+    uploadVersion: (id, data) => api.post(`/contracts/${id}/versions`, data),
 
-    // Remove a parent→child relationship
-    removeAccountRelationship: (parentAccountId, childAccountId) =>
-      api.delete(`/org-hierarchy/accounts/relationship?parentAccountId=${parentAccountId}&childAccountId=${childAccountId}`),
+    // Transitions
+    submitForLegal:    (id, data) => api.post(`/contracts/${id}/submit-legal`, data),
+    pickUp:            (id) => api.post(`/contracts/${id}/pick-up`),
+    reassign:          (id, newAssigneeId) => api.post(`/contracts/${id}/reassign`, { newAssigneeId }),
+    returnToSales:     (id) => api.post(`/contracts/${id}/return-sales`),
+    resubmit:          (id) => api.post(`/contracts/${id}/resubmit`),
+    sendForSignature:  (id) => api.post(`/contracts/${id}/send-signature`),
+    markSigned:        (id) => api.post(`/contracts/${id}/mark-signed`),
+    activate:          (id) => api.post(`/contracts/${id}/activate`),
+    recall:            (id, data) => api.post(`/contracts/${id}/recall`, data),
+    void:              (id, data) => api.post(`/contracts/${id}/void`, data),
+    amend:             (id) => api.post(`/contracts/${id}/amend`),
+    startApproval:     (id) => api.post(`/contracts/${id}/start-approval`),
 
-    // Admin only — toggle visibility between 'whole_org' | 'deal_team'
-    setVisibility: (visibility) =>
-      api.patch('/org-hierarchy/settings/visibility', { visibility }),
+    // Signatories
+    addSignatory:    (id, data) => api.post(`/contracts/${id}/signatories`, data),
+    removeSignatory: (id, sigId) => api.delete(`/contracts/${id}/signatories/${sigId}`),
+
+    // Notes
+    addNote: (id, note) => api.post(`/contracts/${id}/notes`, { note }),
   },
 };
 

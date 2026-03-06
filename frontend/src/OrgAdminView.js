@@ -52,6 +52,12 @@ const NAV_GROUPS = [
     ],
   },
   {
+    label: 'Modules',
+    items: [
+      { id: 'modules', icon: '🧩', label: 'Modules' },
+    ],
+  },
+  {
     label: 'General',
     items: [
       { id: 'integrations', icon: '🔌', label: 'Integrations' },
@@ -74,6 +80,7 @@ const TAB_META = {
   'icp-scoring': { title: 'ICP Scoring',   desc: 'Define your Ideal Customer Profile and scoring criteria' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
+  modules:       { title: 'Modules',       desc: 'Enable or disable product modules for your organisation' },
   integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },
   settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
 };
@@ -166,6 +173,7 @@ export default function OrgAdminView() {
           )}
 
           <div className="oa-tab-content">
+            {tab === 'modules'      && <OAModules />}
             {tab === 'members'     && <OAMembers currentUserId={currentUser.id} />}
             {tab === 'hierarchy'   && <OAHierarchy />}
             {tab === 'teams'       && <OATeams />}
@@ -4220,6 +4228,167 @@ function OAIntegrations() {
         Enabling an integration here allows members to connect their personal accounts.
         Each member still authorises individually via Settings → Integrations — you are not
         granting access to a shared mailbox. This switch controls whether the option is <em>available</em> to your team.
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// MODULES TAB — enable/disable product modules per org
+// ─────────────────────────────────────────────────────────────────
+
+function OAModules() {
+  const [modules, setModules] = useState({
+    contracts: false,
+  });
+  const [loading, setLoading]   = useState(true);
+  const [saving, setSaving]     = useState(null);
+  const [error, setError]       = useState('');
+  const [success, setSuccess]   = useState('');
+
+  useEffect(() => {
+    // Load current module flags from org profile
+    apiService.orgAdmin.getProfile()
+      .then(r => {
+        const settings = r.data.org?.settings || {};
+        setModules({
+          contracts: settings.modules?.contracts || false,
+        });
+      })
+      .catch(() => setError('Failed to load module settings'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleToggle = async (moduleName, newVal) => {
+    setSaving(moduleName);
+    setError('');
+    try {
+      await apiService.contracts.toggleModule(newVal);
+      setModules(prev => ({ ...prev, [moduleName]: newVal }));
+      setSuccess(`Contracts module ${newVal ? 'enabled' : 'disabled'} ✓`);
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (e) {
+      setError(e.response?.data?.error?.message || e.message || 'Failed to update module');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const MODULE_DEFS = [
+    {
+      key: 'contracts',
+      icon: '📄',
+      label: 'Contract Lifecycle Management',
+      desc: 'Full CLM workflow — create contracts, legal review queue, approval chains, e-signature tracking, document versioning, and automated expiry notifications.',
+      features: [
+        'NDA, MSA, SOW, Order Form, Amendment support',
+        'Legal team review queue and assignment',
+        'Internal approval chains (by role, value, type)',
+        'Document version history with major/minor tracking',
+        'Signatory management and signature tracking',
+        'Deal-linked contracts visible in deal detail view',
+        'Automated expiry and unsigned follow-up notifications',
+      ],
+      color: '#6366f1',
+    },
+  ];
+
+  if (loading) return <div className="sv-loading">Loading module settings…</div>;
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>🧩 Modules</h2>
+          <p className="sv-panel-desc">Enable or disable product modules for your organisation. Changes take effect immediately.</p>
+        </div>
+      </div>
+
+      {error   && <div className="sv-error">⚠️ {error}</div>}
+      {success && <div className="sv-success">{success}</div>}
+
+      <div className="sv-panel-body">
+        {MODULE_DEFS.map(mod => {
+          const isOn   = modules[mod.key];
+          const isBusy = saving === mod.key;
+
+          return (
+            <div key={mod.key} style={{
+              background: '#fff',
+              border: `1.5px solid ${isOn ? mod.color + '40' : '#e5e7eb'}`,
+              borderRadius: 12,
+              padding: '20px 24px',
+              marginBottom: 16,
+              transition: 'border-color 0.2s',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+                <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flex: 1 }}>
+                  <span style={{
+                    fontSize: 28, width: 44, height: 44, borderRadius: 10,
+                    background: isOn ? mod.color + '15' : '#f3f4f6',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                  }}>{mod.icon}</span>
+
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                      <span style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>{mod.label}</span>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
+                        background: isOn ? '#d1fae5' : '#f3f4f6',
+                        color: isOn ? '#065f46' : '#9ca3af',
+                        textTransform: 'uppercase', letterSpacing: '0.05em',
+                      }}>
+                        {isOn ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 10px', lineHeight: 1.6 }}>{mod.desc}</p>
+                    <ul style={{ margin: 0, padding: '0 0 0 16px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {mod.features.map(f => (
+                        <li key={f} style={{ fontSize: 12, color: '#374151', lineHeight: 1.5 }}>{f}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Toggle */}
+                <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+                  <button
+                    disabled={isBusy}
+                    onClick={() => handleToggle(mod.key, !isOn)}
+                    style={{
+                      padding: '9px 22px',
+                      borderRadius: 8,
+                      border: 'none',
+                      fontWeight: 700,
+                      fontSize: 13,
+                      cursor: isBusy ? 'wait' : 'pointer',
+                      background: isOn ? '#fee2e2' : mod.color,
+                      color: isOn ? '#dc2626' : '#fff',
+                      transition: 'all 0.15s',
+                      minWidth: 100,
+                    }}
+                  >
+                    {isBusy ? '…' : isOn ? 'Disable' : 'Enable'}
+                  </button>
+                  {isOn && (
+                    <span style={{ fontSize: 11, color: '#9ca3af', textAlign: 'right' }}>
+                      Visible to all members
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        <div style={{
+          padding: '14px 18px', borderRadius: 10, background: '#f8fafc',
+          border: '1px solid #e2e8f0', fontSize: 12, color: '#64748b', lineHeight: 1.7,
+        }}>
+          <strong>Note:</strong> Enabling a module makes it visible in the sidebar for all members immediately.
+          Disabling hides it — existing data is preserved and can be re-enabled at any time.
+          Module-specific configuration (workflow rules, approval chains) is available inside each module's settings.
+        </div>
       </div>
     </div>
   );

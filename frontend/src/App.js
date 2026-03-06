@@ -14,28 +14,27 @@ import ActionContextPanel from './ActionContextPanel';
 import AgentInboxView from './AgentInboxView';
 import PlaybooksView from './PlaybooksView';
 import ProspectingView from './ProspectingView';
+import ContractsView from './ContractsView';
 import Sidebar from './Sidebar';
 
 // ─────────────────────────────────────────────────────────────
 // ROLE DEFINITIONS
-// Display config (labels, badges, colors) now lives in Sidebar.js.
-// Only nav items and default tabs remain here.
 // ─────────────────────────────────────────────────────────────
 
-// Nav items per role — each role only sees its own set
 const NAV_ITEMS_BY_ROLE = {
   member: [
     { id: 'actions',      label: 'Actions',      icon: '⚡' },
     { id: 'prospecting',  label: 'Prospecting',  icon: '🎯' },
     { id: 'deals',        label: 'Deals',        icon: '💼' },
-    { id: 'accounts',  label: 'Accounts',  icon: '🏢' },
-    { id: 'contacts',  label: 'Contacts',  icon: '👥' },
-    { id: 'email',     label: 'Email',     icon: '✉️' },
-    { id: 'calendar',  label: 'Calendar',  icon: '📅' },
-    { id: 'files',     label: 'Files',     icon: '📁' },
-    { id: 'agent',     label: 'Agents',    icon: '🤖' },
-    { id: 'playbooks', label: 'Playbooks', icon: '📋' },
-    { id: 'settings',  label: 'Settings',  icon: '⚙️' },
+    { id: 'contracts',    label: 'Contracts',    icon: '📄' },
+    { id: 'accounts',     label: 'Accounts',     icon: '🏢' },
+    { id: 'contacts',     label: 'Contacts',     icon: '👥' },
+    { id: 'email',        label: 'Email',        icon: '✉️' },
+    { id: 'calendar',     label: 'Calendar',     icon: '📅' },
+    { id: 'files',        label: 'Files',        icon: '📁' },
+    { id: 'agent',        label: 'Agents',       icon: '🤖' },
+    { id: 'playbooks',    label: 'Playbooks',    icon: '📋' },
+    { id: 'settings',     label: 'Settings',     icon: '⚙️' },
   ],
   'org-admin': [
     { id: 'org-admin', label: 'Org Admin', icon: '🔑' },
@@ -45,7 +44,6 @@ const NAV_ITEMS_BY_ROLE = {
   ],
 };
 
-// Default first tab per role
 const DEFAULT_TAB_BY_ROLE = {
   member:       'actions',
   'org-admin':  'org-admin',
@@ -53,7 +51,7 @@ const DEFAULT_TAB_BY_ROLE = {
 };
 
 // ─────────────────────────────────────────────────────────────
-// useAuth — unchanged except logout also clears activeRole
+// useAuth
 // ─────────────────────────────────────────────────────────────
 const useAuth = () => {
   const [user, setUser]       = useState(null);
@@ -141,7 +139,7 @@ const useAuth = () => {
   const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
-    sessionStorage.removeItem('activeRole'); // clear role on logout
+    sessionStorage.removeItem('activeRole');
     setUser(null);
   };
 
@@ -149,7 +147,7 @@ const useAuth = () => {
 };
 
 // ─────────────────────────────────────────────────────────────
-// AuthScreen — unchanged
+// AuthScreen
 // ─────────────────────────────────────────────────────────────
 function AuthScreen({ onLogin, onRegister }) {
   const [isRegistering, setIsRegistering] = useState(false);
@@ -260,25 +258,21 @@ function AuthScreen({ onLogin, onRegister }) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// RoleSwitcher — now handled inside Sidebar.js (UserCard popover)
-// ─────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────
 // Dashboard
 // ─────────────────────────────────────────────────────────────
 function Dashboard({ user, onLogout }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [activeContextAction, setActiveContextAction] = useState(null); // floating panel
-  const [pendingDealId, setPendingDealId]               = useState(null); // tell DealsView which deal to open
-  const [pendingEmailDealId, setPendingEmailDealId]     = useState(null); // tell EmailView which deal to filter to
-  const [pendingContactId, setPendingContactId]         = useState(null); // tell ContactsView which contact to open
-  const [pendingMeetingId, setPendingMeetingId]         = useState(null); // tell CalendarView which meeting to open
-  const [pendingAccountId, setPendingAccountId]         = useState(null); // tell AccountsView which account to open
-  const [pendingPlaybookFilter, setPendingPlaybookFilter] = useState(null); // tell PlaybooksView which type tab to open
+  const [activeContextAction, setActiveContextAction] = useState(null);
+  const [pendingDealId, setPendingDealId]               = useState(null);
+  const [pendingEmailDealId, setPendingEmailDealId]     = useState(null);
+  const [pendingContactId, setPendingContactId]         = useState(null);
+  const [pendingMeetingId, setPendingMeetingId]         = useState(null);
+  const [pendingAccountId, setPendingAccountId]         = useState(null);
+  const [pendingPlaybookFilter, setPendingPlaybookFilter] = useState(null);
+  const [pendingContractId, setPendingContractId]       = useState(null);
   const [sidebarOpen, setSidebarOpen]           = useState(false);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
 
-  // ── Determine which roles this user holds ──────────────────
   const isSuperAdmin = user?.is_super_admin === true;
   const orgRole      = user?.org_role || user?.role || 'member';
   const isOrgAdmin   = orgRole === 'owner' || orgRole === 'admin';
@@ -289,14 +283,11 @@ function Dashboard({ user, onLogout }) {
     ...(isSuperAdmin ? ['super-admin'] : []),
   ];
 
-  // ── Active role — session-persisted, defaults to 'member' ──
   const [activeRole, setActiveRole] = useState(() => {
     const saved = sessionStorage.getItem('activeRole');
-    // Only restore a saved role if the user still has it
     return (saved && availableRoles.includes(saved)) ? saved : 'member';
   });
 
-  // ── Current tab — resets when role changes ─────────────────
   const [currentTab, setCurrentTab] = useState(DEFAULT_TAB_BY_ROLE[activeRole]);
 
   const handleRoleSwitch = (role) => {
@@ -307,10 +298,8 @@ function Dashboard({ user, onLogout }) {
     if (isMobile) setSidebarOpen(false);
   };
 
-  // ── Nav items for the active role only ────────────────────
   const navItems = NAV_ITEMS_BY_ROLE[activeRole] || NAV_ITEMS_BY_ROLE.member;
 
-  // ── Sidebar resize handler ─────────────────────────────────
   useEffect(() => {
     const handleResize = () => {
       const mobile = window.innerWidth < 768;
@@ -335,20 +324,15 @@ function Dashboard({ user, onLogout }) {
     if (isMobile) setSidebarOpen(false);
   };
 
-  // Allow child views to navigate programmatically
   useEffect(() => {
     const handleNavigate = (e) => {
       const detail = e.detail;
 
-      // Legacy: some callers pass a plain string tab id (e.g. 'email', 'deals')
       if (typeof detail === 'string') {
         handleNavClick(detail);
         return;
       }
 
-      // Enriched: Resume button passes { tab, dealId, resume: true }
-      // Set any pending context BEFORE switching the tab so the mounting view
-      // receives the prop on its very first render — no race condition.
       if (detail?.resume && detail?.dealId) {
         const { tab, dealId } = detail;
         if (tab === 'email') {
@@ -358,10 +342,9 @@ function Dashboard({ user, onLogout }) {
         }
       }
 
-      // Contact and meeting deep-links from deal panel
       if (detail?.contactId) setPendingContactId(detail.contactId);
-      if (detail?.meetingId) setPendingMeetingId(detail.meetingId);
-      if (detail?.accountId) setPendingAccountId(detail.accountId);
+      if (detail?.meetingId)  setPendingMeetingId(detail.meetingId);
+      if (detail?.accountId)  setPendingAccountId(detail.accountId);
       if (detail?.playbookFilter) setPendingPlaybookFilter(detail.playbookFilter);
 
       handleNavClick(detail?.tab || detail);
@@ -370,15 +353,22 @@ function Dashboard({ user, onLogout }) {
     return () => window.removeEventListener('navigate', handleNavigate);
   }, [isMobile]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Listen for 'startAction' from CalendarView — opens the floating context panel
+  // Listen for open-contract events dispatched from DealContractsPanel
+  useEffect(() => {
+    const handleOpenContract = (e) => {
+      setPendingContractId(e.detail?.contractId || null);
+      handleNavClick('contracts');
+    };
+    window.addEventListener('open-contract', handleOpenContract);
+    return () => window.removeEventListener('open-contract', handleOpenContract);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     const handleStartAction = (e) => setActiveContextAction(e.detail);
     window.addEventListener('startAction', handleStartAction);
     return () => window.removeEventListener('startAction', handleStartAction);
   }, []);
 
-  // Listen for 'actionContext' from ActionContextPanel's "Go there" button
-  // Sets pendingDealId so DealsView knows which deal to auto-open
   useEffect(() => {
     const handleActionContext = (e) => {
       const { action } = e.detail || {};
@@ -389,11 +379,6 @@ function Dashboard({ user, onLogout }) {
     return () => window.removeEventListener('actionContext', handleActionContext);
   }, []);
 
-  // Note: resumeToEmail and resumeToDeal are handled directly inside the
-  // 'navigate' event listener above (enriched detail object with resume:true).
-  // This avoids the race condition of two separate setState calls.
-
-  // Mobile title — check all role nav sets
   const allNavItems = Object.values(NAV_ITEMS_BY_ROLE).flat();
   const currentNavItem = allNavItems.find(item => item.id === currentTab);
 
@@ -415,14 +400,11 @@ function Dashboard({ user, onLogout }) {
         onClose={() => setSidebarOpen(false)}
       />
 
-      {/* Floating Action Context Panel — persists across tab navigation */}
       {activeContextAction && (
         <ActionContextPanel
           action={activeContextAction}
           onClose={() => setActiveContextAction(null)}
-          onNavigate={(tab) => {
-            handleNavClick(tab);
-          }}
+          onNavigate={(tab) => { handleNavClick(tab); }}
         />
       )}
 
@@ -438,52 +420,55 @@ function Dashboard({ user, onLogout }) {
         )}
 
         <div className="content-area">
-          {/* Member views */}
-          {currentTab === 'actions'      && <ActionsView />}
-          {currentTab === 'prospecting'  && <ProspectingView />}
-          {currentTab === 'deals'        && (
+          {currentTab === 'actions'     && <ActionsView />}
+          {currentTab === 'prospecting' && <ProspectingView />}
+          {currentTab === 'deals'       && (
             <DealsView
               openDealId={pendingDealId}
               onDealOpened={() => setPendingDealId(null)}
             />
           )}
-          {currentTab === 'accounts'     && (
+          {currentTab === 'contracts'   && (
+            <ContractsView
+              openContractId={pendingContractId}
+              onContractOpened={() => setPendingContractId(null)}
+            />
+          )}
+          {currentTab === 'accounts'    && (
             <AccountsView
               openAccountId={pendingAccountId}
               onAccountOpened={() => setPendingAccountId(null)}
             />
           )}
-          {currentTab === 'contacts'     && (
+          {currentTab === 'contacts'    && (
             <ContactsView
               openContactId={pendingContactId}
               onContactOpened={() => setPendingContactId(null)}
             />
           )}
-          {currentTab === 'email'        && (
+          {currentTab === 'email'       && (
             <EmailView
               dealId={pendingEmailDealId}
               onDealFilterApplied={() => setPendingEmailDealId(null)}
             />
           )}
-          {currentTab === 'files'        && <FilesView pendingDealId={pendingDealId} onDealOpened={() => setPendingDealId(null)} />}
-          {currentTab === 'calendar'     && (
+          {currentTab === 'files'       && <FilesView pendingDealId={pendingDealId} onDealOpened={() => setPendingDealId(null)} />}
+          {currentTab === 'calendar'    && (
             <CalendarView
               openMeetingId={pendingMeetingId}
               onMeetingOpened={() => setPendingMeetingId(null)}
             />
           )}
-          {currentTab === 'settings'     && <SettingsView />}
-          {currentTab === 'agent'        && <AgentInboxView />}
-          {currentTab === 'playbooks'    && (
+          {currentTab === 'settings'    && <SettingsView />}
+          {currentTab === 'agent'       && <AgentInboxView />}
+          {currentTab === 'playbooks'   && (
             <PlaybooksView
               initialTypeFilter={pendingPlaybookFilter}
               key={pendingPlaybookFilter || 'default'}
             />
           )}
-          {/* Org admin view — only when activeRole is org-admin */}
-          {currentTab === 'org-admin'    && activeRole === 'org-admin'   && <OrgAdminView />}
-          {/* Super admin view — only when activeRole is super-admin */}
-          {currentTab === 'super-admin'  && activeRole === 'super-admin' && <SuperAdminView />}
+          {currentTab === 'org-admin'   && activeRole === 'org-admin'   && <OrgAdminView />}
+          {currentTab === 'super-admin' && activeRole === 'super-admin' && <SuperAdminView />}
         </div>
       </main>
     </div>
@@ -491,7 +476,7 @@ function Dashboard({ user, onLogout }) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// App — unchanged
+// App
 // ─────────────────────────────────────────────────────────────
 function App() {
   const { user, login, register, logout, loading } = useAuth();

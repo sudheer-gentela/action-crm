@@ -1,0 +1,62 @@
+/* ContractsView.css */
+.cv-wrap { display:flex; height:100%; overflow:hidden; background:#f8fafc; }
+
+/* Left */
+.cv-left { width:390px; min-width:300px; display:flex; flex-direction:column; border-right:1.5px solid #e2e8f0; background:#fff; }
+.cv-header { display:flex; align-items:center; justify-content:space-between; padding:20px 18px 10px; }
+.cv-title { font-size:18px; font-weight:800; color:#0f172a; margin:0; }
+.cv-new-btn { padding:7px 15px; background:#6366f1; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; }
+.cv-new-btn:hover { background:#4f46e5; }
+
+/* Tabs */
+.cv-tabs { display:flex; flex-direction:column; gap:1px; padding:0 10px 6px; }
+.cv-tab { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:7px; border:none; background:none; cursor:pointer; font-size:13px; font-weight:500; color:#64748b; text-align:left; font-family:inherit; }
+.cv-tab:hover { background:#f1f5f9; color:#0f172a; }
+.cv-tab--active { background:#eef2ff; color:#4f46e5; font-weight:700; }
+
+/* Filters */
+.cv-filters { padding:0 10px 8px; display:flex; flex-direction:column; gap:5px; }
+.cv-search { width:100%; padding:8px 12px; border:1.5px solid #e2e8f0; border-radius:8px; font-size:13px; font-family:inherit; outline:none; box-sizing:border-box; }
+.cv-search:focus { border-color:#6366f1; }
+.cv-filter-row { display:flex; gap:5px; }
+.cv-select { flex:1; padding:6px 8px; border:1.5px solid #e2e8f0; border-radius:7px; font-size:12px; font-family:inherit; background:#fff; outline:none; cursor:pointer; }
+.cv-select:focus { border-color:#6366f1; }
+
+/* List */
+.cv-list { flex:1; overflow-y:auto; padding:0 6px 12px; }
+.cv-loading { display:flex; justify-content:center; padding:28px; }
+.cv-spin { width:20px; height:20px; border:2.5px solid #e5e7eb; border-top-color:#6366f1; border-radius:50%; animation:cv-s .6s linear infinite; }
+@keyframes cv-s { to { transform:rotate(360deg); } }
+.cv-error { padding:10px 12px; background:#fef2f2; border-radius:8px; color:#991b1b; font-size:13px; margin:6px 2px; }
+.cv-empty { padding:24px; text-align:center; color:#94a3b8; font-size:13px; display:flex; flex-direction:column; align-items:center; gap:8px; }
+.cv-link { background:none; border:none; color:#6366f1; font-size:13px; font-weight:600; cursor:pointer; }
+
+/* Row */
+.cv-row { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; padding:10px 8px; border-radius:8px; cursor:pointer; transition:background .1s; border:1.5px solid transparent; margin-bottom:2px; }
+.cv-row:hover { background:#f8fafc; }
+.cv-row--selected { background:#eef2ff; border-color:#c7d2fe; }
+.cv-row-main { flex:1; min-width:0; }
+.cv-row-title { font-size:13px; font-weight:600; color:#0f172a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:3px; }
+.cv-row-meta { display:flex; flex-wrap:wrap; gap:4px; }
+.cv-chip { font-size:10px; font-weight:600; background:#f1f5f9; color:#64748b; padding:2px 6px; border-radius:4px; }
+.cv-chip--deal { background:#eef2ff; color:#4f46e5; max-width:100px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cv-chip--muted { color:#94a3b8; background:none; }
+.cv-row-right { display:flex; flex-direction:column; align-items:flex-end; gap:3px; flex-shrink:0; }
+.cv-badge { font-size:10px; font-weight:700; padding:2px 8px; border-radius:10px; white-space:nowrap; }
+.cv-appr { font-size:10px; font-weight:600; padding:2px 6px; border-radius:10px; }
+.cv-appr--pending  { background:#fef3c7; color:#92400e; }
+.cv-appr--approved { background:#d1fae5; color:#065f46; }
+.cv-appr--rejected { background:#fee2e2; color:#991b1b; }
+.cv-value { font-size:11px; font-weight:600; color:#0f172a; }
+.cv-date  { font-size:10px; color:#94a3b8; }
+
+/* Right */
+.cv-right { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+.cv-empty-state { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; gap:10px; color:#94a3b8; font-size:14px; }
+.cv-empty-icon { font-size:48px; opacity:.35; }
+
+@media (max-width:880px) {
+  .cv-left { width:100%; }
+  .cv-right { display:none; }
+  .cv-right--open { display:flex; position:fixed; inset:0; z-index:200; background:#fff; }
+}

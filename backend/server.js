@@ -37,7 +37,7 @@ const playbookPlaysRoutes = require('./routes/playbook-plays.routes');
 const dealPlaysRoutes     = require('./routes/deal-plays.routes');
 
 // Org Hierarchy (Feature 2 — contact reporting structure + account parent/subsidiary)
-const orgHierarchyRoutes        = require('./routes/orgHierarchy.routes');
+const orgHierarchyRoutes = require('./routes/orgHierarchy.routes');
 
 // Feature 1 — Team Notifications (inbox + preferences + triggers — single route file)
 const teamNotificationsRoutes = require('./routes/teamNotifications.routes');
@@ -51,7 +51,10 @@ const prospectContextRoutes     = require('./routes/prospect-context.routes');
 const teamsRoutes               = require('./routes/teams.routes');
 
 // Product Catalog + Deal Products
-const productsRoutes            = require('./routes/products.routes');
+const productsRoutes = require('./routes/products.routes');
+
+// CLM — Contract Lifecycle Management
+const contractsRoutes = require('./routes/contracts.routes');
 
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
@@ -65,6 +68,7 @@ const productsRoutes            = require('./routes/products.routes');
 require('./middleware/auth.middleware');
 require('./middleware/orgContext.middleware');
 require('./middleware/superAdmin.middleware');
+require('./middleware/requireModule.middleware');
 
 // Trust Railway proxy
 app.set('trust proxy', 1);
@@ -149,25 +153,6 @@ app.get('/health', (req, res) => {
 //
 //   auth.routes.js is the ONE exception — login/register/verify
 //   do NOT use orgContext (user has no token yet).
-//
-// Migration status:
-//   [x] auth.routes.js       — org_id in JWT, no orgContext needed
-//   [ ] actions.routes.js    — next to update
-//   [ ] deals.routes.js
-//   [ ] contacts.routes.js
-//   [ ] accounts.routes.js
-//   [ ] emails.routes.js
-//   [ ] meetings.routes.js
-//   [ ] proposals.routes.js
-//   [ ] calendar.routes.js
-//   [ ] dashboard.routes.js
-//   [ ] outlook.routes.js
-//   [ ] sync.routes.js
-//   [ ] playbook.routes.js
-//   [ ] ai.routes.js
-//   [ ] prompts.routes.js
-//   [ ] dealHealth.routes.js
-//   [ ] storage.routes.js
 // ─────────────────────────────────────────────────────────────
 app.use('/api/auth',      require('./routes/auth.routes'));
 app.use('/api/actions',   require('./routes/actions.routes'));
@@ -179,7 +164,7 @@ app.use('/api/meetings',  require('./routes/meetings.routes'));
 app.use('/api/proposals', require('./routes/proposals.routes'));
 app.use('/api/calendar',  require('./routes/calendar.routes'));
 app.use('/api/dashboard', require('./routes/dashboard.routes'));
-app.use('/api/agent', 	  require('./routes/agent.routes'));
+app.use('/api/agent',     require('./routes/agent.routes'));
 app.use('/api/outlook',   outlookRoutes);
 app.use('/api/google',    googleRoutes);
 app.use('/api/sync',      syncRoutes);
@@ -193,21 +178,21 @@ app.use('/api/org/admin',  orgAdminRoutes);
 app.use('/api/org/admin',  teamsRoutes);        // Teams & team memberships
 app.use('/api/playbooks',  playbooksRoutes);
 app.use('/api/ai',         aiContextRoutes);
-app.use('/api/org-roles', orgRolesRoutes);
-app.use('/api/deal-roles', orgRolesRoutes);    // backward compat alias
+app.use('/api/org-roles',  orgRolesRoutes);
+app.use('/api/deal-roles', orgRolesRoutes);     // backward compat alias
 app.use('/api/deal-team',  dealTeamRoutes);
 app.use('/api/deal-contacts', dealContactsRoutes);
-app.use('/api/deal-stages',      dealStagesRoutes);
-app.use('/api/straps',            strapRoutes);              // STRAP Framework
+app.use('/api/deal-stages',   dealStagesRoutes);
+app.use('/api/straps',        strapRoutes);     // STRAP Framework
 app.use('/api/prospect-stages', prospectStagesRoutes);
-app.use('/api/products',        productsRoutes);           // Product Catalog + Deal Line Items
+app.use('/api/products',        productsRoutes); // Product Catalog + Deal Line Items
 
 const pipelineStagesRoutes = require('./routes/pipeline-stages.routes');
 app.use('/api/pipeline-stages', pipelineStagesRoutes);
 
 // ─── Playbook Plays (role-based) ─────────────────────────────
-app.use('/api/playbook-plays', playbookPlaysRoutes);   // Play definitions (admin CRUD)
-app.use('/api/deal-plays',     dealPlaysRoutes);        // Deal play instances (execution)
+app.use('/api/playbook-plays', playbookPlaysRoutes);  // Play definitions (admin CRUD)
+app.use('/api/deal-plays',     dealPlaysRoutes);       // Deal play instances (execution)
 
 // ─── Prospecting Module ──────────────────────────────────────
 app.use('/api/prospects',           prospectsRoutes);
@@ -215,8 +200,11 @@ app.use('/api/prospecting-actions', prospectingActionsRoutes);
 app.use('/api/accounts',            accountProspectingRoutes); // /:id/prospecting, /:id/coverage
 app.use('/api/actions',             unifiedActionsRoutes);     // /unified
 app.use('/api/prospect-context',    prospectContextRoutes);    // /:prospectId, /icp-config/current
-app.use('/api/org-hierarchy',        orgHierarchyRoutes);        // Feature 2: contact org chart + account hierarchy
-app.use('/api/team-notifications',   teamNotificationsRoutes);    // Feature 1: team notifications (inbox + prefs + triggers)
+app.use('/api/org-hierarchy',       orgHierarchyRoutes);       // Feature 2: contact org chart + account hierarchy
+app.use('/api/team-notifications',  teamNotificationsRoutes);  // Feature 1: team notifications
+
+// ─── CLM — Contract Lifecycle Management ─────────────────────
+app.use('/api/contracts', contractsRoutes);
 
 // ─────────────────────────────────────────────────────────────
 // Error handling
@@ -257,19 +245,14 @@ app.listen(PORT, () => {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Agentic Framework — periodic jobs
-  //
-  // Uses node-cron (lightweight, no external deps beyond npm package).
+  // Cron jobs
   // Install: npm install node-cron
-  //
-  // Jobs:
-  //   1. Expire stale proposals — every hour
   // ─────────────────────────────────────────────────────────────
   try {
     const cron = require('node-cron');
     const AgentProposalService = require('./services/AgentProposalService');
 
-    // Every hour: expire proposals past their expires_at date
+    // Every hour: expire agent proposals past their expires_at date
     cron.schedule('0 * * * *', async () => {
       try {
         const count = await AgentProposalService.expireStale();
@@ -281,9 +264,34 @@ app.listen(PORT, () => {
       }
     });
 
+    // CLM — Every hour: expire active contracts past their expiry_date
+    cron.schedule('0 * * * *', async () => {
+      try {
+        const count = await require('./services/contractService').expireContracts();
+        if (count > 0) console.log(`📄 CLM Cron: expired ${count} contracts`);
+      } catch (err) {
+        console.error('📄 CLM Cron: expireContracts error:', err.message);
+      }
+    });
+
+    // CLM — Daily 9am: unsigned follow-ups + expiry warnings
+    cron.schedule('0 9 * * *', async () => {
+      try {
+        const NS = require('./services/contractNotificationService');
+        const [unsigned, expiring] = await Promise.all([
+          NS.notifyUnsignedContracts(),
+          NS.notifyExpiringContracts(),
+        ]);
+        console.log(`📄 CLM Cron: ${unsigned} unsigned follow-ups, ${expiring} expiry warnings sent`);
+      } catch (err) {
+        console.error('📄 CLM Cron: notification error:', err.message);
+      }
+    });
+
     console.log('✅ Agentic framework cron jobs initialized (proposal expiry: hourly)');
+    console.log('✅ CLM cron jobs initialized (contract expiry: hourly, notifications: daily 9am)');
   } catch (error) {
-    console.error('⚠️  Failed to initialize agentic cron jobs:', error.message);
+    console.error('⚠️  Failed to initialize cron jobs:', error.message);
     console.error('   Install node-cron: npm install node-cron');
     console.error('   Proposals will not auto-expire until this is resolved.');
   }

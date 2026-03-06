@@ -2,25 +2,23 @@ import React, { useState, useEffect, useRef } from 'react';
 import './Sidebar.css';
 
 // ─────────────────────────────────────────────────────────────
-// ROLE DISPLAY CONFIG — badge colors per role
+// ROLE DISPLAY CONFIG
 // ─────────────────────────────────────────────────────────────
 const ROLE_BADGE_CONFIG = {
-  member:        { label: 'Member',         className: 'member' },
-  'org-admin':   { label: 'Org Admin',      className: 'org-admin' },
-  'super-admin': { label: 'Super User',     className: 'super-user' },
+  member:        { label: 'Member',     className: 'member' },
+  'org-admin':   { label: 'Org Admin',  className: 'org-admin' },
+  'super-admin': { label: 'Super User', className: 'super-user' },
 };
 
 // ─────────────────────────────────────────────────────────────
-// NAV STRUCTURE — grouped sections for the member role
-// Each section has a label and an array of nav item ids.
-// The actual item metadata (icon, label) comes from the items
-// prop passed by Dashboard.
+// NAV STRUCTURE
+// contracts added to Pipeline section, after deals
 // ─────────────────────────────────────────────────────────────
 const MEMBER_NAV_SECTIONS = [
   {
     id: 'pipeline',
     label: 'Pipeline',
-    items: ['actions', 'prospecting', 'deals', 'contacts', 'accounts'],
+    items: ['actions', 'prospecting', 'deals', 'contracts', 'contacts', 'accounts'],
   },
   {
     id: 'workflow',
@@ -34,16 +32,14 @@ const MEMBER_NAV_SECTIONS = [
   },
 ];
 
-// Items that sit outside sections (pinned to bottom)
 const BOTTOM_ITEMS = ['settings'];
 
 // ─────────────────────────────────────────────────────────────
-// NavSection — collapsible group
+// NavSection
 // ─────────────────────────────────────────────────────────────
 function NavSection({ section, navItemMap, currentTab, onNavClick, collapsed: sidebarCollapsed }) {
   const [open, setOpen] = useState(true);
 
-  // In collapsed sidebar mode, don't show section headers
   if (sidebarCollapsed) {
     return (
       <div className="sb-nav-section">
@@ -95,13 +91,12 @@ function NavSection({ section, navItemMap, currentTab, onNavClick, collapsed: si
 }
 
 // ─────────────────────────────────────────────────────────────
-// UserCard — avatar, name, role badge, popover
+// UserCard
 // ─────────────────────────────────────────────────────────────
 function UserCard({ user, activeRole, availableRoles, onRoleSwitch, onLogout, collapsed }) {
   const [popoverOpen, setPopoverOpen] = useState(false);
   const cardRef = useRef(null);
 
-  // Close popover on outside click
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (cardRef.current && !cardRef.current.contains(e.target)) {
@@ -116,7 +111,6 @@ function UserCard({ user, activeRole, availableRoles, onRoleSwitch, onLogout, co
   const fullName = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
   const roleCfg = ROLE_BADGE_CONFIG[activeRole] || ROLE_BADGE_CONFIG.member;
 
-  // Collapsed mode — just show avatar
   if (collapsed) {
     return (
       <div className="sb-user-card sb-user-card--collapsed" title={`${fullName} (${roleCfg.label})`}>
@@ -156,7 +150,6 @@ function UserCard({ user, activeRole, availableRoles, onRoleSwitch, onLogout, co
             <span>🔔</span> Notifications
           </button>
 
-          {/* Role switcher — only if user has multiple roles */}
           {availableRoles.length > 1 && (
             <>
               <div className="sb-popover-divider" />
@@ -197,7 +190,7 @@ function UserCard({ user, activeRole, availableRoles, onRoleSwitch, onLogout, co
 // ─────────────────────────────────────────────────────────────
 export default function Sidebar({
   user,
-  navItems,          // array of { id, label, icon, badge? }
+  navItems,
   currentTab,
   onNavClick,
   activeRole,
@@ -206,16 +199,13 @@ export default function Sidebar({
   onLogout,
   collapsed,
   onToggleCollapse,
-  // Mobile
   isMobile,
   open: mobileOpen,
   onClose,
 }) {
-  // Build a lookup map: id → item
   const navItemMap = {};
   navItems.forEach(item => { navItemMap[item.id] = item; });
 
-  // For non-member roles, render a flat list (org-admin, super-admin have 1 item)
   const isMemberRole = activeRole === 'member';
 
   return (
@@ -237,7 +227,6 @@ export default function Sidebar({
         {/* Navigation */}
         <nav className="sb-nav">
           {isMemberRole ? (
-            /* Grouped sections for member role */
             MEMBER_NAV_SECTIONS.map(section => (
               <NavSection
                 key={section.id}
@@ -249,7 +238,6 @@ export default function Sidebar({
               />
             ))
           ) : (
-            /* Flat list for admin roles */
             <div className="sb-nav-section">
               <div className="sb-section-items">
                 {navItems.map(item => (
@@ -268,9 +256,8 @@ export default function Sidebar({
           )}
         </nav>
 
-        {/* Bottom pinned items + user card */}
+        {/* Bottom items + user card */}
         <div className="sb-bottom">
-          {/* Settings (and any other bottom items) — member role only */}
           {isMemberRole && BOTTOM_ITEMS.map(id => {
             const item = navItemMap[id];
             if (!item) return null;
@@ -287,7 +274,6 @@ export default function Sidebar({
             );
           })}
 
-          {/* User card */}
           <UserCard
             user={user}
             activeRole={activeRole}
@@ -299,7 +285,6 @@ export default function Sidebar({
         </div>
       </aside>
 
-      {/* Mobile overlay */}
       {isMobile && mobileOpen && (
         <div className="sb-overlay" onClick={onClose} />
       )}
