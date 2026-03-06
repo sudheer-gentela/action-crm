@@ -82,7 +82,7 @@ export default function ContractCreateModal({ onClose, onSuccess, prefillDealId 
     } finally { setSaving(false); }
   }
 
-  const selectedDeal = deals.find(d => String(d.id) === String(form.dealId));
+
 
   return (
     <div className="ccm-overlay" onClick={e => e.target === e.currentTarget && onClose()}>

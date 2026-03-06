@@ -25,22 +25,10 @@ const EV_ICONS = {
 };
 
 export default function LegalReviewPanel({ contract: c, isLegalMember, onUpdated }) {
-  const [legalUsers, setLegalUsers]   = useState([]);
   const [reassignTo, setReassignTo]   = useState('');
   const [showReassign, setShowReassign] = useState(false);
   const [busy, setBusy]               = useState('');
   const [err, setErr]                 = useState('');
-
-  useEffect(() => {
-    if (isLegalMember) {
-      apiService.contracts.getLegalTeamStatus()
-        .then(r => {
-          // We need the legal team member list — fetch from org/admin/teams endpoint
-          // fall back to empty if unavailable
-        })
-        .catch(() => {});
-    }
-  }, [isLegalMember]);
 
   async function act(key, fn) {
     setBusy(key); setErr('');
