@@ -373,7 +373,6 @@ export const apiService = {
     saveApprovalConfig: (rules) => api.put('/contracts/admin/approval-config', { rules }),
 
     // Legal inbox
-    getLegalTeamStatus: () => api.get('/contracts/legal/team-status'),
     getLegalQueue:      () => api.get('/contracts/legal/queue'),
     getLegalAssigned:   () => api.get('/contracts/legal/assigned'),
 

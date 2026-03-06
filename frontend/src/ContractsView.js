@@ -71,9 +71,11 @@ export default function ContractsView() {
   const [filterType, setFilterType]     = useState('');
 
   useEffect(() => {
-    apiService.contracts.getLegalTeamStatus()
-      .then(r => setIsLegal(r.data?.isLegalMember === true))
-      .catch(() => {});
+    // Derive legal membership from user stored in localStorage — no extra API call needed.
+    // Users with org_role 'legal', 'owner', or 'admin' get legal team access.
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    const legalRoles = ['legal', 'owner', 'admin'];
+    setIsLegal(legalRoles.includes(user.org_role) || user.is_legal_member === true);
   }, []);
 
   const TABS = [
