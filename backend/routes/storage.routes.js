@@ -88,6 +88,7 @@ router.get('/imported/:recordId/open', async (req, res) => {
   }
 });
 
+console.log('[storage.routes] ✅ /open route registered BEFORE authenticateToken');
 router.use(authenticateToken);
 router.use(orgContext);
 
