@@ -235,6 +235,7 @@ app.listen(PORT, () => {
 ╚═══════════════════════════════════════╝
   `);
 
+  console.log('🚨 DEPLOY CHECK v2 — if you see this, new code is live');
   console.log('🚀 Starting Bull queue worker...');
   try {
     require('./jobs/worker');
