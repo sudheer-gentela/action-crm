@@ -21,12 +21,26 @@ import Sidebar from './Sidebar';
 // ROLE DEFINITIONS
 // ─────────────────────────────────────────────────────────────
 
+// All modules available in the launcher (shown regardless of sidebar visibility)
+const ALL_MODULE_ITEMS = [
+  { id: 'actions',     label: 'Actions',     icon: '⚡' },
+  { id: 'prospecting', label: 'Prospecting', icon: '🎯' },
+  { id: 'deals',       label: 'Deals',       icon: '💼' },
+  { id: 'accounts',    label: 'Accounts',    icon: '🏢' },
+  { id: 'contacts',    label: 'Contacts',    icon: '👥' },
+  { id: 'email',       label: 'Email',       icon: '✉️' },
+  { id: 'calendar',    label: 'Calendar',    icon: '📅' },
+  { id: 'files',       label: 'Files',       icon: '📁' },
+  { id: 'contracts',   label: 'Contracts',   icon: '📄' },
+  { id: 'agent',       label: 'Agents',      icon: '🤖' },
+  { id: 'playbooks',   label: 'Playbooks',   icon: '📋' },
+];
+
 const NAV_ITEMS_BY_ROLE = {
   member: [
     { id: 'actions',      label: 'Actions',      icon: '⚡' },
     { id: 'prospecting',  label: 'Prospecting',  icon: '🎯' },
     { id: 'deals',        label: 'Deals',        icon: '💼' },
-    { id: 'contracts',    label: 'Contracts',    icon: '📄' },
     { id: 'accounts',     label: 'Accounts',     icon: '🏢' },
     { id: 'contacts',     label: 'Contacts',     icon: '👥' },
     { id: 'email',        label: 'Email',        icon: '✉️' },
@@ -342,7 +356,8 @@ function Dashboard({ user, onLogout }) {
         }
       }
 
-      if (detail?.contactId) setPendingContactId(detail.contactId);
+      if (detail?.contractId) setPendingContractId(detail.contractId);
+      if (detail?.contactId)  setPendingContactId(detail.contactId);
       if (detail?.meetingId)  setPendingMeetingId(detail.meetingId);
       if (detail?.accountId)  setPendingAccountId(detail.accountId);
       if (detail?.playbookFilter) setPendingPlaybookFilter(detail.playbookFilter);
@@ -387,6 +402,7 @@ function Dashboard({ user, onLogout }) {
       <Sidebar
         user={user}
         navItems={navItems}
+        allModuleItems={ALL_MODULE_ITEMS}
         currentTab={currentTab}
         onNavClick={handleNavClick}
         activeRole={activeRole}
@@ -454,10 +470,9 @@ function Dashboard({ user, onLogout }) {
           )}
           {currentTab === 'files'       && <FilesView pendingDealId={pendingDealId} onDealOpened={(dealId) => {
             if (dealId) {
-              // Set the deal ID first, then switch tab on next tick so DealsView
-              // mounts with openDealId already set
-              setPendingDealId(dealId);
-              setTimeout(() => setCurrentTab('deals'), 0);
+              window.dispatchEvent(new CustomEvent('navigate', {
+                detail: { tab: 'deals', resume: true, dealId },
+              }));
             } else {
               setPendingDealId(null);
             }

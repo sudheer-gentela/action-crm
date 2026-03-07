@@ -18,7 +18,7 @@ const MEMBER_NAV_SECTIONS = [
   {
     id: 'pipeline',
     label: 'Pipeline',
-    items: ['actions', 'prospecting', 'deals', 'contracts', 'contacts', 'accounts'],
+    items: ['actions', 'prospecting', 'deals', 'contacts', 'accounts'],
   },
   {
     id: 'workflow',
@@ -185,12 +185,76 @@ function UserCard({ user, activeRole, availableRoles, onRoleSwitch, onLogout, co
   );
 }
 
+
+// ─────────────────────────────────────────────────────────────
+// ModuleLauncher — dots button + popover panel
+// Sits above UserCard in sb-bottom. Uses existing sb-nav-item
+// styles to match the sidebar perfectly.
+// ─────────────────────────────────────────────────────────────
+function ModuleLauncher({ allModuleItems = [], currentTab, onNavClick, collapsed }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handleOutside = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, []);
+
+  const handleSelect = (id) => {
+    onNavClick(id);
+    setOpen(false);
+  };
+
+  return (
+    <div className="sb-module-launcher" ref={ref}>
+      <button
+        className={`sb-nav-item sb-launcher-btn ${open ? 'active' : ''}`}
+        onClick={() => setOpen(o => !o)}
+        title="All modules"
+      >
+        <span className="sb-nav-icon">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="3" cy="3" r="1.8" fill="currentColor"/>
+            <circle cx="12" cy="3" r="1.8" fill="currentColor"/>
+            <circle cx="3" cy="12" r="1.8" fill="currentColor"/>
+            <circle cx="12" cy="12" r="1.8" fill="currentColor"/>
+          </svg>
+        </span>
+        {!collapsed && <span className="sb-nav-label">All Modules</span>}
+      </button>
+
+      {open && (
+        <div className={`sb-launcher-panel ${collapsed ? 'sb-launcher-panel--left' : 'sb-launcher-panel--above'}`}>
+          <div className="sb-launcher-header">Modules</div>
+          <div className="sb-launcher-grid">
+            {allModuleItems.map(item => (
+              <button
+                key={item.id}
+                className={`sb-launcher-tile ${currentTab === item.id ? 'sb-launcher-tile--active' : ''}`}
+                onClick={() => handleSelect(item.id)}
+                title={item.label}
+              >
+                <span className="sb-launcher-icon">{item.icon}</span>
+                <span className="sb-launcher-label">{item.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────
 // Sidebar — main export
 // ─────────────────────────────────────────────────────────────
 export default function Sidebar({
   user,
   navItems,
+  allModuleItems,
   currentTab,
   onNavClick,
   activeRole,
@@ -273,6 +337,15 @@ export default function Sidebar({
               </button>
             );
           })}
+
+          {isMemberRole && (
+            <ModuleLauncher
+              allModuleItems={allModuleItems || []}
+              currentTab={currentTab}
+              onNavClick={onNavClick}
+              collapsed={collapsed}
+            />
+          )}
 
           <UserCard
             user={user}

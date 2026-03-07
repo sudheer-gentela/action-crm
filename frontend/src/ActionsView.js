@@ -118,6 +118,7 @@ function nextStepLabel(nextStep) {
     linkedin:      '🔗 LinkedIn',
     slack:         '💬 Slack',
     document:      '📄 Document',
+    contract:      '📄 Contract',
     internal_task: '🔧 Internal Task',
   };
   return map[nextStep] || '✉️ Email';
@@ -253,6 +254,16 @@ async function resolveResumeTarget(action) {
     return { tab: 'files', dealId, label: 'Open Files', icon: '📁' };
   }
 
+  // ── Contract actions → Contracts module ────────────────────────────────
+  if (
+    type === 'contract' || type === 'contract_review' || type === 'contract_sign' ||
+    rule === 'contract_expiring' || rule === 'contract_approval' ||
+    nextStep === 'contract'
+  ) {
+    const contractId = action.contractId || action.contract_id || null;
+    return { tab: 'contracts', contractId, dealId, label: 'Open Contract', icon: '📄' };
+  }
+
   // ── Internal / task → Deal detail pane ──────────────────────────────────
   if (dealId) return { tab: 'deals', dealId, label: 'Open Deal', icon: '💼' };
 
@@ -278,9 +289,10 @@ function ResumeButton({ action }) {
       // triggered separate async React state updates.
       window.dispatchEvent(new CustomEvent('navigate', {
         detail: {
-          tab:    target.tab,
-          dealId: target.dealId || null,
-          resume: true,
+          tab:        target.tab,
+          dealId:     target.dealId     || null,
+          contractId: target.contractId || null,
+          resume:     true,
         },
       }));
     } catch (err) {
@@ -370,6 +382,17 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
               }));
             }}>
               📁 Open Files for {action.deal?.name || 'this deal'} →
+            </button>
+          )}
+
+          {action.nextStep === 'contract' && (
+            <button className="av-log-resource-nav" style={{ borderColor: '#a78bfa', color: '#6d28d9' }} onClick={() => {
+              const contractId = action.contractId || action.contract_id || null;
+              window.dispatchEvent(new CustomEvent('navigate', {
+                detail: { tab: 'contracts', contractId, dealId, resume: true },
+              }));
+            }}>
+              📄 Open Contract{action.deal?.name ? ` for ${action.deal.name}` : ''} →
             </button>
           )}
 
