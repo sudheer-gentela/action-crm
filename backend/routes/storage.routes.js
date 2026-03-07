@@ -18,6 +18,8 @@ const {
   checkDuplicate, deleteImportRecord,
 } = require('../services/storageFileService');
 
+console.log('🚨 STORAGE ROUTES v2 — FILE IS LIVE');
+
 // ── Open file via authenticated proxy (before auth middleware — uses token query param) ──
 // Browser <a href> can't send Authorization headers, so token comes via ?token=
 router.get('/imported/:recordId/open', async (req, res) => {
@@ -88,7 +90,6 @@ router.get('/imported/:recordId/open', async (req, res) => {
   }
 });
 
-console.log('[storage.routes] ✅ /open route registered BEFORE authenticateToken');
 router.use(authenticateToken);
 router.use(orgContext);
 
