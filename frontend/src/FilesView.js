@@ -218,6 +218,23 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
     }
   }
 
+  // Opens the parent folder in the cloud provider (source badge click)
+  async function openFolder(file) {
+    try {
+      const token = localStorage.getItem('token');
+      const base = (process.env.REACT_APP_API_URL || 'http://localhost:3001/api').replace(/\/$/, '');
+      const res = await fetch(`${base}/storage/imported/${file.id}/folder-url`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Failed to open folder');
+      window.open(data.url, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+      alert('Could not open folder: ' + e.message);
+    }
+  }
+
   // ── Derived: filtered + sorted files ──────────────────────────────────────
   const filteredFiles = importedFiles
     .filter(f => {
@@ -438,8 +455,8 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
                     <td className="files-cell">
                       <button
                         className="files-source-badge files-source-badge--link"
-                        onClick={() => openFile(file)}
-                        title={`Open in ${PROVIDER_LABELS[file.provider] || 'cloud'}`}
+                        onClick={() => openFolder(file)}
+                        title={`Open folder in ${PROVIDER_LABELS[file.provider] || 'cloud'}`}
                       >
                         ☁️ {PROVIDER_LABELS[file.provider] || file.provider || 'Cloud'} ↗
                       </button>

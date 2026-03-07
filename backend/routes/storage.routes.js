@@ -91,6 +91,77 @@ router.post('/imported/:recordId/open-url', async (req, res) => {
   }
 });
 
+// ── Resolve folder URL (POST — returns the parent folder URL for the source badge) ──
+// For Google Drive: fetches parent folder ID via Drive API, returns folder URL.
+// For OneDrive: returns the drive root URL.
+router.post('/imported/:recordId/folder-url', async (req, res) => {
+  try {
+    const jwt    = require('jsonwebtoken');
+    const { pool } = require('../config/database');
+    const axios  = require('axios');
+
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) return res.status(401).json({ error: { message: 'No token provided' } });
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch {
+      return res.status(401).json({ error: { message: 'Invalid or expired token' } });
+    }
+
+    const orgRes = await pool.query(
+      `SELECT org_id FROM org_users WHERE user_id = $1 LIMIT 1`,
+      [decoded.userId]
+    );
+    const orgId = orgRes.rows[0]?.org_id;
+    if (!orgId) return res.status(403).json({ error: { message: 'No org found for user' } });
+
+    const result = await pool.query(
+      `SELECT id, provider, provider_file_id, user_id, web_url
+       FROM storage_files WHERE id = $1 AND org_id = $2`,
+      [req.params.recordId, orgId]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: { message: 'File not found' } });
+    }
+
+    const file = result.rows[0];
+    const provider = getProvider(file.provider);
+    const accessToken = await provider._getAccessToken(file.user_id);
+
+    if (file.provider === 'googledrive') {
+      try {
+        // Fetch file metadata to get parent folder ID
+        const metaRes = await axios.get(
+          `https://www.googleapis.com/drive/v3/files/${file.provider_file_id}?fields=parents`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        const parentId = metaRes.data?.parents?.[0];
+        if (parentId) {
+          return res.json({ url: `https://drive.google.com/drive/folders/${parentId}` });
+        }
+      } catch (e) {
+        console.warn('[storage/folder-url] Could not fetch parent folder:', e.message);
+      }
+      // Fallback: open Drive root
+      return res.json({ url: 'https://drive.google.com' });
+    }
+
+    if (file.provider === 'onedrive') {
+      // OneDrive: open the drive root
+      return res.json({ url: 'https://onedrive.live.com' });
+    }
+
+    res.json({ url: 'https://drive.google.com' });
+
+  } catch (err) {
+    console.error('[storage/folder-url]', err.message);
+    res.status(500).json({ error: { message: 'Failed to resolve folder URL' } });
+  }
+});
+
 router.use(authenticateToken);
 router.use(orgContext);
 
