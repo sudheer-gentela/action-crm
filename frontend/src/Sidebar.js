@@ -213,7 +213,7 @@ function ModuleLauncher({ allModuleItems = [], currentTab, onNavClick, collapsed
       <button
         className={`sb-nav-item sb-launcher-btn ${open ? 'active' : ''}`}
         onClick={() => setOpen(o => !o)}
-        title="All modules"
+        title="More modules"
       >
         <span className="sb-nav-icon">
           <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -223,12 +223,12 @@ function ModuleLauncher({ allModuleItems = [], currentTab, onNavClick, collapsed
             <circle cx="12" cy="12" r="1.8" fill="currentColor"/>
           </svg>
         </span>
-        {!collapsed && <span className="sb-nav-label">All Modules</span>}
+        {!collapsed && <span className="sb-nav-label">More</span>}
       </button>
 
       {open && (
         <div className={`sb-launcher-panel ${collapsed ? 'sb-launcher-panel--left' : 'sb-launcher-panel--above'}`}>
-          <div className="sb-launcher-header">Modules</div>
+          <div className="sb-launcher-header">More Modules</div>
           <div className="sb-launcher-grid">
             {allModuleItems.map(item => (
               <button

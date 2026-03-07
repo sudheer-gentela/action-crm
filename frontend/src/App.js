@@ -21,19 +21,9 @@ import Sidebar from './Sidebar';
 // ROLE DEFINITIONS
 // ─────────────────────────────────────────────────────────────
 
-// All modules available in the launcher (shown regardless of sidebar visibility)
+// Modules not in the sidebar nav — accessible only via the launcher
 const ALL_MODULE_ITEMS = [
-  { id: 'actions',     label: 'Actions',     icon: '⚡' },
-  { id: 'prospecting', label: 'Prospecting', icon: '🎯' },
-  { id: 'deals',       label: 'Deals',       icon: '💼' },
-  { id: 'accounts',    label: 'Accounts',    icon: '🏢' },
-  { id: 'contacts',    label: 'Contacts',    icon: '👥' },
-  { id: 'email',       label: 'Email',       icon: '✉️' },
-  { id: 'calendar',    label: 'Calendar',    icon: '📅' },
-  { id: 'files',       label: 'Files',       icon: '📁' },
-  { id: 'contracts',   label: 'Contracts',   icon: '📄' },
-  { id: 'agent',       label: 'Agents',      icon: '🤖' },
-  { id: 'playbooks',   label: 'Playbooks',   icon: '📋' },
+  { id: 'contracts', label: 'Contracts', icon: '📄' },
 ];
 
 const NAV_ITEMS_BY_ROLE = {
