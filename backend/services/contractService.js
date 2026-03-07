@@ -34,8 +34,16 @@ async function getLegalTeamUserIds(orgId) {
 }
 
 async function isLegalTeamMember(orgId, userId) {
+  // Check team dimension first
   const ids = await getLegalTeamUserIds(orgId);
-  return ids.includes(parseInt(userId, 10));
+  if (ids.includes(parseInt(userId, 10))) return true;
+  // Also grant access to org owners and admins
+  const r = await pool.query(
+    `SELECT org_role FROM organization_members WHERE org_id=$1 AND user_id=$2`,
+    [orgId, userId]
+  );
+  const role = r.rows[0]?.org_role;
+  return role === 'owner' || role === 'admin';
 }
 
 // ── Workflow config (with defaults) ──────────────────────────────────

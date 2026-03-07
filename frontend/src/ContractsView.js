@@ -107,7 +107,11 @@ export default function ContractsView() {
         const r = await apiService.contracts.getAll({ scope, status: filterStatus, contractType: filterType, search });
         setContracts(r.data.contracts || []);
       }
-    } catch { setError('Failed to load contracts'); }
+    } catch (e) {
+      const status = e.response?.status;
+      if (status === 403) setError('You do not have access to the legal queue. Contact your org admin.');
+      else setError('Failed to load contracts');
+    }
     finally { setLoading(false); }
   }, [activeTab, filterStatus, filterType, search]);
 
