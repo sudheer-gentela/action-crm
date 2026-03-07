@@ -452,7 +452,16 @@ function Dashboard({ user, onLogout }) {
               onDealFilterApplied={() => setPendingEmailDealId(null)}
             />
           )}
-          {currentTab === 'files'       && <FilesView pendingDealId={pendingDealId} onDealOpened={() => setPendingDealId(null)} />}
+          {currentTab === 'files'       && <FilesView pendingDealId={pendingDealId} onDealOpened={(dealId) => {
+            if (dealId) {
+              // Set the deal ID first, then switch tab on next tick so DealsView
+              // mounts with openDealId already set
+              setPendingDealId(dealId);
+              setTimeout(() => setCurrentTab('deals'), 0);
+            } else {
+              setPendingDealId(null);
+            }
+          }} />}
           {currentTab === 'calendar'    && (
             <CalendarView
               openMeetingId={pendingMeetingId}
