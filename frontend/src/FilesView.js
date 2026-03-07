@@ -199,23 +199,13 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
   // ── Derived: unique providers present in imported files ───────────────────
   const providers = [...new Set(importedFiles.map(f => f.provider).filter(Boolean))];
 
-  // ── Helper: get parent folder URL for a file ───────────────────────────────
-  function getFolderUrl(file) {
-    if (file.provider === 'googledrive') {
-      // Google Drive folder URL from parent_id stored in file, or fall back to Drive root
-      if (file.parent_id) return `https://drive.google.com/drive/folders/${file.parent_id}`;
-      return 'https://drive.google.com/drive/my-drive';
-    }
-    if (file.provider === 'onedrive') {
-      // OneDrive web URL — strip the filename portion to get the folder
-      if (file.web_url) {
-        const parts = file.web_url.split('/');
-        parts.pop();
-        return parts.join('/');
-      }
-      return 'https://onedrive.live.com';
-    }
-    return null;
+  // ── Helper: open file via backend proxy using the right user's OAuth token ──
+  // Routes through /api/storage/imported/:id/open which uses the stored
+  // OAuth token for whoever originally imported the file — not the browser session.
+  function getOpenUrl(file) {
+    const token = localStorage.getItem('token');
+    const base = (process.env.REACT_APP_API_URL || 'http://localhost:3001/api').replace(/\/$/, '');
+    return `${base}/storage/imported/${file.id}/open?token=${encodeURIComponent(token)}`;
   }
 
   // ── Derived: filtered + sorted files ──────────────────────────────────────
@@ -396,17 +386,15 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
                       <span className="files-file-icon">{catIcon}</span>
                       <div className="files-name-wrap">
                         <span className="files-name">{file.file_name || 'Unnamed file'}</span>
-                        {file.web_url && (
-                          <a
-                            href={file.web_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="files-open-link"
-                            onClick={e => e.stopPropagation()}
-                          >
-                            {openLabel} ↗
-                          </a>
-                        )}
+                        <a
+                          href={getOpenUrl(file)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="files-open-link"
+                          onClick={e => e.stopPropagation()}
+                        >
+                          {openLabel} ↗
+                        </a>
                       </div>
                     </td>
 
@@ -441,37 +429,27 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
                     </td>
 
                     <td className="files-cell">
-                      {(() => {
-                        const folderUrl = getFolderUrl(file);
-                        const label = `☁️ ${file.source_label || PROVIDER_LABELS[file.provider] || file.provider || 'Cloud'}`;
-                        return folderUrl ? (
-                          <a
-                            href={folderUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="files-source-badge files-source-badge--link"
-                            title={`Open ${PROVIDER_LABELS[file.provider] || 'cloud'} folder`}
-                          >
-                            {label} ↗
-                          </a>
-                        ) : (
-                          <span className="files-source-badge">{label}</span>
-                        );
-                      })()}
+                      <a
+                        href={getOpenUrl(file)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="files-source-badge files-source-badge--link"
+                        title={`Open in ${PROVIDER_LABELS[file.provider] || 'cloud'}`}
+                      >
+                        ☁️ {PROVIDER_LABELS[file.provider] || file.provider || 'Cloud'} ↗
+                      </a>
                     </td>
 
                     <td className="files-cell files-cell--actions">
-                      {file.web_url && (
-                        <a
-                          href={file.web_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="files-icon-btn"
-                          title={openLabel}
-                        >
-                          ↗
-                        </a>
-                      )}
+                      <a
+                        href={getOpenUrl(file)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="files-icon-btn"
+                        title={openLabel}
+                      >
+                        ↗
+                      </a>
                       <button
                         className="files-icon-btn files-icon-btn--danger"
                         title="Remove import record"

@@ -155,7 +155,86 @@ router.post('/:provider/files/batch-process', async (req, res) => {
   }
 });
 
-// ── Imported file queries ─────────────────────────────────────
+// ── Open file via authenticated user token ────────────────────
+// Returns a short-lived redirect to the provider's authenticated URL,
+// fetched using the CRM user's stored OAuth token — not whatever
+// account happens to be logged into the browser.
+
+router.get('/imported/:recordId/open', async (req, res) => {
+  try {
+    const { pool } = require('../config/database');
+
+    // Accept token from query param (browser href can't send Authorization headers)
+    const token = req.query.token || req.headers.authorization?.replace('Bearer ', '');
+    if (!token) return res.status(401).json({ error: { message: 'No token provided' } });
+
+    // Verify JWT manually
+    const jwt = require('jsonwebtoken');
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch {
+      return res.status(401).json({ error: { message: 'Invalid or expired token' } });
+    }
+
+    // Load the file record — must belong to this org
+    // Derive orgId from the token's userId via org_users
+    const orgRes = await pool.query(
+      `SELECT org_id FROM org_users WHERE user_id = $1 LIMIT 1`,
+      [decoded.userId]
+    );
+    const orgId = orgRes.rows[0]?.org_id;
+
+    const result = await pool.query(
+      `SELECT id, provider, provider_file_id, user_id, file_name, web_url
+       FROM storage_files
+       WHERE id = $1 AND org_id = $2`,
+      [req.params.recordId, orgId]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: { message: 'File not found' } });
+    }
+
+    const file = result.rows[0];
+    const provider = getProvider(file.provider);
+
+    // Get a fresh access token for the user who imported the file
+    const accessToken = await provider._getAccessToken(file.user_id);
+
+    if (file.provider === 'googledrive') {
+      // Redirect to Google Drive viewer — access_token param authenticates as the right user
+      const url = `https://drive.google.com/file/d/${file.provider_file_id}/view?authuser=0&access_token=${accessToken}`;
+      return res.redirect(302, url);
+    }
+
+    if (file.provider === 'onedrive') {
+      // Try to get a short-lived anonymous view link via Graph API
+      const axios = require('axios');
+      try {
+        const shareRes = await axios.post(
+          `https://graph.microsoft.com/v1.0/me/drive/items/${file.provider_file_id}/createLink`,
+          { type: 'view', scope: 'anonymous' },
+          { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
+        );
+        const link = shareRes.data?.link?.webUrl;
+        if (link) return res.redirect(302, link);
+      } catch (e) {
+        console.warn('[storage/open] OneDrive createLink failed, falling back to web_url:', e.message);
+      }
+      if (file.web_url) return res.redirect(302, file.web_url);
+      return res.status(404).json({ error: { message: 'No URL available for this file' } });
+    }
+
+    if (file.web_url) return res.redirect(302, file.web_url);
+    res.status(404).json({ error: { message: 'No URL available for this file' } });
+
+  } catch (err) {
+    console.error('[storage/open]', err.message);
+    res.status(500).json({ error: { message: 'Failed to open file' } });
+  }
+});
+
+
 // NOTE: These service functions need orgId in their signatures
 // when storageFileService.js is updated
 
