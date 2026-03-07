@@ -18,17 +18,18 @@ const {
   checkDuplicate, deleteImportRecord,
 } = require('../services/storageFileService');
 
-console.log('🚨 STORAGE ROUTES v2 — FILE IS LIVE');
-
-// ── Open file via authenticated proxy (before auth middleware — uses token query param) ──
-// Browser <a href> can't send Authorization headers, so token comes via ?token=
-router.get('/imported/:recordId/open', async (req, res) => {
+// ── Resolve file open URL (POST — token in Authorization header, returns JSON) ──
+// Frontend calls this with fetch() using Authorization header, then does window.open(url).
+// Avoids passing token as query param (proxies mangle URLs with __ in JWT signatures).
+router.post('/imported/:recordId/open-url', async (req, res) => {
   try {
     const jwt  = require('jsonwebtoken');
     const { pool } = require('../config/database');
     const axios = require('axios');
 
-    const token = req.query.token;
+    // Token comes in Authorization header: "Bearer <token>"
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
     if (!token) return res.status(401).json({ error: { message: 'No token provided' } });
 
     let decoded;
@@ -62,7 +63,7 @@ router.get('/imported/:recordId/open', async (req, res) => {
 
     if (file.provider === 'googledrive') {
       const url = `https://drive.google.com/file/d/${file.provider_file_id}/view?access_token=${accessToken}`;
-      return res.redirect(302, url);
+      return res.json({ url });
     }
 
     if (file.provider === 'onedrive') {
@@ -73,20 +74,20 @@ router.get('/imported/:recordId/open', async (req, res) => {
           { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
         );
         const link = shareRes.data?.link?.webUrl;
-        if (link) return res.redirect(302, link);
+        if (link) return res.json({ url: link });
       } catch (e) {
-        console.warn('[storage/open] OneDrive createLink failed, falling back to web_url:', e.message);
+        console.warn('[storage/open-url] OneDrive createLink failed, falling back to web_url:', e.message);
       }
-      if (file.web_url) return res.redirect(302, file.web_url);
+      if (file.web_url) return res.json({ url: file.web_url });
       return res.status(404).json({ error: { message: 'No URL available for this file' } });
     }
 
-    if (file.web_url) return res.redirect(302, file.web_url);
+    if (file.web_url) return res.json({ url: file.web_url });
     res.status(404).json({ error: { message: 'No URL available for this file' } });
 
   } catch (err) {
-    console.error('[storage/open]', err.message);
-    res.status(500).json({ error: { message: 'Failed to open file' } });
+    console.error('[storage/open-url]', err.message);
+    res.status(500).json({ error: { message: 'Failed to resolve file URL' } });
   }
 });
 

@@ -199,13 +199,23 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
   // ── Derived: unique providers present in imported files ───────────────────
   const providers = [...new Set(importedFiles.map(f => f.provider).filter(Boolean))];
 
-  // ── Helper: open file via backend proxy using the right user's OAuth token ──
-  // Routes through /api/storage/imported/:id/open which uses the stored
-  // OAuth token for whoever originally imported the file — not the browser session.
-  function getOpenUrl(file) {
-    const token = localStorage.getItem('token');
-    const base = (process.env.REACT_APP_API_URL || 'http://localhost:3001/api').replace(/\/$/, '');
-    return `${base}/storage/imported/${file.id}/open?token=${encodeURIComponent(token)}`;
+  // ── Helper: open file via backend proxy ──
+  // POSTs to /open-url with Authorization header (avoids proxy mangling token in query params),
+  // gets back the real cloud URL, then opens it in a new tab.
+  async function openFile(file) {
+    try {
+      const token = localStorage.getItem('token');
+      const base = (process.env.REACT_APP_API_URL || 'http://localhost:3001/api').replace(/\/$/, '');
+      const res = await fetch(`${base}/storage/imported/${file.id}/open-url`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Failed to open file');
+      window.open(data.url, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+      alert('Could not open file: ' + e.message);
+    }
   }
 
   // ── Derived: filtered + sorted files ──────────────────────────────────────
@@ -386,15 +396,12 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
                       <span className="files-file-icon">{catIcon}</span>
                       <div className="files-name-wrap">
                         <span className="files-name">{file.file_name || 'Unnamed file'}</span>
-                        <a
-                          href={getOpenUrl(file)}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <button
                           className="files-open-link"
-                          onClick={e => e.stopPropagation()}
+                          onClick={e => { e.stopPropagation(); openFile(file); }}
                         >
                           {openLabel} ↗
-                        </a>
+                        </button>
                       </div>
                     </td>
 
@@ -429,27 +436,23 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
                     </td>
 
                     <td className="files-cell">
-                      <a
-                        href={getOpenUrl(file)}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
                         className="files-source-badge files-source-badge--link"
+                        onClick={() => openFile(file)}
                         title={`Open in ${PROVIDER_LABELS[file.provider] || 'cloud'}`}
                       >
                         ☁️ {PROVIDER_LABELS[file.provider] || file.provider || 'Cloud'} ↗
-                      </a>
+                      </button>
                     </td>
 
                     <td className="files-cell files-cell--actions">
-                      <a
-                        href={getOpenUrl(file)}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
                         className="files-icon-btn"
+                        onClick={() => openFile(file)}
                         title={openLabel}
                       >
                         ↗
-                      </a>
+                      </button>
                       <button
                         className="files-icon-btn files-icon-btn--danger"
                         title="Remove import record"
