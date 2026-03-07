@@ -39,10 +39,10 @@ async function isLegalTeamMember(orgId, userId) {
   if (ids.includes(parseInt(userId, 10))) return true;
   // Also grant access to org owners and admins
   const r = await pool.query(
-    `SELECT org_role FROM organization_members WHERE org_id=$1 AND user_id=$2`,
+    `SELECT role FROM org_users WHERE org_id=$1 AND user_id=$2`,
     [orgId, userId]
   );
-  const role = r.rows[0]?.org_role;
+  const role = r.rows[0]?.role;
   return role === 'owner' || role === 'admin';
 }
 
