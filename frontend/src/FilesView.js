@@ -78,6 +78,38 @@ const PROVIDER_OPEN_LABELS = {
 };
 
 export default function FilesView({ pendingDealId, onDealOpened } = {}) {
+  // Inject styles for new interactive elements
+  useEffect(() => {
+    const id = 'files-view-extra-styles';
+    if (document.getElementById(id)) return;
+    const style = document.createElement('style');
+    style.id = id;
+    style.textContent = `
+      .files-deal-tag--link {
+        background: none;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+        font-size: inherit;
+        font-family: inherit;
+        color: inherit;
+        text-align: left;
+      }
+      .files-deal-tag--link:hover {
+        text-decoration: underline;
+        opacity: 0.8;
+      }
+      .files-source-badge--link {
+        text-decoration: none;
+        color: inherit;
+      }
+      .files-source-badge--link:hover {
+        text-decoration: underline;
+        opacity: 0.8;
+      }
+    `;
+    document.head.appendChild(style);
+  }, []);
   const [importedFiles, setImportedFiles]   = useState([]);
   const [deals, setDeals]                   = useState([]);
   const [loading, setLoading]               = useState(true);
@@ -88,6 +120,7 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
   const [filterCategory, setFilterCategory] = useState('all');
   const [searchQuery, setSearchQuery]       = useState('');
   const [sortBy, setSortBy]                 = useState('date_desc');
+  const [filterProvider, setFilterProvider] = useState('all');
   const [deletingId, setDeletingId]         = useState(null);
 
   // Auto-filter to a specific deal when navigated from Actions
@@ -163,11 +196,34 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
     }
   };
 
+  // ── Derived: unique providers present in imported files ───────────────────
+  const providers = [...new Set(importedFiles.map(f => f.provider).filter(Boolean))];
+
+  // ── Helper: get parent folder URL for a file ───────────────────────────────
+  function getFolderUrl(file) {
+    if (file.provider === 'googledrive') {
+      // Google Drive folder URL from parent_id stored in file, or fall back to Drive root
+      if (file.parent_id) return `https://drive.google.com/drive/folders/${file.parent_id}`;
+      return 'https://drive.google.com/drive/my-drive';
+    }
+    if (file.provider === 'onedrive') {
+      // OneDrive web URL — strip the filename portion to get the folder
+      if (file.web_url) {
+        const parts = file.web_url.split('/');
+        parts.pop();
+        return parts.join('/');
+      }
+      return 'https://onedrive.live.com';
+    }
+    return null;
+  }
+
   // ── Derived: filtered + sorted files ──────────────────────────────────────
   const filteredFiles = importedFiles
     .filter(f => {
       if (filterDeal !== 'all' && String(f.deal_id) !== String(filterDeal)) return false;
       if (filterCategory !== 'all' && f.category !== filterCategory) return false;
+      if (filterProvider !== 'all' && f.provider !== filterProvider) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         if (!f.file_name?.toLowerCase().includes(q)) return false;
@@ -275,6 +331,13 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
           onChange={e => setSearchQuery(e.target.value)}
         />
 
+        <select className="files-select" value={filterProvider} onChange={e => setFilterProvider(e.target.value)}>
+          <option value="all">All Sources</option>
+          {providers.map(p => (
+            <option key={p} value={p}>{PROVIDER_LABELS[p] || p}</option>
+          ))}
+        </select>
+
         <select className="files-select" value={filterDeal} onChange={e => setFilterDeal(e.target.value)}>
           <option value="all">All Deals</option>
           {deals.map(d => (
@@ -305,7 +368,7 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
           connected={connectionStatus?.anyConnected}
           connectedNames={connectedNames}
           onImport={() => setShowPicker(true)}
-          onClearFilters={() => { setFilterDeal('all'); setFilterCategory('all'); setSearchQuery(''); }}
+          onClearFilters={() => { setFilterDeal('all'); setFilterCategory('all'); setFilterProvider('all'); setSearchQuery(''); }}
         />
       ) : (
         <div className="files-table-wrap">
@@ -355,9 +418,15 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
 
                     <td className="files-cell files-cell--deal">
                       {deal ? (
-                        <span className="files-deal-tag">
+                        <button
+                          className="files-deal-tag files-deal-tag--link"
+                          onClick={() => {
+                            if (onDealOpened) onDealOpened(deal.id);
+                          }}
+                          title={`Open deal: ${deal.name}`}
+                        >
                           💼 {deal.name}
-                        </span>
+                        </button>
                       ) : (
                         <span className="files-no-deal">—</span>
                       )}
@@ -372,9 +441,23 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
                     </td>
 
                     <td className="files-cell">
-                      <span className="files-source-badge">
-                        ☁️ {file.source_label || PROVIDER_LABELS[file.provider] || file.provider || 'Cloud'}
-                      </span>
+                      {(() => {
+                        const folderUrl = getFolderUrl(file);
+                        const label = `☁️ ${file.source_label || PROVIDER_LABELS[file.provider] || file.provider || 'Cloud'}`;
+                        return folderUrl ? (
+                          <a
+                            href={folderUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="files-source-badge files-source-badge--link"
+                            title={`Open ${PROVIDER_LABELS[file.provider] || 'cloud'} folder`}
+                          >
+                            {label} ↗
+                          </a>
+                        ) : (
+                          <span className="files-source-badge">{label}</span>
+                        );
+                      })()}
                     </td>
 
                     <td className="files-cell files-cell--actions">
