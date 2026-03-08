@@ -1,5 +1,6 @@
 // contracts.routes.js
 // All CLM endpoints. Middleware: authenticateToken → orgContext → requireModule('contracts')
+// E-signature additions marked with ── ESIGN ──
 
 const express  = require('express');
 const router   = express.Router();
@@ -11,7 +12,70 @@ const requireModule = require('../middleware/requireModule.middleware');
 const CS  = require('../services/contractService');
 const AS  = require('../services/contractApprovalService');
 const NS  = require('../services/contractNotificationService');
+const SS  = require('../services/signatureService');
 
+// ── ESIGN: Webhook endpoint — MUST be before router.use(auth) ─────────────
+// Zoho Sign (and other providers) POST to this URL without our JWT token.
+// Path: POST /contracts/webhooks/esign/:provider
+// e.g.  POST /contracts/webhooks/esign/zoho
+router.post('/webhooks/esign/:provider', express.raw({ type: '*/*' }), async (req, res) => {
+  try {
+    const { provider } = req.params;
+    const event = await SS.handleWebhook(provider, req.body, req.headers);
+
+    if (event.event === 'completed' && event.requestId) {
+      // Look up contract by esign_request_id
+      const r = await db.query(
+        `SELECT id, org_id, owner_id, title FROM contracts
+         WHERE esign_request_id = $1 AND deleted_at IS NULL`,
+        [event.requestId]
+      );
+      const contract = r.rows[0];
+
+      if (contract) {
+        // Update to signed status + persist signed document URL if provided
+        const result = await CS.markSigned(contract.org_id, contract.id, null);
+
+        if (event.signedDocumentUrl) {
+          await db.query(
+            `UPDATE contracts SET document_url = $2 WHERE id = $1`,
+            [contract.id, event.signedDocumentUrl]
+          );
+        }
+
+        NS.notifyAllSigned(
+          contract.org_id, contract.id, contract.title, contract.owner_id
+        ).catch(() => {});
+      }
+    }
+
+    if (event.event === 'declined' && event.requestId) {
+      const r = await db.query(
+        `SELECT id, org_id, owner_id, title FROM contracts
+         WHERE esign_request_id = $1 AND deleted_at IS NULL`,
+        [event.requestId]
+      );
+      const contract = r.rows[0];
+      if (contract) {
+        // Log a contract event for the decline — owner will see it in the timeline
+        await db.query(
+          `INSERT INTO contract_events (contract_id, org_id, event_type, payload)
+           VALUES ($1, $2, 'signature_declined', $3)`,
+          [contract.id, contract.org_id, JSON.stringify({ declinedBy: event.declinedBy })]
+        );
+      }
+    }
+
+    // Always return 200 to Zoho — otherwise it will retry indefinitely
+    res.status(200).json({ received: true });
+  } catch (err) {
+    console.error('[Webhook] esign error:', err.message);
+    // Still return 200 to prevent provider retry storms
+    res.status(200).json({ received: true, error: err.message });
+  }
+});
+
+// ── Auth + org context apply to all routes below ──────────────────────
 router.use(auth);
 router.use(orgContext);
 
@@ -33,7 +97,67 @@ router.patch('/admin/module', requireRole('admin','owner'), async (req, res) => 
   }
 });
 
-// All routes below require module enabled
+// ── ESIGN: Provider config routes (admin only, no module gate needed) ──
+// These sit above router.use(gate) so they work regardless of module state
+
+router.get('/admin/esign-config', requireRole('admin','owner'), async (req, res) => {
+  try {
+    const config = await SS.getEsignConfig(req.orgId);
+    res.json({ config });
+  } catch (err) {
+    res.status(err.status||500).json({ error: { message: err.message } });
+  }
+});
+
+router.put('/admin/esign-config', requireRole('admin','owner'), async (req, res) => {
+  try {
+    const { provider, client_id, client_secret, redirect_uri } = req.body;
+    await SS.saveProviderConfig(req.orgId, { provider, client_id, client_secret, redirect_uri });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(err.status||500).json({ error: { message: err.message } });
+  }
+});
+
+router.get('/admin/esign-auth-url', requireRole('admin','owner'), async (req, res) => {
+  try {
+    const url = await SS.getAuthUrl(req.orgId);
+    res.json({ url });
+  } catch (err) {
+    res.status(err.status||500).json({ error: { message: err.message } });
+  }
+});
+
+router.post('/admin/esign-callback', requireRole('admin','owner'), async (req, res) => {
+  try {
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ error: { message: 'code is required' } });
+    const result = await SS.handleOAuthCallback(req.orgId, code);
+    res.json(result);
+  } catch (err) {
+    res.status(err.status||500).json({ error: { message: err.message } });
+  }
+});
+
+router.post('/admin/esign-disconnect', requireRole('admin','owner'), async (req, res) => {
+  try {
+    await SS.disconnectProvider(req.orgId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+router.get('/admin/esign-validate', requireRole('admin','owner'), async (req, res) => {
+  try {
+    const result = await SS.validateConnection(req.orgId);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// ── All routes below require module enabled ────────────────────────────
 router.use(gate);
 
 // ── Legal team check (for frontend tab visibility) ────────────────────
@@ -184,7 +308,7 @@ router.delete('/:id', async (req, res) => {
   try {
     await CS.deleteContract(req.orgId, parseInt(req.params.id,10));
     res.json({ success: true });
-  } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
+  } catch (err) { res.status(500).json({ error: { message: 'Failed' } }); }
 });
 
 // ── Document versions ──────────────────────────────────────────────────
@@ -204,7 +328,6 @@ router.post('/:id/versions', async (req, res) => {
   try {
     const contractId = parseInt(req.params.id,10);
     const version = await CS.uploadDocumentVersion(req.orgId, contractId, req.userId, req.body);
-    // Notify legal assignee if contract is still under legal review
     const ct = await db.query(
       `SELECT title, legal_assignee_id, status FROM contracts WHERE id=$1`, [contractId]
     );
@@ -291,9 +414,33 @@ router.post('/:id/resubmit', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
+// ── ESIGN: send-signature now triggers provider ────────────────────────
 router.post('/:id/send-signature', async (req, res) => {
   try {
-    await CS.sendForSignature(req.orgId, parseInt(req.params.id,10), req.userId);
+    const contractId = parseInt(req.params.id,10);
+
+    // 1. Update contract status to in_signatures (existing logic)
+    const result = await CS.sendForSignature(req.orgId, contractId, req.userId);
+
+    // 2. Fetch signatories for this contract
+    const sigR = await db.query(
+      `SELECT name, email, signatory_type, role
+       FROM contract_signatories
+       WHERE contract_id = $1 AND org_id = $2
+       ORDER BY created_at ASC`,
+      [contractId, req.orgId]
+    );
+
+    // 3. Trigger signing at provider (non-blocking if no provider configured)
+    SS.triggerSigning(
+      req.orgId,
+      { id: contractId, title: result.title, documentUrl: result.documentUrl || null },
+      sigR.rows
+    ).catch(err => {
+      // Log but don't fail the request — ActionCRM manual tracking still works
+      console.error(`[send-signature] esign trigger failed for contract ${contractId}:`, err.message);
+    });
+
     res.json({ success: true });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message, code: err.code } }); }
 });
@@ -314,16 +461,21 @@ router.post('/:id/activate', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
+// ── ESIGN: recall and void cancel the signing request at provider ──────
 router.post('/:id/recall', async (req, res) => {
   try {
-    const result = await CS.recallContract(req.orgId, parseInt(req.params.id,10), req.userId, req.body);
+    const contractId = parseInt(req.params.id,10);
+    const result = await CS.recallContract(req.orgId, contractId, req.userId, req.body);
+    SS.cancelSigning(req.orgId, contractId).catch(() => {});
     res.json({ result });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
 router.post('/:id/void', async (req, res) => {
   try {
-    await CS.voidContract(req.orgId, parseInt(req.params.id,10), req.userId, req.body);
+    const contractId = parseInt(req.params.id,10);
+    await CS.voidContract(req.orgId, contractId, req.userId, req.body);
+    SS.cancelSigning(req.orgId, contractId).catch(() => {});
     res.json({ success: true });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });

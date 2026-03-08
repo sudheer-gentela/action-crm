@@ -411,6 +411,15 @@ export const apiService = {
 
     // Notes
     addNote: (id, note) => api.post(`/contracts/${id}/notes`, { note }),
+
+    // E-Signature — provider config (admin only)
+    getEsignConfig:      ()     => api.get('/contracts/admin/esign-config'),
+    saveEsignConfig:     (data) => api.put('/contracts/admin/esign-config', data),
+    getEsignAuthUrl:     ()     => api.get('/contracts/admin/esign-auth-url'),
+    handleEsignCallback: (code) => api.post('/contracts/admin/esign-callback', { code }),
+    disconnectEsign:     ()     => api.post('/contracts/admin/esign-disconnect'),
+    validateEsign:       ()     => api.get('/contracts/admin/esign-validate'),
+    removeOrgEsign:      ()     => api.delete(`/contracts/admin/esign-config`),
   },
 };
 

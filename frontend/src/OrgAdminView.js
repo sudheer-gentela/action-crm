@@ -55,6 +55,7 @@ const NAV_GROUPS = [
     label: 'Modules',
     items: [
       { id: 'modules', icon: '🧩', label: 'Modules' },
+      { id: 'esign',   icon: '✍️',  label: 'E-Signature' },
     ],
   },
   {
@@ -80,6 +81,7 @@ const TAB_META = {
   'icp-scoring': { title: 'ICP Scoring',   desc: 'Define your Ideal Customer Profile and scoring criteria' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
+    'esign':        { title: 'E-Signature',  desc: 'Configure your e-signature provider for contract signing' },
   modules:       { title: 'Modules',       desc: 'Enable or disable product modules for your organisation' },
   integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },
   settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
@@ -174,6 +176,7 @@ export default function OrgAdminView() {
 
           <div className="oa-tab-content">
             {tab === 'modules'      && <OAModules />}
+            {tab === 'esign'        && <OAEsignSettings />}
             {tab === 'members'     && <OAMembers currentUserId={currentUser.id} />}
             {tab === 'hierarchy'   && <OAHierarchy />}
             {tab === 'teams'       && <OATeams />}
@@ -4389,6 +4392,346 @@ function OAModules() {
           Disabling hides it — existing data is preserved and can be re-enabled at any time.
           Module-specific configuration (workflow rules, approval chains) is available inside each module's settings.
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// E-SIGNATURE SETTINGS TAB
+// Configure the org's e-signature provider (Zoho Sign, DocuSign etc.)
+// ─────────────────────────────────────────────────────────────────
+
+
+// ─────────────────────────────────────────────────────────────────
+// E-SIGNATURE SETTINGS TAB  (v2 — hybrid platform + BYOL)
+// ─────────────────────────────────────────────────────────────────
+
+function OAEsignSettings() {
+  const [config, setConfig]         = useState(null);
+  const [loading, setLoading]       = useState(true);
+  const [saving, setSaving]         = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [error, setError]           = useState('');
+  const [success, setSuccess]       = useState('');
+  const [mode, setMode]             = useState('view'); // 'view' | 'byol-setup'
+
+  // BYOL form
+  const [provider, setProvider]         = useState('zoho');
+  const [clientId, setClientId]         = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [redirectUri, setRedirectUri]   = useState('');
+  const [showSecret, setShowSecret]     = useState(false);
+
+  useEffect(() => { loadConfig(); }, []);
+
+  async function loadConfig() {
+    setLoading(true);
+    setError('');
+    try {
+      const r = await apiService.contracts.getEsignConfig();
+      const c = r.data.config;
+      setConfig(c);
+      if (c.provider)     setProvider(c.provider);
+      if (c.client_id)    setClientId(c.client_id);
+      if (c.redirect_uri) setRedirectUri(c.redirect_uri);
+    } catch (e) {
+      setError('Failed to load e-signature settings');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSaveByol() {
+    if (!clientId.trim())     return setError('Client ID is required');
+    if (!clientSecret.trim()) return setError('Client Secret is required');
+    if (!redirectUri.trim())  return setError('Redirect URI is required');
+    setSaving(true); setError('');
+    try {
+      await apiService.contracts.saveEsignConfig({
+        provider, client_id: clientId.trim(),
+        client_secret: clientSecret.trim(), redirect_uri: redirectUri.trim(),
+      });
+      setSuccess('Credentials saved ✓');
+      setClientSecret('');
+      setMode('view');
+      setTimeout(() => setSuccess(''), 3000);
+      await loadConfig();
+    } catch (e) {
+      setError(e.response?.data?.error?.message || e.message || 'Failed to save');
+    } finally { setSaving(false); }
+  }
+
+  async function handleConnect() {
+    setError('');
+    try {
+      const r = await apiService.contracts.getEsignAuthUrl();
+      window.open(r.data.url, '_blank', 'width=600,height=700,noopener');
+      setSuccess('OAuth window opened — complete sign-in, then click Validate Connection below');
+      setTimeout(() => setSuccess(''), 10000);
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to get auth URL — save credentials first');
+    }
+  }
+
+  async function handleValidate() {
+    setValidating(true); setError('');
+    try {
+      const r = await apiService.contracts.validateEsign();
+      if (r.data.valid) {
+        setSuccess(`✅ Connection valid (${r.data.credentialSource === 'platform' ? 'platform account' : 'your account'})`);
+        await loadConfig();
+      } else {
+        setError(`Connection invalid: ${r.data.message}`);
+      }
+    } catch (e) {
+      setError('Validation failed — check credentials and try connecting again');
+    } finally {
+      setValidating(false);
+      setTimeout(() => setSuccess(''), 4000);
+    }
+  }
+
+  async function handleDisconnect() {
+    if (!window.confirm('Disconnect your BYOL e-signature account? This org will revert to the platform default if one is configured.')) return;
+    setError('');
+    try {
+      await apiService.contracts.disconnectEsign();
+      setSuccess('Disconnected — reverted to platform default');
+      await loadConfig();
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (e) { setError('Failed to disconnect'); }
+  }
+
+  async function handleRemoveByol() {
+    if (!window.confirm('Remove your own e-signature credentials entirely? This org will use the platform shared account.')) return;
+    setError('');
+    try {
+      await apiService.contracts.removeOrgEsign();
+      setSuccess('Removed — now using platform default');
+      setMode('view');
+      await loadConfig();
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (e) { setError('Failed to remove'); }
+  }
+
+  const PROVIDER_DEFS = [
+    {
+      id: 'zoho', label: 'Zoho Sign', icon: '✍️',
+      desc: '$0.20 per signed document. No monthly fee.',
+      docsUrl: 'https://www.zoho.com/sign/api/',
+      setupSteps: [
+        'Go to api-console.zoho.com → create a Server-based Application',
+        'Copy the Client ID and Client Secret into the form below',
+        'Set the Redirect URI to your Railway backend URL + /api/contracts/admin/esign-callback',
+        'Save credentials, then click Connect to complete OAuth',
+      ],
+    },
+    {
+      id: 'docusign', label: 'DocuSign', icon: '📝',
+      desc: 'Bring your own DocuSign license.',
+      docsUrl: 'https://developers.docusign.com',
+      setupSteps: ['Coming soon'], disabled: true,
+    },
+  ];
+
+  const selectedDef = PROVIDER_DEFS.find(p => p.id === provider) || PROVIDER_DEFS[0];
+
+  if (loading) return <div className="sv-loading">Loading e-signature settings…</div>;
+
+  const isConnected       = config?.connected;
+  const usingPlatform     = config?.usingPlatform;
+  const platformAvailable = config?.platformAvailable;
+  const hasOwnCreds       = !!(config?.client_id);
+
+  // ── Status banner colour ──────────────────────────────────────────
+  const bannerBg     = isConnected ? (usingPlatform ? '#eff6ff' : '#f0fdf4') : '#fafafa';
+  const bannerBorder = isConnected ? (usingPlatform ? '#93c5fd' : '#86efac') : '#e5e7eb';
+  const bannerIcon   = isConnected ? (usingPlatform ? '🔵' : '✅') : '⚪';
+  const bannerTitle  = isConnected
+    ? (usingPlatform ? 'Using platform signing account (shared)' : 'Connected — using your own account')
+    : 'Not connected';
+  const bannerDesc = isConnected
+    ? (usingPlatform
+        ? 'Signing requests will go through the ActionCRM shared Zoho Sign account. Connect your own account below to use your own credits and branding.'
+        : 'Signing requests are sent from your own e-signature account.')
+    : 'No e-signature provider is active. Configure one below.';
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>✍️ E-Signature Provider</h2>
+          <p className="sv-panel-desc">
+            ActionCRM manages the full contract workflow — the provider handles the legally binding
+            signing moment. By default, all orgs share the platform Zoho Sign account.
+            You can connect your own account below for dedicated credits and branding.
+          </p>
+        </div>
+      </div>
+
+      {error   && <div className="sv-error">⚠️ {error}</div>}
+      {success && <div className="sv-success">{success}</div>}
+
+      <div className="sv-panel-body">
+
+        {/* ── Status banner ── */}
+        <div style={{
+          display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+          padding: '14px 18px', borderRadius: 10, marginBottom: 24,
+          background: bannerBg, border: `1.5px solid ${bannerBorder}`,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <span style={{ fontSize: 22, marginTop: 1 }}>{bannerIcon}</span>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: '#111827' }}>{bannerTitle}</div>
+              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3, lineHeight: 1.5, maxWidth: 480 }}>
+                {bannerDesc}
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0, marginLeft: 16 }}>
+            {isConnected && (
+              <button onClick={handleValidate} disabled={validating}
+                style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid #d1d5db', background: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                {validating ? '…' : 'Validate'}
+              </button>
+            )}
+            {hasOwnCreds && isConnected && !usingPlatform && (
+              <button onClick={handleDisconnect}
+                style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid #fca5a5', background: '#fff', color: '#dc2626', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                Disconnect
+              </button>
+            )}
+            {hasOwnCreds && (
+              <button onClick={handleRemoveByol}
+                style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', fontSize: 12, cursor: 'pointer' }}>
+                Use platform default
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* ── BYOL setup toggle ── */}
+        {mode === 'view' && (
+          <button
+            onClick={() => setMode('byol-setup')}
+            style={{
+              width: '100%', padding: '12px', borderRadius: 9, marginBottom: 20,
+              border: '1.5px dashed #d1d5db', background: '#fafafa',
+              fontSize: 13, fontWeight: 600, color: '#374151', cursor: 'pointer',
+              textAlign: 'center',
+            }}
+          >
+            {hasOwnCreds ? '⚙️ Edit your own account credentials' : '➕ Connect your own Zoho / DocuSign account (BYOL)'}
+          </button>
+        )}
+
+        {/* ── BYOL setup panel ── */}
+        {mode === 'byol-setup' && (
+          <div style={{ border: '1.5px solid #e5e7eb', borderRadius: 10, padding: '20px 24px', marginBottom: 20, background: '#fff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#111827' }}>
+                Connect your own account
+              </div>
+              <button onClick={() => { setMode('view'); setError(''); }}
+                style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#9ca3af' }}>✕</button>
+            </div>
+
+            {/* Provider tabs */}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+              {PROVIDER_DEFS.map(p => (
+                <button key={p.id} disabled={p.disabled}
+                  onClick={() => !p.disabled && setProvider(p.id)}
+                  style={{
+                    padding: '7px 16px', borderRadius: 7, fontSize: 12, fontWeight: 700,
+                    border: `2px solid ${provider === p.id ? '#6366f1' : '#e5e7eb'}`,
+                    background: provider === p.id ? '#eef2ff' : '#fff',
+                    color: provider === p.id ? '#4f46e5' : '#374151',
+                    cursor: p.disabled ? 'not-allowed' : 'pointer',
+                    opacity: p.disabled ? 0.5 : 1,
+                  }}>
+                  {p.icon} {p.label} {p.disabled ? '(soon)' : ''}
+                </button>
+              ))}
+            </div>
+
+            {/* Setup steps */}
+            <div style={{ padding: '12px 16px', borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0', marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
+                Setup steps
+              </div>
+              <ol style={{ margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 5 }}>
+                {selectedDef.setupSteps.map((s, i) => (
+                  <li key={i} style={{ fontSize: 12, color: '#4b5563', lineHeight: 1.5 }}>{s}</li>
+                ))}
+              </ol>
+              <a href={selectedDef.docsUrl} target="_blank" rel="noopener noreferrer"
+                style={{ fontSize: 12, color: '#6366f1', fontWeight: 600, marginTop: 8, display: 'inline-block' }}>
+                {selectedDef.label} API Docs →
+              </a>
+            </div>
+
+            {/* Credentials form */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Client ID</label>
+                <input type="text" value={clientId} onChange={e => setClientId(e.target.value)}
+                  placeholder="Paste Client ID from provider console"
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 7, border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }} />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Client Secret</label>
+                <div style={{ position: 'relative' }}>
+                  <input type={showSecret ? 'text' : 'password'} value={clientSecret}
+                    onChange={e => setClientSecret(e.target.value)}
+                    placeholder={config?.client_id ? 'Leave blank to keep saved secret' : 'Paste Client Secret'}
+                    style={{ width: '100%', padding: '9px 40px 9px 12px', borderRadius: 7, border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }} />
+                  <button onClick={() => setShowSecret(!showSecret)}
+                    style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: '#9ca3af' }}>
+                    {showSecret ? '🙈' : '👁'}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Redirect URI</label>
+                <input type="text" value={redirectUri} onChange={e => setRedirectUri(e.target.value)}
+                  placeholder="https://your-backend.railway.app/api/contracts/admin/esign-callback"
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 7, border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }} />
+                <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>Must match exactly what you registered in the provider console.</div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+              <button onClick={handleSaveByol} disabled={saving}
+                style={{ padding: '9px 22px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', fontWeight: 700, fontSize: 13, cursor: saving ? 'wait' : 'pointer' }}>
+                {saving ? 'Saving…' : 'Save Credentials'}
+              </button>
+              {config?.client_id && !isConnected && (
+                <button onClick={handleConnect}
+                  style={{ padding: '9px 22px', borderRadius: 8, border: '1px solid #6366f1', background: '#fff', color: '#6366f1', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+                  Connect to {selectedDef.label} →
+                </button>
+              )}
+              {config?.client_id && isConnected && !usingPlatform && (
+                <button onClick={handleValidate} disabled={validating}
+                  style={{ padding: '9px 22px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', color: '#374151', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
+                  {validating ? 'Validating…' : 'Validate Connection'}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── How it works ── */}
+        <div style={{ padding: '14px 18px', borderRadius: 10, background: '#eff6ff', border: '1px solid #bfdbfe', fontSize: 12, color: '#1e40af', lineHeight: 1.8 }}>
+          <strong>How it works:</strong><br />
+          When a contract moves to <em>In Signatures</em>, ActionCRM automatically sends a signing
+          request to all signatories. If you have your own account connected, it uses your credits
+          and your Zoho branding. Otherwise it uses the shared platform account.<br />
+          You can always mark contracts signed manually — the e-signature integration is additive.
+        </div>
+
       </div>
     </div>
   );
