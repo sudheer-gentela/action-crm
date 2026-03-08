@@ -118,6 +118,12 @@ const EV_ICONS = {
   amendment_spawned:                  '🌿',
   amended:                            '📝',
   note_added:                         '💬',
+  // v2 review-cycle events
+  sent_to_customer_review:            '📨',
+  customer_returned_redlines:         '↩️',
+  customer_returned_to_sales:         '🔁',
+  review_handoff:                     '🔀',
+  review_sub_status_set:              '🏷️',
 };
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'SGD', 'INR'];
@@ -310,19 +316,6 @@ export default function ContractDetailPanel({ contract: c, isLegalMember, onClos
 
         {/* ── IN REVIEW ── */}
         {c.status === 'in_review' && <>
-          {/* Sub-stage indicator strip */}
-          <div className="cdp-review-substage-bar">
-            {['with_legal','with_sales','with_customer'].map(sub => (
-              <span key={sub}
-                className={`cdp-substage-pill${c.reviewSubStatus === sub ? ' cdp-substage-pill--active' : ''}`}>
-                { sub === 'with_legal' ? '⚖️ Legal'
-                  : sub === 'with_sales' ? '💼 Sales'
-                  : '🤝 Customer' }
-              </span>
-            ))}
-          </div>
-
-          {/* with_legal: legal member actions */}
           {c.reviewSubStatus === 'with_legal' && isLegalMember && <>
             {c.legalQueue && (
               <ActionBtn label="Pick Up" variant="primary"
@@ -391,13 +384,10 @@ export default function ContractDetailPanel({ contract: c, isLegalMember, onClos
               loading={busy === 'custtosales'}
               onClick={() => act('custtosales', () => apiService.contracts.handoffTo(id, 'with_sales'))} />
             {isLegalMember && (
-              <ActionBtn label="Send for Signature" variant="secondary"
+              <ActionBtn label="Legal: Send for Signature" variant="secondary"
                 loading={busy === 'legalsend'}
                 onClick={() => act('legalsend', () => apiService.contracts.legalSendSignature(id))} />
             )}
-            <ActionBtn label="Send for Signature" variant="secondary"
-              loading={busy === 'send'}
-              onClick={() => act('send', () => apiService.contracts.sendForSignature(id))} />
             <ActionBtn label="Cancel Contract" variant="warning"
               onClick={() => setShowCancel(true)} />
           </>}
@@ -580,6 +570,20 @@ export default function ContractDetailPanel({ contract: c, isLegalMember, onClos
           </div>
         )}
       </div>
+
+      {/* ── In Review sub-stage indicator — always visible when in_review ── */}
+      {c.status === 'in_review' && (
+        <div className="cdp-review-substage-bar" style={{ padding: '8px 20px 10px' }}>
+          {['with_legal', 'with_sales', 'with_customer'].map(sub => (
+            <span key={sub}
+              className={`cdp-substage-pill${c.reviewSubStatus === sub ? ' cdp-substage-pill--active' : ''}`}>
+              {sub === 'with_legal' ? '⚖️ Legal'
+                : sub === 'with_sales' ? '💼 Sales'
+                : '🤝 Customer'}
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* ── Internal approval bar ── */}
       <div className="cdp-appr-bar">
@@ -870,27 +874,111 @@ function DetailsTab({ c, isLegalMember, onUpdated }) {
         )}
       </div>
 
-      {/* Hierarchy */}
-      {(c.parentContractId || c.children?.length > 0) && (
-        <div className="cdp-hierarchy">
-          <div className="cdp-section-ttl" style={{ marginBottom: 6 }}>Hierarchy</div>
-          {c.parentContractId && (
-            <div className="cdp-hier-up">
-              ↑ Parent: {c.parentTitle} <span className="cdp-hier-type">({c.parentType})</span>
-              {c.parentStatus && (
-                <span className="cdp-hier-status"> · {c.parentStatus}</span>
-              )}
-            </div>
-          )}
-          {c.children?.map(ch => (
-            <div key={ch.id} className="cdp-hier-dn">
-              └─ {ch.title}
-              <span className="cdp-hier-type"> ({ch.contract_type})</span>
-              <span className="cdp-hier-status"> · {ch.status}</span>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* Hierarchy — full recursive tree */}
+      <ContractHierarchyTree contractId={c.id} currentId={c.id} />
+    </div>
+  );
+}
+
+// ── Contract Hierarchy Tree (Chunk 5) ─────────────────────────────────────────
+// Calls GET /contracts/:id/hierarchy, renders the full lineage recursively.
+// Response shape: { root: HierarchyNode }
+// HierarchyNode: { id, title, contract_type, status, children: HierarchyNode[] }
+
+function ContractHierarchyTree({ contractId, currentId }) {
+  const [tree, setTree]   = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setLoading(true); setError('');
+    apiService.contracts.getHierarchy(contractId)
+      .then(r => setTree(r.data?.root || r.data || null))
+      .catch(e => setError(e.response?.data?.error?.message || 'Could not load hierarchy'))
+      .finally(() => setLoading(false));
+  }, [contractId]);
+
+  if (loading) return (
+    <div className="cdp-hierarchy">
+      <div className="cdp-section-ttl" style={{ marginBottom: 6 }}>Hierarchy</div>
+      <div style={{ fontSize: 12, color: '#94a3b8' }}>Loading…</div>
+    </div>
+  );
+  if (error) return (
+    <div className="cdp-hierarchy">
+      <div className="cdp-section-ttl" style={{ marginBottom: 6 }}>Hierarchy</div>
+      <div style={{ fontSize: 12, color: '#991b1b' }}>{error}</div>
+    </div>
+  );
+  if (!tree) return null;
+
+  return (
+    <div className="cdp-hierarchy">
+      <div className="cdp-section-ttl" style={{ marginBottom: 8 }}>Hierarchy</div>
+      <HierarchyNode node={tree} currentId={currentId} depth={0} />
+    </div>
+  );
+}
+
+function HierarchyNode({ node, currentId, depth, onSelect }) {
+  const isCurrent = node.id === currentId;
+  const sc = STATUS_COLORS[node.status] || STATUS_COLORS.draft;
+  const indent = depth * 16;
+
+  return (
+    <div>
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          paddingLeft: indent, marginBottom: 5,
+          cursor: onSelect ? 'pointer' : 'default',
+        }}
+        onClick={() => onSelect && onSelect(node.id)}
+      >
+        {/* Tree connector */}
+        {depth > 0 && (
+          <span style={{ color: '#cbd5e1', fontSize: 11, flexShrink: 0 }}>
+            {'└─'}
+          </span>
+        )}
+
+        {/* Contract type badge */}
+        <span style={{
+          fontSize: 10, fontWeight: 700, background: '#f1f5f9', color: '#64748b',
+          padding: '1px 6px', borderRadius: 4, flexShrink: 0,
+        }}>
+          {TYPE_LABELS[node.contract_type] || node.contract_type}
+        </span>
+
+        {/* Title — bold + underline if current contract */}
+        <span style={{
+          fontSize: 12, color: isCurrent ? '#4f46e5' : '#0f172a',
+          fontWeight: isCurrent ? 700 : 500,
+          textDecoration: isCurrent ? 'underline' : 'none',
+          flexShrink: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {isCurrent ? '▶ ' : ''}{node.title}
+        </span>
+
+        {/* Status pill */}
+        <span style={{
+          fontSize: 10, fontWeight: 600, padding: '1px 7px', borderRadius: 8,
+          background: sc.bg, color: sc.text, flexShrink: 0, marginLeft: 'auto',
+        }}>
+          {STEP_LABELS[node.status] || node.status}
+        </span>
+      </div>
+
+      {/* Recurse into children */}
+      {node.children?.map(child => (
+        <HierarchyNode
+          key={child.id}
+          node={child}
+          currentId={currentId}
+          depth={depth + 1}
+          onSelect={onSelect}
+        />
+      ))}
     </div>
   );
 }
