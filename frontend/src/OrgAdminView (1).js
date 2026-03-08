@@ -52,9 +52,9 @@ const NAV_GROUPS = [
     ],
   },
   {
-    label: 'Modules',
+    label: 'Contract Lifecycle Management (CLM)',
     items: [
-      { id: 'modules', icon: '🧩', label: 'Modules' },
+      { id: 'modules', icon: '🧩', label: 'CLM Modules' },
       { id: 'esign',   icon: '✍️',  label: 'E-Signature' },
     ],
   },
@@ -81,8 +81,8 @@ const TAB_META = {
   'icp-scoring': { title: 'ICP Scoring',   desc: 'Define your Ideal Customer Profile and scoring criteria' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
-    'esign':        { title: 'E-Signature',  desc: 'Configure your e-signature provider for contract signing' },
-  modules:       { title: 'Modules',       desc: 'Enable or disable product modules for your organisation' },
+    'esign':        { title: 'E-Signature',  desc: 'Enable e-signature and configure your provider for contract signing' },
+  modules:       { title: 'CLM Modules',   desc: 'Enable or disable Contract Lifecycle Management modules for your organisation' },
   integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },
   settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
 };
@@ -4302,8 +4302,8 @@ function OAModules() {
     <div className="sv-panel">
       <div className="sv-panel-header">
         <div>
-          <h2>🧩 Modules</h2>
-          <p className="sv-panel-desc">Enable or disable product modules for your organisation. Changes take effect immediately.</p>
+          <h2>🧩 CLM Modules</h2>
+          <p className="sv-panel-desc">Enable or disable Contract Lifecycle Management modules for your organisation. Changes take effect immediately.</p>
         </div>
       </div>
 
@@ -4407,9 +4407,14 @@ function OAModules() {
 // E-SIGNATURE SETTINGS TAB  (v2 — hybrid platform + BYOL)
 // ─────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────
+// E-SIGNATURE SETTINGS TAB
+// ─────────────────────────────────────────────────────────────────
+
 function OAEsignSettings() {
   const [config, setConfig]         = useState(null);
   const [loading, setLoading]       = useState(true);
+  const [togglingEnabled, setTogglingEnabled] = useState(false);
   const [saving, setSaving]         = useState(false);
   const [validating, setValidating] = useState(false);
   const [error, setError]           = useState('');
@@ -4440,6 +4445,18 @@ function OAEsignSettings() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleToggleEnabled(newVal) {
+    setTogglingEnabled(true); setError('');
+    try {
+      await apiService.contracts.toggleEsign(newVal);
+      setConfig(prev => ({ ...prev, enabled: newVal }));
+      setSuccess(`E-Signature ${newVal ? 'enabled ✓' : 'disabled'}`);
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to update');
+    } finally { setTogglingEnabled(false); }
   }
 
   async function handleSaveByol() {
@@ -4539,11 +4556,12 @@ function OAEsignSettings() {
 
   if (loading) return <div className="sv-loading">Loading e-signature settings…</div>;
 
+  const isEnabled     = config?.enabled;
   const isConnected   = config?.connected;
   const usingPlatform = config?.usingPlatform;
   const hasOwnCreds   = !!(config?.client_id);
 
-  // ── Status banner colour ──────────────────────────────────────────
+  // ── Status banner (only shown when enabled) ──────────────────────
   const bannerBg     = isConnected ? (usingPlatform ? '#eff6ff' : '#f0fdf4') : '#fafafa';
   const bannerBorder = isConnected ? (usingPlatform ? '#93c5fd' : '#86efac') : '#e5e7eb';
   const bannerIcon   = isConnected ? (usingPlatform ? '🔵' : '✅') : '⚪';
@@ -4554,17 +4572,17 @@ function OAEsignSettings() {
     ? (usingPlatform
         ? 'Signing requests will go through the ActionCRM shared Zoho Sign account. Connect your own account below to use your own credits and branding.'
         : 'Signing requests are sent from your own e-signature account.')
-    : 'No e-signature provider is active. Configure one below.';
+    : 'No provider connected yet — use the platform default (Zoho Sign) or connect your own account below.';
 
   return (
     <div className="sv-panel">
       <div className="sv-panel-header">
         <div>
-          <h2>✍️ E-Signature Provider</h2>
+          <h2>✍️ E-Signature</h2>
           <p className="sv-panel-desc">
-            ActionCRM manages the full contract workflow — the provider handles the legally binding
-            signing moment. By default, all orgs share the platform Zoho Sign account.
-            You can connect your own account below for dedicated credits and branding.
+            When enabled, ActionCRM automatically sends signing requests when a contract moves to
+            <em> In Signatures</em>. Uses the platform Zoho Sign account by default — or connect
+            your own for dedicated credits and branding.
           </p>
         </div>
       </div>
@@ -4574,162 +4592,211 @@ function OAEsignSettings() {
 
       <div className="sv-panel-body">
 
-        {/* ── Status banner ── */}
+        {/* ── Enable / Disable card ── */}
         <div style={{
-          display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
-          padding: '14px 18px', borderRadius: 10, marginBottom: 24,
-          background: bannerBg, border: `1.5px solid ${bannerBorder}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '18px 22px', borderRadius: 12, marginBottom: 24,
+          background: '#fff',
+          border: `1.5px solid ${isEnabled ? '#a5b4fc' : '#e5e7eb'}`,
         }}>
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-            <span style={{ fontSize: 22, marginTop: 1 }}>{bannerIcon}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <span style={{
+              fontSize: 26, width: 44, height: 44, borderRadius: 10, flexShrink: 0,
+              background: isEnabled ? '#eef2ff' : '#f3f4f6',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>✍️</span>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 14, color: '#111827' }}>{bannerTitle}</div>
-              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3, lineHeight: 1.5, maxWidth: 480 }}>
-                {bannerDesc}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                <span style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>E-Signature</span>
+                <span style={{
+                  fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
+                  background: isEnabled ? '#d1fae5' : '#f3f4f6',
+                  color: isEnabled ? '#065f46' : '#9ca3af',
+                  textTransform: 'uppercase', letterSpacing: '0.05em',
+                }}>
+                  {isEnabled ? 'Enabled' : 'Disabled'}
+                </span>
               </div>
+              <p style={{ margin: 0, fontSize: 12, color: '#6b7280', lineHeight: 1.5 }}>
+                Automatically dispatch signing requests when contracts move to <em>In Signatures</em>.
+              </p>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexShrink: 0, marginLeft: 16 }}>
-            {isConnected && (
-              <button onClick={handleValidate} disabled={validating}
-                style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid #d1d5db', background: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                {validating ? '…' : 'Validate'}
-              </button>
-            )}
-            {hasOwnCreds && isConnected && !usingPlatform && (
-              <button onClick={handleDisconnect}
-                style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid #fca5a5', background: '#fff', color: '#dc2626', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                Disconnect
-              </button>
-            )}
-            {hasOwnCreds && (
-              <button onClick={handleRemoveByol}
-                style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', fontSize: 12, cursor: 'pointer' }}>
-                Use platform default
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* ── BYOL setup toggle ── */}
-        {mode === 'view' && (
           <button
-            onClick={() => setMode('byol-setup')}
+            disabled={togglingEnabled}
+            onClick={() => handleToggleEnabled(!isEnabled)}
             style={{
-              width: '100%', padding: '12px', borderRadius: 9, marginBottom: 20,
-              border: '1.5px dashed #d1d5db', background: '#fafafa',
-              fontSize: 13, fontWeight: 600, color: '#374151', cursor: 'pointer',
-              textAlign: 'center',
+              padding: '9px 22px', borderRadius: 8, border: 'none',
+              fontWeight: 700, fontSize: 13, minWidth: 100,
+              cursor: togglingEnabled ? 'wait' : 'pointer',
+              background: isEnabled ? '#fee2e2' : '#6366f1',
+              color: isEnabled ? '#dc2626' : '#fff',
+              flexShrink: 0,
             }}
           >
-            {hasOwnCreds ? '⚙️ Edit your own account credentials' : '➕ Connect your own Zoho / DocuSign account (BYOL)'}
+            {togglingEnabled ? '…' : isEnabled ? 'Disable' : 'Enable'}
           </button>
-        )}
+        </div>
 
-        {/* ── BYOL setup panel ── */}
-        {mode === 'byol-setup' && (
-          <div style={{ border: '1.5px solid #e5e7eb', borderRadius: 10, padding: '20px 24px', marginBottom: 20, background: '#fff' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: '#111827' }}>
-                Connect your own account
-              </div>
-              <button onClick={() => { setMode('view'); setError(''); }}
-                style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#9ca3af' }}>✕</button>
-            </div>
+        {/* ── Everything below only shown when enabled ── */}
+        {isEnabled && (<>
 
-            {/* Provider tabs */}
-            <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
-              {PROVIDER_DEFS.map(p => (
-                <button key={p.id} disabled={p.disabled}
-                  onClick={() => !p.disabled && setProvider(p.id)}
-                  style={{
-                    padding: '7px 16px', borderRadius: 7, fontSize: 12, fontWeight: 700,
-                    border: `2px solid ${provider === p.id ? '#6366f1' : '#e5e7eb'}`,
-                    background: provider === p.id ? '#eef2ff' : '#fff',
-                    color: provider === p.id ? '#4f46e5' : '#374151',
-                    cursor: p.disabled ? 'not-allowed' : 'pointer',
-                    opacity: p.disabled ? 0.5 : 1,
-                  }}>
-                  {p.icon} {p.label} {p.disabled ? '(soon)' : ''}
-                </button>
-              ))}
-            </div>
-
-            {/* Setup steps */}
-            <div style={{ padding: '12px 16px', borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0', marginBottom: 16 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
-                Setup steps
-              </div>
-              <ol style={{ margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 5 }}>
-                {selectedDef.setupSteps.map((s, i) => (
-                  <li key={i} style={{ fontSize: 12, color: '#4b5563', lineHeight: 1.5 }}>{s}</li>
-                ))}
-              </ol>
-              <a href={selectedDef.docsUrl} target="_blank" rel="noopener noreferrer"
-                style={{ fontSize: 12, color: '#6366f1', fontWeight: 600, marginTop: 8, display: 'inline-block' }}>
-                {selectedDef.label} API Docs →
-              </a>
-            </div>
-
-            {/* Credentials form */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* Status banner */}
+          <div style={{
+            display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+            padding: '14px 18px', borderRadius: 10, marginBottom: 24,
+            background: bannerBg, border: `1.5px solid ${bannerBorder}`,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              <span style={{ fontSize: 22, marginTop: 1 }}>{bannerIcon}</span>
               <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Client ID</label>
-                <input type="text" value={clientId} onChange={e => setClientId(e.target.value)}
-                  placeholder="Paste Client ID from provider console"
-                  style={{ width: '100%', padding: '9px 12px', borderRadius: 7, border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }} />
-              </div>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Client Secret</label>
-                <div style={{ position: 'relative' }}>
-                  <input type={showSecret ? 'text' : 'password'} value={clientSecret}
-                    onChange={e => setClientSecret(e.target.value)}
-                    placeholder={config?.client_id ? 'Leave blank to keep saved secret' : 'Paste Client Secret'}
-                    style={{ width: '100%', padding: '9px 40px 9px 12px', borderRadius: 7, border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }} />
-                  <button onClick={() => setShowSecret(!showSecret)}
-                    style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: '#9ca3af' }}>
-                    {showSecret ? '🙈' : '👁'}
-                  </button>
+                <div style={{ fontWeight: 700, fontSize: 14, color: '#111827' }}>{bannerTitle}</div>
+                <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3, lineHeight: 1.5, maxWidth: 480 }}>
+                  {bannerDesc}
                 </div>
               </div>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Redirect URI</label>
-                <input type="text" value={redirectUri} onChange={e => setRedirectUri(e.target.value)}
-                  placeholder="https://your-backend.railway.app/api/contracts/admin/esign-callback"
-                  style={{ width: '100%', padding: '9px 12px', borderRadius: 7, border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }} />
-                <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>Must match exactly what you registered in the provider console.</div>
-              </div>
             </div>
-
-            <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
-              <button onClick={handleSaveByol} disabled={saving}
-                style={{ padding: '9px 22px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', fontWeight: 700, fontSize: 13, cursor: saving ? 'wait' : 'pointer' }}>
-                {saving ? 'Saving…' : 'Save Credentials'}
-              </button>
-              {config?.client_id && !isConnected && (
-                <button onClick={handleConnect}
-                  style={{ padding: '9px 22px', borderRadius: 8, border: '1px solid #6366f1', background: '#fff', color: '#6366f1', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
-                  Connect to {selectedDef.label} →
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0, marginLeft: 16 }}>
+              {isConnected && (
+                <button onClick={handleValidate} disabled={validating}
+                  style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid #d1d5db', background: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                  {validating ? '…' : 'Validate'}
                 </button>
               )}
-              {config?.client_id && isConnected && !usingPlatform && (
-                <button onClick={handleValidate} disabled={validating}
-                  style={{ padding: '9px 22px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', color: '#374151', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
-                  {validating ? 'Validating…' : 'Validate Connection'}
+              {hasOwnCreds && isConnected && !usingPlatform && (
+                <button onClick={handleDisconnect}
+                  style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid #fca5a5', background: '#fff', color: '#dc2626', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                  Disconnect
+                </button>
+              )}
+              {hasOwnCreds && (
+                <button onClick={handleRemoveByol}
+                  style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', fontSize: 12, cursor: 'pointer' }}>
+                  Use platform default
                 </button>
               )}
             </div>
           </div>
-        )}
 
-        {/* ── How it works ── */}
-        <div style={{ padding: '14px 18px', borderRadius: 10, background: '#eff6ff', border: '1px solid #bfdbfe', fontSize: 12, color: '#1e40af', lineHeight: 1.8 }}>
-          <strong>How it works:</strong><br />
-          When a contract moves to <em>In Signatures</em>, ActionCRM automatically sends a signing
-          request to all signatories. If you have your own account connected, it uses your credits
-          and your Zoho branding. Otherwise it uses the shared platform account.<br />
-          You can always mark contracts signed manually — the e-signature integration is additive.
-        </div>
+          {/* BYOL setup toggle */}
+          {mode === 'view' && (
+            <button
+              onClick={() => setMode('byol-setup')}
+              style={{
+                width: '100%', padding: '12px', borderRadius: 9, marginBottom: 20,
+                border: '1.5px dashed #d1d5db', background: '#fafafa',
+                fontSize: 13, fontWeight: 600, color: '#374151', cursor: 'pointer',
+                textAlign: 'center',
+              }}
+            >
+              {hasOwnCreds ? '⚙️ Edit your own account credentials' : '➕ Connect your own Zoho / DocuSign account (BYOL)'}
+            </button>
+          )}
+
+          {/* BYOL setup panel */}
+          {mode === 'byol-setup' && (
+            <div style={{ border: '1.5px solid #e5e7eb', borderRadius: 10, padding: '20px 24px', marginBottom: 20, background: '#fff' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#111827' }}>Connect your own account</div>
+                <button onClick={() => { setMode('view'); setError(''); }}
+                  style={{ background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: '#9ca3af' }}>✕</button>
+              </div>
+
+              {/* Provider tabs */}
+              <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
+                {PROVIDER_DEFS.map(p => (
+                  <button key={p.id} disabled={p.disabled}
+                    onClick={() => !p.disabled && setProvider(p.id)}
+                    style={{
+                      padding: '7px 16px', borderRadius: 7, fontSize: 12, fontWeight: 700,
+                      border: `2px solid ${provider === p.id ? '#6366f1' : '#e5e7eb'}`,
+                      background: provider === p.id ? '#eef2ff' : '#fff',
+                      color: provider === p.id ? '#4f46e5' : '#374151',
+                      cursor: p.disabled ? 'not-allowed' : 'pointer',
+                      opacity: p.disabled ? 0.5 : 1,
+                    }}>
+                    {p.icon} {p.label} {p.disabled ? '(soon)' : ''}
+                  </button>
+                ))}
+              </div>
+
+              {/* Setup steps */}
+              <div style={{ padding: '12px 16px', borderRadius: 8, background: '#f8fafc', border: '1px solid #e2e8f0', marginBottom: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
+                  Setup steps
+                </div>
+                <ol style={{ margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {selectedDef.setupSteps.map((s, i) => (
+                    <li key={i} style={{ fontSize: 12, color: '#4b5563', lineHeight: 1.5 }}>{s}</li>
+                  ))}
+                </ol>
+                <a href={selectedDef.docsUrl} target="_blank" rel="noopener noreferrer"
+                  style={{ fontSize: 12, color: '#6366f1', fontWeight: 600, marginTop: 8, display: 'inline-block' }}>
+                  {selectedDef.label} API Docs →
+                </a>
+              </div>
+
+              {/* Credentials form */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Client ID</label>
+                  <input type="text" value={clientId} onChange={e => setClientId(e.target.value)}
+                    placeholder="Paste Client ID from provider console"
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 7, border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Client Secret</label>
+                  <div style={{ position: 'relative' }}>
+                    <input type={showSecret ? 'text' : 'password'} value={clientSecret}
+                      onChange={e => setClientSecret(e.target.value)}
+                      placeholder={config?.client_id ? 'Leave blank to keep saved secret' : 'Paste Client Secret'}
+                      style={{ width: '100%', padding: '9px 40px 9px 12px', borderRadius: 7, border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }} />
+                    <button onClick={() => setShowSecret(!showSecret)}
+                      style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: '#9ca3af' }}>
+                      {showSecret ? '🙈' : '👁'}
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 5 }}>Redirect URI</label>
+                  <input type="text" value={redirectUri} onChange={e => setRedirectUri(e.target.value)}
+                    placeholder="https://your-backend.railway.app/api/contracts/admin/esign-callback"
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: 7, border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }} />
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>Must match exactly what you registered in the provider console.</div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
+                <button onClick={handleSaveByol} disabled={saving}
+                  style={{ padding: '9px 22px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', fontWeight: 700, fontSize: 13, cursor: saving ? 'wait' : 'pointer' }}>
+                  {saving ? 'Saving…' : 'Save Credentials'}
+                </button>
+                {config?.client_id && !isConnected && (
+                  <button onClick={handleConnect}
+                    style={{ padding: '9px 22px', borderRadius: 8, border: '1px solid #6366f1', background: '#fff', color: '#6366f1', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+                    Connect to {selectedDef.label} →
+                  </button>
+                )}
+                {config?.client_id && isConnected && !usingPlatform && (
+                  <button onClick={handleValidate} disabled={validating}
+                    style={{ padding: '9px 22px', borderRadius: 8, border: '1px solid #d1d5db', background: '#fff', color: '#374151', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>
+                    {validating ? 'Validating…' : 'Validate Connection'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* How it works */}
+          <div style={{ padding: '14px 18px', borderRadius: 10, background: '#eff6ff', border: '1px solid #bfdbfe', fontSize: 12, color: '#1e40af', lineHeight: 1.8 }}>
+            <strong>How it works:</strong><br />
+            When a contract moves to <em>In Signatures</em>, ActionCRM automatically sends a signing
+            request to all signatories. If you have your own account connected, it uses your credits
+            and your Zoho branding. Otherwise it uses the shared platform account.<br />
+            You can always mark contracts signed manually — the e-signature integration is additive.
+          </div>
+
+        </>)}
 
       </div>
     </div>

@@ -157,6 +157,26 @@ router.get('/admin/esign-validate', requireRole('admin','owner'), async (req, re
   }
 });
 
+
+router.patch('/admin/esign-toggle', requireRole('admin','owner'), async (req, res) => {
+  try {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') return res.status(400).json({ error: { message: 'enabled (boolean) is required' } });
+    await SS.toggleEsign(req.orgId, enabled);
+    res.json({ success: true, enabled });
+  } catch (err) {
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+router.delete('/admin/esign-config', requireRole('admin','owner'), async (req, res) => {
+  try {
+    await SS.removeOrgProvider(req.orgId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
 // ── All routes below require module enabled ────────────────────────────
 router.use(gate);
 

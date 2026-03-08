@@ -158,6 +158,8 @@ async function getEsignConfig(orgId) {
   }
 
   return {
+    // Enabled flag
+    enabled:           !!(orgEsign.enabled),
     // What the org has configured (may be empty if using platform default)
     provider:          orgEsign.provider     || null,
     client_id:         orgEsign.client_id    || '',
@@ -396,6 +398,19 @@ async function handleWebhook(providerId, rawBody, headers) {
   const { getProvider } = require('./EsignProviderFactory');
   const provider = getProvider(providerId);
   return provider.parseWebhookPayload(rawBody, headers);
+
+/**
+ * Enable or disable e-signature for an org.
+ * Stored as settings.esign.enabled — does not affect provider credentials.
+ */
+async function toggleEsign(orgId, enabled) {
+  await pool.query(
+    `UPDATE organizations
+     SET settings = jsonb_set(COALESCE(settings, '{}'), '{esign,enabled}', $2::jsonb, true)
+     WHERE id = $1`,
+    [orgId, JSON.stringify(enabled)]
+  );
+}
 }
 
 module.exports = {
@@ -405,6 +420,7 @@ module.exports = {
   getAuthUrl,
   handleOAuthCallback,
   disconnectProvider,
+  toggleEsign,
   removeOrgProvider,
   validateConnection,
   // Signing operations
