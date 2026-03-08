@@ -133,3 +133,59 @@
 /* Empty */
 .cdp-empty-tab { padding:24px; text-align:center; color:#94a3b8; font-size:13px; display:flex; flex-direction:column; align-items:center; gap:10px; }
 .cdp-tab-btn { padding:8px 16px; border-radius:8px; border:none; background:#6366f1; color:#fff; font-size:13px; font-weight:600; cursor:pointer; }
+
+/* ── v2 additions (Chunks 3 + 4) ─────────────────────────────── */
+
+/* Standalone badge in header */
+.cdp-standalone-badge {
+  font-size: 11px; font-weight: 700; background: #f0fdf4; color: #065f46;
+  padding: 3px 8px; border-radius: 6px;
+}
+
+/* Customer-signing flag inline with action buttons */
+.cdp-flag-badge {
+  display: inline-flex; align-items: center;
+  font-size: 12px; font-weight: 600; color: #5b21b6;
+  background: #ede9fe; padding: 5px 10px; border-radius: 8px;
+}
+
+/* Inline form enhancements */
+.cdp-inline-title {
+  font-size: 12px; font-weight: 700; color: #0f172a; margin-bottom: 2px;
+}
+.cdp-inline-err {
+  font-size: 11px; color: #991b1b; background: #fef2f2;
+  padding: 5px 8px; border-radius: 6px;
+}
+.cdp-inline-note {
+  font-size: 11px; color: #64748b; background: #f8fafc;
+  padding: 6px 9px; border-radius: 6px;
+}
+
+/* Details tab — v2 fields */
+.cdp-check-group {
+  display: flex; gap: 18px; flex-wrap: wrap;
+}
+.cdp-textarea {
+  resize: vertical; min-height: 56px; line-height: 1.5;
+}
+.cdp-fv--pre {
+  white-space: pre-wrap; font-size: 13px; color: #0f172a; line-height: 1.5;
+}
+
+/* Hierarchy type + status labels */
+.cdp-hier-type { color: #94a3b8; font-size: 11px; }
+.cdp-hier-status { font-size: 11px; color: #6366f1; font-weight: 600; }
+
+/* Signatories — customer-initiated signing notice */
+.cdp-sig-notice {
+  font-size: 12px; background: #ede9fe; color: #5b21b6;
+  padding: 8px 12px; border-radius: 8px; font-weight: 600;
+}
+
+/* v2 terminal status stepper — amended / terminated / cancelled colours */
+/* These use inline styles from STATUS_COLORS, the terminal pill just needs sizing */
+.cdp-terminal {
+  font-size: 11px; font-weight: 700; padding: 4px 10px;
+  border-radius: 8px; margin-left: 8px; flex-shrink: 0;
+}
