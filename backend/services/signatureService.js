@@ -398,6 +398,7 @@ async function handleWebhook(providerId, rawBody, headers) {
   const { getProvider } = require('./EsignProviderFactory');
   const provider = getProvider(providerId);
   return provider.parseWebhookPayload(rawBody, headers);
+}
 
 /**
  * Enable or disable e-signature for an org.
@@ -410,7 +411,6 @@ async function toggleEsign(orgId, enabled) {
      WHERE id = $1`,
     [orgId, JSON.stringify(enabled)]
   );
-}
 }
 
 module.exports = {
