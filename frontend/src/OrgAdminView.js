@@ -4539,10 +4539,9 @@ function OAEsignSettings() {
 
   if (loading) return <div className="sv-loading">Loading e-signature settings…</div>;
 
-  const isConnected       = config?.connected;
-  const usingPlatform     = config?.usingPlatform;
-  const platformAvailable = config?.platformAvailable;
-  const hasOwnCreds       = !!(config?.client_id);
+  const isConnected   = config?.connected;
+  const usingPlatform = config?.usingPlatform;
+  const hasOwnCreds   = !!(config?.client_id);
 
   // ── Status banner colour ──────────────────────────────────────────
   const bannerBg     = isConnected ? (usingPlatform ? '#eff6ff' : '#f0fdf4') : '#fafafa';
