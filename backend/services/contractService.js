@@ -1012,6 +1012,8 @@ async function amendContract(orgId, contractId, userId) {
 }
 
 async function getContractHierarchy(orgId, contractId) {
+  // review_sub_status is a v2 column — omitted so this works on pre-migration DBs too.
+  // Add it back after migration_clm_v2_clean.sql has been run on Railway.
   const r = await pool.query(
     `WITH RECURSIVE family AS (
        SELECT id, parent_contract_id, 0 AS depth
@@ -1026,19 +1028,31 @@ async function getContractHierarchy(orgId, contractId) {
      root AS (SELECT id FROM family ORDER BY depth ASC LIMIT 1),
      tree AS (
        SELECT c.id, c.parent_contract_id, c.title, c.contract_type, c.status,
-              c.review_sub_status, c.created_at, c.updated_at, 0 AS level
+              c.created_at, 0 AS level
        FROM contracts c JOIN root r ON c.id = r.id
        WHERE c.org_id = $2 AND c.deleted_at IS NULL
        UNION ALL
        SELECT c.id, c.parent_contract_id, c.title, c.contract_type, c.status,
-              c.review_sub_status, c.created_at, c.updated_at, t.level + 1
+              c.created_at, t.level + 1
        FROM contracts c JOIN tree t ON c.parent_contract_id = t.id
        WHERE c.org_id = $2 AND c.deleted_at IS NULL
      )
      SELECT * FROM tree ORDER BY level, created_at`,
     [contractId, orgId]
   );
-  return r.rows;
+
+  // Build nested tree object from flat rows
+  const map = {};
+  r.rows.forEach(row => { map[row.id] = { ...row, children: [] }; });
+  let root = null;
+  r.rows.forEach(row => {
+    if (row.parent_contract_id && map[row.parent_contract_id]) {
+      map[row.parent_contract_id].children.push(map[row.id]);
+    } else {
+      root = map[row.id];
+    }
+  });
+  return root;
 }
 
 // ── Signatories ──────────────────────────────────────────────────────

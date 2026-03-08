@@ -477,9 +477,12 @@ router.post('/:id/upload-executed', async (req, res) => {
 // ── Hierarchy ──────────────────────────────────────────────────────────
 router.get('/:id/hierarchy', async (req, res) => {
   try {
-    const hierarchy = await CS.getContractHierarchy(req.orgId, parseInt(req.params.id,10));
-    res.json({ hierarchy });
-  } catch (err) { res.status(500).json({ error: { message: 'Failed to fetch hierarchy' } }); }
+    const root = await CS.getContractHierarchy(req.orgId, parseInt(req.params.id,10));
+    res.json({ root });
+  } catch (err) {
+    console.error('GET hierarchy error:', err);
+    res.status(500).json({ error: { message: err.message || 'Failed to fetch hierarchy' } });
+  }
 });
 
 // ── Signatories ────────────────────────────────────────────────────────
