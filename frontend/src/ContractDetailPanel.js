@@ -7,7 +7,9 @@
 //   • Actions() per status fully wired:
 //       draft      → submit / start-approval / delete / cancel
 //       in_legal   → pick-up / reassign (legal) / recall (sales) / legal-send-sig
-//       with_sales → resubmit / send-sig (with approval gate) / start-approval / legal-send-sig
+//       in_review/with_legal → pick up, return to sales, send to customer, send-sig
+//       in_review/with_sales → resubmit, send-sig, send to customer
+//       in_review/with_customer → route back to legal or sales
 //       in_sig     → mark-signed / upload-executed inline / recall / cancel
 //       pending_bk → confirm-booking / cancel
 //       signed     → activate
@@ -21,7 +23,7 @@
 //   • "Mark Customer-Initiated Signing" button + flag display
 //   • pending_booking → Confirm Booking
 //   • DetailsTab shows all v2 metadata fields (read + edit)
-//   • Edit form available to legal members on in_legal_review / with_sales
+//   • Edit form available to legal members on in_review
 //   • Header shows standalone badge when no deal linked
 //   • EV_ICONS expanded for all v2 event types
 
@@ -34,11 +36,11 @@ import './ContractDetailPanel.css';
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const STEPS = [
-  'draft', 'in_legal_review', 'with_sales',
+  'draft', 'in_review',
   'in_signatures', 'pending_booking', 'signed', 'active',
 ];
 const STEP_LABELS = {
-  draft: 'Draft', in_legal_review: 'Legal Review', with_sales: 'With Sales',
+  draft: 'Draft', in_review: 'In Review',
   in_signatures: 'Signatures', pending_booking: 'Booking', signed: 'Signed', active: 'Active',
 };
 
@@ -47,8 +49,7 @@ const TERMINAL_STATUSES = new Set(['void', 'expired', 'terminated', 'cancelled',
 
 const STATUS_COLORS = {
   draft:           { bg: '#f1f5f9', text: '#475569' },
-  in_legal_review: { bg: '#fef3c7', text: '#92400e' },
-  with_sales:      { bg: '#dbeafe', text: '#1e40af' },
+  in_review:       { bg: '#fef3c7', text: '#92400e' },
   in_signatures:   { bg: '#ede9fe', text: '#5b21b6' },
   pending_booking: { bg: '#fce7f3', text: '#9d174d' },
   signed:          { bg: '#dcfce7', text: '#14532d' },
@@ -307,53 +308,99 @@ export default function ContractDetailPanel({ contract: c, isLegalMember, onClos
             onClick={() => act('del', async () => { await apiService.contracts.delete(id); onClose(); })} />
         </>}
 
-        {/* ── IN LEGAL REVIEW ── */}
-        {c.status === 'in_legal_review' && isLegalMember && <>
-          {c.legalQueue && (
-            <ActionBtn label="Pick Up" variant="primary"
-              loading={busy === 'pickup'}
-              onClick={() => act('pickup', () => apiService.contracts.pickUp(id))} />
-          )}
-          <ActionBtn label="Return to Sales" variant="secondary"
-            loading={busy === 'return'}
-            onClick={() => act('return', () => apiService.contracts.returnToSales(id))} />
-          <ActionBtn label="Send for Signature" variant="secondary"
-            loading={busy === 'legalsend'}
-            onClick={() => act('legalsend', () => apiService.contracts.legalSendSignature(id))} />
-          <ActionBtn label="Reassign" variant="secondary"
-            onClick={() => setShowReassign(r => !r)} />
-          <ActionBtn label="Cancel Contract" variant="warning"
-            onClick={() => setShowCancel(true)} />
-        </>}
-        {c.status === 'in_legal_review' && !isLegalMember && <>
-          <ActionBtn label="Recall to Draft" variant="warning"
-            onClick={() => setShowRecall(true)} />
-          <ActionBtn label="Cancel Contract" variant="warning"
-            onClick={() => setShowCancel(true)} />
-        </>}
+        {/* ── IN REVIEW ── */}
+        {c.status === 'in_review' && <>
+          {/* Sub-stage indicator strip */}
+          <div className="cdp-review-substage-bar">
+            {['with_legal','with_sales','with_customer'].map(sub => (
+              <span key={sub}
+                className={`cdp-substage-pill${c.reviewSubStatus === sub ? ' cdp-substage-pill--active' : ''}`}>
+                { sub === 'with_legal' ? '⚖️ Legal'
+                  : sub === 'with_sales' ? '💼 Sales'
+                  : '🤝 Customer' }
+              </span>
+            ))}
+          </div>
 
-        {/* ── WITH SALES ── */}
-        {c.status === 'with_sales' && <>
-          <ActionBtn label="Resubmit to Legal" variant="secondary"
-            loading={busy === 'resubmit'}
-            onClick={() => act('resubmit', () => apiService.contracts.resubmit(id))} />
-          <ActionBtn
-            label={c.internalApprovalStatus !== 'approved' ? 'Send for Signature ⚠️' : 'Send for Signature'}
-            variant={c.internalApprovalStatus === 'approved' ? 'primary' : 'warning'}
-            loading={busy === 'send'}
-            onClick={() => act('send', () => apiService.contracts.sendForSignature(id))} />
-          {c.internalApprovalStatus === 'not_started' && (
-            <ActionBtn label="Start Internal Approval" variant="secondary"
-              loading={busy === 'approval'}
-              onClick={() => act('approval', () => apiService.contracts.startApproval(id))} />
-          )}
-          {isLegalMember && (
-            <ActionBtn label="Legal: Send for Signature" variant="secondary"
+          {/* with_legal: legal member actions */}
+          {c.reviewSubStatus === 'with_legal' && isLegalMember && <>
+            {c.legalQueue && (
+              <ActionBtn label="Pick Up" variant="primary"
+                loading={busy === 'pickup'}
+                onClick={() => act('pickup', () => apiService.contracts.pickUp(id))} />
+            )}
+            <ActionBtn label="Return to Sales" variant="secondary"
+              loading={busy === 'return'}
+              onClick={() => act('return', () => apiService.contracts.handoffTo(id, 'with_sales'))} />
+            <ActionBtn label="Send to Customer for Review" variant="secondary"
+              loading={busy === 'tocustomer'}
+              onClick={() => act('tocustomer', () => apiService.contracts.handoffTo(id, 'with_customer'))} />
+            <ActionBtn label="Send for Signature" variant="secondary"
               loading={busy === 'legalsend'}
               onClick={() => act('legalsend', () => apiService.contracts.legalSendSignature(id))} />
-          )}
-          <ActionBtn label="Cancel Contract" variant="warning"
-            onClick={() => setShowCancel(true)} />
+            <ActionBtn label="Reassign" variant="secondary"
+              onClick={() => setShowReassign(r => !r)} />
+            <ActionBtn label="Cancel Contract" variant="warning"
+              onClick={() => setShowCancel(true)} />
+          </>}
+
+          {/* with_legal: sales member actions (recall only) */}
+          {c.reviewSubStatus === 'with_legal' && !isLegalMember && <>
+            <ActionBtn label="Recall to Draft" variant="warning"
+              onClick={() => setShowRecall(true)} />
+            <ActionBtn label="Cancel Contract" variant="warning"
+              onClick={() => setShowCancel(true)} />
+          </>}
+
+          {/* with_sales: sales actions */}
+          {c.reviewSubStatus === 'with_sales' && <>
+            <ActionBtn label="Resubmit to Legal" variant="primary"
+              loading={busy === 'resubmit'}
+              onClick={() => act('resubmit', () => apiService.contracts.handoffTo(id, 'with_legal'))} />
+            <ActionBtn label="Send to Customer for Review" variant="secondary"
+              loading={busy === 'tocustomer'}
+              onClick={() => act('tocustomer', () => apiService.contracts.handoffTo(id, 'with_customer'))} />
+            <ActionBtn
+              label={c.internalApprovalStatus !== 'approved' ? 'Send for Signature ⚠️' : 'Send for Signature'}
+              variant={c.internalApprovalStatus === 'approved' ? 'primary' : 'warning'}
+              loading={busy === 'send'}
+              onClick={() => act('send', () => apiService.contracts.sendForSignature(id))} />
+            {c.internalApprovalStatus === 'not_started' && (
+              <ActionBtn label="Start Internal Approval" variant="secondary"
+                loading={busy === 'approval'}
+                onClick={() => act('approval', () => apiService.contracts.startApproval(id))} />
+            )}
+            {isLegalMember && (
+              <ActionBtn label="Legal: Send for Signature" variant="secondary"
+                loading={busy === 'legalsend'}
+                onClick={() => act('legalsend', () => apiService.contracts.legalSendSignature(id))} />
+            )}
+            <ActionBtn label="Cancel Contract" variant="warning"
+              onClick={() => setShowCancel(true)} />
+          </>}
+
+          {/* with_customer: any team member can route next step */}
+          {c.reviewSubStatus === 'with_customer' && <>
+            <div className="cdp-substage-note">
+              📄 Draft sent to customer for review. Redlines may come back multiple times.
+            </div>
+            <ActionBtn label="Customer Returned Redlines → Legal" variant="primary"
+              loading={busy === 'custback'}
+              onClick={() => act('custback', () => apiService.contracts.handoffTo(id, 'with_legal'))} />
+            <ActionBtn label="Route Back to Sales" variant="secondary"
+              loading={busy === 'custtosales'}
+              onClick={() => act('custtosales', () => apiService.contracts.handoffTo(id, 'with_sales'))} />
+            {isLegalMember && (
+              <ActionBtn label="Send for Signature" variant="secondary"
+                loading={busy === 'legalsend'}
+                onClick={() => act('legalsend', () => apiService.contracts.legalSendSignature(id))} />
+            )}
+            <ActionBtn label="Send for Signature" variant="secondary"
+              loading={busy === 'send'}
+              onClick={() => act('send', () => apiService.contracts.sendForSignature(id))} />
+            <ActionBtn label="Cancel Contract" variant="warning"
+              onClick={() => setShowCancel(true)} />
+          </>}
         </>}
 
         {/* ── IN SIGNATURES ── */}
@@ -574,7 +621,7 @@ export default function ContractDetailPanel({ contract: c, isLegalMember, onClos
 }
 
 // ── Details tab ───────────────────────────────────────────────────────────────
-// Edit allowed for: draft (anyone), in_legal_review / with_sales (legal members)
+// Edit allowed for: draft (anyone), in_review (legal members)
 
 function DetailsTab({ c, isLegalMember, onUpdated }) {
   const [editing, setEditing] = useState(false);
@@ -582,7 +629,7 @@ function DetailsTab({ c, isLegalMember, onUpdated }) {
   const [saving, setSaving]   = useState(false);
 
   const canEdit = c.status === 'draft'
-    || (isLegalMember && ['in_legal_review', 'with_sales'].includes(c.status));
+    || (isLegalMember && c.status === 'in_review');
 
   function startEdit() {
     setForm({

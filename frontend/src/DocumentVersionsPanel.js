@@ -204,7 +204,7 @@ export default function DocumentVersionsPanel({ contract: c, onUpdated }) {
           </label>
 
           {/* Resubmit notice for NDA majors while with_sales */}
-          {c.status === 'with_sales' && form.versionType === 'major' && (
+          {c.status === 'in_review' && c.reviewSubStatus === 'with_sales' && form.versionType === 'major' && (
             <div className={`dvp-notice ${c.contractType === 'nda' ? 'dvp-notice--warn' : 'dvp-notice--info'}`}>
               {c.contractType === 'nda'
                 ? '⚠️ NDA — uploading a major version while with Sales will automatically resubmit to Legal.'

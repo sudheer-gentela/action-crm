@@ -1,8 +1,7 @@
 // contracts.routes.js
 // All CLM endpoints. Middleware: authenticateToken → orgContext → requireModule('contracts')
-// v2: department-based legal team, new statuses, bulk submit, hierarchy,
-//     customer-initiated signing, executed document upload, confirm booking,
-//     legal-initiated signatures, terminate, cancel.
+// v2: in_review + review_sub_status replaces in_legal_review + with_sales.
+//     New unified /handoff endpoint. Old endpoint names kept as aliases.
 
 const express  = require('express');
 const router   = express.Router();
@@ -39,8 +38,7 @@ router.patch('/admin/module', requireRole('admin','owner'), async (req, res) => 
 // All routes below require module enabled
 router.use(gate);
 
-// ── Legal team check + members list ───────────────────────────────────
-// v2: returns legalTeam array so UI can populate "assign to" dropdowns
+// ── Legal team ────────────────────────────────────────────────────────
 router.get('/legal/team-status', async (req, res) => {
   try {
     const isLegalMember = await CS.isLegalTeamMember(req.orgId, req.userId);
@@ -49,11 +47,30 @@ router.get('/legal/team-status', async (req, res) => {
   } catch (err) { res.status(500).json({ error: { message: 'Failed' } }); }
 });
 
-// v2: dedicated legal members endpoint
 router.get('/legal/members', async (req, res) => {
   try {
     const members = await CS.getLegalTeamMembers(req.orgId);
     res.json({ members });
+  } catch (err) { res.status(500).json({ error: { message: 'Failed' } }); }
+});
+
+// Legal queue: in_review/with_legal contracts not yet assigned
+router.get('/legal/queue', async (req, res) => {
+  try {
+    if (!await CS.isLegalTeamMember(req.orgId, req.userId))
+      return res.status(403).json({ error: { message: 'Legal team only' } });
+    const contracts = await CS.listContracts(req.orgId, { legalMode: 'queue', userId: req.userId });
+    res.json({ contracts });
+  } catch (err) { res.status(500).json({ error: { message: 'Failed' } }); }
+});
+
+// Legal assigned: in_review/with_legal contracts assigned to this user
+router.get('/legal/assigned', async (req, res) => {
+  try {
+    if (!await CS.isLegalTeamMember(req.orgId, req.userId))
+      return res.status(403).json({ error: { message: 'Legal team only' } });
+    const contracts = await CS.listContracts(req.orgId, { legalMode: 'assigned', userId: req.userId });
+    res.json({ contracts });
   } catch (err) { res.status(500).json({ error: { message: 'Failed' } }); }
 });
 
@@ -112,25 +129,6 @@ router.put('/admin/approval-config', requireRole('admin','owner'), async (req, r
   } catch (err) { res.status(500).json({ error: { message: 'Failed to save approval config' } }); }
 });
 
-// ── Legal inbox ────────────────────────────────────────────────────────
-router.get('/legal/queue', async (req, res) => {
-  try {
-    if (!await CS.isLegalTeamMember(req.orgId, req.userId))
-      return res.status(403).json({ error: { message: 'Legal team only' } });
-    const contracts = await CS.listContracts(req.orgId, { legalMode: 'queue', userId: req.userId });
-    res.json({ contracts });
-  } catch (err) { res.status(500).json({ error: { message: 'Failed' } }); }
-});
-
-router.get('/legal/assigned', async (req, res) => {
-  try {
-    if (!await CS.isLegalTeamMember(req.orgId, req.userId))
-      return res.status(403).json({ error: { message: 'Legal team only' } });
-    const contracts = await CS.listContracts(req.orgId, { legalMode: 'assigned', userId: req.userId });
-    res.json({ contracts });
-  } catch (err) { res.status(500).json({ error: { message: 'Failed' } }); }
-});
-
 // ── Pending approvals ─────────────────────────────────────────────────
 router.get('/approvals/pending', async (req, res) => {
   try { res.json({ approvals: await AS.getPendingApprovals(req.orgId, req.userId) }); }
@@ -156,7 +154,7 @@ router.post('/approvals/:aId/decide', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
-// ── v2: Bulk submit to legal ──────────────────────────────────────────
+// ── Bulk submit to legal ──────────────────────────────────────────────
 router.post('/bulk-submit-legal', async (req, res) => {
   try {
     const { contractIds, assigneeUserId } = req.body;
@@ -184,15 +182,20 @@ router.post('/bulk-submit-legal', async (req, res) => {
       }
     }
     const failed = results.filter(r => !r.success);
-    res.json({ results, summary: { total: contractIds.length, succeeded: contractIds.length - failed.length, failed: failed.length } });
+    res.json({
+      results,
+      summary: { total: contractIds.length, succeeded: contractIds.length - failed.length, failed: failed.length },
+    });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
 // ── Contracts CRUD ─────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    const { scope, status, contractType, dealId, search } = req.query;
-    const contracts = await CS.listContracts(req.orgId, { scope, status, contractType, dealId, search, userId: req.userId });
+    const { scope, status, reviewSubStatus, contractType, dealId, search } = req.query;
+    const contracts = await CS.listContracts(req.orgId, {
+      scope, status, reviewSubStatus, contractType, dealId, search, userId: req.userId,
+    });
     res.json({ contracts });
   } catch (err) { console.error(err); res.status(500).json({ error: { message: 'Failed to fetch contracts' } }); }
 });
@@ -244,9 +247,13 @@ router.post('/:id/versions', async (req, res) => {
   try {
     const contractId = parseInt(req.params.id,10);
     const version = await CS.uploadDocumentVersion(req.orgId, contractId, req.userId, req.body);
-    const ct = await db.query(`SELECT title, legal_assignee_id, status FROM contracts WHERE id=$1`, [contractId]);
+    const ct = await db.query(
+      `SELECT title, legal_assignee_id, status, review_sub_status FROM contracts WHERE id=$1`,
+      [contractId]
+    );
     const contract = ct.rows[0];
-    if (contract?.legal_assignee_id) {
+    // Notify legal assignee when sales uploads a new version while with_sales
+    if (contract?.legal_assignee_id && contract?.review_sub_status === 'with_sales') {
       NS.notifyResubmittedToLegal(req.orgId, contractId, contract.title, contract.legal_assignee_id, [], req.userId).catch(() => {});
     }
     res.status(201).json({ version });
@@ -255,6 +262,7 @@ router.post('/:id/versions', async (req, res) => {
 
 // ── Transitions ────────────────────────────────────────────────────────
 
+// Submit draft to legal review (draft → in_review/with_legal)
 router.post('/:id/submit-legal', async (req, res) => {
   try {
     const contractId = parseInt(req.params.id,10);
@@ -270,6 +278,7 @@ router.post('/:id/submit-legal', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
+// Pick up from queue (with_legal queue → assigned to self)
 router.post('/:id/pick-up', async (req, res) => {
   try {
     const contractId = parseInt(req.params.id,10);
@@ -282,6 +291,7 @@ router.post('/:id/pick-up', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
+// Reassign to a different legal team member
 router.post('/:id/reassign', async (req, res) => {
   try {
     const contractId = parseInt(req.params.id,10);
@@ -296,30 +306,67 @@ router.post('/:id/reassign', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
+// ── HANDOFF — unified sub-status transition endpoint ─────────────────
+// POST /:id/handoff  body: { toSubStatus: 'with_legal' | 'with_sales' | 'with_customer', note? }
+//
+// Covers all handoff directions within in_review:
+//   Legal → Sales (return for changes)
+//   Legal → Customer (send draft for customer review)
+//   Sales → Legal (resubmit after making changes)
+//   Sales → Customer (pass draft to customer)
+//   Customer → Legal (customer returns redlines)
+//   Customer → Sales (customer routes back to Sales to co-ordinate)
+router.post('/:id/handoff', async (req, res) => {
+  try {
+    const contractId = parseInt(req.params.id,10);
+    const { toSubStatus, note } = req.body;
+    if (!toSubStatus) return res.status(400).json({ error: { message: 'toSubStatus required' } });
+
+    const result = await CS.handoffReview(req.orgId, contractId, req.userId, toSubStatus, { note });
+
+    // Notifications based on direction
+    if (toSubStatus === 'with_sales') {
+      NS.notifyReturnedToSales(req.orgId, contractId, result.title, result.ownerId, req.userId).catch(() => {});
+    } else if (toSubStatus === 'with_legal') {
+      const ct = await db.query(`SELECT legal_assignee_id FROM contracts WHERE id=$1`, [contractId]);
+      const assigneeId = ct.rows[0]?.legal_assignee_id;
+      const legalTeam  = assigneeId ? [] : await CS.getLegalTeamUserIds(req.orgId);
+      NS.notifyResubmittedToLegal(req.orgId, contractId, result.title, assigneeId, legalTeam, req.userId).catch(() => {});
+    }
+    // with_customer: notify owner that draft has been sent to customer
+    // (add a notifyCustomerReview call here if you add that notification later)
+
+    res.json({ result });
+  } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
+});
+
+// ── LEGACY ALIASES — kept so old frontend calls don't break ──────────
+// return-sales: with_legal → with_sales
 router.post('/:id/return-sales', async (req, res) => {
   try {
     const contractId = parseInt(req.params.id,10);
     if (!await CS.isLegalTeamMember(req.orgId, req.userId))
       return res.status(403).json({ error: { message: 'Legal team only' } });
-    const result = await CS.returnToSales(req.orgId, contractId, req.userId);
+    const result = await CS.handoffReview(req.orgId, contractId, req.userId, 'with_sales');
     NS.notifyReturnedToSales(req.orgId, contractId, result.title, result.ownerId, req.userId).catch(() => {});
     res.json({ success: true });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
+// resubmit: with_sales → with_legal
 router.post('/:id/resubmit', async (req, res) => {
   try {
     const contractId = parseInt(req.params.id,10);
-    const result = await CS.resubmitToLegal(req.orgId, contractId, req.userId);
-    const ct = await db.query(`SELECT title, legal_assignee_id FROM contracts WHERE id=$1`, [contractId]);
-    if (ct.rows[0]) {
-      const legalTeam = result.legalQueue ? await CS.getLegalTeamUserIds(req.orgId) : [];
-      NS.notifyResubmittedToLegal(req.orgId, contractId, ct.rows[0].title, ct.rows[0].legal_assignee_id, legalTeam, req.userId).catch(() => {});
-    }
+    const result = await CS.handoffReview(req.orgId, contractId, req.userId, 'with_legal');
+    const ct = await db.query(`SELECT legal_assignee_id FROM contracts WHERE id=$1`, [contractId]);
+    const assigneeId = ct.rows[0]?.legal_assignee_id;
+    const legalTeam  = assigneeId ? [] : await CS.getLegalTeamUserIds(req.orgId);
+    NS.notifyResubmittedToLegal(req.orgId, contractId, result.title, assigneeId, legalTeam, req.userId).catch(() => {});
     res.json({ result });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
+// ── Send for signature ─────────────────────────────────────────────────
 router.post('/:id/send-signature', async (req, res) => {
   try {
     await CS.sendForSignature(req.orgId, parseInt(req.params.id,10), req.userId);
@@ -327,7 +374,7 @@ router.post('/:id/send-signature', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message, code: err.code } }); }
 });
 
-// v2: Legal-initiated send-for-signature
+// Legal-initiated send-for-signature
 router.post('/:id/legal-send-signature', async (req, res) => {
   try {
     const contractId = parseInt(req.params.id,10);
@@ -355,7 +402,6 @@ router.post('/:id/activate', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
-// v2: confirm deal desk booking (pending_booking → active)
 router.post('/:id/confirm-booking', async (req, res) => {
   try {
     await CS.confirmBooking(req.orgId, parseInt(req.params.id,10), req.userId);
@@ -370,7 +416,6 @@ router.post('/:id/recall', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
-// void kept for backward compat — now transitions to 'terminated'
 router.post('/:id/void', async (req, res) => {
   try {
     await CS.voidContract(req.orgId, parseInt(req.params.id,10), req.userId, req.body);
@@ -378,7 +423,6 @@ router.post('/:id/void', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
-// v2: explicit terminate
 router.post('/:id/terminate', async (req, res) => {
   try {
     await CS.terminateContract(req.orgId, parseInt(req.params.id,10), req.userId, req.body);
@@ -386,7 +430,6 @@ router.post('/:id/terminate', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
-// v2: cancel (pre-execution)
 router.post('/:id/cancel', async (req, res) => {
   try {
     await CS.cancelContract(req.orgId, parseInt(req.params.id,10), req.userId, req.body);
@@ -414,7 +457,6 @@ router.post('/:id/start-approval', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
-// v2: customer-initiated signing
 router.post('/:id/customer-signing', async (req, res) => {
   try {
     await CS.markCustomerInitiatedSigning(req.orgId, parseInt(req.params.id,10), req.userId, req.body);
@@ -422,7 +464,6 @@ router.post('/:id/customer-signing', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
-// v2: upload final executed document + move to pending_booking
 router.post('/:id/upload-executed', async (req, res) => {
   try {
     const contractId = parseInt(req.params.id,10);
@@ -433,7 +474,7 @@ router.post('/:id/upload-executed', async (req, res) => {
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
-// v2: contract hierarchy
+// ── Hierarchy ──────────────────────────────────────────────────────────
 router.get('/:id/hierarchy', async (req, res) => {
   try {
     const hierarchy = await CS.getContractHierarchy(req.orgId, parseInt(req.params.id,10));

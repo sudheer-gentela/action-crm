@@ -363,6 +363,9 @@ export const apiService = {
 
   // ══════════════════════════════════════════════════════════
   // CLM — Contract Lifecycle Management
+  // v2: in_review + review_sub_status model.
+  //     Use handoffTo() for all sub-status transitions within in_review.
+  //     Old methods (returnToSales, resubmit) kept as aliases.
   // ══════════════════════════════════════════════════════════
   contracts: {
     // Admin
@@ -373,14 +376,15 @@ export const apiService = {
     saveApprovalConfig: (rules) => api.put('/contracts/admin/approval-config', { rules }),
 
     // Legal inbox
-    getLegalQueue:      () => api.get('/contracts/legal/queue'),
-    getLegalAssigned:   () => api.get('/contracts/legal/assigned'),
+    getLegalQueue:    () => api.get('/contracts/legal/queue'),
+    getLegalAssigned: () => api.get('/contracts/legal/assigned'),
 
     // Approvals
     getPendingApprovals: () => api.get('/contracts/approvals/pending'),
     decideApproval:      (id, decision, note) => api.post(`/contracts/approvals/${id}/decide`, { decision, note }),
 
     // CRUD
+    // getAll supports params: { scope, status, reviewSubStatus, contractType, dealId, search }
     getAll:   (params = {}) => { const qs = new URLSearchParams(params).toString(); return api.get(`/contracts${qs ? '?' + qs : ''}`); },
     getById:  (id) => api.get(`/contracts/${id}`),
     create:   (data) => api.post('/contracts', data),
@@ -391,12 +395,26 @@ export const apiService = {
     getVersions:   (id) => api.get(`/contracts/${id}/versions`),
     uploadVersion: (id, data) => api.post(`/contracts/${id}/versions`, data),
 
-    // Transitions
-    submitForLegal:    (id, data) => api.post(`/contracts/${id}/submit-legal`, data),
-    pickUp:            (id) => api.post(`/contracts/${id}/pick-up`),
-    reassign:          (id, newAssigneeId) => api.post(`/contracts/${id}/reassign`, { newAssigneeId }),
-    returnToSales:     (id) => api.post(`/contracts/${id}/return-sales`),
-    resubmit:          (id) => api.post(`/contracts/${id}/resubmit`),
+    // ── Review cycle transitions ──────────────────────────────
+    // Submit draft → in_review/with_legal
+    submitForLegal: (id, data) => api.post(`/contracts/${id}/submit-legal`, data),
+
+    // Pick up from legal queue (with_legal queue → assigned to self)
+    pickUp:   (id) => api.post(`/contracts/${id}/pick-up`),
+
+    // Reassign to different legal team member
+    reassign: (id, newAssigneeId) => api.post(`/contracts/${id}/reassign`, { newAssigneeId }),
+
+    // Unified sub-status handoff — use this for all in-review direction changes:
+    //   toSubStatus: 'with_legal' | 'with_sales' | 'with_customer'
+    //   note: optional free-text reason
+    handoffTo: (id, toSubStatus, note) => api.post(`/contracts/${id}/handoff`, { toSubStatus, note }),
+
+    // Legacy aliases (still work — call /return-sales and /resubmit endpoints)
+    returnToSales: (id) => api.post(`/contracts/${id}/return-sales`),
+    resubmit:      (id) => api.post(`/contracts/${id}/resubmit`),
+
+    // ── Signature + booking ───────────────────────────────────
     sendForSignature:  (id) => api.post(`/contracts/${id}/send-signature`),
     markSigned:        (id) => api.post(`/contracts/${id}/mark-signed`),
     activate:          (id) => api.post(`/contracts/${id}/activate`),
@@ -405,32 +423,32 @@ export const apiService = {
     amend:             (id) => api.post(`/contracts/${id}/amend`),
     startApproval:     (id) => api.post(`/contracts/${id}/start-approval`),
 
-    // v2: new status transitions
-    terminate:       (id, data) => api.post(`/contracts/${id}/terminate`, data),
-    cancel:          (id, data) => api.post(`/contracts/${id}/cancel`, data),
-    confirmBooking:  (id) => api.post(`/contracts/${id}/confirm-booking`),
+    // v2 status transitions
+    terminate:      (id, data) => api.post(`/contracts/${id}/terminate`, data),
+    cancel:         (id, data) => api.post(`/contracts/${id}/cancel`, data),
+    confirmBooking: (id) => api.post(`/contracts/${id}/confirm-booking`),
 
-    // v2: signature workflow
-    legalSendSignature:       (id) => api.post(`/contracts/${id}/legal-send-signature`),
-    markCustomerSigning:      (id, data) => api.post(`/contracts/${id}/customer-signing`, data),
-    uploadExecutedDocument:   (id, data) => api.post(`/contracts/${id}/upload-executed`, data),
+    // v2 signature workflow
+    legalSendSignature:     (id) => api.post(`/contracts/${id}/legal-send-signature`),
+    markCustomerSigning:    (id, data) => api.post(`/contracts/${id}/customer-signing`, data),
+    uploadExecutedDocument: (id, data) => api.post(`/contracts/${id}/upload-executed`, data),
 
-    // v2: bulk operations
+    // v2 bulk operations
     bulkSubmitLegal: (contractIds, assigneeUserId) =>
       api.post('/contracts/bulk-submit-legal', { contractIds, assigneeUserId }),
 
-    // v2: hierarchy
+    // v2 hierarchy
     getHierarchy: (id) => api.get(`/contracts/${id}/hierarchy`),
 
-    // v2: legal team
+    // v2 legal team
     getLegalMembers: () => api.get('/contracts/legal/members'),
 
-    // v2: templates
-    getTemplates:          () => api.get('/contracts/templates'),
-    getTemplatesByType:    (contractType) => api.get(`/contracts/templates/by-type/${contractType}`),
-    createTemplate:        (data) => api.post('/contracts/templates', data),
-    updateTemplate:        (id, data) => api.put(`/contracts/templates/${id}`, data),
-    deleteTemplate:        (id) => api.delete(`/contracts/templates/${id}`),
+    // v2 templates
+    getTemplates:       () => api.get('/contracts/templates'),
+    getTemplatesByType: (contractType) => api.get(`/contracts/templates/by-type/${contractType}`),
+    createTemplate:     (data) => api.post('/contracts/templates', data),
+    updateTemplate:     (id, data) => api.put(`/contracts/templates/${id}`, data),
+    deleteTemplate:     (id) => api.delete(`/contracts/templates/${id}`),
 
     // Signatories
     addSignatory:    (id, data) => api.post(`/contracts/${id}/signatories`, data),

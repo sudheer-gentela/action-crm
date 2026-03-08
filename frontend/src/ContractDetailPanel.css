@@ -189,3 +189,43 @@
   font-size: 11px; font-weight: 700; padding: 4px 10px;
   border-radius: 8px; margin-left: 8px; flex-shrink: 0;
 }
+
+
+/* ── Review sub-stage indicator bar (in_review) ─────────────────── */
+.cdp-review-substage-bar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 0 12px;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.cdp-substage-pill {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: #f3f4f6;
+  color: #6b7280;
+  border: 1.5px solid transparent;
+  transition: all 0.15s ease;
+}
+
+.cdp-substage-pill--active {
+  background: #fffbeb;
+  color: #92400e;
+  border-color: #f59e0b;
+  font-weight: 600;
+}
+
+.cdp-substage-note {
+  font-size: 12px;
+  color: #6b7280;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  width: 100%;
+}

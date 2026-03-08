@@ -17,8 +17,7 @@ import './ContractsView.css';
 const STATUS_OPTIONS = [
   { value: '',                label: 'All statuses' },
   { value: 'draft',           label: 'Draft' },
-  { value: 'in_legal_review', label: 'In Legal Review' },
-  { value: 'with_sales',      label: 'With Sales' },
+  { value: 'in_review', label: 'In Review' },
   { value: 'in_signatures',   label: 'In Signatures' },
   { value: 'pending_booking', label: 'Pending Booking' },
   { value: 'signed',          label: 'Signed' },
@@ -42,8 +41,7 @@ const TYPE_OPTIONS = [
 
 const STATUS_COLORS = {
   draft:           { bg: '#f1f5f9', text: '#475569' },
-  in_legal_review: { bg: '#fef3c7', text: '#92400e' },
-  with_sales:      { bg: '#dbeafe', text: '#1e40af' },
+  in_review:       { bg: '#fef3c7', text: '#92400e' },
   in_signatures:   { bg: '#ede9fe', text: '#5b21b6' },
   pending_booking: { bg: '#fce7f3', text: '#9d174d' },
   signed:          { bg: '#dcfce7', text: '#14532d' },
@@ -65,11 +63,16 @@ const BULK_ELIGIBLE_TABS = ['mine', 'all', 'standalone'];
 
 // ── Sub-components ───────────────────────────────────────────────────────────
 
-function Badge({ status }) {
+function Badge({ status, reviewSubStatus }) {
   const col = STATUS_COLORS[status] || STATUS_COLORS.draft;
   const lbl = STATUS_OPTIONS.find(s => s.value === status)?.label || status;
+  const subLabel = status === 'in_review' && reviewSubStatus
+    ? reviewSubStatus === 'with_legal' ? ' · Legal'
+    : reviewSubStatus === 'with_sales' ? ' · Sales'
+    : ' · Customer'
+    : '';
   return (
-    <span className="cv-badge" style={{ background: col.bg, color: col.text }}>{lbl}</span>
+    <span className="cv-badge" style={{ background: col.bg, color: col.text }}>{lbl}{subLabel}</span>
   );
 }
 
@@ -106,7 +109,7 @@ function ContractRow({ contract: c, selected, onSelect, onOpen, bulkMode, checke
       </div>
 
       <div className="cv-row-right">
-        <Badge status={c.status} />
+        <Badge status={c.status} reviewSubStatus={c.reviewSubStatus} />
         {c.internalApprovalStatus && c.internalApprovalStatus !== 'not_started' && (
           <span className={`cv-appr cv-appr--${c.internalApprovalStatus}`}>
             {c.internalApprovalStatus === 'pending'   ? 'Approval pending'
