@@ -54,7 +54,8 @@ const NAV_GROUPS = [
   {
     label: 'Modules',
     items: [
-      { id: 'modules', icon: '🧩', label: 'CLM Modules' },
+      { id: 'modules',       icon: '🧩', label: 'Modules' },
+      { id: 'clm_templates', icon: '📄', label: 'CLM Templates' },
     ],
   },
   {
@@ -80,7 +81,8 @@ const TAB_META = {
   'icp-scoring': { title: 'ICP Scoring',   desc: 'Define your Ideal Customer Profile and scoring criteria' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
-  modules:       { title: 'CLM Modules',   desc: 'Enable or disable Contract Lifecycle Management modules for your organisation' },
+  modules:       { title: 'Modules',       desc: 'Enable or disable product modules for your organisation' },
+  clm_templates: { title: 'CLM Templates', desc: 'Upload master contract templates for your team to download and fill in' },
   integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },
   settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
 };
@@ -175,6 +177,7 @@ export default function OrgAdminView() {
           <div className="oa-tab-content">
             {tab === 'modules'      && <OAModules />}
             {tab === 'members'     && <OAMembers currentUserId={currentUser.id} />}
+            {tab === 'clm_templates' && <OACLMTemplates />}
             {tab === 'hierarchy'   && <OAHierarchy />}
             {tab === 'teams'       && <OATeams />}
             {tab === 'invitations' && <OAInvitations />}
@@ -206,6 +209,34 @@ const ROLE_META = {
   viewer: { label: 'Viewer', color: 'grey',   icon: '👁',  desc: 'Read-only access to all CRM data. Cannot create or edit records.' },
 };
 
+// v2: Department options for CLM legal team routing
+const DEPARTMENT_OPTIONS = [
+  { value: '',                 label: '— No department —' },
+  { value: 'sales',            label: 'Sales' },
+  { value: 'legal',            label: 'Legal' },
+  { value: 'implementation',   label: 'Implementation' },
+  { value: 'customer_support', label: 'Customer Support' },
+  { value: 'finance',          label: 'Finance' },
+  { value: 'executive',        label: 'Executive' },
+];
+
+const DEPARTMENT_META = {
+  sales:            { label: 'Sales',            color: '#2563eb' },
+  legal:            { label: 'Legal',            color: '#7c3aed' },
+  implementation:   { label: 'Implementation',   color: '#059669' },
+  customer_support: { label: 'Customer Support', color: '#d97706' },
+  finance:          { label: 'Finance',          color: '#dc2626' },
+  executive:        { label: 'Executive',        color: '#0891b2' },
+};
+
+const CONTRACT_TYPE_LABELS = {
+  nda:        'NDA',
+  msa:        'MSA',
+  sow:        'SOW',
+  order_form: 'Order Form',
+  amendment:  'Amendment',
+};
+
 function RoleBadge({ role }) {
   const m = ROLE_META[role] || { label: role, color: 'grey', icon: '•' };
   return (
@@ -220,12 +251,13 @@ function RoleBadge({ role }) {
 // ─────────────────────────────────────────────────────────────────
 
 function OAMembers({ currentUserId }) {
-  const [members, setMembers] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch]   = useState('');
-  const [error, setError]     = useState('');
-  const [success, setSuccess] = useState('');
-  const [callerRole, setCallerRole] = useState('member');
+  const [members, setMembers]         = useState([]);
+  const [loading, setLoading]         = useState(true);
+  const [search, setSearch]           = useState('');
+  const [error, setError]             = useState('');
+  const [success, setSuccess]         = useState('');
+  const [callerRole, setCallerRole]   = useState('member');
+  const [editingDept, setEditingDept] = useState(null); // userId currently editing dept
 
   const load = useCallback(async () => {
     try {
@@ -251,6 +283,18 @@ function OAMembers({ currentUserId }) {
     }
   };
 
+  const handleDepartmentChange = async (userId, department) => {
+    try {
+      await apiService.orgAdmin.updateMember(userId, { department: department || null });
+      setSuccess('Department updated');
+      setTimeout(() => setSuccess(''), 2000);
+      setEditingDept(null);
+      load();
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to update department');
+    }
+  };
+
   const handleRemove = async (userId, name) => {
     if (!window.confirm(`Remove ${name} from the organisation?`)) return;
     try {
@@ -266,17 +310,23 @@ function OAMembers({ currentUserId }) {
   const filtered = members.filter(m =>
     !search ||
     m.name?.toLowerCase().includes(search.toLowerCase()) ||
-    m.email.toLowerCase().includes(search.toLowerCase())
+    m.email.toLowerCase().includes(search.toLowerCase()) ||
+    m.department?.toLowerCase().includes(search.toLowerCase())
   );
 
   const isOwner = callerRole === 'owner';
+  const canEditMembers = isOwner || callerRole === 'admin';
 
   return (
     <div className="sv-panel">
       <div className="sv-panel-header">
         <div>
           <h2>👥 Team Members</h2>
-          <p className="sv-panel-desc">Manage who is in your organisation and what they can access.</p>
+          <p className="sv-panel-desc">
+            Manage who is in your organisation and what they can access.
+            Set each member's <strong>department</strong> to enable team-based routing —
+            members with the <strong>Legal</strong> department will receive contracts for review.
+          </p>
         </div>
       </div>
 
@@ -296,10 +346,20 @@ function OAMembers({ currentUserId }) {
           ))}
         </div>
 
+        {/* Department info */}
+        <div style={{
+          background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8,
+          padding: '10px 14px', marginBottom: 16, fontSize: 13, color: '#166534',
+        }}>
+          <strong>🏢 Departments</strong> — Members with the <strong>Legal</strong> department
+          will be added to the CLM legal team queue for contract review. Click a member's
+          department badge to change it.
+        </div>
+
         {/* Search */}
         <input
           className="oa-search"
-          placeholder="Search members…"
+          placeholder="Search members by name, email, or department…"
           value={search}
           onChange={e => setSearch(e.target.value)}
         />
@@ -310,9 +370,11 @@ function OAMembers({ currentUserId }) {
           <div className="oa-member-table">
             {filtered.length === 0 && <div className="sv-empty">No members found</div>}
             {filtered.map(m => {
-              const isMe       = m.user_id === currentUserId;
-              const canEdit    = !isMe && (isOwner || (callerRole === 'admin' && m.role !== 'owner'));
-              const canChangeToOwner = isOwner && !isMe;
+              const isMe              = m.user_id === currentUserId;
+              const canEdit           = !isMe && (isOwner || (callerRole === 'admin' && m.role !== 'owner'));
+              const canChangeToOwner  = isOwner && !isMe;
+              const deptMeta          = DEPARTMENT_META[m.department] || null;
+              const isEditingThisDept = editingDept === m.user_id;
 
               return (
                 <div key={m.user_id} className={`oa-member-row ${!m.is_active ? 'oa-member-row--inactive' : ''}`}>
@@ -323,11 +385,46 @@ function OAMembers({ currentUserId }) {
                     <div className="oa-member-name">
                       {m.name || m.email}
                       {isMe && <span className="oa-you-tag">you</span>}
+                      {m.department === 'legal' && (
+                        <span style={{
+                          marginLeft: 6, fontSize: 11, background: '#ede9fe',
+                          color: '#7c3aed', borderRadius: 4, padding: '2px 6px', fontWeight: 600,
+                        }}>⚖️ Legal Team</span>
+                      )}
                     </div>
                     <div className="oa-member-email">{m.email}</div>
-                    <div className="oa-member-meta">
-                      Joined {new Date(m.joined_at).toLocaleDateString()} ·{' '}
-                      {m.action_count} actions
+                    <div className="oa-member-meta" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 2 }}>
+                      <span>Joined {new Date(m.joined_at).toLocaleDateString()} · {m.action_count} actions</span>
+
+                      {/* Department chip — click to edit */}
+                      {isEditingThisDept && canEditMembers ? (
+                        <select
+                          style={{ fontSize: 12, padding: '2px 6px', borderRadius: 4, border: '1px solid #d1d5db' }}
+                          defaultValue={m.department || ''}
+                          autoFocus
+                          onChange={e => handleDepartmentChange(m.user_id, e.target.value)}
+                          onBlur={() => setEditingDept(null)}
+                        >
+                          {DEPARTMENT_OPTIONS.map(o => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span
+                          onClick={() => canEditMembers && setEditingDept(m.user_id)}
+                          style={{
+                            fontSize: 11, borderRadius: 4, padding: '2px 8px',
+                            background: deptMeta ? `${deptMeta.color}15` : '#f1f5f9',
+                            color: deptMeta ? deptMeta.color : '#64748b',
+                            border: `1px solid ${deptMeta ? `${deptMeta.color}40` : '#e2e8f0'}`,
+                            fontWeight: 500,
+                            cursor: canEditMembers ? 'pointer' : 'default',
+                          }}
+                          title={canEditMembers ? 'Click to change department' : undefined}
+                        >
+                          {deptMeta ? `🏢 ${deptMeta.label}` : '+ Set department'}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="oa-member-role">
@@ -4235,193 +4332,50 @@ function OAIntegrations() {
 
 // ─────────────────────────────────────────────────────────────────
 // MODULES TAB — enable/disable product modules per org
-
-// ─────────────────────────────────────────────────────────────────
-// CLM MODULES TAB
-// Enable/disable CLM modules + E-Signature configuration
 // ─────────────────────────────────────────────────────────────────
 
 function OAModules() {
-
-  // ── CLM module toggle state ───────────────────────────────────
-  const [modules, setModules]       = useState({ contracts: false });
-  const [modulesLoading, setModulesLoading] = useState(true);
-  const [savingModule, setSavingModule]     = useState(null);
-  const [moduleError, setModuleError]       = useState('');
-  const [moduleSuccess, setModuleSuccess]   = useState('');
-
-  // ── E-Signature state ─────────────────────────────────────────
-  const [esignConfig, setEsignConfig]       = useState(null);
-  const [esignLoading, setEsignLoading]     = useState(true);
-  const [togglingEsign, setTogglingEsign]   = useState(false);
-  const [saving, setSaving]                 = useState(false);
-  const [validating, setValidating]         = useState(false);
-  const [esignError, setEsignError]         = useState('');
-  const [esignSuccess, setEsignSuccess]     = useState('');
-  const [esignMode, setEsignMode]           = useState('view'); // 'view' | 'byol-setup'
-
-  // BYOL form fields
-  const [provider, setProvider]         = useState('zoho');
-  const [clientId, setClientId]         = useState('');
-  const [clientSecret, setClientSecret] = useState('');
-  const [redirectUri, setRedirectUri]   = useState('');
-  const [showSecret, setShowSecret]     = useState(false);
+  const [modules, setModules] = useState({
+    contracts: false,
+  });
+  const [loading, setLoading]   = useState(true);
+  const [saving, setSaving]     = useState(null);
+  const [error, setError]       = useState('');
+  const [success, setSuccess]   = useState('');
 
   useEffect(() => {
+    // Load current module flags from org profile
     apiService.orgAdmin.getProfile()
       .then(r => {
         const settings = r.data.org?.settings || {};
-        setModules({ contracts: settings.modules?.contracts || false });
+        setModules({
+          contracts: settings.modules?.contracts || false,
+        });
       })
-      .catch(() => setModuleError('Failed to load module settings'))
-      .finally(() => setModulesLoading(false));
-
-    loadEsignConfig();
+      .catch(() => setError('Failed to load module settings'))
+      .finally(() => setLoading(false));
   }, []);
 
-  async function loadEsignConfig() {
-    setEsignLoading(true);
-    try {
-      const r = await apiService.contracts.getEsignConfig();
-      const c = r.data.config;
-      setEsignConfig(c);
-      if (c.provider)     setProvider(c.provider);
-      if (c.client_id)    setClientId(c.client_id);
-      if (c.redirect_uri) setRedirectUri(c.redirect_uri);
-    } catch (e) {
-      setEsignError('Failed to load e-signature settings');
-    } finally {
-      setEsignLoading(false);
-    }
-  }
-
-  // ── CLM toggle handler ────────────────────────────────────────
-  const handleModuleToggle = async (moduleName, newVal) => {
-    setSavingModule(moduleName);
-    setModuleError('');
+  const handleToggle = async (moduleName, newVal) => {
+    setSaving(moduleName);
+    setError('');
     try {
       await apiService.contracts.toggleModule(newVal);
       setModules(prev => ({ ...prev, [moduleName]: newVal }));
-      setModuleSuccess(`Contracts module ${newVal ? 'enabled' : 'disabled'} ✓`);
-      setTimeout(() => setModuleSuccess(''), 3000);
+      setSuccess(`Contracts module ${newVal ? 'enabled' : 'disabled'} ✓`);
+      setTimeout(() => setSuccess(''), 3000);
     } catch (e) {
-      setModuleError(e.response?.data?.error?.message || e.message || 'Failed to update module');
+      setError(e.response?.data?.error?.message || e.message || 'Failed to update module');
     } finally {
-      setSavingModule(null);
+      setSaving(null);
     }
   };
 
-  // ── E-Signature handlers ──────────────────────────────────────
-  async function handleToggleEsign(newVal) {
-    setTogglingEsign(true); setEsignError('');
-    try {
-      await apiService.contracts.toggleEsign(newVal);
-      setEsignConfig(prev => ({ ...prev, enabled: newVal }));
-      setEsignSuccess(`E-Signature ${newVal ? 'enabled ✓' : 'disabled'}`);
-      setTimeout(() => setEsignSuccess(''), 3000);
-    } catch (e) {
-      setEsignError(e.response?.data?.error?.message || 'Failed to update');
-    } finally { setTogglingEsign(false); }
-  }
-
-  async function handleSaveByol() {
-    if (!clientId.trim())     return setEsignError('Client ID is required');
-    if (!clientSecret.trim()) return setEsignError('Client Secret is required');
-    if (!redirectUri.trim())  return setEsignError('Redirect URI is required');
-    setSaving(true); setEsignError('');
-    try {
-      await apiService.contracts.saveEsignConfig({
-        provider, client_id: clientId.trim(),
-        client_secret: clientSecret.trim(), redirect_uri: redirectUri.trim(),
-      });
-      setEsignSuccess('Credentials saved ✓');
-      setClientSecret('');
-      setEsignMode('view');
-      setTimeout(() => setEsignSuccess(''), 3000);
-      await loadEsignConfig();
-    } catch (e) {
-      setEsignError(e.response?.data?.error?.message || e.message || 'Failed to save');
-    } finally { setSaving(false); }
-  }
-
-  async function handleConnect() {
-    setEsignError('');
-    try {
-      const r = await apiService.contracts.getEsignAuthUrl();
-      window.open(r.data.url, '_blank', 'width=600,height=700,noopener');
-      setEsignSuccess('OAuth window opened — complete sign-in, then click Validate below');
-      setTimeout(() => setEsignSuccess(''), 10000);
-    } catch (e) {
-      setEsignError(e.response?.data?.error?.message || 'Failed to get auth URL — save credentials first');
-    }
-  }
-
-  async function handleValidate() {
-    setValidating(true); setEsignError('');
-    try {
-      const r = await apiService.contracts.validateEsign();
-      if (r.data.valid) {
-        setEsignSuccess(`✅ Connection valid (${r.data.credentialSource === 'platform' ? 'platform account' : 'your account'})`);
-        await loadEsignConfig();
-      } else {
-        setEsignError(`Connection invalid: ${r.data.message}`);
-      }
-    } catch (e) {
-      setEsignError('Validation failed — check credentials and try connecting again');
-    } finally {
-      setValidating(false);
-      setTimeout(() => setEsignSuccess(''), 4000);
-    }
-  }
-
-  async function handleDisconnect() {
-    if (!window.confirm('Disconnect your BYOL e-signature account? This org will revert to the platform default.')) return;
-    setEsignError('');
-    try {
-      await apiService.contracts.disconnectEsign();
-      setEsignSuccess('Disconnected — reverted to platform default');
-      await loadEsignConfig();
-      setTimeout(() => setEsignSuccess(''), 3000);
-    } catch (e) { setEsignError('Failed to disconnect'); }
-  }
-
-  async function handleRemoveByol() {
-    if (!window.confirm('Remove your own credentials? This org will use the platform shared account.')) return;
-    setEsignError('');
-    try {
-      await apiService.contracts.removeOrgEsign();
-      setEsignSuccess('Removed — now using platform default');
-      setEsignMode('view');
-      await loadEsignConfig();
-      setTimeout(() => setEsignSuccess(''), 3000);
-    } catch (e) { setEsignError('Failed to remove'); }
-  }
-
-  // ── Provider definitions ──────────────────────────────────────
-  const PROVIDER_DEFS = [
-    {
-      id: 'zoho', label: 'Zoho Sign', icon: '✍️',
-      desc: '$0.20 per signed document. No monthly fee.',
-      docsUrl: 'https://www.zoho.com/sign/api/',
-      setupSteps: [
-        'Go to api-console.zoho.com → create a Server-based Application',
-        'Copy the Client ID and Client Secret into the form below',
-        'Set the Redirect URI to your Railway backend URL + /api/contracts/admin/esign-callback',
-        'Save credentials, then click Connect to complete OAuth',
-      ],
-    },
-    {
-      id: 'docusign', label: 'DocuSign', icon: '📝',
-      desc: 'Bring your own DocuSign license.',
-      docsUrl: 'https://developers.docusign.com',
-      setupSteps: ['Coming soon'], disabled: true,
-    },
-  ];
-  const selectedDef = PROVIDER_DEFS.find(p => p.id === provider) || PROVIDER_DEFS[0];
-
   const MODULE_DEFS = [
     {
-      key: 'contracts', icon: '📄', label: 'Contract Lifecycle Management', color: '#6366f1',
+      key: 'contracts',
+      icon: '📄',
+      label: 'Contract Lifecycle Management',
       desc: 'Full CLM workflow — create contracts, legal review queue, approval chains, e-signature tracking, document versioning, and automated expiry notifications.',
       features: [
         'NDA, MSA, SOW, Order Form, Amendment support',
@@ -4432,293 +4386,97 @@ function OAModules() {
         'Deal-linked contracts visible in deal detail view',
         'Automated expiry and unsigned follow-up notifications',
       ],
+      color: '#6366f1',
     },
   ];
 
-  // ── Derived esign display values ──────────────────────────────
-  const esignEnabled    = esignConfig?.enabled;
-  const isConnected     = esignConfig?.connected;
-  const usingPlatform   = esignConfig?.usingPlatform;
-  const hasOwnCreds     = !!(esignConfig?.client_id);
-
-  const bannerBg     = isConnected ? (usingPlatform ? '#eff6ff' : '#f0fdf4') : '#fafafa';
-  const bannerBorder = isConnected ? (usingPlatform ? '#93c5fd' : '#86efac') : '#e5e7eb';
-  const bannerIcon   = isConnected ? (usingPlatform ? '🔵' : '✅') : '⚪';
-  const bannerTitle  = isConnected
-    ? (usingPlatform ? 'Using platform signing account (shared)' : 'Connected — using your own account')
-    : 'Not connected';
-  const bannerDesc = isConnected
-    ? (usingPlatform
-        ? 'Signing requests go through the ActionCRM shared Zoho Sign account. Connect your own account below to use your own credits and branding.'
-        : 'Signing requests are sent from your own e-signature account.')
-    : 'No provider connected yet — use the platform default (Zoho Sign) or connect your own account below.';
+  if (loading) return <div className="sv-loading">Loading module settings…</div>;
 
   return (
     <div className="sv-panel">
       <div className="sv-panel-header">
         <div>
-          <h2>🧩 CLM Modules</h2>
-          <p className="sv-panel-desc">Enable or disable Contract Lifecycle Management modules and their integrations.</p>
+          <h2>🧩 Modules</h2>
+          <p className="sv-panel-desc">Enable or disable product modules for your organisation. Changes take effect immediately.</p>
         </div>
       </div>
 
+      {error   && <div className="sv-error">⚠️ {error}</div>}
+      {success && <div className="sv-success">{success}</div>}
+
       <div className="sv-panel-body">
+        {MODULE_DEFS.map(mod => {
+          const isOn   = modules[mod.key];
+          const isBusy = saving === mod.key;
 
-        {/* ── CLM Module cards ── */}
-        {moduleError   && <div className="sv-error">⚠️ {moduleError}</div>}
-        {moduleSuccess && <div className="sv-success">{moduleSuccess}</div>}
+          return (
+            <div key={mod.key} style={{
+              background: '#fff',
+              border: `1.5px solid ${isOn ? mod.color + '40' : '#e5e7eb'}`,
+              borderRadius: 12,
+              padding: '20px 24px',
+              marginBottom: 16,
+              transition: 'border-color 0.2s',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+                <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flex: 1 }}>
+                  <span style={{
+                    fontSize: 28, width: 44, height: 44, borderRadius: 10,
+                    background: isOn ? mod.color + '15' : '#f3f4f6',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                  }}>{mod.icon}</span>
 
-        {modulesLoading
-          ? <div className="sv-loading">Loading…</div>
-          : MODULE_DEFS.map(mod => {
-            const isOn   = modules[mod.key];
-            const isBusy = savingModule === mod.key;
-            return (
-              <div key={mod.key} style={{
-                background: '#fff', border: `1.5px solid ${isOn ? mod.color + '40' : '#e5e7eb'}`,
-                borderRadius: 12, padding: '20px 24px', marginBottom: 16,
-              }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
-                  <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flex: 1 }}>
-                    <span style={{
-                      fontSize: 28, width: 44, height: 44, borderRadius: 10, flexShrink: 0,
-                      background: isOn ? mod.color + '15' : '#f3f4f6',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    }}>{mod.icon}</span>
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-                        <span style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>{mod.label}</span>
-                        <span style={{
-                          fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
-                          background: isOn ? '#d1fae5' : '#f3f4f6',
-                          color: isOn ? '#065f46' : '#9ca3af',
-                          textTransform: 'uppercase', letterSpacing: '0.05em',
-                        }}>{isOn ? 'Enabled' : 'Disabled'}</span>
-                      </div>
-                      <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 10px', lineHeight: 1.6 }}>{mod.desc}</p>
-                      <ul style={{ margin: 0, padding: '0 0 0 16px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                        {mod.features.map(f => (
-                          <li key={f} style={{ fontSize: 12, color: '#374151', lineHeight: 1.5 }}>{f}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  </div>
-                  <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-                    <button disabled={isBusy} onClick={() => handleModuleToggle(mod.key, !isOn)}
-                      style={{
-                        padding: '9px 22px', borderRadius: 8, border: 'none', fontWeight: 700,
-                        fontSize: 13, cursor: isBusy ? 'wait' : 'pointer', minWidth: 100,
-                        background: isOn ? '#fee2e2' : mod.color, color: isOn ? '#dc2626' : '#fff',
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                      <span style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>{mod.label}</span>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
+                        background: isOn ? '#d1fae5' : '#f3f4f6',
+                        color: isOn ? '#065f46' : '#9ca3af',
+                        textTransform: 'uppercase', letterSpacing: '0.05em',
                       }}>
-                      {isBusy ? '…' : isOn ? 'Disable' : 'Enable'}
-                    </button>
-                    {isOn && <span style={{ fontSize: 11, color: '#9ca3af' }}>Visible to all members</span>}
+                        {isOn ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 10px', lineHeight: 1.6 }}>{mod.desc}</p>
+                    <ul style={{ margin: 0, padding: '0 0 0 16px', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {mod.features.map(f => (
+                        <li key={f} style={{ fontSize: 12, color: '#374151', lineHeight: 1.5 }}>{f}</li>
+                      ))}
+                    </ul>
                   </div>
                 </div>
 
-                {/* ── E-Signature section — only shown when CLM is enabled ── */}
-                {isOn && (
-                  <div style={{ marginTop: 24, borderTop: '1px solid #f3f4f6', paddingTop: 20 }}>
-
-                    <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', marginBottom: 14 }}>
-                      ✍️ E-Signature
-                    </div>
-
-                    {esignError   && <div className="sv-error" style={{ marginBottom: 10 }}>⚠️ {esignError}</div>}
-                    {esignSuccess && <div className="sv-success" style={{ marginBottom: 10 }}>{esignSuccess}</div>}
-
-                    {esignLoading
-                      ? <div style={{ fontSize: 12, color: '#9ca3af' }}>Loading e-signature settings…</div>
-                      : (<>
-
-                        {/* Enable/disable card */}
-                        <div style={{
-                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                          padding: '14px 18px', borderRadius: 10, marginBottom: 16,
-                          background: esignEnabled ? '#f5f3ff' : '#fafafa',
-                          border: `1.5px solid ${esignEnabled ? '#c4b5fd' : '#e5e7eb'}`,
-                        }}>
-                          <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                              <span style={{ fontSize: 13, fontWeight: 700, color: '#111827' }}>Automatic signing dispatch</span>
-                              <span style={{
-                                fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
-                                background: esignEnabled ? '#d1fae5' : '#f3f4f6',
-                                color: esignEnabled ? '#065f46' : '#9ca3af',
-                                textTransform: 'uppercase', letterSpacing: '0.05em',
-                              }}>{esignEnabled ? 'Enabled' : 'Disabled'}</span>
-                            </div>
-                            <p style={{ margin: 0, fontSize: 12, color: '#6b7280', lineHeight: 1.5 }}>
-                              Automatically send signing requests when a contract moves to <em>In Signatures</em>.
-                            </p>
-                          </div>
-                          <button disabled={togglingEsign} onClick={() => handleToggleEsign(!esignEnabled)}
-                            style={{
-                              padding: '8px 20px', borderRadius: 8, border: 'none', fontWeight: 700,
-                              fontSize: 12, minWidth: 90, flexShrink: 0, marginLeft: 16,
-                              cursor: togglingEsign ? 'wait' : 'pointer',
-                              background: esignEnabled ? '#fee2e2' : '#7c3aed',
-                              color: esignEnabled ? '#dc2626' : '#fff',
-                            }}>
-                            {togglingEsign ? '…' : esignEnabled ? 'Disable' : 'Enable'}
-                          </button>
-                        </div>
-
-                        {/* Provider config — only shown when esign enabled */}
-                        {esignEnabled && (<>
-
-                          {/* Connection status banner */}
-                          <div style={{
-                            display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
-                            padding: '12px 16px', borderRadius: 9, marginBottom: 14,
-                            background: bannerBg, border: `1.5px solid ${bannerBorder}`,
-                          }}>
-                            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                              <span style={{ fontSize: 18 }}>{bannerIcon}</span>
-                              <div>
-                                <div style={{ fontWeight: 700, fontSize: 13, color: '#111827' }}>{bannerTitle}</div>
-                                <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2, lineHeight: 1.5, maxWidth: 440 }}>{bannerDesc}</div>
-                              </div>
-                            </div>
-                            <div style={{ display: 'flex', gap: 6, flexShrink: 0, marginLeft: 12 }}>
-                              {isConnected && (
-                                <button onClick={handleValidate} disabled={validating}
-                                  style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #d1d5db', background: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                                  {validating ? '…' : 'Validate'}
-                                </button>
-                              )}
-                              {hasOwnCreds && isConnected && !usingPlatform && (
-                                <button onClick={handleDisconnect}
-                                  style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #fca5a5', background: '#fff', color: '#dc2626', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                                  Disconnect
-                                </button>
-                              )}
-                              {hasOwnCreds && (
-                                <button onClick={handleRemoveByol}
-                                  style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', fontSize: 11, cursor: 'pointer' }}>
-                                  Use platform default
-                                </button>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* BYOL toggle button */}
-                          {esignMode === 'view' && (
-                            <button onClick={() => setEsignMode('byol-setup')}
-                              style={{
-                                width: '100%', padding: '10px', borderRadius: 8, marginBottom: 14,
-                                border: '1.5px dashed #d1d5db', background: '#fafafa',
-                                fontSize: 12, fontWeight: 600, color: '#374151', cursor: 'pointer',
-                              }}>
-                              {hasOwnCreds ? '⚙️ Edit your own account credentials' : '➕ Connect your own Zoho / DocuSign account (BYOL)'}
-                            </button>
-                          )}
-
-                          {/* BYOL setup form */}
-                          {esignMode === 'byol-setup' && (
-                            <div style={{ border: '1.5px solid #e5e7eb', borderRadius: 9, padding: '18px 20px', marginBottom: 14, background: '#fff' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                                <div style={{ fontSize: 13, fontWeight: 700, color: '#111827' }}>Connect your own account</div>
-                                <button onClick={() => { setEsignMode('view'); setEsignError(''); }}
-                                  style={{ background: 'none', border: 'none', fontSize: 16, cursor: 'pointer', color: '#9ca3af' }}>✕</button>
-                              </div>
-
-                              {/* Provider tabs */}
-                              <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-                                {PROVIDER_DEFS.map(p => (
-                                  <button key={p.id} disabled={p.disabled} onClick={() => !p.disabled && setProvider(p.id)}
-                                    style={{
-                                      padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 700,
-                                      border: `2px solid ${provider === p.id ? '#6366f1' : '#e5e7eb'}`,
-                                      background: provider === p.id ? '#eef2ff' : '#fff',
-                                      color: provider === p.id ? '#4f46e5' : '#374151',
-                                      cursor: p.disabled ? 'not-allowed' : 'pointer', opacity: p.disabled ? 0.5 : 1,
-                                    }}>
-                                    {p.icon} {p.label}{p.disabled ? ' (soon)' : ''}
-                                  </button>
-                                ))}
-                              </div>
-
-                              {/* Setup steps */}
-                              <div style={{ padding: '10px 14px', borderRadius: 7, background: '#f8fafc', border: '1px solid #e2e8f0', marginBottom: 14 }}>
-                                <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>Setup steps</div>
-                                <ol style={{ margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                  {selectedDef.setupSteps.map((s, i) => (
-                                    <li key={i} style={{ fontSize: 12, color: '#4b5563', lineHeight: 1.5 }}>{s}</li>
-                                  ))}
-                                </ol>
-                                <a href={selectedDef.docsUrl} target="_blank" rel="noopener noreferrer"
-                                  style={{ fontSize: 12, color: '#6366f1', fontWeight: 600, marginTop: 6, display: 'inline-block' }}>
-                                  {selectedDef.label} API Docs →
-                                </a>
-                              </div>
-
-                              {/* Credentials form */}
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                                <div>
-                                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Client ID</label>
-                                  <input type="text" value={clientId} onChange={e => setClientId(e.target.value)}
-                                    placeholder="Paste Client ID from provider console"
-                                    style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }} />
-                                </div>
-                                <div>
-                                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Client Secret</label>
-                                  <div style={{ position: 'relative' }}>
-                                    <input type={showSecret ? 'text' : 'password'} value={clientSecret} onChange={e => setClientSecret(e.target.value)}
-                                      placeholder={esignConfig?.client_id ? 'Leave blank to keep saved secret' : 'Paste Client Secret'}
-                                      style={{ width: '100%', padding: '8px 36px 8px 12px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }} />
-                                    <button onClick={() => setShowSecret(!showSecret)}
-                                      style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: '#9ca3af' }}>
-                                      {showSecret ? '🙈' : '👁'}
-                                    </button>
-                                  </div>
-                                </div>
-                                <div>
-                                  <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>Redirect URI</label>
-                                  <input type="text" value={redirectUri} onChange={e => setRedirectUri(e.target.value)}
-                                    placeholder="https://your-backend.railway.app/api/contracts/admin/esign-callback"
-                                    style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12, fontFamily: 'monospace', outline: 'none', boxSizing: 'border-box' }} />
-                                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>Must match exactly what you registered in the provider console.</div>
-                                </div>
-                              </div>
-
-                              <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-                                <button onClick={handleSaveByol} disabled={saving}
-                                  style={{ padding: '8px 20px', borderRadius: 7, border: 'none', background: '#6366f1', color: '#fff', fontWeight: 700, fontSize: 12, cursor: saving ? 'wait' : 'pointer' }}>
-                                  {saving ? 'Saving…' : 'Save Credentials'}
-                                </button>
-                                {esignConfig?.client_id && !isConnected && (
-                                  <button onClick={handleConnect}
-                                    style={{ padding: '8px 20px', borderRadius: 7, border: '1px solid #6366f1', background: '#fff', color: '#6366f1', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
-                                    Connect to {selectedDef.label} →
-                                  </button>
-                                )}
-                                {esignConfig?.client_id && isConnected && !usingPlatform && (
-                                  <button onClick={handleValidate} disabled={validating}
-                                    style={{ padding: '8px 20px', borderRadius: 7, border: '1px solid #d1d5db', background: '#fff', color: '#374151', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}>
-                                    {validating ? 'Validating…' : 'Validate Connection'}
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* How it works note */}
-                          <div style={{ padding: '12px 16px', borderRadius: 9, background: '#eff6ff', border: '1px solid #bfdbfe', fontSize: 12, color: '#1e40af', lineHeight: 1.7 }}>
-                            <strong>How it works:</strong> When a contract moves to <em>In Signatures</em>, ActionCRM
-                            automatically dispatches signing requests to all signatories. Uses your own account if connected,
-                            otherwise the shared platform account. Manual signing tracking still works regardless.
-                          </div>
-
-                        </>)}
-                      </>)
-                    }
-                  </div>
-                )}
+                {/* Toggle */}
+                <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+                  <button
+                    disabled={isBusy}
+                    onClick={() => handleToggle(mod.key, !isOn)}
+                    style={{
+                      padding: '9px 22px',
+                      borderRadius: 8,
+                      border: 'none',
+                      fontWeight: 700,
+                      fontSize: 13,
+                      cursor: isBusy ? 'wait' : 'pointer',
+                      background: isOn ? '#fee2e2' : mod.color,
+                      color: isOn ? '#dc2626' : '#fff',
+                      transition: 'all 0.15s',
+                      minWidth: 100,
+                    }}
+                  >
+                    {isBusy ? '…' : isOn ? 'Disable' : 'Enable'}
+                  </button>
+                  {isOn && (
+                    <span style={{ fontSize: 11, color: '#9ca3af', textAlign: 'right' }}>
+                      Visible to all members
+                    </span>
+                  )}
+                </div>
               </div>
-            );
-          })
-        }
+            </div>
+          );
+        })}
 
         <div style={{
           padding: '14px 18px', borderRadius: 10, background: '#f8fafc',
@@ -4726,9 +4484,232 @@ function OAModules() {
         }}>
           <strong>Note:</strong> Enabling a module makes it visible in the sidebar for all members immediately.
           Disabling hides it — existing data is preserved and can be re-enabled at any time.
+          Module-specific configuration (workflow rules, approval chains) is available inside each module's settings.
         </div>
-
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// CLM TEMPLATES TAB
+// Admins upload master DOCX templates per contract type.
+// Users download, fill in Word, upload back as v1.0.
+// ─────────────────────────────────────────────────────────────────
+
+function OACLMTemplates() {
+  const [templates, setTemplates] = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState('');
+  const [success, setSuccess]     = useState('');
+  const [uploading, setUploading] = useState(null); // contract_type being uploaded
+  const [form, setForm]           = useState({ contractType: 'nda', name: '', description: '', fileUrl: '', fileName: '' });
+  const [showForm, setShowForm]   = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const r = await apiService.contracts.getTemplates();
+      setTemplates(r.data.templates || []);
+    } catch { setError('Failed to load templates'); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleCreate = async () => {
+    if (!form.name.trim() || !form.fileUrl.trim()) {
+      setError('Name and file URL are required'); return;
+    }
+    try {
+      setUploading(form.contractType);
+      await apiService.contracts.createTemplate(form);
+      setSuccess('Template added');
+      setTimeout(() => setSuccess(''), 2500);
+      setShowForm(false);
+      setForm({ contractType: 'nda', name: '', description: '', fileUrl: '', fileName: '' });
+      load();
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to add template');
+    } finally { setUploading(null); }
+  };
+
+  const handleDelete = async (id, name) => {
+    if (!window.confirm(`Remove template "${name}"?`)) return;
+    try {
+      await apiService.contracts.deleteTemplate(id);
+      setSuccess('Template removed');
+      setTimeout(() => setSuccess(''), 2000);
+      load();
+    } catch { setError('Failed to remove template'); }
+  };
+
+  const groupedByType = Object.keys(CONTRACT_TYPE_LABELS).reduce((acc, type) => {
+    acc[type] = templates.filter(t => t.contract_type === type && t.is_active);
+    return acc;
+  }, {});
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <h2>📄 CLM Contract Templates</h2>
+          <p className="sv-panel-desc">
+            Upload master templates for each contract type. Team members can download these,
+            fill them in Word, and upload back into a contract as v1.0.
+          </p>
+        </div>
+        <button
+          className="sv-btn sv-btn-primary"
+          onClick={() => setShowForm(true)}
+          style={{ whiteSpace: 'nowrap', marginLeft: 16 }}
+        >
+          + Add Template
+        </button>
+      </div>
+
+      {error   && <div className="sv-error">⚠️ {error}</div>}
+      {success && <div className="sv-success">{success}</div>}
+
+      {/* Add template form */}
+      {showForm && (
+        <div style={{
+          background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10,
+          padding: 20, marginBottom: 20,
+        }}>
+          <h3 style={{ margin: '0 0 16px', fontSize: 15 }}>Add New Template</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+            <div>
+              <label className="sv-label">Contract Type</label>
+              <select
+                className="sv-input"
+                value={form.contractType}
+                onChange={e => setForm(f => ({ ...f, contractType: e.target.value }))}
+              >
+                {Object.entries(CONTRACT_TYPE_LABELS).map(([v, l]) => (
+                  <option key={v} value={v}>{l}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="sv-label">Template Name</label>
+              <input
+                className="sv-input"
+                placeholder="e.g. Standard NDA v3"
+                value={form.name}
+                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+              />
+            </div>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label className="sv-label">File URL (paste link from Google Drive / OneDrive / SharePoint)</label>
+            <input
+              className="sv-input"
+              placeholder="https://docs.google.com/…"
+              value={form.fileUrl}
+              onChange={e => setForm(f => ({ ...f, fileUrl: e.target.value }))}
+            />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label className="sv-label">File Name (optional)</label>
+            <input
+              className="sv-input"
+              placeholder="NDA_Template_v3.docx"
+              value={form.fileName}
+              onChange={e => setForm(f => ({ ...f, fileName: e.target.value }))}
+            />
+          </div>
+          <div style={{ marginBottom: 16 }}>
+            <label className="sv-label">Description (optional)</label>
+            <input
+              className="sv-input"
+              placeholder="Use for standard mutual NDAs with US entities"
+              value={form.description}
+              onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              className="sv-btn sv-btn-primary"
+              onClick={handleCreate}
+              disabled={!!uploading}
+            >
+              {uploading ? 'Adding…' : 'Add Template'}
+            </button>
+            <button className="sv-btn" onClick={() => setShowForm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="sv-loading">Loading templates…</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          {Object.entries(CONTRACT_TYPE_LABELS).map(([type, label]) => (
+            <div key={type}>
+              <div style={{
+                fontWeight: 600, fontSize: 13, color: '#374151',
+                borderBottom: '1px solid #e5e7eb', paddingBottom: 8, marginBottom: 12,
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                {label}
+                <span style={{
+                  fontSize: 11, background: '#f3f4f6', color: '#6b7280',
+                  borderRadius: 10, padding: '1px 8px',
+                }}>
+                  {groupedByType[type]?.length || 0}
+                </span>
+              </div>
+              {(!groupedByType[type] || groupedByType[type].length === 0) ? (
+                <div style={{ fontSize: 13, color: '#9ca3af', fontStyle: 'italic', paddingLeft: 4 }}>
+                  No templates — click "Add Template" to upload one.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {groupedByType[type].map(t => (
+                    <div key={t.id} style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      padding: '10px 14px', background: '#fff', border: '1px solid #e5e7eb',
+                      borderRadius: 8, gap: 12,
+                    }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 13, color: '#1f2937' }}>
+                          📄 {t.name}
+                        </div>
+                        {t.description && (
+                          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{t.description}</div>
+                        )}
+                        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>
+                          Added {new Date(t.created_at).toLocaleDateString()}
+                          {t.file_name && ` · ${t.file_name}`}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                        <a
+                          href={t.file_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="sv-btn"
+                          style={{ fontSize: 12, padding: '4px 12px', textDecoration: 'none' }}
+                        >
+                          ↓ Download
+                        </a>
+                        <button
+                          className="oa-btn-remove"
+                          style={{ fontSize: 12 }}
+                          onClick={() => handleDelete(t.id, t.name)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

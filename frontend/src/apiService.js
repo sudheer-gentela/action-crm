@@ -405,22 +405,39 @@ export const apiService = {
     amend:             (id) => api.post(`/contracts/${id}/amend`),
     startApproval:     (id) => api.post(`/contracts/${id}/start-approval`),
 
+    // v2: new status transitions
+    terminate:       (id, data) => api.post(`/contracts/${id}/terminate`, data),
+    cancel:          (id, data) => api.post(`/contracts/${id}/cancel`, data),
+    confirmBooking:  (id) => api.post(`/contracts/${id}/confirm-booking`),
+
+    // v2: signature workflow
+    legalSendSignature:       (id) => api.post(`/contracts/${id}/legal-send-signature`),
+    markCustomerSigning:      (id, data) => api.post(`/contracts/${id}/customer-signing`, data),
+    uploadExecutedDocument:   (id, data) => api.post(`/contracts/${id}/upload-executed`, data),
+
+    // v2: bulk operations
+    bulkSubmitLegal: (contractIds, assigneeUserId) =>
+      api.post('/contracts/bulk-submit-legal', { contractIds, assigneeUserId }),
+
+    // v2: hierarchy
+    getHierarchy: (id) => api.get(`/contracts/${id}/hierarchy`),
+
+    // v2: legal team
+    getLegalMembers: () => api.get('/contracts/legal/members'),
+
+    // v2: templates
+    getTemplates:          () => api.get('/contracts/templates'),
+    getTemplatesByType:    (contractType) => api.get(`/contracts/templates/by-type/${contractType}`),
+    createTemplate:        (data) => api.post('/contracts/templates', data),
+    updateTemplate:        (id, data) => api.put(`/contracts/templates/${id}`, data),
+    deleteTemplate:        (id) => api.delete(`/contracts/templates/${id}`),
+
     // Signatories
     addSignatory:    (id, data) => api.post(`/contracts/${id}/signatories`, data),
     removeSignatory: (id, sigId) => api.delete(`/contracts/${id}/signatories/${sigId}`),
 
     // Notes
     addNote: (id, note) => api.post(`/contracts/${id}/notes`, { note }),
-
-    // E-Signature — provider config (admin only)
-    toggleEsign:         (enabled) => api.patch("/contracts/admin/esign-toggle", { enabled }),
-    getEsignConfig:      ()     => api.get('/contracts/admin/esign-config'),
-    saveEsignConfig:     (data) => api.put('/contracts/admin/esign-config', data),
-    getEsignAuthUrl:     ()     => api.get('/contracts/admin/esign-auth-url'),
-    handleEsignCallback: (code) => api.post('/contracts/admin/esign-callback', { code }),
-    disconnectEsign:     ()     => api.post('/contracts/admin/esign-disconnect'),
-    validateEsign:       ()     => api.get('/contracts/admin/esign-validate'),
-    removeOrgEsign:      ()     => api.delete(`/contracts/admin/esign-config`),
   },
 };
 

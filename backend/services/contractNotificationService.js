@@ -1,5 +1,6 @@
 // contractNotificationService.js
 // All CLM notification triggers. Non-fatal — workflow always continues on failure.
+// v2: legalIds() now uses department field; new notifyPendingBooking added.
 
 const { pool } = require('../config/database');
 
@@ -20,11 +21,17 @@ async function name(userId) {
   } catch { return 'Someone'; }
 }
 
+// v2: legal team members identified by department = 'legal'
 async function legalIds(orgId) {
   try {
     const r = await pool.query(
-      `SELECT DISTINCT tm.user_id FROM team_memberships tm
-       JOIN teams t ON t.id=tm.team_id WHERE t.org_id=$1 AND t.dimension='legal'`, [orgId]
+      `SELECT u.id AS user_id
+       FROM org_users ou
+       JOIN users u ON u.id = ou.user_id
+       WHERE ou.org_id = $1
+         AND u.department = 'legal'
+         AND ou.is_active = TRUE`,
+      [orgId]
     );
     return r.rows.map(x => x.user_id);
   } catch { return []; }
@@ -113,7 +120,15 @@ async function notifyNextApprovers(orgId, contractId, title, approverIds) {
 // All signed
 async function notifyAllSigned(orgId, contractId, title, ownerId) {
   await insert(ownerId, orgId, 'clm_signed', 'Contract fully signed',
-    `"${title}" has been signed — activate it to make it live`, contractId);
+    `"${title}" has been signed`, contractId);
+}
+
+// v2: NEW — notify owner that signed contract needs deal desk submission
+async function notifyPendingBooking(orgId, contractId, title, ownerId) {
+  await insert(ownerId, orgId, 'clm_pending_booking',
+    'Action required: Submit signed contract to deal desk',
+    `"${title}" has been signed. Please submit to deal desk to complete booking.`,
+    contractId);
 }
 
 // ── Cron: unsigned contracts follow-up (3/7/14 days) ─────────────────
@@ -165,5 +180,6 @@ module.exports = {
   notifyLegalPickedUp, notifyLegalReassigned, notifyReturnedToSales,
   notifyResubmittedToLegal, notifyApprovalNeeded, notifyApprovalRejected,
   notifyApprovalCompleted, notifyNextApprovers, notifyAllSigned,
+  notifyPendingBooking,
   notifyUnsignedContracts, notifyExpiringContracts,
 };

@@ -1,17 +1,24 @@
 // contractService.js
 // Core CLM: CRUD, state machine, document versioning, amendment cloning.
+// v2: department-based legal team, new statuses, major/minor versioning,
+//     standalone contracts (no deal), new metadata fields, hierarchy.
 
 const { pool, withOrgTransaction } = require('../config/database');
 
 // ── Valid state transitions ───────────────────────────────────────────
+// v2: added terminated, amended, cancelled, pending_booking
 const TRANSITIONS = {
-  draft:           ['in_legal_review', 'void'],
-  in_legal_review: ['with_sales', 'draft', 'void'],
-  with_sales:      ['in_legal_review', 'in_signatures', 'void'],
-  in_signatures:   ['signed', 'with_sales', 'void'],
-  signed:          ['active', 'void'],
-  active:          ['expired', 'void'],
-  expired:         [],
+  draft:           ['in_legal_review', 'cancelled', 'void'],
+  in_legal_review: ['with_sales', 'draft', 'cancelled', 'void'],
+  with_sales:      ['in_legal_review', 'in_signatures', 'cancelled', 'void'],
+  in_signatures:   ['pending_booking', 'signed', 'with_sales', 'cancelled', 'void'],
+  signed:          ['pending_booking', 'active', 'void'],
+  pending_booking: ['active', 'cancelled'],
+  active:          ['expired', 'terminated', 'amended', 'void'],
+  expired:         ['terminated'],
+  terminated:      [],
+  amended:         [],
+  cancelled:       [],
   void:            [],
 };
 
@@ -23,27 +30,51 @@ function assertTransition(from, to) {
 }
 
 // ── Legal team helpers ────────────────────────────────────────────────
+// v2: Uses users.department = 'legal' instead of team dimension.
+// Admins and owners also have access to the legal queue.
+
 async function getLegalTeamUserIds(orgId) {
   const r = await pool.query(
-    `SELECT DISTINCT tm.user_id FROM team_memberships tm
-     JOIN teams t ON t.id = tm.team_id
-     WHERE t.org_id = $1 AND t.dimension = 'legal'`,
+    `SELECT u.id AS user_id
+     FROM org_users ou
+     JOIN users u ON u.id = ou.user_id
+     WHERE ou.org_id = $1
+       AND u.department = 'legal'
+       AND ou.is_active = TRUE`,
     [orgId]
   );
   return r.rows.map(row => row.user_id);
 }
 
-async function isLegalTeamMember(orgId, userId) {
-  // Check team dimension first
-  const ids = await getLegalTeamUserIds(orgId);
-  if (ids.includes(parseInt(userId, 10))) return true;
-  // Also grant access to org owners and admins
+// v2: Returns full user objects for the legal team (for dropdowns etc.)
+async function getLegalTeamMembers(orgId) {
   const r = await pool.query(
-    `SELECT role FROM org_users WHERE org_id=$1 AND user_id=$2`,
+    `SELECT u.id, u.first_name, u.last_name, u.email, u.department
+     FROM org_users ou
+     JOIN users u ON u.id = ou.user_id
+     WHERE ou.org_id = $1
+       AND u.department = 'legal'
+       AND ou.is_active = TRUE
+     ORDER BY u.first_name, u.last_name`,
+    [orgId]
+  );
+  return r.rows;
+}
+
+async function isLegalTeamMember(orgId, userId) {
+  // Department check — legal team members
+  const r = await pool.query(
+    `SELECT u.department, ou.role
+     FROM org_users ou
+     JOIN users u ON u.id = ou.user_id
+     WHERE ou.org_id = $1 AND ou.user_id = $2`,
     [orgId, userId]
   );
-  const role = r.rows[0]?.role;
-  return role === 'owner' || role === 'admin';
+  const row = r.rows[0];
+  if (!row) return false;
+  // Legal department members, or org admins/owners
+  if (row.department === 'legal') return true;
+  return row.role === 'owner' || row.role === 'admin';
 }
 
 // ── Workflow config (with defaults) ──────────────────────────────────
@@ -75,15 +106,28 @@ async function logEvent(client, { contractId, orgId, eventType, actorId, payload
 }
 
 // ── Version label computation ─────────────────────────────────────────
-async function nextVersionLabel(client, contractId, versionType) {
+// v2: Returns { major, minor, label } — uses version_major/version_minor columns
+async function nextVersionNumbers(client, contractId, versionType) {
   const r = await client.query(
-    `SELECT version_label FROM contract_document_versions
-     WHERE contract_id = $1 ORDER BY created_at ASC`, [contractId]
+    `SELECT version_major, version_minor
+     FROM contract_document_versions
+     WHERE contract_id = $1 AND is_superseded = FALSE
+     ORDER BY version_major DESC, version_minor DESC
+     LIMIT 1`,
+    [contractId]
   );
-  if (!r.rows.length) return '1.0';
-  const last = r.rows[r.rows.length - 1].version_label || '1.0';
-  const [maj, min] = last.split('.').map(n => parseInt(n, 10) || 0);
-  return versionType === 'major' ? `${maj + 1}.0` : `${maj}.${min + 1}`;
+  if (!r.rows.length) return { major: 1, minor: 0, label: '1.0' };
+  const { version_major: maj, version_minor: min } = r.rows[0];
+  if (versionType === 'major') {
+    return { major: maj + 1, minor: 0, label: `${maj + 1}.0` };
+  }
+  return { major: maj, minor: min + 1, label: `${maj}.${min + 1}` };
+}
+
+// Keep legacy helper for backward compat
+async function nextVersionLabel(client, contractId, versionType) {
+  const v = await nextVersionNumbers(client, contractId, versionType);
+  return v.label;
 }
 
 // ── Row formatter ─────────────────────────────────────────────────────
@@ -103,12 +147,24 @@ function fmt(row) {
     legalQueue:             row.legal_queue,
     legalAssigneeId:        row.legal_assignee_id,
     legalAssigneeName:      row.la_first ? `${row.la_first} ${row.la_last}` : null,
+    legalOwnerType:         row.legal_owner_type,
     internalApprovalStatus: row.internal_approval_status,
     value:                  row.value ? parseFloat(row.value) : null,
     currency:               row.currency,
+    // v2 metadata fields
     customerLegalName:      row.customer_legal_name,
     companyEntity:          row.company_entity,
+    includeFullDpa:         row.include_full_dpa,
+    terminationForConvenience: row.termination_for_convenience,
+    tfcStartDate:           row.tfc_start_date,
+    tfcEndDate:             row.tfc_end_date,
+    specialTerms:           row.special_terms,
+    agreementEndDate:       row.agreement_end_date,
+    // v2 workflow fields
     arrImpact:              row.arr_impact,
+    amendmentSubtype:       row.amendment_subtype,
+    customerInitiatedSigning: row.customer_initiated_signing,
+    executedDocumentVersionId: row.executed_document_version_id,
     documentUrl:            row.document_url,
     documentProvider:       row.document_provider,
     effectiveDate:          row.effective_date,
@@ -182,9 +238,11 @@ async function getContract(orgId, id) {
        LEFT JOIN contracts pc ON pc.id = c.parent_contract_id
        WHERE c.id=$1 AND c.org_id=$2 AND c.deleted_at IS NULL`, [id, orgId]),
     pool.query(
-      `SELECT cdv.*, u.first_name, u.last_name FROM contract_document_versions cdv
+      `SELECT cdv.*, u.first_name, u.last_name
+       FROM contract_document_versions cdv
        LEFT JOIN users u ON u.id = cdv.uploaded_by
-       WHERE cdv.contract_id=$1 ORDER BY cdv.created_at DESC`, [id]),
+       WHERE cdv.contract_id=$1
+       ORDER BY cdv.version_major DESC, cdv.version_minor DESC, cdv.created_at DESC`, [id]),
     pool.query(
       `SELECT ca.*, u.first_name, u.last_name, u.email FROM contract_approvals ca
        LEFT JOIN users u ON u.id = ca.approver_user_id
@@ -197,7 +255,7 @@ async function getContract(orgId, id) {
        WHERE ce.contract_id=$1 ORDER BY ce.created_at DESC`, [id]),
     pool.query(
       `SELECT id, title, contract_type, status, created_at FROM contracts
-       WHERE parent_contract_id=$1 AND deleted_at IS NULL`, [id]),
+       WHERE parent_contract_id=$1 AND deleted_at IS NULL ORDER BY created_at ASC`, [id]),
   ]);
   if (!cr.rows[0]) return null;
   const contract = fmt(cr.rows[0]);
@@ -211,36 +269,94 @@ async function getContract(orgId, id) {
 
 // ════════════════════════════════════════════════════════════════════
 // CREATE
+// v2: deal_id now optional; all new metadata fields
 // ════════════════════════════════════════════════════════════════════
 async function createContract(orgId, userId, data) {
   const {
-    title, contractType = 'custom', dealId, parentContractId,
-    value, currency = 'USD', customerLegalName, companyEntity,
-    arrImpact = false, effectiveDate, expiryDate,
+    title, contractType = 'custom',
+    dealId,                      // v2: optional — NDAs and standalone amendments don't need a deal
+    parentContractId,
+    value, currency = 'USD',
+    effectiveDate, expiryDate,
     documentUrl, documentProvider = 'other', documentComment,
+    // v2 metadata fields
+    customerLegalName,
+    companyEntity,               // 'us' | 'uk' | 'de'
+    includeFullDpa = false,
+    terminationForConvenience = false,
+    tfcStartDate, tfcEndDate,
+    specialTerms,
+    agreementEndDate,
+    // v2 workflow fields
+    arrImpact = false,
+    amendmentSubtype,
   } = data;
+
   if (!title?.trim()) { const e = new Error('Title is required'); e.status = 400; throw e; }
+
+  const validEntities = ['us', 'uk', 'de', null, undefined, ''];
+  if (companyEntity && !['us','uk','de'].includes(companyEntity)) {
+    const e = new Error('companyEntity must be us, uk, or de'); e.status = 400; throw e;
+  }
 
   return withOrgTransaction(orgId, async (client) => {
     const r = await client.query(
       `INSERT INTO contracts
-         (org_id,deal_id,parent_contract_id,title,contract_type,status,
-          value,currency,customer_legal_name,company_entity,arr_impact,
-          effective_date,expiry_date,document_url,document_provider,owner_id,created_by)
-       VALUES ($1,$2,$3,$4,$5,'draft',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)
+         (org_id, deal_id, parent_contract_id, title, contract_type, status,
+          value, currency,
+          customer_legal_name, company_entity,
+          include_full_dpa, termination_for_convenience,
+          tfc_start_date, tfc_end_date, special_terms, agreement_end_date,
+          arr_impact, amendment_subtype,
+          effective_date, expiry_date,
+          document_url, document_provider,
+          owner_id, created_by,
+          legal_owner_type)
+       VALUES ($1,$2,$3,$4,$5,'draft',
+               $6,$7,
+               $8,$9,
+               $10,$11,
+               $12,$13,$14,$15,
+               $16,$17,
+               $18,$19,
+               $20,$21,
+               $22,$22,
+               'sales')
        RETURNING *`,
-      [orgId, dealId||null, parentContractId||null, title.trim(), contractType,
-       value||null, currency, customerLegalName||null, companyEntity||null, arrImpact,
-       effectiveDate||null, expiryDate||null, documentUrl||null, documentProvider, userId]
+      [
+        orgId,
+        dealId || null,
+        parentContractId || null,
+        title.trim(),
+        contractType,
+        value || null,
+        currency,
+        customerLegalName || null,
+        companyEntity || null,
+        !!includeFullDpa,
+        !!terminationForConvenience,
+        tfcStartDate || null,
+        tfcEndDate || null,
+        specialTerms || null,
+        agreementEndDate || null,
+        !!arrImpact,
+        amendmentSubtype || null,
+        effectiveDate || null,
+        expiryDate || null,
+        documentUrl || null,
+        documentProvider,
+        userId,
+      ]
     );
     const contract = r.rows[0];
     if (documentUrl) {
       await client.query(
         `INSERT INTO contract_document_versions
-           (contract_id,org_id,document_url,document_provider,version_label,version_type,
-            round_number,comment,uploaded_by,is_current)
-         VALUES ($1,$2,$3,$4,'1.0','major',1,$5,$6,TRUE)`,
-        [contract.id, orgId, documentUrl, documentProvider, documentComment||'Initial draft', userId]
+           (contract_id, org_id, document_url, document_provider,
+            version_label, version_type, version_major, version_minor,
+            round_number, comment, upload_comment, uploaded_by, is_current, is_superseded)
+         VALUES ($1,$2,$3,$4,'1.0','major',1,0,1,$5,$5,$6,TRUE,FALSE)`,
+        [contract.id, orgId, documentUrl, documentProvider, documentComment || 'Initial draft', userId]
       );
     }
     await logEvent(client, { contractId: contract.id, orgId, eventType: 'draft_created', actorId: userId });
@@ -250,6 +366,7 @@ async function createContract(orgId, userId, data) {
 
 // ════════════════════════════════════════════════════════════════════
 // UPDATE (any editable field)
+// v2: includes all new metadata fields
 // ════════════════════════════════════════════════════════════════════
 async function updateContract(orgId, id, userId, data) {
   const existing = await pool.query(
@@ -257,25 +374,44 @@ async function updateContract(orgId, id, userId, data) {
   );
   if (!existing.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
   const {
-    title, value, currency, customerLegalName, companyEntity,
-    arrImpact, effectiveDate, expiryDate, dealId, parentContractId,
+    title, value, currency,
+    customerLegalName, companyEntity,
+    includeFullDpa, terminationForConvenience,
+    tfcStartDate, tfcEndDate, specialTerms, agreementEndDate,
+    arrImpact, amendmentSubtype,
+    effectiveDate, expiryDate, dealId, parentContractId,
   } = data;
   const r = await pool.query(
     `UPDATE contracts SET
-       title               = COALESCE($3,  title),
-       value               = COALESCE($4,  value),
-       currency            = COALESCE($5,  currency),
-       customer_legal_name = COALESCE($6,  customer_legal_name),
-       company_entity      = COALESCE($7,  company_entity),
-       arr_impact          = COALESCE($8,  arr_impact),
-       effective_date      = COALESCE($9,  effective_date),
-       expiry_date         = COALESCE($10, expiry_date),
-       deal_id             = COALESCE($11, deal_id),
-       parent_contract_id  = COALESCE($12, parent_contract_id)
+       title                      = COALESCE($3,  title),
+       value                      = COALESCE($4,  value),
+       currency                   = COALESCE($5,  currency),
+       customer_legal_name        = COALESCE($6,  customer_legal_name),
+       company_entity             = COALESCE($7,  company_entity),
+       arr_impact                 = COALESCE($8,  arr_impact),
+       effective_date             = COALESCE($9,  effective_date),
+       expiry_date                = COALESCE($10, expiry_date),
+       deal_id                    = COALESCE($11, deal_id),
+       parent_contract_id         = COALESCE($12, parent_contract_id),
+       include_full_dpa           = COALESCE($13, include_full_dpa),
+       termination_for_convenience = COALESCE($14, termination_for_convenience),
+       tfc_start_date             = COALESCE($15, tfc_start_date),
+       tfc_end_date               = COALESCE($16, tfc_end_date),
+       special_terms              = COALESCE($17, special_terms),
+       agreement_end_date         = COALESCE($18, agreement_end_date),
+       amendment_subtype          = COALESCE($19, amendment_subtype),
+       updated_at                 = NOW()
      WHERE id=$1 AND org_id=$2 RETURNING *`,
-    [id, orgId, title||null, value||null, currency||null, customerLegalName||null,
-     companyEntity||null, arrImpact??null, effectiveDate||null, expiryDate||null,
-     dealId||null, parentContractId||null]
+    [
+      id, orgId,
+      title || null, value || null, currency || null,
+      customerLegalName || null, companyEntity || null,
+      arrImpact ?? null, effectiveDate || null, expiryDate || null,
+      dealId || null, parentContractId || null,
+      includeFullDpa ?? null, terminationForConvenience ?? null,
+      tfcStartDate || null, tfcEndDate || null, specialTerms || null,
+      agreementEndDate || null, amendmentSubtype || null,
+    ]
   );
   return r.rows[0];
 }
@@ -296,9 +432,16 @@ async function deleteContract(orgId, id) {
 
 // ════════════════════════════════════════════════════════════════════
 // UPLOAD DOCUMENT VERSION
+// v2: major/minor version numbers, upload_comment, is_executed flag,
+//     supersedes previous versions on major upload
 // ════════════════════════════════════════════════════════════════════
 async function uploadDocumentVersion(orgId, contractId, userId, data) {
-  const { documentUrl, documentProvider = 'other', versionType, comment } = data;
+  const {
+    documentUrl, documentProvider = 'other',
+    versionType,          // 'major' | 'minor'
+    comment, uploadComment,
+    isExecuted = false,
+  } = data;
   if (!documentUrl) { const e = new Error('documentUrl required'); e.status = 400; throw e; }
   if (!['major','minor'].includes(versionType)) {
     const e = new Error('versionType must be major or minor'); e.status = 400; throw e;
@@ -310,36 +453,56 @@ async function uploadDocumentVersion(orgId, contractId, userId, data) {
       [contractId, orgId]
     );
     if (!cr.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
-    const contract = cr.rows[0];
 
-    const label = await nextVersionLabel(client, contractId, versionType);
+    const { major, minor, label } = await nextVersionNumbers(client, contractId, versionType);
 
     const roundRes = await client.query(
       `SELECT COALESCE(MAX(round_number),1) AS r FROM contract_document_versions WHERE contract_id=$1`,
       [contractId]
     );
     const lastRound = parseInt(roundRes.rows[0].r, 10) || 1;
-    const roundNumber = (versionType === 'major' && contract.status === 'with_sales')
+    const roundNumber = (versionType === 'major' && cr.rows[0].status === 'with_sales')
       ? lastRound + 1 : lastRound;
 
-    await client.query(
-      `UPDATE contract_document_versions SET is_current=FALSE WHERE contract_id=$1`, [contractId]
-    );
+    // Mark all existing non-superseded versions as superseded when uploading a new major
+    if (versionType === 'major') {
+      await client.query(
+        `UPDATE contract_document_versions
+         SET is_superseded = TRUE, is_current = FALSE
+         WHERE contract_id = $1 AND is_superseded = FALSE`,
+        [contractId]
+      );
+    } else {
+      await client.query(
+        `UPDATE contract_document_versions SET is_current=FALSE WHERE contract_id=$1`, [contractId]
+      );
+    }
+
+    const effectiveComment = comment || uploadComment || null;
     const vr = await client.query(
       `INSERT INTO contract_document_versions
-         (contract_id,org_id,document_url,document_provider,version_label,version_type,
-          round_number,comment,uploaded_by,is_current)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE) RETURNING *`,
-      [contractId, orgId, documentUrl, documentProvider, label, versionType,
-       roundNumber, comment||null, userId]
+         (contract_id, org_id, document_url, document_provider,
+          version_label, version_type, version_major, version_minor,
+          round_number, comment, upload_comment,
+          uploaded_by, is_current, is_superseded, is_executed)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,TRUE,FALSE,$12) RETURNING *`,
+      [
+        contractId, orgId, documentUrl, documentProvider,
+        label, versionType, major, minor,
+        roundNumber, effectiveComment,
+        userId, !!isExecuted,
+      ]
     );
+
     await client.query(
-      `UPDATE contracts SET document_url=$3, document_provider=$4 WHERE id=$1 AND org_id=$2`,
+      `UPDATE contracts SET document_url=$3, document_provider=$4, updated_at=NOW()
+       WHERE id=$1 AND org_id=$2`,
       [contractId, orgId, documentUrl, documentProvider]
     );
+
     await logEvent(client, {
       contractId, orgId, eventType: 'document_version_uploaded', actorId: userId,
-      payload: { versionLabel: label, versionType, roundNumber, comment },
+      payload: { versionLabel: label, versionType, roundNumber, comment: effectiveComment },
     });
     return vr.rows[0];
   });
@@ -349,7 +512,9 @@ async function uploadDocumentVersion(orgId, contractId, userId, data) {
 // STATE TRANSITIONS
 // ════════════════════════════════════════════════════════════════════
 
-async function submitForLegalReview(orgId, contractId, userId, { assigneeUserId } = {}) {
+// v2: assigneeUserId still supported; also sets legal_owner_type
+async function submitForLegalReview(orgId, contractId, userId, { assigneeUserId, assigneeId } = {}) {
+  const effectiveAssignee = assigneeUserId || assigneeId || null;
   return withOrgTransaction(orgId, async (client) => {
     const r = await client.query(
       `SELECT * FROM contracts WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL FOR UPDATE`,
@@ -357,12 +522,25 @@ async function submitForLegalReview(orgId, contractId, userId, { assigneeUserId 
     );
     if (!r.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
     assertTransition(r.rows[0].status, 'in_legal_review');
-    const legalQueue  = !assigneeUserId;
-    const assignee    = assigneeUserId ? parseInt(assigneeUserId, 10) : null;
+
+    // Validate assignee is actually legal if provided
+    if (effectiveAssignee) {
+      const isLegal = await isLegalTeamMember(orgId, parseInt(effectiveAssignee, 10));
+      if (!isLegal) {
+        const e = new Error('Assignee must be a legal team member'); e.status = 400; throw e;
+      }
+    }
+
+    const legalQueue  = !effectiveAssignee;
+    const assignee    = effectiveAssignee ? parseInt(effectiveAssignee, 10) : null;
+    const ownerType   = legalQueue ? 'legal_queue' : 'legal_person';
+
     await client.query(
-      `UPDATE contracts SET status='in_legal_review', legal_queue=$3, legal_assignee_id=$4
+      `UPDATE contracts
+       SET status='in_legal_review', legal_queue=$3, legal_assignee_id=$4,
+           legal_owner_type=$5, updated_at=NOW()
        WHERE id=$1 AND org_id=$2`,
-      [contractId, orgId, legalQueue, assignee]
+      [contractId, orgId, legalQueue, assignee, ownerType]
     );
     await logEvent(client, {
       contractId, orgId, eventType: 'submitted_for_legal_review', actorId: userId,
@@ -386,7 +564,9 @@ async function pickUpFromQueue(orgId, contractId, userId) {
       const e = new Error('Already assigned'); e.status = 400; throw e;
     }
     await client.query(
-      `UPDATE contracts SET legal_queue=FALSE, legal_assignee_id=$3 WHERE id=$1 AND org_id=$2`,
+      `UPDATE contracts
+       SET legal_queue=FALSE, legal_assignee_id=$3, legal_owner_type='legal_person', updated_at=NOW()
+       WHERE id=$1 AND org_id=$2`,
       [contractId, orgId, userId]
     );
     await logEvent(client, { contractId, orgId, eventType: 'legal_picked_up', actorId: userId });
@@ -405,7 +585,9 @@ async function reassignLegal(orgId, contractId, userId, newAssigneeId) {
       const e = new Error('Not in legal review'); e.status = 400; throw e;
     }
     await client.query(
-      `UPDATE contracts SET legal_queue=FALSE, legal_assignee_id=$3 WHERE id=$1 AND org_id=$2`,
+      `UPDATE contracts
+       SET legal_queue=FALSE, legal_assignee_id=$3, legal_owner_type='legal_person', updated_at=NOW()
+       WHERE id=$1 AND org_id=$2`,
       [contractId, orgId, newAssigneeId]
     );
     await logEvent(client, {
@@ -424,7 +606,10 @@ async function returnToSales(orgId, contractId, userId) {
     if (!r.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
     assertTransition(r.rows[0].status, 'with_sales');
     await client.query(
-      `UPDATE contracts SET status='with_sales' WHERE id=$1 AND org_id=$2`, [contractId, orgId]
+      `UPDATE contracts
+       SET status='with_sales', legal_owner_type='sales', updated_at=NOW()
+       WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId]
     );
     await logEvent(client, { contractId, orgId, eventType: 'returned_to_sales', actorId: userId });
     return { ownerId: r.rows[0].owner_id, title: r.rows[0].title };
@@ -441,9 +626,12 @@ async function resubmitToLegal(orgId, contractId, userId) {
     assertTransition(r.rows[0].status, 'in_legal_review');
     const priorAssignee = r.rows[0].legal_assignee_id;
     const legalQueue    = !priorAssignee;
+    const ownerType     = legalQueue ? 'legal_queue' : 'legal_person';
     await client.query(
-      `UPDATE contracts SET status='in_legal_review', legal_queue=$3 WHERE id=$1 AND org_id=$2`,
-      [contractId, orgId, legalQueue]
+      `UPDATE contracts
+       SET status='in_legal_review', legal_queue=$3, legal_owner_type=$4, updated_at=NOW()
+       WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId, legalQueue, ownerType]
     );
     await logEvent(client, {
       contractId, orgId, eventType: 'resubmitted_to_legal', actorId: userId,
@@ -473,13 +661,16 @@ async function sendForSignature(orgId, contractId, userId) {
       e.status = 400; e.code = 'APPROVAL_GATE'; throw e;
     }
     await client.query(
-      `UPDATE contracts SET status='in_signatures' WHERE id=$1 AND org_id=$2`, [contractId, orgId]
+      `UPDATE contracts SET status='in_signatures', updated_at=NOW()
+       WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId]
     );
     await logEvent(client, { contractId, orgId, eventType: 'sent_for_signature', actorId: userId });
-    return { ownerId: c.owner_id, title: c.title };
+    return { ownerId: c.owner_id, title: c.title, documentUrl: c.document_url };
   });
 }
 
+// v2: transitions to pending_booking rather than directly to signed
 async function markSigned(orgId, contractId, userId) {
   return withOrgTransaction(orgId, async (client) => {
     const r = await client.query(
@@ -487,12 +678,36 @@ async function markSigned(orgId, contractId, userId) {
       [contractId, orgId]
     );
     if (!r.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
-    assertTransition(r.rows[0].status, 'signed');
+    // Allow from in_signatures or signed (webhook may have set it to signed already)
+    if (!['in_signatures', 'signed'].includes(r.rows[0].status)) {
+      assertTransition(r.rows[0].status, 'pending_booking');
+    }
     await client.query(
-      `UPDATE contracts SET status='signed' WHERE id=$1 AND org_id=$2`, [contractId, orgId]
+      `UPDATE contracts SET status='pending_booking', updated_at=NOW()
+       WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId]
     );
     await logEvent(client, { contractId, orgId, eventType: 'signed_by_external', actorId: userId });
     return { ownerId: r.rows[0].owner_id, title: r.rows[0].title };
+  });
+}
+
+// v2: NEW — confirm deal desk booking (pending_booking → active)
+async function confirmBooking(orgId, contractId, userId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const r = await client.query(
+      `SELECT * FROM contracts WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+      [contractId, orgId]
+    );
+    if (!r.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
+    if (r.rows[0].status !== 'pending_booking') {
+      const e = new Error('Contract is not pending booking'); e.status = 400; throw e;
+    }
+    await client.query(
+      `UPDATE contracts SET status='active', updated_at=NOW() WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId]
+    );
+    await logEvent(client, { contractId, orgId, eventType: 'booking_confirmed', actorId: userId });
   });
 }
 
@@ -505,7 +720,8 @@ async function activateContract(orgId, contractId, userId) {
     if (!r.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
     assertTransition(r.rows[0].status, 'active');
     await client.query(
-      `UPDATE contracts SET status='active' WHERE id=$1 AND org_id=$2`, [contractId, orgId]
+      `UPDATE contracts SET status='active', updated_at=NOW() WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId]
     );
     await logEvent(client, { contractId, orgId, eventType: 'activated', actorId: userId });
   });
@@ -524,7 +740,8 @@ async function recallContract(orgId, contractId, userId, { reason } = {}) {
     else if (from === 'in_legal_review') to = 'draft';
     else { const e = new Error(`Cannot recall from '${from}'`); e.status = 400; throw e; }
     await client.query(
-      `UPDATE contracts SET status=$3 WHERE id=$1 AND org_id=$2`, [contractId, orgId, to]
+      `UPDATE contracts SET status=$3, updated_at=NOW() WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId, to]
     );
     await logEvent(client, {
       contractId, orgId, eventType: 'recalled', actorId: userId,
@@ -534,6 +751,7 @@ async function recallContract(orgId, contractId, userId, { reason } = {}) {
   });
 }
 
+// v2: voidContract kept for backward compat; new code should use terminateContract/cancelContract
 async function voidContract(orgId, contractId, userId, { reason } = {}) {
   return withOrgTransaction(orgId, async (client) => {
     const r = await client.query(
@@ -541,19 +759,150 @@ async function voidContract(orgId, contractId, userId, { reason } = {}) {
       [contractId, orgId]
     );
     if (!r.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
-    if (['void','expired'].includes(r.rows[0].status)) {
+    if (['void','expired','terminated','cancelled','amended'].includes(r.rows[0].status)) {
       const e = new Error('Already terminal'); e.status = 400; throw e;
     }
     await client.query(
-      `UPDATE contracts SET status='void' WHERE id=$1 AND org_id=$2`, [contractId, orgId]
+      `UPDATE contracts SET status='terminated', updated_at=NOW() WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId]
     );
     await logEvent(client, {
-      contractId, orgId, eventType: 'voided', actorId: userId,
+      contractId, orgId, eventType: 'terminated', actorId: userId,
       payload: { from: r.rows[0].status, reason },
     });
   });
 }
 
+// v2: NEW — explicit terminate (active contracts that have ended)
+async function terminateContract(orgId, contractId, userId, { reason } = {}) {
+  return withOrgTransaction(orgId, async (client) => {
+    const r = await client.query(
+      `SELECT * FROM contracts WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+      [contractId, orgId]
+    );
+    if (!r.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
+    const terminatable = ['active', 'signed', 'pending_booking', 'expired', 'void'];
+    if (!terminatable.includes(r.rows[0].status)) {
+      const e = new Error(`Cannot terminate from status '${r.rows[0].status}'`); e.status = 400; throw e;
+    }
+    await client.query(
+      `UPDATE contracts SET status='terminated', updated_at=NOW() WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId]
+    );
+    await logEvent(client, {
+      contractId, orgId, eventType: 'terminated', actorId: userId, payload: { reason },
+    });
+  });
+}
+
+// v2: NEW — cancel (never-executed contracts withdrawn before completion)
+async function cancelContract(orgId, contractId, userId, { reason } = {}) {
+  return withOrgTransaction(orgId, async (client) => {
+    const r = await client.query(
+      `SELECT * FROM contracts WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+      [contractId, orgId]
+    );
+    if (!r.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
+    const cancellable = ['draft', 'in_legal_review', 'with_sales', 'in_signatures', 'pending_booking'];
+    if (!cancellable.includes(r.rows[0].status)) {
+      const e = new Error(`Cannot cancel from status '${r.rows[0].status}'`); e.status = 400; throw e;
+    }
+    await client.query(
+      `UPDATE contracts SET status='cancelled', updated_at=NOW() WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId]
+    );
+    await logEvent(client, {
+      contractId, orgId, eventType: 'cancelled', actorId: userId, payload: { reason },
+    });
+  });
+}
+
+// v2: NEW — mark customer as initiating the signature outside ActionCRM
+async function markCustomerInitiatedSigning(orgId, contractId, userId, { note } = {}) {
+  return withOrgTransaction(orgId, async (client) => {
+    const r = await client.query(
+      `SELECT * FROM contracts WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+      [contractId, orgId]
+    );
+    if (!r.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
+    assertTransition(r.rows[0].status, 'in_signatures');
+    await client.query(
+      `UPDATE contracts
+       SET status='in_signatures', customer_initiated_signing=TRUE, updated_at=NOW()
+       WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId]
+    );
+    await logEvent(client, {
+      contractId, orgId, eventType: 'customer_initiated_signing', actorId: userId,
+      payload: { note: note || null },
+    });
+    return r.rows[0];
+  });
+}
+
+// v2: NEW — upload the final executed/signed document + move to pending_booking
+async function uploadExecutedDocument(orgId, contractId, userId, data) {
+  const { documentUrl, documentProvider = 'other', versionComment } = data;
+  if (!documentUrl) { const e = new Error('documentUrl required'); e.status = 400; throw e; }
+
+  return withOrgTransaction(orgId, async (client) => {
+    const cr = await client.query(
+      `SELECT * FROM contracts WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+      [contractId, orgId]
+    );
+    if (!cr.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
+
+    // Upload as a new major version, flagged as executed
+    const { major, minor, label } = await nextVersionNumbers(client, contractId, 'major');
+
+    await client.query(
+      `UPDATE contract_document_versions
+       SET is_superseded=TRUE, is_current=FALSE
+       WHERE contract_id=$1 AND is_superseded=FALSE`,
+      [contractId]
+    );
+
+    const vr = await client.query(
+      `INSERT INTO contract_document_versions
+         (contract_id, org_id, document_url, document_provider,
+          version_label, version_type, version_major, version_minor,
+          upload_comment, comment,
+          uploaded_by, is_current, is_superseded, is_executed)
+       VALUES ($1,$2,$3,$4,$5,'major',$6,$7,$8,$8,$9,TRUE,FALSE,TRUE) RETURNING *`,
+      [
+        contractId, orgId, documentUrl, documentProvider,
+        label, major, minor,
+        versionComment || 'Executed document uploaded',
+        userId,
+      ]
+    );
+
+    // Store executed version reference + move to pending_booking
+    await client.query(
+      `UPDATE contracts
+       SET status='pending_booking',
+           executed_document_version_id=$3,
+           document_url=$4,
+           document_provider=$5,
+           updated_at=NOW()
+       WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId, vr.rows[0].id, documentUrl, documentProvider]
+    );
+
+    await logEvent(client, {
+      contractId, orgId, eventType: 'executed_document_uploaded', actorId: userId,
+      payload: { versionId: vr.rows[0].id },
+    });
+
+    return {
+      version: vr.rows[0],
+      title: cr.rows[0].title,
+      ownerId: cr.rows[0].owner_id,
+    };
+  });
+}
+
+// v2: amendContract now marks the ORIGINAL as 'amended'
 async function amendContract(orgId, contractId, userId) {
   return withOrgTransaction(orgId, async (client) => {
     const r = await client.query(
@@ -561,41 +910,93 @@ async function amendContract(orgId, contractId, userId) {
     );
     if (!r.rows[0]) { const e = new Error('Not found'); e.status = 404; throw e; }
     const o = r.rows[0];
-    if (!['active','signed'].includes(o.status)) {
-      const e = new Error('Can only amend active or signed contracts'); e.status = 400; throw e;
+    if (!['active','signed','pending_booking'].includes(o.status)) {
+      const e = new Error('Can only amend active, signed, or pending-booking contracts'); e.status = 400; throw e;
     }
     const nr = await client.query(
       `INSERT INTO contracts
-         (org_id,deal_id,parent_contract_id,title,contract_type,status,
-          value,currency,customer_legal_name,company_entity,arr_impact,
-          expiry_date,owner_id,created_by)
-       VALUES ($1,$2,$3,$4,'amendment','draft',$5,$6,$7,$8,FALSE,$9,$10,$10)
+         (org_id, deal_id, parent_contract_id, title, contract_type, status,
+          value, currency, customer_legal_name, company_entity,
+          include_full_dpa, termination_for_convenience,
+          tfc_start_date, tfc_end_date, special_terms, agreement_end_date,
+          arr_impact,
+          expiry_date, owner_id, created_by, legal_owner_type)
+       VALUES ($1,$2,$3,$4,'amendment','draft',
+               $5,$6,$7,$8,
+               $9,$10,
+               $11,$12,$13,$14,
+               FALSE,
+               $15,$16,$16,'sales')
        RETURNING *`,
-      [orgId, o.deal_id, contractId, `Amendment to: ${o.title}`,
-       o.value, o.currency, o.customer_legal_name, o.company_entity,
-       o.expiry_date, userId]
+      [
+        orgId, o.deal_id, contractId, `Amendment to: ${o.title}`,
+        o.value, o.currency, o.customer_legal_name, o.company_entity,
+        o.include_full_dpa, o.termination_for_convenience,
+        o.tfc_start_date, o.tfc_end_date, o.special_terms, o.agreement_end_date,
+        o.expiry_date, userId,
+      ]
     );
     const amendment = nr.rows[0];
+
+    // v2: Mark the original contract as 'amended'
+    await client.query(
+      `UPDATE contracts SET status='amended', updated_at=NOW() WHERE id=$1 AND org_id=$2`,
+      [contractId, orgId]
+    );
+
     await logEvent(client, {
       contractId: amendment.id, orgId, eventType: 'amendment_created', actorId: userId,
       payload: { parentContractId: contractId, parentTitle: o.title },
     });
     await logEvent(client, {
-      contractId, orgId, eventType: 'amendment_spawned', actorId: userId,
+      contractId, orgId, eventType: 'amended', actorId: userId,
       payload: { amendmentContractId: amendment.id },
     });
     return amendment;
   });
 }
 
+// v2: NEW — full contract hierarchy (root + all descendants via recursive CTE)
+async function getContractHierarchy(orgId, contractId) {
+  const r = await pool.query(
+    `WITH RECURSIVE family AS (
+       SELECT id, parent_contract_id, 0 AS depth
+       FROM contracts
+       WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
+       UNION ALL
+       SELECT c.id, c.parent_contract_id, f.depth - 1
+       FROM contracts c
+       JOIN family f ON c.id = f.parent_contract_id
+       WHERE c.org_id = $2 AND c.deleted_at IS NULL
+     ),
+     root AS (SELECT id FROM family ORDER BY depth ASC LIMIT 1),
+     tree AS (
+       SELECT c.id, c.parent_contract_id, c.title, c.contract_type, c.status,
+              c.created_at, c.updated_at, 0 AS level
+       FROM contracts c JOIN root r ON c.id = r.id
+       WHERE c.org_id = $2 AND c.deleted_at IS NULL
+       UNION ALL
+       SELECT c.id, c.parent_contract_id, c.title, c.contract_type, c.status,
+              c.created_at, c.updated_at, t.level + 1
+       FROM contracts c JOIN tree t ON c.parent_contract_id = t.id
+       WHERE c.org_id = $2 AND c.deleted_at IS NULL
+     )
+     SELECT * FROM tree ORDER BY level, created_at`,
+    [contractId, orgId]
+  );
+  return r.rows;
+}
+
 // ── Signatories ───────────────────────────────────────────────────────
 async function addSignatory(orgId, contractId, data) {
-  const { name, email, signatoryType = 'external', role = 'signer' } = data;
+  const { name, email, signatoryType = 'external', role = 'signer', ccRecipients } = data;
   if (!name || !email) { const e = new Error('Name and email required'); e.status = 400; throw e; }
   const r = await pool.query(
-    `INSERT INTO contract_signatories (contract_id,org_id,name,email,signatory_type,role)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [contractId, orgId, name, email, signatoryType, role]
+    `INSERT INTO contract_signatories
+       (contract_id, org_id, name, email, signatory_type, role, cc_recipients)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [contractId, orgId, name, email, signatoryType, role,
+     JSON.stringify(ccRecipients || [])]
   );
   return r.rows[0];
 }
@@ -609,7 +1010,7 @@ async function removeSignatory(orgId, contractId, sigId) {
 
 async function addNote(orgId, contractId, userId, note) {
   await pool.query(
-    `INSERT INTO contract_events (contract_id,org_id,event_type,actor_id,payload)
+    `INSERT INTO contract_events (contract_id, org_id, event_type, actor_id, payload)
      VALUES ($1,$2,'note_added',$3,$4)`,
     [contractId, orgId, userId, JSON.stringify({ note })]
   );
@@ -618,12 +1019,12 @@ async function addNote(orgId, contractId, userId, note) {
 // ── Cron: expire active contracts ─────────────────────────────────────
 async function expireContracts() {
   const r = await pool.query(
-    `UPDATE contracts SET status='expired'
+    `UPDATE contracts SET status='expired', updated_at=NOW()
      WHERE status='active' AND expiry_date < CURRENT_DATE RETURNING id, org_id`
   );
   for (const row of r.rows) {
     await pool.query(
-      `INSERT INTO contract_events (contract_id,org_id,event_type,payload)
+      `INSERT INTO contract_events (contract_id, org_id, event_type, payload)
        VALUES ($1,$2,'expired','{}')`, [row.id, row.org_id]
     ).catch(() => {});
   }
@@ -631,12 +1032,25 @@ async function expireContracts() {
 }
 
 module.exports = {
-  listContracts, getContract, createContract, updateContract, deleteContract,
+  // List / read
+  listContracts, getContract,
+  // CRUD
+  createContract, updateContract, deleteContract,
+  // Document versions
   uploadDocumentVersion,
+  // Legal team
+  getLegalTeamUserIds, getLegalTeamMembers, isLegalTeamMember,
+  // Transitions — existing
   submitForLegalReview, pickUpFromQueue, reassignLegal, returnToSales,
   resubmitToLegal, sendForSignature, markSigned, activateContract,
   recallContract, voidContract, amendContract,
+  // Transitions — v2 new
+  confirmBooking, terminateContract, cancelContract,
+  markCustomerInitiatedSigning, uploadExecutedDocument,
+  // Hierarchy
+  getContractHierarchy,
+  // Signatories / notes
   addSignatory, removeSignatory, addNote,
-  expireContracts, getLegalTeamUserIds, isLegalTeamMember,
-  getWorkflowConfig, isResubmitRequired,
+  // Config / cron
+  expireContracts, getWorkflowConfig, isResubmitRequired,
 };
