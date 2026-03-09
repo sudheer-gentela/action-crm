@@ -413,26 +413,6 @@ router.post('/orgs/:orgId/users/create', async (req, res) => {
 // INVITE FLOW — generate invite link, list pending invites
 // ═════════════════════════════════════════════════════════════════════════════
 
-// Ensure org_invites table exists (idempotent)
-(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS org_invites (
-        id           SERIAL PRIMARY KEY,
-        org_id       INTEGER NOT NULL REFERENCES organizations(id),
-        email        VARCHAR(255) NOT NULL,
-        role         VARCHAR(50) NOT NULL DEFAULT 'member',
-        token        VARCHAR(64) NOT NULL UNIQUE,
-        invited_by   INTEGER REFERENCES users(id),
-        expires_at   TIMESTAMPTZ NOT NULL,
-        accepted_at  TIMESTAMPTZ,
-        created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `);
-  } catch (e) {
-    console.warn('org_invites table creation skipped:', e.message);
-  }
-})();
 
 // Create invite
 router.post('/orgs/:orgId/invites', async (req, res) => {
