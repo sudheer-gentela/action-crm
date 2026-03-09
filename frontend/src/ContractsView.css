@@ -1,8 +1,8 @@
 /* ContractsView.css */
-.cv-wrap { display:flex; height:100%; overflow:hidden; background:#f8fafc; }
+.cv-wrap { display:flex; height:100%; overflow:hidden; background:#f8fafc; min-height:0; }
 
 /* Left */
-.cv-left { width:390px; min-width:300px; display:flex; flex-direction:column; border-right:1.5px solid #e2e8f0; background:#fff; }
+.cv-left { width:390px; min-width:300px; display:flex; flex-direction:column; border-right:1.5px solid #e2e8f0; background:#fff; min-height:0; }
 .cv-header { display:flex; align-items:center; justify-content:space-between; padding:20px 18px 10px; }
 .cv-title { font-size:18px; font-weight:800; color:#0f172a; margin:0; }
 .cv-new-btn { padding:7px 15px; background:#6366f1; color:#fff; border:none; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; }
@@ -23,7 +23,7 @@
 .cv-select:focus { border-color:#6366f1; }
 
 /* List */
-.cv-list { flex:1; overflow-y:auto; padding:0 6px 12px; }
+.cv-list { flex:1; overflow-y:auto; padding:0 6px 12px; min-height:0; }
 .cv-loading { display:flex; justify-content:center; padding:28px; }
 .cv-spin { width:20px; height:20px; border:2.5px solid #e5e7eb; border-top-color:#6366f1; border-radius:50%; animation:cv-s .6s linear infinite; }
 @keyframes cv-s { to { transform:rotate(360deg); } }
@@ -51,7 +51,7 @@
 .cv-date  { font-size:10px; color:#94a3b8; }
 
 /* Right */
-.cv-right { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+.cv-right { flex:1; overflow-y:auto; display:flex; flex-direction:column; min-height:0; }
 .cv-empty-state { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; gap:10px; color:#94a3b8; font-size:14px; }
 .cv-empty-icon { font-size:48px; opacity:.35; }
 

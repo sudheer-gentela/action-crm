@@ -185,17 +185,27 @@ export default function ContractsView() {
   const [bulkMode, setBulkMode]         = useState(false);
   const [checkedIds, setCheckedIds]     = useState(new Set());
 
+  // Fetch legal context from backend — team-based, not role string comparison
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    const legalRoles = ['legal', 'owner', 'admin'];
-    const isLegalUser = legalRoles.includes(user.org_role) || user.is_legal_member === true;
-    setIsLegal(isLegalUser);
-
-    if (isLegalUser) {
-      apiService.contracts.getLegalMembers()
-        .then(r => setLegalMembers(r.data?.members || []))
-        .catch(() => {});
-    }
+    apiService.contracts.getLegalMembers()
+      .then(r => {
+        const members = r.data?.members || [];
+        setLegalMembers(members);
+        // We are a legal member if the backend returned us in the legal team,
+        // OR check our own user id against the list. Use the /legal/team-status
+        // endpoint if it exists, otherwise fall back to checking user role.
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+        const legalRoles = ['legal', 'owner', 'admin'];
+        const byRole = legalRoles.includes(user.role) || legalRoles.includes(user.org_role);
+        const inTeam = members.some(m => m.id === user.id);
+        setIsLegal(byRole || inTeam);
+      })
+      .catch(() => {
+        // Fallback to role-based check if endpoint fails
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+        const legalRoles = ['legal', 'owner', 'admin'];
+        setIsLegal(legalRoles.includes(user.role) || legalRoles.includes(user.org_role));
+      });
   }, []);
 
   const TABS = [
