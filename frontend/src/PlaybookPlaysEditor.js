@@ -343,6 +343,7 @@ export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
       const pbRes = await apiFetch(`/playbooks/${playbookId}`);
       const pb = pbRes.playbook || pbRes;
       const isProspecting = pb.type === 'prospecting';
+      const isCLM = pb.type === 'clm';
       const isSalesType = !pb.type || ['sales', 'custom', 'market', 'product'].includes(pb.type);
       setPlaybookType(pb.type || 'sales');
 
@@ -350,6 +351,9 @@ export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
       let stagesPromise;
       if (isProspecting) {
         stagesPromise = apiFetch('/prospect-stages');
+      } else if (isCLM) {
+        // CLM stages live in pipeline_stages with pipeline='clm'
+        stagesPromise = apiFetch('/pipeline-stages/clm');
       } else if (isSalesType) {
         stagesPromise = apiFetch('/deal-stages');
       } else {
@@ -485,7 +489,9 @@ export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
     return <div className="ppe-loading">Loading playbook plays…</div>;
   }
 
-  const stageNoun = playbookType === 'prospecting' ? 'prospect stage' : 'stage';
+  const stageNoun = playbookType === 'prospecting' ? 'prospect stage'
+    : playbookType === 'clm' ? 'contract stage'
+    : 'stage';
 
   return (
     <div className="ppe-root">

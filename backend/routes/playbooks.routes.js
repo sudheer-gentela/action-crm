@@ -169,24 +169,18 @@ router.post('/', adminOnly, async (req, res) => {
     const orgTypes = orgTypesResult.rows[0]?.types;
     const validKeys = Array.isArray(orgTypes) && orgTypes.length > 0
       ? orgTypes.map(t => t.key)
-      : ['sales', 'market', 'product', 'custom', 'prospecting']; // fallback
-    if (!validKeys.includes(type) && type !== 'custom' && type !== 'sales') {
+      : ['sales', 'market', 'product', 'custom', 'prospecting', 'clm']; // fallback
+    // clm is always a valid system type regardless of org settings
+    if (!validKeys.includes(type) && type !== 'custom' && type !== 'sales' && type !== 'clm') {
       return res.status(400).json({ error: { message: `type must be one of: ${validKeys.join(', ')}` } });
     }
 
     if (is_default) {
-      // Only clear defaults within the same type group
-      if (type === 'prospecting') {
-        await db.query(
-          `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND type = 'prospecting' AND is_default = TRUE`,
-          [req.orgId]
-        );
-      } else {
-        await db.query(
-          `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND type != 'prospecting' AND is_default = TRUE`,
-          [req.orgId]
-        );
-      }
+      // Clear defaults only within the same type — each type has its own default
+      await db.query(
+        `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND type = $2 AND is_default = TRUE`,
+        [req.orgId, type]
+      );
     }
 
     // Auto-populate stage_guidance from salesPlaybook defaults when none provided
@@ -231,8 +225,8 @@ router.put('/:id', adminOnly, async (req, res) => {
       const orgTypes = orgTypesResult.rows[0]?.types;
       const validKeys = Array.isArray(orgTypes) && orgTypes.length > 0
         ? orgTypes.map(t => t.key)
-        : ['market', 'product', 'custom', 'prospecting'];
-      if (!validKeys.includes(type) && type !== 'custom') {
+        : ['sales', 'market', 'product', 'custom', 'prospecting', 'clm'];
+      if (!validKeys.includes(type) && type !== 'custom' && type !== 'clm') {
         return res.status(400).json({ error: { message: `type must be one of: ${validKeys.join(', ')}` } });
       }
     }
@@ -423,21 +417,13 @@ router.post('/:id/set-default', adminOnly, async (req, res) => {
     }
 
     const pbType = existing.rows[0].type;
-    const isProspecting = pbType === 'prospecting';
 
     await db.query('BEGIN');
-    // Only clear defaults within the same type group
-    if (isProspecting) {
-      await db.query(
-        `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND type = 'prospecting'`,
-        [req.orgId]
-      );
-    } else {
-      await db.query(
-        `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND type != 'prospecting'`,
-        [req.orgId]
-      );
-    }
+    // Clear defaults only within the same type — each type has its own default
+    await db.query(
+      `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND type = $2`,
+      [req.orgId, pbType]
+    );
     const result = await db.query(
       `UPDATE playbooks SET is_default = TRUE, updated_at = NOW()
        WHERE id = $1 AND org_id = $2 RETURNING *`,

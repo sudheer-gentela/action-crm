@@ -2731,14 +2731,15 @@ function OAPlaybooks() {
     updateGuidanceField(stageKey, 'key_actions', actions);
   };
 
-  const TYPE_LABELS = { market: '🌍 Market', product: '📦 Product', custom: '⚙️ Custom', prospecting: '🎯 Prospecting' };
-  const TYPE_COLORS = { market: '#3182ce', product: '#38a169', custom: '#718096', prospecting: '#0F9D8E' };
+  const TYPE_LABELS = { market: '🌍 Market', product: '📦 Product', custom: '⚙️ Custom', prospecting: '🎯 Prospecting', clm: '📋 CLM' };
+  const TYPE_COLORS = { market: '#3182ce', product: '#38a169', custom: '#718096', prospecting: '#0F9D8E', clm: '#7c3aed' };
   const TEAL = '#0F9D8E';
 
   // ── Dynamic playbook types from org settings ────────────────────────────────
   const [playbookTypes, setPlaybookTypes] = useState([
-    { key: 'sales', label: 'Sales', icon: '📘', color: '#3b82f6', is_system: true },
+    { key: 'sales',       label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
     { key: 'prospecting', label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
+    { key: 'clm',         label: 'CLM',         icon: '📋', color: '#7c3aed', is_system: true },
   ]);
 
   useEffect(() => {
@@ -2757,8 +2758,9 @@ function OAPlaybooks() {
   // ── Type filter tab: dynamic from org playbook types ────────────────────────
   const [typeFilter, setTypeFilter] = useState('sales');
   const isProspecting = typeFilter === 'prospecting';
-  const isSalesType = typeFilter === 'sales';
-  const isCustomType = !isSalesType && !isProspecting;
+  const isSalesType   = typeFilter === 'sales';
+  const isCLM         = typeFilter === 'clm';
+  const isCustomType  = !isSalesType && !isProspecting && !isCLM;
 
   // "sales" tab catches legacy types (custom, market, product) + explicit sales type
   // All other tabs filter by exact type key
@@ -2797,8 +2799,8 @@ function OAPlaybooks() {
 
   useEffect(() => {
     if (isSalesType || isProspecting) return;
+    // CLM and custom types all load from pipeline-stages/{type}
     setCustomStagesLoading(true);
-    // Custom types use their own pipeline stages
     (async () => {
       try {
         const res = await fetch(`${API}/pipeline-stages/${typeFilter}`, {
@@ -2828,10 +2830,13 @@ function OAPlaybooks() {
   }, [typeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Which stages to show in the editor
+  const isCLMType = typeFilter === 'clm';
   const activeLiveStages = isProspecting ? prospectLiveStages
+    : isCLMType ? customLiveStages     // CLM uses the custom pipeline-stages loader (pipeline='clm')
     : isCustomType ? customLiveStages
     : liveStages;
   const activeStagesLoading = isProspecting ? prospectStagesLoading
+    : isCLMType ? customStagesLoading
     : isCustomType ? customStagesLoading
     : stagesLoading;
 
@@ -2854,6 +2859,11 @@ function OAPlaybooks() {
 
   const handleCreate = async () => {
     if (!newPbData.name.trim()) { flash('error', 'Name is required'); return; }
+    // CLM playbook is system-managed — admins can edit it but not create additional ones
+    if (typeFilter === 'clm') {
+      flash('error', 'The CLM playbook is system-managed. Edit the existing one directly.');
+      return;
+    }
     setCreating(true);
     try {
       // For sales tab, use the sub-type from the form (or default 'custom')
@@ -2912,9 +2922,11 @@ function OAPlaybooks() {
                 : `Manage ${activeType?.label || typeFilter} playbooks and stage guidance.`}
           </p>
         </div>
-        <button className="sv-btn-primary" onClick={() => setShowNewForm(true)}>
-          + New {activeType?.label || 'Sales'} Playbook
-        </button>
+        {!isCLM && (
+          <button className="sv-btn-primary" onClick={() => setShowNewForm(true)}>
+            + New {activeType?.label || 'Sales'} Playbook
+          </button>
+        )}
       </div>
 
       {/* Dynamic type toggle tabs */}
@@ -3112,6 +3124,7 @@ function OAPlaybooks() {
                   <span style={{ fontSize: 12, color: '#9ca3af' }}>
                     {isProspecting ? 'Stages from Prospect Stages tab'
                       : isSalesType ? 'Stages from Deal Stages tab'
+                      : isCLM ? 'CLM contract lifecycle stages'
                       : `Stages from ${activeType?.label || typeFilter} Stages tab`}
                     {' · save each stage individually'}
                   </span>
@@ -3121,7 +3134,7 @@ function OAPlaybooks() {
                   <div className="sv-loading" style={{ padding: 16 }}>Loading stages…</div>
                 ) : activeLiveStages.length === 0 ? (
                   <div className="sv-empty">
-                    No active pipeline stages found. Add stages in the {isProspecting ? 'Prospect' : 'Deal'} Stages tab first.
+                    No active pipeline stages found. {isProspecting ? 'Add stages in the Prospect Stages tab.' : isCLM ? 'Run the CLM pipeline stages migration to seed CLM stages.' : 'Add stages in the Deal Stages tab.'}
                   </div>
                 ) : (
                   <div className="sv-stages-list">
