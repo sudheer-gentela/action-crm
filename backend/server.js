@@ -215,7 +215,11 @@ app.get('/api/org/context', authenticateToken, orgContext, async (req, res) => {
       `SELECT settings->'modules' AS modules FROM organizations WHERE id = $1`,
       [req.orgId]
     );
-    const modules = r.rows[0]?.modules || {};
+    // Normalise JSONB values to real booleans so the frontend === true check always works.
+    const raw = r.rows[0]?.modules || {};
+    const modules = Object.fromEntries(
+      Object.entries(raw).map(([k, v]) => [k, v === true || v === 'true' || v === 1 || v === '1'])
+    );
     res.json({ modules });
   } catch (err) {
     res.status(500).json({ error: { message: 'Failed to load org context' } });
@@ -225,6 +229,14 @@ app.get('/api/org/context', authenticateToken, orgContext, async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 // Error handling
 // ─────────────────────────────────────────────────────────────
+
+// 404 — must come BEFORE the 4-arg error handler so unmatched routes
+// return a clean JSON 404 rather than falling into the error middleware.
+app.use((req, res) => {
+  res.status(404).json({ error: { message: 'Route not found' } });
+});
+
+// 5xx — 4-arg signature tells Express this is the error handler.
 app.use((err, req, res, next) => {
   console.error('Error:', err.stack);
   res.status(err.status || 500).json({
@@ -233,10 +245,6 @@ app.use((err, req, res, next) => {
       ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
     }
   });
-});
-
-app.use((req, res) => {
-  res.status(404).json({ error: { message: 'Route not found' } });
 });
 
 // ─────────────────────────────────────────────────────────────
