@@ -25,6 +25,8 @@ import DealEmailHistory from './DealEmailHistory';
 import DealFilesPanel from './DealFilesPanel';
 import { csvExport, EXPORT_COLUMNS } from './csvUtils';
 import CSVImportModal from './CSVImportModal';
+import ContractCreateModal from './ContractCreateModal';
+import ContractDetailPanel from './ContractDetailPanel';
 import './DealsView.css';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
@@ -52,6 +54,14 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
   const [editingField, setEditingField]   = useState(null);
   const [savingField, setSavingField]     = useState(null);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showContractModal, setShowContractModal] = useState(false);
+  const [dealContracts, setDealContracts]         = useState([]);
+  const [dealContractsLoading, setDealContractsLoading] = useState(false);
+  const [selectedContract, setSelectedContract]   = useState(null);
+
+  // Derive isLegalMember from the stored user object — same pattern as apiService.js line 528
+  const currentUser    = JSON.parse(localStorage.getItem('user') || '{}');
+  const isLegalMember  = currentUser.department === 'legal' || currentUser.role === 'legal';
   const [orgStages, setOrgStages] = useState(FALLBACK_STAGES);
   const [playbookGuide, setPlaybookGuide]   = useState(null);
   const [guideExpanded, setGuideExpanded]   = useState(false);
@@ -70,6 +80,16 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
       .catch(() => setPlaybookGuide(null))
       .finally(() => setGuideLoading(false));
   }, [selectedDeal?.id, selectedDeal?.stage]);
+
+  // Load contracts linked to this deal whenever the selected deal changes
+  useEffect(() => {
+    if (!selectedDeal?.id) { setDealContracts([]); return; }
+    setDealContractsLoading(true);
+    apiService.contracts.getAll({ dealId: selectedDeal.id })
+      .then(r => setDealContracts(r.data?.contracts || r.data || []))
+      .catch(() => setDealContracts([]))
+      .finally(() => setDealContractsLoading(false));
+  }, [selectedDeal?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { apiService.orgAdmin.getMyTeam().then(r => setHasTeam(r.data.hasTeam)).catch(() => setHasTeam(false)); }, []);
 
@@ -442,6 +462,68 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
               </div>
 
               {/* 6-9: Deal Team, Contacts, Files, Modify, Notes */}
+              {/* 6. Contracts */}
+              <div className="detail-section">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <h3 style={{ margin: 0 }}>
+                    Contracts {dealContracts.length > 0 && `(${dealContracts.length})`}
+                  </h3>
+                  <button
+                    onClick={() => setShowContractModal(true)}
+                    style={{ padding: '5px 13px', borderRadius: 7, border: 'none', background: '#6366f1', color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                    + Create Contract
+                  </button>
+                </div>
+                {dealContractsLoading ? (
+                  <p className="empty-message">Loading contracts…</p>
+                ) : dealContracts.length === 0 ? (
+                  <p className="empty-message">No contracts yet for this deal.</p>
+                ) : (
+                  <div className="linked-items-list">
+                    {dealContracts.map(contract => {
+                      const STATUS_COLORS = {
+                        draft: { bg: '#f1f5f9', text: '#475569' },
+                        in_review: { bg: '#fef3c7', text: '#92400e' },
+                        in_signatures: { bg: '#ede9fe', text: '#5b21b6' },
+                        pending_booking: { bg: '#fce7f3', text: '#9d174d' },
+                        signed: { bg: '#dcfce7', text: '#14532d' },
+                        active: { bg: '#d1fae5', text: '#065f46' },
+                        expired: { bg: '#f3f4f6', text: '#6b7280' },
+                        terminated: { bg: '#fee2e2', text: '#7f1d1d' },
+                        cancelled: { bg: '#f3f4f6', text: '#374151' },
+                        void: { bg: '#fee2e2', text: '#991b1b' },
+                        amended: { bg: '#fef9c3', text: '#713f12' },
+                      };
+                      const sc = STATUS_COLORS[contract.status] || STATUS_COLORS.draft;
+                      const subLabel = contract.status === 'in_review' && contract.review_sub_status
+                        ? ` · ${contract.review_sub_status.replace('_', ' ')}`
+                        : '';
+                      return (
+                        <div key={contract.id} className="linked-item linked-item--clickable"
+                          onClick={() => setSelectedContract(contract)}>
+                          <span style={{ fontSize: 16 }}>📄</span>
+                          <div className="item-info">
+                            <div className="item-name">{contract.title}</div>
+                            <div className="item-meta">
+                              {contract.contract_type?.toUpperCase()}
+                              {contract.value ? ` · $${Number(contract.value).toLocaleString()}` : ''}
+                            </div>
+                          </div>
+                          <span style={{
+                            fontSize: 11, fontWeight: 600, padding: '2px 8px',
+                            borderRadius: 8, background: sc.bg, color: sc.text,
+                            whiteSpace: 'nowrap', flexShrink: 0,
+                          }}>
+                            {contract.status.replace('_', ' ')}{subLabel}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* 7-10: Deal Team, Contacts, Files, Modify, Notes */}
               <div className="detail-section"><h3>Deal Team</h3><DealTeamPanel deal={selectedDeal} /></div>
               <div className="detail-section"><h3>Contacts</h3><DealContactsPanel deal={selectedDeal} /></div>
               <div className="detail-section"><h3>Files</h3><DealFilesPanel deal={selectedDeal} /></div>
@@ -463,6 +545,46 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
       {showTranscriptUpload && (<TranscriptUpload dealId={selectedDeal?.id} onSuccess={(result) => { setShowTranscriptUpload(false); setViewingTranscriptId(result.transcriptId); }} onClose={() => setShowTranscriptUpload(false)} />)}
       {viewingTranscriptId && (<TranscriptAnalysis transcriptId={viewingTranscriptId} onClose={() => setViewingTranscriptId(null)} />)}
       {showImportModal && (<CSVImportModal entity="deals" accounts={accounts} onImport={handleImportDeals} onClose={() => setShowImportModal(false)} />)}
+
+      {/* Contract create — pre-filled with this deal's ID */}
+      {showContractModal && selectedDeal && (
+        <ContractCreateModal
+          prefillDealId={selectedDeal.id}
+          onClose={() => setShowContractModal(false)}
+          onSuccess={(newContract) => {
+            setShowContractModal(false);
+            setDealContracts(prev => [newContract, ...prev]);
+            setSelectedContract(newContract);
+          }}
+        />
+      )}
+
+      {/* Contract detail panel — slide-in overlay */}
+      {selectedContract && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+          zIndex: 900, display: 'flex', justifyContent: 'flex-end',
+        }}
+          onClick={(e) => { if (e.target === e.currentTarget) setSelectedContract(null); }}>
+          <div style={{ width: '100%', maxWidth: 640, height: '100%', background: '#fff', boxShadow: '-4px 0 24px rgba(0,0,0,0.15)', overflow: 'hidden' }}>
+            <ContractDetailPanel
+              contract={selectedContract}
+              isLegalMember={isLegalMember}
+              onClose={() => setSelectedContract(null)}
+              onUpdated={() => {
+                // Refresh contract in the list
+                apiService.contracts.getById(selectedContract.id)
+                  .then(r => {
+                    const updated = r.data?.contract || r.data;
+                    setSelectedContract(updated);
+                    setDealContracts(prev => prev.map(c => c.id === updated.id ? updated : c));
+                  })
+                  .catch(() => {});
+              }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
