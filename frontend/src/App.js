@@ -276,6 +276,23 @@ function Dashboard({ user, onLogout }) {
   const [pendingContractId, setPendingContractId]       = useState(null);
   const [sidebarOpen, setSidebarOpen]           = useState(false);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
+  const [orgModules, setOrgModules]             = useState({});  // { contracts: true/false, ... }
+
+  // Fetch org module flags once on mount — controls which modules are accessible
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    const API   = process.env.REACT_APP_API_URL || '';
+    fetch(`${API}/org/admin/profile`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.organization?.settings?.modules) {
+          setOrgModules(data.organization.settings.modules);
+        }
+      })
+      .catch(() => {}); // non-fatal — modules stay hidden if fetch fails
+  }, []);
 
   const isSuperAdmin = user?.is_super_admin === true;
   const orgRole      = user?.org_role || user?.role || 'member';
@@ -303,6 +320,9 @@ function Dashboard({ user, onLogout }) {
   };
 
   const navItems = NAV_ITEMS_BY_ROLE[activeRole] || NAV_ITEMS_BY_ROLE.member;
+
+  // Only surface module items whose flag is enabled in org settings
+  const enabledModuleItems = ALL_MODULE_ITEMS.filter(m => orgModules[m.id] === true);
 
   useEffect(() => {
     const handleResize = () => {
@@ -361,12 +381,13 @@ function Dashboard({ user, onLogout }) {
   // Listen for open-contract events dispatched from DealContractsPanel
   useEffect(() => {
     const handleOpenContract = (e) => {
+      if (!orgModules.contracts) return; // module disabled — ignore silently
       setPendingContractId(e.detail?.contractId || null);
       handleNavClick('contracts');
     };
     window.addEventListener('open-contract', handleOpenContract);
     return () => window.removeEventListener('open-contract', handleOpenContract);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [orgModules]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const handleStartAction = (e) => setActiveContextAction(e.detail);
@@ -392,7 +413,7 @@ function Dashboard({ user, onLogout }) {
       <Sidebar
         user={user}
         navItems={navItems}
-        allModuleItems={ALL_MODULE_ITEMS}
+        allModuleItems={enabledModuleItems}
         currentTab={currentTab}
         onNavClick={handleNavClick}
         activeRole={activeRole}
@@ -435,10 +456,16 @@ function Dashboard({ user, onLogout }) {
             />
           )}
           {currentTab === 'contracts'   && (
-            <ContractsView
-              openContractId={pendingContractId}
-              onContractOpened={() => setPendingContractId(null)}
-            />
+            orgModules.contracts
+              ? <ContractsView
+                  openContractId={pendingContractId}
+                  onContractOpened={() => setPendingContractId(null)}
+                />
+              : <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12, color:'#94a3b8' }}>
+                  <div style={{ fontSize:48 }}>📄</div>
+                  <div style={{ fontSize:16, fontWeight:600, color:'#475569' }}>Contracts module is disabled</div>
+                  <div style={{ fontSize:13 }}>An org admin can enable it under Org Admin → Modules.</div>
+                </div>
           )}
           {currentTab === 'accounts'    && (
             <AccountsView
