@@ -14,6 +14,7 @@ const PORT = process.env.PORT || 3001;
 const outlookRoutes    = require('./routes/outlook.routes');
 const googleRoutes     = require('./routes/google.routes');
 const syncRoutes       = require('./routes/sync.routes');
+const playbookRoutes   = require('./routes/playbook.routes');
 const aiRoutes         = require('./routes/ai.routes');
 const promptsRoutes    = require('./routes/prompts.routes');
 const dealHealthRoutes = require('./routes/dealHealth.routes');
@@ -167,6 +168,7 @@ app.use('/api/agent',     require('./routes/agent.routes'));
 app.use('/api/outlook',   outlookRoutes);
 app.use('/api/google',    googleRoutes);
 app.use('/api/sync',      syncRoutes);
+app.use('/api/playbook',  playbookRoutes);
 app.use('/api/ai',        aiRoutes);
 app.use('/api/prompts',   promptsRoutes);
 app.use('/api',           dealHealthRoutes);
@@ -203,6 +205,24 @@ app.use('/api/team-notifications',  teamNotificationsRoutes);  // Feature 1: tea
 
 // ─── CLM — Contract Lifecycle Management ─────────────────────
 app.use('/api/contracts', contractsRoutes);
+
+// ─── Public org context — accessible to ALL authenticated members ─────────
+// Returns org module flags so the frontend can gate UI without an admin call.
+const authenticateToken   = require('./middleware/auth.middleware');
+const { orgContext }      = require('./middleware/orgContext.middleware');
+const { pool: ctxPool }   = require('./config/database');
+app.get('/api/org/context', authenticateToken, orgContext, async (req, res) => {
+  try {
+    const r = await ctxPool.query(
+      `SELECT settings->'modules' AS modules FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const modules = r.rows[0]?.modules || {};
+    res.json({ modules });
+  } catch (err) {
+    res.status(500).json({ error: { message: 'Failed to load org context' } });
+  }
+});
 
 // ─────────────────────────────────────────────────────────────
 // Error handling

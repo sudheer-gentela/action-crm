@@ -278,18 +278,16 @@ function Dashboard({ user, onLogout }) {
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
   const [orgModules, setOrgModules]             = useState({});  // { contracts: true/false, ... }
 
-  // Fetch org module flags once on mount — controls which modules are accessible
+  // Fetch org module flags once on mount — accessible to ALL roles via /org/context
   useEffect(() => {
     const token = localStorage.getItem('token');
     const API   = process.env.REACT_APP_API_URL || '';
-    fetch(`${API}/org/admin/profile`, {
+    fetch(`${API}/org/context`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
-        if (data?.organization?.settings?.modules) {
-          setOrgModules(data.organization.settings.modules);
-        }
+        if (data?.modules) setOrgModules(data.modules);
       })
       .catch(() => {}); // non-fatal — modules stay hidden if fetch fails
   }, []);
