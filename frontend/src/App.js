@@ -21,11 +21,6 @@ import Sidebar from './Sidebar';
 // ROLE DEFINITIONS
 // ─────────────────────────────────────────────────────────────
 
-// PostgreSQL JSONB can return booleans as true/false, but also as
-// the strings "true"/"false" or integers 1/0 depending on the driver
-// version and how jsonb_set was called.  Normalise to a real boolean.
-const isTruthy = (v) => v === true || v === 'true' || v === 1 || v === '1';
-
 // Modules not in the sidebar nav — accessible only via the launcher
 const ALL_MODULE_ITEMS = [
   { id: 'contracts', label: 'Contracts', icon: '📄' },
@@ -319,14 +314,15 @@ function Dashboard({ user, onLogout }) {
     sessionStorage.setItem('activeRole', role);
     setActiveRole(role);
     setCurrentTab(DEFAULT_TAB_BY_ROLE[role]);
+    // Notify any mounted components that read activeRole from sessionStorage
+    window.dispatchEvent(new CustomEvent('roleSwitch', { detail: { role } }));
     if (isMobile) setSidebarOpen(false);
   };
 
   const navItems = NAV_ITEMS_BY_ROLE[activeRole] || NAV_ITEMS_BY_ROLE.member;
 
-  // Only surface module items whose flag is enabled in org settings.
-  // isTruthy() normalises JSONB values — DB can return true, "true", or 1.
-  const enabledModuleItems = ALL_MODULE_ITEMS.filter(m => isTruthy(orgModules[m.id]));
+  // Only surface module items whose flag is enabled in org settings
+  const enabledModuleItems = ALL_MODULE_ITEMS.filter(m => orgModules[m.id] === true);
 
   useEffect(() => {
     const handleResize = () => {
@@ -385,7 +381,7 @@ function Dashboard({ user, onLogout }) {
   // Listen for open-contract events dispatched from DealContractsPanel
   useEffect(() => {
     const handleOpenContract = (e) => {
-      if (!isTruthy(orgModules.contracts)) return; // module disabled — ignore silently
+      if (!orgModules.contracts) return; // module disabled — ignore silently
       setPendingContractId(e.detail?.contractId || null);
       handleNavClick('contracts');
     };
@@ -460,7 +456,7 @@ function Dashboard({ user, onLogout }) {
             />
           )}
           {currentTab === 'contracts'   && (
-            isTruthy(orgModules.contracts)
+            orgModules.contracts
               ? <ContractsView
                   openContractId={pendingContractId}
                   onContractOpened={() => setPendingContractId(null)}

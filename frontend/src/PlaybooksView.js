@@ -40,17 +40,49 @@ export default function PlaybooksView({ initialTypeFilter }) {
   const [showCompany, setShowCompany]   = useState(false);
   const [showPlaysTab, setShowPlaysTab] = useState(false);
 
-  // Type filter: 'sales' | 'prospecting'
+  // Dynamic playbook types from org settings — mirrors OrgAdminView
+  const [playbookTypes, setPlaybookTypes] = useState([
+    { key: 'sales',       label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
+    { key: 'prospecting', label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
+  ]);
+
+  // Type filter driven by the dynamic tabs above
   const [typeFilter, setTypeFilter]     = useState(initialTypeFilter || 'sales');
+
+  // "sales" tab absorbs legacy types (custom, market, product) — exact mirror of OrgAdminView
+  const SALES_LEGACY_TYPES = ['sales', 'custom', 'market', 'product'];
 
   // Dynamic prospect stages from API
   const [prospectStageKeys, setProspectStageKeys]     = useState(DEFAULT_PROSPECT_STAGE_KEYS);
   const [prospectStageLabels, setProspectStageLabels] = useState(DEFAULT_PROSPECT_STAGE_LABELS);
 
+  // Fetch org's configured playbook types (so CLM tab appears when module is enabled)
   useEffect(() => {
-    const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+    const token   = localStorage.getItem('token') || localStorage.getItem('authToken');
     const API_BASE = process.env.REACT_APP_API_URL || '';
-    fetch(`${API_BASE}/prospect-stages`, {
+    fetch(`${API_BASE}/org/admin/playbook-types`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(data => {
+        if (data.playbook_types?.length) setPlaybookTypes(data.playbook_types);
+      })
+      .catch(() => { /* use defaults — sales + prospecting */ });
+  }, []);
+
+  // Re-read activeRole if the user switches roles while this component is mounted
+  useEffect(() => {
+    const onStorage = () => setActiveRole(sessionStorage.getItem('activeRole') || 'member');
+    window.addEventListener('storage', onStorage);
+    // Also listen for the custom role-switch event Dashboard fires
+    window.addEventListener('roleSwitch', onStorage);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('roleSwitch', onStorage);
+    };
+  }, []);
+
+
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(r => r.ok ? r.json() : Promise.reject())
@@ -68,13 +100,13 @@ export default function PlaybooksView({ initialTypeFilter }) {
       .catch(() => { /* fallback to defaults */ });
   }, []);
 
-  const activeRole = sessionStorage.getItem('activeRole') || 'member';
+  const [activeRole, setActiveRole] = useState(() => sessionStorage.getItem('activeRole') || 'member');
   const canEdit    = activeRole === 'org-admin' || activeRole === 'super-admin';
 
   // ── Derived: filtered playbook list ─────────────────────
-  const filteredPlaybooks = typeFilter === 'prospecting'
-    ? playbooks.filter(p => p.type === 'prospecting')
-    : playbooks.filter(p => p.type !== 'prospecting');
+  const filteredPlaybooks = typeFilter === 'sales'
+    ? playbooks.filter(p => SALES_LEGACY_TYPES.includes(p.type))
+    : playbooks.filter(p => p.type === typeFilter);
 
   // ── Load playbook list ───────────────────────────────────
   useEffect(() => {
@@ -91,9 +123,9 @@ export default function PlaybooksView({ initialTypeFilter }) {
 
   // Re-select on type filter change
   useEffect(() => {
-    const filtered = typeFilter === 'prospecting'
-      ? playbooks.filter(p => p.type === 'prospecting')
-      : playbooks.filter(p => p.type !== 'prospecting');
+    const filtered = typeFilter === 'sales'
+      ? playbooks.filter(p => SALES_LEGACY_TYPES.includes(p.type))
+      : playbooks.filter(p => p.type === typeFilter);
     const def = filtered.find(p => p.is_default) || filtered[0];
     setSelectedId(def?.id || null);
     setEditingStage(null);
@@ -166,7 +198,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
     try {
       const createPayload = typeFilter === 'prospecting'
         ? { name: newPbData.name, type: 'prospecting', description: newPbData.description }
-        : { ...newPbData, content: { deal_stages: {}, company: {} } };
+        : { ...newPbData, type: typeFilter === 'sales' ? (newPbData.type || 'sales') : typeFilter, content: { deal_stages: {}, company: {} } };
       const r  = await apiService.playbooks.create(createPayload);
       const nb = r.data.playbook;
       setPlaybooks(prev => [...prev, nb]);
@@ -223,61 +255,69 @@ export default function PlaybooksView({ initialTypeFilter }) {
     }));
   };
 
-  const TYPE_LABELS = { sales: '📘 Sales', market: '\u{1F30D} Market', product: '\u{1F4E6} Product', custom: '\u2699\uFE0F Custom', prospecting: '🎯 Prospecting' };
-  const TYPE_COLORS = { sales: '#3b82f6', market: '#3182ce', product: '#38a169', custom: '#718096', prospecting: TEAL };
+  const TYPE_LABELS = { sales: '📘 Sales', market: '🌍 Market', product: '📦 Product', custom: '⚙️ Custom', prospecting: '🎯 Prospecting', clm: '📋 CLM' };
+  const TYPE_COLORS = { sales: '#3b82f6', market: '#3182ce', product: '#38a169', custom: '#718096', prospecting: TEAL, clm: '#7c3aed' };
 
   // ── Render ───────────────────────────────────────────────
   if (loading) return <div className="sv-loading">Loading playbooks...</div>;
 
+  const activeType    = playbookTypes.find(t => t.key === typeFilter) || playbookTypes[0];
   const isProspecting = typeFilter === 'prospecting';
+  const isCLM         = typeFilter === 'clm';
 
   return (
     <div style={{ maxWidth: 960 }}>
       <div className="sv-panel">
         <div className="sv-panel-header">
           <div>
-            <h2>{isProspecting ? '🎯 Prospecting Playbooks' : '📘 Sales Playbooks'}</h2>
+            <h2>{activeType?.icon} {activeType?.label} Playbooks</h2>
             <p className="sv-panel-desc">
               {canEdit
-                ? (isProspecting
-                    ? 'Manage outreach playbooks — define stage guidance, key actions, and cadences for each prospecting stage.'
-                    : 'Manage playbooks per market or product. Each deal can use a specific playbook; the default is used when none is selected.')
-                : (isProspecting
-                    ? 'View your org\'s prospecting playbooks — outreach strategy, actions, and success criteria per stage.'
-                    : 'View your org\'s sales playbooks — stage guidance, key actions, and success criteria for every deal stage.')}
+                ? (isCLM
+                    ? 'Manage CLM playbooks — define contract workflow guidance, actions, and review criteria.'
+                    : isProspecting
+                      ? 'Manage outreach playbooks — define stage guidance, key actions, and cadences for each prospecting stage.'
+                      : 'Manage playbooks per market or product. Each deal can use a specific playbook; the default is used when none is selected.')
+                : (isCLM
+                    ? 'View your org\'s CLM playbooks — contract workflow guidance and review criteria.'
+                    : isProspecting
+                      ? 'View your org\'s prospecting playbooks — outreach strategy, actions, and success criteria per stage.'
+                      : 'View your org\'s sales playbooks — stage guidance, key actions, and success criteria for every deal stage.')}
             </p>
           </div>
-          {canEdit && (
+          {canEdit && !isCLM && (
             <button className="sv-btn sv-btn-primary" onClick={() => setShowNewForm(true)}>
-              + New {isProspecting ? 'Prospecting' : 'Sales'} Playbook
+              + New {activeType?.label || 'Sales'} Playbook
             </button>
           )}
         </div>
 
-        {/* Type toggle tabs */}
+        {/* Type toggle tabs — dynamic from org playbook types */}
         <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 20 }}>
-          {[
-            { key: 'sales', label: '📘 Sales', color: '#3b82f6' },
-            { key: 'prospecting', label: '🎯 Prospecting', color: TEAL },
-          ].map(t => (
-            <button
-              key={t.key}
-              onClick={() => setTypeFilter(t.key)}
-              style={{
-                padding: '10px 20px',
-                background: 'none',
-                border: 'none',
-                borderBottom: `3px solid ${typeFilter === t.key ? t.color : 'transparent'}`,
-                color: typeFilter === t.key ? t.color : '#6b7280',
-                fontWeight: typeFilter === t.key ? 600 : 400,
-                fontSize: 14,
-                cursor: 'pointer',
-                transition: 'all 0.15s',
-              }}
-            >
-              {t.label} ({(t.key === 'prospecting' ? playbooks.filter(p => p.type === 'prospecting') : playbooks.filter(p => p.type !== 'prospecting')).length})
-            </button>
-          ))}
+          {playbookTypes.map(t => {
+            const count = t.key === 'sales'
+              ? playbooks.filter(p => SALES_LEGACY_TYPES.includes(p.type)).length
+              : playbooks.filter(p => p.type === t.key).length;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setTypeFilter(t.key)}
+                style={{
+                  padding: '10px 20px',
+                  background: 'none',
+                  border: 'none',
+                  borderBottom: `3px solid ${typeFilter === t.key ? (t.color || '#3b82f6') : 'transparent'}`,
+                  color: typeFilter === t.key ? (t.color || '#3b82f6') : '#6b7280',
+                  fontWeight: typeFilter === t.key ? 600 : 400,
+                  fontSize: 14,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {t.icon} {t.label} ({count})
+              </button>
+            );
+          })}
         </div>
 
         {error   && <div className="sv-alert sv-alert-error">{error}</div>}
@@ -322,7 +362,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
           <div className="pb-sidebar">
             {filteredPlaybooks.length === 0 ? (
               <div className="sv-empty">
-                No {isProspecting ? 'prospecting' : 'sales'} playbooks yet.
+                No {activeType?.label?.toLowerCase() || 'sales'} playbooks yet.
                 {canEdit ? ' Create one above.' : ' Ask your org admin to create one.'}
               </div>
             ) : filteredPlaybooks.map(pb => (
