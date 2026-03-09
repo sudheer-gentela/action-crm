@@ -634,6 +634,14 @@ function DetailsTab({ c, isLegalMember, onUpdated }) {
   const [editing, setEditing] = useState(false);
   const [form, setForm]       = useState({});
   const [saving, setSaving]   = useState(false);
+  const [legalMembers, setLegalMembers] = useState([]);
+
+  // Fetch legal members for assignee dropdown — available to all users with edit access
+  useEffect(() => {
+    apiService.contracts.getLegalMembers()
+      .then(r => setLegalMembers(r.data?.members || []))
+      .catch(() => {});
+  }, []);
 
   const canEdit = c.status === 'draft'
     || (isLegalMember && c.status === 'in_review');
@@ -655,6 +663,7 @@ function DetailsTab({ c, isLegalMember, onUpdated }) {
       expiryDate:                c.expiryDate?.split('T')[0] || '',
       arrImpact:                 c.arrImpact || false,
       amendmentSubtype:          c.amendmentSubtype || '',
+      legalAssigneeId:           c.legalAssigneeId || '',
     });
     setEditing(true);
   }
@@ -703,6 +712,16 @@ function DetailsTab({ c, isLegalMember, onUpdated }) {
           <option value="us">🇺🇸 US</option>
           <option value="uk">🇬🇧 UK</option>
           <option value="de">🇩🇪 DE</option>
+        </select>
+      </label>
+
+      <label className="cdp-lbl">Legal Assignee
+        <select className="cdp-inp" value={form.legalAssigneeId}
+          onChange={e => f('legalAssigneeId', e.target.value)}>
+          <option value="">In queue (unassigned)</option>
+          {legalMembers.map(m => (
+            <option key={m.id} value={m.id}>{m.first_name} {m.last_name}</option>
+          ))}
         </select>
       </label>
 
@@ -903,9 +922,9 @@ function ContractHierarchyTree({ contractId, currentId, hasHierarchy }) {
   useEffect(() => {
     // Don't attempt fetch for standalone contracts — avoids spurious errors
     // when the endpoint isn't yet deployed.
-    if (!hasHierarchy) { setLoading(false); return; }
+    if (!hasHierarchy) { setTree(null); setLoading(false); return; }
 
-    setLoading(true); setError('');
+    setLoading(true); setError(''); setTree(null);
     apiService.contracts.getHierarchy(contractId)
       .then(r => setTree(r.data?.root || r.data || null))
       .catch(e => {

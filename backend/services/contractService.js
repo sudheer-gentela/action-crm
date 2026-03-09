@@ -365,6 +365,7 @@ async function updateContract(orgId, id, userId, data) {
     tfcStartDate, tfcEndDate, specialTerms, agreementEndDate,
     arrImpact, amendmentSubtype,
     effectiveDate, expiryDate, dealId, parentContractId,
+    legalAssigneeId,
   } = data;
   const r = await pool.query(
     `UPDATE contracts SET
@@ -385,6 +386,9 @@ async function updateContract(orgId, id, userId, data) {
        special_terms               = COALESCE($17, special_terms),
        agreement_end_date          = COALESCE($18, agreement_end_date),
        amendment_subtype           = COALESCE($19, amendment_subtype),
+       legal_assignee_id           = COALESCE($20, legal_assignee_id),
+       legal_queue                 = CASE WHEN $20 IS NOT NULL THEN FALSE ELSE legal_queue END,
+       legal_owner_type            = CASE WHEN $20 IS NOT NULL THEN 'legal_person' ELSE legal_owner_type END,
        updated_at                  = NOW()
      WHERE id=$1 AND org_id=$2 RETURNING *`,
     [
@@ -396,6 +400,7 @@ async function updateContract(orgId, id, userId, data) {
       includeFullDpa ?? null, terminationForConvenience ?? null,
       tfcStartDate || null, tfcEndDate || null, specialTerms || null,
       agreementEndDate || null, amendmentSubtype || null,
+      legalAssigneeId ? parseInt(legalAssigneeId, 10) : null,
     ]
   );
   return r.rows[0];
