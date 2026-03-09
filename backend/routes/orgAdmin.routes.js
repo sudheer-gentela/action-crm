@@ -17,7 +17,7 @@ const adminOnly = requireRole('owner', 'admin');
 router.get('/profile', adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, name, status, plan, max_users, created_at FROM organizations WHERE id = $1`,
+      `SELECT id, name, status, plan, max_users, created_at, settings FROM organizations WHERE id = $1`,
       [req.orgId]
     );
     res.json({ org: result.rows[0] });
