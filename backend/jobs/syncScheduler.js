@@ -16,7 +16,8 @@ const { pool }  = require('../config/database');
 const UnifiedEmailProvider = require('../services/UnifiedEmailProvider');
 const { emailQueue }       = require('./emailProcessor');
 const config               = require('../config/config');
-const ActionsGenerator     = require('../services/actionsGenerator');
+const ActionsGenerator             = require('../services/actionsGenerator');
+const ContractActionsGenerator     = require('../services/ContractActionsGenerator');
 
 /**
  * Store email to database with deduplication.
@@ -379,6 +380,19 @@ function startScheduler() {
     console.log('Running scheduled sync...');
     syncAllUsers();
   }, { timezone: config.system.timezone || 'UTC' });
+
+  // ── CLM contract actions — nightly sweep ──────────────────────────────────
+  // Runs at 02:00 UTC every day. Catches stagnation rules (contracts sitting in
+  // a status for N days) and time-based rules (expiry warnings, expired with no
+  // renewal) that are never triggered by status-change events.
+  cron.schedule('0 2 * * *', () => {
+    console.log('🌙 Running nightly CLM action sweep...');
+    ContractActionsGenerator.generateAll()
+      .then(r => console.log(`✅ CLM sweep done — generated: ${r.generated}, inserted: ${r.inserted}`))
+      .catch(err => console.error('❌ CLM sweep error:', err.message));
+  }, { timezone: 'UTC' });
+
+  console.log('✅ CLM action scheduler started (nightly 02:00 UTC)');
 }
 
 module.exports = {

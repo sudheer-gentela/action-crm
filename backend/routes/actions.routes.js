@@ -3,7 +3,8 @@ const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
-const ActionsGenerator = require('../services/actionsGenerator');
+const ActionsGenerator           = require('../services/actionsGenerator');
+const ContractActionsGenerator   = require('../services/ContractActionsGenerator');
 const ActionConfigService = require('../services/actionConfig.service');
 const ActionCompletionDetector = require('../services/actionCompletionDetector.service');
 const StrapEngine = require('../services/StrapEngine');
@@ -67,6 +68,12 @@ function mapActionRow(row) {
       direction: row.evidence_direction,
       sentAt:    row.evidence_sent_at,
     } : null,
+    contract: row.contract_id ? {
+      id:           row.contract_id,
+      title:        row.contract_title,
+      contractType: row.contract_type,
+      status:       row.contract_status,
+    } : null,
   };
 }
 
@@ -91,13 +98,17 @@ const BASE_QUERY = `
     ev.subject      AS evidence_subject,
     LEFT(ev.body, 300) AS evidence_snippet,
     ev.direction    AS evidence_direction,
-    ev.sent_at      AS evidence_sent_at
+    ev.sent_at      AS evidence_sent_at,
+    ct.title        AS contract_title,
+    ct.contract_type AS contract_type,
+    ct.status       AS contract_status
   FROM actions a
-  LEFT JOIN deals d      ON a.deal_id    = d.id    AND d.org_id   = a.org_id
-  LEFT JOIN users u      ON d.owner_id   = u.id
-  LEFT JOIN contacts c   ON a.contact_id = c.id    AND c.org_id   = a.org_id
-  LEFT JOIN accounts acc ON d.account_id = acc.id  AND acc.org_id = a.org_id
-  LEFT JOIN emails ev    ON a.source_id  = ev.id::varchar AND ev.org_id = a.org_id
+  LEFT JOIN deals d      ON a.deal_id     = d.id    AND d.org_id   = a.org_id
+  LEFT JOIN users u      ON d.owner_id    = u.id
+  LEFT JOIN contacts c   ON a.contact_id  = c.id    AND c.org_id   = a.org_id
+  LEFT JOIN accounts acc ON d.account_id  = acc.id  AND acc.org_id = a.org_id
+  LEFT JOIN emails ev    ON a.source_id   = ev.id::varchar AND ev.org_id = a.org_id
+  LEFT JOIN contracts ct ON a.contract_id = ct.id   AND ct.org_id  = a.org_id
 `;
 
 const ORDER_CLAUSE = `
@@ -127,6 +138,7 @@ router.get('/', async (req, res) => {
       dueBefore,
       dueAfter,
       scope = 'mine',
+      contractId,
     } = req.query;
 
     // org_id is the primary isolation filter — always first
@@ -172,6 +184,11 @@ router.get('/', async (req, res) => {
     if (ownerId) {
       query += ` AND d.owner_id = $${params.length + 1}`;
       params.push(parseInt(ownerId));
+    }
+
+    if (contractId) {
+      query += ` AND a.contract_id = $${params.length + 1}`;
+      params.push(parseInt(contractId));
     }
 
     if (actionType) {
@@ -520,13 +537,26 @@ router.post('/generate', async (req, res) => {
       prospectResult = await generateAllProspectingActions(req.orgId, req.user.userId);
     }
 
+    // ── CLM contract actions ───────────────────────────────────
+    let clmResult = { success: true, generated: 0, inserted: 0 };
+    if (source !== 'prospecting' && source !== 'deals') {
+      const { contractId } = req.body || {};
+      if (contractId) {
+        const ins = await ContractActionsGenerator.generateForContract(parseInt(contractId));
+        clmResult = { success: true, generated: ins, inserted: ins };
+      } else if (!dealId) {
+        clmResult = await ContractActionsGenerator.generateAll();
+      }
+    }
+
     res.json({
       success:   true,
-      message:   `Generated ${dealResult.inserted || 0} deal action(s), ${prospectResult.created} prospecting action(s)`,
-      generated: (dealResult.generated || 0) + prospectResult.created,
-      inserted:  (dealResult.inserted || 0) + prospectResult.created,
+      message:   `Generated ${dealResult.inserted || 0} deal action(s), ${prospectResult.created} prospecting action(s), ${clmResult.inserted || 0} CLM action(s)`,
+      generated: (dealResult.generated || 0) + prospectResult.created + (clmResult.generated || 0),
+      inserted:  (dealResult.inserted  || 0) + prospectResult.created + (clmResult.inserted  || 0),
       deal:      { generated: dealResult.generated || 0, inserted: dealResult.inserted || 0 },
       prospecting: prospectResult,
+      clm:       { generated: clmResult.generated || 0, inserted: clmResult.inserted || 0 },
     });
   } catch (error) {
     console.error('Error in /generate endpoint:', error);
@@ -692,6 +722,7 @@ router.get('/unified', async (req, res) => {
     const {
       scope = 'mine', status, source, actionType, nextStep,
       dueBefore, dueAfter, dealId, accountId, ownerId, isInternal,
+      contractId,
     } = req.query;
 
     let ownerFilterDeal = '';
@@ -724,6 +755,7 @@ router.get('/unified', async (req, res) => {
 
     if (status) { dealWhere += ` AND a.status = $${dIdx}`; dealParams.push(status); dIdx++; }
     if (dealId) { dealWhere += ` AND a.deal_id = $${dIdx}`; dealParams.push(parseInt(dealId)); dIdx++; }
+    if (contractId) { dealWhere += ` AND a.contract_id = $${dIdx}`; dealParams.push(parseInt(contractId)); dIdx++; }
     if (actionType) { dealWhere += ` AND a.action_type = $${dIdx}`; dealParams.push(actionType); dIdx++; }
     if (nextStep) { dealWhere += ` AND a.next_step = $${dIdx}`; dealParams.push(nextStep); dIdx++; }
     if (isInternal === 'true') { dealWhere += ` AND a.is_internal = TRUE`; }
@@ -741,6 +773,10 @@ router.get('/unified', async (req, res) => {
         a.completion_evidence, a.context, a.suggested_action, a.metadata,
         a.snoozed_until, a.snooze_reason, a.snooze_duration,
         a.deal_id, a.contact_id, a.user_id, a.health_param,
+        a.contract_id,
+        ct.title        AS contract_title,
+        ct.contract_type AS contract_type,
+        ct.status       AS contract_status,
         d.name AS deal_name, d.value AS deal_value, d.stage AS deal_stage,
         d.owner_id AS deal_owner_id,
         du.first_name || ' ' || du.last_name AS deal_owner_name,
@@ -758,6 +794,7 @@ router.get('/unified', async (req, res) => {
       LEFT JOIN contacts c ON a.contact_id = c.id AND c.org_id = a.org_id
       LEFT JOIN accounts acc ON d.account_id = acc.id AND acc.org_id = a.org_id
       LEFT JOIN emails ev ON a.source_id = ev.id::varchar AND ev.org_id = a.org_id
+      LEFT JOIN contracts ct ON a.contract_id = ct.id AND ct.org_id = a.org_id
       WHERE a.org_id = $1 ${ownerFilterDeal} ${dealWhere}
     `;
 
@@ -878,20 +915,21 @@ router.get('/:id', async (req, res) => {
 // ── POST / — create manual action ────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const { dealId, contactId, type, priority, title, description, context, dueDate, isInternal } = req.body;
+    const { dealId, contactId, contractId, type, priority, title, description, context, dueDate, isInternal } = req.body;
     const result = await db.query(
       `INSERT INTO actions
-         (org_id, user_id, deal_id, contact_id, type, action_type, priority,
+         (org_id, user_id, deal_id, contact_id, contract_id, type, action_type, priority,
           title, description, context, due_date, is_internal, status, source)
-       VALUES ($1,$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,'yet_to_start','manual')
+       VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,'yet_to_start','manual')
        RETURNING *`,
       [
         req.orgId,
         req.user.userId,
-        dealId    || null,
-        contactId || null,
-        type      || 'follow_up',
-        priority  || 'medium',
+        dealId      || null,
+        contactId   || null,
+        contractId  || null,
+        type        || 'follow_up',
+        priority    || 'medium',
         title,
         description || null,
         context     || null,
@@ -1182,6 +1220,12 @@ function mapUnifiedAction(row, source) {
       snippet:   row.evidence_snippet,
       direction: row.evidence_direction,
       sentAt:    row.evidence_sent_at,
+    } : null,
+    contract: row.contract_id ? {
+      id:           row.contract_id,
+      title:        row.contract_title,
+      contractType: row.contract_type,
+      status:       row.contract_status,
     } : null,
   };
 }

@@ -3,13 +3,15 @@
 //
 // Provides stage-aware playbook data to ActionsRulesEngine and actionsGenerator.
 //
-// KEY CHANGE: stage_guidance is now keyed by stage KEY (e.g. "qualified", "demo",
-// "security_review") instead of stage_type (e.g. "evaluation"). This means each
-// stage gets its own guidance regardless of whether multiple stages share a type.
-//
-// Resolution order:
-//   1. Org default playbook — stage_guidance JSONB keyed by stage key
-//   2. salesPlaybook.js fallback — already keyed by stage key, so no mapping needed
+// CHANGES FROM PREVIOUS VERSION:
+//   - getStageGuidance(orgId, stageKey)  — was getStageGuidance(userId, stageKey)
+//   - getStageActions(orgId, stageKey)   — was getStageActions(userId, stageKey)
+//   - getFullPlaybook(orgId)             — was getFullPlaybook(userId, orgId)
+//   - All three now query playbooks directly by org_id — no JOIN through users.
+//   - getCLMPlaybook(orgId)              — NEW: returns the CLM playbook plays
+//     for ContractActionsGenerator.
+//   - salesPlaybook.js fallback is retained until every org has a seeded
+//     sales playbook in the DB.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const db             = require('../config/database');
@@ -19,22 +21,20 @@ class PlaybookService {
 
   // ── getStageGuidance ─────────────────────────────────────────────────────────
   // Returns the full guidance object for a given stage key from the org's
-  // default playbook. Falls back to salesPlaybook.js if no DB entry found.
-  //
-  // stageKey: the deal_stages.key value (e.g. "qualified", "demo", "proposal")
-  // userId:   deal owner — used to scope the org default playbook lookup
+  // default SALES playbook. Falls back to salesPlaybook.js if no DB entry found.
 
-  static async getStageGuidance(userId, stageKey) {
-    if (!stageKey) return null;
+  static async getStageGuidance(orgId, stageKey) {
+    if (!stageKey || !orgId) return null;
 
     try {
       const result = await db.query(
-        `SELECT p.stage_guidance
-         FROM playbooks p
-         JOIN users u ON u.org_id = p.org_id
-         WHERE u.id = $1 AND p.is_default = TRUE
+        `SELECT stage_guidance
+         FROM playbooks
+         WHERE org_id = $1
+           AND is_default = TRUE
+           AND type != 'clm'
          LIMIT 1`,
-        [userId]
+        [orgId]
       );
 
       if (result.rows.length > 0) {
@@ -48,32 +48,32 @@ class PlaybookService {
       console.error('PlaybookService.getStageGuidance DB error:', err.message);
     }
 
-    // Fallback: salesPlaybook.js is already keyed by stage key
     return this._getFallbackGuidance(stageKey);
   }
 
   // ── getStageActions ──────────────────────────────────────────────────────────
   // Returns the key_actions array for a given stage key.
-  // Called by actionsGenerator.buildContext().
 
-  static async getStageActions(userId, stageKey) {
-    if (!stageKey) return [];
-
-    // Terminal stages have no key_actions — check common terminal keys
-    // (is_terminal flag is also checked by the caller, but guard here too)
+  static async getStageActions(orgId, stageKey) {
+    if (!stageKey || !orgId) return [];
     if (['closed_won', 'closed_lost'].includes(stageKey)) return [];
 
-    const guidance = await this.getStageGuidance(userId, stageKey);
+    const guidance = await this.getStageGuidance(orgId, stageKey);
     return guidance?.key_actions || [];
   }
 
   // ── getFullPlaybook ──────────────────────────────────────────────────────────
-  // Returns the entire default playbook for an org.
+  // Returns the entire default sales playbook for an org.
 
-  static async getFullPlaybook(userId, orgId) {
+  static async getFullPlaybook(orgId) {
+    if (!orgId) return null;
     try {
       const result = await db.query(
-        `SELECT * FROM playbooks WHERE org_id = $1 AND is_default = TRUE LIMIT 1`,
+        `SELECT * FROM playbooks
+         WHERE org_id = $1
+           AND is_default = TRUE
+           AND type != 'clm'
+         LIMIT 1`,
         [orgId]
       );
       if (result.rows.length > 0) {
@@ -94,9 +94,38 @@ class PlaybookService {
     return null;
   }
 
+  // ── getCLMPlaybook ───────────────────────────────────────────────────────────
+  // Returns all active plays from the org's CLM playbook, ordered by sort_order.
+  // Used exclusively by ContractActionsGenerator.
+  //
+  // Returns array of playbook_plays rows:
+  //   { id, stage_key, title, description, channel, priority,
+  //     due_offset_days, execution_type, sort_order }
+
+  static async getCLMPlays(orgId) {
+    if (!orgId) return [];
+    try {
+      const result = await db.query(
+        `SELECT pp.id, pp.stage_key, pp.title, pp.description,
+                pp.channel, pp.priority, pp.due_offset_days,
+                pp.execution_type, pp.sort_order
+         FROM playbook_plays pp
+         JOIN playbooks pb ON pb.id = pp.playbook_id
+         WHERE pb.org_id   = $1
+           AND pb.type     = 'clm'
+           AND pp.is_active = TRUE
+           AND pp.execution_type = 'auto'
+         ORDER BY pp.sort_order ASC`,
+        [orgId]
+      );
+      return result.rows;
+    } catch (err) {
+      console.error('PlaybookService.getCLMPlays error:', err.message);
+      return [];
+    }
+  }
+
   // ── upsertStageGuidance ──────────────────────────────────────────────────────
-  // Saves guidance for a single stage key into a playbook's stage_guidance JSONB.
-  // Called by playbooks.routes.js PUT /:id/stages/:stageKey
 
   static async upsertStageGuidance(playbookId, orgId, stageKey, guidance) {
     const result = await db.query(
@@ -112,9 +141,6 @@ class PlaybookService {
   }
 
   // ── removeStageGuidance ──────────────────────────────────────────────────────
-  // Removes guidance for a stage key. Called when a stage key is renamed —
-  // the cascade in deal-stages.routes.js should also call this to clean up
-  // the old key's guidance entry.
 
   static async removeStageGuidance(playbookId, orgId, stageKey) {
     await db.query(
@@ -126,7 +152,7 @@ class PlaybookService {
     );
   }
 
-  // ── classifyActionType ───────────────────────────────────────────────────────
+  // ── Utility methods (used by ActionsRulesEngine) ─────────────────────────────
 
   static classifyActionType(actionText) {
     const text = actionText.toLowerCase();
@@ -143,10 +169,6 @@ class PlaybookService {
     return 'task_complete';
   }
 
-  // ── suggestPriority ──────────────────────────────────────────────────────────
-  // Uses stage_type for semantic priority hints since that's the stable
-  // semantic signal (key can be anything the org names it).
-
   static suggestPriority(stageType, actionType) {
     const highPriorityTypes = ['negotiation', 'closing', 'proposal'];
     if (highPriorityTypes.includes(stageType)) return 'high';
@@ -155,8 +177,6 @@ class PlaybookService {
     return 'medium';
   }
 
-  // ── suggestDueDays ───────────────────────────────────────────────────────────
-
   static suggestDueDays(stageType, actionType) {
     const urgentTypes = { negotiation: 1, closing: 1, proposal: 2 };
     if (urgentTypes[stageType]) return urgentTypes[stageType];
@@ -164,8 +184,6 @@ class PlaybookService {
     if (actionType === 'document_prep')    return 3;
     return 3;
   }
-
-  // ── extractKeywords ──────────────────────────────────────────────────────────
 
   static extractKeywords(actionText) {
     const keywords = [];
@@ -182,16 +200,13 @@ class PlaybookService {
     return keywords.length ? keywords.join(',') : null;
   }
 
-  // ── requiresExternalEvidence ─────────────────────────────────────────────────
-
   static requiresExternalEvidence(actionType, actionText) {
     if (['email_send', 'meeting_schedule'].includes(actionType)) return true;
     const text = actionText.toLowerCase();
     return text.includes('send') || text.includes('schedule') || text.includes('meet');
   }
 
-  // ── Private: fallback to salesPlaybook.js ────────────────────────────────────
-  // salesPlaybook.js is already keyed by stage key — look up directly.
+  // ── Private fallback ─────────────────────────────────────────────────────────
 
   static _getFallbackGuidance(stageKey) {
     if (SALES_PLAYBOOK.deal_stages?.[stageKey]) {

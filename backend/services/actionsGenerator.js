@@ -3,15 +3,13 @@
  *
  * Builds deal context, runs ActionsRulesEngine, optionally runs ActionsAIEnhancer.
  *
- * Changes from previous version:
- *   - buildContext now fetches playbookStageGuidance (full guidance object)
- *     in addition to playbookStageActions, and passes both into context.
- *   - deal.stage_type is read from the deals table (backfilled by migration
- *     trigger) and passed through context so rules engine + AI enhancer
- *     can use semantic type instead of stage name.
- *   - generateAll / generateForDeal terminal-stage guard uses is_terminal
- *     from deal_stages instead of a hardcoded string list.
- *   - org_id is always derived from deal.org_id — never trusted from the caller.
+ * CHANGES FROM PREVIOUS VERSION:
+ *   - PlaybookService.getStageActions / getStageGuidance now called with orgId
+ *     instead of userId. PlaybookService no longer does a JOIN through users —
+ *     it queries playbooks directly by org_id (cleaner, one fewer join).
+ *   - buildContext signature unchanged — userId still passed for insertAction
+ *     and AgentObserver, but orgId is derived from deal.org_id and passed
+ *     separately to PlaybookService calls.
  */
 
 const db = require('../config/database');
@@ -115,18 +113,16 @@ function buildDerived(deal, contacts, emails, meetings, files) {
 }
 
 // ── Context builder ───────────────────────────────────────────────────────────
+// orgId added as explicit param — passed to PlaybookService instead of userId.
 
-async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles, userId) {
+async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles, userId, orgId) {
   const contacts = allContacts.filter(c => c.account_id === deal.account_id);
   const emails   = allEmails.filter(e => e.deal_id === deal.id);
   const meetings = allMeetings.filter(m => m.deal_id === deal.id);
   const files    = allFiles.filter(f => f.deal_id === deal.id);
 
-  // stage_type is stored on the deal row (backfilled by migration, kept in sync
-  // by the trg_sync_deal_stage_type trigger). Fall back to 'custom' if missing.
   const stageType = deal.stage_type || 'custom';
-
-  const derived = buildDerived(deal, contacts, emails, meetings, files);
+  const derived   = buildDerived(deal, contacts, emails, meetings, files);
 
   let healthBreakdown = null;
   if (deal.health_score_breakdown) {
@@ -137,16 +133,13 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
     } catch (_) {}
   }
 
-  // Fetch both key_actions and full guidance using the stage KEY (deal.stage),
-  // not stage_type. Each stage gets its own guidance even if multiple stages
-  // share the same stage_type. stageType is still passed in context for the
-  // AI Enhancer prompt label — it is not used for guidance lookup.
+  // Use orgId directly — PlaybookService no longer needs userId for lookup.
   let playbookStageActions  = [];
   let playbookStageGuidance = null;
   try {
     [playbookStageActions, playbookStageGuidance] = await Promise.all([
-      PlaybookService.getStageActions(userId, deal.stage),
-      PlaybookService.getStageGuidance(userId, deal.stage),
+      PlaybookService.getStageActions(orgId, deal.stage),
+      PlaybookService.getStageGuidance(orgId, deal.stage),
     ]);
   } catch (err) {
     console.error('buildContext: PlaybookService error:', err.message);
@@ -161,10 +154,10 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
     healthBreakdown,
     healthStatus:         deal.health      || null,
     healthScore:          deal.health_score || null,
-    stageType,                                        // ← semantic type for AI Enhancer
+    stageType,
     derived,
     playbookStageActions,
-    playbookStageGuidance,                            // ← full guidance for _fileRules etc.
+    playbookStageGuidance,
   };
 }
 
@@ -178,15 +171,15 @@ async function insertAction(action, userId, orgId) {
   await db.query(
     `INSERT INTO actions (
        org_id, user_id, type, title, description, action_type, priority,
-       due_date, deal_id, contact_id, account_id,
+       due_date, deal_id, contact_id, account_id, contract_id,
        suggested_action, context, source, source_rule, health_param,
        keywords, deal_stage, requires_external_evidence,
        is_internal, next_step, status, created_at
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-       $12,$13,$14,$15,$16,
-       $17,$18,$19,
-       $20,$21,'yet_to_start',NOW()
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+       $13,$14,$15,$16,$17,
+       $18,$19,$20,
+       $21,$22,'yet_to_start',NOW()
      )`,
     [
       orgId,
@@ -197,9 +190,10 @@ async function insertAction(action, userId, orgId) {
       action.action_type,
       action.priority || 'medium',
       action.due_date,
-      action.deal_id    || null,
-      action.contact_id || null,
-      action.account_id || null,
+      action.deal_id       || null,
+      action.contact_id    || null,
+      action.account_id    || null,
+      action.contract_id   || null,   // ← new
       action.suggested_action           || null,
       action.context                    || null,
       source,
@@ -215,11 +209,8 @@ async function insertAction(action, userId, orgId) {
 }
 
 // ── Terminal stage check ──────────────────────────────────────────────────────
-// Reads from deal_stages so org-specific terminal stages are respected.
-// Falls back to the is_terminal flag stored on the deal row (set by trigger).
 
 function isTerminalDeal(deal) {
-  // is_terminal is joined in by generateAll's query
   return deal.is_terminal === true;
 }
 
@@ -233,7 +224,6 @@ class ActionsGenerator {
     try {
       console.log('🤖 Starting ActionsRulesEngine — generating all actions...');
 
-      // Join deal_stages to get is_terminal flag — avoids hardcoded stage name list
       const [dealsRes, contactsRes, emailsRes, meetingsRes, filesRes] = await Promise.all([
         db.query(`
           SELECT d.*, ds.is_terminal, ds.stage_type AS stage_type_from_db
@@ -256,7 +246,7 @@ class ActionsGenerator {
       console.log(`📊 Loaded: ${deals.length} deals, ${contacts.length} contacts, ${emails.length} emails, ${meetings.length} meetings, ${files.length} files`);
 
       await db.query(
-        "DELETE FROM actions WHERE source IN ('auto_generated', 'ai_generated') AND status IN ('yet_to_start', 'in_progress')"
+        "DELETE FROM actions WHERE source IN ('auto_generated', 'ai_generated') AND status IN ('yet_to_start', 'in_progress') AND contract_id IS NULL"
       );
 
       let totalGenerated = 0;
@@ -279,7 +269,7 @@ class ActionsGenerator {
 
         try {
           const actionConfig = await ActionConfigService.getConfig(userId, orgId);
-          const context      = await buildContext(deal, contacts, emails, meetings, files, userId);
+          const context      = await buildContext(deal, contacts, emails, meetings, files, userId, orgId);
           const rulesActions = ActionsRulesEngine.generate(context);
 
           console.log(`  📏 Rules: ${rulesActions.length} actions for deal ${deal.id} (${deal.name})`);
@@ -301,7 +291,6 @@ class ActionsGenerator {
             }
           }
 
-          // ── Agentic Framework hook (non-blocking) ──────────────
           AgentObserver.onActionsGenerated(deal.id, allActions, context, orgId, userId)
             .catch(err => console.error(`  🤖 AgentObserver hook error:`, err.message));
         } catch (err) {
@@ -348,7 +337,7 @@ class ActionsGenerator {
       ]);
 
       const actionConfig = await ActionConfigService.getConfig(userId, orgId);
-      const context      = await buildContext(deal, contactsRes.rows, emailsRes.rows, meetingsRes.rows, filesRes.rows, userId);
+      const context      = await buildContext(deal, contactsRes.rows, emailsRes.rows, meetingsRes.rows, filesRes.rows, userId, orgId);
       const rulesActions = ActionsRulesEngine.generate(context);
       const aiActions    = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
       const allActions   = [...rulesActions, ...aiActions];
@@ -370,7 +359,6 @@ class ActionsGenerator {
 
       console.log(`✅ Generated ${inserted} actions for deal ${dealId}`);
 
-      // ── Agentic Framework hook (non-blocking) ──────────────
       AgentObserver.onActionsGenerated(dealId, allActions, context, orgId, userId)
         .catch(err => console.error(`  🤖 AgentObserver hook error:`, err.message));
 

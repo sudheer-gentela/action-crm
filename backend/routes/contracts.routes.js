@@ -13,6 +13,7 @@ const requireModule = require('../middleware/requireModule.middleware');
 const CS  = require('../services/contractService');
 const AS  = require('../services/contractApprovalService');
 const NS  = require('../services/contractNotificationService');
+const ContractActionsGenerator = require('../services/ContractActionsGenerator');
 
 router.use(auth);
 router.use(orgContext);
@@ -334,7 +335,10 @@ router.post('/:id/handoff', async (req, res) => {
       NS.notifyResubmittedToLegal(req.orgId, contractId, result.title, assigneeId, legalTeam, req.userId).catch(() => {});
     }
     // with_customer: notify owner that draft has been sent to customer
-    // (add a notifyCustomerReview call here if you add that notification later)
+
+    // Regenerate CLM actions for the new status (non-blocking)
+    ContractActionsGenerator.generateForContract(contractId)
+      .catch(err => console.error(`CLM action regen error (handoff ${contractId}):`, err.message));
 
     res.json({ result });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
@@ -349,6 +353,8 @@ router.post('/:id/return-sales', async (req, res) => {
       return res.status(403).json({ error: { message: 'Legal team only' } });
     const result = await CS.handoffReview(req.orgId, contractId, req.userId, 'with_sales');
     NS.notifyReturnedToSales(req.orgId, contractId, result.title, result.ownerId, req.userId).catch(() => {});
+    ContractActionsGenerator.generateForContract(contractId)
+      .catch(err => console.error(`CLM action regen error (return-sales ${contractId}):`, err.message));
     res.json({ success: true });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
@@ -362,6 +368,8 @@ router.post('/:id/resubmit', async (req, res) => {
     const assigneeId = ct.rows[0]?.legal_assignee_id;
     const legalTeam  = assigneeId ? [] : await CS.getLegalTeamUserIds(req.orgId);
     NS.notifyResubmittedToLegal(req.orgId, contractId, result.title, assigneeId, legalTeam, req.userId).catch(() => {});
+    ContractActionsGenerator.generateForContract(contractId)
+      .catch(err => console.error(`CLM action regen error (resubmit ${contractId}):`, err.message));
     res.json({ result });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
@@ -369,7 +377,10 @@ router.post('/:id/resubmit', async (req, res) => {
 // ── Send for signature ─────────────────────────────────────────────────
 router.post('/:id/send-signature', async (req, res) => {
   try {
-    await CS.sendForSignature(req.orgId, parseInt(req.params.id,10), req.userId);
+    const contractId = parseInt(req.params.id,10);
+    await CS.sendForSignature(req.orgId, contractId, req.userId);
+    ContractActionsGenerator.generateForContract(contractId)
+      .catch(err => console.error(`CLM action regen error (send-signature ${contractId}):`, err.message));
     res.json({ success: true });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message, code: err.code } }); }
 });
@@ -381,6 +392,8 @@ router.post('/:id/legal-send-signature', async (req, res) => {
     if (!await CS.isLegalTeamMember(req.orgId, req.userId))
       return res.status(403).json({ error: { message: 'Legal team only' } });
     await CS.sendForSignature(req.orgId, contractId, req.userId);
+    ContractActionsGenerator.generateForContract(contractId)
+      .catch(err => console.error(`CLM action regen error (legal-send-sig ${contractId}):`, err.message));
     res.json({ success: true });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message, code: err.code } }); }
 });
@@ -391,13 +404,18 @@ router.post('/:id/mark-signed', async (req, res) => {
     const result = await CS.markSigned(req.orgId, contractId, req.userId);
     NS.notifyAllSigned(req.orgId, contractId, result.title, result.ownerId).catch(() => {});
     NS.notifyPendingBooking(req.orgId, contractId, result.title, result.ownerId).catch(() => {});
+    ContractActionsGenerator.generateForContract(contractId)
+      .catch(err => console.error(`CLM action regen error (mark-signed ${contractId}):`, err.message));
     res.json({ success: true });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
 router.post('/:id/activate', async (req, res) => {
   try {
-    await CS.activateContract(req.orgId, parseInt(req.params.id,10), req.userId);
+    const contractId = parseInt(req.params.id,10);
+    await CS.activateContract(req.orgId, contractId, req.userId);
+    ContractActionsGenerator.generateForContract(contractId)
+      .catch(err => console.error(`CLM action regen error (activate ${contractId}):`, err.message));
     res.json({ success: true });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
@@ -411,28 +429,40 @@ router.post('/:id/confirm-booking', async (req, res) => {
 
 router.post('/:id/recall', async (req, res) => {
   try {
-    const result = await CS.recallContract(req.orgId, parseInt(req.params.id,10), req.userId, req.body);
+    const contractId = parseInt(req.params.id,10);
+    const result = await CS.recallContract(req.orgId, contractId, req.userId, req.body);
+    ContractActionsGenerator.generateForContract(contractId)
+      .catch(err => console.error(`CLM action regen error (recall ${contractId}):`, err.message));
     res.json({ result });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
 router.post('/:id/void', async (req, res) => {
   try {
-    await CS.voidContract(req.orgId, parseInt(req.params.id,10), req.userId, req.body);
+    const contractId = parseInt(req.params.id,10);
+    await CS.voidContract(req.orgId, contractId, req.userId, req.body);
+    ContractActionsGenerator.generateForContract(contractId)
+      .catch(err => console.error(`CLM action regen error (void ${contractId}):`, err.message));
     res.json({ success: true });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
 router.post('/:id/terminate', async (req, res) => {
   try {
-    await CS.terminateContract(req.orgId, parseInt(req.params.id,10), req.userId, req.body);
+    const contractId = parseInt(req.params.id,10);
+    await CS.terminateContract(req.orgId, contractId, req.userId, req.body);
+    ContractActionsGenerator.generateForContract(contractId)
+      .catch(err => console.error(`CLM action regen error (terminate ${contractId}):`, err.message));
     res.json({ success: true });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });
 
 router.post('/:id/cancel', async (req, res) => {
   try {
-    await CS.cancelContract(req.orgId, parseInt(req.params.id,10), req.userId, req.body);
+    const contractId = parseInt(req.params.id,10);
+    await CS.cancelContract(req.orgId, contractId, req.userId, req.body);
+    ContractActionsGenerator.generateForContract(contractId)
+      .catch(err => console.error(`CLM action regen error (cancel ${contractId}):`, err.message));
     res.json({ success: true });
   } catch (err) { res.status(err.status||500).json({ error: { message: err.message } }); }
 });

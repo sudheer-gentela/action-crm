@@ -1275,7 +1275,11 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
 // ── Filter Bar ────────────────────────────────────────────────────────────────
 
 function FilterBar({ filters, onChange, options, scope }) {
-  const hasFilters = filters.dealId || filters.accountId || filters.ownerId;
+  const hasFilters = filters.dealId || filters.accountId || filters.ownerId || filters.dealStage;
+
+  // Derive unique stage values from loaded actions — no extra fetch needed
+  const stageOptions = options.stages || [];
+
   return (
     <div className="av-filters">
       {/* Team member — only visible on team/org scope */}
@@ -1316,6 +1320,20 @@ function FilterBar({ filters, onChange, options, scope }) {
         ))}
       </select>
 
+      {/* Deal Stage — client-side filter, populated from deal_stage on loaded actions */}
+      {stageOptions.length > 0 && (
+        <select
+          className="av-filter-select"
+          value={filters.dealStage}
+          onChange={e => onChange('dealStage', e.target.value)}
+        >
+          <option value="">All Stages</option>
+          {stageOptions.map(s => (
+            <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>
+          ))}
+        </select>
+      )}
+
       {/* Clear */}
       {hasFilters && (
         <button className="av-filter-clear" onClick={() => onChange('__reset__', null)}>
@@ -1339,6 +1357,7 @@ const DEFAULT_FILTERS = {
   dueAfter:   '',
   dueBefore:  '',
   status:     '',
+  dealStage:  '',
 };
 
 // ── Main Component ────────────────────────────────────────────────────────────
@@ -1349,7 +1368,7 @@ export default function ActionsView() {
   const [generating,    setGenerating]    = useState(false);
   const [error,         setError]         = useState(null);
   const [filters,       setFilters]       = useState(DEFAULT_FILTERS);
-  const [filterOptions, setFilterOptions] = useState({ deals: [], accounts: [], owners: [] });
+  const [filterOptions, setFilterOptions] = useState({ deals: [], accounts: [], owners: [], stages: [] });
   const [contacts,      setContacts]      = useState([]);
   const [deals,         setDeals]         = useState([]);
 
@@ -1522,6 +1541,19 @@ export default function ActionsView() {
       if (!activeFilters.status) {
         rows = rows.filter(a => a.status !== 'completed' && a.status !== 'snoozed');
       }
+
+      // Client-side stage filter (deal_stage already on every action row)
+      if (activeFilters.dealStage) {
+        rows = rows.filter(a =>
+          (a.deal?.stage || a.dealStage || a.deal_stage) === activeFilters.dealStage
+        );
+      }
+
+      // Derive unique stage values for the FilterBar dropdown
+      const stageVals = Array.from(
+        new Set(rows.map(a => a.deal?.stage || a.dealStage || a.deal_stage).filter(Boolean))
+      ).sort();
+      setFilterOptions(prev => ({ ...prev, stages: stageVals }));
 
       setActions(rows);
     } catch (err) {

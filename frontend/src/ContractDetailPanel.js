@@ -31,6 +31,7 @@ import React, { useState, useEffect } from 'react';
 import { apiService } from './apiService';
 import DocumentVersionsPanel from './DocumentVersionsPanel';
 import LegalReviewPanel from './LegalReviewPanel';
+import ContractActionsPanel from './ContractActionsPanel';
 import './ContractDetailPanel.css';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -513,6 +514,7 @@ export default function ContractDetailPanel({ contract: c, isLegalMember, onClos
     { id: 'legal',        label: 'Legal' },
     { id: 'approvals',    label: 'Approvals' },
     { id: 'signatories',  label: 'Signatories' },
+    { id: 'actions',      label: 'Actions' },
     { id: 'timeline',     label: 'Timeline' },
   ];
 
@@ -618,6 +620,7 @@ export default function ContractDetailPanel({ contract: c, isLegalMember, onClos
         {tab === 'legal'       && <LegalReviewPanel contract={c} isLegalMember={isLegalMember} onUpdated={onUpdated} />}
         {tab === 'approvals'   && <ApprovalsTab c={c} onUpdated={onUpdated} />}
         {tab === 'signatories' && <SignatoriesTab c={c} onUpdated={onUpdated} />}
+        {tab === 'actions'     && <ContractActionsPanel contractId={c.id} />}
         {tab === 'timeline'    && <TimelineTab events={c.events || []} />}
       </div>
     </div>
@@ -875,7 +878,11 @@ function DetailsTab({ c, isLegalMember, onUpdated }) {
       </div>
 
       {/* Hierarchy — full recursive tree */}
-      <ContractHierarchyTree contractId={c.id} currentId={c.id} />
+      <ContractHierarchyTree
+        contractId={c.id}
+        currentId={c.id}
+        hasHierarchy={!!(c.parentContractId || c.children?.length > 0)}
+      />
     </div>
   );
 }
@@ -885,18 +892,33 @@ function DetailsTab({ c, isLegalMember, onUpdated }) {
 // Response shape: { root: HierarchyNode }
 // HierarchyNode: { id, title, contract_type, status, children: HierarchyNode[] }
 
-function ContractHierarchyTree({ contractId, currentId }) {
-  const [tree, setTree]   = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+// hasHierarchy: hint from contract object — if false, skip the fetch entirely.
+// 404 responses are treated as "no hierarchy" (endpoint not yet deployed) rather
+// than shown as errors.
+function ContractHierarchyTree({ contractId, currentId, hasHierarchy }) {
+  const [tree, setTree]       = useState(null);
+  const [loading, setLoading] = useState(!!hasHierarchy);
+  const [error, setError]     = useState('');
 
   useEffect(() => {
+    // Don't attempt fetch for standalone contracts — avoids spurious errors
+    // when the endpoint isn't yet deployed.
+    if (!hasHierarchy) { setLoading(false); return; }
+
     setLoading(true); setError('');
     apiService.contracts.getHierarchy(contractId)
       .then(r => setTree(r.data?.root || r.data || null))
-      .catch(e => setError(e.response?.data?.error?.message || 'Could not load hierarchy'))
+      .catch(e => {
+        const status = e.response?.status;
+        // 404 means endpoint not yet deployed or contract is standalone — silent
+        if (status === 404 || status === 405) { setTree(null); return; }
+        setError(e.response?.data?.error?.message || 'Could not load hierarchy');
+      })
       .finally(() => setLoading(false));
-  }, [contractId]);
+  }, [contractId, hasHierarchy]);
+
+  // Nothing to show for standalone contracts
+  if (!hasHierarchy && !tree) return null;
 
   if (loading) return (
     <div className="cdp-hierarchy">
