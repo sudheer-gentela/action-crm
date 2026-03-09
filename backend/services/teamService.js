@@ -28,6 +28,7 @@ const DEFAULT_DIMENSIONS = [
   { key: 'product_line',   label: 'Product Line',   required: false, description: 'Which product(s) the user sells' },
   { key: 'geo',            label: 'Geography',      required: false, description: 'Geographic territory' },
   { key: 'motion',         label: 'Motion',         required: false, description: 'Type of sales motion' },
+  { key: 'function',       label: 'Function',       required: false, description: 'Functional team — Legal, Sales, Implementation, CS, Executive, etc.' },
 ];
 
 const teamService = {

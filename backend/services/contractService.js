@@ -31,7 +31,38 @@ function assertTransition(from, to) {
 }
 
 // ── Legal team helpers ──────────────────────────────────────────────
+// ── Legal team resolution — uses function dimension teams ────────────────────
+// Looks for a team with dimension='function' and name='Legal' (case-insensitive).
+// Falls back to users.department='legal' so existing data continues to work
+// until all orgs have a Legal function team configured.
+
+async function getLegalFunctionTeamIds(orgId) {
+  const r = await pool.query(
+    `SELECT id FROM teams
+     WHERE org_id = $1
+       AND dimension = 'function'
+       AND LOWER(name) = 'legal'
+       AND is_active = TRUE`,
+    [orgId]
+  );
+  return r.rows.map(row => row.id);
+}
+
 async function getLegalTeamUserIds(orgId) {
+  const teamIds = await getLegalFunctionTeamIds(orgId);
+  if (teamIds.length > 0) {
+    const r = await pool.query(
+      `SELECT DISTINCT tm.user_id
+       FROM team_memberships tm
+       JOIN org_users ou ON ou.user_id = tm.user_id AND ou.org_id = tm.org_id
+       WHERE tm.team_id = ANY($1)
+         AND tm.org_id  = $2
+         AND ou.is_active = TRUE`,
+      [teamIds, orgId]
+    );
+    return r.rows.map(row => row.user_id);
+  }
+  // Fallback: department-based (legacy)
   const r = await pool.query(
     `SELECT u.id AS user_id
      FROM org_users ou
@@ -45,6 +76,22 @@ async function getLegalTeamUserIds(orgId) {
 }
 
 async function getLegalTeamMembers(orgId) {
+  const teamIds = await getLegalFunctionTeamIds(orgId);
+  if (teamIds.length > 0) {
+    const r = await pool.query(
+      `SELECT DISTINCT u.id, u.first_name, u.last_name, u.email, tm.role AS role_in_team
+       FROM team_memberships tm
+       JOIN users u     ON u.id  = tm.user_id
+       JOIN org_users ou ON ou.user_id = tm.user_id AND ou.org_id = tm.org_id
+       WHERE tm.team_id = ANY($1)
+         AND tm.org_id  = $2
+         AND ou.is_active = TRUE
+       ORDER BY u.first_name, u.last_name`,
+      [teamIds, orgId]
+    );
+    return r.rows;
+  }
+  // Fallback: department-based (legacy)
   const r = await pool.query(
     `SELECT u.id, u.first_name, u.last_name, u.email, u.department
      FROM org_users ou
@@ -59,17 +106,33 @@ async function getLegalTeamMembers(orgId) {
 }
 
 async function isLegalTeamMember(orgId, userId) {
-  const r = await pool.query(
-    `SELECT u.department, ou.role
-     FROM org_users ou
-     JOIN users u ON u.id = ou.user_id
-     WHERE ou.org_id = $1 AND ou.user_id = $2`,
+  // Always allow owners and admins
+  const orgUser = await pool.query(
+    `SELECT role FROM org_users WHERE org_id = $1 AND user_id = $2`,
     [orgId, userId]
   );
-  const row = r.rows[0];
+  const row = orgUser.rows[0];
   if (!row) return false;
-  if (row.department === 'legal') return true;
-  return row.role === 'owner' || row.role === 'admin';
+  if (row.role === 'owner' || row.role === 'admin') return true;
+
+  // Check function team membership
+  const teamIds = await getLegalFunctionTeamIds(orgId);
+  if (teamIds.length > 0) {
+    const r = await pool.query(
+      `SELECT 1 FROM team_memberships
+       WHERE user_id = $1 AND team_id = ANY($2) AND org_id = $3
+       LIMIT 1`,
+      [userId, teamIds, orgId]
+    );
+    return r.rows.length > 0;
+  }
+
+  // Fallback: department-based (legacy)
+  const deptRow = await pool.query(
+    `SELECT department FROM users WHERE id = $1`,
+    [userId]
+  );
+  return deptRow.rows[0]?.department === 'legal';
 }
 
 // ── Workflow config ─────────────────────────────────────────────────
