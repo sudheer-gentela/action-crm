@@ -2,72 +2,168 @@
  * ContractActionsGenerator.js
  *
  * Generates auto actions for contracts based on CLM playbook plays.
- * Mirrors the structure of actionsGenerator.js but driven by contract
- * status/sub-status age rather than deal health parameters.
+ * Actions are assigned to users based on playbook_play_roles, resolved
+ * against the contract's owner_id, legal_assignee_id, and deal team.
  *
- * How it works:
- *   1. Loads all active 'auto' plays from the org's CLM playbook via
- *      PlaybookService.getCLMPlays(orgId).
- *   2. For each active contract, checks whether the contract's current
- *      status maps to a play's stage_key AND has been in that status
- *      for >= play.due_offset_days.
- *   3. If the condition is met and no non-completed action with the same
- *      source_rule already exists for this contract, inserts the action.
+ * Role resolution (per playbook_play_roles → org_roles.key):
+ *   account_executive → contracts.owner_id
+ *   legal             → contracts.legal_assignee_id
+ *                        (skipped if no legal assignee set)
+ *   sales_manager     → deal_team_members for the contract's linked deal,
+ *                        falls back to owner_id if not staffed
+ *   any other key     → owner_id as fallback
  *
- * stage_key → contract status/sub-status mapping:
- *   clm_in_review_with_legal    → status=in_review,  review_sub_status=with_legal
- *   clm_in_review_with_sales    → status=in_review,  review_sub_status=with_sales
- *   clm_in_review_with_customer → status=in_review,  review_sub_status=with_customer
- *   clm_in_signatures           → status=in_signatures
- *   clm_expiring_soon           → status=active, days_to_expiry <= 90
- *   clm_expiring_soon_urgent    → status=active, days_to_expiry <= 30
- *   clm_expired_no_renewal      → status=expired, no child contract exists
- *
- * Triggered by:
- *   - The existing cron job in syncScheduler.js / worker.js (add a call to
- *     ContractActionsGenerator.generateAll() alongside ActionsGenerator.generateAll())
- *   - contracts.routes.js on CLM status transitions (generateForContract)
+ * One action row is inserted per (play × assignee). So:
+ *   clm_expiring_soon_urgent  → 2 actions: AE + sales_manager
+ *   clm_in_review_with_legal  → 2 actions: legal person + AE
+ *   all others                → 1 action:  AE only
  */
 
 const db             = require('../config/database');
-const PlaybookService = require('./playbook.service');
 
-// ── Status → stage_key mapping ────────────────────────────────────────────────
+// ── Role key → resolution strategy ───────────────────────────────────────────
 
-function getStageKey(contract) {
-  const { status, review_sub_status } = contract;
+const ROLE_STRATEGY = {
+  account_executive:  'owner',
+  legal:              'legal_assignee',
+  sales_manager:      'deal_sales_manager',
+  deal_manager:       'deal_role',
+  executive_sponsor:  'deal_role',
+  solutions_engineer: 'deal_role',
+};
 
-  if (status === 'in_review') {
-    if (review_sub_status === 'with_legal')    return 'clm_in_review_with_legal';
-    if (review_sub_status === 'with_sales')    return 'clm_in_review_with_sales';
-    if (review_sub_status === 'with_customer') return 'clm_in_review_with_customer';
-    return null;
+function resolveRoleToUserId(contract, roleKey, roleId, dealTeam) {
+  const strategy = ROLE_STRATEGY[roleKey] || 'owner';
+
+  switch (strategy) {
+    case 'owner':
+      return contract.owner_id || null;
+
+    case 'legal_assignee':
+      // Only create the action if a legal person is actually assigned
+      return contract.legal_assignee_id || null;
+
+    case 'deal_sales_manager':
+      if (dealTeam[roleId] && dealTeam[roleId].length > 0) {
+        return dealTeam[roleId][0];
+      }
+      // Fallback: AE gets the urgency alert if no sales manager on the deal
+      return contract.owner_id || null;
+
+    case 'deal_role':
+      if (dealTeam[roleId] && dealTeam[roleId].length > 0) {
+        return dealTeam[roleId][0];
+      }
+      return null; // skip — role not staffed
+
+    default:
+      return contract.owner_id || null;
   }
-  if (status === 'in_signatures') return 'clm_in_signatures';
-
-  // active + expiry checks are handled separately (two plays, different thresholds)
-  if (status === 'active') return 'clm_expiring_soon'; // refined below
-
-  if (status === 'expired') return 'clm_expired_no_renewal';
-
-  return null;
 }
 
-// ── Days in current status ────────────────────────────────────────────────────
+// ── Load deal team for a contract ─────────────────────────────────────────────
+
+async function loadDealTeam(dealId, orgId) {
+  if (!dealId) return {};
+  try {
+    const result = await db.query(
+      `SELECT dtm.role_id, dtm.user_id
+       FROM deal_team_members dtm
+       WHERE dtm.deal_id = $1 AND dtm.org_id = $2`,
+      [dealId, orgId]
+    );
+    const byRole = {};
+    for (const row of result.rows) {
+      if (!byRole[row.role_id]) byRole[row.role_id] = [];
+      byRole[row.role_id].push(row.user_id);
+    }
+    return byRole;
+  } catch (err) {
+    console.error('loadDealTeam error:', err.message);
+    return {};
+  }
+}
+
+// ── Load CLM plays WITH their role assignments ────────────────────────────────
+
+async function loadCLMPlaysWithRoles(orgId) {
+  try {
+    const result = await db.query(
+      `SELECT pp.id, pp.stage_key, pp.title, pp.description,
+              pp.channel, pp.priority, pp.due_offset_days,
+              pp.execution_type, pp.sort_order,
+              COALESCE(
+                json_agg(
+                  json_build_object(
+                    'role_id',        ppr.role_id,
+                    'role_key',       dr.key,
+                    'ownership_type', ppr.ownership_type
+                  )
+                ) FILTER (WHERE ppr.id IS NOT NULL),
+                '[]'
+              ) AS roles
+       FROM playbook_plays pp
+       JOIN playbooks pb ON pb.id = pp.playbook_id
+       LEFT JOIN playbook_play_roles ppr ON ppr.play_id = pp.id
+       LEFT JOIN org_roles dr ON dr.id = ppr.role_id
+       WHERE pb.org_id      = $1
+         AND pb.type        = 'clm'
+         AND pp.is_active   = TRUE
+         AND pp.execution_type = 'auto'
+       GROUP BY pp.id
+       ORDER BY pp.sort_order ASC`,
+      [orgId]
+    );
+    return result.rows.map(r => ({
+      ...r,
+      roles: typeof r.roles === 'string' ? JSON.parse(r.roles) : (r.roles || []),
+    }));
+  } catch (err) {
+    console.error('loadCLMPlaysWithRoles error:', err.message);
+    return [];
+  }
+}
+
+// ── Fire condition ────────────────────────────────────────────────────────────
 
 function daysInStatus(contract) {
   const ref = contract.status_changed_at || contract.updated_at || contract.created_at;
   return Math.floor((Date.now() - new Date(ref)) / 86400000);
 }
 
-// ── Days to expiry ────────────────────────────────────────────────────────────
-
 function daysToExpiry(contract) {
-  if (!contract.end_date) return null;
-  return Math.ceil((new Date(contract.end_date) - Date.now()) / 86400000);
+  const d = contract.expiry_date || contract.end_date;
+  if (!d) return null;
+  return Math.ceil((new Date(d) - Date.now()) / 86400000);
 }
 
-// ── Interpolate description template ─────────────────────────────────────────
+function shouldFire(play, contract, renewalContractIds) {
+  const { status, review_sub_status } = contract;
+  const threshold = play.due_offset_days || 0;
+  const elapsed   = daysInStatus(contract);
+  const expiry    = daysToExpiry(contract);
+
+  switch (play.stage_key) {
+    case 'clm_in_review_with_legal':
+      return status === 'in_review' && review_sub_status === 'with_legal'    && elapsed >= threshold;
+    case 'clm_in_review_with_sales':
+      return status === 'in_review' && review_sub_status === 'with_sales'    && elapsed >= threshold;
+    case 'clm_in_review_with_customer':
+      return status === 'in_review' && review_sub_status === 'with_customer' && elapsed >= threshold;
+    case 'clm_in_signatures':
+      return status === 'in_signatures' && elapsed >= threshold;
+    case 'clm_expiring_soon':
+      return status === 'active' && expiry !== null && expiry <= threshold && expiry > 30;
+    case 'clm_expiring_soon_urgent':
+      return status === 'active' && expiry !== null && expiry <= threshold;
+    case 'clm_expired_no_renewal':
+      return status === 'expired' && !renewalContractIds.has(contract.id);
+    default:
+      return false;
+  }
+}
+
+// ── Template interpolation ────────────────────────────────────────────────────
 
 function interpolate(template, vars) {
   return (template || '').replace(/\{\{(\w+)\}\}/g, (_, key) =>
@@ -75,71 +171,17 @@ function interpolate(template, vars) {
   );
 }
 
-// ── Check whether a play should fire for a contract ──────────────────────────
-
-function shouldFire(play, contract, renewalContractIds) {
-  const { status, review_sub_status } = contract;
-  const stageKey    = play.stage_key;
-  const threshold   = play.due_offset_days || 0;
-  const elapsed     = daysInStatus(contract);
-  const expiry      = daysToExpiry(contract);
-
-  switch (stageKey) {
-    case 'clm_in_review_with_legal':
-      return status === 'in_review'
-        && review_sub_status === 'with_legal'
-        && elapsed >= threshold;
-
-    case 'clm_in_review_with_sales':
-      return status === 'in_review'
-        && review_sub_status === 'with_sales'
-        && elapsed >= threshold;
-
-    case 'clm_in_review_with_customer':
-      return status === 'in_review'
-        && review_sub_status === 'with_customer'
-        && elapsed >= threshold;
-
-    case 'clm_in_signatures':
-      return status === 'in_signatures'
-        && elapsed >= threshold;
-
-    case 'clm_expiring_soon':
-      // fires when expiry is within 90 days but NOT within 30 (that's urgent)
-      return status === 'active'
-        && expiry !== null
-        && expiry <= threshold      // threshold = 90 from seed
-        && expiry > 30;             // leave the 30-day play to fire separately
-
-    case 'clm_expiring_soon_urgent':
-      return status === 'active'
-        && expiry !== null
-        && expiry <= threshold;     // threshold = 30 from seed
-
-    case 'clm_expired_no_renewal':
-      return status === 'expired'
-        && !renewalContractIds.has(contract.id);
-
-    default:
-      return false;
-  }
-}
-
-// ── Build template variables for description interpolation ───────────────────
-
 function buildVars(play, contract) {
   return {
     days_in_status:    daysInStatus(contract),
     days_to_expiry:    daysToExpiry(contract) ?? 'unknown',
     days_since_expiry: contract.status === 'expired'
-      ? Math.floor((Date.now() - new Date(contract.end_date || contract.updated_at)) / 86400000)
+      ? Math.floor((Date.now() - new Date(contract.expiry_date || contract.end_date || contract.updated_at)) / 86400000)
       : 0,
-    contract_title:    contract.title || `Contract #${contract.id}`,
-    contract_type:     contract.contract_type || 'contract',
+    contract_title: contract.title || `Contract #${contract.id}`,
+    contract_type:  contract.contract_type || 'contract',
   };
 }
-
-// ── Map play channel to action_type ──────────────────────────────────────────
 
 const CHANNEL_TO_ACTION_TYPE = {
   email: 'email_send',
@@ -147,48 +189,108 @@ const CHANNEL_TO_ACTION_TYPE = {
   call:  'meeting_schedule',
 };
 
+// ── Insert one action row ─────────────────────────────────────────────────────
+
+async function insertCLMAction(orgId, userId, contract, play, title, description) {
+  const actionType = CHANNEL_TO_ACTION_TYPE[play.channel] || 'task_complete';
+  const dueDate    = new Date(Date.now() + 2 * 86400000);
+
+  await db.query(
+    `INSERT INTO actions (
+       org_id, user_id, type, title, description, action_type,
+       priority, due_date, contract_id, deal_id, account_id,
+       source, source_rule, is_internal, next_step, deal_stage,
+       status, created_at
+     ) VALUES (
+       $1, $2, $3, $4, $5, $3,
+       $6, $7, $8, $9, $10,
+       'auto_generated', $11, FALSE, $12, 'clm',
+       'yet_to_start', NOW()
+     )`,
+    [
+      orgId, userId, actionType, title, description,
+      play.priority || 'medium', dueDate,
+      contract.id, contract.deal_id || null, contract.account_id || null,
+      `clm_${play.stage_key}`, play.channel || 'email',
+    ]
+  );
+}
+
+// ── Process one play for one contract ─────────────────────────────────────────
+
+async function processPlayForContract(orgId, contract, play, renewalContractIds, dealTeam) {
+  if (!shouldFire(play, contract, renewalContractIds)) return 0;
+
+  const vars        = buildVars(play, contract);
+  const title       = interpolate(play.title, vars);
+  const description = interpolate(play.description, vars);
+  let   inserted    = 0;
+
+  // No roles defined → fall back to owner
+  if (!play.roles || play.roles.length === 0) {
+    if (!contract.owner_id) return 0;
+    try {
+      await insertCLMAction(orgId, contract.owner_id, contract, play, title, description);
+      return 1;
+    } catch (err) {
+      console.error(`  ❌ CLM insert (no-role) contract ${contract.id}:`, err.message);
+      return 0;
+    }
+  }
+
+  // One action per unique resolved user across all roles
+  const seenUserIds = new Set();
+
+  for (const role of play.roles) {
+    const userId = resolveRoleToUserId(contract, role.role_key, role.role_id, dealTeam);
+    if (!userId || seenUserIds.has(userId)) continue;
+    seenUserIds.add(userId);
+
+    try {
+      await insertCLMAction(orgId, userId, contract, play, title, description);
+      inserted++;
+    } catch (err) {
+      console.error(`  ❌ CLM insert (role=${role.role_key}) contract ${contract.id}:`, err.message);
+    }
+  }
+
+  return inserted;
+}
+
 // ── Main class ────────────────────────────────────────────────────────────────
 
 class ContractActionsGenerator {
 
-  // ── generateAll ─────────────────────────────────────────────────────────────
-  // Called by the cron scheduler alongside ActionsGenerator.generateAll().
-
   static async generateAll() {
     try {
-      console.log('📄 Starting ContractActionsGenerator — generating CLM actions...');
+      console.log('📄 ContractActionsGenerator — starting nightly CLM sweep...');
 
-      // Load all active non-terminal contracts
       const contractsRes = await db.query(`
-        SELECT c.*, c.status_changed_at
-        FROM contracts c
-        WHERE c.deleted_at IS NULL
-          AND c.status NOT IN ('void', 'terminated')
+        SELECT * FROM contracts
+        WHERE deleted_at IS NULL
+          AND status NOT IN ('void', 'terminated', 'cancelled')
       `);
 
       const contracts = contractsRes.rows;
       if (contracts.length === 0) {
-        console.log('📄 No active contracts — skipping CLM action generation.');
+        console.log('📄 No active contracts — skipping.');
         return { success: true, generated: 0, inserted: 0 };
       }
 
-      // Find all contract IDs that are children (renewals/amendments) —
-      // used to determine whether an expired contract has a renewal in progress.
       const childRes = await db.query(
         `SELECT DISTINCT parent_contract_id FROM contracts
          WHERE parent_contract_id IS NOT NULL AND deleted_at IS NULL`
       );
       const renewalContractIds = new Set(childRes.rows.map(r => r.parent_contract_id));
 
-      // Group contracts by org so we load CLM plays once per org
+      // Group by org — load plays once per org
       const byOrg = {};
       for (const c of contracts) {
         if (!c.org_id) continue;
-        if (!byOrg[c.org_id]) byOrg[c.org_id] = [];
-        byOrg[c.org_id].push(c);
+        (byOrg[c.org_id] = byOrg[c.org_id] || []).push(c);
       }
 
-      // Delete existing auto CLM actions that are not yet started / in progress
+      // Wipe all pending auto CLM actions — regenerate fresh
       await db.query(
         `DELETE FROM actions
          WHERE contract_id IS NOT NULL
@@ -196,76 +298,33 @@ class ContractActionsGenerator {
            AND status IN ('yet_to_start', 'in_progress')`
       );
 
-      let totalGenerated = 0;
-      let totalInserted  = 0;
+      let totalInserted = 0;
 
       for (const [orgId, orgContracts] of Object.entries(byOrg)) {
-        const plays = await PlaybookService.getCLMPlays(parseInt(orgId));
+        const plays = await loadCLMPlaysWithRoles(parseInt(orgId));
         if (!plays.length) {
-          console.warn(`⚠️  No CLM plays found for org ${orgId} — skipping`);
+          console.warn(`⚠️  No CLM plays for org ${orgId} — skipping`);
           continue;
         }
 
         for (const contract of orgContracts) {
+          const dealTeam = await loadDealTeam(contract.deal_id, parseInt(orgId));
           for (const play of plays) {
-            if (!shouldFire(play, contract, renewalContractIds)) continue;
-
-            totalGenerated++;
-
-            const vars        = buildVars(play, contract);
-            const title       = interpolate(play.title, vars);
-            const description = interpolate(play.description, vars);
-            const actionType  = CHANNEL_TO_ACTION_TYPE[play.channel] || 'task_complete';
-            const dueDate     = new Date(Date.now() + 2 * 86400000); // due in 2 days
-
-            try {
-              await db.query(
-                `INSERT INTO actions (
-                   org_id, user_id, type, title, description, action_type,
-                   priority, due_date, contract_id, deal_id, account_id,
-                   source, source_rule, is_internal, next_step, status, created_at
-                 )
-                 SELECT
-                   $1, c.owner_id, $3, $4, $5, $6,
-                   $7, $8, $9, c.deal_id, c.account_id,
-                   'auto_generated', $10, FALSE, $11, 'yet_to_start', NOW()
-                 FROM contracts c
-                 WHERE c.id = $9
-                   AND c.org_id = $1`,
-                [
-                  parseInt(orgId),
-                  null,              // placeholder — user_id from subquery
-                  actionType,
-                  title,
-                  description,
-                  actionType,
-                  play.priority || 'medium',
-                  dueDate,
-                  contract.id,
-                  `clm_${play.stage_key}`,
-                  play.channel || 'email',
-                ]
-              );
-              totalInserted++;
-            } catch (err) {
-              console.error(`  ❌ CLM action insert failed for contract ${contract.id}:`, err.message);
-            }
+            totalInserted += await processPlayForContract(
+              parseInt(orgId), contract, play, renewalContractIds, dealTeam
+            );
           }
         }
       }
 
-      console.log(`✅ CLM generateAll complete — generated: ${totalGenerated} inserted: ${totalInserted}`);
-      return { success: true, generated: totalGenerated, inserted: totalInserted };
+      console.log(`✅ CLM sweep complete — inserted ${totalInserted} actions`);
+      return { success: true, inserted: totalInserted };
 
     } catch (error) {
-      console.error('❌ Error in ContractActionsGenerator.generateAll:', error);
+      console.error('❌ ContractActionsGenerator.generateAll:', error);
       return { success: false, error: error.message };
     }
   }
-
-  // ── generateForContract ──────────────────────────────────────────────────────
-  // Called from contracts.routes.js on status transitions.
-  // Deletes existing auto actions for this contract and regenerates.
 
   static async generateForContract(contractId) {
     try {
@@ -284,7 +343,6 @@ class ContractActionsGenerator {
       );
       const renewalContractIds = new Set(childRes.rows.map(r => r.parent_contract_id));
 
-      // Clear existing auto actions for this specific contract
       await db.query(
         `DELETE FROM actions
          WHERE contract_id = $1
@@ -293,57 +351,19 @@ class ContractActionsGenerator {
         [contractId]
       );
 
-      const plays = await PlaybookService.getCLMPlays(orgId);
+      const plays    = await loadCLMPlaysWithRoles(orgId);
+      const dealTeam = await loadDealTeam(contract.deal_id, orgId);
+
       let inserted = 0;
-
       for (const play of plays) {
-        if (!shouldFire(play, contract, renewalContractIds)) continue;
-
-        const vars        = buildVars(play, contract);
-        const title       = interpolate(play.title, vars);
-        const description = interpolate(play.description, vars);
-        const actionType  = CHANNEL_TO_ACTION_TYPE[play.channel] || 'task_complete';
-        const dueDate     = new Date(Date.now() + 2 * 86400000);
-
-        try {
-          await db.query(
-            `INSERT INTO actions (
-               org_id, user_id, type, title, description, action_type,
-               priority, due_date, contract_id, deal_id, account_id,
-               source, source_rule, is_internal, next_step, status, created_at
-             )
-             SELECT
-               $1, c.owner_id, $3, $4, $5, $6,
-               $7, $8, $9, c.deal_id, c.account_id,
-               'auto_generated', $10, FALSE, $11, 'yet_to_start', NOW()
-             FROM contracts c
-             WHERE c.id = $9
-               AND c.org_id = $1`,
-            [
-              orgId,
-              null,
-              actionType,
-              title,
-              description,
-              actionType,
-              play.priority || 'medium',
-              dueDate,
-              contractId,
-              `clm_${play.stage_key}`,
-              play.channel || 'email',
-            ]
-          );
-          inserted++;
-        } catch (err) {
-          console.error(`  ❌ CLM action insert failed for contract ${contractId}:`, err.message);
-        }
+        inserted += await processPlayForContract(orgId, contract, play, renewalContractIds, dealTeam);
       }
 
       console.log(`✅ Generated ${inserted} CLM actions for contract ${contractId}`);
       return inserted;
 
     } catch (error) {
-      console.error('Error in ContractActionsGenerator.generateForContract:', error);
+      console.error('ContractActionsGenerator.generateForContract error:', error);
       return 0;
     }
   }
