@@ -23,13 +23,13 @@ import Sidebar from './Sidebar';
 
 // Modules not in the sidebar nav — accessible only via the launcher
 const ALL_MODULE_ITEMS = [
-  { id: 'contracts', label: 'Contracts', icon: '📄' },
+  { id: 'prospecting', label: 'Prospecting', icon: '🎯' },
+  { id: 'contracts',   label: 'Contracts',   icon: '📄' },
 ];
 
 const NAV_ITEMS_BY_ROLE = {
   member: [
     { id: 'actions',      label: 'Actions',      icon: '⚡' },
-    { id: 'prospecting',  label: 'Prospecting',  icon: '🎯' },
     { id: 'deals',        label: 'Deals',        icon: '💼' },
     { id: 'accounts',     label: 'Accounts',     icon: '🏢' },
     { id: 'contacts',     label: 'Contacts',     icon: '👥' },
@@ -448,7 +448,15 @@ function Dashboard({ user, onLogout }) {
 
         <div className="content-area">
           {currentTab === 'actions'     && <ActionsView />}
-          {currentTab === 'prospecting' && <ProspectingView />}
+          {currentTab === 'prospecting' && (
+            orgModules.prospecting
+              ? <ProspectingView />
+              : <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12, color:'#94a3b8' }}>
+                  <div style={{ fontSize:48 }}>🎯</div>
+                  <div style={{ fontSize:16, fontWeight:600, color:'#475569' }}>Prospecting module is disabled</div>
+                  <div style={{ fontSize:13 }}>An org admin can enable it under Org Admin → Modules.</div>
+                </div>
+          )}
           {currentTab === 'deals'       && (
             <DealsView
               openDealId={pendingDealId}

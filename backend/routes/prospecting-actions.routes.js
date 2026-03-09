@@ -3,9 +3,11 @@ const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
+const requireModule = require('../middleware/requireModule.middleware');
 
 router.use(authenticateToken);
 router.use(orgContext);
+router.use(requireModule('prospecting'));
 
 // ── Shared row mapper ────────────────────────────────────────────────────────
 

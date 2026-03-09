@@ -560,6 +560,35 @@ router.delete('/hierarchy/:userId', adminOnly, async (req, res) => {
   }
 });
 
+// ── Module Toggles ────────────────────────────────────────────────────────────
+// These endpoints must NOT be gated by requireModule — they control module state.
+// requireModule.invalidate ensures the cache is cleared immediately after toggle.
+
+const requireModule = require('../middleware/requireModule.middleware');
+
+/**
+ * PATCH /org/admin/module/prospecting
+ * Enable or disable the prospecting module for this org.
+ */
+router.patch('/module/prospecting', adminOnly, async (req, res) => {
+  try {
+    const enabled = req.body.enabled === true || req.body.enabled === 'true';
+    await pool.query(
+      `UPDATE organizations
+       SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{modules,prospecting}', $2::jsonb, true),
+           updated_at = NOW()
+       WHERE id = $1`,
+      [req.orgId, JSON.stringify(enabled)]
+    );
+    requireModule.invalidate(req.orgId, 'prospecting');
+    console.log(`🎯 Prospecting module ${enabled ? 'enabled' : 'disabled'} for org ${req.orgId}`);
+    res.json({ enabled });
+  } catch (err) {
+    console.error('PATCH /org/admin/module/prospecting error:', err);
+    res.status(500).json({ error: { message: 'Failed to update prospecting module' } });
+  }
+});
+
 // ── Playbook Types (configurable per org) ────────────────────────────────────
 // Stored in organizations.settings->'playbook_types' as a JSON array.
 // System types (sales, prospecting) cannot be removed or renamed.

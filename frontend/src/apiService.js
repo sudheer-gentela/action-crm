@@ -250,6 +250,7 @@ export const apiService = {
     updateIcpConfig: (config) => api.put('/prospect-context/icp-config/current', config),
     getIcpFields: () => api.get('/prospect-context/icp-config/fields'),
     getIcpDefaults: () => api.get('/prospect-context/icp-config/defaults'),
+    toggleModule:   (enabled) => api.patch('/org/admin/module/prospecting', { enabled }),
   },
 
   prospectingActions: {

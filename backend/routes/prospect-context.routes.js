@@ -9,10 +9,12 @@ const express = require('express');
 const router  = express.Router();
 const authenticateToken           = require('../middleware/auth.middleware');
 const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
+const requireModule               = require('../middleware/requireModule.middleware');
 const ProspectContextBuilder      = require('../services/ProspectContextBuilder');
 const IcpScoringService           = require('../services/icpScoring.service');
 
 router.use(authenticateToken, orgContext);
+router.use(requireModule('prospecting'));
 
 const adminOnly = requireRole('owner', 'admin');
 

@@ -193,6 +193,7 @@ app.use('/api/playbook-plays', playbookPlaysRoutes);  // Play definitions (admin
 app.use('/api/deal-plays',     dealPlaysRoutes);       // Deal play instances (execution)
 
 // ─── Prospecting Module ──────────────────────────────────────
+// Gate is applied inside each route file via requireModule('prospecting').
 app.use('/api/prospects',           prospectsRoutes);
 app.use('/api/prospecting-actions', prospectingActionsRoutes);
 app.use('/api/accounts',            accountProspectingRoutes); // /:id/prospecting, /:id/coverage

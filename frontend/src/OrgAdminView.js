@@ -4349,7 +4349,8 @@ function OAIntegrations() {
 
 function OAModules() {
   const [modules, setModules] = useState({
-    contracts: false,
+    contracts:    false,
+    prospecting:  false,
   });
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(null);
@@ -4362,20 +4363,27 @@ function OAModules() {
       .then(r => {
         const settings = r.data.org?.settings || {};
         setModules({
-          contracts: settings.modules?.contracts || false,
+          contracts:   settings.modules?.contracts   || false,
+          prospecting: settings.modules?.prospecting || false,
         });
       })
       .catch(() => setError('Failed to load module settings'))
       .finally(() => setLoading(false));
   }, []);
 
+  const MODULE_TOGGLE_API = {
+    contracts:   (enabled) => apiService.contracts.toggleModule(enabled),
+    prospecting: (enabled) => apiService.prospects.toggleModule(enabled),
+  };
+
   const handleToggle = async (moduleName, newVal) => {
     setSaving(moduleName);
     setError('');
     try {
-      await apiService.contracts.toggleModule(newVal);
+      await MODULE_TOGGLE_API[moduleName](newVal);
       setModules(prev => ({ ...prev, [moduleName]: newVal }));
-      setSuccess(`Contracts module ${newVal ? 'enabled' : 'disabled'} ✓`);
+      const label = MODULE_DEFS.find(m => m.key === moduleName)?.label || moduleName;
+      setSuccess(`${label} module ${newVal ? 'enabled' : 'disabled'} ✓`);
       setTimeout(() => setSuccess(''), 3000);
     } catch (e) {
       setError(e.response?.data?.error?.message || e.message || 'Failed to update module');
@@ -4385,6 +4393,21 @@ function OAModules() {
   };
 
   const MODULE_DEFS = [
+    {
+      key: 'prospecting',
+      icon: '🎯',
+      label: 'Prospecting',
+      desc: 'Full prospecting pipeline — manage prospect lists, track outreach stages, ICP scoring, coverage scorecards, and prospecting playbooks.',
+      features: [
+        'Prospect pipeline with customisable stages',
+        'ICP scoring and fit analysis',
+        'Outreach sequencing and action tracking',
+        'Account coverage scorecards against playbooks',
+        'Prospect-to-deal conversion workflow',
+        'Prospecting playbooks with stage guidance',
+      ],
+      color: '#0F9D8E',
+    },
     {
       key: 'contracts',
       icon: '📄',

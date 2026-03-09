@@ -2,10 +2,12 @@ const express = require('express');
 const router = express.Router();
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
+const requireModule = require('../middleware/requireModule.middleware');
 const AccountProspectingService = require('../services/accountProspecting.service');
 
 router.use(authenticateToken);
 router.use(orgContext);
+router.use(requireModule('prospecting'));
 
 // ── GET /api/accounts/:id/prospecting ────────────────────────────────────────
 // Returns the full prospecting picture for an account
