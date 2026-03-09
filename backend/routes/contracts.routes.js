@@ -39,6 +39,102 @@ router.patch('/admin/module', requireRole('admin','owner'), async (req, res) => 
 // All routes below require module enabled
 router.use(gate);
 
+// ── Contract Templates ────────────────────────────────────────────────
+// Table: contract_templates (already exists in DB)
+// Columns: id, org_id, contract_type, name, description,
+//          file_url, file_name, file_size, is_active, uploaded_by, created_at, updated_at
+//
+// NOTE: file_url is aliased as document_url in SELECT so ContractCreateModal
+//       (which reads tpl.document_url) and OACLMTemplates (which reads t.file_url)
+//       both receive what they expect from a single response shape.
+
+// GET /templates — all active templates for this org (used by OACLMTemplates)
+router.get('/templates', async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT id, org_id, contract_type, name, description,
+              file_url, file_url AS document_url, file_name, file_size,
+              is_active, uploaded_by, created_at, updated_at
+       FROM contract_templates
+       WHERE org_id = $1 AND is_active = TRUE
+       ORDER BY contract_type, name`,
+      [req.orgId]
+    );
+    res.json({ templates: r.rows });
+  } catch (err) {
+    console.error('GET /contracts/templates error:', err);
+    res.status(500).json({ error: { message: 'Failed to load templates' } });
+  }
+});
+
+// GET /templates/by-type/:contractType — filtered by type (used by ContractCreateModal)
+// MUST stay before /:id routes so Express does not match 'by-type' as a contract id.
+router.get('/templates/by-type/:contractType', async (req, res) => {
+  try {
+    const { contractType } = req.params;
+    const r = await db.query(
+      `SELECT id, org_id, contract_type, name, description,
+              file_url, file_url AS document_url, file_name, file_size,
+              is_active, uploaded_by, created_at, updated_at
+       FROM contract_templates
+       WHERE org_id = $1 AND contract_type = $2 AND is_active = TRUE
+       ORDER BY name`,
+      [req.orgId, contractType]
+    );
+    res.json({ templates: r.rows });
+  } catch (err) {
+    console.error('GET /contracts/templates/by-type error:', err);
+    res.status(500).json({ error: { message: 'Failed to load templates' } });
+  }
+});
+
+// POST /templates — create template (admin/owner only, used by OACLMTemplates)
+// Payload: { contractType, name, description?, fileUrl, fileName?, fileSize? }
+router.post('/templates', requireRole('admin', 'owner'), async (req, res) => {
+  try {
+    const { contractType, name, description = '', fileUrl, fileName = '', fileSize = null } = req.body;
+    if (!contractType || !name?.trim() || !fileUrl?.trim()) {
+      return res.status(400).json({ error: { message: 'contractType, name, and fileUrl are required' } });
+    }
+    const r = await db.query(
+      `INSERT INTO contract_templates
+         (org_id, contract_type, name, description, file_url, file_name, file_size, uploaded_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, org_id, contract_type, name, description,
+                 file_url, file_url AS document_url, file_name, file_size,
+                 is_active, uploaded_by, created_at, updated_at`,
+      [req.orgId, contractType, name.trim(), description, fileUrl.trim(), fileName, fileSize, req.userId]
+    );
+    res.status(201).json({ template: r.rows[0] });
+  } catch (err) {
+    console.error('POST /contracts/templates error:', err);
+    res.status(500).json({ error: { message: 'Failed to create template' } });
+  }
+});
+
+// DELETE /templates/:id — soft delete (admin/owner only, used by OACLMTemplates)
+router.delete('/templates/:id', requireRole('admin', 'owner'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const check = await db.query(
+      `SELECT id FROM contract_templates WHERE id = $1 AND org_id = $2 AND is_active = TRUE`,
+      [id, req.orgId]
+    );
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Template not found' } });
+    }
+    await db.query(
+      `UPDATE contract_templates SET is_active = FALSE, updated_at = NOW()
+       WHERE id = $1 AND org_id = $2`,
+      [id, req.orgId]
+    );
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('DELETE /contracts/templates/:id error:', err);
+    res.status(500).json({ error: { message: 'Failed to delete template' } });
+  }
+});
+
 // ── Legal team ────────────────────────────────────────────────────────
 router.get('/legal/team-status', async (req, res) => {
   try {
