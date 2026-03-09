@@ -83,6 +83,11 @@ export default function PlaybooksView({ initialTypeFilter }) {
   }, []);
 
 
+  // Load dynamic prospect stage keys for the prospecting tab
+  useEffect(() => {
+    const token    = localStorage.getItem('token') || localStorage.getItem('authToken');
+    const API_BASE = process.env.REACT_APP_API_URL || '';
+    fetch(`${API_BASE}/prospect-stages`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(r => r.ok ? r.json() : Promise.reject())
