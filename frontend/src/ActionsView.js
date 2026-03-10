@@ -993,7 +993,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
 
 // ── Action Card ───────────────────────────────────────────────────────────────
 
-function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze, isNew }) {
+function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze }) {
   const dueInfo    = formatDate(action.dueDate);
   const pColor     = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
   const isCompleted = action.status === 'completed';
@@ -1008,7 +1008,7 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
       ${isCompleted ? 'av-card--completed' : ''}
       ${isSnoozed   ? 'av-card--snoozed'   : ''}
       ${action.isInternal ? 'av-card--internal' : ''}
-      ${isNew ? 'av-card--new' : ''}
+
     `.trim().replace(/\s+/g, ' ')}>
 
       {/* Card header */}
@@ -1017,7 +1017,6 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
           {nextStepLabel(action.nextStep)}
         </span>
         <div className="av-card-badges">
-          {isNew && <span className="av-badge av-badge--new">🆕 New</span>}
           {isSnoozed && <span className="av-badge av-badge--snoozed">😴 Snoozed</span>}
           {action.isInternal && <span className="av-badge av-badge--internal">🏠 Internal</span>}
           {action.source === 'ai_generated' && (
@@ -1123,7 +1122,7 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
 
 // ── STRAP Pinned Card ────────────────────────────────────────────────────────
 
-function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onUpdate, lastGeneratedAt }) {
+function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onUpdate }) {
   const [editingSection, setEditingSection] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1231,9 +1230,6 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
           </span>
         )}
         <span className="av-strap-entity-name">{ctx.entityName}</span>
-        {lastGeneratedAt && strap.updated_at && new Date(strap.updated_at) >= lastGeneratedAt && (
-          <span className="av-badge av-badge--new" style={{ fontSize: 10, padding: '1px 6px' }}>🆕 Updated</span>
-        )}
         <span className="av-strap-chevron">{expanded ? '▲' : '▼'}</span>
       </div>
 
@@ -1383,9 +1379,8 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
 // ── Filter Bar ────────────────────────────────────────────────────────────────
 
 function FilterBar({ filters, onChange, options, scope }) {
-  const hasFilters = filters.dealId || filters.accountId || filters.ownerId || filters.dealStage;
+  const hasFilters = filters.dealId || filters.accountId || filters.ownerId || filters.dealStage || filters.generatedWithin;
 
-  // Derive unique stage values from loaded actions — no extra fetch needed
   const stageOptions = options.stages || [];
 
   return (
@@ -1428,7 +1423,7 @@ function FilterBar({ filters, onChange, options, scope }) {
         ))}
       </select>
 
-      {/* Deal Stage — client-side filter, populated from deal_stage on loaded actions */}
+      {/* Deal Stage */}
       {stageOptions.length > 0 && (
         <select
           className="av-filter-select"
@@ -1441,6 +1436,18 @@ function FilterBar({ filters, onChange, options, scope }) {
           ))}
         </select>
       )}
+
+      {/* Generated within */}
+      <select
+        className="av-filter-select"
+        value={filters.generatedWithin}
+        onChange={e => onChange('generatedWithin', e.target.value)}
+      >
+        <option value="">Generated: All Time</option>
+        <option value="12h">Generated: Last 12 hours</option>
+        <option value="1d">Generated: Last 1 day</option>
+        <option value="1w">Generated: Last 1 week</option>
+      </select>
 
       {/* Clear */}
       {hasFilters && (
@@ -1455,17 +1462,18 @@ function FilterBar({ filters, onChange, options, scope }) {
 // ── Default filters ───────────────────────────────────────────────────────────
 
 const DEFAULT_FILTERS = {
-  source:     'all',
-  isInternal: '',
-  actionType: '',
-  nextStep:   '',
-  dealId:     '',
-  accountId:  '',
-  ownerId:    '',
-  dueAfter:   '',
-  dueBefore:  '',
-  status:     '',
-  dealStage:  '',
+  source:          'all',
+  isInternal:      '',
+  actionType:      '',
+  nextStep:        '',
+  dealId:          '',
+  accountId:       '',
+  ownerId:         '',
+  dueAfter:        '',
+  dueBefore:       '',
+  status:          '',
+  dealStage:       '',
+  generatedWithin: '',   // '' = All Time | '12h' | '1d' | '1w'
 };
 
 // ── Main Component ────────────────────────────────────────────────────────────
@@ -1680,10 +1688,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
 
   // ── User preferences — loaded from backend (users.ui_preferences) ────────────
   // Defaults are applied server-side; we store state here for reactive UI.
-  // ── Recently Generated — track timestamp for inline "New" badges ─────────
-  // lastGeneratedAt: Date | null. Actions created after this show a 🆕 badge.
-  // Cleared after 30 minutes automatically so badges don't persist forever.
-  const [lastGeneratedAt, setLastGeneratedAt] = useState(null);
+  // ── Recently Generated — simple filter in FilterBar handles this now ─────
 
   const [error,         setError]         = useState(null);
   const [filters,       setFilters]       = useState(DEFAULT_FILTERS);
@@ -1866,6 +1871,16 @@ export default function ActionsView({ openActionId, onActionOpened }) {
         rows = rows.filter(a =>
           (a.deal?.stage || a.dealStage || a.deal_stage) === activeFilters.dealStage
         );
+      }
+
+      // Client-side generated-within filter
+      if (activeFilters.generatedWithin) {
+        const ms = { '12h': 12 * 60 * 60 * 1000, '1d': 24 * 60 * 60 * 1000, '1w': 7 * 24 * 60 * 60 * 1000 };
+        const cutoff = Date.now() - (ms[activeFilters.generatedWithin] || 0);
+        rows = rows.filter(a => {
+          const ts = a.createdAt ? new Date(a.createdAt).getTime() : null;
+          return ts && ts >= cutoff;
+        });
       }
 
       // Derive unique stage values for the FilterBar dropdown
@@ -2154,17 +2169,11 @@ export default function ActionsView({ openActionId, onActionOpened }) {
 
   async function handleGenerateActions() {
     setGenerating(true);
-    // Capture timestamp BEFORE the API call — server inserts happen during/after
-    // this moment, so any action with createdAt >= beforeGenerate is "new".
-    // Subtract 2s buffer to absorb clock skew between client and server.
-    const beforeGenerate = new Date(Date.now() - 2000);
     try {
       const result = await apiFetch('/actions/generate', { method: 'POST' });
+      const generatedAt = new Date();
       await fetchActions(filters);
-      setLastGenerated(new Date());
-      setLastGeneratedAt(beforeGenerate);
-      // Clear "new" badges after 30 minutes
-      setTimeout(() => setLastGeneratedAt(null), 30 * 60 * 1000);
+      setLastGenerated(generatedAt);
       const dealMsg     = result.deal        ? `${result.deal.inserted} deal`        : '';
       const prospectMsg = result.prospecting ? `${result.prospecting.created} prospecting` : '';
       const clmMsg      = result.clm         ? `${result.clm.inserted} CLM`          : '';
@@ -2364,7 +2373,6 @@ export default function ActionsView({ openActionId, onActionOpened }) {
                   strap={s}
                   expanded={expandedStrap === s.id}
                   onToggle={() => setExpandedStrap(expandedStrap === s.id ? null : s.id)}
-                  lastGeneratedAt={lastGeneratedAt}
                   onResolve={handleStrapResolve}
                   onReassess={handleStrapReassess}
                   onUpdate={handleStrapUpdate}
@@ -2438,7 +2446,6 @@ export default function ActionsView({ openActionId, onActionOpened }) {
                   onStart={handleStart}
                   onSnoozeClick={setSnoozeAction}
                   onUnsnooze={handleUnsnooze}
-                  isNew={!!(lastGeneratedAt && action.createdAt && new Date(action.createdAt) >= lastGeneratedAt)}
                 />
               ))}
             </div>
