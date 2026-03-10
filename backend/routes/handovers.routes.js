@@ -204,4 +204,33 @@ router.post('/sales/:id/plays/:instanceId/complete', async (req, res) => {
   }
 });
 
+// ── PATCH /admin/module — enable/disable handovers module for org ─────────────
+
+router.patch('/admin/module', async (req, res) => {
+  try {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: { message: '`enabled` must be a boolean' } });
+    }
+
+    const { pool } = require('../config/database');
+    await pool.query(
+      `UPDATE organizations
+       SET settings = jsonb_set(
+         COALESCE(settings, '{}'),
+         '{modules,handovers}',
+         $1::jsonb
+       )
+       WHERE id = $2`,
+      [JSON.stringify(enabled), req.orgId]
+    );
+
+    // Notify the frontend so App.js updates orgModules state instantly
+    res.json({ module: 'handovers', enabled });
+  } catch (err) {
+    console.error('Handovers module toggle error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 module.exports = router;

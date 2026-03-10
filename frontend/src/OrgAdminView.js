@@ -4433,6 +4433,7 @@ function OAModules() {
   const [modules, setModules] = useState({
     contracts:    false,
     prospecting:  false,
+    handovers:    false,
   });
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(null);
@@ -4447,6 +4448,7 @@ function OAModules() {
         setModules({
           contracts:   settings.modules?.contracts   || false,
           prospecting: settings.modules?.prospecting || false,
+          handovers:   settings.modules?.handovers   || false,
         });
       })
       .catch(() => setError('Failed to load module settings'))
@@ -4456,6 +4458,7 @@ function OAModules() {
   const MODULE_TOGGLE_API = {
     contracts:   (enabled) => apiService.contracts.toggleModule(enabled),
     prospecting: (enabled) => apiService.prospects.toggleModule(enabled),
+    handovers:   (enabled) => apiService.handovers.toggleModule(enabled),
   };
 
   const handleToggle = async (moduleName, newVal) => {
@@ -4505,6 +4508,22 @@ function OAModules() {
         'Automated expiry and unsigned follow-up notifications',
       ],
       color: '#6366f1',
+    },
+    {
+      key: 'handovers',
+      icon: '🤝',
+      label: 'Sales → Implementation Handover',
+      desc: 'Structured handover workflow when a deal closes — ensures sales captures everything the implementation team needs before handing off.',
+      features: [
+        'Handover automatically created when a deal is marked Closed Won',
+        'Play-driven checklist with gate enforcement before submission',
+        'Customer stakeholder mapping with implementation roles',
+        'Commitments, promises, risks, and red flags log',
+        'Commercial terms summary and go-live date tracking',
+        'Service owner assignment and acknowledgement workflow',
+        'Implementation notes visible to the service team',
+      ],
+      color: '#0369a1',
     },
   ];
 
