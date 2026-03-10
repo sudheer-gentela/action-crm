@@ -419,160 +419,43 @@ function AgentUserSettings() {
 }
 
 
-// ════════════════════════════════════════════════════════════
-// MY PREFERENCES — per-user UI settings stored in DB
-// Covers: Actions view preferences (recently generated panel)
-// ════════════════════════════════════════════════════════════
 
-const ALL_RECENT_WINDOWS = [
-  { value: '12h', label: 'Last 12 hours' },
-  { value: '1d',  label: 'Last 1 day' },
-  { value: '1w',  label: 'Last 1 week' },
-];
+
+// ════════════════════════════════════════════════════════════
+// MY PREFERENCES — per-user UI settings
+// ════════════════════════════════════════════════════════════
 
 function UserPreferencesSettings() {
-  const DEFAULT_PREFS = {
-    actions_show_sparkline:  false,
-    actions_recent_windows:  ['12h', '1d', '1w'],
-  };
-
-  const [prefs,   setPrefs]   = useState(DEFAULT_PREFS); // start with defaults — form always shows
-  const [loading, setLoading] = useState(true);
-  const [saving,  setSaving]  = useState(false);
-  const [success, setSuccess] = useState('');
-  const [error,   setError]   = useState('');
-  const [apiAvailable, setApiAvailable] = useState(true);
-
-  // Load from backend on mount — merge over defaults
-  useEffect(() => {
-    apiService.userPreferences.get()
-      .then(data => {
-        if (data?.preferences) setPrefs({ ...DEFAULT_PREFS, ...data.preferences });
-        setApiAvailable(true);
-      })
-      .catch(() => {
-        // Leave defaults in place — user can still configure locally
-        setApiAvailable(false);
-      })
-      .finally(() => setLoading(false));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function handleSave() {
-    if (!apiAvailable) {
-      setError('Preferences API not available — check server deployment');
-      return;
-    }
-    setSaving(true);
-    setError('');
-    setSuccess('');
-    try {
-      const data = await apiService.userPreferences.update(prefs);
-      if (data?.preferences) setPrefs({ ...DEFAULT_PREFS, ...data.preferences });
-      setSuccess('Saved ✓');
-      setTimeout(() => setSuccess(''), 2500);
-    } catch {
-      setError('Failed to save preferences');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function toggleWindow(value) {
-    const current = prefs.actions_recent_windows || [];
-    const next = current.includes(value)
-      ? current.filter(v => v !== value)
-      : [...current, value];
-    // Always keep at least one window
-    if (next.length === 0) return;
-    // Preserve canonical order
-    const ordered = ALL_RECENT_WINDOWS.map(w => w.value).filter(v => next.includes(v));
-    setPrefs(p => ({ ...p, actions_recent_windows: ordered }));
-  }
-
-  if (loading) return <div style={{ padding: 32, color: '#6b7280' }}>Loading preferences…</div>;
-
   return (
     <div className="sv-panel">
       <div className="sv-panel-header">
         <div>
           <h2 style={{ margin: '0 0 4px' }}>🎛️ My Preferences</h2>
           <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
-            Personal UI settings — saved to your account and shared across devices.
+            Personal settings saved to your account and shared across devices.
           </p>
-        </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          {success && <span style={{ fontSize: 13, color: '#16a34a', fontWeight: 500 }}>{success}</span>}
-          {error   && <span style={{ fontSize: 13, color: '#dc2626' }}>{error}</span>}
-          <button className="sv-btn-primary" onClick={handleSave} disabled={saving}>
-            {saving ? '⏳ Saving…' : '💾 Save'}
-          </button>
         </div>
       </div>
 
-      {!apiAvailable && (
-        <div style={{ margin: '12px 24px 0', padding: '10px 14px', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, fontSize: 13, color: '#92400e' }}>
-          ⚠️ Could not connect to preferences API. Make sure <code>user-preferences.routes.js</code> is deployed and mounted in <code>server.js</code>. Changes below will not be saved until this is resolved.
-        </div>
-      )}
-
       <div className="sv-panel-body">
-
-          {/* ── Actions — Recently Generated panel ── */}
-          <div className="sv-section">
-            <h3 className="sv-section-heading">⚡ Actions — Recently Generated</h3>
-            <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 16 }}>
-              Controls the "🕐 Recent" panel that appears after generating actions,
-              letting you verify what rules fired and what was created.
-            </p>
-
-            {/* Sparkline toggle */}
-            <div className="sv-pref-row">
-              <div className="sv-pref-info">
-                <div className="sv-pref-label">Show activity sparkline</div>
-                <div className="sv-pref-hint">
-                  Displays a bar chart showing when actions were generated within the selected window.
-                  Off by default — turn on if you want a visual activity summary.
-                </div>
-              </div>
-              <label className="sv-toggle">
-                <input
-                  type="checkbox"
-                  checked={!!prefs.actions_show_sparkline}
-                  onChange={e => setPrefs(p => ({ ...p, actions_show_sparkline: e.target.checked }))}
-                />
-                <span className="sv-toggle-slider" />
-              </label>
+        <div className="sv-section">
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center',
+            justifyContent: 'center', padding: '48px 24px', textAlign: 'center',
+            color: '#9ca3af',
+          }}>
+            <div style={{ fontSize: 36, marginBottom: 16 }}>🎛️</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: '#374151', marginBottom: 8 }}>
+              No preferences configured yet
             </div>
-
-            {/* Time window checkboxes */}
-            <div className="sv-pref-row sv-pref-row--top">
-              <div className="sv-pref-info">
-                <div className="sv-pref-label">Visible time windows</div>
-                <div className="sv-pref-hint">
-                  Choose which time window options appear in the Recently Generated panel.
-                  At least one must be selected.
-                </div>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {ALL_RECENT_WINDOWS.map(w => (
-                  <label key={w.value} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#374151', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={(prefs.actions_recent_windows || []).includes(w.value)}
-                      onChange={() => toggleWindow(w.value)}
-                      disabled={
-                        (prefs.actions_recent_windows || []).includes(w.value) &&
-                        (prefs.actions_recent_windows || []).length === 1
-                      }
-                    />
-                    {w.label}
-                  </label>
-                ))}
-              </div>
+            <div style={{ fontSize: 13, maxWidth: 380, lineHeight: 1.6 }}>
+              User-level preferences will appear here as features are added —
+              things like default views, notification tone, display density, and
+              any other settings that are personal to you rather than org-wide.
             </div>
           </div>
-
         </div>
+      </div>
     </div>
   );
 }

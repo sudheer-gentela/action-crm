@@ -21,7 +21,10 @@ class ActionConfigService {
         return this.createDefaultConfig(userId, orgId);
       }
 
-      return result.rows[0];
+      const row = result.rows[0];
+      // Normalise ai_settings — merge stored JSONB with defaults
+      row.ai_settings = this._normaliseAiSettings(row.ai_settings);
+      return row;
     } catch (error) {
       console.error('❌ Error in getConfig:', error.message);
       if (error.message && error.message.includes('does not exist')) {
@@ -29,6 +32,35 @@ class ActionConfigService {
       }
       throw error;
     }
+  }
+
+  // Returns default ai_settings structure
+  static _normaliseAiSettings(stored) {
+    const defaults = {
+      master_enabled: true,
+      modules: {
+        deals:       true,
+        straps:      true,
+        clm:         false,
+        prospecting: false,
+      },
+    };
+    if (!stored || typeof stored !== 'object') return defaults;
+    return {
+      master_enabled: stored.master_enabled ?? defaults.master_enabled,
+      modules: {
+        deals:       stored.modules?.deals       ?? defaults.modules.deals,
+        straps:      stored.modules?.straps      ?? defaults.modules.straps,
+        clm:         stored.modules?.clm         ?? defaults.modules.clm,
+        prospecting: stored.modules?.prospecting ?? defaults.modules.prospecting,
+      },
+    };
+  }
+
+  // Check if AI is enabled for a specific module
+  static isAiEnabledForModule(config, moduleName) {
+    const settings = this._normaliseAiSettings(config?.ai_settings);
+    return settings.master_enabled && (settings.modules[moduleName] ?? false);
   }
 
   static async createDefaultConfig(userId, orgId) {
@@ -74,6 +106,12 @@ class ActionConfigService {
           values.push(updates[key]);
         }
       });
+
+      // Handle ai_settings JSONB separately — merge rather than overwrite
+      if (updates.ai_settings !== undefined) {
+        setClauses.push(`ai_settings = $${paramCount++}`);
+        values.push(JSON.stringify(updates.ai_settings));
+      }
 
       if (setClauses.length === 0) throw new Error('No valid fields to update');
 
