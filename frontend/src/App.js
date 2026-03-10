@@ -399,6 +399,9 @@ function Dashboard({ user, onLogout }) {
     window.addEventListener('moduleToggle', handleModuleToggle);
     return () => window.removeEventListener('moduleToggle', handleModuleToggle);
   }, []);
+
+  useEffect(() => {
+    const handleStartAction = (e) => setActiveContextAction(e.detail);
     window.addEventListener('startAction', handleStartAction);
     return () => window.removeEventListener('startAction', handleStartAction);
   }, []);
