@@ -127,7 +127,7 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
       const company   = prospect.company_name || '';
 
       const lines = (researchNotes || '').split('\n').filter(l => l.trim());
-      const topLine = lines[0]?.replace(/^[•\-\*]\s*/, '') || '';
+      const topLine = lines[0]?.replace(/^[•\-*]\s*/, '') || '';
 
       // Simple templating — keeps things fast and deterministic
       if (!subject) {

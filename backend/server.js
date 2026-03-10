@@ -35,10 +35,10 @@ const strapRoutes = require('./routes/strap.routes');
 const playbookPlaysRoutes = require('./routes/playbook-plays.routes');
 const dealPlaysRoutes     = require('./routes/deal-plays.routes');
 
-// Org Hierarchy (Feature 2 — contact reporting structure + account parent/subsidiary)
+// Org Hierarchy
 const orgHierarchyRoutes = require('./routes/orgHierarchy.routes');
 
-// Feature 1 — Team Notifications (inbox + preferences + triggers — single route file)
+// Team Notifications
 const teamNotificationsRoutes = require('./routes/teamNotifications.routes');
 
 // Prospecting Module
@@ -50,6 +50,11 @@ const prospectContextRoutes     = require('./routes/prospect-context.routes');
 const teamsRoutes               = require('./routes/teams.routes');
 const userPreferencesRoutes     = require('./routes/user-preferences.routes');
 
+// ── NEW: Prospecting Phase 2 routes ──────────────────────────
+const prospectingSendersRoutes  = require('./routes/prospecting-senders.routes');
+const outreachLimitsRoutes      = require('./routes/outreach-limits.routes');
+const prospectingInboxRoutes    = require('./routes/prospecting-inbox.routes');
+
 // Product Catalog + Deal Products
 const productsRoutes = require('./routes/products.routes');
 
@@ -58,12 +63,6 @@ const contractsRoutes = require('./routes/contracts.routes');
 
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
-// auth middleware is used inside individual route files.
-// orgContext is also used inside route files — NOT globally here
-// because auth.routes.js (login/register) must never have it.
-//
-// Importing here just so it's accessible and so Railway can
-// fail fast at startup if the file is missing.
 // ─────────────────────────────────────────────────────────────
 require('./middleware/auth.middleware');
 require('./middleware/orgContext.middleware');
@@ -136,7 +135,7 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Health check (no auth, no org context needed)
+// Health check
 // ─────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -144,15 +143,6 @@ app.get('/health', (req, res) => {
 
 // ─────────────────────────────────────────────────────────────
 // API Routes
-//
-// Pattern for multi-org routes:
-//   Each route FILE is responsible for applying:
-//     1. authenticateToken  — verifies JWT
-//     2. orgContext         — resolves + validates org_id → req.orgId
-//   on every handler that touches org-scoped data.
-//
-//   auth.routes.js is the ONE exception — login/register/verify
-//   do NOT use orgContext (user has no token yet).
 // ─────────────────────────────────────────────────────────────
 app.use('/api/auth',      require('./routes/auth.routes'));
 app.use('/api/actions',   require('./routes/actions.routes'));
@@ -174,41 +164,44 @@ app.use('/api',           dealHealthRoutes);
 app.use('/api/storage',   storageRoutes);
 app.use('/api/super',      superAdminRoutes);
 app.use('/api/org/admin',  orgAdminRoutes);
-app.use('/api/org/admin',  teamsRoutes);        // Teams & team memberships
+app.use('/api/org/admin',  teamsRoutes);
 app.use('/api/playbooks',  playbooksRoutes);
 app.use('/api/ai',         aiContextRoutes);
 app.use('/api/org-roles',  orgRolesRoutes);
-app.use('/api/deal-roles', orgRolesRoutes);     // backward compat alias
+app.use('/api/deal-roles', orgRolesRoutes);
 app.use('/api/deal-team',  dealTeamRoutes);
 app.use('/api/deal-contacts', dealContactsRoutes);
 app.use('/api/deal-stages',   dealStagesRoutes);
-app.use('/api/straps',        strapRoutes);     // STRAP Framework
+app.use('/api/straps',        strapRoutes);
 app.use('/api/prospect-stages', prospectStagesRoutes);
-app.use('/api/products',        productsRoutes); // Product Catalog + Deal Line Items
+app.use('/api/products',        productsRoutes);
 
 const pipelineStagesRoutes = require('./routes/pipeline-stages.routes');
 app.use('/api/pipeline-stages', pipelineStagesRoutes);
 
-// ─── Playbook Plays (role-based) ─────────────────────────────
-app.use('/api/playbook-plays', playbookPlaysRoutes);  // Play definitions (admin CRUD)
-app.use('/api/deal-plays',     dealPlaysRoutes);       // Deal play instances (execution)
+// ─── Playbook Plays ───────────────────────────────────────────
+app.use('/api/playbook-plays', playbookPlaysRoutes);
+app.use('/api/deal-plays',     dealPlaysRoutes);
 
-// ─── Prospecting Module ──────────────────────────────────────
-// Gate is applied inside each route file via requireModule('prospecting').
+// ─── Prospecting Module ───────────────────────────────────────
 app.use('/api/prospects',           prospectsRoutes);
 app.use('/api/prospecting-actions', prospectingActionsRoutes);
-app.use('/api/accounts',            accountProspectingRoutes); // /:id/prospecting, /:id/coverage
-app.use('/api/actions',             unifiedActionsRoutes);     // /unified
-app.use('/api/prospect-context',    prospectContextRoutes);    // /:prospectId, /icp-config/current
-app.use('/api/org-hierarchy',       orgHierarchyRoutes);       // Feature 2: contact org chart + account hierarchy
-app.use('/api/team-notifications',  teamNotificationsRoutes);  // Feature 1: team notifications
-app.use('/api/users/me',            userPreferencesRoutes);    // Per-user UI preferences (JSONB)
+app.use('/api/accounts',            accountProspectingRoutes);
+app.use('/api/actions',             unifiedActionsRoutes);
+app.use('/api/prospect-context',    prospectContextRoutes);
+app.use('/api/org-hierarchy',       orgHierarchyRoutes);
+app.use('/api/team-notifications',  teamNotificationsRoutes);
+app.use('/api/users/me',            userPreferencesRoutes);
 
-// ─── CLM — Contract Lifecycle Management ─────────────────────
+// ── NEW: Prospecting Phase 2 ──────────────────────────────────
+app.use('/api/prospecting-senders', prospectingSendersRoutes); // sender account CRUD + OAuth connect
+app.use('/api/org/outreach-limits', outreachLimitsRoutes);     // org ceiling GET + PUT (admin only)
+app.use('/api/prospecting/inbox',   prospectingInboxRoutes);   // unified outreach inbox + stats
+
+// ─── CLM ──────────────────────────────────────────────────────
 app.use('/api/contracts', contractsRoutes);
 
-// ─── Public org context — accessible to ALL authenticated members ─────────
-// Returns org module flags so the frontend can gate UI without an admin call.
+// ─── Public org context ───────────────────────────────────────
 const authenticateToken   = require('./middleware/auth.middleware');
 const { orgContext }      = require('./middleware/orgContext.middleware');
 const { pool: ctxPool }   = require('./config/database');
@@ -218,7 +211,6 @@ app.get('/api/org/context', authenticateToken, orgContext, async (req, res) => {
       `SELECT settings->'modules' AS modules FROM organizations WHERE id = $1`,
       [req.orgId]
     );
-    // Normalise JSONB values to real booleans so the frontend === true check always works.
     const raw = r.rows[0]?.modules || {};
     const modules = Object.fromEntries(
       Object.entries(raw).map(([k, v]) => [k, v === true || v === 'true' || v === 1 || v === '1'])
@@ -232,14 +224,10 @@ app.get('/api/org/context', authenticateToken, orgContext, async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 // Error handling
 // ─────────────────────────────────────────────────────────────
-
-// 404 — must come BEFORE the 4-arg error handler so unmatched routes
-// return a clean JSON 404 rather than falling into the error middleware.
 app.use((req, res) => {
   res.status(404).json({ error: { message: 'Route not found' } });
 });
 
-// 5xx — 4-arg signature tells Express this is the error handler.
 app.use((err, req, res, next) => {
   console.error('Error:', err.stack);
   res.status(err.status || 500).json({
@@ -262,7 +250,7 @@ app.listen(PORT, () => {
 ╚═══════════════════════════════════════╝
   `);
 
-  console.log('🚨 DEPLOY CHECK v3 — prospecting module gating live');
+  console.log('🚨 DEPLOY CHECK v4 — prospecting phase 2 routes live');
   console.log('🚀 Starting Bull queue worker...');
   try {
     require('./jobs/worker');
@@ -272,27 +260,19 @@ app.listen(PORT, () => {
     console.error('   Queue processing will not work!');
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // Cron jobs
-  // Install: npm install node-cron
-  // ─────────────────────────────────────────────────────────────
   try {
     const cron = require('node-cron');
     const AgentProposalService = require('./services/AgentProposalService');
 
-    // Every hour: expire agent proposals past their expires_at date
     cron.schedule('0 * * * *', async () => {
       try {
         const count = await AgentProposalService.expireStale();
-        if (count > 0) {
-          console.log(`🕐 Cron: expired ${count} stale agent proposals`);
-        }
+        if (count > 0) console.log(`🕐 Cron: expired ${count} stale agent proposals`);
       } catch (err) {
         console.error('🕐 Cron: expireStale error:', err.message);
       }
     });
 
-    // CLM — Every hour: expire active contracts past their expiry_date
     cron.schedule('0 * * * *', async () => {
       try {
         const count = await require('./services/contractService').expireContracts();
@@ -302,7 +282,6 @@ app.listen(PORT, () => {
       }
     });
 
-    // CLM — Daily 9am: unsigned follow-ups + expiry warnings
     cron.schedule('0 9 * * *', async () => {
       try {
         const NS = require('./services/contractNotificationService');
@@ -321,7 +300,6 @@ app.listen(PORT, () => {
   } catch (error) {
     console.error('⚠️  Failed to initialize cron jobs:', error.message);
     console.error('   Install node-cron: npm install node-cron');
-    console.error('   Proposals will not auto-expire until this is resolved.');
   }
 });
 
