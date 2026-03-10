@@ -48,6 +48,7 @@ const accountProspectingRoutes  = require('./routes/account-prospecting.routes')
 const unifiedActionsRoutes      = require('./routes/unified-actions.routes');
 const prospectContextRoutes     = require('./routes/prospect-context.routes');
 const teamsRoutes               = require('./routes/teams.routes');
+const userPreferencesRoutes     = require('./routes/user-preferences.routes');
 
 // Product Catalog + Deal Products
 const productsRoutes = require('./routes/products.routes');
@@ -201,6 +202,7 @@ app.use('/api/actions',             unifiedActionsRoutes);     // /unified
 app.use('/api/prospect-context',    prospectContextRoutes);    // /:prospectId, /icp-config/current
 app.use('/api/org-hierarchy',       orgHierarchyRoutes);       // Feature 2: contact org chart + account hierarchy
 app.use('/api/team-notifications',  teamNotificationsRoutes);  // Feature 1: team notifications
+app.use('/api/users/me',            userPreferencesRoutes);    // Per-user UI preferences (JSONB)
 
 // ─── CLM — Contract Lifecycle Management ─────────────────────
 app.use('/api/contracts', contractsRoutes);
