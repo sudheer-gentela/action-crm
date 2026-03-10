@@ -583,3 +583,73 @@
 .sv-org-int-status.disabled {
   color: #9ca3af;
 }
+
+
+/* ── My Preferences section ─────────────────────────────────────────────────── */
+
+.sv-pref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 14px 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+.sv-pref-row:last-child { border-bottom: none; }
+.sv-pref-row--top { align-items: flex-start; }
+
+.sv-pref-info { flex: 1; min-width: 0; }
+
+.sv-pref-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #111827;
+  margin-bottom: 3px;
+}
+
+.sv-pref-hint {
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.5;
+}
+
+/* Checkbox-driven toggle — matches visual style of existing .sv-toggle */
+.sv-toggle {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.sv-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+.sv-toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: #cbd5e0;
+  border-radius: 999px;
+  transition: background 0.2s;
+}
+.sv-toggle-slider::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 18px;
+  height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: transform 0.2s;
+}
+.sv-toggle input:checked + .sv-toggle-slider {
+  background: #4f46e5;
+}
+.sv-toggle input:checked + .sv-toggle-slider::before {
+  transform: translateX(20px);
+}

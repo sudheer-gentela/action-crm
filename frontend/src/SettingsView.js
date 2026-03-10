@@ -13,12 +13,13 @@ import NotificationSettings from './NotificationSettings';
 // ── Top-level Settings Tabs ──────────────────────────────────
 
 const SETTINGS_TABS = [
-  { id: 'integrations', label: 'Integrations',  icon: '🔌' },
-  { id: 'health',       label: 'Deal Health',   icon: '🏥' },
-  { id: 'prompts',      label: 'AI Prompts',    icon: '🤖' },
-  { id: 'actions',      label: 'Actions',       icon: '🎯' },
-  { id: 'ai-agent',     label: 'AI Agent',      icon: '🤖' },
-  { id: 'notifications',   label: 'Notifications',    icon: '🔔' },
+  { id: 'integrations', label: 'Integrations',    icon: '🔌' },
+  { id: 'health',       label: 'Deal Health',     icon: '🏥' },
+  { id: 'prompts',      label: 'AI Prompts',      icon: '🤖' },
+  { id: 'actions',      label: 'Actions',         icon: '🎯' },
+  { id: 'ai-agent',     label: 'AI Agent',        icon: '🤖' },
+  { id: 'notifications',label: 'Notifications',   icon: '🔔' },
+  { id: 'preferences',  label: 'My Preferences',  icon: '🎛️' },
 ];
 
 
@@ -57,6 +58,7 @@ export default function SettingsView({ initialTab }) {
         {settingsTab === 'actions'      && <ActionsSettings />}
         {settingsTab === 'ai-agent'     && <AgentUserSettings />}
         {settingsTab === 'notifications'   && <NotificationSettings />}
+        {settingsTab === 'preferences'  && <UserPreferencesSettings />}
       </div>
     </div>
   );
@@ -412,6 +414,145 @@ function AgentUserSettings() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+
+// ════════════════════════════════════════════════════════════
+// MY PREFERENCES — per-user UI settings stored in DB
+// Covers: Actions view preferences (recently generated panel)
+// ════════════════════════════════════════════════════════════
+
+const ALL_RECENT_WINDOWS = [
+  { value: '12h', label: 'Last 12 hours' },
+  { value: '1d',  label: 'Last 1 day' },
+  { value: '1w',  label: 'Last 1 week' },
+];
+
+function UserPreferencesSettings() {
+  const [prefs,   setPrefs]   = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving,  setSaving]  = useState(false);
+  const [success, setSuccess] = useState('');
+  const [error,   setError]   = useState('');
+
+  // Load from backend on mount
+  useEffect(() => {
+    apiService.userPreferences.get()
+      .then(data => setPrefs(data.preferences))
+      .catch(() => setError('Failed to load preferences'))
+      .finally(() => setLoading(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleSave() {
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      const data = await apiService.userPreferences.update(prefs);
+      setPrefs(data.preferences);
+      setSuccess('Saved ✓');
+      setTimeout(() => setSuccess(''), 2500);
+    } catch {
+      setError('Failed to save preferences');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function toggleWindow(value) {
+    const current = prefs.actions_recent_windows || [];
+    const next = current.includes(value)
+      ? current.filter(v => v !== value)
+      : [...current, value];
+    // Always keep at least one window
+    if (next.length === 0) return;
+    // Preserve canonical order
+    const ordered = ALL_RECENT_WINDOWS.map(w => w.value).filter(v => next.includes(v));
+    setPrefs(p => ({ ...p, actions_recent_windows: ordered }));
+  }
+
+  if (loading) return <div style={{ padding: 32, color: '#6b7280' }}>Loading preferences…</div>;
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2 style={{ margin: '0 0 4px' }}>🎛️ My Preferences</h2>
+          <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
+            Personal UI settings — saved to your account and shared across devices.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          {success && <span style={{ fontSize: 13, color: '#16a34a', fontWeight: 500 }}>{success}</span>}
+          {error   && <span style={{ fontSize: 13, color: '#dc2626' }}>{error}</span>}
+          <button className="sv-btn-primary" onClick={handleSave} disabled={saving || !prefs}>
+            {saving ? '⏳ Saving…' : '💾 Save'}
+          </button>
+        </div>
+      </div>
+
+      {prefs && (
+        <div className="sv-panel-body">
+
+          {/* ── Actions — Recently Generated panel ── */}
+          <div className="sv-section">
+            <h3 className="sv-section-heading">⚡ Actions — Recently Generated</h3>
+            <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 16 }}>
+              Controls the "🕐 Recent" panel that appears after generating actions,
+              letting you verify what rules fired and what was created.
+            </p>
+
+            {/* Sparkline toggle */}
+            <div className="sv-pref-row">
+              <div className="sv-pref-info">
+                <div className="sv-pref-label">Show activity sparkline</div>
+                <div className="sv-pref-hint">
+                  Displays a bar chart showing when actions were generated within the selected window.
+                  Off by default — turn on if you want a visual activity summary.
+                </div>
+              </div>
+              <label className="sv-toggle">
+                <input
+                  type="checkbox"
+                  checked={!!prefs.actions_show_sparkline}
+                  onChange={e => setPrefs(p => ({ ...p, actions_show_sparkline: e.target.checked }))}
+                />
+                <span className="sv-toggle-slider" />
+              </label>
+            </div>
+
+            {/* Time window checkboxes */}
+            <div className="sv-pref-row sv-pref-row--top">
+              <div className="sv-pref-info">
+                <div className="sv-pref-label">Visible time windows</div>
+                <div className="sv-pref-hint">
+                  Choose which time window options appear in the Recently Generated panel.
+                  At least one must be selected.
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {ALL_RECENT_WINDOWS.map(w => (
+                  <label key={w.value} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#374151', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={(prefs.actions_recent_windows || []).includes(w.value)}
+                      onChange={() => toggleWindow(w.value)}
+                      disabled={
+                        (prefs.actions_recent_windows || []).includes(w.value) &&
+                        (prefs.actions_recent_windows || []).length === 1
+                      }
+                    />
+                    {w.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+
+        </div>
+      )}
     </div>
   );
 }

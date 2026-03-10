@@ -1465,20 +1465,314 @@ const DEFAULT_FILTERS = {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
+// ── Recently Generated Panel ──────────────────────────────────────────────────
+// Slide-down panel below the filter bar showing actions created within a time
+// window. Lets reps verify what the generator actually produced.
+// Source badge + source_rule shown so they can confirm rules are firing correctly.
+
+const RECENT_SOURCE_META = {
+  playbook:       { label: 'Playbook',  color: '#6366f1', bg: '#eef2ff' },
+  ai_generated:   { label: 'AI',        color: '#7c3aed', bg: '#f5f3ff' },
+  auto_generated: { label: 'Signal',    color: '#0891b2', bg: '#ecfeff' },
+  manual:         { label: 'Manual',    color: '#6b7280', bg: '#f3f4f6' },
+  strap:          { label: 'STRAP',     color: '#d97706', bg: '#fffbeb' },
+};
+
+const ALL_WINDOWS = [
+  { label: 'Last 12h', value: '12h', ms: 12 * 60 * 60 * 1000 },
+  { label: 'Last 1 day', value: '1d', ms: 24 * 60 * 60 * 1000 },
+  { label: 'Last 1 week', value: '1w', ms: 7 * 24 * 60 * 60 * 1000 },
+];
+
+function RecentSourceBadge({ source, sourceRule }) {
+  const meta = RECENT_SOURCE_META[source] || RECENT_SOURCE_META.manual;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+      <span style={{
+        fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase',
+        padding: '2px 6px', borderRadius: 4, color: meta.color, background: meta.bg,
+        flexShrink: 0,
+      }}>
+        {meta.label}
+      </span>
+      {sourceRule && (
+        <span style={{ fontSize: 10, color: '#9ca3af', fontFamily: 'monospace' }}>
+          {sourceRule}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function SparklineBar({ actions, windowMs }) {
+  const BUCKETS = 8;
+  const bucketSize = windowMs / BUCKETS;
+  const now = Date.now();
+  const counts = Array(BUCKETS).fill(0);
+  actions.forEach(a => {
+    const ts = a.createdAt ? new Date(a.createdAt).getTime() : null;
+    if (!ts) return;
+    const idx = Math.floor((now - ts) / bucketSize);
+    if (idx >= 0 && idx < BUCKETS) counts[BUCKETS - 1 - idx]++;
+  });
+  const max = Math.max(...counts, 1);
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 28 }}>
+      {counts.map((c, i) => (
+        <div
+          key={i}
+          title={`${c} action${c !== 1 ? 's' : ''}`}
+          style={{
+            flex: 1, borderRadius: '2px 2px 0 0',
+            background: c > 0 ? '#6366f1' : '#e5e7eb',
+            height: `${Math.max((c / max) * 100, c > 0 ? 12 : 3)}%`,
+            opacity: 0.4 + (i / BUCKETS) * 0.6,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function RecentlyGeneratedPanel({ actions, userPrefs, saveUserPref, recentWindow, setRecentWindow, recentSourceFilter, setRecentSourceFilter, onClose }) {
+  const now = Date.now();
+
+  // Only show windows the user has enabled in prefs
+  const visibleWindows = ALL_WINDOWS.filter(w => (userPrefs.actions_recent_windows || ['12h','1d','1w']).includes(w.value));
+  const activeWindow   = visibleWindows.find(w => w.value === recentWindow) || visibleWindows[0] || ALL_WINDOWS[0];
+  const cutoff         = now - activeWindow.ms;
+
+  const recentActions = actions.filter(a => {
+    const ts = a.createdAt ? new Date(a.createdAt).getTime() : null;
+    return ts && ts >= cutoff;
+  });
+
+  const filtered = recentSourceFilter === 'all'
+    ? recentActions
+    : recentActions.filter(a => a.source === recentSourceFilter);
+
+  // Source breakdown counts for filter tabs
+  const sourceCounts = {};
+  recentActions.forEach(a => { sourceCounts[a.source] = (sourceCounts[a.source] || 0) + 1; });
+  const sourceTabs = [
+    { key: 'all', label: 'All', count: recentActions.length },
+    ...Object.entries(sourceCounts).map(([key, count]) => ({
+      key, label: RECENT_SOURCE_META[key]?.label || key, count,
+    })),
+  ];
+
+  // Settings popover
+  const [showSettings, setShowSettings] = useState(false);
+
+  return (
+    <div className="av-recent-panel">
+      {/* Panel header */}
+      <div className="av-recent-panel__header">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>
+            🕐 Recently Generated
+          </span>
+          <span style={{
+            fontSize: 11, fontWeight: 600, color: '#6366f1',
+            background: '#eef2ff', padding: '2px 8px', borderRadius: 10,
+          }}>
+            {recentActions.length} action{recentActions.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {/* Time window pills */}
+          <div style={{ display: 'flex', background: '#f3f4f6', borderRadius: 8, padding: 3, gap: 2 }}>
+            {visibleWindows.map(w => (
+              <button
+                key={w.value}
+                onClick={() => setRecentWindow(w.value)}
+                className={`av-recent-window-pill${recentWindow === w.value ? ' active' : ''}`}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Settings cog */}
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={() => setShowSettings(v => !v)}
+              title="Panel settings"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: '#9ca3af', padding: '3px 6px', borderRadius: 6 }}
+            >
+              ⚙️
+            </button>
+            {showSettings && (
+              <div style={{
+                position: 'absolute', right: 0, top: 28, zIndex: 200,
+                background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
+                padding: 14, width: 230, boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+              }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 10 }}>Panel preferences</div>
+
+                {/* Sparkline toggle */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#374151', marginBottom: 10, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={!!userPrefs.actions_show_sparkline}
+                    onChange={e => saveUserPref('actions_show_sparkline', e.target.checked)}
+                  />
+                  Show activity sparkline
+                </label>
+
+                {/* Window toggles */}
+                <div style={{ fontSize: 12, fontWeight: 500, color: '#6b7280', marginBottom: 6 }}>Visible time windows</div>
+                {ALL_WINDOWS.map(w => (
+                  <label key={w.value} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#374151', marginBottom: 6, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={(userPrefs.actions_recent_windows || ['12h','1d','1w']).includes(w.value)}
+                      onChange={e => {
+                        const cur = userPrefs.actions_recent_windows || ['12h','1d','1w'];
+                        const next = e.target.checked
+                          ? [...cur, w.value]
+                          : cur.filter(v => v !== w.value);
+                        const ordered = ['12h','1d','1w'].filter(v => next.includes(v));
+                        if (ordered.length > 0) saveUserPref('actions_recent_windows', ordered);
+                      }}
+                    />
+                    {w.label}
+                  </label>
+                ))}
+                <button
+                  onClick={() => setShowSettings(false)}
+                  style={{ marginTop: 6, width: '100%', padding: '6px 0', border: '1px solid #e5e7eb', borderRadius: 6, background: '#f9fafb', fontSize: 12, cursor: 'pointer' }}
+                >
+                  Done
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Close */}
+          <button
+            onClick={onClose}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: '#9ca3af', padding: '2px 6px', lineHeight: 1 }}
+          >
+            ×
+          </button>
+        </div>
+      </div>
+
+      {/* Sparkline (user-configurable, off by default) */}
+      {userPrefs.actions_show_sparkline && recentActions.length > 0 && (
+        <div style={{ padding: '8px 14px 0', borderBottom: '1px solid #f3f4f6' }}>
+          <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
+            <span>Activity</span><span>Now →</span>
+          </div>
+          <SparklineBar actions={recentActions} windowMs={activeWindow.ms} />
+          <div style={{ height: 8 }} />
+        </div>
+      )}
+
+      {/* Source filter tabs */}
+      {sourceTabs.length > 1 && (
+        <div style={{ display: 'flex', gap: 5, padding: '8px 14px', borderBottom: '1px solid #f3f4f6', flexWrap: 'wrap' }}>
+          {sourceTabs.map(tab => (
+            <button
+              key={tab.key}
+              onClick={() => setRecentSourceFilter(tab.key)}
+              style={{
+                padding: '4px 10px', border: '1px solid',
+                borderColor: recentSourceFilter === tab.key ? '#c7d2fe' : '#e5e7eb',
+                borderRadius: 6, background: recentSourceFilter === tab.key ? '#eef2ff' : '#fff',
+                color: recentSourceFilter === tab.key ? '#4338ca' : '#6b7280',
+                fontSize: 11, fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5,
+              }}
+            >
+              {tab.key !== 'all' && (
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: RECENT_SOURCE_META[tab.key]?.color || '#9ca3af', flexShrink: 0 }} />
+              )}
+              {tab.label}
+              <span style={{
+                background: recentSourceFilter === tab.key ? '#c7d2fe' : '#f3f4f6',
+                color: recentSourceFilter === tab.key ? '#4338ca' : '#9ca3af',
+                borderRadius: 10, padding: '0 5px', fontSize: 10, fontWeight: 600,
+              }}>
+                {tab.count}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Action rows — using same av-card design, just showing source info */}
+      <div className="av-recent-panel__list">
+        {filtered.length === 0 ? (
+          <div style={{ padding: '24px 14px', textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
+            No actions generated in this window.
+          </div>
+        ) : (
+          filtered.map(action => (
+            <div key={action.id} className="av-recent-row">
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, flexWrap: 'wrap' }}>
+                    {/* Priority dot */}
+                    <span style={{
+                      width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+                      background: { critical: '#dc2626', high: '#f97316', medium: '#f59e0b', low: '#22c55e' }[action.priority] || '#f59e0b',
+                    }} />
+                    <RecentSourceBadge source={action.source} sourceRule={action.sourceRule || action.source_rule} />
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: '#111827', lineHeight: 1.4, marginBottom: 3 }}>
+                    {action.title}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {action.deal?.name && (
+                      <span style={{ fontSize: 11, color: '#6b7280', background: '#f3f4f6', borderRadius: 4, padding: '1px 6px' }}>
+                        💼 {action.deal.name}
+                      </span>
+                    )}
+                    {action.prospect && (
+                      <span style={{ fontSize: 11, color: '#6b7280', background: '#f3f4f6', borderRadius: 4, padding: '1px 6px' }}>
+                        🎯 {action.prospect.first_name} {action.prospect.last_name}
+                      </span>
+                    )}
+                    <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                      {action.createdAt ? (() => {
+                        const diff = Date.now() - new Date(action.createdAt).getTime();
+                        const m = Math.floor(diff / 60000);
+                        const h = Math.floor(diff / 3600000);
+                        const d = Math.floor(diff / 86400000);
+                        if (m < 1) return 'just now';
+                        if (m < 60) return `${m}m ago`;
+                        if (h < 24) return `${h}h ago`;
+                        return `${d}d ago`;
+                      })() : ''}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Add Action Modal ──────────────────────────────────────────────────────────
 // Lets reps create a manual action not generated by any rule or playbook.
 // source = 'manual' — distinguished in filtering and UI.
 
 const ACTION_TYPES = [
-  { value: 'email_send',    label: '✉️ Email' },
+  { value: 'email_send',       label: '✉️ Email' },
   { value: 'meeting_schedule', label: '📅 Meeting / Call' },
-  { value: 'follow_up',    label: '🔄 Follow-Up' },
-  { value: 'document_prep', label: '📄 Document Prep' },
-  { value: 'task_complete', label: '✅ Internal Task' },
-  { value: 'review',       label: '🔍 Review' },
+  { value: 'follow_up',        label: '🔄 Follow-Up' },
+  { value: 'document_prep',    label: '📄 Document Prep' },
+  { value: 'task_complete',    label: '✅ Internal Task' },
+  { value: 'review',           label: '🔍 Review' },
 ];
 
-function AddActionModal({ onSave, onClose }) {
+// Manual actions must always be linked to a deal, account, or contact.
+function AddActionModal({ onSave, onClose, deals = [], accounts = [], contacts = [] }) {
   const [title,       setTitle]       = useState('');
   const [actionType,  setActionType]  = useState('follow_up');
   const [priority,    setPriority]    = useState('medium');
@@ -1487,75 +1781,128 @@ function AddActionModal({ onSave, onClose }) {
   const [isInternal,  setIsInternal]  = useState(false);
   const [saving,      setSaving]      = useState(false);
 
+  // Entity linkage — at least one required
+  const [linkType,    setLinkType]    = useState('deal');    // 'deal' | 'account' | 'contact'
+  const [dealId,      setDealId]      = useState('');
+  const [accountId,   setAccountId]   = useState('');
+  const [contactId,   setContactId]   = useState('');
+
+  const linkedId = linkType === 'deal' ? dealId : linkType === 'account' ? accountId : contactId;
+  const canSave  = title.trim() && linkedId;
+
   async function handleSave() {
-    if (!title.trim()) return;
+    if (!canSave) return;
     setSaving(true);
     try {
-      await onSave({ title: title.trim(), actionType, priority, description, dueDate, isInternal });
+      await onSave({
+        title:       title.trim(),
+        actionType,
+        priority,
+        description,
+        dueDate,
+        isInternal,
+        dealId:      linkType === 'deal'    ? dealId    : null,
+        accountId:   linkType === 'account' ? accountId : null,
+        contactId:   linkType === 'contact' ? contactId : null,
+      });
     } finally {
       setSaving(false);
     }
   }
 
-  // Trap Escape key
   useEffect(() => {
     const handler = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
+  const selectStyle = { width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, boxSizing: 'border-box', background: '#fff' };
+  const labelStyle  = { display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4, color: '#374151' };
+
   return (
     <div
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        zIndex: 9000,
-      }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9000 }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div style={{
-        background: '#fff', borderRadius: 14, padding: 28, width: 480, maxWidth: '94vw',
-        boxShadow: '0 20px 60px rgba(0,0,0,.18)',
-      }}>
+      <div style={{ background: '#fff', borderRadius: 14, padding: 28, width: 500, maxWidth: '94vw', boxShadow: '0 20px 60px rgba(0,0,0,.18)', maxHeight: '90vh', overflowY: 'auto' }}>
+
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>+ Add Manual Action</h3>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#6b7280', lineHeight: 1 }}>×</button>
         </div>
 
+        {/* ── Link to deal / account / contact (required) ── */}
+        <div style={{ marginBottom: 16, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: '12px 14px' }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10 }}>
+            Link to <span style={{ color: '#ef4444' }}>*</span>
+          </div>
+          {/* Link type selector */}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+            {[
+              { key: 'deal',    label: '💼 Deal',    disabled: deals.length === 0 },
+              { key: 'account', label: '🏢 Account', disabled: accounts.length === 0 },
+              { key: 'contact', label: '👤 Contact', disabled: contacts.length === 0 },
+            ].map(opt => (
+              <button
+                key={opt.key}
+                disabled={opt.disabled}
+                onClick={() => { setLinkType(opt.key); setDealId(''); setAccountId(''); setContactId(''); }}
+                style={{
+                  padding: '5px 12px', borderRadius: 6, border: '1px solid',
+                  borderColor: linkType === opt.key ? '#6366f1' : '#e2e8f0',
+                  background:  linkType === opt.key ? '#eef2ff' : '#fff',
+                  color:       opt.disabled ? '#d1d5db' : linkType === opt.key ? '#4338ca' : '#6b7280',
+                  fontSize: 12, fontWeight: 500, cursor: opt.disabled ? 'default' : 'pointer',
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {/* Entity dropdown */}
+          {linkType === 'deal' && (
+            <select style={selectStyle} value={dealId} onChange={e => setDealId(e.target.value)} autoFocus>
+              <option value="">— Select deal —</option>
+              {deals.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          )}
+          {linkType === 'account' && (
+            <select style={selectStyle} value={accountId} onChange={e => setAccountId(e.target.value)}>
+              <option value="">— Select account —</option>
+              {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          )}
+          {linkType === 'contact' && (
+            <select style={selectStyle} value={contactId} onChange={e => setContactId(e.target.value)}>
+              <option value="">— Select contact —</option>
+              {contacts.map(c => <option key={c.id} value={c.id}>{c.first_name} {c.last_name}{c.company ? ` · ${c.company}` : ''}</option>)}
+            </select>
+          )}
+        </div>
+
         {/* Title */}
         <div style={{ marginBottom: 14 }}>
-          <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>
-            Title <span style={{ color: '#ef4444' }}>*</span>
-          </label>
+          <label style={labelStyle}>Title <span style={{ color: '#ef4444' }}>*</span></label>
           <input
-            autoFocus
-            style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }}
+            style={{ ...selectStyle }}
             placeholder="e.g. Send pricing summary to procurement"
             value={title}
             onChange={e => setTitle(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && title.trim()) handleSave(); }}
+            onKeyDown={e => { if (e.key === 'Enter' && canSave) handleSave(); }}
           />
         </div>
 
-        {/* Type + Priority row */}
+        {/* Type + Priority */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
           <div>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Type</label>
-            <select
-              style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14 }}
-              value={actionType}
-              onChange={e => setActionType(e.target.value)}
-            >
+            <label style={labelStyle}>Type</label>
+            <select style={selectStyle} value={actionType} onChange={e => setActionType(e.target.value)}>
               {ACTION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Priority</label>
-            <select
-              style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14 }}
-              value={priority}
-              onChange={e => setPriority(e.target.value)}
-            >
+            <label style={labelStyle}>Priority</label>
+            <select style={selectStyle} value={priority} onChange={e => setPriority(e.target.value)}>
               <option value="critical">🔴 Critical</option>
               <option value="high">🟠 High</option>
               <option value="medium">🟡 Medium</option>
@@ -1566,20 +1913,15 @@ function AddActionModal({ onSave, onClose }) {
 
         {/* Due date */}
         <div style={{ marginBottom: 14 }}>
-          <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Due Date</label>
-          <input
-            type="date"
-            style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }}
-            value={dueDate}
-            onChange={e => setDueDate(e.target.value)}
-          />
+          <label style={labelStyle}>Due Date</label>
+          <input type="date" style={selectStyle} value={dueDate} onChange={e => setDueDate(e.target.value)} />
         </div>
 
         {/* Notes */}
         <div style={{ marginBottom: 14 }}>
-          <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Notes / Context</label>
+          <label style={labelStyle}>Notes / Context</label>
           <textarea
-            style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, resize: 'vertical', minHeight: 72, boxSizing: 'border-box' }}
+            style={{ ...selectStyle, resize: 'vertical', minHeight: 68 }}
             placeholder="Optional — what's the context or goal for this action?"
             value={description}
             onChange={e => setDescription(e.target.value)}
@@ -1593,22 +1935,19 @@ function AddActionModal({ onSave, onClose }) {
           Internal task (not a customer-facing action)
         </label>
 
-        {/* Actions */}
+        {/* Buttons */}
         <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-          <button
-            onClick={onClose}
-            style={{ padding: '9px 18px', border: '1px solid #d1d5db', borderRadius: 8, background: '#fff', fontSize: 14, cursor: 'pointer' }}
-          >
+          <button onClick={onClose} style={{ padding: '9px 18px', border: '1px solid #d1d5db', borderRadius: 8, background: '#fff', fontSize: 14, cursor: 'pointer' }}>
             Cancel
           </button>
           <button
             onClick={handleSave}
-            disabled={saving || !title.trim()}
+            disabled={saving || !canSave}
             style={{
               padding: '9px 20px', border: 'none', borderRadius: 8,
-              background: saving || !title.trim() ? '#9ca3af' : '#4f46e5',
+              background: saving || !canSave ? '#9ca3af' : '#4f46e5',
               color: '#fff', fontSize: 14, fontWeight: 500,
-              cursor: saving || !title.trim() ? 'not-allowed' : 'pointer',
+              cursor: saving || !canSave ? 'not-allowed' : 'pointer',
             }}
           >
             {saving ? 'Creating…' : 'Create Action'}
@@ -1626,6 +1965,38 @@ export default function ActionsView({ openActionId, onActionOpened }) {
   const [lastGenerated, setLastGenerated] = useState(null); // Phase 5: last generated timestamp
   const [nextActionToast, setNextActionToast] = useState(null); // Phase 2: gate unlock toast
   const [showAddAction, setShowAddAction] = useState(false); // Item 1: manual action creation
+
+  // ── User preferences — loaded from backend (users.ui_preferences) ────────────
+  // Defaults are applied server-side; we store state here for reactive UI.
+  const [userPrefs, setUserPrefs] = useState({
+    actions_show_sparkline: false,
+    actions_recent_windows: ['12h', '1d', '1w'],
+  });
+
+  useEffect(() => {
+    apiFetch('/users/me/preferences')
+      .then(data => { if (data?.preferences) setUserPrefs(data.preferences); })
+      .catch(() => {}); // silent — defaults already set above
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function saveUserPref(key, value) {
+    // Optimistic update
+    setUserPrefs(prev => ({ ...prev, [key]: value }));
+    try {
+      const data = await apiFetch('/users/me/preferences', {
+        method: 'PATCH',
+        body: JSON.stringify({ [key]: value }),
+      });
+      if (data?.preferences) setUserPrefs(data.preferences);
+    } catch {
+      // Non-critical — local state already updated, will resync on next load
+    }
+  }
+
+  // ── Recently Generated panel ───────────────────────────────────────────────
+  const [showRecent,       setShowRecent]       = useState(false);
+  const [recentWindow,     setRecentWindow]      = useState('12h');
+  const [recentSourceFilter, setRecentSourceFilter] = useState('all');
   const [error,         setError]         = useState(null);
   const [filters,       setFilters]       = useState(DEFAULT_FILTERS);
   const [filterOptions, setFilterOptions] = useState({ deals: [], accounts: [], owners: [], stages: [] });
@@ -2099,11 +2470,15 @@ export default function ActionsView({ openActionId, onActionOpened }) {
       const result = await apiFetch('/actions/generate', { method: 'POST' });
       await fetchActions(filters);
       setLastGenerated(new Date());
-      const dealMsg     = result.deal        ? `${result.deal.inserted} deal action(s)`        : '';
-      const prospectMsg = result.prospecting ? `${result.prospecting.created} prospecting action(s)` : '';
-      const clmMsg      = result.clm         ? `${result.clm.inserted} CLM action(s)`          : '';
+      const dealMsg     = result.deal        ? `${result.deal.inserted} deal`        : '';
+      const prospectMsg = result.prospecting ? `${result.prospecting.created} prospecting` : '';
+      const clmMsg      = result.clm         ? `${result.clm.inserted} CLM`          : '';
       const parts = [dealMsg, prospectMsg, clmMsg].filter(Boolean).join(', ');
-      alert(`✅ Generated ${parts || 'no new actions'}.${result.prospecting?.skipped ? ` Skipped ${result.prospecting.skipped} duplicate(s).` : ''}`);
+      alert(`✅ Generated ${parts || 'no new'} action(s).${result.prospecting?.skipped ? ` Skipped ${result.prospecting.skipped} duplicate(s).` : ''}`);
+      // Auto-open recently generated panel so rep can verify what was created
+      setShowRecent(true);
+      setRecentWindow('12h');
+      setRecentSourceFilter('all');
     } catch (err) {
       alert('Failed to generate actions: ' + err.message);
     } finally {
@@ -2236,6 +2611,13 @@ export default function ActionsView({ openActionId, onActionOpened }) {
                 >
                   + Add Action
                 </button>
+                <button
+                  className={`av-recent-btn${showRecent ? ' av-recent-btn--active' : ''}`}
+                  onClick={() => setShowRecent(v => !v)}
+                  title="View recently generated actions"
+                >
+                  🕐 Recent
+                </button>
               </div>
               {lastGenerated && (
                 <span style={{ fontSize: 11, color: '#9ca3af' }}>
@@ -2281,6 +2663,20 @@ export default function ActionsView({ openActionId, onActionOpened }) {
 
         {/* Filters */}
         <FilterBar filters={filters} onChange={handleFilterChange} options={filterOptions} scope={scope} />
+
+        {/* ── Recently Generated Panel ─────────────────────────────────── */}
+        {showRecent && (
+          <RecentlyGeneratedPanel
+            actions={actions}
+            userPrefs={userPrefs}
+            saveUserPref={saveUserPref}
+            recentWindow={recentWindow}
+            setRecentWindow={setRecentWindow}
+            recentSourceFilter={recentSourceFilter}
+            setRecentSourceFilter={setRecentSourceFilter}
+            onClose={() => setShowRecent(false)}
+          />
+        )}
 
         {/* ── STRAP Pinned Section ──────────────────────────────────── */}
         {(filters.source === 'all' || filters.source === 'strap') && filteredStraps.length > 0 && (
@@ -2426,6 +2822,9 @@ export default function ActionsView({ openActionId, onActionOpened }) {
         <AddActionModal
           onSave={handleAddAction}
           onClose={() => setShowAddAction(false)}
+          deals={deals}
+          accounts={filterOptions.accounts || []}
+          contacts={contacts}
         />
       )}
     </>
