@@ -389,8 +389,16 @@ function Dashboard({ user, onLogout }) {
     return () => window.removeEventListener('open-contract', handleOpenContract);
   }, [orgModules]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Listen for module toggle events dispatched from OAModules (OrgAdminView)
+  // Updates orgModules state instantly — no refresh needed.
   useEffect(() => {
-    const handleStartAction = (e) => setActiveContextAction(e.detail);
+    const handleModuleToggle = (e) => {
+      const { module, enabled } = e.detail || {};
+      if (module) setOrgModules(prev => ({ ...prev, [module]: enabled }));
+    };
+    window.addEventListener('moduleToggle', handleModuleToggle);
+    return () => window.removeEventListener('moduleToggle', handleModuleToggle);
+  }, []);
     window.addEventListener('startAction', handleStartAction);
     return () => window.removeEventListener('startAction', handleStartAction);
   }, []);

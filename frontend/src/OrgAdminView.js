@@ -4385,6 +4385,10 @@ function OAModules() {
       const label = MODULE_DEFS.find(m => m.key === moduleName)?.label || moduleName;
       setSuccess(`${label} module ${newVal ? 'enabled' : 'disabled'} ✓`);
       setTimeout(() => setSuccess(''), 3000);
+      // Notify Dashboard instantly — sidebar updates without a page refresh
+      window.dispatchEvent(new CustomEvent('moduleToggle', {
+        detail: { module: moduleName, enabled: newVal },
+      }));
     } catch (e) {
       setError(e.response?.data?.error?.message || e.message || 'Failed to update module');
     } finally {
