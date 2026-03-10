@@ -7,7 +7,6 @@ import ContactMergeBanner from './ContactMergeBanner';
 import { csvExport, EXPORT_COLUMNS } from './csvUtils';
 import CSVImportModal from './CSVImportModal';
 import { ContactOrgPosition } from './OrgChartPanel';
-import { apiService } from './apiService';
 import './ContactsView.css';
 
 // Fields that can be inline-edited on the contact detail panel
