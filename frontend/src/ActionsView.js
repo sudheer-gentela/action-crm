@@ -2154,12 +2154,15 @@ export default function ActionsView({ openActionId, onActionOpened }) {
 
   async function handleGenerateActions() {
     setGenerating(true);
+    // Capture timestamp BEFORE the API call — server inserts happen during/after
+    // this moment, so any action with createdAt >= beforeGenerate is "new".
+    // Subtract 2s buffer to absorb clock skew between client and server.
+    const beforeGenerate = new Date(Date.now() - 2000);
     try {
       const result = await apiFetch('/actions/generate', { method: 'POST' });
-      const generatedAt = new Date();
       await fetchActions(filters);
-      setLastGenerated(generatedAt);
-      setLastGeneratedAt(generatedAt);
+      setLastGenerated(new Date());
+      setLastGeneratedAt(beforeGenerate);
       // Clear "new" badges after 30 minutes
       setTimeout(() => setLastGeneratedAt(null), 30 * 60 * 1000);
       const dealMsg     = result.deal        ? `${result.deal.inserted} deal`        : '';
@@ -2435,7 +2438,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
                   onStart={handleStart}
                   onSnoozeClick={setSnoozeAction}
                   onUnsnooze={handleUnsnooze}
-                  isNew={lastGeneratedAt && (action.createdAt || action.created_at) && new Date(action.createdAt || action.created_at) >= lastGeneratedAt}
+                  isNew={!!(lastGeneratedAt && action.createdAt && new Date(action.createdAt) >= lastGeneratedAt)}
                 />
               ))}
             </div>
