@@ -99,7 +99,7 @@ router.patch('/:id/read', async (req, res) => {
  */
 router.get('/preferences', async (req, res) => {
   try {
-    const prefs = await notificationService.getUserNotificationPrefs(req.user.userId);
+    const prefs = await notificationService.getUserNotificationPrefs(req.user.userId, req.orgId);
     res.json({ preferences: prefs });
   } catch (err) {
     console.error('GET /team-notifications/preferences error:', err);
@@ -119,7 +119,7 @@ router.get('/preferences', async (req, res) => {
  */
 router.patch('/preferences', async (req, res) => {
   try {
-    const updated = await notificationService.setUserNotificationPrefs(req.user.userId, req.body);
+    const updated = await notificationService.setUserNotificationPrefs(req.user.userId, req.orgId, req.body);
     res.json({ preferences: updated });
   } catch (err) {
     console.error('PATCH /team-notifications/preferences error:', err);

@@ -56,7 +56,7 @@ async function findActionsForImmediateNotification(orgId) {
       COALESCE(up.preferences->'notifications', '{}'::jsonb) AS esc_prefs
     FROM actions a
     JOIN users u ON u.id = a.user_id
-    LEFT JOIN user_preferences up ON up.user_id = a.user_id
+    LEFT JOIN user_preferences up ON up.user_id = a.user_id AND up.org_id = a.org_id
     WHERE a.org_id  = $1
       AND a.status  = 'pending'
       AND a.due_date IS NOT NULL
@@ -96,7 +96,7 @@ async function findActionsForDailyDigest(orgId) {
       COALESCE(up.preferences->'notifications', '{}'::jsonb) AS esc_prefs
     FROM actions a
     JOIN users u ON u.id = a.user_id
-    LEFT JOIN user_preferences up ON up.user_id = a.user_id
+    LEFT JOIN user_preferences up ON up.user_id = a.user_id AND up.org_id = a.org_id
     WHERE a.org_id  = $1
       AND a.status  = 'pending'
       AND a.due_date IS NOT NULL
@@ -254,7 +254,7 @@ async function processImmediateNotification(orgId, actionId) {
            COALESCE(up.preferences->'notifications', '{}'::jsonb) AS esc_prefs
     FROM actions a
     JOIN users u ON u.id = a.user_id
-    LEFT JOIN user_preferences up ON up.user_id = a.user_id
+    LEFT JOIN user_preferences up ON up.user_id = a.user_id AND up.org_id = a.org_id
     WHERE a.id = $1 AND a.org_id = $2
   `, [actionId, orgId]);
 
@@ -380,18 +380,19 @@ const DEFAULT_PREFS = {
   specific_user_ids: [],
 };
 
-async function getUserNotificationPrefs(userId) {
+async function getUserNotificationPrefs(userId, orgId) {
   const { rows: [row] } = await pool.query(`
     SELECT preferences->'notifications' AS esc
     FROM user_preferences
     WHERE user_id = $1
-  `, [userId]);
+      AND org_id  = $2
+  `, [userId, orgId]);
 
   const saved = row?.esc ? (typeof row.esc === 'string' ? JSON.parse(row.esc) : row.esc) : {};
   return { ...DEFAULT_PREFS, ...saved };
 }
 
-async function setUserNotificationPrefs(userId, patch) {
+async function setUserNotificationPrefs(userId, orgId, patch) {
   const allowed = ['immediate_alert', 'immediate_hours', 'daily_digest', 'notify_deal_team', 'notify_my_teams', 'fallback_mode', 'specific_user_ids'];
   const safe    = {};
   for (const key of allowed) {
@@ -412,19 +413,20 @@ async function setUserNotificationPrefs(userId, patch) {
       : [];
   }
 
-  // Upsert user_preferences row if missing
+  // Upsert — conflict on composite PK (user_id, org_id)
   await pool.query(`
-    INSERT INTO user_preferences (user_id, preferences)
-    VALUES ($1, jsonb_build_object('notifications', $2::jsonb))
-    ON CONFLICT (user_id) DO UPDATE
+    INSERT INTO user_preferences (user_id, org_id, preferences)
+    VALUES ($1, $2, jsonb_build_object('notifications', $3::jsonb))
+    ON CONFLICT (user_id, org_id) DO UPDATE
     SET preferences = jsonb_set(
       COALESCE(user_preferences.preferences, '{}'::jsonb),
       '{notifications}',
-      COALESCE(user_preferences.preferences->'notifications', '{}'::jsonb) || $2::jsonb
-    )
-  `, [userId, JSON.stringify(safe)]);
+      COALESCE(user_preferences.preferences->'notifications', '{}'::jsonb) || $3::jsonb
+    ),
+    updated_at = CURRENT_TIMESTAMP
+  `, [userId, orgId, JSON.stringify(safe)]);
 
-  return getUserNotificationPrefs(userId);
+  return getUserNotificationPrefs(userId, orgId);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
