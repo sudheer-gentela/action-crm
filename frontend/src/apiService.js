@@ -465,6 +465,63 @@ export const apiService = {
     removeSignatory: (id, sigId) => api.delete(`/contracts/${id}/signatories/${sigId}`),
     addNote: (id, note) => api.post(`/contracts/${id}/notes`, { note }),
   },
+
+  // ══════════════════════════════════════════════════════════
+  // Team Dimensions  (Phase 3 — Handover module)
+  // ══════════════════════════════════════════════════════════
+  teamDimensions: {
+    list:   (params = {}) => {
+      const qs = new URLSearchParams();
+      if (params.appliesTo)          qs.set('appliesTo',       params.appliesTo);
+      if (params.activeOnly === false) qs.set('includeInactive', 'true');
+      return api.get(`/team-dimensions${qs.toString() ? '?' + qs : ''}`);
+    },
+    create: (data)           => api.post('/team-dimensions', data),
+    update: (id, data)       => api.put(`/team-dimensions/${id}`, data),
+    toggle: (id, isActive)   => api.patch(`/team-dimensions/${id}/toggle`, { isActive }),
+    remove: (id)             => api.delete(`/team-dimensions/${id}`),
+  },
+
+  // ══════════════════════════════════════════════════════════
+  // Account Teams  (Phase 3 — Handover module)
+  // ══════════════════════════════════════════════════════════
+  accountTeams: {
+    listByAccount: (accountId, params = {}) => {
+      const qs = new URLSearchParams({ accountId, ...params }).toString();
+      return api.get(`/account-teams?${qs}`);
+    },
+    listByContact: (contactId) => api.get(`/account-teams/contact/${contactId}`),
+    create:        (data)      => api.post('/account-teams', data),
+    update:        (id, data)  => api.put(`/account-teams/${id}`, data),
+    delete:        (id)        => api.delete(`/account-teams/${id}`),
+    addMember:     (teamId, data)       => api.post(`/account-teams/${teamId}/members`, data),
+    updateMember:  (teamId, memberId, data) => api.put(`/account-teams/${teamId}/members/${memberId}`, data),
+    removeMember:  (teamId, memberId)   => api.delete(`/account-teams/${teamId}/members/${memberId}`),
+  },
+
+  // ══════════════════════════════════════════════════════════
+  // Handovers — Sales → Implementation  (Phase 3)
+  // ══════════════════════════════════════════════════════════
+  handovers: {
+    list:      (scope = 'mine', status) => {
+      const qs = new URLSearchParams({ scope, ...(status && { status }) }).toString();
+      return api.get(`/handovers/sales?${qs}`);
+    },
+    create:    (dealId)      => api.post('/handovers/sales', { dealId }),
+    getById:   (id)          => api.get(`/handovers/sales/${id}`),
+    update:    (id, data)    => api.put(`/handovers/sales/${id}`, data),
+    setStatus: (id, status)  => api.patch(`/handovers/sales/${id}/status`, { status }),
+    canSubmit: (id)          => api.get(`/handovers/sales/${id}/can-submit`),
+
+    addStakeholder:    (id, data) => api.post(`/handovers/sales/${id}/stakeholders`, data),
+    updateStakeholder: (id, sid, data) => api.put(`/handovers/sales/${id}/stakeholders/${sid}`, data),
+    removeStakeholder: (id, sid)  => api.delete(`/handovers/sales/${id}/stakeholders/${sid}`),
+
+    addCommitment:    (id, data) => api.post(`/handovers/sales/${id}/commitments`, data),
+    removeCommitment: (id, cid)  => api.delete(`/handovers/sales/${id}/commitments/${cid}`),
+
+    completePlay: (id, instanceId) => api.post(`/handovers/sales/${id}/plays/${instanceId}/complete`),
+  },
 };
 
 // ============================================================

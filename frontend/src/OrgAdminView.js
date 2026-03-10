@@ -5,6 +5,7 @@ import DealHealthSettings from './DealHealthSettings';
 import OAStages from './OAStages';
 import PlaybookPlaysEditor from './PlaybookPlaysEditor';
 import OAProducts from './OAProducts';
+import OATeamDimensions from './OATeamDimensions';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -21,6 +22,7 @@ const NAV_GROUPS = [
       { id: 'hierarchy',   icon: '🏢', label: 'Hierarchy' },
       { id: 'teams',       icon: '🏷️', label: 'Teams' },
       { id: 'invitations', icon: '✉️', label: 'Invitations' },
+      { id: 'team-dimensions', icon: '🏷️', label: 'Team Dimensions' },
     ],
   },
   {
@@ -74,6 +76,7 @@ const TAB_META = {
   hierarchy:     { title: 'Hierarchy',     desc: 'Reporting structure and team visibility' },
   teams:         { title: 'Teams',         desc: 'Organise users by market segment, role, product, geo, and motion' },
   invitations:   { title: 'Invitations',   desc: 'Invite new members to your organisation' },
+  'team-dimensions': { title: 'Team Dimensions', desc: 'Configure the dimension vocabulary used for internal and customer-side teams' },
   playbooks:     { title: 'Playbooks',     desc: 'Configure deal playbooks and templates' },
   'stages':      { title: 'Stages',       desc: 'Customise your deal and prospecting pipeline stages' },
   'org-roles':   { title: 'Organization Roles', desc: 'Manage roles used across deals, prospecting, and all playbooks' },
@@ -191,6 +194,7 @@ export default function OrgAdminView() {
             {tab === 'ai-agent'    && <OAAgentSettings />}
             {tab === 'action-ai'   && <OAActionsAI />}
             {tab === 'duplicates'  && <OADuplicateSettings />}
+            {tab === 'team-dimensions' && <OATeamDimensions />}
             {tab === 'integrations' && <OAIntegrations />}
             {tab === 'settings'    && <OASettings />}
           </div>
