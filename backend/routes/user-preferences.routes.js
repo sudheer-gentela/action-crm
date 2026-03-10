@@ -14,9 +14,11 @@
 const express           = require('express');
 const router            = express.Router();
 const db                = require('../config/database');
-const authenticateToken = require('../middleware/auth.middleware');
+const authenticateToken    = require('../middleware/auth.middleware');
+const { orgContext }        = require('../middleware/orgContext.middleware');
 
 router.use(authenticateToken);
+router.use(orgContext);
 
 // ── Defaults — merged at read time so new keys always have a value ─────────
 const UI_PREF_DEFAULTS = {

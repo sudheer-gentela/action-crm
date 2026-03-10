@@ -993,7 +993,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
 
 // ── Action Card ───────────────────────────────────────────────────────────────
 
-function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze }) {
+function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze, isNew }) {
   const dueInfo    = formatDate(action.dueDate);
   const pColor     = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
   const isCompleted = action.status === 'completed';
@@ -1008,6 +1008,7 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
       ${isCompleted ? 'av-card--completed' : ''}
       ${isSnoozed   ? 'av-card--snoozed'   : ''}
       ${action.isInternal ? 'av-card--internal' : ''}
+      ${isNew ? 'av-card--new' : ''}
     `.trim().replace(/\s+/g, ' ')}>
 
       {/* Card header */}
@@ -1016,6 +1017,7 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
           {nextStepLabel(action.nextStep)}
         </span>
         <div className="av-card-badges">
+          {isNew && <span className="av-badge av-badge--new">🆕 New</span>}
           {isSnoozed && <span className="av-badge av-badge--snoozed">😴 Snoozed</span>}
           {action.isInternal && <span className="av-badge av-badge--internal">🏠 Internal</span>}
           {action.source === 'ai_generated' && (
@@ -1121,7 +1123,7 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
 
 // ── STRAP Pinned Card ────────────────────────────────────────────────────────
 
-function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onUpdate }) {
+function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onUpdate, lastGeneratedAt }) {
   const [editingSection, setEditingSection] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1229,6 +1231,9 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
           </span>
         )}
         <span className="av-strap-entity-name">{ctx.entityName}</span>
+        {lastGeneratedAt && strap.updated_at && new Date(strap.updated_at) >= lastGeneratedAt && (
+          <span className="av-badge av-badge--new" style={{ fontSize: 10, padding: '1px 6px' }}>🆕 Updated</span>
+        )}
         <span className="av-strap-chevron">{expanded ? '▲' : '▼'}</span>
       </div>
 
@@ -1465,299 +1470,6 @@ const DEFAULT_FILTERS = {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-// ── Recently Generated Panel ──────────────────────────────────────────────────
-// Slide-down panel below the filter bar showing actions created within a time
-// window. Lets reps verify what the generator actually produced.
-// Source badge + source_rule shown so they can confirm rules are firing correctly.
-
-const RECENT_SOURCE_META = {
-  playbook:       { label: 'Playbook',  color: '#6366f1', bg: '#eef2ff' },
-  ai_generated:   { label: 'AI',        color: '#7c3aed', bg: '#f5f3ff' },
-  auto_generated: { label: 'Signal',    color: '#0891b2', bg: '#ecfeff' },
-  manual:         { label: 'Manual',    color: '#6b7280', bg: '#f3f4f6' },
-  strap:          { label: 'STRAP',     color: '#d97706', bg: '#fffbeb' },
-};
-
-const ALL_WINDOWS = [
-  { label: 'Last 12h', value: '12h', ms: 12 * 60 * 60 * 1000 },
-  { label: 'Last 1 day', value: '1d', ms: 24 * 60 * 60 * 1000 },
-  { label: 'Last 1 week', value: '1w', ms: 7 * 24 * 60 * 60 * 1000 },
-];
-
-function RecentSourceBadge({ source, sourceRule }) {
-  const meta = RECENT_SOURCE_META[source] || RECENT_SOURCE_META.manual;
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-      <span style={{
-        fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase',
-        padding: '2px 6px', borderRadius: 4, color: meta.color, background: meta.bg,
-        flexShrink: 0,
-      }}>
-        {meta.label}
-      </span>
-      {sourceRule && (
-        <span style={{ fontSize: 10, color: '#9ca3af', fontFamily: 'monospace' }}>
-          {sourceRule}
-        </span>
-      )}
-    </span>
-  );
-}
-
-function SparklineBar({ actions, windowMs }) {
-  const BUCKETS = 8;
-  const bucketSize = windowMs / BUCKETS;
-  const now = Date.now();
-  const counts = Array(BUCKETS).fill(0);
-  actions.forEach(a => {
-    const ts = a.createdAt ? new Date(a.createdAt).getTime() : null;
-    if (!ts) return;
-    const idx = Math.floor((now - ts) / bucketSize);
-    if (idx >= 0 && idx < BUCKETS) counts[BUCKETS - 1 - idx]++;
-  });
-  const max = Math.max(...counts, 1);
-  return (
-    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 28 }}>
-      {counts.map((c, i) => (
-        <div
-          key={i}
-          title={`${c} action${c !== 1 ? 's' : ''}`}
-          style={{
-            flex: 1, borderRadius: '2px 2px 0 0',
-            background: c > 0 ? '#6366f1' : '#e5e7eb',
-            height: `${Math.max((c / max) * 100, c > 0 ? 12 : 3)}%`,
-            opacity: 0.4 + (i / BUCKETS) * 0.6,
-          }}
-        />
-      ))}
-    </div>
-  );
-}
-
-function RecentlyGeneratedPanel({ actions, userPrefs, saveUserPref, recentWindow, setRecentWindow, recentSourceFilter, setRecentSourceFilter, onClose }) {
-  const now = Date.now();
-
-  // Only show windows the user has enabled in prefs
-  const visibleWindows = ALL_WINDOWS.filter(w => (userPrefs.actions_recent_windows || ['12h','1d','1w']).includes(w.value));
-  const activeWindow   = visibleWindows.find(w => w.value === recentWindow) || visibleWindows[0] || ALL_WINDOWS[0];
-  const cutoff         = now - activeWindow.ms;
-
-  const recentActions = actions.filter(a => {
-    const ts = a.createdAt ? new Date(a.createdAt).getTime() : null;
-    return ts && ts >= cutoff;
-  });
-
-  const filtered = recentSourceFilter === 'all'
-    ? recentActions
-    : recentActions.filter(a => a.source === recentSourceFilter);
-
-  // Source breakdown counts for filter tabs
-  const sourceCounts = {};
-  recentActions.forEach(a => { sourceCounts[a.source] = (sourceCounts[a.source] || 0) + 1; });
-  const sourceTabs = [
-    { key: 'all', label: 'All', count: recentActions.length },
-    ...Object.entries(sourceCounts).map(([key, count]) => ({
-      key, label: RECENT_SOURCE_META[key]?.label || key, count,
-    })),
-  ];
-
-  // Settings popover
-  const [showSettings, setShowSettings] = useState(false);
-
-  return (
-    <div className="av-recent-panel">
-      {/* Panel header */}
-      <div className="av-recent-panel__header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>
-            🕐 Recently Generated
-          </span>
-          <span style={{
-            fontSize: 11, fontWeight: 600, color: '#6366f1',
-            background: '#eef2ff', padding: '2px 8px', borderRadius: 10,
-          }}>
-            {recentActions.length} action{recentActions.length !== 1 ? 's' : ''}
-          </span>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {/* Time window pills */}
-          <div style={{ display: 'flex', background: '#f3f4f6', borderRadius: 8, padding: 3, gap: 2 }}>
-            {visibleWindows.map(w => (
-              <button
-                key={w.value}
-                onClick={() => setRecentWindow(w.value)}
-                className={`av-recent-window-pill${recentWindow === w.value ? ' active' : ''}`}
-              >
-                {w.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Settings cog */}
-          <div style={{ position: 'relative' }}>
-            <button
-              onClick={() => setShowSettings(v => !v)}
-              title="Panel settings"
-              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14, color: '#9ca3af', padding: '3px 6px', borderRadius: 6 }}
-            >
-              ⚙️
-            </button>
-            {showSettings && (
-              <div style={{
-                position: 'absolute', right: 0, top: 28, zIndex: 200,
-                background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
-                padding: 14, width: 230, boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
-              }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 10 }}>Panel preferences</div>
-
-                {/* Sparkline toggle */}
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#374151', marginBottom: 10, cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={!!userPrefs.actions_show_sparkline}
-                    onChange={e => saveUserPref('actions_show_sparkline', e.target.checked)}
-                  />
-                  Show activity sparkline
-                </label>
-
-                {/* Window toggles */}
-                <div style={{ fontSize: 12, fontWeight: 500, color: '#6b7280', marginBottom: 6 }}>Visible time windows</div>
-                {ALL_WINDOWS.map(w => (
-                  <label key={w.value} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#374151', marginBottom: 6, cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={(userPrefs.actions_recent_windows || ['12h','1d','1w']).includes(w.value)}
-                      onChange={e => {
-                        const cur = userPrefs.actions_recent_windows || ['12h','1d','1w'];
-                        const next = e.target.checked
-                          ? [...cur, w.value]
-                          : cur.filter(v => v !== w.value);
-                        const ordered = ['12h','1d','1w'].filter(v => next.includes(v));
-                        if (ordered.length > 0) saveUserPref('actions_recent_windows', ordered);
-                      }}
-                    />
-                    {w.label}
-                  </label>
-                ))}
-                <button
-                  onClick={() => setShowSettings(false)}
-                  style={{ marginTop: 6, width: '100%', padding: '6px 0', border: '1px solid #e5e7eb', borderRadius: 6, background: '#f9fafb', fontSize: 12, cursor: 'pointer' }}
-                >
-                  Done
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Close */}
-          <button
-            onClick={onClose}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: '#9ca3af', padding: '2px 6px', lineHeight: 1 }}
-          >
-            ×
-          </button>
-        </div>
-      </div>
-
-      {/* Sparkline (user-configurable, off by default) */}
-      {userPrefs.actions_show_sparkline && recentActions.length > 0 && (
-        <div style={{ padding: '8px 14px 0', borderBottom: '1px solid #f3f4f6' }}>
-          <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
-            <span>Activity</span><span>Now →</span>
-          </div>
-          <SparklineBar actions={recentActions} windowMs={activeWindow.ms} />
-          <div style={{ height: 8 }} />
-        </div>
-      )}
-
-      {/* Source filter tabs */}
-      {sourceTabs.length > 1 && (
-        <div style={{ display: 'flex', gap: 5, padding: '8px 14px', borderBottom: '1px solid #f3f4f6', flexWrap: 'wrap' }}>
-          {sourceTabs.map(tab => (
-            <button
-              key={tab.key}
-              onClick={() => setRecentSourceFilter(tab.key)}
-              style={{
-                padding: '4px 10px', border: '1px solid',
-                borderColor: recentSourceFilter === tab.key ? '#c7d2fe' : '#e5e7eb',
-                borderRadius: 6, background: recentSourceFilter === tab.key ? '#eef2ff' : '#fff',
-                color: recentSourceFilter === tab.key ? '#4338ca' : '#6b7280',
-                fontSize: 11, fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5,
-              }}
-            >
-              {tab.key !== 'all' && (
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: RECENT_SOURCE_META[tab.key]?.color || '#9ca3af', flexShrink: 0 }} />
-              )}
-              {tab.label}
-              <span style={{
-                background: recentSourceFilter === tab.key ? '#c7d2fe' : '#f3f4f6',
-                color: recentSourceFilter === tab.key ? '#4338ca' : '#9ca3af',
-                borderRadius: 10, padding: '0 5px', fontSize: 10, fontWeight: 600,
-              }}>
-                {tab.count}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Action rows — using same av-card design, just showing source info */}
-      <div className="av-recent-panel__list">
-        {filtered.length === 0 ? (
-          <div style={{ padding: '24px 14px', textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
-            No actions generated in this window.
-          </div>
-        ) : (
-          filtered.map(action => (
-            <div key={action.id} className="av-recent-row">
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3, flexWrap: 'wrap' }}>
-                    {/* Priority dot */}
-                    <span style={{
-                      width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
-                      background: { critical: '#dc2626', high: '#f97316', medium: '#f59e0b', low: '#22c55e' }[action.priority] || '#f59e0b',
-                    }} />
-                    <RecentSourceBadge source={action.source} sourceRule={action.sourceRule || action.source_rule} />
-                  </div>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: '#111827', lineHeight: 1.4, marginBottom: 3 }}>
-                    {action.title}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    {action.deal?.name && (
-                      <span style={{ fontSize: 11, color: '#6b7280', background: '#f3f4f6', borderRadius: 4, padding: '1px 6px' }}>
-                        💼 {action.deal.name}
-                      </span>
-                    )}
-                    {action.prospect && (
-                      <span style={{ fontSize: 11, color: '#6b7280', background: '#f3f4f6', borderRadius: 4, padding: '1px 6px' }}>
-                        🎯 {action.prospect.first_name} {action.prospect.last_name}
-                      </span>
-                    )}
-                    <span style={{ fontSize: 11, color: '#9ca3af' }}>
-                      {action.createdAt ? (() => {
-                        const diff = Date.now() - new Date(action.createdAt).getTime();
-                        const m = Math.floor(diff / 60000);
-                        const h = Math.floor(diff / 3600000);
-                        const d = Math.floor(diff / 86400000);
-                        if (m < 1) return 'just now';
-                        if (m < 60) return `${m}m ago`;
-                        if (h < 24) return `${h}h ago`;
-                        return `${d}d ago`;
-                      })() : ''}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ── Add Action Modal ──────────────────────────────────────────────────────────
 // Lets reps create a manual action not generated by any rule or playbook.
 // source = 'manual' — distinguished in filtering and UI.
@@ -1968,35 +1680,11 @@ export default function ActionsView({ openActionId, onActionOpened }) {
 
   // ── User preferences — loaded from backend (users.ui_preferences) ────────────
   // Defaults are applied server-side; we store state here for reactive UI.
-  const [userPrefs, setUserPrefs] = useState({
-    actions_show_sparkline: false,
-    actions_recent_windows: ['12h', '1d', '1w'],
-  });
+  // ── Recently Generated — track timestamp for inline "New" badges ─────────
+  // lastGeneratedAt: Date | null. Actions created after this show a 🆕 badge.
+  // Cleared after 30 minutes automatically so badges don't persist forever.
+  const [lastGeneratedAt, setLastGeneratedAt] = useState(null);
 
-  useEffect(() => {
-    apiFetch('/users/me/preferences')
-      .then(data => { if (data?.preferences) setUserPrefs(data.preferences); })
-      .catch(() => {}); // silent — defaults already set above
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function saveUserPref(key, value) {
-    // Optimistic update
-    setUserPrefs(prev => ({ ...prev, [key]: value }));
-    try {
-      const data = await apiFetch('/users/me/preferences', {
-        method: 'PATCH',
-        body: JSON.stringify({ [key]: value }),
-      });
-      if (data?.preferences) setUserPrefs(data.preferences);
-    } catch {
-      // Non-critical — local state already updated, will resync on next load
-    }
-  }
-
-  // ── Recently Generated panel ───────────────────────────────────────────────
-  const [showRecent,       setShowRecent]       = useState(false);
-  const [recentWindow,     setRecentWindow]      = useState('12h');
-  const [recentSourceFilter, setRecentSourceFilter] = useState('all');
   const [error,         setError]         = useState(null);
   const [filters,       setFilters]       = useState(DEFAULT_FILTERS);
   const [filterOptions, setFilterOptions] = useState({ deals: [], accounts: [], owners: [], stages: [] });
@@ -2468,17 +2156,17 @@ export default function ActionsView({ openActionId, onActionOpened }) {
     setGenerating(true);
     try {
       const result = await apiFetch('/actions/generate', { method: 'POST' });
+      const generatedAt = new Date();
       await fetchActions(filters);
-      setLastGenerated(new Date());
+      setLastGenerated(generatedAt);
+      setLastGeneratedAt(generatedAt);
+      // Clear "new" badges after 30 minutes
+      setTimeout(() => setLastGeneratedAt(null), 30 * 60 * 1000);
       const dealMsg     = result.deal        ? `${result.deal.inserted} deal`        : '';
       const prospectMsg = result.prospecting ? `${result.prospecting.created} prospecting` : '';
       const clmMsg      = result.clm         ? `${result.clm.inserted} CLM`          : '';
       const parts = [dealMsg, prospectMsg, clmMsg].filter(Boolean).join(', ');
       alert(`✅ Generated ${parts || 'no new'} action(s).${result.prospecting?.skipped ? ` Skipped ${result.prospecting.skipped} duplicate(s).` : ''}`);
-      // Auto-open recently generated panel so rep can verify what was created
-      setShowRecent(true);
-      setRecentWindow('12h');
-      setRecentSourceFilter('all');
     } catch (err) {
       alert('Failed to generate actions: ' + err.message);
     } finally {
@@ -2611,13 +2299,6 @@ export default function ActionsView({ openActionId, onActionOpened }) {
                 >
                   + Add Action
                 </button>
-                <button
-                  className={`av-recent-btn${showRecent ? ' av-recent-btn--active' : ''}`}
-                  onClick={() => setShowRecent(v => !v)}
-                  title="View recently generated actions"
-                >
-                  🕐 Recent
-                </button>
               </div>
               {lastGenerated && (
                 <span style={{ fontSize: 11, color: '#9ca3af' }}>
@@ -2664,20 +2345,6 @@ export default function ActionsView({ openActionId, onActionOpened }) {
         {/* Filters */}
         <FilterBar filters={filters} onChange={handleFilterChange} options={filterOptions} scope={scope} />
 
-        {/* ── Recently Generated Panel ─────────────────────────────────── */}
-        {showRecent && (
-          <RecentlyGeneratedPanel
-            actions={actions}
-            userPrefs={userPrefs}
-            saveUserPref={saveUserPref}
-            recentWindow={recentWindow}
-            setRecentWindow={setRecentWindow}
-            recentSourceFilter={recentSourceFilter}
-            setRecentSourceFilter={setRecentSourceFilter}
-            onClose={() => setShowRecent(false)}
-          />
-        )}
-
         {/* ── STRAP Pinned Section ──────────────────────────────────── */}
         {(filters.source === 'all' || filters.source === 'strap') && filteredStraps.length > 0 && (
           <div className="av-strap-section">
@@ -2694,6 +2361,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
                   strap={s}
                   expanded={expandedStrap === s.id}
                   onToggle={() => setExpandedStrap(expandedStrap === s.id ? null : s.id)}
+                  lastGeneratedAt={lastGeneratedAt}
                   onResolve={handleStrapResolve}
                   onReassess={handleStrapReassess}
                   onUpdate={handleStrapUpdate}
@@ -2767,6 +2435,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
                   onStart={handleStart}
                   onSnoozeClick={setSnoozeAction}
                   onUnsnooze={handleUnsnooze}
+                  isNew={lastGeneratedAt && action.createdAt && new Date(action.createdAt) >= lastGeneratedAt}
                 />
               ))}
             </div>
