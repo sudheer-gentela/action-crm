@@ -316,6 +316,106 @@ function ResumeButton({ action }) {
 
 // ── Manual Log Modal ──────────────────────────────────────────────────────────
 
+// ── Export Context Button ─────────────────────────────────────────────────────
+// Generates a structured plain-text export of everything relevant to this action.
+// The rep can paste it into any AI tool (ChatGPT, Claude.ai, etc.) for feedback.
+
+function ExportContextButton({ action }) {
+  const [copied, setCopied] = useState(false);
+
+  function buildExport() {
+    const lines = [];
+    lines.push('# CRM Action Context Export');
+    lines.push(`Generated: ${new Date().toLocaleString()}`);
+    lines.push('');
+
+    lines.push('## Action');
+    lines.push(`Title: ${action.title}`);
+    lines.push(`Type: ${action.actionType || action.type || 'N/A'}`);
+    lines.push(`Channel: ${action.nextStep || 'N/A'}`);
+    lines.push(`Priority: ${action.priority}`);
+    lines.push(`Status: ${action.status}`);
+    lines.push(`Due: ${action.dueDate ? new Date(action.dueDate).toLocaleDateString() : 'N/A'}`);
+    if (action.description) lines.push(`\nContext: ${action.description}`);
+    if (action.suggestedAction) lines.push(`\nSuggested Approach: ${action.suggestedAction}`);
+    lines.push('');
+
+    if (action.deal) {
+      lines.push('## Deal');
+      lines.push(`Name: ${action.deal.name}`);
+      lines.push(`Value: $${parseFloat(action.deal.value || 0).toLocaleString()}`);
+      lines.push(`Stage: ${action.deal.stage || 'N/A'}`);
+      if (action.deal.account) lines.push(`Account: ${action.deal.account}`);
+      lines.push('');
+    }
+
+    if (action.prospect) {
+      lines.push('## Prospect');
+      lines.push(`Name: ${action.prospect.firstName} ${action.prospect.lastName}`);
+      if (action.prospect.companyName) lines.push(`Company: ${action.prospect.companyName}`);
+      lines.push(`Stage: ${action.prospect.stage || 'N/A'}`);
+      lines.push('');
+    }
+
+    if (action.contact) {
+      lines.push('## Primary Contact');
+      lines.push(`Name: ${action.contact.firstName} ${action.contact.lastName}`);
+      if (action.contact.email) lines.push(`Email: ${action.contact.email}`);
+      lines.push('');
+    }
+
+    if (action.evidenceEmail) {
+      lines.push('## Recent Email Evidence');
+      lines.push(`Direction: ${action.evidenceEmail.direction === 'sent' ? 'Sent by us' : 'Received'}`);
+      lines.push(`Subject: ${action.evidenceEmail.subject || 'N/A'}`);
+      if (action.evidenceEmail.snippet) lines.push(`Preview: ${action.evidenceEmail.snippet}`);
+      lines.push('');
+    }
+
+    if (action.sourceRule) {
+      lines.push('## Why This Action Was Generated');
+      lines.push(`Rule: ${action.sourceRule.replace(/_/g, ' ')}`);
+      if (action.healthParam) lines.push(`Health Parameter: ${action.healthParam}`);
+      lines.push('');
+    }
+
+    lines.push('---');
+    lines.push('Paste this into your preferred AI assistant and ask:');
+    lines.push('"Based on this CRM context, what\'s the best approach for this action? What should I say/do and what outcome should I aim for?"');
+
+    return lines.join('\n');
+  }
+
+  function handleCopy(e) {
+    e.stopPropagation();
+    const text = buildExport();
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {
+      // Fallback for browsers without clipboard API
+      const el = document.createElement('textarea');
+      el.value = text;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  return (
+    <button
+      className="av-export-btn"
+      onClick={handleCopy}
+      title="Copy action context to clipboard — paste into any AI tool for suggestions"
+    >
+      {copied ? '✓ Copied!' : '📋 Export'}
+    </button>
+  );
+}
+
 function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
   const [notes, setNotes]   = useState('');
   const [saving, setSaving] = useState(false);
@@ -900,7 +1000,9 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
   const isSnoozed   = action.status === 'snoozed';
 
   return (
-    <div className={`
+    <div
+      id={`action-card-${action.id}`}
+      className={`
       av-card
       av-card--${action.priority}
       ${isCompleted ? 'av-card--completed' : ''}
@@ -994,12 +1096,13 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
       {/* Evidence panel — hide on snoozed */}
       {!isSnoozed && <EvidencePanel action={action} />}
 
-      {/* Footer row: status stepper + resume + snooze button */}
+      {/* Footer row: status stepper + resume + snooze + export context */}
       {!isSnoozed && (
         <div className="av-card-footer">
           <StatusStepper action={action} onStatusChange={onStatusChange} onStart={onStart} />
           <div className="av-card-footer-actions">
             <ResumeButton action={action} />
+            <ExportContextButton action={action} />
             {!isCompleted && (
               <button
                 className="av-snooze-btn"
@@ -1362,10 +1465,167 @@ const DEFAULT_FILTERS = {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export default function ActionsView() {
+// ── Add Action Modal ──────────────────────────────────────────────────────────
+// Lets reps create a manual action not generated by any rule or playbook.
+// source = 'manual' — distinguished in filtering and UI.
+
+const ACTION_TYPES = [
+  { value: 'email_send',    label: '✉️ Email' },
+  { value: 'meeting_schedule', label: '📅 Meeting / Call' },
+  { value: 'follow_up',    label: '🔄 Follow-Up' },
+  { value: 'document_prep', label: '📄 Document Prep' },
+  { value: 'task_complete', label: '✅ Internal Task' },
+  { value: 'review',       label: '🔍 Review' },
+];
+
+function AddActionModal({ onSave, onClose }) {
+  const [title,       setTitle]       = useState('');
+  const [actionType,  setActionType]  = useState('follow_up');
+  const [priority,    setPriority]    = useState('medium');
+  const [description, setDescription] = useState('');
+  const [dueDate,     setDueDate]     = useState('');
+  const [isInternal,  setIsInternal]  = useState(false);
+  const [saving,      setSaving]      = useState(false);
+
+  async function handleSave() {
+    if (!title.trim()) return;
+    setSaving(true);
+    try {
+      await onSave({ title: title.trim(), actionType, priority, description, dueDate, isInternal });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Trap Escape key
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 9000,
+      }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: '#fff', borderRadius: 14, padding: 28, width: 480, maxWidth: '94vw',
+        boxShadow: '0 20px 60px rgba(0,0,0,.18)',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+          <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>+ Add Manual Action</h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: '#6b7280', lineHeight: 1 }}>×</button>
+        </div>
+
+        {/* Title */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>
+            Title <span style={{ color: '#ef4444' }}>*</span>
+          </label>
+          <input
+            autoFocus
+            style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }}
+            placeholder="e.g. Send pricing summary to procurement"
+            value={title}
+            onChange={e => setTitle(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && title.trim()) handleSave(); }}
+          />
+        </div>
+
+        {/* Type + Priority row */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Type</label>
+            <select
+              style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14 }}
+              value={actionType}
+              onChange={e => setActionType(e.target.value)}
+            >
+              {ACTION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Priority</label>
+            <select
+              style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14 }}
+              value={priority}
+              onChange={e => setPriority(e.target.value)}
+            >
+              <option value="critical">🔴 Critical</option>
+              <option value="high">🟠 High</option>
+              <option value="medium">🟡 Medium</option>
+              <option value="low">🟢 Low</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Due date */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Due Date</label>
+          <input
+            type="date"
+            style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, boxSizing: 'border-box' }}
+            value={dueDate}
+            onChange={e => setDueDate(e.target.value)}
+          />
+        </div>
+
+        {/* Notes */}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 4 }}>Notes / Context</label>
+          <textarea
+            style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, resize: 'vertical', minHeight: 72, boxSizing: 'border-box' }}
+            placeholder="Optional — what's the context or goal for this action?"
+            value={description}
+            onChange={e => setDescription(e.target.value)}
+            rows={3}
+          />
+        </div>
+
+        {/* Internal flag */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#374151', marginBottom: 20, cursor: 'pointer' }}>
+          <input type="checkbox" checked={isInternal} onChange={e => setIsInternal(e.target.checked)} />
+          Internal task (not a customer-facing action)
+        </label>
+
+        {/* Actions */}
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button
+            onClick={onClose}
+            style={{ padding: '9px 18px', border: '1px solid #d1d5db', borderRadius: 8, background: '#fff', fontSize: 14, cursor: 'pointer' }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || !title.trim()}
+            style={{
+              padding: '9px 20px', border: 'none', borderRadius: 8,
+              background: saving || !title.trim() ? '#9ca3af' : '#4f46e5',
+              color: '#fff', fontSize: 14, fontWeight: 500,
+              cursor: saving || !title.trim() ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {saving ? 'Creating…' : 'Create Action'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function ActionsView({ openActionId, onActionOpened }) {
   const [actions,       setActions]       = useState([]);
   const [loading,       setLoading]       = useState(true);
   const [generating,    setGenerating]    = useState(false);
+  const [lastGenerated, setLastGenerated] = useState(null); // Phase 5: last generated timestamp
+  const [nextActionToast, setNextActionToast] = useState(null); // Phase 2: gate unlock toast
+  const [showAddAction, setShowAddAction] = useState(false); // Item 1: manual action creation
   const [error,         setError]         = useState(null);
   const [filters,       setFilters]       = useState(DEFAULT_FILTERS);
   const [filterOptions, setFilterOptions] = useState({ deals: [], accounts: [], owners: [], stages: [] });
@@ -1578,6 +1838,18 @@ export default function ActionsView() {
     fetchActionsImpl(filters);
   }, [actionsFetchKey, filters, fetchActionsImpl]);
 
+  // Phase 4: scroll to and highlight a specific action when navigating from Calendar
+  useEffect(() => {
+    if (!openActionId || loading) return;
+    const el = document.getElementById(`action-card-${openActionId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('av-card--highlighted');
+      setTimeout(() => el.classList.remove('av-card--highlighted'), 2500);
+    }
+    if (onActionOpened) onActionOpened();
+  }, [openActionId, loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function handleFilterChange(key, value) {
     if (key === '__reset__') { setFilters(DEFAULT_FILTERS); return; }
     setFilters(prev => ({ ...prev, [key]: value }));
@@ -1589,8 +1861,9 @@ export default function ActionsView() {
       const action = actions.find(a => a.id === actionId);
       const isProspecting = action?.actionSource === 'prospecting';
 
+      let nextAction = null;
+
       if (isProspecting) {
-        // Map ActionsView statuses to prospecting_actions statuses
         const statusMap = { yet_to_start: 'pending', in_progress: 'in_progress', completed: 'completed' };
         const mappedStatus = statusMap[newStatus] || newStatus;
         await apiFetch(`/prospecting-actions/${actionId}/status`, {
@@ -1598,21 +1871,55 @@ export default function ActionsView() {
           body: JSON.stringify({ status: mappedStatus }),
         });
       } else {
-        await apiFetch(`/actions/${actionId}/status`, {
+        const result = await apiFetch(`/actions/${actionId}/status`, {
           method: 'PATCH',
           body: JSON.stringify({ status: newStatus }),
         });
+        // Phase 2: gate unlock — next action returned by backend
+        if (result.nextAction) {
+          nextAction = result.nextAction;
+        }
       }
 
-      setActions(prev =>
-        prev.map(a => a.id === actionId
+      setActions(prev => {
+        let updated = prev.map(a => a.id === actionId
           ? { ...a, status: newStatus, completed: newStatus === 'completed' }
           : a
         ).filter(a => {
           if (!filters.status && a.id === actionId && newStatus === 'completed') return false;
           return true;
-        })
-      );
+        });
+
+        // Append the unlocked next action if returned
+        if (nextAction) {
+          // Map backend row to frontend shape
+          updated = [...updated, {
+            id:              nextAction.id,
+            actionSource:    'deal',
+            type:            nextAction.type,
+            actionType:      nextAction.action_type || nextAction.type,
+            priority:        nextAction.priority,
+            title:           nextAction.title,
+            description:     nextAction.description,
+            suggestedAction: nextAction.suggested_action,
+            source:          nextAction.source,
+            sourceRule:      nextAction.source_rule,
+            nextStep:        nextAction.next_step || 'email',
+            status:          'yet_to_start',
+            dueDate:         nextAction.due_date,
+            deal:            action?.deal || null,
+            contact:         null,
+            prospect:        null,
+          }];
+        }
+        return updated;
+      });
+
+      // Show toast for unlocked next action
+      if (nextAction) {
+        setNextActionToast(nextAction.title);
+        setTimeout(() => setNextActionToast(null), 4000);
+      }
     } catch (err) {
       console.error('Status update failed:', err);
       alert('Failed to update status: ' + err.message);
@@ -1791,9 +2098,11 @@ export default function ActionsView() {
     try {
       const result = await apiFetch('/actions/generate', { method: 'POST' });
       await fetchActions(filters);
-      const dealMsg = result.deal ? `${result.deal.inserted} deal action(s)` : '';
+      setLastGenerated(new Date());
+      const dealMsg     = result.deal        ? `${result.deal.inserted} deal action(s)`        : '';
       const prospectMsg = result.prospecting ? `${result.prospecting.created} prospecting action(s)` : '';
-      const parts = [dealMsg, prospectMsg].filter(Boolean).join(', ');
+      const clmMsg      = result.clm         ? `${result.clm.inserted} CLM action(s)`          : '';
+      const parts = [dealMsg, prospectMsg, clmMsg].filter(Boolean).join(', ');
       alert(`✅ Generated ${parts || 'no new actions'}.${result.prospecting?.skipped ? ` Skipped ${result.prospecting.skipped} duplicate(s).` : ''}`);
     } catch (err) {
       alert('Failed to generate actions: ' + err.message);
@@ -1802,7 +2111,47 @@ export default function ActionsView() {
     }
   }
 
-  // Header counts
+  // Item 1: Manual action creation
+  async function handleAddAction(formData) {
+    try {
+      const result = await apiFetch('/actions', {
+        method: 'POST',
+        body: JSON.stringify({
+          title:       formData.title,
+          type:        formData.actionType,
+          priority:    formData.priority,
+          description: formData.description || null,
+          dueDate:     formData.dueDate     || null,
+          isInternal:  formData.isInternal  || false,
+          dealId:      formData.dealId      || null,
+          contactId:   formData.contactId   || null,
+        }),
+      });
+      setShowAddAction(false);
+      // Append to current list immediately
+      if (result.action) {
+        setActions(prev => [{
+          id:           result.action.id,
+          actionSource: 'deal',
+          type:         result.action.type,
+          actionType:   result.action.action_type || result.action.type,
+          priority:     result.action.priority,
+          title:        result.action.title,
+          description:  result.action.description,
+          status:       'yet_to_start',
+          source:       'manual',
+          nextStep:     result.action.next_step || 'email',
+          dueDate:      result.action.due_date,
+          isInternal:   result.action.is_internal,
+          deal:         null,
+          contact:      null,
+          prospect:     null,
+        }, ...prev]);
+      }
+    } catch (err) {
+      alert('Failed to create action: ' + err.message);
+    }
+  }
   const yetToStart = actions.filter(a => a.status === 'yet_to_start').length;
   const inProgress = actions.filter(a => a.status === 'in_progress').length;
   const snoozed    = actions.filter(a => a.status === 'snoozed').length;
@@ -1810,6 +2159,25 @@ export default function ActionsView() {
 
   return (
     <>
+      {/* Phase 2: Gate unlock toast — appears when completing a gate action unlocks the next one */}
+      {nextActionToast && (
+        <div style={{
+          position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)',
+          background: '#1e293b', color: '#f8fafc', padding: '12px 20px',
+          borderRadius: 10, fontSize: 14, fontWeight: 500, zIndex: 9999,
+          boxShadow: '0 4px 20px rgba(0,0,0,.25)',
+          display: 'flex', alignItems: 'center', gap: 10, maxWidth: 460,
+          animation: 'fadeInUp .25s ease',
+        }}>
+          <span>🔓</span>
+          <span>Next action ready: <strong>{nextActionToast}</strong></span>
+          <button
+            onClick={() => setNextActionToast(null)}
+            style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 16, marginLeft: 4 }}
+          >×</button>
+        </div>
+      )}
+
       <div className="av-root">
 
         {/* Header */}
@@ -1852,13 +2220,30 @@ export default function ActionsView() {
                 ))}
               </div>
             )}
-            <button
-              className="av-generate-btn"
-              onClick={handleGenerateActions}
-              disabled={generating || loading}
-            >
-              {generating ? '⏳ Generating…' : '⚡ Generate Actions'}
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  className="av-generate-btn"
+                  onClick={handleGenerateActions}
+                  disabled={generating || loading}
+                >
+                  {generating ? '⏳ Generating…' : '⚡ Generate Actions'}
+                </button>
+                <button
+                  className="av-add-btn"
+                  onClick={() => setShowAddAction(true)}
+                  title="Create a manual action"
+                >
+                  + Add Action
+                </button>
+              </div>
+              {lastGenerated && (
+                <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                  Last run: {lastGenerated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {' · '}Auto-runs daily at 6am
+                </span>
+              )}
+            </div>
             <button onClick={() => csvExport(actions, EXPORT_COLUMNS.actions, `actions-${scope}-${new Date().toISOString().slice(0,10)}.csv`)} title="Export CSV"
               style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #d1d5db',
                        background: '#fff', fontSize: 13, cursor: 'pointer' }}>
@@ -2035,6 +2420,12 @@ export default function ActionsView() {
           action={snoozeAction}
           onSnooze={handleSnooze}
           onClose={() => setSnoozeAction(null)}
+        />
+      )}
+      {showAddAction && (
+        <AddActionModal
+          onSave={handleAddAction}
+          onClose={() => setShowAddAction(false)}
         />
       )}
     </>

@@ -359,6 +359,22 @@ class ContractActionsGenerator {
         inserted += await processPlayForContract(orgId, contract, play, renewalContractIds, dealTeam);
       }
 
+      // ── AI Enhancement (optional, module-gated) ──────────────────────────
+      try {
+        const ActionConfigService = require('./actionConfig.service');
+        const actionConfig = await ActionConfigService.getConfig(contract.owner_id, orgId);
+        if (ActionConfigService.isAiEnabledForModule(actionConfig, 'clm')) {
+          const CLMAIEnhancer = require('./CLMAIEnhancer');
+          const aiInserted = await CLMAIEnhancer.enhance(contract, orgId, contract.owner_id);
+          if (aiInserted > 0) {
+            console.log(`  🤖 CLM AI: ${aiInserted} additional action(s) for contract ${contractId}`);
+            inserted += aiInserted;
+          }
+        }
+      } catch (aiErr) {
+        console.error('CLM AI enhancement skipped (non-blocking):', aiErr.message);
+      }
+
       console.log(`✅ Generated ${inserted} CLM actions for contract ${contractId}`);
       return inserted;
 

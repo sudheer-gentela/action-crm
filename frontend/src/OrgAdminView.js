@@ -43,6 +43,7 @@ const NAV_GROUPS = [
     label: 'Auto Action Execution',
     items: [
       { id: 'ai-agent',    icon: '🤖', label: 'AI Agent' },
+      { id: 'action-ai',   icon: '✨', label: 'Actions AI' },
     ],
   },
   {
@@ -188,6 +189,7 @@ export default function OrgAdminView() {
             {tab === 'org-roles'   && <OADealRoles />}
             {tab === 'products'    && <OAProducts />}
             {tab === 'ai-agent'    && <OAAgentSettings />}
+            {tab === 'action-ai'   && <OAActionsAI />}
             {tab === 'duplicates'  && <OADuplicateSettings />}
             {tab === 'integrations' && <OAIntegrations />}
             {tab === 'settings'    && <OASettings />}
@@ -4385,10 +4387,6 @@ function OAModules() {
       const label = MODULE_DEFS.find(m => m.key === moduleName)?.label || moduleName;
       setSuccess(`${label} module ${newVal ? 'enabled' : 'disabled'} ✓`);
       setTimeout(() => setSuccess(''), 3000);
-      // Notify Dashboard instantly — sidebar updates without a page refresh
-      window.dispatchEvent(new CustomEvent('moduleToggle', {
-        detail: { module: moduleName, enabled: newVal },
-      }));
     } catch (e) {
       setError(e.response?.data?.error?.message || e.message || 'Failed to update module');
     } finally {
@@ -4750,6 +4748,179 @@ function OACLMTemplates() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OAActionsAI — per-module AI enhancement toggles + export context settings
+// Phase 3: AI is optional per action type, with a master toggle.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function OAActionsAI() {
+  const [config, setConfig]     = useState(null);
+  const [saving, setSaving]     = useState(false);
+  const [success, setSuccess]   = useState('');
+  const [error, setError]       = useState('');
+  const [loading, setLoading]   = useState(true);
+
+  const API = process.env.REACT_APP_API_URL || '';
+
+  function apiFetch(path, opts = {}) {
+    const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+    return fetch(`${API}${path}`, {
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(opts.headers || {}) },
+      ...opts,
+    }).then(r => {
+      if (!r.ok) return r.json().then(e => Promise.reject(new Error(e?.error?.message || r.statusText)));
+      return r.json();
+    });
+  }
+
+  useEffect(() => {
+    apiFetch('/actions/config')
+      .then(data => {
+        const raw = data.config?.ai_settings || {};
+        setConfig({
+          master_enabled: raw.master_enabled ?? true,
+          modules: {
+            deals:       raw.modules?.deals       ?? true,
+            straps:      raw.modules?.straps      ?? true,
+            clm:         raw.modules?.clm         ?? false,
+            prospecting: raw.modules?.prospecting ?? false,
+          },
+        });
+      })
+      .catch(() => setError('Failed to load config'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function handleSave() {
+    setSaving(true);
+    setError('');
+    try {
+      await apiFetch('/actions/config', {
+        method: 'PUT',
+        body: JSON.stringify({ ai_settings: config }),
+      });
+      setSuccess('Saved ✓');
+      setTimeout(() => setSuccess(''), 2500);
+    } catch (e) {
+      setError(e.message || 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function toggleModule(key) {
+    setConfig(prev => ({
+      ...prev,
+      modules: { ...prev.modules, [key]: !prev.modules[key] },
+    }));
+  }
+
+  const MODULE_DEFS = [
+    { key: 'deals',       icon: '💼', label: 'Deal Actions',         desc: 'AI enhances rules-generated actions for at-risk and high-value deals using deal health, emails, meetings, and playbook context.' },
+    { key: 'straps',      icon: '🎯', label: 'STRAP Actions',        desc: 'AI can suggest additional context and refinements to STRAP-generated action steps.' },
+    { key: 'clm',         icon: '📄', label: 'Contract Actions',     desc: 'AI enhancement for CLM-generated actions. Off by default as CLM plays are already well-structured.' },
+    { key: 'prospecting', icon: '🔭', label: 'Prospecting Actions',  desc: 'AI enhancement for prospecting stage actions. Off by default as prospecting actions are simpler.' },
+  ];
+
+  if (loading) return <div style={{ padding: 32 }}>Loading…</div>;
+
+  return (
+    <div style={{ maxWidth: 680, padding: '24px 0' }}>
+      <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>✨ Actions AI Settings</h2>
+      <p style={{ color: '#6b7280', fontSize: 14, marginBottom: 24 }}>
+        Control when AI enhances your generated actions. AI enhancement adds deal-specific context,
+        refines suggested approaches, and fills gaps the rules engine can't catch. All toggles are
+        per-user — each team member can set their own preference.
+      </p>
+
+      {error && <div style={{ padding: '10px 14px', background: '#fef2f2', borderRadius: 8, color: '#991b1b', fontSize: 14, marginBottom: 16 }}>{error}</div>}
+
+      {/* Master toggle */}
+      <div style={{ background: '#f8fafc', border: '1.5px solid #e2e8f0', borderRadius: 10, padding: '16px 20px', marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 15 }}>🤖 Master AI Toggle</div>
+          <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>
+            Turn off to disable all AI enhancement regardless of module settings.
+          </div>
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <div
+            onClick={() => setConfig(p => ({ ...p, master_enabled: !p.master_enabled }))}
+            style={{
+              width: 44, height: 24, borderRadius: 12,
+              background: config?.master_enabled ? '#10b981' : '#d1d5db',
+              position: 'relative', cursor: 'pointer', transition: 'background .2s',
+            }}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: '50%', background: '#fff',
+              position: 'absolute', top: 3,
+              left: config?.master_enabled ? 23 : 3,
+              transition: 'left .2s',
+              boxShadow: '0 1px 3px rgba(0,0,0,.2)',
+            }} />
+          </div>
+          <span style={{ fontSize: 13, color: config?.master_enabled ? '#059669' : '#6b7280', fontWeight: 500 }}>
+            {config?.master_enabled ? 'On' : 'Off'}
+          </span>
+        </label>
+      </div>
+
+      {/* Per-module toggles */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, opacity: config?.master_enabled ? 1 : 0.5, pointerEvents: config?.master_enabled ? 'auto' : 'none' }}>
+        {MODULE_DEFS.map(mod => (
+          <div key={mod.key} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '14px 18px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 500, fontSize: 14 }}>{mod.icon} {mod.label}</div>
+              <div style={{ fontSize: 13, color: '#6b7280', marginTop: 3, lineHeight: 1.5 }}>{mod.desc}</div>
+            </div>
+            <div
+              onClick={() => toggleModule(mod.key)}
+              style={{
+                flexShrink: 0,
+                width: 40, height: 22, borderRadius: 11,
+                background: config?.modules[mod.key] ? '#6366f1' : '#d1d5db',
+                position: 'relative', cursor: 'pointer', transition: 'background .2s', marginTop: 2,
+              }}
+            >
+              <div style={{
+                width: 16, height: 16, borderRadius: '50%', background: '#fff',
+                position: 'absolute', top: 3,
+                left: config?.modules[mod.key] ? 21 : 3,
+                transition: 'left .2s',
+                boxShadow: '0 1px 3px rgba(0,0,0,.2)',
+              }} />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Export context info */}
+      <div style={{ marginTop: 24, padding: '14px 18px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10 }}>
+        <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 4 }}>💡 Using your own AI?</div>
+        <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6 }}>
+          Every action card has an <strong>Export Context</strong> button that generates a structured
+          summary of the deal — health score, contacts, emails, meetings, playbook goal, and the
+          action itself. Copy it and paste into ChatGPT, Claude.ai, or any AI tool to get tailored
+          suggestions without sharing your CRM credentials.
+        </div>
+      </div>
+
+      <div style={{ marginTop: 20, display: 'flex', alignItems: 'center', gap: 12 }}>
+        <button
+          onClick={handleSave}
+          disabled={saving || !config}
+          style={{ padding: '9px 22px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: 8, fontWeight: 500, fontSize: 14, cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : 1 }}
+        >
+          {saving ? 'Saving…' : 'Save Settings'}
+        </button>
+        {success && <span style={{ color: '#059669', fontSize: 14 }}>{success}</span>}
+      </div>
     </div>
   );
 }

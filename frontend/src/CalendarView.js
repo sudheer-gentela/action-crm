@@ -758,6 +758,16 @@ const ActionPopover = React.forwardRef(function ActionPopover(
         {action.status !== 'in_progress' && (
           <button className="popover-btn popover-btn-start" onClick={() => onStart(action)}>🚀 Start & Open</button>
         )}
+        <button
+          className="popover-btn popover-btn-actions"
+          onClick={() => {
+            window.dispatchEvent(new CustomEvent('navigate', {
+              detail: { tab: 'actions', actionId: action.id },
+            }));
+          }}
+        >
+          ⚡ View in Actions
+        </button>
         <button className="popover-btn popover-btn-snooze" onClick={() => onSnoozeRequest(action)}>
           💤 Snooze
         </button>

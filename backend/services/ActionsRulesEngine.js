@@ -613,17 +613,60 @@ class ActionsRulesEngine {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // G. PLAYBOOK RULES
+  // G. PLAYBOOK RULES  (Phase 1 — conditional play firing)
   //
-  // Converts the key_actions array from the stage's playbook guidance into
-  // individual actions. This is where stage-specific intelligence now lives.
-  // The playbookStageActions array is populated in actionsGenerator.buildContext()
-  // by calling PlaybookService.getStageActions(userId, deal.stage) — keyed by
-  // stage KEY (e.g. "demo"), not stage_type.
+  // Primary path: uses structured plays from playbook_plays table.
+  //   Each play has fire_conditions evaluated against deal context.
+  //   A play only generates an action when ALL conditions pass.
+  //   Play's explicit channel/priority/due_offset_days/suggested_action
+  //   are used directly — no inference needed.
+  //
+  // Fallback path: if no plays exist for the stage, falls back to the
+  //   legacy key_actions string array (playbookStageActions).
+  //   This ensures orgs that haven't authored plays yet still get actions.
   // ─────────────────────────────────────────────────────────────────────────
 
   static _playbookRules(ctx, actions) {
-    const { deal, playbookStageActions, playbookStageGuidance } = ctx;
+    const { deal, playbookStageActions, playbookStageGuidance, playbookPlays } = ctx;
+
+    // ── Primary path: structured plays with fire_conditions ──────────────────
+    if (playbookPlays?.length > 0) {
+      playbookPlays.forEach(play => {
+        // Evaluate all fire_conditions — skip play if any fail
+        if (!PlaybookService.evaluateConditions(play.fire_conditions, ctx)) {
+          return; // condition(s) not met — don't generate this action
+        }
+
+        const due_days = play.due_offset_days ?? 3;
+
+        actions.push(this._action({
+          title:            play.title,
+          description:      play.description
+                              || (playbookStageGuidance?.goal
+                                  ? `Playbook action — stage goal: ${playbookStageGuidance.goal}`
+                                  : `Playbook action for ${deal.stage_type || deal.stage} stage`),
+          action_type:      play.channel ? this._channelToActionType(play.channel) : 'follow_up',
+          priority:         play.priority || 'medium',
+          due_days,
+          deal_id:          deal.id,
+          account_id:       deal.account_id,
+          suggested_action: play.suggested_action || null,
+          keywords:         PlaybookService.extractKeywords(play.title),
+          requires_external_evidence: PlaybookService.requiresExternalEvidence(
+                              play.channel ? this._channelToActionType(play.channel) : 'follow_up',
+                              play.title
+                            ),
+          deal_stage:       deal.stage_type || deal.stage,
+          source_rule:      'playbook',
+          source:           'playbook',
+          playbook_play_id: play.id,
+          _next_step_override: play.channel || null,
+        }));
+      });
+      return; // plays found and processed — skip legacy fallback
+    }
+
+    // ── Fallback: legacy key_actions string array ────────────────────────────
     if (!playbookStageActions?.length) return;
 
     playbookStageActions.forEach(actionText => {
@@ -649,6 +692,21 @@ class ActionsRulesEngine {
         source:           'playbook',
       }));
     });
+  }
+
+  // Maps play channel to an action_type compatible with the rest of the system
+  static _channelToActionType(channel) {
+    const map = {
+      email:         'email_send',
+      call:          'meeting_schedule',
+      meeting:       'meeting_schedule',
+      document:      'document_prep',
+      internal_task: 'task_complete',
+      linkedin:      'email_send',
+      whatsapp:      'email_send',
+      slack:         'task_complete',
+    };
+    return map[channel] || 'follow_up';
   }
 
   // ─────────────────────────────────────────────────────────────────────────

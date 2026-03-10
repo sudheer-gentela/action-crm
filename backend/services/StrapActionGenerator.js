@@ -268,6 +268,27 @@ class StrapActionGenerator {
     }
 
     console.log(`✅ STRAP #${strap.id}: generated ${createdActions.length} action(s) from ${steps.length} plan steps`);
+
+    // ── AI Enhancement (optional, module-gated) ────────────────────────────
+    // Runs only if ai_settings.modules.straps is enabled for this user+org.
+    // Non-blocking — any failure just skips AI enhancements.
+    try {
+      const ActionConfigService = require('./actionConfig.service');
+      const actionConfig = await ActionConfigService.getConfig(userId, orgId);
+      if (ActionConfigService.isAiEnabledForModule(actionConfig, 'straps')) {
+        const StrapAIEnhancer = require('./StrapAIEnhancer');
+        const aiActions = await StrapAIEnhancer.enhance(strap, context, createdActions, orgId, userId);
+        if (aiActions.length > 0) {
+          console.log(`  🤖 STRAP AI: ${aiActions.length} additional action(s) for STRAP #${strap.id}`);
+          for (const action of aiActions) {
+            createdActions.push(action);
+          }
+        }
+      }
+    } catch (aiErr) {
+      console.error(`  🤖 STRAP AI enhancement skipped (non-blocking):`, aiErr.message);
+    }
+
     return { actions: createdActions, count: createdActions.length };
   }
 

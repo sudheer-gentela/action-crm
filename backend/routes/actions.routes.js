@@ -571,11 +571,11 @@ async function generateAllProspectingActions(orgId, userId) {
   const result = { created: 0, skipped: 0, prospects: 0, errors: [] };
 
   try {
-    // Find all active prospects with playbooks
     const prospectsRes = await db.query(
       `SELECT p.id, p.first_name, p.last_name, p.email, p.company_name,
-              p.stage, p.owner_id, p.playbook_id, p.preferred_channel,
-              p.research_notes, p.company_industry, p.current_sequence_step,
+              p.stage, p.stage_changed_at, p.owner_id, p.playbook_id,
+              p.preferred_channel, p.research_notes, p.company_industry,
+              p.current_sequence_step,
               pb.stage_guidance, pb.name AS playbook_name
        FROM prospects p
        JOIN playbooks pb ON p.playbook_id = pb.id
@@ -588,41 +588,81 @@ async function generateAllProspectingActions(orgId, userId) {
 
     for (const prospect of prospectsRes.rows) {
       try {
+        // ── Try structured plays with conditional firing first ──────────
+        const PlaybookService = require('../services/playbook.service');
+        const plays = await PlaybookService.getPlaysForStage(orgId, prospect.stage);
+
+        if (plays.length > 0) {
+          const prospectContext = await buildProspectContext(prospect, orgId);
+          const existingRes = await db.query(
+            `SELECT title FROM prospecting_actions
+             WHERE prospect_id = $1 AND org_id = $2 AND status IN ('pending', 'in_progress', 'snoozed')`,
+            [prospect.id, orgId]
+          );
+          const existingTitles = new Set(existingRes.rows.map(r => r.title.toLowerCase()));
+          const now = new Date();
+
+          for (const play of plays) {
+            if (!PlaybookService.evaluateConditions(play.fire_conditions, prospectContext)) {
+              result.skipped++; continue;
+            }
+            if (existingTitles.has(play.title.toLowerCase())) {
+              result.skipped++; continue;
+            }
+            const dueDate = new Date(now.getTime() + (play.due_offset_days || 2) * 86400000);
+            const channel = play.channel || prospectDefaultChannel(prospect.stage);
+            await db.query(
+              `INSERT INTO prospecting_actions
+               (org_id, user_id, prospect_id, title, description, action_type, channel,
+                sequence_step, status, priority, due_date, source, suggested_action, ai_context, metadata)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,'playbook',$11,$12,$13)`,
+              [
+                orgId, prospect.owner_id, prospect.id, play.title,
+                play.description || `Playbook action for ${prospect.stage} stage`,
+                channel === 'document' ? 'document_prep' : 'outreach',
+                channel,
+                (prospect.current_sequence_step || 0) + 1,
+                play.priority || 'medium', dueDate,
+                play.suggested_action || null,
+                JSON.stringify({ playbook_id: prospect.playbook_id, playbook_name: prospect.playbook_name, stage: prospect.stage }),
+                JSON.stringify({ generated_from: 'playbook_plays', play_id: play.id, stage_key: prospect.stage }),
+              ]
+            );
+            result.created++;
+          }
+          continue; // structured plays handled — skip legacy path
+        }
+
+        // ── Legacy fallback: key_actions string array (unconditional) ──
         const rawGuidance = prospect.stage_guidance;
         const guidance = typeof rawGuidance === 'string' ? JSON.parse(rawGuidance) : (rawGuidance || {});
         const stageGuidance = guidance[prospect.stage];
-
         if (!stageGuidance?.key_actions?.length) continue;
 
-        // Check existing actions
         const existingRes = await db.query(
           `SELECT title FROM prospecting_actions
            WHERE prospect_id = $1 AND org_id = $2 AND status IN ('pending', 'in_progress', 'snoozed')`,
           [prospect.id, orgId]
         );
         const existingTitles = new Set(existingRes.rows.map(r => r.title.toLowerCase()));
-
         const now = new Date();
+
         for (let i = 0; i < stageGuidance.key_actions.length; i++) {
           const actionKey = stageGuidance.key_actions[i];
           const title = prospectActionTitle(actionKey, prospect);
-
-          if (existingTitles.has(title.toLowerCase())) {
-            result.skipped++;
-            continue;
-          }
+          if (existingTitles.has(title.toLowerCase())) { result.skipped++; continue; }
 
           const actionType = prospectActionType(actionKey);
-          const channel = prospectActionChannel(actionKey);
-          const priority = prospectActionPriority(prospect.stage, actionType, i);
-          const baseDays = { target: 2, researched: 1, contacted: 1, engaged: 1, qualified: 0, nurture: 5 };
-          const dueDate = new Date(now.getTime() + ((baseDays[prospect.stage] ?? 2) + i) * 86400000);
+          const channel    = prospectActionChannel(actionKey);
+          const priority   = prospectActionPriority(prospect.stage, actionType, i);
+          const baseDays   = { target: 2, researched: 1, contacted: 1, engaged: 1, qualified: 0, nurture: 5 };
+          const dueDate    = new Date(now.getTime() + ((baseDays[prospect.stage] ?? 2) + i) * 86400000);
 
           await db.query(
             `INSERT INTO prospecting_actions
              (org_id, user_id, prospect_id, title, description, action_type, channel,
               sequence_step, status, priority, due_date, source, ai_context, metadata)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10, 'playbook', $11, $12)`,
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10,'playbook',$11,$12)`,
             [
               orgId, prospect.owner_id, prospect.id, title,
               stageGuidance.goal ? `Stage goal: ${stageGuidance.goal}` : `Action for ${prospect.stage} stage`,
@@ -635,6 +675,20 @@ async function generateAllProspectingActions(orgId, userId) {
           );
           result.created++;
         }
+
+        // ── AI Enhancement (optional, module-gated) ──────────────────────
+        try {
+          const ActionConfigService = require('../services/actionConfig.service');
+          const actionConfig = await ActionConfigService.getConfig(prospect.owner_id, orgId);
+          if (ActionConfigService.isAiEnabledForModule(actionConfig, 'prospecting')) {
+            const ProspectingAIEnhancer = require('../services/ProspectingAIEnhancer');
+            const aiCreated = await ProspectingAIEnhancer.enhance(prospect, orgId, prospect.owner_id);
+            if (aiCreated > 0) result.created += aiCreated;
+          }
+        } catch (aiErr) {
+          console.error(`Prospecting AI enhancement skipped for ${prospect.id}:`, aiErr.message);
+        }
+
       } catch (err) {
         result.errors.push({ prospectId: prospect.id, error: err.message });
       }
@@ -643,6 +697,55 @@ async function generateAllProspectingActions(orgId, userId) {
     result.errors.push({ error: err.message });
   }
   return result;
+}
+
+// Minimal context object for ProspectingService.evaluateConditions()
+async function buildProspectContext(prospect, orgId) {
+  try {
+    const [actionsRes, meetingsRes] = await Promise.all([
+      db.query(
+        `SELECT title, status, channel, completed_at, created_at FROM prospecting_actions
+         WHERE prospect_id=$1 AND org_id=$2 ORDER BY created_at DESC LIMIT 20`,
+        [prospect.id, orgId]
+      ),
+      db.query(
+        `SELECT id, status, start_time FROM meetings
+         WHERE org_id=$1 AND title ILIKE $2 ORDER BY start_time DESC LIMIT 10`,
+        [orgId, `%${prospect.first_name}%`]
+      ),
+    ]);
+    const now = Date.now();
+    const stageEntry = prospect.stage_changed_at ? new Date(prospect.stage_changed_at) : new Date(0);
+    const daysInStage = Math.floor((now - stageEntry) / 86400000);
+    const completedMeetings = meetingsRes.rows.filter(m => m.status === 'completed');
+    const upcomingMeetings  = meetingsRes.rows.filter(m => m.status === 'scheduled' && new Date(m.start_time) > new Date());
+    const sentEmails = actionsRes.rows.filter(a => a.channel === 'email' && a.status === 'completed');
+    return {
+      deal: { id: prospect.id, stage: prospect.stage, stage_changed_at: prospect.stage_changed_at, org_id: orgId },
+      contacts: [], files: [], healthBreakdown: null,
+      emails: sentEmails.map(a => ({ direction: 'sent', sent_at: a.completed_at || a.created_at })),
+      derived: {
+        completedMeetings, upcomingMeetings, daysInStage, daysUntilClose: null,
+        decisionMakers: [], champions: [], isHighValue: false, isStagnant: daysInStage > 14,
+        closingImminently: false, isPastClose: false,
+        daysSinceLastMeeting: completedMeetings.length > 0
+          ? Math.floor((now - new Date(completedMeetings[0].start_time)) / 86400000) : 999,
+        daysSinceLastEmail: sentEmails.length > 0
+          ? Math.floor((now - new Date(sentEmails[0].completed_at || 0)) / 86400000) : 999,
+      },
+    };
+  } catch {
+    return {
+      deal: { id: prospect.id, stage: prospect.stage, stage_changed_at: prospect.stage_changed_at },
+      contacts: [], emails: [], files: [], healthBreakdown: null,
+      derived: { completedMeetings: [], upcomingMeetings: [], daysInStage: 0, daysUntilClose: null,
+                 decisionMakers: [], champions: [] },
+    };
+  }
+}
+
+function prospectDefaultChannel(stage) {
+  return { target: 'email', researched: 'email', contacted: 'email', engaged: 'call', qualified: 'call', nurture: 'email' }[stage] || 'email';
 }
 
 // ── Prospect action helpers (mirrored from prospecting-actions.routes.js) ────
@@ -977,7 +1080,7 @@ router.put('/:id', async (req, res) => {
 // ── PATCH /:id/status ─────────────────────────────────────────
 router.patch('/:id/status', async (req, res) => {
   try {
-    const { status } = req.body;
+    const { status, notes } = req.body;
     const VALID = ['yet_to_start', 'in_progress', 'completed'];
     if (!VALID.includes(status)) {
       return res.status(400).json({ error: { message: `status must be one of: ${VALID.join(', ')}` } });
@@ -991,20 +1094,127 @@ router.patch('/:id/status', async (req, res) => {
            completed    = $2,
            completed_at = CASE WHEN $2 = true THEN CURRENT_TIMESTAMP ELSE completed_at END,
            completed_by = CASE WHEN $2 = true THEN $3 ELSE completed_by END,
+           notes        = COALESCE($6, notes),
            updated_at   = CURRENT_TIMESTAMP
        WHERE id = $4 AND org_id = $5 AND user_id = $3
        RETURNING *`,
-      [status, isCompleting, req.user.userId, req.params.id, req.orgId]
+      [status, isCompleting, req.user.userId, req.params.id, req.orgId, notes || null]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: { message: 'Action not found' } });
 
-    // If completed and action has a strap_id, check if STRAP should auto-resolve
-    if (isCompleting && result.rows[0].strap_id) {
-      StrapActionGenerator.checkAutoResolve(result.rows[0].strap_id, req.user.userId, req.orgId)
+    const completedAction = result.rows[0];
+    let nextAction = null;
+
+    // STRAP auto-resolve check
+    if (isCompleting && completedAction.strap_id) {
+      StrapActionGenerator.checkAutoResolve(completedAction.strap_id, req.user.userId, req.orgId)
         .catch(err => console.error('STRAP auto-resolve check error:', err.message));
     }
 
-    res.json({ action: result.rows[0] });
+    // ── Phase 2: Gated next-action generation ────────────────────────────────
+    // When a gate play action is completed, check if it unlocks a follow-on play.
+    if (isCompleting && completedAction.playbook_play_id) {
+      try {
+        const gateRes = await db.query(
+          `SELECT * FROM playbook_plays
+           WHERE id = $1 AND org_id = $2 AND is_gate = true AND unlocks_play_id IS NOT NULL`,
+          [completedAction.playbook_play_id, req.orgId]
+        );
+
+        if (gateRes.rows.length > 0) {
+          const unlockedRes = await db.query(
+            `SELECT * FROM playbook_plays WHERE id = $1 AND org_id = $2`,
+            [gateRes.rows[0].unlocks_play_id, req.orgId]
+          );
+
+          if (unlockedRes.rows.length > 0) {
+            const unlockedPlay = unlockedRes.rows[0];
+            const fireConditions = typeof unlockedPlay.fire_conditions === 'string'
+              ? JSON.parse(unlockedPlay.fire_conditions)
+              : (unlockedPlay.fire_conditions || []);
+
+            // Evaluate conditions if any, using a lightweight context
+            let conditionsMet = true;
+            if (fireConditions.length > 0 && completedAction.deal_id) {
+              const PlaybookService = require('../services/playbook.service');
+              const dealRes = await db.query('SELECT * FROM deals WHERE id = $1', [completedAction.deal_id]);
+              if (dealRes.rows.length > 0) {
+                const deal = dealRes.rows[0];
+                const [cR, eR, mR, fR] = await Promise.all([
+                  db.query('SELECT * FROM contacts WHERE account_id = $1 AND org_id = $2', [deal.account_id, req.orgId]),
+                  db.query('SELECT * FROM emails WHERE deal_id = $1 AND org_id = $2', [deal.id, req.orgId]),
+                  db.query('SELECT * FROM meetings WHERE deal_id = $1 AND org_id = $2', [deal.id, req.orgId]),
+                  db.query("SELECT * FROM storage_files WHERE deal_id = $1 AND org_id = $2 AND processing_status = 'completed'", [deal.id, req.orgId]),
+                ]);
+                const ActionsGenerator = require('../services/actionsGenerator');
+                const context = await ActionsGenerator.buildContextPublic(
+                  deal, cR.rows, eR.rows, mR.rows, fR.rows, req.user.userId, req.orgId
+                );
+                conditionsMet = PlaybookService.evaluateConditions(fireConditions, context);
+              }
+            }
+
+            if (conditionsMet) {
+              const dueDate = new Date();
+              dueDate.setDate(dueDate.getDate() + (unlockedPlay.due_offset_days || 3));
+
+              const insertRes = await db.query(
+                `INSERT INTO actions (
+                   org_id, user_id, type, title, description, action_type, priority,
+                   due_date, deal_id, account_id, source, source_rule, next_step,
+                   playbook_play_id, status, suggested_action, created_at
+                 ) VALUES (
+                   $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+                   'playbook','playbook_gate_unlock',$11,$12,'yet_to_start',$13,NOW()
+                 ) RETURNING *`,
+                [
+                  req.orgId, req.user.userId,
+                  unlockedPlay.channel || 'follow_up',
+                  unlockedPlay.title,
+                  unlockedPlay.description || `Unlocked after completing: ${completedAction.title}`,
+                  unlockedPlay.channel || 'follow_up',
+                  unlockedPlay.priority || 'medium',
+                  dueDate,
+                  completedAction.deal_id   || null,
+                  completedAction.account_id || null,
+                  unlockedPlay.channel || 'email',
+                  unlockedPlay.id,
+                  unlockedPlay.suggested_action || null,
+                ]
+              );
+              nextAction = insertRes.rows[0];
+
+              // Create calendar entry for the next action
+              try {
+                const startTime = new Date(dueDate);
+                startTime.setHours(9, 0, 0, 0);
+                const endTime = new Date(startTime);
+                endTime.setMinutes(endTime.getMinutes() + 30);
+                await db.query(
+                  `INSERT INTO meetings (
+                     org_id, user_id, deal_id, title, description,
+                     start_time, end_time, meeting_type, source, status, action_id, created_at
+                   ) VALUES ($1,$2,$3,$4,$5,$6,$7,'task','action','scheduled',$8,NOW())`,
+                  [
+                    req.orgId, req.user.userId, completedAction.deal_id || null,
+                    unlockedPlay.title,
+                    `Next step unlocked from playbook gate: ${completedAction.title}`,
+                    startTime, endTime,
+                    nextAction.id,
+                  ]
+                );
+              } catch (calErr) {
+                console.error('Calendar entry for next action failed (non-blocking):', calErr.message);
+              }
+            }
+          }
+        }
+      } catch (gateErr) {
+        console.error('Gate unlock error (non-blocking):', gateErr.message);
+      }
+    }
+
+    res.json({ action: completedAction, nextAction: nextAction || null });
   } catch (error) {
     console.error('Status update error:', error);
     res.status(500).json({ error: { message: 'Failed to update status' } });

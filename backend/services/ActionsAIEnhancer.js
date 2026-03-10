@@ -52,6 +52,10 @@ class ActionsAIEnhancer {
   }
 
   static _shouldRunAI(context, rulesActions, actionConfig) {
+    // Check master AI toggle and per-module toggle for deals
+    const ActionConfigService = require('./actionConfig.service');
+    const aiEnabled = ActionConfigService.isAiEnabledForModule(actionConfig, 'deals');
+    if (!aiEnabled) return false;
     if (!actionConfig?.ai_enhanced_generation) return false;
     if (actionConfig?.generation_mode === 'manual') return false;
 

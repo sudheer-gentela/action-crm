@@ -105,7 +105,8 @@ router.post('/', adminOnly, async (req, res) => {
     const {
       playbookId, stageKey, title, description, channel,
       sortOrder, executionType, dependsOn, isGate,
-      dueOffsetDays, priority, roleIds
+      dueOffsetDays, priority, roleIds,
+      fireConditions, suggestedAction, unlocksPlayId,
     } = req.body;
 
     if (!playbookId || !stageKey || !title) {
@@ -136,14 +137,18 @@ router.post('/', adminOnly, async (req, res) => {
          playbook_id, org_id, stage_key,
          title, description, channel,
          sort_order, execution_type, depends_on, is_gate,
-         due_offset_days, priority
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         due_offset_days, priority,
+         fire_conditions, suggested_action, unlocks_play_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        RETURNING *`,
       [
         playbookId, req.orgId, stageKey,
         title, description || null, channel || null,
         order, executionType || 'parallel', dependsOn || null, isGate || false,
-        dueOffsetDays || 3, priority || 'medium'
+        dueOffsetDays || 3, priority || 'medium',
+        JSON.stringify(Array.isArray(fireConditions) ? fireConditions : []),
+        suggestedAction || null,
+        unlocksPlayId || null,
       ]
     );
 
@@ -195,7 +200,8 @@ router.patch('/:playId', adminOnly, async (req, res) => {
   try {
     const {
       title, description, channel, sortOrder, executionType,
-      dependsOn, isGate, dueOffsetDays, priority, isActive
+      dependsOn, isGate, dueOffsetDays, priority, isActive,
+      fireConditions, suggestedAction, unlocksPlayId,
     } = req.body;
 
     const sets = [];
@@ -220,6 +226,18 @@ router.patch('/:playId', adminOnly, async (req, res) => {
     addSet('due_offset_days', dueOffsetDays);
     addSet('priority', priority);
     addSet('is_active', isActive);
+    addSet('suggested_action', suggestedAction);
+    if (fireConditions !== undefined) {
+      sets.push(`fire_conditions = $${idx}`);
+      params.push(JSON.stringify(Array.isArray(fireConditions) ? fireConditions : []));
+      idx++;
+    }
+    // unlocks_play_id: always settable (even to null to clear it)
+    if (unlocksPlayId !== undefined) {
+      sets.push(`unlocks_play_id = $${idx}`);
+      params.push(unlocksPlayId || null);
+      idx++;
+    }
 
     if (sets.length === 0) {
       return res.status(400).json({ error: { message: 'No fields to update' } });

@@ -136,10 +136,12 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
   // Use orgId directly — PlaybookService no longer needs userId for lookup.
   let playbookStageActions  = [];
   let playbookStageGuidance = null;
+  let playbookPlays         = [];
   try {
-    [playbookStageActions, playbookStageGuidance] = await Promise.all([
+    [playbookStageActions, playbookStageGuidance, playbookPlays] = await Promise.all([
       PlaybookService.getStageActions(orgId, deal.stage),
       PlaybookService.getStageGuidance(orgId, deal.stage),
+      PlaybookService.getPlaysForStage(orgId, deal.stage),
     ]);
   } catch (err) {
     console.error('buildContext: PlaybookService error:', err.message);
@@ -158,6 +160,7 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
     derived,
     playbookStageActions,
     playbookStageGuidance,
+    playbookPlays,
   };
 }
 
@@ -168,19 +171,19 @@ async function insertAction(action, userId, orgId) {
   const source    = action.source || 'auto_generated';
   const next_step = action.next_step || 'email';
 
-  await db.query(
+  const result = await db.query(
     `INSERT INTO actions (
        org_id, user_id, type, title, description, action_type, priority,
        due_date, deal_id, contact_id, account_id, contract_id,
        suggested_action, context, source, source_rule, health_param,
        keywords, deal_stage, requires_external_evidence,
-       is_internal, next_step, status, created_at
+       is_internal, next_step, playbook_play_id, status, created_at
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
        $13,$14,$15,$16,$17,
        $18,$19,$20,
-       $21,$22,'yet_to_start',NOW()
-     )`,
+       $21,$22,$23,'yet_to_start',NOW()
+     ) RETURNING id`,
     [
       orgId,
       userId,
@@ -193,7 +196,7 @@ async function insertAction(action, userId, orgId) {
       action.deal_id       || null,
       action.contact_id    || null,
       action.account_id    || null,
-      action.contract_id   || null,   // ← new
+      action.contract_id   || null,
       action.suggested_action           || null,
       action.context                    || null,
       source,
@@ -204,11 +207,53 @@ async function insertAction(action, userId, orgId) {
       action.requires_external_evidence || false,
       internal,
       next_step,
+      action.playbook_play_id           || null,
     ]
   );
+  return result.rows[0]?.id || null;
 }
 
-// ── Terminal stage check ──────────────────────────────────────────────────────
+// ── Calendar entry helper ─────────────────────────────────────────────────────
+// Creates a lightweight `meetings` row so the action shows up in CalendarView.
+// Only fires for meeting/scheduling action types — internal tasks don't need it.
+
+const CALENDAR_ACTION_TYPES = new Set([
+  'meeting_schedule', 'meeting', 'meeting_prep', 'meeting_followup',
+  'email_send', 'email', 'follow_up',
+]);
+
+async function createCalendarEntryForAction(action, insertedId, userId, orgId) {
+  if (!CALENDAR_ACTION_TYPES.has(action.action_type)) return;
+  if (!action.due_date) return;
+
+  try {
+    const startTime = new Date(action.due_date);
+    startTime.setHours(9, 0, 0, 0);
+    const endTime = new Date(startTime);
+    endTime.setMinutes(endTime.getMinutes() + 30);
+
+    await db.query(
+      `INSERT INTO meetings (
+         org_id, user_id, deal_id, title, description,
+         start_time, end_time, meeting_type, source, status, action_id, created_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,'task','action','scheduled',$8,NOW())
+       ON CONFLICT DO NOTHING`,
+      [
+        orgId,
+        userId,
+        action.deal_id || null,
+        action.title,
+        action.description || null,
+        startTime,
+        endTime,
+        insertedId,
+      ]
+    );
+  } catch (err) {
+    // Best-effort — calendar entry failure must never block action generation
+    console.error(`📅 Calendar entry creation failed (non-blocking) for action "${action.title}":`, err.message);
+  }
+}
 
 function isTerminalDeal(deal) {
   return deal.is_terminal === true;
@@ -284,8 +329,11 @@ class ActionsGenerator {
 
           for (const action of allActions) {
             try {
-              await insertAction(action, userId, orgId);
+              const insertedId = await insertAction(action, userId, orgId);
               totalInserted++;
+              if (insertedId) {
+                await createCalendarEntryForAction(action, insertedId, userId, orgId);
+              }
             } catch (err) {
               console.error(`  ❌ Insert failed for "${action.title}":`, err.message);
             }
@@ -299,6 +347,17 @@ class ActionsGenerator {
       }
 
       console.log(`✅ generateAll complete — generated: ${totalGenerated} inserted: ${totalInserted}`);
+
+      // Phase 5: stamp last_generated_at for all users who had actions generated
+      try {
+        await db.query(
+          `UPDATE action_config SET last_generated_at = NOW()
+           WHERE org_id = ANY(
+             SELECT DISTINCT org_id FROM deals WHERE deleted_at IS NULL
+           )`
+        );
+      } catch (_) { /* non-blocking */ }
+
       return { success: true, generated: totalGenerated, inserted: totalInserted };
 
     } catch (error) {
@@ -350,8 +409,11 @@ class ActionsGenerator {
       let inserted = 0;
       for (const action of allActions) {
         try {
-          await insertAction(action, userId, orgId);
+          const insertedId = await insertAction(action, userId, orgId);
           inserted++;
+          if (insertedId) {
+            await createCalendarEntryForAction(action, insertedId, userId, orgId);
+          }
         } catch (err) {
           console.error(`  ❌ Insert failed for "${action.title}":`, err.message);
         }
@@ -403,6 +465,10 @@ class ActionsGenerator {
       if (config.generation_mode === 'manual') return [];
       return this.generateForDeal(dealId);
     } catch (error) { return []; }
+  }
+  // ── buildContextPublic — called from actions_routes for gate condition eval ──
+  static async buildContextPublic(deal, contacts, emails, meetings, files, userId, orgId) {
+    return buildContext(deal, contacts, emails, meetings, files, userId, orgId);
   }
 }
 

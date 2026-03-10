@@ -274,6 +274,7 @@ function Dashboard({ user, onLogout }) {
   const [pendingAccountId, setPendingAccountId]         = useState(null);
   const [pendingPlaybookFilter, setPendingPlaybookFilter] = useState(null);
   const [pendingContractId, setPendingContractId]       = useState(null);
+  const [pendingActionId, setPendingActionId]           = useState(null); // Phase 4: deep-link from calendar
   const [sidebarOpen, setSidebarOpen]           = useState(false);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
   const [orgModules, setOrgModules]             = useState({});  // { contracts: true/false, ... }
@@ -371,6 +372,7 @@ function Dashboard({ user, onLogout }) {
       if (detail?.meetingId)  setPendingMeetingId(detail.meetingId);
       if (detail?.accountId)  setPendingAccountId(detail.accountId);
       if (detail?.playbookFilter) setPendingPlaybookFilter(detail.playbookFilter);
+      if (detail?.actionId)   setPendingActionId(detail.actionId);
 
       handleNavClick(detail?.tab || detail);
     };
@@ -399,9 +401,6 @@ function Dashboard({ user, onLogout }) {
     window.addEventListener('moduleToggle', handleModuleToggle);
     return () => window.removeEventListener('moduleToggle', handleModuleToggle);
   }, []);
-
-  useEffect(() => {
-    const handleStartAction = (e) => setActiveContextAction(e.detail);
     window.addEventListener('startAction', handleStartAction);
     return () => window.removeEventListener('startAction', handleStartAction);
   }, []);
@@ -458,7 +457,7 @@ function Dashboard({ user, onLogout }) {
         )}
 
         <div className="content-area">
-          {currentTab === 'actions'     && <ActionsView />}
+          {currentTab === 'actions'     && <ActionsView openActionId={pendingActionId} onActionOpened={() => setPendingActionId(null)} />}
           {currentTab === 'prospecting' && (
             orgModules.prospecting
               ? <ProspectingView />
