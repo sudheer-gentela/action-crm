@@ -15,6 +15,7 @@ import AgentInboxView from './AgentInboxView';
 import PlaybooksView from './PlaybooksView';
 import ProspectingView from './ProspectingView';
 import ContractsView from './ContractsView';
+import HandoverView from './HandoverView';
 import Sidebar from './Sidebar';
 
 // ─────────────────────────────────────────────────────────────
@@ -25,6 +26,7 @@ import Sidebar from './Sidebar';
 const ALL_MODULE_ITEMS = [
   { id: 'prospecting', label: 'Prospecting', icon: '🎯' },
   { id: 'contracts',   label: 'Contracts',   icon: '📄' },
+  { id: 'handovers',   label: 'Handovers',   icon: '🤝' },
 ];
 
 const NAV_ITEMS_BY_ROLE = {
@@ -274,6 +276,7 @@ function Dashboard({ user, onLogout }) {
   const [pendingAccountId, setPendingAccountId]         = useState(null);
   const [pendingPlaybookFilter, setPendingPlaybookFilter] = useState(null);
   const [pendingContractId, setPendingContractId]       = useState(null);
+  const [pendingHandoverId, setPendingHandoverId]       = useState(null);
   const [pendingActionId, setPendingActionId]           = useState(null); // Phase 4: deep-link from calendar
   const [sidebarOpen, setSidebarOpen]           = useState(false);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
@@ -368,6 +371,7 @@ function Dashboard({ user, onLogout }) {
       }
 
       if (detail?.contractId) setPendingContractId(detail.contractId);
+      if (detail?.handoverId)  setPendingHandoverId(detail.handoverId);
       if (detail?.contactId)  setPendingContactId(detail.contactId);
       if (detail?.meetingId)  setPendingMeetingId(detail.meetingId);
       if (detail?.accountId)  setPendingAccountId(detail.accountId);
@@ -389,6 +393,17 @@ function Dashboard({ user, onLogout }) {
     };
     window.addEventListener('open-contract', handleOpenContract);
     return () => window.removeEventListener('open-contract', handleOpenContract);
+  }, [orgModules]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Listen for open-handover events dispatched from DealsView or deal panels
+  useEffect(() => {
+    const handleOpenHandover = (e) => {
+      if (!orgModules.handovers) return;
+      setPendingHandoverId(e.detail?.handoverId || null);
+      handleNavClick('handovers');
+    };
+    window.addEventListener('open-handover', handleOpenHandover);
+    return () => window.removeEventListener('open-handover', handleOpenHandover);
   }, [orgModules]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Listen for module toggle events dispatched from OAModules (OrgAdminView)
@@ -485,6 +500,18 @@ function Dashboard({ user, onLogout }) {
               : <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12, color:'#94a3b8' }}>
                   <div style={{ fontSize:48 }}>📄</div>
                   <div style={{ fontSize:16, fontWeight:600, color:'#475569' }}>Contracts module is disabled</div>
+                  <div style={{ fontSize:13 }}>An org admin can enable it under Org Admin → Modules.</div>
+                </div>
+          )}
+          {currentTab === 'handovers'   && (
+            orgModules.handovers
+              ? <HandoverView
+                  openHandoverId={pendingHandoverId}
+                  onHandoverOpened={() => setPendingHandoverId(null)}
+                />
+              : <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12, color:'#94a3b8' }}>
+                  <div style={{ fontSize:48 }}>🤝</div>
+                  <div style={{ fontSize:16, fontWeight:600, color:'#475569' }}>Handovers module is disabled</div>
                   <div style={{ fontSize:13 }}>An org admin can enable it under Org Admin → Modules.</div>
                 </div>
           )}

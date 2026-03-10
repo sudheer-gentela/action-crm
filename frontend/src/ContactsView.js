@@ -7,6 +7,7 @@ import ContactMergeBanner from './ContactMergeBanner';
 import { csvExport, EXPORT_COLUMNS } from './csvUtils';
 import CSVImportModal from './CSVImportModal';
 import { ContactOrgPosition } from './OrgChartPanel';
+import { apiService } from './apiService';
 import './ContactsView.css';
 
 // Fields that can be inline-edited on the contact detail panel
@@ -47,6 +48,7 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
   const [showForm, setShowForm] = useState(false);
   const [editingContact, setEditingContact] = useState(null);
   const [selectedContact, setSelectedContact] = useState(null);
+  const [contactTeams, setContactTeams]       = useState([]);    // team memberships for selected contact
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -90,6 +92,14 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
 
   // Reset inline edit when switching contacts
   useEffect(() => { setEditingField(null); }, [selectedContact?.id]);
+
+  // Load team memberships for selected contact
+  useEffect(() => {
+    if (!selectedContact?.id) { setContactTeams([]); return; }
+    apiService.accountTeams.listByContact(selectedContact.id)
+      .then(r => setContactTeams(r.data.memberships || []))
+      .catch(() => setContactTeams([]));
+  }, [selectedContact?.id]);
 
   const loadContacts = async () => {
     try {
@@ -716,6 +726,51 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
                       nav('accounts', { accountId: selectedContact.account_id })
                     }
                   />
+                </div>
+              )}
+
+              {/* ── 1c. Customer Team Memberships ──────────────── */}
+              {contactTeams.length > 0 && (
+                <div className="detail-section">
+                  <h3>👥 Customer Teams ({contactTeams.length})</h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {contactTeams.map(m => (
+                      <div key={m.id} style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '7px 10px', background: '#f8fafc',
+                        border: '1px solid #e5e7eb', borderRadius: 6,
+                      }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>
+                            {m.teamName}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#6b7280', marginTop: 1 }}>
+                            {m.accountName}
+                            {m.teamDimension && m.teamDimension !== 'custom' && (
+                              <span style={{ marginLeft: 6, padding: '1px 5px', background: '#e0f2fe', color: '#0369a1', borderRadius: 4, fontSize: 10, fontWeight: 600 }}>
+                                {m.teamDimension}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <span style={{
+                          fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+                          background: '#f1f5f9', color: '#374151',
+                        }}>
+                          {m.role?.charAt(0).toUpperCase() + m.role?.slice(1) || 'Member'}
+                        </span>
+                        {m.isPrimary && (
+                          <span style={{ fontSize: 10, color: '#0369a1', fontWeight: 700 }}>★</span>
+                        )}
+                        <button
+                          onClick={() => nav('accounts', { accountId: m.accountId })}
+                          title="Open account"
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: '#6b7280' }}>
+                          →
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 

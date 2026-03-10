@@ -54,19 +54,22 @@ export default function PlaybooksView({ initialTypeFilter }) {
 
   // ── Playbook types (dynamic from org settings) ───────────
   const [playbookTypes, setPlaybookTypes] = useState([
-    { key: 'sales',       label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
-    { key: 'prospecting', label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
+    { key: 'sales',         label: 'Sales',         icon: '📘', color: '#3b82f6', is_system: true },
+    { key: 'prospecting',   label: 'Prospecting',   icon: '🎯', color: '#0F9D8E', is_system: true },
+    { key: 'handover_s2i',  label: 'Handover',      icon: '🤝', color: '#0369a1', is_system: true },
   ]);
 
   // ── Type filter ──────────────────────────────────────────
   const [typeFilter, setTypeFilter] = useState(initialTypeFilter || 'sales');
   const isProspecting = typeFilter === 'prospecting';
   const isCLM         = typeFilter === 'clm';
+  const isHandover    = typeFilter === 'handover_s2i';
 
   // ── Live stage lists — all fetched dynamically ───────────
   const [dealStages,    setDealStages]    = useState([]);
   const [prospectStages, setProspectStages] = useState([]);
   const [clmStages,     setClmStages]     = useState([]);
+  const [handoverStages, setHandoverStages] = useState([]);
   const [stagesLoading, setStagesLoading] = useState(false);
 
   // ── Role — reactive to role-switch events ────────────────
@@ -101,24 +104,26 @@ export default function PlaybooksView({ initialTypeFilter }) {
     setStagesLoading(true);
     const h = { Authorization: `Bearer ${token}` };
     Promise.all([
-      fetch(`${API_BASE}/deal-stages`,         { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
-      fetch(`${API_BASE}/prospect-stages`,     { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
-      fetch(`${API_BASE}/pipeline-stages/clm`, { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
+      fetch(`${API_BASE}/deal-stages`,                    { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
+      fetch(`${API_BASE}/prospect-stages`,                { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
+      fetch(`${API_BASE}/pipeline-stages/clm`,           { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
+      fetch(`${API_BASE}/pipeline-stages/handover_s2i`,  { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
     ])
-      .then(([deal, prospect, clm]) => {
+      .then(([deal, prospect, clm, handover]) => {
         const active = d => (d.stages || [])
           .filter(s => s.is_active && !s.is_terminal)
           .sort((a, b) => a.sort_order - b.sort_order);
         setDealStages(active(deal));
         setProspectStages(active(prospect));
         setClmStages(active(clm));
+        setHandoverStages(active(handover));
       })
       .catch(() => { /* non-fatal — degrade gracefully */ })
       .finally(() => setStagesLoading(false));
   }, [API_BASE, token]);
 
   // ── Active stage list for current tab ────────────────────
-  const activeLiveStages = isProspecting ? prospectStages : isCLM ? clmStages : dealStages;
+  const activeLiveStages = isProspecting ? prospectStages : isCLM ? clmStages : isHandover ? handoverStages : dealStages;
 
   // ── Filtered playbook list for current tab ───────────────
   const filteredPlaybooks = typeFilter === 'sales'
@@ -218,6 +223,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
     try {
       const type = isProspecting ? 'prospecting'
         : isCLM ? 'clm'
+        : isHandover ? 'handover_s2i'
         : typeFilter === 'sales' ? (newPbData.type || 'sales')
         : typeFilter;
       const createPayload = type === 'prospecting'
@@ -284,7 +290,9 @@ export default function PlaybooksView({ initialTypeFilter }) {
       <div className="sv-empty">
         {isCLM
           ? 'No active CLM stages found. Run the CLM pipeline stages migration to seed CLM stages.'
-          : 'No active prospect stages found. Add stages in the Prospect Stages tab.'}
+          : isHandover
+            ? 'No active handover stages found. Run the handover migration to seed stages.'
+            : 'No active prospect stages found. Add stages in the Prospect Stages tab.'}
       </div>
     );
     return (
@@ -357,17 +365,21 @@ export default function PlaybooksView({ initialTypeFilter }) {
               {canEdit
                 ? isCLM
                   ? 'Manage CLM playbooks — define contract workflow guidance, actions, and review criteria.'
-                  : isProspecting
-                    ? 'Manage outreach playbooks — define stage guidance, key actions, and cadences for each prospecting stage.'
-                    : 'Manage playbooks per market or product. Each deal can use a specific playbook; the default is used when none is selected.'
+                  : isHandover
+                    ? 'Manage handover playbooks — define the plays and checks required when a deal is closed won and handed to the service team.'
+                    : isProspecting
+                      ? 'Manage outreach playbooks — define stage guidance, key actions, and cadences for each prospecting stage.'
+                      : 'Manage playbooks per market or product. Each deal can use a specific playbook; the default is used when none is selected.'
                 : isCLM
                   ? 'View your org\'s CLM playbooks — contract workflow guidance and review criteria.'
-                  : isProspecting
-                    ? 'View your org\'s prospecting playbooks — outreach strategy, actions, and success criteria per stage.'
-                    : 'View your org\'s sales playbooks — stage guidance, key actions, and success criteria for every deal stage.'}
+                  : isHandover
+                    ? 'View your org\'s handover playbook — the plays and gate checks required before a won deal is handed to the service team.'
+                    : isProspecting
+                      ? 'View your org\'s prospecting playbooks — outreach strategy, actions, and success criteria per stage.'
+                      : 'View your org\'s sales playbooks — stage guidance, key actions, and success criteria for every deal stage.'}
             </p>
           </div>
-          {canEdit && !isCLM && (
+          {canEdit && !isCLM && !isHandover && (
             <button className="sv-btn sv-btn-primary" onClick={() => setShowNewForm(true)}>
               + New {activeType?.label || 'Sales'} Playbook
             </button>
@@ -410,7 +422,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
                   value={newPbData.name}
                   onChange={e => setNewPbData(p => ({ ...p, name: e.target.value }))} />
               </div>
-              {!isProspecting && !isCLM && (
+              {!isProspecting && !isCLM && !isHandover && (
                 <div className="sv-field">
                   <label>Type</label>
                   <select className="sv-input" value={newPbData.type}
@@ -516,10 +528,10 @@ export default function PlaybooksView({ initialTypeFilter }) {
                 {/* Sub-tabs */}
                 <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16 }}>
                   {[
-                    { key: false, label: isCLM ? '📋 Contract Stages' : isProspecting ? '🎯 Stage Guidance' : '📋 Stage Guidance' },
+                    { key: false, label: isCLM ? '📋 Contract Stages' : isHandover ? '🤝 Handover Stages' : isProspecting ? '🎯 Stage Guidance' : '📋 Stage Guidance' },
                     { key: true,  label: '🎭 Plays by Role' },
                   ].map(t => {
-                    const color = isCLM ? '#7c3aed' : isProspecting ? TEAL : '#3b82f6';
+                    const color = isCLM ? '#7c3aed' : isHandover ? '#0369a1' : isProspecting ? TEAL : '#3b82f6';
                     return (
                       <button key={String(t.key)} onClick={() => setShowPlaysTab(t.key)} style={{
                         padding: '8px 16px', background: 'none', border: 'none',
@@ -609,8 +621,22 @@ export default function PlaybooksView({ initialTypeFilter }) {
                       </div>
                     )}
 
+                    {/* ── HANDOVER S2I ── */}
+                    {isHandover && (
+                      <div className="sv-card">
+                        <h4 style={{ marginTop: 0, marginBottom: 16, fontSize: 15, color: '#0369a1' }}>
+                          🤝 Handover Stage Guidance
+                        </h4>
+                        <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 16px' }}>
+                          Define goals and key actions for each stage of the sales-to-implementation handover.
+                          Gate plays are enforced before a handover can be submitted.
+                        </p>
+                        {renderGuidanceStages(activeLiveStages, '#0369a1')}
+                      </div>
+                    )}
+
                     {/* ── SALES (and other non-prospecting, non-CLM) ── */}
-                    {!isProspecting && !isCLM && (
+                    {!isProspecting && !isCLM && !isHandover && (
                       <>
                         {/* Company context */}
                         {playbook.content && (

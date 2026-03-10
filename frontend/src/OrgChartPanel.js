@@ -6,6 +6,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import api from './apiService';
+import { AccountTeamsPanel } from './AccountTeamsPanel';
 import './OrgChartPanel.css';
 
 async function apiFetch(path, options = {}) {
@@ -250,7 +251,7 @@ function UnplacedSection({ contacts, allContacts, onReportsToChange, onNavigate 
 }
 
 // ── OrgChartPanel ─────────────────────────────────────────────────────────────
-export function OrgChartPanel({ accountId, accountName, allAccountContacts, onNavigateToContact }) {
+export function OrgChartPanel({ accountId, accountName, allAccountContacts, onNavigateToContact, canEdit = false }) {
   const [tree,                 setTree]                 = useState([]);
   const [unplaced,             setUnplaced]             = useState([]);
   const [loading,              setLoading]              = useState(true);
@@ -305,6 +306,9 @@ export function OrgChartPanel({ accountId, accountName, allAccountContacts, onNa
         <button className={`och-subtab${activeTab === 'accounts' ? ' och-subtab--active' : ''}`} onClick={() => setActiveTab('accounts')}>
           🏢 Account Hierarchy
         </button>
+        <button className={`och-subtab${activeTab === 'teams' ? ' och-subtab--active' : ''}`} onClick={() => setActiveTab('teams')}>
+          👥 Customer Teams
+        </button>
       </div>
 
       {error && <div className="och-error">{error}</div>}
@@ -358,6 +362,14 @@ export function OrgChartPanel({ accountId, accountName, allAccountContacts, onNa
         <AccountHierarchyView accountId={accountId} hierarchy={accountHierarchy}
           onRefresh={loadOrgChart} showAddRelationship={showAddRelationship}
           setShowAddRelationship={setShowAddRelationship} />
+      )}
+
+      {activeTab === 'teams' && (
+        <AccountTeamsPanel
+          accountId={accountId}
+          accountContacts={allAccountContacts || []}
+          canEdit={canEdit}
+        />
       )}
     </div>
   );
