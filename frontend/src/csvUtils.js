@@ -24,7 +24,6 @@ export function csvExport(data, columns, filename) {
   const escape = (val) => {
     if (val === null || val === undefined) return '';
     const str = String(val);
-    // Wrap in quotes if the value contains comma, quote, or newline
     if (str.includes(',') || str.includes('"') || str.includes('\n')) {
       return '"' + str.replace(/"/g, '""') + '"';
     }
@@ -86,7 +85,7 @@ export function csvParse(text) {
     if (inQuotes) {
       if (ch === '"' && next === '"') {
         field += '"';
-        i++; // skip escaped quote
+        i++;
       } else if (ch === '"') {
         inQuotes = false;
       } else {
@@ -103,14 +102,13 @@ export function csvParse(text) {
         if (current.some(f => f !== '')) lines.push(current);
         current = [];
         field = '';
-        if (ch === '\r') i++; // skip \n in \r\n
+        if (ch === '\r') i++;
       } else {
         field += ch;
       }
     }
   }
 
-  // Last field / last line
   current.push(field.trim());
   if (current.some(f => f !== '')) lines.push(current);
 
@@ -181,6 +179,30 @@ export const EXPORT_COLUMNS = {
     { key: 'suggestedAction', label: 'Suggested Action' },
     { key: 'createdAt',   label: 'Created', format: v => v ? new Date(v).toLocaleDateString() : '' },
   ],
+
+  // ── NEW ──────────────────────────────────────────────────────────────────────
+  prospects: [
+    { key: 'first_name',       label: 'First Name' },
+    { key: 'last_name',        label: 'Last Name' },
+    { key: 'email',            label: 'Email' },
+    { key: 'phone',            label: 'Phone' },
+    { key: 'title',            label: 'Job Title' },
+    { key: 'company_name',     label: 'Company' },
+    { key: 'company_domain',   label: 'Company Domain' },
+    { key: 'company_industry', label: 'Industry' },
+    { key: 'company_size',     label: 'Company Size' },
+    { key: 'location',         label: 'Location' },
+    { key: 'linkedin_url',     label: 'LinkedIn URL' },
+    { key: 'stage',            label: 'Stage' },
+    { key: 'icp_score',        label: 'ICP Score', format: v => v != null ? String(v) : '' },
+    { key: 'outreach_count',   label: 'Outreach Count', format: v => v != null ? String(v) : '0' },
+    { key: 'response_count',   label: 'Response Count', format: v => v != null ? String(v) : '0' },
+    { key: 'preferred_channel',label: 'Preferred Channel' },
+    { key: 'source',           label: 'Source' },
+    { key: 'last_outreach_at', label: 'Last Outreach', format: v => v ? new Date(v).toLocaleDateString() : '' },
+    { key: 'last_response_at', label: 'Last Response', format: v => v ? new Date(v).toLocaleDateString() : '' },
+    { key: 'created_at',       label: 'Created', format: v => v ? new Date(v).toLocaleDateString() : '' },
+  ],
 };
 
 
@@ -219,5 +241,23 @@ export const IMPORT_FIELDS = {
     { key: 'probability',       label: 'Probability (%)' },
     { key: 'notes',             label: 'Notes' },
     { key: 'accountId',         label: 'Account ID (or name to match)' },
+  ],
+
+  // ── NEW ──────────────────────────────────────────────────────────────────────
+  // CSVImportModal.js picks these up automatically — no changes needed there.
+  prospects: [
+    { key: 'firstName',       label: 'First Name',     required: true },
+    { key: 'lastName',        label: 'Last Name',      required: true },
+    { key: 'email',           label: 'Email' },
+    { key: 'phone',           label: 'Phone' },
+    { key: 'title',           label: 'Job Title' },
+    { key: 'companyName',     label: 'Company' },
+    { key: 'companyDomain',   label: 'Company Domain' },
+    { key: 'companyIndustry', label: 'Industry' },
+    { key: 'companySize',     label: 'Company Size' },
+    { key: 'location',        label: 'Location' },
+    { key: 'linkedinUrl',     label: 'LinkedIn URL' },
+    { key: 'preferredChannel',label: 'Preferred Channel (email/phone/linkedin)' },
+    { key: 'source',          label: 'Source' },
   ],
 };

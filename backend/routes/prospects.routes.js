@@ -18,13 +18,11 @@ const STAGE_TRANSITIONS = {
   contacted:    ['engaged', 'qualified', 'disqualified', 'nurture'],
   engaged:      ['qualified', 'disqualified', 'nurture'],
   qualified:    ['converted', 'disqualified', 'nurture'],
-  // Terminal / parked — can be reopened
   disqualified: ['target'],
   nurture:      ['target', 'contacted'],
 };
 
 // ── GET / — list prospects ───────────────────────────────────────────────────
-// Supports ?scope=mine|team|org, ?stage=, ?accountId=, ?companyDomain=, ?search=
 router.get('/', async (req, res) => {
   try {
     const { scope = 'mine', stage, accountId, companyDomain, search } = req.query;
@@ -42,7 +40,6 @@ router.get('/', async (req, res) => {
     `;
     const params = [req.orgId];
 
-    // Scope filtering
     if (scope === 'team' && req.subordinateIds?.length > 0) {
       const teamIds = [req.user.userId, ...req.subordinateIds];
       query += ` AND p.owner_id = ANY($${params.length + 1}::int[])`;
@@ -103,7 +100,6 @@ router.get('/', async (req, res) => {
 });
 
 // ── GET /pipeline/summary ────────────────────────────────────────────────────
-// Returns counts and grouping by stage for the pipeline board metrics bar
 router.get('/pipeline/summary', async (req, res) => {
   try {
     const { scope = 'mine' } = req.query;
@@ -135,13 +131,10 @@ router.get('/pipeline/summary', async (req, res) => {
       params
     );
 
-    // Outreach metrics for the current week
-    // Note: prospecting_actions uses user_id, not owner_id
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     weekStart.setHours(0, 0, 0, 0);
 
-    // Build a separate filter for prospecting_actions (user_id instead of owner_id)
     let actionOwnerFilter = '';
     const actionParams = [req.orgId];
     if (scope === 'team' && req.subordinateIds?.length > 0) {
@@ -171,13 +164,142 @@ router.get('/pipeline/summary', async (req, res) => {
         count: parseInt(row.count),
       })),
       metrics: {
-        outreachThisWeek:   parseInt(outreachResult.rows[0]?.outreach_this_week || 0),
-        responsesThisWeek:  parseInt(outreachResult.rows[0]?.responses_this_week || 0),
+        outreachThisWeek:  parseInt(outreachResult.rows[0]?.outreach_this_week || 0),
+        responsesThisWeek: parseInt(outreachResult.rows[0]?.responses_this_week || 0),
       },
     });
   } catch (error) {
     console.error('Pipeline summary error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch pipeline summary' } });
+  }
+});
+
+// ── POST /bulk — bulk import prospects from CSV ───────────────────────────────
+// Body: { prospects: [{ firstName, lastName, email, title, companyName, ... }] }
+// Returns: { imported, skipped, errors: [{ row, reason }] }
+router.post('/bulk', async (req, res) => {
+  try {
+    const { prospects: rows, source = 'csv_import' } = req.body;
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: { message: 'prospects array is required and must not be empty' } });
+    }
+
+    if (rows.length > 500) {
+      return res.status(400).json({ error: { message: 'Maximum 500 prospects per import' } });
+    }
+
+    let imported = 0;
+    let skipped  = 0;
+    const errors = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNum = i + 1;
+
+      // Required fields
+      if (!row.firstName || !row.lastName) {
+        errors.push({ row: rowNum, reason: 'firstName and lastName are required' });
+        skipped++;
+        continue;
+      }
+
+      try {
+        // Duplicate check by email
+        if (row.email) {
+          const dup = await db.query(
+            `SELECT id FROM prospects
+             WHERE org_id = $1 AND LOWER(email) = LOWER($2) AND deleted_at IS NULL`,
+            [req.orgId, row.email]
+          );
+          if (dup.rows.length > 0) {
+            errors.push({ row: rowNum, reason: `Duplicate email: ${row.email}` });
+            skipped++;
+            continue;
+          }
+        }
+
+        // Auto-match account by domain
+        let resolvedAccountId = null;
+        if (row.companyDomain) {
+          const accMatch = await db.query(
+            `SELECT id FROM accounts WHERE org_id = $1 AND LOWER(domain) = LOWER($2) LIMIT 1`,
+            [req.orgId, row.companyDomain]
+          );
+          if (accMatch.rows.length > 0) {
+            resolvedAccountId = accMatch.rows[0].id;
+          }
+        }
+
+        await db.query(
+          `INSERT INTO prospects (
+             org_id, owner_id, first_name, last_name, email, phone, linkedin_url,
+             title, location, company_name, company_domain, company_size,
+             company_industry, account_id, source, tags, stage, stage_changed_at
+           ) VALUES (
+             $1, $2, $3, $4, $5, $6, $7,
+             $8, $9, $10, $11, $12,
+             $13, $14, $15, $16,
+             'target', CURRENT_TIMESTAMP
+           )`,
+          [
+            req.orgId,
+            req.user.userId,
+            row.firstName,
+            row.lastName,
+            row.email            || null,
+            row.phone            || null,
+            row.linkedinUrl      || null,
+            row.title            || null,
+            row.location         || null,
+            row.companyName      || null,
+            row.companyDomain    || null,
+            row.companySize      || null,
+            row.companyIndustry  || null,
+            resolvedAccountId,
+            source,
+            JSON.stringify(row.tags || []),
+          ]
+        );
+
+        imported++;
+      } catch (rowErr) {
+        console.error(`Bulk import row ${rowNum} error:`, rowErr.message);
+        errors.push({ row: rowNum, reason: rowErr.message });
+        skipped++;
+      }
+    }
+
+    // Log a single import activity
+    if (imported > 0) {
+      await db.query(
+        `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
+         SELECT id, $1, 'created', $2, $3
+         FROM prospects
+         WHERE org_id = $4 AND owner_id = $1 AND source = $5
+           AND created_at >= NOW() - INTERVAL '10 seconds'
+         LIMIT 1`,
+        [
+          req.user.userId,
+          `Imported via ${source}`,
+          JSON.stringify({ imported, skipped, source }),
+          req.orgId,
+          source,
+        ]
+      );
+    }
+
+    console.log(`📥 Bulk import: ${imported} imported, ${skipped} skipped (org ${req.orgId})`);
+
+    res.status(201).json({
+      imported,
+      skipped,
+      errors: errors.length > 0 ? errors : undefined,
+      message: `Imported ${imported} prospect${imported !== 1 ? 's' : ''}${skipped > 0 ? `, skipped ${skipped}` : ''}.`,
+    });
+  } catch (error) {
+    console.error('Bulk import error:', error);
+    res.status(500).json({ error: { message: 'Bulk import failed: ' + error.message } });
   }
 });
 
@@ -203,7 +325,6 @@ router.get('/:id', async (req, res) => {
 
     const row = result.rows[0];
 
-    // Fetch recent activities
     const activities = await db.query(
       `SELECT * FROM prospecting_activities
        WHERE prospect_id = $1
@@ -211,7 +332,6 @@ router.get('/:id', async (req, res) => {
       [req.params.id]
     );
 
-    // Fetch actions
     const actions = await db.query(
       `SELECT * FROM prospecting_actions
        WHERE prospect_id = $1 AND org_id = $2
@@ -235,6 +355,183 @@ router.get('/:id', async (req, res) => {
   } catch (error) {
     console.error('Get prospect detail error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch prospect' } });
+  }
+});
+
+// ── GET /:id/emails — email history for a prospect ───────────────────────────
+router.get('/:id/emails', async (req, res) => {
+  try {
+    // Verify prospect belongs to this org
+    const check = await db.query(
+      'SELECT id FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL',
+      [req.params.id, req.orgId]
+    );
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+
+    const result = await db.query(
+      `SELECT
+         e.id,
+         e.direction,
+         e.subject,
+         e.body,
+         e.to_address,
+         e.from_address,
+         e.sent_at,
+         e.provider,
+         u.first_name  AS sender_first_name,
+         u.last_name   AS sender_last_name,
+         psa.email     AS sender_account_email,
+         psa.provider  AS sender_account_provider,
+         psa.label     AS sender_account_label
+       FROM emails e
+       JOIN  users u   ON u.id   = e.user_id
+       LEFT JOIN prospecting_sender_accounts psa ON psa.id = e.sender_account_id
+       WHERE e.prospect_id = $1
+         AND e.org_id      = $2
+       ORDER BY e.sent_at DESC
+       LIMIT 50`,
+      [req.params.id, req.orgId]
+    );
+
+    res.json({
+      emails: result.rows.map(row => ({
+        id:          row.id,
+        direction:   row.direction,
+        subject:     row.subject,
+        bodyPreview: (row.body || '').replace(/<[^>]+>/g, '').slice(0, 200),
+        body:        row.body,
+        toAddress:   row.to_address,
+        fromAddress: row.from_address,
+        sentAt:      row.sent_at,
+        provider:    row.provider,
+        sentBy: {
+          firstName: row.sender_first_name,
+          lastName:  row.sender_last_name,
+        },
+        senderAccount: row.sender_account_email ? {
+          email:    row.sender_account_email,
+          provider: row.sender_account_provider,
+          label:    row.sender_account_label,
+        } : null,
+      })),
+    });
+  } catch (error) {
+    console.error('Get prospect emails error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch prospect emails' } });
+  }
+});
+
+// ── POST /:id/research — AI-powered prospect research ────────────────────────
+// Calls Claude Haiku to generate research notes from available prospect data.
+// Saves to research_notes and advances target → researched if applicable.
+router.post('/:id/research', async (req, res) => {
+  try {
+    const prospectResult = await db.query(
+      `SELECT p.*,
+              acc.name AS account_name, acc.website AS account_website,
+              acc.industry AS account_industry
+       FROM prospects p
+       LEFT JOIN accounts acc ON p.account_id = acc.id
+       WHERE p.id = $1 AND p.org_id = $2 AND p.deleted_at IS NULL`,
+      [req.params.id, req.orgId]
+    );
+
+    if (prospectResult.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+
+    const p = prospectResult.rows[0];
+
+    // Build research prompt from available data
+    const contextLines = [
+      `Name: ${p.first_name} ${p.last_name}`,
+      p.title         ? `Title: ${p.title}`                         : null,
+      p.email         ? `Email: ${p.email}`                         : null,
+      p.linkedin_url  ? `LinkedIn: ${p.linkedin_url}`               : null,
+      p.company_name  ? `Company: ${p.company_name}`                : null,
+      p.company_domain ? `Company domain: ${p.company_domain}`      : null,
+      p.company_industry ? `Industry: ${p.company_industry}`        : null,
+      p.company_size  ? `Company size: ${p.company_size}`           : null,
+      p.location      ? `Location: ${p.location}`                   : null,
+      p.account_name  ? `Account: ${p.account_name}`                : null,
+      p.account_industry ? `Account industry: ${p.account_industry}`: null,
+      p.tags?.length  ? `Tags: ${JSON.parse(p.tags || '[]').join(', ')}` : null,
+    ].filter(Boolean).join('\n');
+
+    const prompt = `You are a B2B sales research assistant. Based on the following prospect information, generate concise research notes (3-5 bullet points) that a sales rep can use to personalise their outreach. Focus on: likely pain points, potential value propositions, relevant company context, and suggested conversation angles.
+
+Prospect information:
+${contextLines}
+
+Respond with bullet points only. Each bullet should be actionable and specific. Do not include generic advice.`;
+
+    // Call Claude Haiku via the Anthropic API
+    const Anthropic = require('@anthropic-ai/sdk');
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const message = await anthropic.messages.create({
+      model:      'claude-haiku-4-5-20251001',
+      max_tokens: 400,
+      messages:   [{ role: 'user', content: prompt }],
+    });
+
+    const researchNotes = message.content[0]?.text || '';
+
+    if (!researchNotes) {
+      return res.status(500).json({ error: { message: 'Research generation returned empty response' } });
+    }
+
+    // Save research notes
+    await db.query(
+      `UPDATE prospects
+       SET research_notes = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2 AND org_id = $3`,
+      [researchNotes, req.params.id, req.orgId]
+    );
+
+    // Auto-advance target → researched
+    let stageAdvanced = false;
+    if (p.stage === 'target') {
+      await db.query(
+        `UPDATE prospects
+         SET stage = 'researched', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1 AND org_id = $2`,
+        [req.params.id, req.orgId]
+      );
+      stageAdvanced = true;
+
+      await db.query(
+        `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
+         VALUES ($1, $2, 'stage_change', 'Auto-advanced to researched after AI research')`,
+        [req.params.id, req.user.userId]
+      );
+    }
+
+    // Log activity
+    await db.query(
+      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, 'research_completed', 'AI research notes generated', $3)`,
+      [
+        req.params.id,
+        req.user.userId,
+        JSON.stringify({ stageAdvanced, model: 'claude-haiku-4-5-20251001' }),
+      ]
+    );
+
+    res.json({
+      researchNotes,
+      stageAdvanced,
+      newStage: stageAdvanced ? 'researched' : p.stage,
+    });
+  } catch (error) {
+    console.error('Prospect research error:', error);
+    // Specific error for missing API key
+    if (error.message?.includes('API key')) {
+      return res.status(500).json({ error: { message: 'AI research unavailable — ANTHROPIC_API_KEY not configured' } });
+    }
+    res.status(500).json({ error: { message: 'Research failed: ' + error.message } });
   }
 });
 
@@ -302,7 +599,6 @@ router.post('/', async (req, res) => {
       ]
     );
 
-    // Log activity
     await db.query(
       `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
        VALUES ($1, $2, 'created', $3)`,
@@ -336,22 +632,22 @@ router.put('/:id', async (req, res) => {
       }
     };
 
-    maybeSet('first_name',       firstName);
-    maybeSet('last_name',        lastName);
-    maybeSet('email',            email);
-    maybeSet('phone',            phone);
-    maybeSet('linkedin_url',     linkedinUrl);
-    maybeSet('title',            title);
-    maybeSet('location',         location);
-    maybeSet('company_name',     companyName);
-    maybeSet('company_domain',   companyDomain);
-    maybeSet('company_size',     companySize);
-    maybeSet('company_industry', companyIndustry);
-    maybeSet('account_id',       accountId);
-    maybeSet('playbook_id',      playbookId);
+    maybeSet('first_name',        firstName);
+    maybeSet('last_name',         lastName);
+    maybeSet('email',             email);
+    maybeSet('phone',             phone);
+    maybeSet('linkedin_url',      linkedinUrl);
+    maybeSet('title',             title);
+    maybeSet('location',          location);
+    maybeSet('company_name',      companyName);
+    maybeSet('company_domain',    companyDomain);
+    maybeSet('company_size',      companySize);
+    maybeSet('company_industry',  companyIndustry);
+    maybeSet('account_id',        accountId);
+    maybeSet('playbook_id',       playbookId);
     maybeSet('preferred_channel', preferredChannel);
-    maybeSet('research_notes',   researchNotes);
-    maybeSet('owner_id',         ownerId);
+    maybeSet('research_notes',    researchNotes);
+    maybeSet('owner_id',          ownerId);
 
     if (tags !== undefined) {
       fields.push(`tags = $${idx++}`);
@@ -410,15 +706,6 @@ router.post('/:id/stage', async (req, res) => {
       });
     }
 
-    const updates = {
-      stage,
-      stage_changed_at: new Date(),
-    };
-
-    if (stage === 'disqualified' && reason) {
-      updates.disqualified_reason = reason;
-    }
-
     const result = await db.query(
       `UPDATE prospects
        SET stage = $1, stage_changed_at = CURRENT_TIMESTAMP,
@@ -429,7 +716,6 @@ router.post('/:id/stage', async (req, res) => {
       [stage, stage === 'disqualified' ? reason : null, req.params.id, req.orgId]
     );
 
-    // Log activity
     await db.query(
       `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
        VALUES ($1, $2, 'stage_change', $3, $4)`,
@@ -447,15 +733,14 @@ router.post('/:id/stage', async (req, res) => {
   }
 });
 
-// ── POST /:id/disqualify — shorthand for disqualification ────────────────────
+// ── POST /:id/disqualify ──────────────────────────────────────────────────────
 router.post('/:id/disqualify', async (req, res) => {
   req.body.stage = 'disqualified';
   req.body.reason = req.body.reason || 'Not a fit';
-  // Delegate to the stage change handler by forwarding
   return router.handle(Object.assign(req, { url: `/${req.params.id}/stage`, method: 'POST' }), res);
 });
 
-// ── POST /:id/nurture — move to nurture with follow-up date ──────────────────
+// ── POST /:id/nurture ─────────────────────────────────────────────────────────
 router.post('/:id/nurture', async (req, res) => {
   try {
     const { nurtureUntil, reason } = req.body;
@@ -521,7 +806,6 @@ router.post('/:id/convert', async (req, res) => {
     // 1. Create or find account
     let accountId = p.account_id;
     if (!accountId && p.company_name) {
-      // Try to match by domain first
       if (p.company_domain) {
         const accMatch = await client.query(
           `SELECT id FROM accounts WHERE org_id = $1 AND LOWER(domain) = LOWER($2) LIMIT 1`,
@@ -531,7 +815,6 @@ router.post('/:id/convert', async (req, res) => {
           accountId = accMatch.rows[0].id;
         }
       }
-      // Create if not found
       if (!accountId) {
         const newAcc = await client.query(
           `INSERT INTO accounts (org_id, owner_id, name, domain, industry, size)
@@ -545,7 +828,6 @@ router.post('/:id/convert', async (req, res) => {
     // 2. Create or find contact
     let contactId = p.contact_id;
     if (!contactId) {
-      // Check for existing contact by email
       if (p.email) {
         const cMatch = await client.query(
           `SELECT id FROM contacts WHERE org_id = $1 AND LOWER(email) = LOWER($2) AND deleted_at IS NULL LIMIT 1`,
@@ -553,7 +835,6 @@ router.post('/:id/convert', async (req, res) => {
         );
         if (cMatch.rows.length > 0) {
           contactId = cMatch.rows[0].id;
-          // Update the existing contact with prospect data
           await client.query(
             `UPDATE contacts SET
                converted_from_prospect_id = $1,
@@ -588,7 +869,6 @@ router.post('/:id/convert', async (req, res) => {
     // 3. Optionally create deal
     let dealId = null;
     if (createDeal) {
-      // Resolve default stage
       let stageKey = dealStage;
       if (!stageKey) {
         const stageRes = await client.query(
@@ -611,7 +891,6 @@ router.post('/:id/convert', async (req, res) => {
       );
       dealId = newDeal.rows[0].id;
 
-      // Link contact to deal
       await client.query(
         `INSERT INTO deal_contacts (deal_id, contact_id, role) VALUES ($1, $2, 'primary') ON CONFLICT DO NOTHING`,
         [dealId, contactId]
@@ -643,12 +922,7 @@ router.post('/:id/convert', async (req, res) => {
 
     console.log(`🎯 Prospect #${p.id} converted → contact #${contactId}${dealId ? ` + deal #${dealId}` : ''} (org ${req.orgId})`);
 
-    res.json({
-      success: true,
-      contactId,
-      dealId,
-      accountId,
-    });
+    res.json({ success: true, contactId, dealId, accountId });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Convert prospect error:', error);
@@ -658,7 +932,7 @@ router.post('/:id/convert', async (req, res) => {
   }
 });
 
-// ── POST /:id/link-account — link to existing account ────────────────────────
+// ── POST /:id/link-account ────────────────────────────────────────────────────
 router.post('/:id/link-account', async (req, res) => {
   try {
     const { accountId } = req.body;
@@ -667,7 +941,6 @@ router.post('/:id/link-account', async (req, res) => {
       return res.status(400).json({ error: { message: 'accountId is required' } });
     }
 
-    // Verify account exists in org
     const acc = await db.query(
       'SELECT id, name FROM accounts WHERE id = $1 AND org_id = $2',
       [accountId, req.orgId]
@@ -700,7 +973,7 @@ router.post('/:id/link-account', async (req, res) => {
   }
 });
 
-// ── POST /:id/link-contact — link to existing contact (re-engagement) ────────
+// ── POST /:id/link-contact ────────────────────────────────────────────────────
 router.post('/:id/link-contact', async (req, res) => {
   try {
     const { contactId } = req.body;

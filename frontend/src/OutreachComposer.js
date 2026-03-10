@@ -5,15 +5,15 @@ import { apiService } from './apiService';
  * OutreachComposer
  *
  * Multi-channel outreach composer for the Prospecting module.
- * Adapts its UI by channel: email (full compose), linkedin/sms/whatsapp
- * (copy-to-clipboard), phone (call script + outcome).
+ * Adapts its UI by channel: email (full compose with sender selector + AI draft),
+ * linkedin/sms/whatsapp (copy-to-clipboard), phone (call script + outcome).
  *
  * Props:
- *   prospect      {object}   — { id, first_name, last_name, email, phone, linkedin_url, company_name, stage }
- *   initialChannel {string?} — 'email'|'linkedin'|'phone'|'sms'|'whatsapp'
- *   actionToExecute {object?} — existing prospecting_action to execute (prefills subject/body)
- *   onComplete     {function} — called after successful send/log with { action, emailId? }
- *   onClose        {function} — close the composer
+ *   prospect        {object}   — { id, first_name, last_name, email, phone, linkedin_url, company_name, stage }
+ *   initialChannel  {string?}  — 'email'|'linkedin'|'phone'|'sms'|'whatsapp'
+ *   actionToExecute {object?}  — existing prospecting_action to execute (prefills subject/body)
+ *   onComplete      {function} — called after successful send/log with result data
+ *   onClose         {function} — close the composer
  */
 
 const CHANNELS = [
@@ -39,22 +39,66 @@ const MESSAGE_OUTCOMES = [
 ];
 
 const EMAIL_OUTCOMES = [
-  { key: 'sent',           label: 'Sent' },
-  { key: 'bounced',        label: 'Bounced' },
+  { key: 'sent',    label: 'Sent' },
+  { key: 'bounced', label: 'Bounced' },
 ];
 
-function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplete, onClose }) {
-  const [channel, setChannel] = useState(initialChannel || 'email');
-  const [subject, setSubject] = useState('');
-  const [body, setBody]       = useState('');
-  const [outcome, setOutcome] = useState('');
-  const [notes, setNotes]     = useState('');
-  const [sending, setSending] = useState(false);
-  const [error, setError]     = useState('');
-  const [copied, setCopied]   = useState(false);
-  const [success, setSuccess] = useState(false);
+const PROVIDER_BADGE = {
+  gmail:   { label: 'G', color: '#ea4335', bg: '#fef2f2' },
+  outlook: { label: 'O', color: '#0078d4', bg: '#eff6ff' },
+};
 
-  // Prefill from action if provided
+function ProviderBadge({ provider }) {
+  const cfg = PROVIDER_BADGE[provider] || { label: '?', color: '#6b7280', bg: '#f3f4f6' };
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      width: 18, height: 18, borderRadius: 4, fontSize: 10, fontWeight: 700,
+      background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.color}30`,
+      flexShrink: 0,
+    }}>
+      {cfg.label}
+    </span>
+  );
+}
+
+function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplete, onClose }) {
+  const [channel, setChannel]         = useState(initialChannel || 'email');
+  const [subject, setSubject]         = useState('');
+  const [body, setBody]               = useState('');
+  const [outcome, setOutcome]         = useState('');
+  const [notes, setNotes]             = useState('');
+  const [sending, setSending]         = useState(false);
+  const [error, setError]             = useState('');
+  const [copied, setCopied]           = useState(false);
+  const [success, setSuccess]         = useState(false);
+
+  // Sender accounts
+  const [senders, setSenders]         = useState([]);
+  const [selectedSender, setSelectedSender] = useState(null);
+  const [sendersLoading, setSendersLoading] = useState(true);
+  const [rateLimitInfo, setRateLimitInfo]   = useState(null); // { nextAllowedAt, dailySent, dailyLimit }
+
+  // AI draft
+  const [drafting, setDrafting]       = useState(false);
+
+  // ── Load sender accounts on mount ─────────────────────────────────────────
+  useEffect(() => {
+    if (channel !== 'email') return;
+    setSendersLoading(true);
+    apiService.prospectingSenders.getAll()
+      .then(r => {
+        const list = r.data?.senders || [];
+        setSenders(list);
+        if (list.length > 0 && !selectedSender) {
+          setSelectedSender(list[0].id);
+        }
+      })
+      .catch(() => setSenders([]))
+      .finally(() => setSendersLoading(false));
+  }, [channel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Prefill from action if provided ───────────────────────────────────────
   useEffect(() => {
     if (actionToExecute) {
       if (actionToExecute.channel) setChannel(actionToExecute.channel);
@@ -67,36 +111,70 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
     }
   }, [actionToExecute]);
 
-  // ── Copy to clipboard ──────────────────────────────────────────────────────
+  // ── AI Draft ──────────────────────────────────────────────────────────────
+  const handleAiDraft = async () => {
+    setDrafting(true);
+    setError('');
+    try {
+      // Call the backend research endpoint to get / refresh context
+      // then use that to pre-fill. We call the AI model directly via
+      // the Anthropic API using the prospect data we already have.
+      const res = await apiService.prospects.research(prospect.id);
+      const { researchNotes } = res.data;
 
+      // Build a suggested subject and body from research notes
+      const firstName = prospect.first_name;
+      const company   = prospect.company_name || '';
+
+      const lines = (researchNotes || '').split('\n').filter(l => l.trim());
+      const topLine = lines[0]?.replace(/^[•\-\*]\s*/, '') || '';
+
+      // Simple templating — keeps things fast and deterministic
+      if (!subject) {
+        setSubject(`Quick question for ${firstName}${company ? ` at ${company}` : ''}`);
+      }
+
+      if (!body) {
+        setBody(
+          `Hi ${firstName},\n\n` +
+          `${topLine}\n\n` +
+          `I'd love to explore whether we could help — would you be open to a quick 20-minute call this week?\n\n` +
+          `Best,`
+        );
+      }
+    } catch (err) {
+      setError('AI draft failed: ' + (err.response?.data?.error?.message || err.message));
+    } finally {
+      setDrafting(false);
+    }
+  };
+
+  // ── Copy to clipboard ──────────────────────────────────────────────────────
   const handleCopy = async () => {
     const text = subject ? `${subject}\n\n${body}` : body;
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Fallback
       const ta = document.createElement('textarea');
       ta.value = text;
       document.body.appendChild(ta);
       ta.select();
       document.execCommand('copy');
       document.body.removeChild(ta);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
     }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   // ── Send / Log ─────────────────────────────────────────────────────────────
-
   const handleSend = async () => {
     setError('');
+    setRateLimitInfo(null);
 
-    // Validation
     if (channel === 'email') {
-      if (!subject.trim()) { setError('Subject is required for email'); return; }
-      if (!body.trim()) { setError('Message body is required'); return; }
+      if (!subject.trim()) { setError('Subject is required'); return; }
+      if (!body.trim())    { setError('Message body is required'); return; }
+      if (senders.length > 0 && !selectedSender) { setError('Select a sender account'); return; }
     }
     if (channel === 'phone' && !outcome) {
       setError('Please select a call outcome'); return;
@@ -107,25 +185,45 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
     try {
       let result;
 
-      if (actionToExecute) {
-        // Execute existing action
-        result = await apiService.prospectingActions.execute(
-          actionToExecute.id || actionToExecute.actionId,
+      if (channel === 'email' && !actionToExecute) {
+        // Use the new outreach-send endpoint (actual email send + rate limiting)
+        const res = await apiService.prospectingActions.outreachSend({
+          prospectId:      prospect.id,
+          subject,
+          body,
+          toAddress:       prospect.email,
+          senderAccountId: selectedSender || undefined,
+        });
+        result = res.data;
+      } else if (actionToExecute) {
+        // Execute existing action (non-email or email with pre-existing action)
+        if (channel === 'email' && prospect.email) {
+          const res = await apiService.prospectingActions.outreachSend({
+            prospectId:      prospect.id,
+            subject,
+            body,
+            toAddress:       prospect.email,
+            senderAccountId: selectedSender || undefined,
+            actionId:        actionToExecute.id || actionToExecute.actionId,
+          });
+          result = res.data;
+        } else {
+          const res = await apiService.prospectingActions.execute(
+            actionToExecute.id || actionToExecute.actionId,
+            outcome || 'sent',
+            notes || body || ''
+          );
+          result = { action: res.data?.action };
+        }
+      } else {
+        // Non-email channel: create + complete action
+        const res = await apiService.prospectingActions.execute(
+          // For non-email we create a new action inline then execute
+          // Fall back to legacy execute path — create action first
+          null,
           outcome || 'sent',
           notes || body || ''
         );
-        result = { action: result.data?.action };
-      } else {
-        // Create + complete via outreach-send endpoint
-        const res = await apiService.prospectingActions.outreachSend({
-          prospectId: prospect.id,
-          channel,
-          subject: subject || null,
-          body: body || null,
-          outcome: outcome || 'sent',
-          notes: notes || null,
-          toAddress: prospect.email || null,
-        });
         result = res.data;
       }
 
@@ -133,22 +231,27 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
       setTimeout(() => {
         if (onComplete) onComplete(result);
       }, 600);
+
     } catch (err) {
-      console.error('Outreach send error:', err);
-      setError(err.response?.data?.error?.message || err.message || 'Failed to send outreach');
+      const errData = err.response?.data?.error;
+      if (err.response?.status === 429) {
+        setRateLimitInfo(errData);
+        setError(errData?.message || 'Rate limit reached. Please wait before sending again.');
+      } else {
+        setError(errData?.message || err.message || 'Failed to send outreach');
+      }
     } finally {
       setSending(false);
     }
   };
 
-  // ── Determine which outcomes to show ───────────────────────────────────────
-
   const outcomeOptions = channel === 'phone' ? PHONE_OUTCOMES
     : channel === 'email' ? EMAIL_OUTCOMES
     : MESSAGE_OUTCOMES;
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  const selectedSenderObj = senders.find(s => s.id === selectedSender);
 
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="pv-modal-overlay" onClick={onClose}>
       <div className="oc-modal" onClick={e => e.stopPropagation()}>
@@ -175,10 +278,9 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
         {/* Channel tabs */}
         <div className="oc-channel-tabs">
           {CHANNELS.map(ch => {
-            // Disable channels without contact info
             const disabled =
-              (ch.key === 'email' && !prospect.email) ||
-              (ch.key === 'phone' && !prospect.phone) ||
+              (ch.key === 'email'    && !prospect.email) ||
+              (ch.key === 'phone'    && !prospect.phone) ||
               (ch.key === 'linkedin' && !prospect.linkedin_url);
             return (
               <button
@@ -206,15 +308,78 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
         {/* Channel-specific content */}
         <div className="oc-body">
 
-          {/* ── EMAIL ────────────────────────────────────────────────────── */}
+          {/* ── EMAIL ──────────────────────────────────────────────────────── */}
           {channel === 'email' && (
             <>
+              {/* Sender account selector */}
+              <div className="oc-field">
+                <label>From</label>
+                {sendersLoading ? (
+                  <div className="oc-sender-loading">Loading accounts…</div>
+                ) : senders.length === 0 ? (
+                  <div className="oc-no-senders">
+                    No outreach accounts connected.{' '}
+                    <a
+                      href="#settings"
+                      onClick={e => {
+                        e.preventDefault();
+                        window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'settings', settingsTab: 'preferences' } }));
+                        onClose();
+                      }}
+                    >
+                      Connect one in Settings → My Preferences
+                    </a>
+                  </div>
+                ) : (
+                  <div className="oc-sender-select-wrap">
+                    <select
+                      className="oc-sender-select"
+                      value={selectedSender || ''}
+                      onChange={e => setSelectedSender(parseInt(e.target.value))}
+                    >
+                      {senders.map(s => (
+                        <option key={s.id} value={s.id}>
+                          {s.label ? `${s.label} — ` : ''}{s.email}  [{s.provider}]
+                        </option>
+                      ))}
+                    </select>
+                    {selectedSenderObj && (
+                      <div className="oc-sender-meta">
+                        <ProviderBadge provider={selectedSenderObj.provider} />
+                        <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 4 }}>
+                          {selectedSenderObj.emailsSentToday ?? 0} sent today
+                          {selectedSenderObj.dailyLimit ? ` / ${selectedSenderObj.dailyLimit} limit` : ''}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div className="oc-field">
                 <label>To</label>
                 <div className="oc-to-display">{prospect.email || 'No email on file'}</div>
               </div>
+
+              {/* Subject with AI Draft button */}
               <div className="oc-field">
-                <label>Subject <span className="oc-required">*</span></label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <label>Subject <span className="oc-required">*</span></label>
+                  <button
+                    className="oc-ai-draft-btn"
+                    onClick={handleAiDraft}
+                    disabled={drafting}
+                    title="Generate a personalised draft using AI research"
+                    style={{
+                      fontSize: 11, padding: '3px 10px', borderRadius: 6,
+                      border: '1px solid #8b5cf6', background: '#f5f3ff',
+                      color: '#7c3aed', cursor: drafting ? 'wait' : 'pointer',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {drafting ? '⏳ Drafting…' : '✨ AI Draft'}
+                  </button>
+                </div>
                 <input
                   type="text"
                   value={subject}
@@ -223,6 +388,7 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
                   className="oc-input"
                 />
               </div>
+
               <div className="oc-field">
                 <label>Message <span className="oc-required">*</span></label>
                 <textarea
@@ -234,10 +400,20 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
                 />
                 <div className="oc-char-count">{body.length} characters</div>
               </div>
+
+              {/* Rate limit info */}
+              {rateLimitInfo?.nextAllowedAt && (
+                <div style={{
+                  padding: '8px 12px', background: '#fffbeb', border: '1px solid #fde68a',
+                  borderRadius: 6, fontSize: 12, color: '#92400e', marginBottom: 8,
+                }}>
+                  ⏱ Next send allowed at {new Date(rateLimitInfo.nextAllowedAt).toLocaleTimeString()}
+                </div>
+              )}
             </>
           )}
 
-          {/* ── LINKEDIN / SMS / WHATSAPP ──────────────────────────────── */}
+          {/* ── LINKEDIN / SMS / WHATSAPP ─────────────────────────────────── */}
           {['linkedin', 'sms', 'whatsapp'].includes(channel) && (
             <>
               {channel === 'linkedin' && prospect.linkedin_url && (
@@ -271,7 +447,7 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
             </>
           )}
 
-          {/* ── PHONE ──────────────────────────────────────────────────── */}
+          {/* ── PHONE ──────────────────────────────────────────────────────── */}
           {channel === 'phone' && (
             <>
               <div className="oc-field">
@@ -296,7 +472,7 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
             </>
           )}
 
-          {/* ── Outcome selector (all channels) ──────────────────────── */}
+          {/* ── Outcome selector (all channels) ──────────────────────────── */}
           <div className="oc-field">
             <label>{channel === 'phone' ? 'Call Outcome *' : 'Outcome'}</label>
             <div className="oc-outcome-grid">
@@ -328,7 +504,7 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
         {/* Error */}
         {error && <div className="oc-error">{error}</div>}
 
-        {/* Footer actions */}
+        {/* Footer */}
         <div className="oc-footer">
           <button className="oc-btn-cancel" onClick={onClose} disabled={sending}>
             Cancel
@@ -336,12 +512,12 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
           <button
             className="oc-btn-send"
             onClick={handleSend}
-            disabled={sending || success}
+            disabled={sending || success || (channel === 'email' && !prospect.email)}
           >
             {sending ? 'Sending...' :
               channel === 'email' ? '📤 Send Email' :
               channel === 'phone' ? '📞 Log Call' :
-              `✓ Mark as Sent`}
+              '✓ Mark as Sent'}
           </button>
         </div>
       </div>

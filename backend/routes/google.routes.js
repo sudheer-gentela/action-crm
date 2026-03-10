@@ -4,6 +4,10 @@
 // Google OAuth flow — connect, callback, status, disconnect.
 // Mirrors outlook.routes.js patterns.
 // Mount in server.js: app.use('/api/google', googleRoutes);
+//
+// ADDED: prospecting branch in /callback
+//   When state contains mode=prospecting, saves to prospecting_sender_accounts
+//   instead of oauth_tokens, then redirects to /?prospecting_sender_connected=true
 // ─────────────────────────────────────────────────────────────────────────────
 
 const express = require('express');
@@ -45,6 +49,11 @@ router.get('/connect', async (req, res) => {
 /**
  * OAuth callback
  * GET /api/google/callback
+ *
+ * Handles two modes:
+ *   1. Standard (no mode in state)  → saves to oauth_tokens, redirects /?google_connected=true
+ *   2. Prospecting (mode=prospecting in state) → saves to prospecting_sender_accounts,
+ *      redirects /?prospecting_sender_connected=true
  */
 router.get('/callback', async (req, res) => {
   try {
@@ -74,11 +83,59 @@ router.get('/callback', async (req, res) => {
       return res.redirect(`${frontendUrl}/?error=invalid_state`);
     }
 
-    console.log('🔄 Processing Google OAuth for user:', userId);
+    console.log('🔄 Processing Google OAuth for user:', userId, '| mode:', stateData.mode || 'standard');
 
     const tokenResponse = await getTokenFromCode(code);
     console.log('✅ Google token exchange successful');
 
+    // ── Prospecting mode ───────────────────────────────────────────────────────
+    if (stateData.mode === 'prospecting') {
+      const orgId = stateData.orgId;
+      if (!orgId) {
+        return res.redirect(`${frontendUrl}/?error=missing_org_id`);
+      }
+
+      // Get the email address from the token profile
+      const profile = await getUserProfile(userId);
+      const email   = profile.email;
+
+      if (!email) {
+        return res.redirect(`${frontendUrl}/?error=no_email_in_profile`);
+      }
+
+      console.log('📧 Saving prospecting sender account:', email, 'for user', userId);
+
+      // Upsert: if this email was previously connected for prospecting, refresh tokens
+      await pool.query(
+        `INSERT INTO prospecting_sender_accounts
+           (org_id, user_id, provider, email, label, access_token, refresh_token,
+            expires_at, account_data, is_active, updated_at)
+         VALUES ($1, $2, 'gmail', $3, $4, $5, $6, $7, $8, true, CURRENT_TIMESTAMP)
+         ON CONFLICT (user_id, email) DO UPDATE
+           SET access_token  = EXCLUDED.access_token,
+               refresh_token = COALESCE(EXCLUDED.refresh_token, prospecting_sender_accounts.refresh_token),
+               expires_at    = EXCLUDED.expires_at,
+               account_data  = EXCLUDED.account_data,
+               is_active     = true,
+               label         = COALESCE(EXCLUDED.label, prospecting_sender_accounts.label),
+               updated_at    = CURRENT_TIMESTAMP`,
+        [
+          orgId,
+          userId,
+          email,
+          stateData.label || null,
+          tokenResponse.access_token,
+          tokenResponse.refresh_token || null,
+          tokenResponse.expiry_date ? new Date(tokenResponse.expiry_date) : null,
+          JSON.stringify({ email, scope: tokenResponse.scope || null }),
+        ]
+      );
+
+      console.log('✅ Prospecting sender account saved for:', email);
+      return res.redirect(`${frontendUrl}/?prospecting_sender_connected=true`);
+    }
+
+    // ── Standard mode ──────────────────────────────────────────────────────────
     await saveUserToken(userId, 'google', tokenResponse);
     console.log('✅ Google tokens saved');
 
