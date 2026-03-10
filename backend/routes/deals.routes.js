@@ -5,6 +5,7 @@ const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
 const ActionsGenerator    = require('../services/actionsGenerator');
 const ActionConfigService = require('../services/actionConfig.service');
+const HandoverService     = require('../services/handover.service');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -589,6 +590,40 @@ router.put('/:id', async (req, res) => {
       } catch (err) {
         console.error('Error generating playbook actions on stage change:', err);
       }
+
+      // ── Handover initiation on won stage ────────────────────────────────────
+      // Fires unconditionally when a deal reaches a won terminal stage.
+      // HandoverService.initiate() is idempotent — safe to call multiple times.
+      // Failure is non-fatal and never blocks a deal stage update.
+      try {
+        if (willClose) {
+          const stageRow = await db.query(
+            `SELECT stage_type FROM deal_stages WHERE org_id = $1 AND key = $2 LIMIT 1`,
+            [req.orgId, stage]
+          );
+          // Treat stage_type = 'won' OR the literal key 'closed_won' as a win
+          const isWonStage =
+            stageRow.rows[0]?.stage_type === 'won' ||
+            stage === 'closed_won';
+
+          if (isWonStage) {
+            const { handover, created, warnings } = await HandoverService.initiate(
+              parseInt(req.params.id),
+              req.orgId,
+              req.user.userId
+            );
+            if (created) {
+              console.log(`🤝 Handover created for deal ${req.params.id} (handover id: ${handover.id})`);
+            }
+            if (warnings.length > 0) {
+              console.warn('Handover initiation warnings:', warnings);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error initiating handover on won stage:', err);
+      }
+      // ── end handover initiation ─────────────────────────────────────────────
     }
 
     if (closeDatePushIncrement > 0) {

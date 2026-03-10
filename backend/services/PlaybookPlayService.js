@@ -210,6 +210,110 @@ class PlaybookPlayService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // STAGE ACTIVATION FOR SPECIFIC PLAYBOOK (handover variant)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Activate plays from a specific playbook (by explicit playbookId) rather
+   * than looking up the deal's assigned playbook.
+   *
+   * Used by HandoverService to fire the handover_s2i playbook independently
+   * of whatever sales playbook the deal has assigned. Assigns plays to the
+   * deal owner rather than role-based deal team members.
+   *
+   * @param {number} dealId
+   * @param {string} stageKey
+   * @param {number} orgId
+   * @param {number} userId
+   * @param {number} playbookId  — explicit playbook to activate plays from
+   * @returns {{ instances: Array, warnings: string[] }}
+   */
+  static async activateStageForPlaybook(dealId, stageKey, orgId, userId, playbookId) {
+    const warnings = [];
+
+    // Get plays for this stage from the specific playbook
+    const playsResult = await db.query(
+      `SELECT pp.*
+       FROM playbook_plays pp
+       WHERE pp.playbook_id = $1 AND pp.stage_key = $2 AND pp.is_active = TRUE
+       ORDER BY pp.sort_order ASC`,
+      [playbookId, stageKey]
+    );
+
+    if (playsResult.rows.length === 0) {
+      return { instances: [], warnings: [`No plays defined in playbook ${playbookId} for stage: ${stageKey}`] };
+    }
+
+    // Check for existing instances from this playbook (avoid duplicates)
+    const existingResult = await db.query(
+      `SELECT dpi.play_id FROM deal_play_instances dpi
+       JOIN playbook_plays pp ON pp.id = dpi.play_id
+       WHERE dpi.deal_id = $1 AND dpi.stage_key = $2 AND pp.playbook_id = $3`,
+      [dealId, stageKey, playbookId]
+    );
+    const existingPlayIds = new Set(existingResult.rows.map(r => r.play_id));
+
+    // Get the deal owner to assign handover plays to
+    const ownerResult = await db.query(
+      `SELECT d.owner_id AS user_id, u.first_name || ' ' || u.last_name AS name
+       FROM deals d JOIN users u ON u.id = d.owner_id
+       WHERE d.id = $1`,
+      [dealId]
+    );
+    const owner = ownerResult.rows[0] || null;
+
+    const instances = [];
+
+    for (const play of playsResult.rows) {
+      if (existingPlayIds.has(play.id)) continue;
+
+      // Handover plays use same dependency logic as regular plays
+      let initialStatus = 'active';
+      if (play.execution_type === 'sequential' && play.depends_on && play.depends_on.length > 0) {
+        const allDepsComplete = await this._areDependenciesComplete(dealId, play.depends_on);
+        if (!allDepsComplete) initialStatus = 'pending';
+      }
+
+      const dueDate = new Date();
+      dueDate.setDate(dueDate.getDate() + (play.due_offset_days || 3));
+
+      const instResult = await db.query(
+        `INSERT INTO deal_play_instances (
+           deal_id, org_id, play_id, stage_key,
+           title, description, channel, priority,
+           execution_type, is_gate, due_date, sort_order,
+           status
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         RETURNING *`,
+        [
+          dealId, orgId, play.id, stageKey,
+          play.title, play.description, play.channel, play.priority,
+          play.execution_type, play.is_gate, dueDate.toISOString().split('T')[0],
+          play.sort_order, initialStatus,
+        ]
+      );
+
+      const instance = instResult.rows[0];
+
+      // Create action assigned to deal owner
+      let actionId = null;
+      if (initialStatus === 'active' && owner) {
+        actionId = await this._createActionForPlay(instance, owner, orgId);
+        if (actionId) {
+          await db.query(
+            'UPDATE deal_play_instances SET action_id = $1 WHERE id = $2',
+            [actionId, instance.id]
+          );
+        }
+      }
+
+      instances.push({ ...instance, action_id: actionId });
+    }
+
+    return { instances, warnings };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // COMPLETE A PLAY
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -587,11 +691,13 @@ class PlaybookPlayService {
   static async _createActionForPlay(instance, assignee, orgId) {
     try {
       const channelMap = {
-        email: 'email',
-        call: 'call',
-        meeting: 'call',
-        document: 'document',
-        internal_task: 'document',
+        email:             'email',
+        call:              'call',
+        meeting:           'call',
+        document:          'document',
+        internal_task:     'document',
+        handover_section:  'document',   // handover form section → task action
+        handover_document: 'document',   // file attachment play  → task action
       };
 
       const result = await db.query(
