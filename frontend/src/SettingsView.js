@@ -431,27 +431,43 @@ const ALL_RECENT_WINDOWS = [
 ];
 
 function UserPreferencesSettings() {
-  const [prefs,   setPrefs]   = useState(null);
+  const DEFAULT_PREFS = {
+    actions_show_sparkline:  false,
+    actions_recent_windows:  ['12h', '1d', '1w'],
+  };
+
+  const [prefs,   setPrefs]   = useState(DEFAULT_PREFS); // start with defaults — form always shows
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
   const [success, setSuccess] = useState('');
   const [error,   setError]   = useState('');
+  const [apiAvailable, setApiAvailable] = useState(true);
 
-  // Load from backend on mount
+  // Load from backend on mount — merge over defaults
   useEffect(() => {
     apiService.userPreferences.get()
-      .then(data => setPrefs(data.preferences))
-      .catch(() => setError('Failed to load preferences'))
+      .then(data => {
+        if (data?.preferences) setPrefs({ ...DEFAULT_PREFS, ...data.preferences });
+        setApiAvailable(true);
+      })
+      .catch(() => {
+        // Leave defaults in place — user can still configure locally
+        setApiAvailable(false);
+      })
       .finally(() => setLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleSave() {
+    if (!apiAvailable) {
+      setError('Preferences API not available — check server deployment');
+      return;
+    }
     setSaving(true);
     setError('');
     setSuccess('');
     try {
       const data = await apiService.userPreferences.update(prefs);
-      setPrefs(data.preferences);
+      if (data?.preferences) setPrefs({ ...DEFAULT_PREFS, ...data.preferences });
       setSuccess('Saved ✓');
       setTimeout(() => setSuccess(''), 2500);
     } catch {
@@ -487,14 +503,19 @@ function UserPreferencesSettings() {
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           {success && <span style={{ fontSize: 13, color: '#16a34a', fontWeight: 500 }}>{success}</span>}
           {error   && <span style={{ fontSize: 13, color: '#dc2626' }}>{error}</span>}
-          <button className="sv-btn-primary" onClick={handleSave} disabled={saving || !prefs}>
+          <button className="sv-btn-primary" onClick={handleSave} disabled={saving}>
             {saving ? '⏳ Saving…' : '💾 Save'}
           </button>
         </div>
       </div>
 
-      {prefs && (
-        <div className="sv-panel-body">
+      {!apiAvailable && (
+        <div style={{ margin: '12px 24px 0', padding: '10px 14px', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 8, fontSize: 13, color: '#92400e' }}>
+          ⚠️ Could not connect to preferences API. Make sure <code>user-preferences.routes.js</code> is deployed and mounted in <code>server.js</code>. Changes below will not be saved until this is resolved.
+        </div>
+      )}
+
+      <div className="sv-panel-body">
 
           {/* ── Actions — Recently Generated panel ── */}
           <div className="sv-section">
@@ -552,7 +573,6 @@ function UserPreferencesSettings() {
           </div>
 
         </div>
-      )}
     </div>
   );
 }

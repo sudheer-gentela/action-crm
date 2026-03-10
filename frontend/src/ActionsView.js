@@ -2435,7 +2435,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
                   onStart={handleStart}
                   onSnoozeClick={setSnoozeAction}
                   onUnsnooze={handleUnsnooze}
-                  isNew={lastGeneratedAt && action.createdAt && new Date(action.createdAt) >= lastGeneratedAt}
+                  isNew={lastGeneratedAt && (action.createdAt || action.created_at) && new Date(action.createdAt || action.created_at) >= lastGeneratedAt}
                 />
               ))}
             </div>
