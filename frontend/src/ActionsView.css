@@ -1379,3 +1379,221 @@
 .av-table-cell--clickable .av-table-prospect-name:hover {
   text-decoration: underline;
 }
+
+
+/* =============================================================================
+   ActionCRM — New Component Styles (Actions System Phase 1–5 + Items 1–7)
+   ============================================================================= */
+
+
+/* ── + Add Action button (header, beside Generate Actions) ────────────────── */
+.av-add-btn {
+  padding: 7px 14px;
+  border: 1.5px dashed #a5b4fc;
+  border-radius: 8px;
+  background: #f5f3ff;
+  color: #4f46e5;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.av-add-btn:hover {
+  background: #ede9fe;
+  border-color: #818cf8;
+}
+
+
+/* ── Export Context (📋) button on action cards ───────────────────────────── */
+.av-export-btn {
+  padding: 4px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.av-export-btn:hover {
+  background: #f1f5f9;
+  color: #334155;
+}
+.av-export-btn--copied {
+  background: #ecfdf5;
+  border-color: #6ee7b7;
+  color: #065f46;
+}
+
+
+/* ── Deep-link highlight — card scrolled to from calendar ─────────────────── */
+.av-card--highlighted {
+  box-shadow: 0 0 0 2px #6366f1, 0 4px 16px rgba(99, 102, 241, 0.18) !important;
+  animation: av-highlight-pulse 2.5s ease-out forwards;
+}
+@keyframes av-highlight-pulse {
+  0%   { box-shadow: 0 0 0 3px #6366f1, 0 6px 24px rgba(99, 102, 241, 0.3); }
+  60%  { box-shadow: 0 0 0 2px #6366f1, 0 4px 16px rgba(99, 102, 241, 0.18); }
+  100% { box-shadow: none; }
+}
+
+
+/* ── Gate unlock toast (Phase 2 — next action ready) ─────────────────────── */
+.av-gate-toast {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  z-index: 9500;
+  background: #1e1b4b;
+  color: #fff;
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.22);
+  animation: av-toast-in 0.25s ease-out;
+  max-width: 340px;
+}
+@keyframes av-toast-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+
+/* ── CalendarView ActionPopover: "⚡ View in Actions" button ──────────────── */
+.popover-btn-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: 7px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+  text-decoration: none;
+}
+.popover-btn-actions:hover {
+  background: #e0e7ff;
+  border-color: #a5b4fc;
+}
+
+
+/* ── PlaybookPlaysEditor: Fire Conditions builder ─────────────────────────── */
+.ppe-conditions {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: #fafafa;
+  margin-top: 4px;
+}
+
+.ppe-conditions__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.ppe-conditions__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.ppe-conditions__hint {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: 8px;
+  font-style: italic;
+}
+
+.ppe-conditions__empty {
+  font-size: 12px;
+  color: #9ca3af;
+  padding: 6px 0;
+}
+
+.ppe-condition-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid #f3f4f6;
+  flex-wrap: wrap;
+}
+.ppe-condition-row:last-child {
+  border-bottom: none;
+}
+
+.ppe-select--condition-type {
+  flex: 0 0 220px;
+  font-size: 12px;
+  padding: 5px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #374151;
+}
+
+.ppe-input--sm {
+  width: 80px;
+  font-size: 12px;
+  padding: 5px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #374151;
+}
+
+.ppe-condition-unit {
+  font-size: 11px;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.ppe-condition-remove {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #ef4444;
+  cursor: pointer;
+  font-size: 15px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+.ppe-condition-remove:hover {
+  opacity: 1;
+  background: #fef2f2;
+}
+
+
+/* ── PlaybookPlaysEditor: form hint text ──────────────────────────────────── */
+.ppe-form__hint {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+
+/* ── PlaybookPlaysEditor: gate card "→ unlocks" label ────────────────────── */
+.ppe-card__gate-unlocks {
+  font-size: 11px;
+  color: #6b7280;
+  font-weight: 400;
+  margin-left: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+  display: inline-block;
+  vertical-align: middle;
+}
