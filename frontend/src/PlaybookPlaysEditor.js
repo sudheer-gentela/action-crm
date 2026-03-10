@@ -845,7 +845,7 @@ export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
                   canEdit={isAdmin}
                   onEdit={p => setEditingPlay(p)}
                   onDelete={handleDeletePlay}
-                  allPlays={plays}
+                  allPlays={Object.values(playsByStage).flat()}
                 />
               ))}
             </div>
