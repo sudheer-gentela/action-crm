@@ -1,47 +1,47 @@
 /**
  * user-preferences.routes.js
  *
- * GET  /users/me/preferences         — return current user's ui_preferences merged with defaults
- * PATCH /users/me/preferences        — deep-merge supplied keys into ui_preferences
+ * GET  /users/me/preferences   — return current user's UI prefs (merged with defaults)
+ * PATCH /users/me/preferences  — deep-merge supplied keys into prefs
  *
- * Lives at: routes/user-preferences.routes.js
+ * Storage: user_preferences.preferences->'ui' JSONB
+ * PK is (user_id, org_id) — both are required for all queries.
+ *
  * Mount in server.js:
  *   app.use('/api/users/me', require('./routes/user-preferences.routes'));
- *
- * Auth: requireAuth middleware (same as all other routes).
- * No org-admin requirement — every user can read/write their own prefs.
  */
 
-const express = require('express');
-const router  = express.Router();
-const db      = require('../config/database');
+const express           = require('express');
+const router            = express.Router();
+const db                = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 
 router.use(authenticateToken);
 
-// ── Defaults — applied when a key is missing from the stored JSONB ────────────
+// ── Defaults — merged at read time so new keys always have a value ─────────
 const UI_PREF_DEFAULTS = {
-  // Actions — Recently Generated panel
-  actions_show_sparkline:   false,
-  actions_recent_windows:   ['12h', '1d', '1w'],
+  actions_show_sparkline:  false,
+  actions_recent_windows:  ['12h', '1d', '1w'],
 };
 
-// ── GET /users/me/preferences ─────────────────────────────────────────────────
+// ── Helper ────────────────────────────────────────────────────────────────
+async function getUiPrefs(userId, orgId) {
+  const { rows: [row] } = await db.query(
+    `SELECT preferences->'ui' AS ui
+     FROM user_preferences
+     WHERE user_id = $1 AND org_id = $2`,
+    [userId, orgId]
+  );
+  const stored = row?.ui
+    ? (typeof row.ui === 'string' ? JSON.parse(row.ui) : row.ui)
+    : {};
+  return { ...UI_PREF_DEFAULTS, ...stored };
+}
+
+// ── GET /users/me/preferences ─────────────────────────────────────────────
 router.get('/preferences', async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT ui_preferences FROM users WHERE id = $1`,
-      [req.user.userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'User not found' } });
-    }
-
-    const stored = result.rows[0].ui_preferences || {};
-    // Merge stored over defaults so new keys always have a sensible value
-    const preferences = { ...UI_PREF_DEFAULTS, ...stored };
-
+    const preferences = await getUiPrefs(req.user.userId, req.orgId);
     res.json({ preferences });
   } catch (error) {
     console.error('GET /users/me/preferences error:', error);
@@ -49,40 +49,33 @@ router.get('/preferences', async (req, res) => {
   }
 });
 
-// ── PATCH /users/me/preferences ───────────────────────────────────────────────
-// Body: { actions_show_sparkline: true } — only supplied keys are updated.
-// Uses jsonb_strip_nulls + || operator for a proper deep merge.
+// ── PATCH /users/me/preferences ───────────────────────────────────────────
 router.patch('/preferences', async (req, res) => {
   try {
-    const updates = req.body;
-
-    // Whitelist to only known pref keys — prevents arbitrary JSONB injection
-    const allowed = Object.keys(UI_PREF_DEFAULTS);
+    const allowed  = Object.keys(UI_PREF_DEFAULTS);
     const filtered = {};
     for (const key of allowed) {
-      if (key in updates) filtered[key] = updates[key];
+      if (key in req.body) filtered[key] = req.body[key];
     }
 
     if (Object.keys(filtered).length === 0) {
       return res.status(400).json({ error: { message: 'No valid preference keys supplied' } });
     }
 
-    const result = await db.query(
-      `UPDATE users
-       SET ui_preferences = ui_preferences || $1::jsonb,
-           updated_at     = CURRENT_TIMESTAMP
-       WHERE id = $2
-       RETURNING ui_preferences`,
-      [JSON.stringify(filtered), req.user.userId]
-    );
+    // Upsert on composite PK (user_id, org_id) — merges only the 'ui' key
+    await db.query(`
+      INSERT INTO user_preferences (user_id, org_id, preferences)
+      VALUES ($1, $2, jsonb_build_object('ui', $3::jsonb))
+      ON CONFLICT (user_id, org_id) DO UPDATE
+      SET preferences = jsonb_set(
+        COALESCE(user_preferences.preferences, '{}'::jsonb),
+        '{ui}',
+        COALESCE(user_preferences.preferences->'ui', '{}'::jsonb) || $3::jsonb
+      ),
+      updated_at = CURRENT_TIMESTAMP
+    `, [req.user.userId, req.orgId, JSON.stringify(filtered)]);
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'User not found' } });
-    }
-
-    const stored = result.rows[0].ui_preferences || {};
-    const preferences = { ...UI_PREF_DEFAULTS, ...stored };
-
+    const preferences = await getUiPrefs(req.user.userId, req.orgId);
     res.json({ preferences });
   } catch (error) {
     console.error('PATCH /users/me/preferences error:', error);
