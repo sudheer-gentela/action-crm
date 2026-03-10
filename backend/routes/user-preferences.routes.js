@@ -15,7 +15,9 @@
 const express = require('express');
 const router  = express.Router();
 const db      = require('../config/database');
-const { requireAuth } = require('../middleware/auth');
+const authenticateToken = require('../middleware/auth.middleware');
+
+router.use(authenticateToken);
 
 // ── Defaults — applied when a key is missing from the stored JSONB ────────────
 const UI_PREF_DEFAULTS = {
@@ -25,7 +27,7 @@ const UI_PREF_DEFAULTS = {
 };
 
 // ── GET /users/me/preferences ─────────────────────────────────────────────────
-router.get('/preferences', requireAuth, async (req, res) => {
+router.get('/preferences', async (req, res) => {
   try {
     const result = await db.query(
       `SELECT ui_preferences FROM users WHERE id = $1`,
@@ -50,7 +52,7 @@ router.get('/preferences', requireAuth, async (req, res) => {
 // ── PATCH /users/me/preferences ───────────────────────────────────────────────
 // Body: { actions_show_sparkline: true } — only supplied keys are updated.
 // Uses jsonb_strip_nulls + || operator for a proper deep merge.
-router.patch('/preferences', requireAuth, async (req, res) => {
+router.patch('/preferences', async (req, res) => {
   try {
     const updates = req.body;
 
