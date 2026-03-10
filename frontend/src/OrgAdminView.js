@@ -4794,7 +4794,7 @@ function OAActionsAI() {
       })
       .catch(() => setError('Failed to load config'))
       .finally(() => setLoading(false));
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleSave() {
     setSaving(true);
