@@ -104,7 +104,8 @@ export default function PlaybooksView({ initialTypeFilter }) {
     setStagesLoading(true);
     const h = { Authorization: `Bearer ${token}` };
 
-    // handover_s2i has one fixed stage (closed_won) — no dynamic fetch needed
+    // handover_s2i default — overridden dynamically when a playbook is selected
+    // by reading distinct stage_keys from the playbook's plays
     setHandoverStages([{ key: 'closed_won', name: 'Closed Won', label: 'Closed Won', sort_order: 1, is_active: true, is_terminal: false, stage_type: 'closed_won' }]);
 
     Promise.all([
@@ -173,9 +174,35 @@ export default function PlaybooksView({ initialTypeFilter }) {
           delete raw.content.stages;
         }
         setPlaybook(raw);
+
+        // For handover_s2i: derive stages dynamically from playbook plays
+        // so any new stage keys added to the playbook are picked up automatically
+        if (raw?.type === 'handover_s2i') {
+          try {
+            const pr = await fetch(`${API_BASE}/playbook-plays/playbook/${selectedId}/all`, {
+              headers: { Authorization: `Bearer ${token}` },
+            });
+            if (pr.ok) {
+              const { plays } = await pr.json();
+              const stageKeys = Object.keys(plays || {});
+              if (stageKeys.length > 0) {
+                const derived = stageKeys.map(key => ({
+                  key,
+                  name:        key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                  label:       key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                  sort_order:  plays[key][0]?.sort_order ?? 0,
+                  is_active:   true,
+                  is_terminal: false,
+                  stage_type:  key,
+                })).sort((a, b) => a.sort_order - b.sort_order);
+                setHandoverStages(derived);
+              }
+            }
+          } catch { /* non-fatal — falls back to hardcoded default below */ }
+        }
       } catch { setError('Failed to load playbook content'); }
     })();
-  }, [selectedId]);
+  }, [selectedId, API_BASE, token]);
 
   // ── Flash helper ─────────────────────────────────────────
   const flash = useCallback((type, msg) => {
