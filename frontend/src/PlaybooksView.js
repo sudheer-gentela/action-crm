@@ -103,20 +103,22 @@ export default function PlaybooksView({ initialTypeFilter }) {
   useEffect(() => {
     setStagesLoading(true);
     const h = { Authorization: `Bearer ${token}` };
+
+    // handover_s2i has one fixed stage (closed_won) — no dynamic fetch needed
+    setHandoverStages([{ key: 'closed_won', name: 'Closed Won', label: 'Closed Won', sort_order: 1, is_active: true, is_terminal: false, stage_type: 'closed_won' }]);
+
     Promise.all([
-      fetch(`${API_BASE}/deal-stages`,                    { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
-      fetch(`${API_BASE}/prospect-stages`,                { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
-      fetch(`${API_BASE}/pipeline-stages/clm`,           { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
-      fetch(`${API_BASE}/pipeline-stages/handover_s2i`,  { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
+      fetch(`${API_BASE}/deal-stages`,          { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
+      fetch(`${API_BASE}/prospect-stages`,      { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
+      fetch(`${API_BASE}/pipeline-stages/clm`, { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
     ])
-      .then(([deal, prospect, clm, handover]) => {
+      .then(([deal, prospect, clm]) => {
         const active = d => (d.stages || [])
           .filter(s => s.is_active && !s.is_terminal)
           .sort((a, b) => a.sort_order - b.sort_order);
         setDealStages(active(deal));
         setProspectStages(active(prospect));
         setClmStages(active(clm));
-        setHandoverStages(active(handover));
       })
       .catch(() => { /* non-fatal — degrade gracefully */ })
       .finally(() => setStagesLoading(false));
