@@ -2754,6 +2754,7 @@ function OAPlaybooks() {
     { key: 'sales',       label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
     { key: 'prospecting', label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
     { key: 'clm',         label: 'CLM',         icon: '📋', color: '#7c3aed', is_system: true },
+    { key: 'service',     label: 'Service',     icon: '🎧', color: '#0891b2', is_system: true },
   ]);
 
   useEffect(() => {
