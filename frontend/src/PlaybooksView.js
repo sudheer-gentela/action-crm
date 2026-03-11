@@ -72,7 +72,6 @@ export default function PlaybooksView({ initialTypeFilter }) {
   // stagesMap: { [typeKey]: Stage[] } — built from playbookTypes after they load.
   // All types use /pipeline-stages/:key uniformly — no special cases.
   const [stagesMap,     setStagesMap]     = useState({});
-  const [handoverStages, setHandoverStages] = useState([]);
   const [stagesLoading, setStagesLoading] = useState(false);
 
   // ── Role — reactive to role-switch events ────────────────
@@ -125,23 +124,17 @@ export default function PlaybooksView({ initialTypeFilter }) {
     setStagesLoading(true);
     const h = { Authorization: `Bearer ${token}` };
 
-    // handover_s2i default — overridden dynamically when a playbook is selected
-    // by reading distinct stage_keys from the playbook's plays
-    setHandoverStages([{ key: 'closed_won', name: 'Closed Won', label: 'Closed Won', sort_order: 1, is_active: true, is_terminal: false, stage_type: 'closed_won' }]);
-
     const active = d => (d.stages || [])
       .filter(s => s.is_active !== false)
       .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
 
-    // All types use /pipeline-stages/:key — sales and prospecting now included
-    const types = playbookTypes.filter(t => t.key !== 'handover_s2i');
-
+    // All types use /pipeline-stages/:key — including handover_s2i, no exclusions
     Promise.all(
-      types.map(t => fetch(`${API_BASE}/pipeline-stages/${t.key}`, { headers: h }).then(r => r.ok ? r.json() : { stages: [] }))
+      playbookTypes.map(t => fetch(`${API_BASE}/pipeline-stages/${t.key}`, { headers: h }).then(r => r.ok ? r.json() : { stages: [] }))
     )
       .then(results => {
         const map = {};
-        types.forEach((t, i) => { map[t.key] = active(results[i]); });
+        playbookTypes.forEach((t, i) => { map[t.key] = active(results[i]); });
         setStagesMap(map);
       })
       .catch(() => { /* non-fatal — degrade gracefully */ })
@@ -149,9 +142,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
   }, [playbookTypes, API_BASE, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Active stage list for current tab ────────────────────
-  const activeLiveStages = typeFilter === 'handover_s2i'
-    ? handoverStages
-    : (stagesMap[typeFilter] || []);
+  const activeLiveStages = stagesMap[typeFilter] || [];
 
   // ── Filtered playbook list for current tab ───────────────
   const filteredPlaybooks = typeFilter === 'sales'
@@ -200,42 +191,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
           delete raw.content.stages;
         }
         setPlaybook(raw);
-        console.log('[Handover PB] type:', raw?.type, 'stage_guidance:', raw?.stage_guidance, 'content:', raw?.content);
-
-        // For handover_s2i: derive stages dynamically from playbook plays
-        if (raw?.type === 'handover_s2i') {
-          try {
-            const playsUrl = `${API_BASE}/playbook-plays/playbook/${selectedId}/all`;
-            console.log('[Handover PB] fetching plays from:', playsUrl);
-            const pr = await fetch(playsUrl, {
-              headers: { Authorization: `Bearer ${token}` },
-            });
-            console.log('[Handover PB] plays response status:', pr.status);
-            if (pr.ok) {
-              const { plays } = await pr.json();
-              console.log('[Handover PB] plays keys:', Object.keys(plays || {}), 'plays:', plays);
-              const stageKeys = Object.keys(plays || {});
-              if (stageKeys.length > 0) {
-                const derived = stageKeys.map(key => ({
-                  key,
-                  name:        key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-                  label:       key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-                  sort_order:  plays[key][0]?.sort_order ?? 0,
-                  is_active:   true,
-                  is_terminal: false,
-                  stage_type:  key,
-                })).sort((a, b) => a.sort_order - b.sort_order);
-                console.log('[Handover PB] derived stages:', derived);
-                setHandoverStages(derived);
-              } else {
-                console.warn('[Handover PB] plays came back empty — no stage keys');
-              }
-            } else {
-              console.error('[Handover PB] plays fetch failed:', pr.status);
-            }
-          } catch (e) { console.error('[Handover PB] plays fetch threw:', e); }
-        }
-      } catch (e) { console.error('[Handover PB] playbook load failed:', e); setError('Failed to load playbook content'); }
+      } catch (e) { console.error('[PB] playbook load failed:', e); setError('Failed to load playbook content'); }
     })();
   }, [selectedId, API_BASE, token]);
 
