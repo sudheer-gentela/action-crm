@@ -1,3 +1,4 @@
+// ProspectingView v1.1 — bulk CSV import enabled
 import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
 import OutreachComposer from './OutreachComposer';
 import CoverageScorecard from './CoverageScorecard';
