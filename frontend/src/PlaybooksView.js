@@ -67,7 +67,8 @@ export default function PlaybooksView({ initialTypeFilter }) {
 
   // ── Live stage lists — fetched dynamically per playbook type ─────────────
   // stagesMap: { [typeKey]: Stage[] } — built from playbookTypes after they load.
-  // All types including sales and prospecting use /pipeline-stages/:key uniformly.
+  // sales → /deal-stages, prospecting → /prospect-stages (own tables, predate pipeline-stages).
+  // All other types (clm, service, custom, etc.) use /pipeline-stages/:key.
   const [stagesMap,     setStagesMap]     = useState({});
   const [handoverStages, setHandoverStages] = useState([]);
   const [stagesLoading, setStagesLoading] = useState(false);
@@ -130,11 +131,19 @@ export default function PlaybooksView({ initialTypeFilter }) {
       .filter(s => s.is_active !== false)
       .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
 
+    // Resolve the correct endpoint per type key.
+    // sales and prospecting predate the generic pipeline-stages system and have their own tables.
+    const stageUrl = (key) => {
+      if (key === 'sales')       return `${API_BASE}/deal-stages`;
+      if (key === 'prospecting') return `${API_BASE}/prospect-stages`;
+      return `${API_BASE}/pipeline-stages/${key}`;
+    };
+
     // Fetch stages for every enabled playbook type (excluding handover_s2i — derived from plays)
     const types = playbookTypes.filter(t => t.key !== 'handover_s2i');
 
     Promise.all(
-      types.map(t => fetch(`${API_BASE}/pipeline-stages/${t.key}`, { headers: h }).then(r => r.ok ? r.json() : { stages: [] }))
+      types.map(t => fetch(stageUrl(t.key), { headers: h }).then(r => r.ok ? r.json() : { stages: [] }))
     )
       .then(results => {
         const map = {};
@@ -737,7 +746,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
                           </div>
                         )}
 
-                        {/* Deal stages — live from /pipeline-stages/sales */}
+                        {/* Deal stages — live from /deal-stages */}
                         <div className="sv-card">
                           <h4 style={{ marginTop: 0, marginBottom: 16, fontSize: 15 }}>📋 Deal Stages</h4>
                           {stagesLoading ? (
