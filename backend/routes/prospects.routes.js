@@ -430,7 +430,7 @@ router.post('/:id/research', async (req, res) => {
   try {
     const prospectResult = await db.query(
       `SELECT p.*,
-              acc.name AS account_name, acc.website AS account_website,
+              acc.name AS account_name, acc.domain AS account_domain,
               acc.industry AS account_industry
        FROM prospects p
        LEFT JOIN accounts acc ON p.account_id = acc.id
