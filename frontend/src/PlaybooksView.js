@@ -187,7 +187,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
     if (!playbook || !canEdit) return;
     setSaving(true);
     try {
-      if (isProspecting) {
+      if (isProspecting || isCLM || isHandover) {
         await apiService.playbooks.update(selectedId, {
           stage_guidance: playbook.stage_guidance,
           content: playbook.content,

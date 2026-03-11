@@ -641,7 +641,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   const loadList = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await apiService.handovers.list({ view: tab });
+      const res = await apiService.handovers.list(tab);
       setHandovers(res.data.handovers || []);
     } catch {
       setHandovers([]);

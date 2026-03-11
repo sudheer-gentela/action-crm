@@ -169,9 +169,9 @@ router.post('/', adminOnly, async (req, res) => {
     const orgTypes = orgTypesResult.rows[0]?.types;
     const validKeys = Array.isArray(orgTypes) && orgTypes.length > 0
       ? orgTypes.map(t => t.key)
-      : ['sales', 'market', 'product', 'custom', 'prospecting', 'clm']; // fallback
-    // clm is always a valid system type regardless of org settings
-    if (!validKeys.includes(type) && type !== 'custom' && type !== 'sales' && type !== 'clm') {
+      : ['sales', 'market', 'product', 'custom', 'prospecting', 'clm', 'handover_s2i']; // fallback
+    // clm and handover_s2i are always valid system types regardless of org settings
+    if (!validKeys.includes(type) && type !== 'custom' && type !== 'sales' && type !== 'clm' && type !== 'handover_s2i') {
       return res.status(400).json({ error: { message: `type must be one of: ${validKeys.join(', ')}` } });
     }
 
@@ -225,8 +225,8 @@ router.put('/:id', adminOnly, async (req, res) => {
       const orgTypes = orgTypesResult.rows[0]?.types;
       const validKeys = Array.isArray(orgTypes) && orgTypes.length > 0
         ? orgTypes.map(t => t.key)
-        : ['sales', 'market', 'product', 'custom', 'prospecting', 'clm'];
-      if (!validKeys.includes(type) && type !== 'custom' && type !== 'clm') {
+        : ['sales', 'market', 'product', 'custom', 'prospecting', 'clm', 'handover_s2i'];
+      if (!validKeys.includes(type) && type !== 'custom' && type !== 'clm' && type !== 'handover_s2i') {
         return res.status(400).json({ error: { message: `type must be one of: ${validKeys.join(', ')}` } });
       }
     }
