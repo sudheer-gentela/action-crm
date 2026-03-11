@@ -2764,13 +2764,6 @@ function OAPlaybooks() {
         if (data.playbook_types?.length) setPlaybookTypes(data.playbook_types);
       } catch (err) {
         console.error('Failed to load playbook types:', err);
-        // Hard fallback so the UI never renders empty — backend should always return these
-        setPlaybookTypes([
-          { key: 'sales',       label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
-          { key: 'prospecting', label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
-          { key: 'clm',         label: 'CLM',         icon: '📋', color: '#7c3aed', is_system: true },
-          { key: 'service',     label: 'Service',     icon: '🎧', color: '#0891b2', is_system: true },
-        ]);
       } finally {
         setPlaybookTypesLoading(false);
       }
