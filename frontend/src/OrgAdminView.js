@@ -4851,7 +4851,7 @@ function OACLMModule() {
           icon="📄"
           label="Contract Lifecycle Management"
           desc="Enables the full CLM workflow for your organisation — contract creation, legal review queues, approval chains, e-signature tracking, and document versioning."
-          toggleFn={(enabled) => toggleModuleApi('contracts', enabled)}
+          toggleFn={(enabled) => toggleModuleApi('clm', enabled)}
         />
       )}
       {subTab === 'esign'     && enabled && <OACLMESignConfig />}
@@ -4877,7 +4877,7 @@ function OAHandoverModule() {
         icon="🤝"
         label="Sales → Implementation Handover"
         desc="Automatically creates a handover checklist when a deal closes. Ensures the implementation team receives everything they need before the handoff."
-        toggleFn={(enabled) => toggleModuleApi('handovers', enabled)}
+        toggleFn={(enabled) => toggleModuleApi('handover_s2i', enabled)}
       />
     </div>
   );
@@ -4963,10 +4963,10 @@ function OAModules() {
   }, []);
 
   const MODULE_TOGGLE_API = {
-    contracts:   (enabled) => toggleModuleApi('contracts',   enabled),
-    prospecting: (enabled) => toggleModuleApi('prospecting', enabled),
-    handovers:   (enabled) => toggleModuleApi('handovers',   enabled),
-    service:     (enabled) => toggleModuleApi('service',     enabled),
+    contracts:   (enabled) => toggleModuleApi('clm',          enabled),
+    prospecting: (enabled) => toggleModuleApi('prospecting',  enabled),
+    handovers:   (enabled) => toggleModuleApi('handover_s2i', enabled),
+    service:     (enabled) => toggleModuleApi('support',      enabled),
   };
 
   const handleToggle = async (moduleName, newVal) => {
@@ -5577,7 +5577,7 @@ function OAServiceGeneral() {
   const handleToggle = async (newVal) => {
     setSaving(true); setError(''); setSuccess('');
     try {
-      await toggleModuleApi('service', newVal);
+      await toggleModuleApi('support', newVal);
       setEnabled(newVal);
       setSuccess(`Service module ${newVal ? 'enabled' : 'disabled'} ✓`);
       setTimeout(() => setSuccess(''), 3000);
