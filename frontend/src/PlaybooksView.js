@@ -95,7 +95,24 @@ export default function PlaybooksView({ initialTypeFilter }) {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(r => r.ok ? r.json() : Promise.reject())
-      .then(data => { if (data.playbook_types?.length) setPlaybookTypes(data.playbook_types); })
+      .then(data => {
+        if (data.playbook_types?.length) {
+          // Always ensure system types are present — merge API response with defaults
+          // The org/admin/playbook-types endpoint may not include system types like
+          // handover_s2i that were added after the org was created
+          const SYSTEM_TYPES = [
+            { key: 'sales',        label: 'Sales',        icon: '📘', color: '#3b82f6', is_system: true },
+            { key: 'prospecting',  label: 'Prospecting',  icon: '🎯', color: '#0F9D8E', is_system: true },
+            { key: 'handover_s2i', label: 'Handover',     icon: '🤝', color: '#0369a1', is_system: true },
+          ];
+          // Strip legacy 'handovers' key — correct key is 'handover_s2i'
+          const cleaned  = data.playbook_types.filter(t => t.key !== 'handovers');
+          const apiKeys  = new Set(cleaned.map(t => t.key));
+          const missing  = SYSTEM_TYPES.filter(t => !apiKeys.has(t.key));
+          console.log('[PB types] from API:', cleaned.map(t=>t.key), 'merged missing:', missing.map(t=>t.key));
+          setPlaybookTypes([...cleaned, ...missing]);
+        }
+      })
       .catch(() => { /* keep defaults — sales + prospecting */ });
   }, [API_BASE, token]);
 
@@ -139,6 +156,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
       try {
         setLoading(true);
         const r = await apiService.playbooks.getAll();
+        console.log('[PB list] all playbooks:', (r.data.playbooks || []).map(p => ({ id: p.id, name: p.name, type: p.type })));
         setPlaybooks(r.data.playbooks || []);
       } catch { setError('Failed to load playbooks'); }
       finally  { setLoading(false); }
