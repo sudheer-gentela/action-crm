@@ -139,8 +139,20 @@ export default function OrgAdminView() {
       .catch(console.error);
     apiService.orgAdmin.getProfile()
       .then(r => {
-        setOrgName(r.data.org.name);
-        const mods = r.data.org?.settings?.modules || {};
+        // Support both response shapes: r.data.org and r.data (axios wraps in .data)
+        const org  = r.data?.org ?? r.data ?? {};
+        const name = org.name || '';
+        if (name) setOrgName(name);
+
+        // Try both known response shapes for module flags
+        const mods =
+          org?.settings?.modules ||   // shape A: { org: { settings: { modules: {} } } }
+          org?.modules           ||   // shape B: { org: { modules: {} } }
+          r.data?.modules        ||   // shape C: { modules: {} } at top level
+          {};
+
+        console.log('[OrgAdminView] module flags from API:', mods); // temporary — remove after confirming
+
         setOrgModules({
           contracts:   mods.contracts   || false,
           prospecting: mods.prospecting || false,
@@ -148,7 +160,7 @@ export default function OrgAdminView() {
           service:     mods.service     || false,
         });
       })
-      .catch(console.error);
+      .catch(e => console.error('[OrgAdminView] getProfile failed:', e));
 
     // Listen for module toggle events fired by child General sub-tabs
     const handleModuleToggle = (e) => {
