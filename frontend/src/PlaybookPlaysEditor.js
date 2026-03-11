@@ -31,6 +31,15 @@ const CHANNELS = [
 
 const PRIORITIES = ['high', 'medium', 'low'];
 
+// Fixed stage keys for service playbooks — mirrors the case status CHECK constraint
+const SERVICE_STAGES = [
+  { key: 'open',             name: 'Open',             is_active: true, is_terminal: false },
+  { key: 'in_progress',      name: 'In Progress',      is_active: true, is_terminal: false },
+  { key: 'pending_customer', name: 'Pending Customer', is_active: true, is_terminal: false },
+  { key: 'resolved',         name: 'Resolved',         is_active: true, is_terminal: false },
+  { key: 'closed',           name: 'Closed',           is_active: true, is_terminal: false },
+];
+
 // ── PlayForm (create/edit) ──────────────────────────────────────────────────
 
 function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
@@ -591,8 +600,12 @@ export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
       setPlaybookType(pb.type || 'sales');
 
       // Determine stage source based on playbook type
+      const isService = pb.type === 'service';
       let stagesPromise;
-      if (isProspecting) {
+      if (isService) {
+        // Service stages are fixed case-status strings — no API call needed
+        stagesPromise = Promise.resolve({ stages: SERVICE_STAGES });
+      } else if (isProspecting) {
         stagesPromise = apiFetch('/prospect-stages');
       } else if (isCLM) {
         // CLM stages live in pipeline_stages with pipeline='clm'
@@ -734,6 +747,7 @@ export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
 
   const stageNoun = playbookType === 'prospecting' ? 'prospect stage'
     : playbookType === 'clm' ? 'contract stage'
+    : playbookType === 'service' ? 'case status'
     : 'stage';
 
   return (
