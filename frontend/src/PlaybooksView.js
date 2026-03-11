@@ -174,16 +174,20 @@ export default function PlaybooksView({ initialTypeFilter }) {
           delete raw.content.stages;
         }
         setPlaybook(raw);
+        console.log('[Handover PB] type:', raw?.type, 'stage_guidance:', raw?.stage_guidance, 'content:', raw?.content);
 
         // For handover_s2i: derive stages dynamically from playbook plays
-        // so any new stage keys added to the playbook are picked up automatically
         if (raw?.type === 'handover_s2i') {
           try {
-            const pr = await fetch(`${API_BASE}/playbook-plays/playbook/${selectedId}/all`, {
+            const playsUrl = `${API_BASE}/playbook-plays/playbook/${selectedId}/all`;
+            console.log('[Handover PB] fetching plays from:', playsUrl);
+            const pr = await fetch(playsUrl, {
               headers: { Authorization: `Bearer ${token}` },
             });
+            console.log('[Handover PB] plays response status:', pr.status);
             if (pr.ok) {
               const { plays } = await pr.json();
+              console.log('[Handover PB] plays keys:', Object.keys(plays || {}), 'plays:', plays);
               const stageKeys = Object.keys(plays || {});
               if (stageKeys.length > 0) {
                 const derived = stageKeys.map(key => ({
@@ -195,12 +199,17 @@ export default function PlaybooksView({ initialTypeFilter }) {
                   is_terminal: false,
                   stage_type:  key,
                 })).sort((a, b) => a.sort_order - b.sort_order);
+                console.log('[Handover PB] derived stages:', derived);
                 setHandoverStages(derived);
+              } else {
+                console.warn('[Handover PB] plays came back empty — no stage keys');
               }
+            } else {
+              console.error('[Handover PB] plays fetch failed:', pr.status);
             }
-          } catch { /* non-fatal — falls back to hardcoded default below */ }
+          } catch (e) { console.error('[Handover PB] plays fetch threw:', e); }
         }
-      } catch { setError('Failed to load playbook content'); }
+      } catch (e) { console.error('[Handover PB] playbook load failed:', e); setError('Failed to load playbook content'); }
     })();
   }, [selectedId, API_BASE, token]);
 
