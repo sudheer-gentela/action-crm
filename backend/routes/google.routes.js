@@ -95,39 +95,24 @@ router.get('/callback', async (req, res) => {
         return res.redirect(`${frontendUrl}/?error=missing_org_id`);
       }
 
-      // Extract email directly from the token response (id_token or email field)
-      // getUserProfile() won't work here because tokens aren't saved to oauth_tokens yet
-      let email = tokenResponse.email || null;
+      // NOTE: getTokenFromCode() returns camelCase keys:
+      //   accessToken, refreshToken, expiresOn  (NOT access_token / refresh_token / expiry_date)
+      const accessToken  = tokenResponse.accessToken;
+      const refreshToken = tokenResponse.refreshToken || null;
+      const expiresAt    = tokenResponse.expiresOn ? new Date(tokenResponse.expiresOn) : null;
 
-      // Fallback: decode id_token JWT payload to get email
-      if (!email && tokenResponse.id_token) {
-        try {
-          const payload = JSON.parse(
-            Buffer.from(tokenResponse.id_token.split('.')[1], 'base64').toString()
-          );
-          email = payload.email || null;
-        } catch (e) {
-          console.warn('⚠️  Could not decode id_token for email:', e.message);
-        }
+      if (!accessToken) {
+        console.error('❌ No accessToken in token response:', Object.keys(tokenResponse));
+        return res.redirect(`${frontendUrl}/?error=no_access_token`);
       }
 
-      // Last resort: temporarily save token and fetch profile, then clean up
-      if (!email) {
-        try {
-          await saveUserToken(userId, 'google', tokenResponse);
-          const profile = await getUserProfile(userId);
-          email = profile.email || null;
-        } catch (e) {
-          console.warn('⚠️  Fallback getUserProfile failed:', e.message);
-        }
-      }
+      // Save token first so getUserProfile can use getAuthenticatedClient
+      await saveUserToken(userId, 'google', tokenResponse);
+      const profile = await getUserProfile(userId);
+      const email   = profile.email || null;
 
       if (!email) {
         return res.redirect(`${frontendUrl}/?error=no_email_in_profile`);
-      }
-
-      if (!tokenResponse.access_token) {
-        return res.redirect(`${frontendUrl}/?error=no_access_token`);
       }
 
       console.log('📧 Saving prospecting sender account:', email, 'for user', userId);
@@ -151,9 +136,9 @@ router.get('/callback', async (req, res) => {
           userId,
           email,
           stateData.label || null,
-          tokenResponse.access_token,
-          tokenResponse.refresh_token || null,
-          tokenResponse.expiry_date ? new Date(tokenResponse.expiry_date) : null,
+          accessToken,
+          refreshToken,
+          expiresAt,
           JSON.stringify({ email, scope: tokenResponse.scope || null }),
         ]
       );
