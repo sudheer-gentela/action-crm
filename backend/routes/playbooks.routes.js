@@ -3,7 +3,7 @@
 // Mount in server.js: app.use('/api/playbooks', require('./routes/playbooks.routes'));
 //
 // KEY CHANGE: stage guidance endpoints now use stage KEY (e.g. "qualified", "demo")
-// as the identifier, not stage_type. The key is validated against deal_stages for
+// as the identifier, not stage_type. The key is validated against pipeline_stages for
 // the org, so any key the org has defined is valid.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -20,39 +20,27 @@ router.use(authenticateToken, orgContext);
 const adminOnly = requireRole('owner', 'admin');
 
 // ── Helper: validate a stage key belongs to this org ─────────────────────────
-// - sales/prospecting: validated against deal_stages / prospect_stages tables
-// - all other types: validated against playbook_stages table for that playbook
+// All types now use pipeline_stages — keyed by pipeline name.
+// Sales legacy types map to pipeline='sales', others use type key directly.
+const SALES_LEGACY_TYPES = ['sales', 'custom', 'market', 'product'];
+
 async function validateStageKey(orgId, stageKey, playbookType, playbookId) {
   if (!stageKey || !stageKey.trim()) return false;
 
-  if (playbookType === 'sales' || playbookType === 'custom' ||
-      playbookType === 'market' || playbookType === 'product') {
-    const result = await db.query(
-      `SELECT key FROM pipeline_stages WHERE org_id = $1 AND pipeline = 'sales' AND key = $2 LIMIT 1`,
-      [orgId, stageKey]
-    );
-    return result.rows.length > 0;
-  }
+  const pipeline = SALES_LEGACY_TYPES.includes(playbookType) ? 'sales'
+    : playbookType === 'prospecting' ? 'prospecting'
+    : playbookType; // clm, service, handover_s2i, or any custom type
 
-  if (playbookType === 'prospecting') {
-    const result = await db.query(
-      `SELECT key FROM pipeline_stages WHERE org_id = $1 AND pipeline = 'prospecting' AND key = $2 LIMIT 1`,
-      [orgId, stageKey]
-    );
-    return result.rows.length > 0;
-  }
-
-  // All other types — validate against playbook_stages table
-  // If no stages defined yet for this playbook, accept any non-empty key
+  // If no stages seeded yet for this pipeline, accept any non-empty key
   const stageCount = await db.query(
-    `SELECT COUNT(*) FROM playbook_stages WHERE playbook_id = $1`,
-    [playbookId]
+    `SELECT COUNT(*) FROM pipeline_stages WHERE org_id = $1 AND pipeline = $2`,
+    [orgId, pipeline]
   );
   if (parseInt(stageCount.rows[0].count) === 0) return true;
 
   const result = await db.query(
-    `SELECT key FROM playbook_stages WHERE playbook_id = $1 AND key = $2 LIMIT 1`,
-    [playbookId, stageKey]
+    `SELECT key FROM pipeline_stages WHERE org_id = $1 AND pipeline = $2 AND key = $3 LIMIT 1`,
+    [orgId, pipeline, stageKey]
   );
   return result.rows.length > 0;
 }

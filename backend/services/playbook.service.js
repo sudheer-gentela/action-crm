@@ -3,7 +3,7 @@
 //
 // Responsibilities:
 //   resolvePlaybook()    — find the right playbook for an entity (explicit or type default)
-//   getStagesForPlaybook() — fetch stages from playbook_stages table
+//   getStagesForPlaybook() — fetch stages from pipeline_stages table
 //   firePlaybookPlays()  — evaluate plays and insert into the module's play instances table
 //
 // Each module calls this service instead of implementing its own play-firing logic.
@@ -46,33 +46,24 @@ async function resolvePlaybook(orgId, playbookId, type) {
 }
 
 // ── getStagesForPlaybook ─────────────────────────────────────────────────────
-// Returns ordered active stages for a playbook from pipeline_stages.
-// All types use pipeline_stages — sales uses pipeline='sales',
-// prospecting uses pipeline='prospecting', all others use pipeline=playbookType.
+// Returns ordered active non-terminal stages for a playbook from pipeline_stages.
+// All types use pipeline_stages — sales legacy types map to pipeline='sales',
+// prospecting to pipeline='prospecting', all others use the type key directly.
 //
 // returns: Array<{ key, name, sort_order, is_active, is_terminal }>
-async function getStagesForPlaybook(orgId, playbookId, playbookType) {
-  // Sales-type playbooks and prospecting both use pipeline_stages
-  const pipelineTypes = ['sales', 'custom', 'market', 'product'];
-  if (!playbookType || pipelineTypes.includes(playbookType) || playbookType === 'prospecting') {
-    const pipeline = pipelineTypes.includes(playbookType) || !playbookType ? 'sales' : playbookType;
-    const result = await db.query(
-      `SELECT key, name, sort_order, is_active, is_terminal
-       FROM pipeline_stages
-       WHERE org_id = $1 AND pipeline = $2 AND is_active = true AND is_terminal = false
-       ORDER BY sort_order`,
-      [orgId, pipeline]
-    );
-    return result.rows;
-  }
+const SALES_LEGACY_TYPES = ['sales', 'custom', 'market', 'product'];
 
-  // All other types (service, clm, handover_s2i, custom pipeline types) — use playbook_stages table
+async function getStagesForPlaybook(orgId, playbookId, playbookType) {
+  const pipeline = !playbookType || SALES_LEGACY_TYPES.includes(playbookType) ? 'sales'
+    : playbookType === 'prospecting' ? 'prospecting'
+    : playbookType; // clm, service, handover_s2i, or any custom type
+
   const result = await db.query(
     `SELECT key, name, sort_order, is_active, is_terminal
-     FROM playbook_stages
-     WHERE playbook_id = $1 AND is_active = true AND is_terminal = false
+     FROM pipeline_stages
+     WHERE org_id = $1 AND pipeline = $2 AND is_active = true AND is_terminal = false
      ORDER BY sort_order`,
-    [playbookId]
+    [orgId, pipeline]
   );
   return result.rows;
 }
