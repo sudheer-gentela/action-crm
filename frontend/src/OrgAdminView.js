@@ -4521,19 +4521,12 @@ function OAIntegrations() {
 // ═══════════════════════════════════════════════════════════════════
 
 // ── Shared sub-tab bar ──────────────────────────────────────────────
-// ── Module toggle helper — calls PATCH /org/admin/module/:moduleKey ──────────
-// apiService does not expose a toggleModule method on all namespaces,
-// so we call the endpoint directly here.
-function toggleModuleApi(moduleKey, enabled) {
-  const API   = process.env.REACT_APP_API_URL;
-  const token = localStorage.getItem('token') || localStorage.getItem('authToken');
-  return fetch(`${API}/org/admin/module/${moduleKey}`, {
-    method:  'PATCH',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body:    JSON.stringify({ enabled }),
-  }).then(r => {
-    if (!r.ok) return r.json().then(e => Promise.reject(new Error(e?.error?.message || r.statusText)));
-    return r.json();
+// ── Module toggle helpers ─────────────────────────────────────────────────────
+// contracts/handovers/support use their apiService.toggleModule methods.
+// prospecting has no dedicated endpoint — falls back to orgAdmin.updateProfile.
+function toggleProspectingModule(enabled) {
+  return apiService.orgAdmin.updateProfile({
+    settings: { modules: { prospecting: enabled } },
   });
 }
 
@@ -4658,7 +4651,7 @@ function OAProspectingModule() {
         icon="🎯"
         label="Prospecting"
         desc="Enables the prospect pipeline, ICP scoring, outreach sequencing, and prospecting playbooks for your whole organisation."
-        toggleFn={(enabled) => toggleModuleApi('prospecting', enabled)}
+        toggleFn={(enabled) => toggleProspectingModule(enabled)}
       />
     </div>
   );
@@ -4851,7 +4844,7 @@ function OACLMModule() {
           icon="📄"
           label="Contract Lifecycle Management"
           desc="Enables the full CLM workflow for your organisation — contract creation, legal review queues, approval chains, e-signature tracking, and document versioning."
-          toggleFn={(enabled) => toggleModuleApi('clm', enabled)}
+          toggleFn={(enabled) => apiService.contracts.toggleModule(enabled)}
         />
       )}
       {subTab === 'esign'     && enabled && <OACLMESignConfig />}
@@ -4877,7 +4870,7 @@ function OAHandoverModule() {
         icon="🤝"
         label="Sales → Implementation Handover"
         desc="Automatically creates a handover checklist when a deal closes. Ensures the implementation team receives everything they need before the handoff."
-        toggleFn={(enabled) => toggleModuleApi('handover_s2i', enabled)}
+        toggleFn={(enabled) => apiService.handovers.toggleModule(enabled)}
       />
     </div>
   );
@@ -4963,10 +4956,10 @@ function OAModules() {
   }, []);
 
   const MODULE_TOGGLE_API = {
-    contracts:   (enabled) => toggleModuleApi('clm',          enabled),
-    prospecting: (enabled) => toggleModuleApi('prospecting',  enabled),
-    handovers:   (enabled) => toggleModuleApi('handover_s2i', enabled),
-    service:     (enabled) => toggleModuleApi('support',      enabled),
+    contracts:   (enabled) => apiService.contracts.toggleModule(enabled),
+    prospecting: (enabled) => toggleProspectingModule(enabled),
+    handovers:   (enabled) => apiService.handovers.toggleModule(enabled),
+    service:     (enabled) => apiService.support.toggleModule(enabled),
   };
 
   const handleToggle = async (moduleName, newVal) => {
@@ -5577,7 +5570,7 @@ function OAServiceGeneral() {
   const handleToggle = async (newVal) => {
     setSaving(true); setError(''); setSuccess('');
     try {
-      await toggleModuleApi('support', newVal);
+      await apiService.support.toggleModule(newVal);
       setEnabled(newVal);
       setSuccess(`Service module ${newVal ? 'enabled' : 'disabled'} ✓`);
       setTimeout(() => setSuccess(''), 3000);
