@@ -20,17 +20,32 @@ router.use(authenticateToken, orgContext);
 const adminOnly = requireRole('owner', 'admin');
 
 // ── Helper: validate a stage key belongs to this org ─────────────────────────
-// Checks both deal_stages and prospect_stages so guidance can be saved
-// for either sales or prospecting playbooks.
-async function validateStageKey(orgId, stageKey) {
-  const result = await db.query(
-    `SELECT key FROM deal_stages WHERE org_id = $1 AND key = $2
-     UNION ALL
-     SELECT key FROM prospect_stages WHERE org_id = $1 AND key = $2
-     LIMIT 1`,
-    [orgId, stageKey]
-  );
-  return result.rows.length > 0;
+// - sales/prospecting types: validated against deal_stages / prospect_stages
+// - all other types: any non-empty stage key is accepted — stages are defined
+//   by the admin in the playbook UI, not stored in a pipeline stages table
+async function validateStageKey(orgId, stageKey, playbookType) {
+  if (!stageKey || !stageKey.trim()) return false;
+
+  if (playbookType === 'sales' || playbookType === 'custom' ||
+      playbookType === 'market' || playbookType === 'product') {
+    const result = await db.query(
+      `SELECT key FROM deal_stages WHERE org_id = $1 AND key = $2 LIMIT 1`,
+      [orgId, stageKey]
+    );
+    return result.rows.length > 0;
+  }
+
+  if (playbookType === 'prospecting') {
+    const result = await db.query(
+      `SELECT key FROM prospect_stages WHERE org_id = $1 AND key = $2 LIMIT 1`,
+      [orgId, stageKey]
+    );
+    return result.rows.length > 0;
+  }
+
+  // All other types (service, clm, handover_s2i, any custom type) —
+  // accept any non-empty key. Stages are defined by the admin, not in a DB table.
+  return true;
 }
 
 // ── Helper: build default stage_guidance from salesPlaybook.js ───────────────
@@ -167,12 +182,13 @@ router.post('/', adminOnly, async (req, res) => {
       [req.orgId]
     );
     const orgTypes = orgTypesResult.rows[0]?.types;
-    const validKeys = Array.isArray(orgTypes) && orgTypes.length > 0
-      ? orgTypes.map(t => t.key)
-      : ['sales', 'market', 'product', 'custom', 'prospecting', 'clm', 'handover_s2i']; // fallback
-    // clm and handover_s2i are always valid system types regardless of org settings
-    if (!validKeys.includes(type) && type !== 'custom' && type !== 'sales' && type !== 'clm' && type !== 'handover_s2i') {
-      return res.status(400).json({ error: { message: `type must be one of: ${validKeys.join(', ')}` } });
+    // System types are always valid regardless of org settings
+    const SYSTEM_TYPE_KEYS = ['sales', 'market', 'product', 'custom', 'prospecting', 'clm', 'handover_s2i', 'service'];
+    if (!SYSTEM_TYPE_KEYS.includes(type)) {
+      const customKeys = Array.isArray(orgTypes) ? orgTypes.map(t => t.key) : [];
+      if (!customKeys.includes(type)) {
+        return res.status(400).json({ error: { message: `type must be one of: ${[...SYSTEM_TYPE_KEYS, ...customKeys].join(', ')}` } });
+      }
     }
 
     if (is_default) {
@@ -183,11 +199,18 @@ router.post('/', adminOnly, async (req, res) => {
       );
     }
 
-    // Auto-populate stage_guidance from salesPlaybook defaults when none provided
-    // (skip for prospecting playbooks — they use prospect stages, not deal stages)
-    const resolvedGuidance = (Object.keys(stage_guidance).length > 0)
-      ? stage_guidance
-      : (type === 'prospecting' ? buildDefaultProspectingGuidance() : await buildDefaultGuidance(req.orgId));
+    // Auto-populate stage_guidance from defaults when none provided.
+    // Only sales-type playbooks get deal stage defaults — everything else starts empty.
+    let resolvedGuidance;
+    if (Object.keys(stage_guidance).length > 0) {
+      resolvedGuidance = stage_guidance;
+    } else if (type === 'prospecting') {
+      resolvedGuidance = buildDefaultProspectingGuidance();
+    } else if (type === 'sales' || type === 'custom' || type === 'market' || type === 'product') {
+      resolvedGuidance = await buildDefaultGuidance(req.orgId);
+    } else {
+      resolvedGuidance = {}; // all other types start with empty guidance, admin fills via UI
+    }
 
     const result = await db.query(
       `INSERT INTO playbooks (org_id, name, type, description, content, stage_guidance, is_default)
@@ -287,7 +310,17 @@ router.put('/:id/stages/:stageKey', adminOnly, async (req, res) => {
   try {
     const { stageKey } = req.params;
 
-    const keyExists = await validateStageKey(req.orgId, stageKey);
+    // Fetch playbook type so validateStageKey can apply the right validation strategy
+    const pbRow = await db.query(
+      'SELECT type FROM playbooks WHERE id = $1 AND org_id = $2',
+      [req.params.id, req.orgId]
+    );
+    if (pbRow.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Playbook not found' } });
+    }
+    const playbookType = pbRow.rows[0].type;
+
+    const keyExists = await validateStageKey(req.orgId, stageKey, playbookType);
     if (!keyExists) {
       return res.status(400).json({
         error: { message: `Stage key "${stageKey}" does not exist in your organisation's stages` },
