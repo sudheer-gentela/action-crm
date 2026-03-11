@@ -201,7 +201,7 @@ export default function OAStages() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Deal Stages Panel (uses /deal-stages)
+// Deal Stages Panel (uses /pipeline-stages/sales)
 // ═══════════════════════════════════════════════════════════════════════════
 
 function DealStagesPanel() {
@@ -226,7 +226,7 @@ function DealStagesPanel() {
   }
 
   const load = useCallback(async () => {
-    try { setLoading(true); const r = await apiFetch('/deal-stages'); setStages(r.stages || []); }
+    try { setLoading(true); const r = await apiFetch('/pipeline-stages/sales'); setStages(r.stages || []); }
     catch (e) { setError(e.message); } finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -239,14 +239,14 @@ function DealStagesPanel() {
     const newOrder = sorted.map(s => s.id);
     [newOrder[idx], newOrder[swapIdx]] = [newOrder[swapIdx], newOrder[idx]];
     try {
-      const r = await apiFetch('/deal-stages/reorder', { method: 'PATCH', body: JSON.stringify({ order: newOrder }) });
+      const r = await apiFetch('/pipeline-stages/sales/reorder', { method: 'PATCH', body: JSON.stringify({ order: newOrder }) });
       setStages(r.stages || []);
     } catch (e) { flash('error', e.message); }
   }
 
   async function handleToggle(stage) {
     try {
-      const r = await apiFetch(`/deal-stages/${stage.id}`, { method: 'PUT', body: JSON.stringify({ is_active: !stage.is_active }) });
+      const r = await apiFetch(`/pipeline-stages/sales/${stage.id}`, { method: 'PUT', body: JSON.stringify({ is_active: !stage.is_active }) });
       setStages(prev => prev.map(s => s.id === stage.id ? r.stage : s));
       flash('success', `"${stage.name}" ${r.stage.is_active ? 'activated' : 'deactivated'}`);
     } catch (e) { flash('error', e.message); }
@@ -255,7 +255,7 @@ function DealStagesPanel() {
   async function handleRename(stage) {
     if (!editName.trim() || editName.trim() === stage.name) { setEditId(null); return; }
     try {
-      const r = await apiFetch(`/deal-stages/${stage.id}`, { method: 'PUT', body: JSON.stringify({ name: editName.trim() }) });
+      const r = await apiFetch(`/pipeline-stages/sales/${stage.id}`, { method: 'PUT', body: JSON.stringify({ name: editName.trim() }) });
       setStages(prev => prev.map(s => s.id === stage.id ? r.stage : s));
       setEditId(null);
       flash('success', 'Stage renamed');
@@ -265,7 +265,7 @@ function DealStagesPanel() {
   async function handleDelete(stage) {
     if (!window.confirm(`Delete "${stage.name}"? This cannot be undone if no deals reference it.`)) return;
     try {
-      const r = await apiFetch(`/deal-stages/${stage.id}`, { method: 'DELETE' });
+      const r = await apiFetch(`/pipeline-stages/sales/${stage.id}`, { method: 'DELETE' });
       if (r.action === 'deactivated') {
         setStages(prev => prev.map(s => s.id === stage.id ? { ...s, is_active: false } : s));
       } else {
@@ -279,7 +279,7 @@ function DealStagesPanel() {
     if (!newName.trim()) return;
     setSubmitting(true);
     try {
-      const r = await apiFetch('/deal-stages', {
+      const r = await apiFetch('/pipeline-stages/sales', {
         method: 'POST',
         body: JSON.stringify({ name: newName.trim(), stage_type: newType, is_terminal: newTerminal }),
       });
@@ -341,7 +341,7 @@ function DealStagesPanel() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Prospect Stages Panel (uses /prospect-stages)
+// Prospect Stages Panel (uses /pipeline-stages/prospecting)
 // ═══════════════════════════════════════════════════════════════════════════
 
 function ProspectStagesPanel() {
@@ -367,7 +367,7 @@ function ProspectStagesPanel() {
   }
 
   const load = useCallback(async () => {
-    try { setLoading(true); const r = await apiFetch('/prospect-stages'); setStages(r.stages || []); }
+    try { setLoading(true); const r = await apiFetch('/pipeline-stages/prospecting'); setStages(r.stages || []); }
     catch (e) { setError(e.message); } finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -380,14 +380,14 @@ function ProspectStagesPanel() {
     const newOrder = sorted.map(s => s.id);
     [newOrder[idx], newOrder[swapIdx]] = [newOrder[swapIdx], newOrder[idx]];
     try {
-      const r = await apiFetch('/prospect-stages/reorder', { method: 'PATCH', body: JSON.stringify({ order: newOrder }) });
+      const r = await apiFetch('/pipeline-stages/prospecting/reorder', { method: 'PATCH', body: JSON.stringify({ order: newOrder }) });
       setStages(r.stages || []);
     } catch (e) { flash('error', e.message); }
   }
 
   async function handleToggle(stage) {
     try {
-      const r = await apiFetch(`/prospect-stages/${stage.id}`, { method: 'PUT', body: JSON.stringify({ is_active: !stage.is_active }) });
+      const r = await apiFetch(`/pipeline-stages/prospecting/${stage.id}`, { method: 'PUT', body: JSON.stringify({ is_active: !stage.is_active }) });
       setStages(prev => prev.map(s => s.id === stage.id ? r.stage : s));
       flash('success', `"${stage.name}" ${r.stage.is_active ? 'activated' : 'deactivated'}`);
     } catch (e) { flash('error', e.message); }
@@ -396,7 +396,7 @@ function ProspectStagesPanel() {
   async function handleRename(stage) {
     if (!editName.trim() || editName.trim() === stage.name) { setEditId(null); return; }
     try {
-      const r = await apiFetch(`/prospect-stages/${stage.id}`, { method: 'PUT', body: JSON.stringify({ name: editName.trim() }) });
+      const r = await apiFetch(`/pipeline-stages/prospecting/${stage.id}`, { method: 'PUT', body: JSON.stringify({ name: editName.trim() }) });
       setStages(prev => prev.map(s => s.id === stage.id ? r.stage : s));
       setEditId(null);
       flash('success', 'Stage renamed');
@@ -406,7 +406,7 @@ function ProspectStagesPanel() {
   async function handleDelete(stage) {
     if (!window.confirm(`Delete "${stage.name}"?`)) return;
     try {
-      const r = await apiFetch(`/prospect-stages/${stage.id}`, { method: 'DELETE' });
+      const r = await apiFetch(`/pipeline-stages/prospecting/${stage.id}`, { method: 'DELETE' });
       if (r.action === 'deactivated') {
         setStages(prev => prev.map(s => s.id === stage.id ? { ...s, is_active: false } : s));
       } else {
@@ -420,7 +420,7 @@ function ProspectStagesPanel() {
     if (!newName.trim()) return;
     setSubmitting(true);
     try {
-      const r = await apiFetch('/prospect-stages', {
+      const r = await apiFetch('/pipeline-stages/prospecting', {
         method: 'POST',
         body: JSON.stringify({ name: newName.trim(), stage_type: newType, is_terminal: newTerminal, color: newColor }),
       });
