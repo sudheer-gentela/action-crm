@@ -1,347 +1,295 @@
-/**
- * playbook.service.js
- *
- * Playbook data access + condition evaluation for conditional play firing.
- *
- * KEY ADDITIONS (Phase 1):
- *   - getPlaysForStage(orgId, stageKey) — fetches structured plays (not key_action strings)
- *   - evaluateConditions(conditions, context) — pure function, zero DB calls
- *     evaluates fire_conditions array against deal context object
- *
- * EXISTING METHODS retained unchanged:
- *   - getStageActions, getStageGuidance, getDefaultGuidance
- *   - classifyActionType, suggestPriority, suggestDueDays
- *   - extractKeywords, requiresExternalEvidence
- *   - upsertStageGuidance
- */
+// playbookService.js
+// Shared playbook service — works across all modules (deals, cases, contracts, prospects).
+//
+// Responsibilities:
+//   resolvePlaybook()    — find the right playbook for an entity (explicit or type default)
+//   getStagesForPlaybook() — fetch stages from playbook_stages table
+//   firePlaybookPlays()  — evaluate plays and insert into the module's play instances table
+//
+// Each module calls this service instead of implementing its own play-firing logic.
+
+'use strict';
 
 const db = require('../config/database');
 
-// ── Condition evaluator ───────────────────────────────────────────────────────
+// ── Play instances config per entity type ────────────────────────────────────
+// Maps entityType → { table, entityColumn }
+// Add new modules here as they are built.
+const ENTITY_CONFIG = {
+  deal:     { table: 'deal_play_instances', entityColumn: 'deal_id'     },
+  case:     { table: 'case_plays',          entityColumn: 'case_id'     },
+  contract: { table: 'contract_plays',      entityColumn: 'contract_id' },
+  prospect: { table: 'prospecting_actions', entityColumn: 'prospect_id' },
+};
+
+// ── resolvePlaybook ──────────────────────────────────────────────────────────
+// Returns the playbook_id to use for an entity.
+//   1. If the entity has an explicit playbook_id set — use it
+//   2. Otherwise find the default playbook for that type in the org
 //
-// Supported condition types and their context lookups:
+// params:
+//   orgId      {number}
+//   playbookId {number|null}  — from entity row (e.g. cases.playbook_id)
+//   type       {string}       — playbook type ('service', 'clm', 'sales', ...)
 //
-//  { type: 'no_meeting_this_stage' }
-//    → no completed meeting since deal.stage_changed_at
-//
-//  { type: 'meeting_not_scheduled' }
-//    → no upcoming (status=scheduled, future) meeting on the deal
-//
-//  { type: 'no_email_since_meeting' }
-//    → no outbound email sent after the last completed meeting
-//
-//  { type: 'no_contact_role', role: 'decision_maker' }
-//    → no contact with that role_type on the deal's account
-//
-//  { type: 'no_file_matching', pattern: 'proposal|quote' }
-//    → no file whose file_name matches the regex pattern
-//
-//  { type: 'days_in_stage', operator: '>', value: 7 }
-//    → derived.daysInStage > 7  (operator: '>' | '>=' | '<' | '<=')
-//
-//  { type: 'days_until_close', operator: '<', value: 14 }
-//    → derived.daysUntilClose < 14
-//
-//  { type: 'health_param_state', param: '2a', state: 'absent' }
-//    → healthBreakdown.params['2a'].state === 'absent'
-//
-// All conditions are AND-ed: every condition must pass for the play to fire.
-// Empty array = fire unconditionally (safe default for unconfigured plays).
+// returns: {number|null} resolved playbook id
+async function resolvePlaybook(orgId, playbookId, type) {
+  if (playbookId) return playbookId;
 
-function evaluateConditions(conditions, context) {
-  if (!conditions || conditions.length === 0) return true;
-
-  const { deal, derived, contacts, emails, files, healthBreakdown } = context;
-
-  for (const cond of conditions) {
-    switch (cond.type) {
-
-      case 'no_meeting_this_stage': {
-        // True (should fire) when NO completed meeting exists since stage entry
-        const stageEntryDate = deal.stage_changed_at ? new Date(deal.stage_changed_at) : new Date(0);
-        const hasMeetingThisStage = derived.completedMeetings.some(
-          m => new Date(m.start_time) >= stageEntryDate
-        );
-        if (hasMeetingThisStage) return false;
-        break;
-      }
-
-      case 'meeting_not_scheduled': {
-        // True when no upcoming meeting is booked
-        if (derived.upcomingMeetings.length > 0) return false;
-        break;
-      }
-
-      case 'no_email_since_meeting': {
-        // True when no outbound email has been sent after the last completed meeting
-        const lastMeeting = derived.completedMeetings[0];
-        if (lastMeeting) {
-          const meetingTime = new Date(lastMeeting.start_time);
-          const hasFollowUp = emails.some(
-            e => e.direction === 'sent' && new Date(e.sent_at) > meetingTime
-          );
-          if (hasFollowUp) return false;
-        }
-        break;
-      }
-
-      case 'no_contact_role': {
-        // True when no contact with the specified role exists
-        const role = cond.role || '';
-        const roleVariants = {
-          decision_maker: ['decision_maker', 'economic_buyer'],
-          champion:       ['champion'],
-          executive:      ['executive', 'decision_maker', 'economic_buyer'],
-          influencer:     ['influencer'],
-        };
-        const acceptedRoles = roleVariants[role] || [role];
-        const hasRole = contacts.some(c => acceptedRoles.includes(c.role_type));
-        if (hasRole) return false;
-        break;
-      }
-
-      case 'no_file_matching': {
-        // True when no file matches the provided regex pattern
-        const pattern = cond.pattern || '';
-        if (pattern) {
-          try {
-            const regex = new RegExp(pattern, 'i');
-            const hasFile = files.some(f => regex.test(f.file_name || ''));
-            if (hasFile) return false;
-          } catch (_) {
-            // Invalid regex — treat as condition passed (don't block play)
-          }
-        }
-        break;
-      }
-
-      case 'days_in_stage': {
-        const val = Number(cond.value ?? 0);
-        const days = derived.daysInStage ?? 0;
-        if (!compareValues(days, cond.operator || '>', val)) return false;
-        break;
-      }
-
-      case 'days_until_close': {
-        if (derived.daysUntilClose === null) break; // no close date — condition skipped
-        const val = Number(cond.value ?? 0);
-        if (!compareValues(derived.daysUntilClose, cond.operator || '<', val)) return false;
-        break;
-      }
-
-      case 'health_param_state': {
-        const param = cond.param;
-        const expectedState = cond.state;
-        if (param && expectedState && healthBreakdown?.params) {
-          const actualState = healthBreakdown.params[param]?.state;
-          if (actualState !== expectedState) return false;
-        }
-        break;
-      }
-
-      default:
-        // Unknown condition type — skip (don't block the play)
-        break;
-    }
-  }
-
-  return true; // all conditions passed
+  const result = await db.query(
+    `SELECT id FROM playbooks
+     WHERE org_id = $1 AND type = $2 AND is_default = true
+     LIMIT 1`,
+    [orgId, type]
+  );
+  return result.rows[0]?.id || null;
 }
 
-function compareValues(actual, operator, expected) {
-  switch (operator) {
+// ── getStagesForPlaybook ─────────────────────────────────────────────────────
+// Returns ordered active stages for a playbook from the playbook_stages table.
+// Falls back to deal_stages (sales) or prospect_stages (prospecting) for
+// legacy playbook types that predate the playbook_stages table.
+//
+// returns: Array<{ key, name, sort_order, is_active, is_terminal }>
+async function getStagesForPlaybook(orgId, playbookId, playbookType) {
+  // Sales-type playbooks use deal_stages (org-wide pipeline)
+  if (!playbookType || ['sales', 'custom', 'market', 'product'].includes(playbookType)) {
+    const result = await db.query(
+      `SELECT key, name, sort_order, is_active, is_terminal
+       FROM deal_stages WHERE org_id = $1 AND is_active = true AND is_terminal = false
+       ORDER BY sort_order`,
+      [orgId]
+    );
+    return result.rows;
+  }
+
+  // Prospecting uses prospect_stages
+  if (playbookType === 'prospecting') {
+    const result = await db.query(
+      `SELECT key, name, sort_order, is_active, is_terminal
+       FROM prospect_stages WHERE org_id = $1 AND is_active = true AND is_terminal = false
+       ORDER BY sort_order`,
+      [orgId]
+    );
+    return result.rows;
+  }
+
+  // All other types (service, clm, handover_s2i, custom) — use playbook_stages table
+  const result = await db.query(
+    `SELECT key, name, sort_order, is_active, is_terminal
+     FROM playbook_stages
+     WHERE playbook_id = $1 AND is_active = true AND is_terminal = false
+     ORDER BY sort_order`,
+    [playbookId]
+  );
+  return result.rows;
+}
+
+// ── evaluateConditions ───────────────────────────────────────────────────────
+// Returns true if all fire conditions pass for the given context.
+// Context shape varies by entity type — each module passes what it knows.
+// Empty conditions = always fire.
+function evaluateConditions(conditions, context) {
+  if (!Array.isArray(conditions) || conditions.length === 0) return true;
+
+  return conditions.every(cond => {
+    try {
+      switch (cond.type) {
+        // ── Deal / Sales conditions ───────────────────────────────────────
+        case 'no_meeting_this_stage':
+          return !context.hadMeetingThisStage;
+
+        case 'meeting_not_scheduled':
+          return !context.hasMeetingScheduled;
+
+        case 'no_email_since_meeting':
+          return context.hadMeeting && !context.hasEmailSinceMeeting;
+
+        case 'no_contact_role':
+          return !(context.contactRoles || []).includes(cond.role);
+
+        case 'no_file_matching':
+          return !(context.fileNames || []).some(n =>
+            new RegExp(cond.pattern || '', 'i').test(n)
+          );
+
+        case 'days_in_stage': {
+          const days = context.daysInStage ?? 0;
+          return applyOperator(cond.operator, days, cond.value);
+        }
+
+        case 'days_until_close': {
+          const days = context.daysUntilClose ?? 999;
+          return applyOperator(cond.operator, days, cond.value);
+        }
+
+        case 'health_param_state':
+          return (context.healthParams || {})[cond.param] === cond.state;
+
+        // ── Case / Service conditions ─────────────────────────────────────
+        case 'priority_is':
+          return context.priority === cond.value;
+
+        case 'sla_tier_is':
+          return String(context.slaTierId) === String(cond.value);
+
+        case 'response_breached':
+          return context.responseBreached === true;
+
+        case 'resolution_breached':
+          return context.resolutionBreached === true;
+
+        // ── Contract / CLM conditions ─────────────────────────────────────
+        case 'contract_value_above':
+          return (context.contractValue || 0) > (cond.value || 0);
+
+        case 'arr_impact':
+          return context.arrImpact === true;
+
+        // ── Prospect conditions ───────────────────────────────────────────
+        case 'icp_score_above':
+          return (context.icpScore || 0) > (cond.value || 0);
+
+        case 'outreach_count_above':
+          return (context.outreachCount || 0) > (cond.value || 0);
+
+        default:
+          // Unknown condition type — don't block the play
+          return true;
+      }
+    } catch {
+      return true; // evaluation error — don't block
+    }
+  });
+}
+
+function applyOperator(op, actual, expected) {
+  switch (op) {
     case '>':  return actual >  expected;
     case '>=': return actual >= expected;
     case '<':  return actual <  expected;
     case '<=': return actual <= expected;
-    case '=':
-    case '==': return actual === expected;
-    default:   return actual >  expected;
+    default:   return true;
   }
 }
 
-// ── PlaybookService class ─────────────────────────────────────────────────────
+// ── buildDueAt ───────────────────────────────────────────────────────────────
+// Calculates due_at from due_offset_days. Falls back to 3 days.
+function buildDueAt(dueOffsetDays) {
+  const days = parseInt(dueOffsetDays) || 3;
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d;
+}
 
-class PlaybookService {
+// ── firePlaybookPlays ────────────────────────────────────────────────────────
+// Core method — fires plays for an entity when it enters a stage.
+//
+// params: {
+//   orgId        {number}
+//   playbookId   {number}   — already resolved (use resolvePlaybook first)
+//   stageKey     {string}   — the stage/status the entity just entered
+//   entityType   {string}   — 'deal' | 'case' | 'contract' | 'prospect'
+//   entityId     {number}   — id of the atomic unit
+//   context      {object}   — module-specific fields for condition evaluation
+//   assignedTo   {number|null} — default user to assign plays to
+// }
+//
+// returns: { fired: number, skipped: number }
+async function firePlaybookPlays({ orgId, playbookId, stageKey, entityType, entityId, context = {}, assignedTo = null }) {
+  const cfg = ENTITY_CONFIG[entityType];
+  if (!cfg) throw new Error(`Unknown entityType: ${entityType}`);
 
-  // ── Phase 1: Get structured plays for a stage ──────────────────────────────
-  // Returns plays with fire_conditions, channel, priority, due_offset_days,
-  // suggested_action, and role assignments — replacing the key_action string array.
+  // Fetch all active plays for this playbook + stage
+  const playsResult = await db.query(
+    `SELECT pp.id, pp.title, pp.fire_conditions, pp.due_offset_days,
+            pp.execution_type, pp.is_gate, pp.is_active
+     FROM playbook_plays pp
+     WHERE pp.playbook_id = $1
+       AND pp.stage_key   = $2
+       AND pp.is_active   = true`,
+    [playbookId, stageKey]
+  );
 
-  static async getPlaysForStage(orgId, stageKey) {
-    if (!orgId || !stageKey) return [];
+  const plays = playsResult.rows;
+  if (plays.length === 0) return { fired: 0, skipped: 0 };
+
+  let fired = 0;
+  let skipped = 0;
+
+  for (const play of plays) {
+    const conditions = Array.isArray(play.fire_conditions) ? play.fire_conditions : [];
+
+    if (!evaluateConditions(conditions, context)) {
+      skipped++;
+      continue;
+    }
+
+    const dueAt = buildDueAt(play.due_offset_days);
+
     try {
-      const result = await db.query(
-        `SELECT
-           pp.id,
-           pp.title,
-           pp.description,
-           pp.channel,
-           pp.priority,
-           pp.due_offset_days,
-           pp.execution_type,
-           pp.depends_on,
-           pp.is_gate,
-           pp.unlocks_play_id,
-           pp.fire_conditions,
-           pp.suggested_action,
-           COALESCE(
-             json_agg(
-               json_build_object(
-                 'role_id',        ppr.role_id,
-                 'ownership_type', ppr.ownership_type,
-                 'role_name',      dr.name
-               )
-             ) FILTER (WHERE ppr.role_id IS NOT NULL),
-             '[]'
-           ) AS roles
-         FROM playbook_plays pp
-         LEFT JOIN playbook_play_roles ppr ON ppr.play_id = pp.id
-         LEFT JOIN org_roles dr ON dr.id = ppr.role_id
-         WHERE pp.org_id = $1
-           AND pp.stage_key = $2
-           AND pp.is_active = true
-         GROUP BY pp.id
-         ORDER BY pp.sort_order ASC, pp.id ASC`,
-        [orgId, stageKey]
-      );
-      return result.rows.map(r => ({
-        ...r,
-        fire_conditions: typeof r.fire_conditions === 'string'
-          ? JSON.parse(r.fire_conditions)
-          : (r.fire_conditions || []),
-        roles: typeof r.roles === 'string' ? JSON.parse(r.roles) : (r.roles || []),
-        depends_on: Array.isArray(r.depends_on) ? r.depends_on : [],
-      }));
+      if (entityType === 'prospect') {
+        // prospecting_actions has a different shape — map to its columns
+        await db.query(
+          `INSERT INTO prospecting_actions
+             (org_id, prospect_id, playbook_id, play_id, title, action_type,
+              status, priority, due_date, source)
+           VALUES ($1, $2, $3, $4, $5, 'playbook_play', 'pending', 'medium', $6, 'playbook')`,
+          [orgId, entityId, playbookId, play.id, play.title, dueAt]
+        );
+      } else {
+        // deal_play_instances, case_plays, contract_plays — all share same shape
+        await db.query(
+          `INSERT INTO ${cfg.table}
+             (org_id, ${cfg.entityColumn}, playbook_id, play_id, stage_key,
+              status, assigned_to, due_at)
+           VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7)`,
+          [orgId, entityId, playbookId, play.id, stageKey, assignedTo, dueAt]
+        );
+      }
+      fired++;
     } catch (err) {
-      console.error('PlaybookService.getPlaysForStage error:', err.message);
-      return [];
+      // Log but don't block — play firing is non-critical
+      console.error(`[playbookService] Failed to fire play ${play.id} for ${entityType} ${entityId}:`, err.message);
     }
   }
 
-  // ── Expose evaluateConditions as a static method ───────────────────────────
+  return { fired, skipped };
+}
 
-  static evaluateConditions(conditions, context) {
-    return evaluateConditions(conditions, context);
-  }
-
-  // ── Existing methods (unchanged) ──────────────────────────────────────────
-
-  static async getStageActions(orgId, stageKey) {
-    if (!orgId || !stageKey) return [];
-    try {
-      const result = await db.query(
-        `SELECT stage_guidance FROM playbooks
-         WHERE org_id = $1 AND is_default = true AND type = 'sales'
-         LIMIT 1`,
-        [orgId]
-      );
-      if (result.rows.length === 0) return [];
-      const raw = result.rows[0].stage_guidance;
-      const guidance = typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
-      const stageData = guidance[stageKey];
-      if (!stageData) return [];
-      const keyActions = stageData.key_actions || [];
-      // Support both legacy string[] and new object[] formats
-      return keyActions.map(a => (typeof a === 'string' ? a : a.title || '')).filter(Boolean);
-    } catch (err) {
-      console.error('PlaybookService.getStageActions error:', err.message);
-      return [];
+// ── fireForEntity ────────────────────────────────────────────────────────────
+// Convenience wrapper — resolves the playbook automatically from the entity
+// row and fires plays. Modules call this instead of resolvePlaybook + firePlaybookPlays.
+//
+// params: {
+//   orgId        {number}
+//   playbookType {string}       — 'service' | 'clm' | 'sales' | 'prospecting' | ...
+//   playbookId   {number|null}  — from entity row, null = use type default
+//   stageKey     {string}
+//   entityType   {string}
+//   entityId     {number}
+//   context      {object}
+//   assignedTo   {number|null}
+// }
+async function fireForEntity({ orgId, playbookType, playbookId, stageKey, entityType, entityId, context = {}, assignedTo = null }) {
+  try {
+    const resolvedId = await resolvePlaybook(orgId, playbookId, playbookType);
+    if (!resolvedId) {
+      console.warn(`[playbookService] No playbook found for type=${playbookType} org=${orgId} — skipping play fire`);
+      return { fired: 0, skipped: 0 };
     }
-  }
-
-  static async getStageGuidance(orgId, stageKey) {
-    if (!orgId || !stageKey) return null;
-    try {
-      const result = await db.query(
-        `SELECT stage_guidance FROM playbooks
-         WHERE org_id = $1 AND is_default = true AND type = 'sales'
-         LIMIT 1`,
-        [orgId]
-      );
-      if (result.rows.length === 0) return null;
-      const raw = result.rows[0].stage_guidance;
-      const guidance = typeof raw === 'string' ? JSON.parse(raw) : (raw || {});
-      return guidance[stageKey] || null;
-    } catch (err) {
-      console.error('PlaybookService.getStageGuidance error:', err.message);
-      return null;
-    }
-  }
-
-  static async upsertStageGuidance(playbookId, orgId, stageKey, guidanceData) {
-    const result = await db.query(
-      `UPDATE playbooks
-       SET stage_guidance = jsonb_set(
-         COALESCE(stage_guidance, '{}'),
-         $1::text[],
-         $2::jsonb,
-         true
-       ),
-       updated_at = NOW()
-       WHERE id = $3 AND org_id = $4
-       RETURNING stage_guidance`,
-      [
-        `{${stageKey}}`,
-        JSON.stringify(guidanceData),
-        playbookId,
-        orgId,
-      ]
-    );
-    return result.rows[0];
-  }
-
-  static classifyActionType(text) {
-    const t = text.toLowerCase();
-    if (/\b(schedule|book|set up|arrange).*(meeting|call|demo|session|presentation)/i.test(t)) return 'meeting_schedule';
-    if (/\b(send|write|draft|follow[\s-]?up|email|reply|respond)/i.test(t)) return 'email_send';
-    if (/\b(prepare|create|build|develop|write|draft).*(document|proposal|deck|presentation|brief|plan|report)/i.test(t)) return 'document_prep';
-    if (/\b(review|analyse|assess|evaluate|check|audit|score)/i.test(t)) return 'review';
-    if (/\b(call|phone|ring|dial)/i.test(t)) return 'meeting_schedule';
-    if (/\b(identify|find|research|discover|map|list)/i.test(t)) return 'task_complete';
-    if (/\b(update|log|record|confirm|close|resolve)/i.test(t)) return 'task_complete';
-    if (/\b(introduce|connect|handover|transition)/i.test(t)) return 'email_send';
-    return 'follow_up';
-  }
-
-  static suggestPriority(stageOrType, actionType) {
-    const stage = (stageOrType || '').toLowerCase();
-    if (['negotiation', 'closing', 'closed_won'].some(s => stage.includes(s))) {
-      return actionType === 'meeting_schedule' ? 'critical' : 'high';
-    }
-    if (['proposal', 'evaluation'].some(s => stage.includes(s))) {
-      return actionType === 'meeting_schedule' ? 'high' : 'medium';
-    }
-    if (actionType === 'meeting_schedule') return 'high';
-    if (actionType === 'document_prep')    return 'medium';
-    return 'medium';
-  }
-
-  static suggestDueDays(stageOrType, actionType) {
-    const stage = (stageOrType || '').toLowerCase();
-    if (['negotiation', 'closing'].some(s => stage.includes(s))) return 1;
-    if (actionType === 'meeting_schedule') return 2;
-    if (actionType === 'email_send')       return 1;
-    if (actionType === 'document_prep')    return 3;
-    if (actionType === 'review')           return 2;
-    return 3;
-  }
-
-  static extractKeywords(text) {
-    const stopWords = new Set(['the', 'and', 'for', 'with', 'from', 'this', 'that', 'have', 'will', 'your', 'their', 'about']);
-    return text
-      .toLowerCase()
-      .replace(/[^\w\s]/g, ' ')
-      .split(/\s+/)
-      .filter(w => w.length > 3 && !stopWords.has(w))
-      .slice(0, 10);
-  }
-
-  static requiresExternalEvidence(actionType, text) {
-    if (['email_send', 'meeting_schedule', 'follow_up'].includes(actionType)) return true;
-    if (/\b(send|call|meet|email|schedule|contact)/i.test(text)) return true;
-    return false;
+    return await firePlaybookPlays({ orgId, playbookId: resolvedId, stageKey, entityType, entityId, context, assignedTo });
+  } catch (err) {
+    // Non-blocking — log and continue
+    console.error(`[playbookService] fireForEntity error (${entityType} ${entityId}):`, err.message);
+    return { fired: 0, skipped: 0 };
   }
 }
 
-module.exports = PlaybookService;
+module.exports = {
+  resolvePlaybook,
+  getStagesForPlaybook,
+  firePlaybookPlays,
+  fireForEntity,
+  evaluateConditions,
+};

@@ -266,7 +266,7 @@ app.listen(PORT, () => {
 ╚═══════════════════════════════════════╝
   `);
 
-  console.log('🚨 DEPLOY CHECK v6 — service/support module routes live');
+  console.log('🚨 DEPLOY CHECK v7 — playbook.service merged, playbook_stages table, contract_plays');
   console.log('🚀 Starting Bull queue worker...');
   try {
     require('./jobs/worker');
