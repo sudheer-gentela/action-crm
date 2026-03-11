@@ -174,6 +174,7 @@ export default function OrgAdminView() {
   const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
   const meta = TAB_META[tab] || TAB_META.members;
   const navGroups = buildNavGroups(orgModules);
+  console.log('[OrgAdminView] navGroups Modules section:', navGroups.find(g => g.label === 'Modules')); // temporary
 
   // When a module is disabled via its General sub-tab, redirect away from its nav item
   useEffect(() => {
