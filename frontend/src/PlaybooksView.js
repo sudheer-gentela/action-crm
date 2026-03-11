@@ -64,6 +64,9 @@ export default function PlaybooksView({ initialTypeFilter }) {
   const isProspecting = typeFilter === 'prospecting';
   const isCLM         = typeFilter === 'clm';
   const isHandover    = typeFilter === 'handover_s2i';
+  const isSales       = !isProspecting && !isCLM && !isHandover && (
+    typeFilter === 'sales' || ['custom', 'market', 'product'].includes(typeFilter)
+  );
 
   // ── Live stage lists — fetched dynamically per playbook type ─────────────
   // stagesMap: { [typeKey]: Stage[] } — built from playbookTypes after they load.
@@ -696,8 +699,53 @@ export default function PlaybooksView({ initialTypeFilter }) {
                       </div>
                     )}
 
-                    {/* ── SALES (and other non-prospecting, non-CLM) ── */}
-                    {!isProspecting && !isCLM && !isHandover && (
+                    {/* ── GENERIC MODULE (service, custom, future modules) ── */}
+                    {!isProspecting && !isCLM && !isHandover && !isSales && (
+                      <div className="sv-card">
+                        <h4 style={{ marginTop: 0, marginBottom: 16, fontSize: 15 }}>
+                          📋 {playbookTypes.find(t => t.key === typeFilter)?.label || typeFilter} Stages
+                        </h4>
+                        {stagesLoading ? (
+                          <div className="sv-loading">Loading stages…</div>
+                        ) : activeLiveStages.length === 0 ? (
+                          <div className="sv-empty">No active stages found. Add stages in Org Admin → Stages.</div>
+                        ) : (
+                          <div className="sv-stages-list">
+                            {activeLiveStages.map((stage, i) => {
+                              const guidance = playbook.stage_guidance?.[stage.key] || {};
+                              const isOpen = editingStage === stage.key;
+                              return (
+                                <div key={stage.key} className="sv-stage-row">
+                                  <div className="sv-stage-header" onClick={() => setEditingStage(isOpen ? null : stage.key)}>
+                                    <span className="sv-stage-num">{i + 1}</span>
+                                    <span className="sv-stage-name">{stage.name}</span>
+                                    <span className="sv-hint sv-stage-goal">
+                                      {guidance.goal?.substring(0, 60)}{guidance.goal?.length > 60 ? '…' : ''}
+                                    </span>
+                                    <span className="sv-expand-btn">{isOpen ? '▲' : '▼'}</span>
+                                  </div>
+                                  {isOpen && (
+                                    <div className="sv-stage-detail">
+                                      {['goal', 'timeline', 'next_step'].map(field => (
+                                        <div key={field} className="sv-field" style={{ marginBottom: 10 }}>
+                                          <label style={{ textTransform: 'capitalize' }}>{field.replace(/_/g, ' ')}</label>
+                                          <input className="sv-input"
+                                            value={guidance[field] || ''} disabled={!canEdit}
+                                            onChange={e => updateGuidanceField(stage.key, field, e.target.value)} />
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* ── SALES (and legacy sales types) ── */}
+                    {isSales && (
                       <>
                         {/* Company context */}
                         {playbook.content && (

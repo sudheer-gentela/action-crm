@@ -2686,11 +2686,11 @@ function OAPlaybooks() {
   const token  = localStorage.getItem('token') || localStorage.getItem('authToken');
   const API    = process.env.REACT_APP_API_URL || '';
 
-  // ── Fetch live deal stages once on mount ──────────────────────────────────
+  // ── Fetch live sales stages once on mount ──────────────────────────────────
   useEffect(() => {
     (async () => {
       try {
-        const res  = await fetch(`${API}/deal-stages`, {
+        const res  = await fetch(`${API}/pipeline-stages/sales`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json();
@@ -2863,8 +2863,8 @@ function OAPlaybooks() {
     : playbooks.filter(p => p.type === typeFilter);
 
   // ── Stage loader — unified for all types ─────────────────────────────────
-  // sales → deal-stages table
-  // prospecting → prospect-stages table
+  // sales       → pipeline-stages/sales
+  // prospecting → pipeline-stages/prospecting
   // all others (service, clm, handover_s2i, custom) → org/admin/playbook-stages/:type
   const [prospectLiveStages, setProspectLiveStages] = useState([]);
   const [prospectStagesLoading, setProspectStagesLoading] = useState(false);
@@ -2872,13 +2872,13 @@ function OAPlaybooks() {
   const [customStagesLoading, setCustomStagesLoading] = useState(false);
 
   useEffect(() => {
-    if (isSalesType) return; // sales uses liveStages already loaded from deal-stages
+    if (isSalesType) return; // sales uses liveStages already loaded from pipeline-stages/sales
 
     if (isProspecting) {
       setProspectStagesLoading(true);
       (async () => {
         try {
-          const res = await fetch(`${API}/prospect-stages`, {
+          const res = await fetch(`${API}/pipeline-stages/prospecting`, {
             headers: { Authorization: `Bearer ${token}` },
           });
           const data = await res.json();
