@@ -5536,43 +5536,6 @@ function OAActionsAI() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// OAService — Service Module settings (sub-tabs: General | SLA Tiers)
-// Layout B pattern — same as OAProducts / OAStages
-// ═══════════════════════════════════════════════════════════════════
-function OAService() {
-  const [subTab, setSubTab] = useState('general');
-
-  return (
-    <div className="sv-panel">
-      <div className="sv-panel-header">
-        <div>
-          <h2>🎧 Service Module</h2>
-          <p className="sv-panel-desc">Configure the Customer Support &amp; Service module.</p>
-        </div>
-      </div>
-
-      {/* Sub-tabs */}
-      <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #e5e7eb', marginBottom: 24 }}>
-        {[['general', 'General'], ['sla-tiers', 'SLA Tiers']].map(([key, label]) => (
-          <button key={key} onClick={() => setSubTab(key)} style={{
-            padding: '9px 20px', fontSize: 13,
-            fontWeight: subTab === key ? 600 : 400,
-            color: subTab === key ? '#6366f1' : '#6b7280',
-            background: 'none', border: 'none',
-            borderBottom: subTab === key ? '2px solid #6366f1' : '2px solid transparent',
-            cursor: 'pointer', marginBottom: -1,
-          }}>
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {subTab === 'general'   && <OAServiceGeneral />}
-      {subTab === 'sla-tiers' && <OAServiceSLATiers />}
-    </div>
-  );
-}
-
 function OAServiceGeneral() {
   const [enabled, setEnabled] = useState(false);
   const [stats, setStats]     = useState(null);
