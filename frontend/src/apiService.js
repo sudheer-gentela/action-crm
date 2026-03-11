@@ -523,6 +523,42 @@ export const apiService = {
     completePlay: (id, instanceId) => api.post(`/handovers/sales/${id}/plays/${instanceId}/complete`),
     toggleModule: (enabled) => api.patch('/handovers/admin/module', { enabled }),
   },
+
+  // ══════════════════════════════════════════════════════════
+  // Service / Customer Support Module
+  // ══════════════════════════════════════════════════════════
+  support: {
+    toggleModule:  (enabled) => api.patch('/support/admin/module', { enabled }),
+    // SLA Tiers
+    getSlaTiers:   () => api.get('/support/sla-tiers'),
+    createSlaTier: (data) => api.post('/support/sla-tiers', data),
+    updateSlaTier: (id, data) => api.patch(`/support/sla-tiers/${id}`, data),
+    // Teams (assignment pickers)
+    getTeams:      () => api.get('/support/teams'),
+    getTeamMembers:(teamId) => api.get(`/support/teams/${teamId}/members`),
+    // Cases
+    getCases:      (params = {}) => {
+      const qs = new URLSearchParams();
+      if (params.status)    qs.set('status',    params.status);
+      if (params.accountId) qs.set('accountId', params.accountId);
+      if (params.assignedTo)qs.set('assignedTo',params.assignedTo);
+      if (params.teamId)    qs.set('teamId',    params.teamId);
+      if (params.priority)  qs.set('priority',  params.priority);
+      if (params.breach)    qs.set('breach',    params.breach);
+      if (params.scope)     qs.set('scope',     params.scope);
+      if (params.search)    qs.set('search',    params.search);
+      if (params.limit)     qs.set('limit',     params.limit);
+      if (params.offset)    qs.set('offset',    params.offset);
+      return api.get(`/support/cases${qs.toString() ? '?' + qs : ''}`);
+    },
+    getCase:       (id) => api.get(`/support/cases/${id}`),
+    createCase:    (data) => api.post('/support/cases', data),
+    updateCase:    (id, data) => api.patch(`/support/cases/${id}`, data),
+    addNote:       (id, data) => api.post(`/support/cases/${id}/notes`, data),
+    updatePlay:    (caseId, playId, data) => api.patch(`/support/cases/${caseId}/plays/${playId}`, data),
+    // Dashboard
+    getDashboard:  (scope = 'mine') => api.get(`/support/dashboard?scope=${scope}`),
+  },
 };
 
 // ============================================================

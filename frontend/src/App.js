@@ -16,6 +16,7 @@ import PlaybooksView from './PlaybooksView';
 import ProspectingView from './ProspectingView';
 import ContractsView from './ContractsView';
 import HandoverView from './HandoverView';
+import SupportView from './SupportView';
 import Sidebar from './Sidebar';
 
 // ─────────────────────────────────────────────────────────────
@@ -27,6 +28,7 @@ const ALL_MODULE_ITEMS = [
   { id: 'prospecting', label: 'Prospecting', icon: '🎯' },
   { id: 'contracts',   label: 'Contracts',   icon: '📄' },
   { id: 'handovers',   label: 'Handovers',   icon: '🤝' },
+  { id: 'support',     label: 'Service',     icon: '🎧' },
 ];
 
 const NAV_ITEMS_BY_ROLE = {
@@ -513,6 +515,15 @@ function Dashboard({ user, onLogout }) {
                   <div style={{ fontSize:48 }}>🤝</div>
                   <div style={{ fontSize:16, fontWeight:600, color:'#475569' }}>Handovers module is disabled</div>
                   <div style={{ fontSize:13 }}>An org admin can enable it under Org Admin → Modules.</div>
+                </div>
+          )}
+          {currentTab === 'support'     && (
+            orgModules.support
+              ? <SupportView />
+              : <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12, color:'#94a3b8' }}>
+                  <div style={{ fontSize:48 }}>🎧</div>
+                  <div style={{ fontSize:16, fontWeight:600, color:'#475569' }}>Service module is disabled</div>
+                  <div style={{ fontSize:13 }}>An org admin can enable it under Org Admin → Service.</div>
                 </div>
           )}
           {currentTab === 'accounts'    && (

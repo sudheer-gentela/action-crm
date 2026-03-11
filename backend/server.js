@@ -50,7 +50,7 @@ const prospectContextRoutes     = require('./routes/prospect-context.routes');
 const teamsRoutes               = require('./routes/teams.routes');
 const userPreferencesRoutes     = require('./routes/user-preferences.routes');
 
-// ── NEW: Prospecting Phase 2 routes ──────────────────────────
+// ── Prospecting Phase 2 routes ────────────────────────────────
 const prospectingSendersRoutes  = require('./routes/prospecting-senders.routes');
 const outreachLimitsRoutes      = require('./routes/outreach-limits.routes');
 const prospectingInboxRoutes    = require('./routes/prospecting-inbox.routes');
@@ -65,6 +65,9 @@ const contractsRoutes = require('./routes/contracts.routes');
 const teamDimensionsRoutes = require('./routes/team-dimensions.routes');
 const accountTeamsRoutes   = require('./routes/account-teams.routes');
 const handoversRoutes      = require('./routes/handovers.routes');
+
+// ── Service / Customer Support Module ────────────────────────
+const supportRoutes = require('./routes/support.routes');
 
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
@@ -198,7 +201,7 @@ app.use('/api/org-hierarchy',       orgHierarchyRoutes);
 app.use('/api/team-notifications',  teamNotificationsRoutes);
 app.use('/api/users/me',            userPreferencesRoutes);
 
-// ── NEW: Prospecting Phase 2 ──────────────────────────────────
+// ── Prospecting Phase 2 ───────────────────────────────────────
 app.use('/api/prospecting-senders', prospectingSendersRoutes);
 app.use('/api/org/outreach-limits', outreachLimitsRoutes);
 app.use('/api/prospecting/inbox',   prospectingInboxRoutes);
@@ -210,6 +213,9 @@ app.use('/api/contracts', contractsRoutes);
 app.use('/api/team-dimensions', teamDimensionsRoutes);
 app.use('/api/account-teams',   accountTeamsRoutes);
 app.use('/api/handovers',       handoversRoutes);
+
+// ─── Service / Customer Support Module ───────────────────────
+app.use('/api/support', supportRoutes);
 
 // ─── Public org context ───────────────────────────────────────
 const authenticateToken   = require('./middleware/auth.middleware');
@@ -260,7 +266,7 @@ app.listen(PORT, () => {
 ╚═══════════════════════════════════════╝
   `);
 
-  console.log('🚨 DEPLOY CHECK v5 — handover module routes live');
+  console.log('🚨 DEPLOY CHECK v6 — service/support module routes live');
   console.log('🚀 Starting Bull queue worker...');
   try {
     require('./jobs/worker');
