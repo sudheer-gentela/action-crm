@@ -2750,22 +2750,30 @@ function OAPlaybooks() {
   const TEAL = '#0F9D8E';
 
   // ── Dynamic playbook types from org settings ────────────────────────────────
-  const [playbookTypes, setPlaybookTypes] = useState([
-    { key: 'sales',       label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
-    { key: 'prospecting', label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
-    { key: 'clm',         label: 'CLM',         icon: '📋', color: '#7c3aed', is_system: true },
-    { key: 'service',     label: 'Service',     icon: '🎧', color: '#0891b2', is_system: true },
-  ]);
+  const [playbookTypes,        setPlaybookTypes]        = useState([]);
+  const [playbookTypesLoading, setPlaybookTypesLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${API}/org/admin/playbook-types`, {
+        const res = await fetch(`${API}/api/org/admin/playbook-types`, {
           headers: { Authorization: `Bearer ${token}` },
         });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (data.playbook_types?.length) setPlaybookTypes(data.playbook_types);
-      } catch { /* use defaults */ }
+      } catch (err) {
+        console.error('Failed to load playbook types:', err);
+        // Hard fallback so the UI never renders empty — backend should always return these
+        setPlaybookTypes([
+          { key: 'sales',       label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
+          { key: 'prospecting', label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
+          { key: 'clm',         label: 'CLM',         icon: '📋', color: '#7c3aed', is_system: true },
+          { key: 'service',     label: 'Service',     icon: '🎧', color: '#0891b2', is_system: true },
+        ]);
+      } finally {
+        setPlaybookTypesLoading(false);
+      }
     })();
   }, [API, token]);
 
@@ -2936,7 +2944,7 @@ function OAPlaybooks() {
   // Current type metadata
   const activeType = playbookTypes.find(t => t.key === typeFilter) || playbookTypes[0];
 
-  if (loading) return <div className="sv-loading">Loading playbooks...</div>;
+  if (loading || playbookTypesLoading) return <div className="sv-loading">Loading playbooks...</div>;
 
   return (
     <div className="sv-panel">
@@ -3419,7 +3427,7 @@ function OAPlaybookTypes() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${API}/org/admin/playbook-types`, {
+        const res = await fetch(`${API}/api/org/admin/playbook-types`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json();
@@ -3434,7 +3442,7 @@ function OAPlaybookTypes() {
     setAdding(true);
     try {
       const key = newType.label.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_');
-      const res = await fetch(`${API}/org/admin/playbook-types`, {
+      const res = await fetch(`${API}/api/org/admin/playbook-types`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ key, label: newType.label.trim(), icon: newType.icon, color: newType.color }),
@@ -3454,7 +3462,7 @@ function OAPlaybookTypes() {
     if (!window.confirm(`Delete "${t?.label || typeKey}" playbook type? Playbooks of this type must be reassigned first.`)) return;
     setDeleting(typeKey);
     try {
-      const res = await fetch(`${API}/org/admin/playbook-types/${typeKey}`, {
+      const res = await fetch(`${API}/api/org/admin/playbook-types/${typeKey}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
