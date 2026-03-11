@@ -238,6 +238,7 @@ export const apiService = {
   },
 
   prospects: {
+    toggleModule: (enabled) => api.patch('/org/admin/module/prospecting', { enabled }),
     getAll: (scope = 'mine', params = {}) => { const qs = new URLSearchParams({ scope, ...params }).toString(); return api.get(`/prospects?${qs}`); },
     getById: (id) => api.get(`/prospects/${id}`),
     create: (data) => api.post('/prospects', data),

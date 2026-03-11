@@ -4522,13 +4522,7 @@ function OAIntegrations() {
 
 // ── Shared sub-tab bar ──────────────────────────────────────────────
 // ── Module toggle helpers ─────────────────────────────────────────────────────
-// contracts/handovers/support use their apiService.toggleModule methods.
-// prospecting has no dedicated endpoint — falls back to orgAdmin.updateProfile.
-function toggleProspectingModule(enabled) {
-  return apiService.orgAdmin.updateProfile({
-    settings: { modules: { prospecting: enabled } },
-  });
-}
+// All four use apiService.X.toggleModule — see apiService.js for endpoints.
 
 function ModuleSubTabs({ tabs, active, onChange }) {
   return (
@@ -4651,7 +4645,7 @@ function OAProspectingModule() {
         icon="🎯"
         label="Prospecting"
         desc="Enables the prospect pipeline, ICP scoring, outreach sequencing, and prospecting playbooks for your whole organisation."
-        toggleFn={(enabled) => toggleProspectingModule(enabled)}
+        toggleFn={(enabled) => apiService.prospects.toggleModule(enabled)}
       />
     </div>
   );
@@ -4957,7 +4951,7 @@ function OAModules() {
 
   const MODULE_TOGGLE_API = {
     contracts:   (enabled) => apiService.contracts.toggleModule(enabled),
-    prospecting: (enabled) => toggleProspectingModule(enabled),
+    prospecting: (enabled) => apiService.prospects.toggleModule(enabled),
     handovers:   (enabled) => apiService.handovers.toggleModule(enabled),
     service:     (enabled) => apiService.support.toggleModule(enabled),
   };
