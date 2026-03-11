@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
+import './OATeamDimensions.css';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OATeamDimensions

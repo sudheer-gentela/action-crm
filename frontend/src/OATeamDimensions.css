@@ -1,0 +1,380 @@
+/* ═══════════════════════════════════════════════════════════════
+   OATeamDimensions.css
+   Styles for the Team Dimensions admin panel.
+   Extends the oa-* and sv-* design tokens from OrgAdminView.css.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Root container ──────────────────────────────────────────── */
+.oa-team-dims {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ── Loading / error states ──────────────────────────────────── */
+.oa-loading {
+  padding: 48px;
+  text-align: center;
+  color: #718096;
+  font-size: 15px;
+}
+
+.oa-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #fff5f5;
+  border: 1px solid #fed7d7;
+  border-radius: 8px;
+  color: #c53030;
+  font-size: 14px;
+}
+.oa-error-banner button {
+  background: none;
+  border: none;
+  color: #c53030;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 4px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.oa-error-banner button:hover { color: #9b2c2c; }
+
+/* ── Section header ──────────────────────────────────────────── */
+.oa-team-dims__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.oa-section-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1a202c;
+  margin: 0 0 4px;
+}
+
+.oa-section-subtitle {
+  font-size: 13px;
+  color: #718096;
+  margin: 0;
+  line-height: 1.5;
+  max-width: 560px;
+}
+
+/* ── Add dimension form ──────────────────────────────────────── */
+.oa-add-dim-form {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.oa-add-dim-form h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #1a202c;
+}
+.oa-add-dim-form__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 700px) {
+  .oa-add-dim-form__row { grid-template-columns: 1fr; }
+}
+.oa-add-dim-form__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+/* ── Field + input ───────────────────────────────────────────── */
+.oa-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.oa-field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+.oa-hint {
+  font-weight: 400;
+  color: #9ca3af;
+  font-size: 11px;
+}
+.oa-field-error {
+  font-size: 12px;
+  color: #c53030;
+  padding: 6px 10px;
+  background: #fff5f5;
+  border-radius: 6px;
+  border: 1px solid #fed7d7;
+}
+
+.oa-input {
+  width: 100%;
+  padding: 8px 11px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  font-size: 13px;
+  color: #1a202c;
+  background: #fff;
+  font-family: inherit;
+  transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+.oa-input:focus {
+  outline: none;
+  border-color: #667eea;
+}
+.oa-input--sm {
+  padding: 6px 9px;
+  font-size: 13px;
+}
+
+/* ── Two-column layout ───────────────────────────────────────── */
+.oa-team-dims__columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 800px) {
+  .oa-team-dims__columns { grid-template-columns: 1fr; }
+}
+
+/* ── Dimension column ────────────────────────────────────────── */
+.oa-dim-col {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.oa-dim-col__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+.oa-dim-col__icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.oa-dim-col__title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1a202c;
+  margin-bottom: 1px;
+}
+.oa-dim-col__subtitle {
+  font-size: 12px;
+  color: #718096;
+}
+
+/* ── Dimension list ──────────────────────────────────────────── */
+.oa-dim-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.oa-dim-empty {
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: #a0aec0;
+  font-style: italic;
+}
+
+/* ── Dimension item ──────────────────────────────────────────── */
+.oa-dim-item {
+  border-bottom: 1px solid #f0f4f8;
+  transition: background 0.12s;
+}
+.oa-dim-item:last-child { border-bottom: none; }
+.oa-dim-item:hover { background: #fafbfc; }
+.oa-dim-item--inactive { opacity: 0.55; }
+
+/* View mode */
+.oa-dim-item__view {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 16px;
+}
+
+.oa-dim-item__info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.oa-dim-item__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a202c;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.oa-dim-item__lock {
+  font-size: 11px;
+  opacity: 0.6;
+}
+.oa-dim-item__key {
+  font-size: 11px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  background: #f3f4f6;
+  color: #6b7280;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid #e5e7eb;
+}
+
+/* Scope badge — three variants */
+.oa-dim-item__scope {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid;
+}
+.oa-dim-item__scope--internal {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+.oa-dim-item__scope--customer {
+  background: #f0fdf4;
+  color: #15803d;
+  border-color: #bbf7d0;
+}
+.oa-dim-item__scope--both {
+  background: #faf5ff;
+  color: #6d28d9;
+  border-color: #ddd6fe;
+}
+
+.oa-dim-item__inactive-badge {
+  font-size: 10px;
+  font-weight: 700;
+  background: #f3f4f6;
+  color: #9ca3af;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid #e5e7eb;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.oa-dim-item__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Edit mode */
+.oa-dim-item__edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: #f0f4ff;
+  flex-wrap: wrap;
+}
+.oa-dim-item__edit .oa-input--sm {
+  flex: 1;
+  min-width: 100px;
+}
+.oa-dim-item__edit-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+.oa-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  line-height: 1;
+}
+.oa-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Sizes */
+.oa-btn--xs {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+/* Variants */
+.oa-btn--primary {
+  background: #667eea;
+  color: #fff;
+  border-color: #667eea;
+}
+.oa-btn--primary:hover:not(:disabled) {
+  background: #5a67d8;
+  border-color: #5a67d8;
+}
+
+.oa-btn--ghost {
+  background: #fff;
+  color: #4a5568;
+  border-color: #e2e8f0;
+}
+.oa-btn--ghost:hover:not(:disabled) {
+  background: #f7fafc;
+  border-color: #cbd5e0;
+}
+
+.oa-btn--danger {
+  background: #fff;
+  color: #c53030;
+  border-color: #fed7d7;
+}
+.oa-btn--danger:hover:not(:disabled) {
+  background: #fff5f5;
+  border-color: #fc8181;
+}
+
+.oa-btn--success {
+  background: #f0fff4;
+  color: #276749;
+  border-color: #c6f6d5;
+}
+.oa-btn--success:hover:not(:disabled) {
+  background: #c6f6d5;
+}
