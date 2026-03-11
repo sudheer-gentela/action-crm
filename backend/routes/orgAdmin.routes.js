@@ -593,30 +593,17 @@ router.patch('/module/prospecting', adminOnly, async (req, res) => {
 // Stored in organizations.settings->'playbook_types' as a JSON array.
 // System types (sales, prospecting) cannot be removed or renamed.
 
-const SYSTEM_PLAYBOOK_TYPES = [
-  { key: 'sales',       label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
-  { key: 'prospecting', label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
-  { key: 'clm',         label: 'CLM',         icon: '📋', color: '#7c3aed', is_system: true },
-  { key: 'service',     label: 'Service',     icon: '🎧', color: '#0891b2', is_system: true },
-];
-
 // Helper: get org's playbook types.
-// Always ensures every system type is present — if the org has a saved list that
-// pre-dates a new system type being added, we inject the missing ones at the front
-// rather than silently omitting them.
+// Returns exactly what is stored in the DB — no injection, no defaults added.
+// If nothing is stored, returns an empty array.
 async function getPlaybookTypes(orgId) {
   const result = await pool.query(
     `SELECT settings->'playbook_types' AS types FROM organizations WHERE id = $1`,
     [orgId]
   );
   const stored = result.rows[0]?.types;
-  if (!stored || !Array.isArray(stored) || stored.length === 0) {
-    return [...SYSTEM_PLAYBOOK_TYPES];
-  }
-  // Inject any system types that are absent from the stored list (handles orgs
-  // that had their types saved before 'clm' or 'service' were added).
-  const missing = SYSTEM_PLAYBOOK_TYPES.filter(s => !stored.some(t => t.key === s.key));
-  return [...missing, ...stored];
+  if (!stored || !Array.isArray(stored)) return [];
+  return stored;
 }
 
 // GET — any member can read (needed for playbook create form)
