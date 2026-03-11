@@ -2756,7 +2756,7 @@ function OAPlaybooks() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${API}/api/org/admin/playbook-types`, {
+        const res = await fetch(`${API}/org/admin/playbook-types`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -3427,7 +3427,7 @@ function OAPlaybookTypes() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${API}/api/org/admin/playbook-types`, {
+        const res = await fetch(`${API}/org/admin/playbook-types`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json();
@@ -3442,7 +3442,7 @@ function OAPlaybookTypes() {
     setAdding(true);
     try {
       const key = newType.label.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_');
-      const res = await fetch(`${API}/api/org/admin/playbook-types`, {
+      const res = await fetch(`${API}/org/admin/playbook-types`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ key, label: newType.label.trim(), icon: newType.icon, color: newType.color }),
@@ -3462,7 +3462,7 @@ function OAPlaybookTypes() {
     if (!window.confirm(`Delete "${t?.label || typeKey}" playbook type? Playbooks of this type must be reassigned first.`)) return;
     setDeleting(typeKey);
     try {
-      const res = await fetch(`${API}/api/org/admin/playbook-types/${typeKey}`, {
+      const res = await fetch(`${API}/org/admin/playbook-types/${typeKey}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
