@@ -80,15 +80,16 @@ function buildNavGroups(orgModules) {
     .filter(m => orgModules[m.moduleKey])
     .map(m => ({ id: m.navId, icon: m.icon, label: m.label }));
 
+  // 🧩 Modules is always present — it's the only way to re-enable a disabled module.
+  // Enabled modules appear as sub-items below it.
   const moduleGroup = {
     label: 'Modules',
     items: [
-      { id: 'modules', icon: '🧩', label: 'All Modules' },
+      { id: 'modules', icon: '🧩', label: 'Modules' },
       ...enabledModuleItems,
     ],
   };
 
-  // Splice module group in before 'General'
   const groups = [...STATIC_NAV_GROUPS];
   const generalIdx = groups.findIndex(g => g.label === 'General');
   groups.splice(generalIdx, 0, moduleGroup);
@@ -151,8 +152,6 @@ export default function OrgAdminView() {
           r.data?.modules        ||   // shape C: { modules: {} } at top level
           {};
 
-        console.log('[OrgAdminView] module flags from API:', mods); // temporary — remove after confirming
-
         setOrgModules({
           contracts:   mods.contracts   || false,
           prospecting: mods.prospecting || false,
@@ -174,9 +173,9 @@ export default function OrgAdminView() {
   const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
   const meta = TAB_META[tab] || TAB_META.members;
   const navGroups = buildNavGroups(orgModules);
-  console.log('[OrgAdminView] navGroups Modules section:', navGroups.find(g => g.label === 'Modules')); // temporary
 
-  // When a module is disabled via its General sub-tab, redirect away from its nav item
+  // When a module is disabled via its General sub-tab, redirect to the Modules overview
+  // so the user can see the full list and re-enable if needed.
   useEffect(() => {
     if (tab.startsWith('mod-')) {
       const def = MODULE_NAV_DEFS.find(m => m.navId === tab);
@@ -256,9 +255,9 @@ export default function OrgAdminView() {
           )}
 
           <div className="oa-tab-content">
-            {/* ── Module overview (legacy single panel — now "All Modules") ── */}
+            {/* ── Modules overview — always accessible for enable/disable ── */}
             {tab === 'modules'          && <OAModules />}
-            {/* ── Per-module settings pages ── */}
+            {/* ── Per-module settings pages (only reachable when module is enabled) ── */}
             {tab === 'mod-prospecting'  && <OAProspectingModule />}
             {tab === 'mod-contracts'    && <OACLMModule />}
             {tab === 'mod-handovers'    && <OAHandoverModule />}

@@ -156,14 +156,17 @@
 /* ── Main content area ──────────────────────────────────────── */
 .oa-main {
   flex: 1;
-  overflow: auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .oa-topbar {
   padding: 20px 32px 16px;
   border-bottom: 1px solid #e8e9ee;
   background: #fff;
+  flex-shrink: 0;
 }
 .oa-topbar-title {
   font-size: 22px;
@@ -179,6 +182,8 @@
 }
 
 .oa-content {
+  flex: 1;
+  overflow-y: auto;
   padding: 24px 32px;
 }
 
