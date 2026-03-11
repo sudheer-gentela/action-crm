@@ -14,24 +14,26 @@ import OATeamDimensions from './OATeamDimensions';
 // this view handles PEOPLE, ROLES, INVITATIONS, and ORG SETTINGS.
 // ═══════════════════════════════════════════════════════════════════
 
-const NAV_GROUPS = [
+// Static nav groups — Modules group is injected dynamically in OrgAdminView
+// based on which modules are enabled for the org.
+const STATIC_NAV_GROUPS = [
   {
     label: 'Team',
     items: [
-      { id: 'members',     icon: '👥', label: 'Members' },
-      { id: 'hierarchy',   icon: '🏢', label: 'Hierarchy' },
-      { id: 'teams',       icon: '🏷️', label: 'Teams' },
-      { id: 'invitations', icon: '✉️', label: 'Invitations' },
+      { id: 'members',         icon: '👥', label: 'Members' },
+      { id: 'hierarchy',       icon: '🏢', label: 'Hierarchy' },
+      { id: 'teams',           icon: '🏷️', label: 'Teams' },
+      { id: 'invitations',     icon: '✉️', label: 'Invitations' },
       { id: 'team-dimensions', icon: '🏷️', label: 'Team Dimensions' },
     ],
   },
   {
     label: 'Sales Process',
     items: [
-      { id: 'playbooks',   icon: '📘', label: 'Playbooks' },
-      { id: 'stages',      icon: '🏷️', label: 'Stages' },
-      { id: 'org-roles',   icon: '🎭', label: 'Org Roles' },
-      { id: 'products',    icon: '📦', label: 'Products' },
+      { id: 'playbooks', icon: '📘', label: 'Playbooks' },
+      { id: 'stages',    icon: '🏷️', label: 'Stages' },
+      { id: 'org-roles', icon: '🎭', label: 'Org Roles' },
+      { id: 'products',  icon: '📦', label: 'Products' },
     ],
   },
   {
@@ -44,37 +46,54 @@ const NAV_GROUPS = [
   {
     label: 'Auto Action Execution',
     items: [
-      { id: 'ai-agent',    icon: '🤖', label: 'AI Agent' },
-      { id: 'action-ai',   icon: '✨', label: 'Actions AI' },
+      { id: 'ai-agent',  icon: '🤖', label: 'AI Agent' },
+      { id: 'action-ai', icon: '✨', label: 'Actions AI' },
     ],
   },
   {
     label: 'Data Quality',
     items: [
-      { id: 'duplicates',  icon: '🔍', label: 'Duplicates' },
+      { id: 'duplicates', icon: '🔍', label: 'Duplicates' },
     ],
   },
-  {
-    label: 'Modules',
-    items: [
-      { id: 'modules',       icon: '🧩', label: 'Modules' },
-      { id: 'clm_templates', icon: '📄', label: 'CLM Templates' },
-    ],
-  },
-  {
-    label: 'Service',
-    items: [
-      { id: 'service', icon: '🎧', label: 'Service' },
-    ],
-  },
+  // 'Modules' group is injected here dynamically — see buildNavGroups()
   {
     label: 'General',
     items: [
       { id: 'integrations', icon: '🔌', label: 'Integrations' },
-      { id: 'settings',    icon: '⚙️', label: 'Org Settings' },
+      { id: 'settings',     icon: '⚙️', label: 'Org Settings' },
     ],
   },
 ];
+
+// Module definitions — drives dynamic nav + per-module content routing
+const MODULE_NAV_DEFS = [
+  { moduleKey: 'prospecting', navId: 'mod-prospecting', icon: '🎯', label: 'Prospecting' },
+  { moduleKey: 'contracts',   navId: 'mod-contracts',   icon: '📄', label: 'CLM' },
+  { moduleKey: 'handovers',   navId: 'mod-handovers',   icon: '🤝', label: 'Handover S→I' },
+  { moduleKey: 'service',     navId: 'mod-service',     icon: '🎧', label: 'Service' },
+];
+
+// Builds the full nav group list, inserting enabled module items before 'General'
+function buildNavGroups(orgModules) {
+  const enabledModuleItems = MODULE_NAV_DEFS
+    .filter(m => orgModules[m.moduleKey])
+    .map(m => ({ id: m.navId, icon: m.icon, label: m.label }));
+
+  const moduleGroup = {
+    label: 'Modules',
+    items: [
+      { id: 'modules', icon: '🧩', label: 'All Modules' },
+      ...enabledModuleItems,
+    ],
+  };
+
+  // Splice module group in before 'General'
+  const groups = [...STATIC_NAV_GROUPS];
+  const generalIdx = groups.findIndex(g => g.label === 'General');
+  groups.splice(generalIdx, 0, moduleGroup);
+  return groups;
+}
 
 // Content descriptions for the top bar
 const TAB_META = {
@@ -91,30 +110,68 @@ const TAB_META = {
   'icp-scoring': { title: 'ICP Scoring',   desc: 'Define your Ideal Customer Profile and scoring criteria' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
-  modules:       { title: 'Modules',       desc: 'Enable or disable product modules for your organisation' },
-  clm_templates: { title: 'CLM Templates', desc: 'Upload master contract templates for your team to download and fill in' },
-  service:       { title: 'Service',       desc: 'Configure the Customer Support & Service module — SLA tiers and general settings' },
+  modules:             { title: 'Modules',                           desc: 'Enable or disable product modules for your organisation' },
+  'mod-prospecting':   { title: 'Prospecting',                       desc: 'Prospecting module settings' },
+  'mod-contracts':     { title: 'Contract Lifecycle Management',      desc: 'CLM module settings — eSign configuration and contract templates' },
+  'mod-handovers':     { title: 'Sales → Implementation Handover',   desc: 'Handover module settings' },
+  'mod-service':       { title: 'Customer Support & Service',         desc: 'Service module settings — SLA tiers and general configuration' },
   integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },
   settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
 };
 
 export default function OrgAdminView() {
-  const [tab, setTab]       = useState('members');
-  const [stats, setStats]   = useState(null);
-  const [orgName, setOrgName] = useState('');
+  const [tab, setTab]               = useState('members');
+  const [stats, setStats]           = useState(null);
+  const [orgName, setOrgName]       = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // orgModules — controls which module nav items are visible.
+  // Kept in sync via moduleToggle events fired by child components.
+  const [orgModules, setOrgModules] = useState({
+    contracts:   false,
+    prospecting: false,
+    handovers:   false,
+    service:     false,
+  });
 
   useEffect(() => {
     apiService.orgAdmin.getStats()
       .then(r => setStats(r.data))
       .catch(console.error);
     apiService.orgAdmin.getProfile()
-      .then(r => setOrgName(r.data.org.name))
+      .then(r => {
+        setOrgName(r.data.org.name);
+        const mods = r.data.org?.settings?.modules || {};
+        setOrgModules({
+          contracts:   mods.contracts   || false,
+          prospecting: mods.prospecting || false,
+          handovers:   mods.handovers   || false,
+          service:     mods.service     || false,
+        });
+      })
       .catch(console.error);
+
+    // Listen for module toggle events fired by child General sub-tabs
+    const handleModuleToggle = (e) => {
+      const { module, enabled } = e.detail;
+      setOrgModules(prev => ({ ...prev, [module]: enabled }));
+    };
+    window.addEventListener('moduleToggle', handleModuleToggle);
+    return () => window.removeEventListener('moduleToggle', handleModuleToggle);
   }, []);
 
   const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
   const meta = TAB_META[tab] || TAB_META.members;
+  const navGroups = buildNavGroups(orgModules);
+
+  // When a module is disabled via its General sub-tab, redirect away from its nav item
+  useEffect(() => {
+    if (tab.startsWith('mod-')) {
+      const def = MODULE_NAV_DEFS.find(m => m.navId === tab);
+      if (def && !orgModules[def.moduleKey]) {
+        setTab('modules');
+      }
+    }
+  }, [orgModules, tab]);
 
   return (
     <div className="oa-layout">
@@ -132,7 +189,7 @@ export default function OrgAdminView() {
         </div>
 
         <div className="oa-sidebar-nav">
-          {NAV_GROUPS.map(group => (
+          {navGroups.map(group => (
             <div key={group.label} className="oa-nav-group">
               {!sidebarCollapsed && <div className="oa-nav-group-label">{group.label}</div>}
               {group.items.map(item => (
@@ -186,25 +243,30 @@ export default function OrgAdminView() {
           )}
 
           <div className="oa-tab-content">
-            {tab === 'modules'      && <OAModules />}
-            {tab === 'members'     && <OAMembers currentUserId={currentUser.id} />}
-            {tab === 'clm_templates' && <OACLMTemplates />}
-            {tab === 'hierarchy'   && <OAHierarchy />}
-            {tab === 'teams'       && <OATeams />}
-            {tab === 'invitations' && <OAInvitations />}
-            {tab === 'playbooks'   && <OAPlaybooks />}
-            {tab === 'health'      && <DealHealthSettings />}
-            {tab === 'icp-scoring' && <OAIcpScoring />}
-            {tab === 'stages'      && <OAStages />}
-            {tab === 'org-roles'   && <OADealRoles />}
-            {tab === 'products'    && <OAProducts />}
-            {tab === 'ai-agent'    && <OAAgentSettings />}
-            {tab === 'action-ai'   && <OAActionsAI />}
-            {tab === 'duplicates'  && <OADuplicateSettings />}
-            {tab === 'team-dimensions' && <OATeamDimensions />}
-            {tab === 'integrations' && <OAIntegrations />}
-            {tab === 'settings'    && <OASettings />}
-            {tab === 'service'     && <OAService />}
+            {/* ── Module overview (legacy single panel — now "All Modules") ── */}
+            {tab === 'modules'          && <OAModules />}
+            {/* ── Per-module settings pages ── */}
+            {tab === 'mod-prospecting'  && <OAProspectingModule />}
+            {tab === 'mod-contracts'    && <OACLMModule />}
+            {tab === 'mod-handovers'    && <OAHandoverModule />}
+            {tab === 'mod-service'      && <OAServiceModule />}
+            {/* ── All other existing sections (untouched) ── */}
+            {tab === 'members'          && <OAMembers currentUserId={currentUser.id} />}
+            {tab === 'hierarchy'        && <OAHierarchy />}
+            {tab === 'teams'            && <OATeams />}
+            {tab === 'invitations'      && <OAInvitations />}
+            {tab === 'playbooks'        && <OAPlaybooks />}
+            {tab === 'health'           && <DealHealthSettings />}
+            {tab === 'icp-scoring'      && <OAIcpScoring />}
+            {tab === 'stages'           && <OAStages />}
+            {tab === 'org-roles'        && <OADealRoles />}
+            {tab === 'products'         && <OAProducts />}
+            {tab === 'ai-agent'         && <OAAgentSettings />}
+            {tab === 'action-ai'        && <OAActionsAI />}
+            {tab === 'duplicates'       && <OADuplicateSettings />}
+            {tab === 'team-dimensions'  && <OATeamDimensions />}
+            {tab === 'integrations'     && <OAIntegrations />}
+            {tab === 'settings'         && <OASettings />}
           </div>
         </div>
       </main>
@@ -4437,6 +4499,408 @@ function OAIntegrations() {
   );
 }
 
+
+// ═══════════════════════════════════════════════════════════════════
+// MODULE SETTINGS PAGES
+// One component per module, each with its own sub-tab shell.
+// These are rendered when the user clicks a module nav item.
+// General sub-tab always has the enable/disable toggle.
+// Other sub-tabs are hidden until the module is enabled.
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Shared sub-tab bar ──────────────────────────────────────────────
+function ModuleSubTabs({ tabs, active, onChange }) {
+  return (
+    <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #e5e7eb', marginBottom: 24 }}>
+      {tabs.map(([key, label]) => (
+        <button key={key} onClick={() => onChange(key)} style={{
+          padding: '9px 20px', fontSize: 13,
+          fontWeight: active === key ? 600 : 400,
+          color: active === key ? '#6366f1' : '#6b7280',
+          background: 'none', border: 'none',
+          borderBottom: active === key ? '2px solid #6366f1' : '2px solid transparent',
+          cursor: 'pointer', marginBottom: -1,
+        }}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Generic module General tab ───────────────────────────────────────
+// Reusable enable/disable toggle for any module.
+// moduleKey: 'contracts' | 'prospecting' | 'handovers' | 'service'
+// toggleFn: async (enabled: bool) => Promise  (calls the relevant apiService method)
+function OAModuleGeneral({ moduleKey, icon, label, desc, toggleFn }) {
+  const [enabled, setEnabled] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving]   = useState(false);
+  const [error, setError]     = useState('');
+  const [success, setSuccess] = useState('');
+
+  useEffect(() => {
+    apiService.orgAdmin.getProfile()
+      .then(r => {
+        const mods = r.data.org?.settings?.modules || {};
+        setEnabled(mods[moduleKey] || false);
+      })
+      .catch(() => setError('Failed to load settings'))
+      .finally(() => setLoading(false));
+  }, [moduleKey]);
+
+  const handleToggle = async (newVal) => {
+    setSaving(true); setError(''); setSuccess('');
+    try {
+      await toggleFn(newVal);
+      setEnabled(newVal);
+      setSuccess(`${label} ${newVal ? 'enabled' : 'disabled'} ✓`);
+      setTimeout(() => setSuccess(''), 3000);
+      window.dispatchEvent(new CustomEvent('moduleToggle', { detail: { module: moduleKey, enabled: newVal } }));
+    } catch (e) {
+      setError(e.response?.data?.error?.message || e.message || 'Failed to update');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div className="sv-loading">Loading…</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {error   && <div className="sv-error">⚠️ {error}</div>}
+      {success && <div className="sv-success">{success}</div>}
+
+      <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '20px 22px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+        <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+          <span style={{ fontSize: 28 }}>{icon}</span>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14, color: '#111827' }}>Enable {label}</div>
+            <div style={{ fontSize: 13, color: '#6b7280', marginTop: 3 }}>{desc}</div>
+          </div>
+        </div>
+        <div
+          onClick={() => !saving && handleToggle(!enabled)}
+          style={{
+            flexShrink: 0, width: 44, height: 24, borderRadius: 12,
+            background: enabled ? '#6366f1' : '#d1d5db',
+            position: 'relative', cursor: saving ? 'not-allowed' : 'pointer',
+            transition: 'background .2s', opacity: saving ? 0.7 : 1,
+          }}
+        >
+          <div style={{
+            width: 18, height: 18, borderRadius: '50%', background: '#fff',
+            position: 'absolute', top: 3,
+            left: enabled ? 23 : 3,
+            transition: 'left .2s',
+            boxShadow: '0 1px 3px rgba(0,0,0,.2)',
+          }} />
+        </div>
+      </div>
+
+      {enabled ? (
+        <div style={{ padding: '12px 16px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 9, fontSize: 13, color: '#166534' }}>
+          ✅ Module is active and visible to all members.
+          {/* If module has extra sub-tabs, a hint to switch tabs */}
+        </div>
+      ) : (
+        <div style={{ padding: '12px 16px', background: '#fafafa', border: '1px solid #e5e7eb', borderRadius: 9, fontSize: 13, color: '#6b7280' }}>
+          Module is disabled. Enable it above to make it visible to your team.
+          Existing data is preserved when re-enabled.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// PROSPECTING MODULE — General only
+// ─────────────────────────────────────────────────────────────────
+function OAProspectingModule() {
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>🎯 Prospecting</h2>
+          <p className="sv-panel-desc">Full prospecting pipeline — prospect lists, outreach stages, ICP scoring, and playbooks.</p>
+        </div>
+      </div>
+      <OAModuleGeneral
+        moduleKey="prospecting"
+        icon="🎯"
+        label="Prospecting"
+        desc="Enables the prospect pipeline, ICP scoring, outreach sequencing, and prospecting playbooks for your whole organisation."
+        toggleFn={(enabled) => apiService.prospects.toggleModule(enabled)}
+      />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// CLM MODULE — General | eSign Configuration | CLM Templates
+// ─────────────────────────────────────────────────────────────────
+
+function OACLMESignConfig() {
+  const API  = process.env.REACT_APP_API_URL;
+  const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+  const PROVIDER_LABELS = { none: 'None (manual)', docusign: 'DocuSign', hellosign: 'HelloSign / Dropbox Sign', adobe_sign: 'Adobe Acrobat Sign' };
+
+  const [config, setConfig]   = useState({ provider: 'none', apiKey: '', accountId: '', webhookSecret: '', sandboxMode: false });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving]   = useState(false);
+  const [error, setError]     = useState('');
+  const [success, setSuccess] = useState('');
+
+  useEffect(() => {
+    fetch(`${API}/org/admin/esign-config`, { headers })
+      .then(r => r.json())
+      .then(d => {
+        if (d.config) setConfig({ provider: 'none', apiKey: '', accountId: '', webhookSecret: '', sandboxMode: false, ...d.config });
+      })
+      .catch(() => setError('Failed to load eSign configuration'))
+      .finally(() => setLoading(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSave = async () => {
+    setSaving(true); setError(''); setSuccess('');
+    try {
+      const r = await fetch(`${API}/org/admin/esign-config`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(config),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d?.error?.message || 'Save failed');
+      setSuccess('eSign configuration saved ✓');
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (e) {
+      setError(e.message || 'Failed to save configuration');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div className="sv-loading">Loading eSign configuration…</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {error   && <div className="sv-error">⚠️ {error}</div>}
+      {success && <div className="sv-success">{success}</div>}
+
+      {/* Provider picker */}
+      <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '20px 22px' }}>
+        <div style={{ fontWeight: 600, fontSize: 14, color: '#111827', marginBottom: 6 }}>eSignature Provider</div>
+        <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 14px' }}>
+          Choose your e-signature integration. Contracts sent for signature will use this provider.
+          Select <strong>None</strong> to use manual signature tracking only.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+          {Object.entries(PROVIDER_LABELS).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setConfig(c => ({ ...c, provider: key }))}
+              style={{
+                padding: '12px 16px', borderRadius: 9, textAlign: 'left', cursor: 'pointer',
+                border: config.provider === key ? '2px solid #6366f1' : '1px solid #e5e7eb',
+                background: config.provider === key ? '#eef2ff' : '#fff',
+                fontWeight: config.provider === key ? 700 : 400,
+                fontSize: 13, color: config.provider === key ? '#4338ca' : '#374151',
+                transition: 'all .15s',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Provider credentials — shown only when a real provider is chosen */}
+      {config.provider !== 'none' && (
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '20px 22px' }}>
+          <div style={{ fontWeight: 600, fontSize: 14, color: '#111827', marginBottom: 14 }}>
+            {PROVIDER_LABELS[config.provider]} — Credentials
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div>
+              <label className="sv-label">API Key / Integration Key</label>
+              <input
+                className="sv-input"
+                type="password"
+                placeholder="Paste API key from your provider dashboard"
+                value={config.apiKey}
+                onChange={e => setConfig(c => ({ ...c, apiKey: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="sv-label">Account ID {config.provider === 'docusign' ? '(DocuSign Account GUID)' : '(optional)'}</label>
+              <input
+                className="sv-input"
+                placeholder={config.provider === 'docusign' ? 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' : 'Account ID if required'}
+                value={config.accountId}
+                onChange={e => setConfig(c => ({ ...c, accountId: e.target.value }))}
+              />
+            </div>
+            <div>
+              <label className="sv-label">Webhook Secret (optional)</label>
+              <input
+                className="sv-input"
+                type="password"
+                placeholder="Used to verify incoming webhook events from the provider"
+                value={config.webhookSecret}
+                onChange={e => setConfig(c => ({ ...c, webhookSecret: e.target.value }))}
+              />
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={config.sandboxMode}
+                onChange={e => setConfig(c => ({ ...c, sandboxMode: e.target.checked }))}
+              />
+              <span>
+                <strong>Sandbox / Test mode</strong>
+                <span style={{ color: '#6b7280', marginLeft: 6 }}>— Uses the provider's sandbox environment. Disable for production.</span>
+              </span>
+            </label>
+          </div>
+        </div>
+      )}
+
+      <div>
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          style={{ padding: '9px 24px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', fontSize: 13, fontWeight: 600, cursor: saving ? 'wait' : 'pointer', opacity: saving ? 0.7 : 1 }}
+        >
+          {saving ? 'Saving…' : 'Save Configuration'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OACLMModule() {
+  const [enabled, setEnabled]   = useState(false);
+  const [loading, setLoading]   = useState(true);
+  const [subTab, setSubTab]     = useState('general');
+
+  useEffect(() => {
+    apiService.orgAdmin.getProfile()
+      .then(r => setEnabled(r.data.org?.settings?.modules?.contracts || false))
+      .catch(console.error)
+      .finally(() => setLoading(false));
+
+    const handler = (e) => {
+      if (e.detail.module === 'contracts') {
+        setEnabled(e.detail.enabled);
+        if (!e.detail.enabled) setSubTab('general');
+      }
+    };
+    window.addEventListener('moduleToggle', handler);
+    return () => window.removeEventListener('moduleToggle', handler);
+  }, []);
+
+  const tabs = [
+    ['general', 'General'],
+    ...(enabled ? [['esign', 'eSign Configuration'], ['templates', 'CLM Templates']] : []),
+  ];
+
+  if (loading) return <div className="sv-loading">Loading…</div>;
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>📄 Contract Lifecycle Management</h2>
+          <p className="sv-panel-desc">Full CLM workflow — contracts, legal review, approval chains, e-signatures, and document versioning.</p>
+        </div>
+      </div>
+      <ModuleSubTabs tabs={tabs} active={subTab} onChange={setSubTab} />
+      {subTab === 'general' && (
+        <OAModuleGeneral
+          moduleKey="contracts"
+          icon="📄"
+          label="Contract Lifecycle Management"
+          desc="Enables the full CLM workflow for your organisation — contract creation, legal review queues, approval chains, e-signature tracking, and document versioning."
+          toggleFn={(enabled) => apiService.contracts.toggleModule(enabled)}
+        />
+      )}
+      {subTab === 'esign'     && enabled && <OACLMESignConfig />}
+      {subTab === 'templates' && enabled && <OACLMTemplates />}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// HANDOVER MODULE — General only
+// ─────────────────────────────────────────────────────────────────
+function OAHandoverModule() {
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>🤝 Sales → Implementation Handover</h2>
+          <p className="sv-panel-desc">Structured handover workflow when a deal closes — ensures sales captures everything the implementation team needs.</p>
+        </div>
+      </div>
+      <OAModuleGeneral
+        moduleKey="handovers"
+        icon="🤝"
+        label="Sales → Implementation Handover"
+        desc="Automatically creates a handover checklist when a deal closes. Ensures the implementation team receives everything they need before the handoff."
+        toggleFn={(enabled) => apiService.handovers.toggleModule(enabled)}
+      />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// SERVICE MODULE — General | SLA Settings
+// Wraps the existing OAServiceGeneral + OAServiceSLATiers.
+// ─────────────────────────────────────────────────────────────────
+function OAServiceModule() {
+  const [enabled, setEnabled]   = useState(false);
+  const [loading, setLoading]   = useState(true);
+  const [subTab, setSubTab]     = useState('general');
+
+  useEffect(() => {
+    apiService.orgAdmin.getProfile()
+      .then(r => setEnabled(r.data.org?.settings?.modules?.service || false))
+      .catch(console.error)
+      .finally(() => setLoading(false));
+
+    const handler = (e) => {
+      if (e.detail.module === 'service') {
+        setEnabled(e.detail.enabled);
+        if (!e.detail.enabled) setSubTab('general');
+      }
+    };
+    window.addEventListener('moduleToggle', handler);
+    return () => window.removeEventListener('moduleToggle', handler);
+  }, []);
+
+  const tabs = [
+    ['general', 'General'],
+    ...(enabled ? [['sla', 'SLA Settings']] : []),
+  ];
+
+  if (loading) return <div className="sv-loading">Loading…</div>;
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>🎧 Customer Support &amp; Service</h2>
+          <p className="sv-panel-desc">Full case management with SLA tracking, playbook-driven workflows, and team assignment.</p>
+        </div>
+      </div>
+      <ModuleSubTabs tabs={tabs} active={subTab} onChange={setSubTab} />
+      {subTab === 'general' && <OAServiceGeneral />}
+      {subTab === 'sla'     && enabled && <OAServiceSLATiers />}
+    </div>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────
 // MODULES TAB — enable/disable product modules per org
