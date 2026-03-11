@@ -42,14 +42,25 @@ router.get('/:pipeline', async (req, res) => {
       return res.status(400).json({ error: { message: 'Invalid pipeline key' } });
     }
 
+    // Read org settings to determine terminal stage visibility.
+    // Default: hide terminal stages. Org admin can override via
+    // organizations.settings.pipeline_stages_show_terminal = true
+    const orgRow = await pool.query(
+      `SELECT settings FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const orgSettings = orgRow.rows[0]?.settings || {};
+    const showTerminal = orgSettings.pipeline_stages_show_terminal === true;
+
     const result = await pool.query(
       `SELECT ${SELECT_COLS}
        FROM pipeline_stages
        WHERE org_id = $1 AND pipeline = $2
+         ${showTerminal ? '' : 'AND is_terminal = FALSE'}
        ORDER BY sort_order ASC, id ASC`,
       [req.orgId, pipeline]
     );
-    res.json({ stages: result.rows });
+    res.json({ stages: result.rows, show_terminal: showTerminal });
   } catch (err) {
     res.status(500).json({ error: { message: err.message } });
   }

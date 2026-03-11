@@ -2696,7 +2696,7 @@ function OAPlaybooks() {
         const data = await res.json();
         // Only active non-terminal stages are meaningful for playbook guidance
         const active = (data.stages || [])
-          .filter(s => s.is_active && !s.is_terminal)
+          .filter(s => s.is_active)
           .sort((a, b) => a.sort_order - b.sort_order);
         setLiveStages(active);
       } catch {
@@ -2883,7 +2883,7 @@ function OAPlaybooks() {
           });
           const data = await res.json();
           const active = (data.stages || [])
-            .filter(s => s.is_active && !s.is_terminal)
+            .filter(s => s.is_active)
             .sort((a, b) => a.sort_order - b.sort_order);
           setProspectLiveStages(active);
         } catch { /* non-fatal */ }
