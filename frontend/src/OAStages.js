@@ -74,6 +74,8 @@ const COLOR_PRESETS = [
 export default function OAStages() {
   const [activeTab, setActiveTab] = useState('deal');
   const [playbookTypes, setPlaybookTypes] = useState([]);
+  const [showTerminal, setShowTerminal] = useState(false);
+  const [terminalSaving, setTerminalSaving] = useState(false);
 
   // Fetch org's playbook types
   useEffect(() => {
@@ -84,6 +86,32 @@ export default function OAStages() {
       } catch { /* use defaults */ }
     })();
   }, []);
+
+  // Fetch pipeline stage display settings
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await apiFetch('/org/admin/pipeline-stages-settings');
+        setShowTerminal(res.pipeline_stages_show_terminal === true);
+      } catch { /* non-fatal */ }
+    })();
+  }, []);
+
+  const handleToggleTerminal = async () => {
+    const next = !showTerminal;
+    setShowTerminal(next);
+    setTerminalSaving(true);
+    try {
+      await apiFetch('/org/admin/pipeline-stages-settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ pipeline_stages_show_terminal: next }),
+      });
+    } catch {
+      setShowTerminal(!next); // revert on failure
+    } finally {
+      setTerminalSaving(false);
+    }
+  };
 
   // Build tab list: always start with deal + prospect, then add custom types
   const tabs = [
@@ -112,6 +140,28 @@ export default function OAStages() {
             Configure the stages in your pipelines. Each playbook type can have its own set of stages.
             Add new playbook types in Org Settings → Playbook Types.
           </p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+          <span style={{ fontSize: 13, color: '#6b7280' }}>
+            Show terminal stages
+          </span>
+          <button
+            onClick={handleToggleTerminal}
+            disabled={terminalSaving}
+            title={showTerminal ? 'Hide terminal stages (e.g. Closed Won / Lost) in Playbooks' : 'Show terminal stages in Playbooks'}
+            style={{
+              width: 44, height: 24, borderRadius: 12, border: 'none', cursor: 'pointer',
+              background: showTerminal ? '#10b981' : '#d1d5db',
+              position: 'relative', transition: 'background 0.2s', flexShrink: 0,
+              opacity: terminalSaving ? 0.6 : 1,
+            }}
+          >
+            <span style={{
+              position: 'absolute', top: 3, left: showTerminal ? 23 : 3,
+              width: 18, height: 18, borderRadius: '50%', background: '#fff',
+              transition: 'left 0.2s', display: 'block',
+            }} />
+          </button>
         </div>
       </div>
 
