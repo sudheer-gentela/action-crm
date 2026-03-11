@@ -782,12 +782,16 @@ router.delete('/playbook-types/:typeKey', adminOnly, async (req, res) => {
 
 
 // ── Playbook Stages ──────────────────────────────────────────────────────────
-// Stages are stored in the playbook_stages table, scoped per playbook_id.
-// sales/prospecting fall back to deal_stages/prospect_stages (org-wide pipeline tables).
-// All other types (service, clm, handover_s2i, custom) use playbook_stages rows.
+// All pipeline types now use pipeline_stages (org-wide, keyed by pipeline name).
+// The pipeline name matches the playbook type:
+//   sales / custom / market / product → pipeline = 'sales'
+//   prospecting                       → pipeline = 'prospecting'
+//   clm / service / handover_s2i      → pipeline = type key
 //
 // GET  /org/admin/playbook-stages/:playbookId — returns stages for a specific playbook
 // PUT  /org/admin/playbook-stages/:playbookId — replaces all stages for a playbook (admin)
+
+const SALES_LEGACY_TYPES = ['sales', 'custom', 'market', 'product'];
 
 // GET — any member can read (needed for PlaybookPlaysEditor)
 router.get('/playbook-stages/:playbookId', async (req, res) => {
@@ -805,37 +809,27 @@ router.get('/playbook-stages/:playbookId', async (req, res) => {
     }
     const { type: playbookType } = pbResult.rows[0];
 
-    // Sales types — read from deal_stages
-    if (!playbookType || ['sales', 'custom', 'market', 'product'].includes(playbookType)) {
-      const result = await pool.query(
-        `SELECT key, name, sort_order, is_active, is_terminal
-         FROM deal_stages WHERE org_id = $1 AND is_active = true AND is_terminal = false
-         ORDER BY sort_order`,
-        [req.orgId]
-      );
-      return res.json({ playbookId, type: playbookType, stages: result.rows });
-    }
+    // Map playbook type → pipeline key
+    const pipeline = SALES_LEGACY_TYPES.includes(playbookType) ? 'sales'
+      : playbookType === 'prospecting' ? 'prospecting'
+      : playbookType; // clm, service, handover_s2i, or any custom type
 
-    // Prospecting — read from prospect_stages
-    if (playbookType === 'prospecting') {
-      const result = await pool.query(
-        `SELECT key, name, sort_order, is_active, is_terminal
-         FROM prospect_stages WHERE org_id = $1 AND is_active = true AND is_terminal = false
-         ORDER BY sort_order`,
-        [req.orgId]
-      );
-      return res.json({ playbookId, type: playbookType, stages: result.rows });
-    }
-
-    // All other types — read from playbook_stages table
-    const result = await pool.query(
-      `SELECT id, key, name, sort_order, is_active, is_terminal
-       FROM playbook_stages
-       WHERE playbook_id = $1
-       ORDER BY sort_order`,
-      [playbookId]
+    // Read org settings for terminal stage visibility
+    const orgRow = await pool.query(
+      `SELECT settings FROM organizations WHERE id = $1`, [req.orgId]
     );
-    res.json({ playbookId, type: playbookType, stages: result.rows });
+    const showTerminal = orgRow.rows[0]?.settings?.pipeline_stages_show_terminal === true;
+
+    const result = await pool.query(
+      `SELECT id, pipeline, key, name, stage_type, sort_order, is_active, is_terminal
+       FROM pipeline_stages
+       WHERE org_id = $1 AND pipeline = $2
+         ${showTerminal ? '' : 'AND is_terminal = FALSE'}
+       ORDER BY sort_order ASC, id ASC`,
+      [req.orgId, pipeline]
+    );
+
+    res.json({ playbookId, type: playbookType, pipeline, stages: result.rows });
   } catch (err) {
     console.error('GET /org-admin/playbook-stages error:', err);
     res.status(500).json({ error: { message: 'Failed to fetch playbook stages' } });
@@ -863,12 +857,11 @@ router.put('/playbook-stages/:playbookId', adminOnly, async (req, res) => {
     }
     const { type: playbookType } = pbResult.rows[0];
 
-    // Sales and prospecting stages are managed via deal_stages / prospect_stages
-    if (['sales', 'custom', 'market', 'product', 'prospecting'].includes(playbookType)) {
-      return res.status(400).json({
-        error: { message: `${playbookType} stages are managed via the pipeline stages settings, not per-playbook` }
-      });
-    }
+    // All pipeline types are managed via pipeline_stages (org-wide), not per-playbook.
+    // This PUT endpoint is therefore disabled — stages are edited via OAStages / pipeline-stages routes.
+    return res.status(400).json({
+      error: { message: `Stages are managed org-wide via pipeline settings, not per-playbook. Use the Stages tab in Org Admin.` }
+    });
 
     // Validate
     for (const s of stages) {

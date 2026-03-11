@@ -2892,24 +2892,22 @@ function OAPlaybooks() {
       return;
     }
 
-    // All other types — load from playbook_stages table via unified endpoint
-    // Uses selectedId (the active playbook) so stages are per-playbook not per-type
-    if (!selectedId) { setCustomLiveStages([]); setCustomStagesLoading(false); return; }
+    // All other types — load from pipeline-stages/:type (org-wide, consistent with PlaybooksView)
     setCustomStagesLoading(true);
     (async () => {
       try {
-        const res = await fetch(`${API}/org/admin/playbook-stages/${selectedId}`, {
+        const res = await fetch(`${API}/pipeline-stages/${typeFilter}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json();
         const active = (data.stages || [])
-          .filter(s => s.is_active !== false && !s.is_terminal)
+          .filter(s => s.is_active !== false)
           .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
         setCustomLiveStages(active);
       } catch { /* non-fatal */ }
       finally { setCustomStagesLoading(false); }
     })();
-  }, [typeFilter, selectedId, API, token, isSalesType, isProspecting]);
+  }, [typeFilter, API, token, isSalesType, isProspecting]);
 
   // Re-select on type filter change
   useEffect(() => {
