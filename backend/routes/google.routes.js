@@ -95,12 +95,39 @@ router.get('/callback', async (req, res) => {
         return res.redirect(`${frontendUrl}/?error=missing_org_id`);
       }
 
-      // Get the email address from the token profile
-      const profile = await getUserProfile(userId);
-      const email   = profile.email;
+      // Extract email directly from the token response (id_token or email field)
+      // getUserProfile() won't work here because tokens aren't saved to oauth_tokens yet
+      let email = tokenResponse.email || null;
+
+      // Fallback: decode id_token JWT payload to get email
+      if (!email && tokenResponse.id_token) {
+        try {
+          const payload = JSON.parse(
+            Buffer.from(tokenResponse.id_token.split('.')[1], 'base64').toString()
+          );
+          email = payload.email || null;
+        } catch (e) {
+          console.warn('⚠️  Could not decode id_token for email:', e.message);
+        }
+      }
+
+      // Last resort: temporarily save token and fetch profile, then clean up
+      if (!email) {
+        try {
+          await saveUserToken(userId, 'google', tokenResponse);
+          const profile = await getUserProfile(userId);
+          email = profile.email || null;
+        } catch (e) {
+          console.warn('⚠️  Fallback getUserProfile failed:', e.message);
+        }
+      }
 
       if (!email) {
         return res.redirect(`${frontendUrl}/?error=no_email_in_profile`);
+      }
+
+      if (!tokenResponse.access_token) {
+        return res.redirect(`${frontendUrl}/?error=no_access_token`);
       }
 
       console.log('📧 Saving prospecting sender account:', email, 'for user', userId);
