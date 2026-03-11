@@ -46,35 +46,27 @@ async function resolvePlaybook(orgId, playbookId, type) {
 }
 
 // ── getStagesForPlaybook ─────────────────────────────────────────────────────
-// Returns ordered active stages for a playbook from the playbook_stages table.
-// Falls back to deal_stages (sales) or prospect_stages (prospecting) for
-// legacy playbook types that predate the playbook_stages table.
+// Returns ordered active stages for a playbook from pipeline_stages.
+// All types use pipeline_stages — sales uses pipeline='sales',
+// prospecting uses pipeline='prospecting', all others use pipeline=playbookType.
 //
 // returns: Array<{ key, name, sort_order, is_active, is_terminal }>
 async function getStagesForPlaybook(orgId, playbookId, playbookType) {
-  // Sales-type playbooks use deal_stages (org-wide pipeline)
-  if (!playbookType || ['sales', 'custom', 'market', 'product'].includes(playbookType)) {
+  // Sales-type playbooks and prospecting both use pipeline_stages
+  const pipelineTypes = ['sales', 'custom', 'market', 'product'];
+  if (!playbookType || pipelineTypes.includes(playbookType) || playbookType === 'prospecting') {
+    const pipeline = pipelineTypes.includes(playbookType) || !playbookType ? 'sales' : playbookType;
     const result = await db.query(
       `SELECT key, name, sort_order, is_active, is_terminal
-       FROM deal_stages WHERE org_id = $1 AND is_active = true AND is_terminal = false
+       FROM pipeline_stages
+       WHERE org_id = $1 AND pipeline = $2 AND is_active = true AND is_terminal = false
        ORDER BY sort_order`,
-      [orgId]
+      [orgId, pipeline]
     );
     return result.rows;
   }
 
-  // Prospecting uses prospect_stages
-  if (playbookType === 'prospecting') {
-    const result = await db.query(
-      `SELECT key, name, sort_order, is_active, is_terminal
-       FROM prospect_stages WHERE org_id = $1 AND is_active = true AND is_terminal = false
-       ORDER BY sort_order`,
-      [orgId]
-    );
-    return result.rows;
-  }
-
-  // All other types (service, clm, handover_s2i, custom) — use playbook_stages table
+  // All other types (service, clm, handover_s2i, custom pipeline types) — use playbook_stages table
   const result = await db.query(
     `SELECT key, name, sort_order, is_active, is_terminal
      FROM playbook_stages

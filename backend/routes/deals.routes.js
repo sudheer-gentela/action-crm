@@ -19,8 +19,8 @@ async function validateStage(orgId, stageKey) {
   try {
     const result = await db.query(
       `SELECT key, stage_type, is_active, is_terminal
-       FROM deal_stages
-       WHERE org_id = $1 AND key = $2`,
+       FROM pipeline_stages
+       WHERE org_id = $1 AND pipeline = 'sales' AND key = $2`,
       [orgId, stageKey]
     );
     if (result.rows.length === 0) {
@@ -31,11 +31,7 @@ async function validateStage(orgId, stageKey) {
     }
     return result.rows[0];
   } catch (err) {
-    // If the error is a missing table (migration not run yet), skip validation
-    if (err.message?.includes('relation "deal_stages" does not exist')) {
-      console.warn('validateStage: deal_stages table not found, skipping validation (pre-migration?)');
-      return null;
-    }
+    throw err;
     throw err;
   }
 }
@@ -44,8 +40,8 @@ async function validateStage(orgId, stageKey) {
 async function resolveDefaultStage(orgId) {
   try {
     const result = await db.query(
-      `SELECT key FROM deal_stages
-       WHERE org_id = $1 AND is_active = TRUE AND is_terminal = FALSE
+      `SELECT key FROM pipeline_stages
+       WHERE org_id = $1 AND pipeline = 'sales' AND is_active = TRUE AND is_terminal = FALSE
        ORDER BY sort_order ASC LIMIT 1`,
       [orgId]
     );
@@ -147,7 +143,7 @@ router.get('/', async (req, res) => {
 });
 
 // ── GET /pipeline/summary ─────────────────────────────────────
-// Updated: joins deal_stages so ordering follows org sort_order instead of
+// Updated: joins pipeline_stages so ordering follows org sort_order instead of
 // a hardcoded CASE WHEN. Backward compatible — falls back to count-only if
 // deal_stages table doesn't exist yet.
 // Supports ?scope=mine|team|org (same as GET /)
@@ -179,8 +175,8 @@ router.get('/pipeline/summary', async (req, res) => {
          COUNT(d.id)   AS count,
          SUM(d.value)  AS total_value
        FROM deals d
-       LEFT JOIN deal_stages ds
-         ON ds.org_id = d.org_id AND ds.key = d.stage
+       LEFT JOIN pipeline_stages ds
+         ON ds.org_id = d.org_id AND ds.pipeline = 'sales' AND ds.key = d.stage
        WHERE d.org_id   = $1
          ${ownerFilter}
          AND (ds.is_terminal = FALSE OR ds.is_terminal IS NULL)
@@ -200,52 +196,6 @@ router.get('/pipeline/summary', async (req, res) => {
       }))
     });
   } catch (error) {
-    // Fallback: if deal_stages doesn't exist, return legacy format
-    if (error.message?.includes('relation "deal_stages" does not exist')) {
-      try {
-        const fallbackParams = [req.orgId];
-        let fallbackOwnerFilter;
-        const scope = req.query.scope || 'mine';
-        if (scope === 'team' && req.subordinateIds?.length > 0) {
-          const teamIds = [req.user.userId, ...req.subordinateIds];
-          fallbackOwnerFilter = `AND owner_id = ANY($${fallbackParams.length + 1}::int[])`;
-          fallbackParams.push(teamIds);
-        } else if (scope === 'org') {
-          fallbackOwnerFilter = '';
-        } else {
-          fallbackOwnerFilter = `AND owner_id = $${fallbackParams.length + 1}`;
-          fallbackParams.push(req.user.userId);
-        }
-
-        const fallback = await db.query(
-          `SELECT stage, COUNT(*) as count, SUM(value) as total_value
-           FROM deals
-           WHERE org_id = $1 ${fallbackOwnerFilter}
-             AND stage NOT IN ('closed_won', 'closed_lost')
-           GROUP BY stage
-           ORDER BY CASE stage
-             WHEN 'qualified'   THEN 1
-             WHEN 'demo'        THEN 2
-             WHEN 'proposal'    THEN 3
-             WHEN 'negotiation' THEN 4
-             ELSE 5
-           END`,
-          fallbackParams
-        );
-        return res.json({
-          pipeline: fallback.rows.map(row => ({
-            stage:      row.stage,
-            stageName:  row.stage,
-            stageType:  'custom',
-            sortOrder:  0,
-            count:      parseInt(row.count),
-            totalValue: parseFloat(row.total_value) || 0,
-          }))
-        });
-      } catch (fallbackError) {
-        console.error('Get pipeline summary fallback error:', fallbackError);
-      }
-    }
     console.error('Get pipeline summary error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch pipeline summary' } });
   }
@@ -540,8 +490,8 @@ router.put('/:id', async (req, res) => {
     const isClosingStage = async (stageKey) => {
       try {
         const r = await db.query(
-          'SELECT is_terminal FROM deal_stages WHERE org_id = $1 AND key = $2',
-          [req.orgId, stageKey]
+          'SELECT is_terminal FROM pipeline_stages WHERE org_id = $1 AND pipeline = $2 AND key = $3',
+          [req.orgId, 'sales', stageKey]
         );
         return r.rows[0]?.is_terminal === true;
       } catch {
@@ -598,7 +548,7 @@ router.put('/:id', async (req, res) => {
       try {
         if (willClose) {
           const stageRow = await db.query(
-            `SELECT stage_type FROM deal_stages WHERE org_id = $1 AND key = $2 LIMIT 1`,
+            `SELECT stage_type FROM pipeline_stages WHERE org_id = $1 AND pipeline = 'sales' AND key = $2 LIMIT 1`,
             [req.orgId, stage]
           );
           // Treat stage_type = 'won' OR the literal key 'closed_won' as a win

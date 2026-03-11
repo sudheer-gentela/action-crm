@@ -741,7 +741,7 @@ router.delete('/playbook-types/:typeKey', adminOnly, async (req, res) => {
 
 // ── Playbook Stages ──────────────────────────────────────────────────────────
 // Stages are stored in the playbook_stages table, scoped per playbook_id.
-// sales/prospecting fall back to deal_stages/prospect_stages (org-wide pipeline tables).
+// sales/prospecting use pipeline_stages (pipeline='sales' / pipeline='prospecting').
 // All other types (service, clm, handover_s2i, custom) use playbook_stages rows.
 //
 // GET  /org/admin/playbook-stages/:playbookId — returns stages for a specific playbook
@@ -763,22 +763,22 @@ router.get('/playbook-stages/:playbookId', async (req, res) => {
     }
     const { type: playbookType } = pbResult.rows[0];
 
-    // Sales types — read from deal_stages
+    // Sales types — read from pipeline_stages
     if (!playbookType || ['sales', 'custom', 'market', 'product'].includes(playbookType)) {
       const result = await pool.query(
         `SELECT key, name, sort_order, is_active, is_terminal
-         FROM deal_stages WHERE org_id = $1 AND is_active = true AND is_terminal = false
+         FROM pipeline_stages WHERE org_id = $1 AND pipeline = 'sales' AND is_active = true AND is_terminal = false
          ORDER BY sort_order`,
         [req.orgId]
       );
       return res.json({ playbookId, type: playbookType, stages: result.rows });
     }
 
-    // Prospecting — read from prospect_stages
+    // Prospecting — read from pipeline_stages
     if (playbookType === 'prospecting') {
       const result = await pool.query(
         `SELECT key, name, sort_order, is_active, is_terminal
-         FROM prospect_stages WHERE org_id = $1 AND is_active = true AND is_terminal = false
+         FROM pipeline_stages WHERE org_id = $1 AND pipeline = 'prospecting' AND is_active = true AND is_terminal = false
          ORDER BY sort_order`,
         [req.orgId]
       );
@@ -821,7 +821,7 @@ router.put('/playbook-stages/:playbookId', adminOnly, async (req, res) => {
     }
     const { type: playbookType } = pbResult.rows[0];
 
-    // Sales and prospecting stages are managed via deal_stages / prospect_stages
+    // All pipeline stages (including sales and prospecting) are managed via pipeline_stages
     if (['sales', 'custom', 'market', 'product', 'prospecting'].includes(playbookType)) {
       return res.status(400).json({
         error: { message: `${playbookType} stages are managed via the pipeline stages settings, not per-playbook` }

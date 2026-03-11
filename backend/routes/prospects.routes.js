@@ -872,8 +872,8 @@ router.post('/:id/convert', async (req, res) => {
       let stageKey = dealStage;
       if (!stageKey) {
         const stageRes = await client.query(
-          `SELECT key FROM deal_stages
-           WHERE org_id = $1 AND is_active = TRUE AND is_terminal = FALSE
+          `SELECT key FROM pipeline_stages
+           WHERE org_id = $1 AND pipeline = 'sales' AND is_active = TRUE AND is_terminal = FALSE
            ORDER BY sort_order ASC LIMIT 1`,
           [req.orgId]
         );

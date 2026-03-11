@@ -28,7 +28,7 @@ async function validateStageKey(orgId, stageKey, playbookType, playbookId) {
   if (playbookType === 'sales' || playbookType === 'custom' ||
       playbookType === 'market' || playbookType === 'product') {
     const result = await db.query(
-      `SELECT key FROM deal_stages WHERE org_id = $1 AND key = $2 LIMIT 1`,
+      `SELECT key FROM pipeline_stages WHERE org_id = $1 AND pipeline = 'sales' AND key = $2 LIMIT 1`,
       [orgId, stageKey]
     );
     return result.rows.length > 0;
@@ -36,7 +36,7 @@ async function validateStageKey(orgId, stageKey, playbookType, playbookId) {
 
   if (playbookType === 'prospecting') {
     const result = await db.query(
-      `SELECT key FROM prospect_stages WHERE org_id = $1 AND key = $2 LIMIT 1`,
+      `SELECT key FROM pipeline_stages WHERE org_id = $1 AND pipeline = 'prospecting' AND key = $2 LIMIT 1`,
       [orgId, stageKey]
     );
     return result.rows.length > 0;
@@ -63,7 +63,7 @@ async function validateStageKey(orgId, stageKey, playbookType, playbookId) {
 
 async function buildDefaultGuidance(orgId) {
   const stagesResult = await db.query(
-    `SELECT key FROM deal_stages WHERE org_id = $1 AND is_active = TRUE AND is_terminal = FALSE ORDER BY sort_order ASC`,
+    `SELECT key FROM pipeline_stages WHERE org_id = $1 AND pipeline = 'sales' AND is_active = TRUE AND is_terminal = FALSE ORDER BY sort_order ASC`,
     [orgId]
   );
   const guidance = {};

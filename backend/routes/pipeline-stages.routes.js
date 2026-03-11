@@ -130,6 +130,25 @@ router.put('/:pipeline/:id', adminOnly, async (req, res) => {
       });
     }
 
+    // Cascade key rename to entity tables for sales and prospecting pipelines
+    if (newKey !== existing.key) {
+      if (pipeline === 'sales') {
+        await pool.query(
+          `UPDATE deals SET stage = $1, updated_at = NOW() WHERE org_id = $2 AND stage = $3`,
+          [newKey, req.orgId, existing.key]
+        );
+        await pool.query(
+          `UPDATE actions SET deal_stage = $1 WHERE org_id = $2 AND deal_stage = $3`,
+          [newKey, req.orgId, existing.key]
+        );
+      } else if (pipeline === 'prospecting') {
+        await pool.query(
+          `UPDATE prospects SET stage = $1, updated_at = NOW() WHERE org_id = $2 AND stage = $3`,
+          [newKey, req.orgId, existing.key]
+        );
+      }
+    }
+
     const updated = await pool.query(
       `UPDATE pipeline_stages
        SET
@@ -214,11 +233,63 @@ router.delete('/:pipeline/:id', adminOnly, async (req, res) => {
       return res.status(404).json({ error: { message: 'Stage not found' } });
     }
     const { name, is_system } = stage.rows[0];
+    const { key } = stage.rows[0];
 
     if (is_system) {
       return res.status(403).json({
         error: { message: `"${name}" is a system stage. Deactivate it instead.` },
       });
+    }
+
+    // For sales pipeline — block delete if active deals exist in this stage
+    if (pipeline === 'sales') {
+      const activeDeals = await pool.query(
+        `SELECT COUNT(*) AS count FROM deals WHERE org_id = $1 AND stage = $2 AND deleted_at IS NULL`,
+        [req.orgId, key]
+      );
+      const count = parseInt(activeDeals.rows[0].count);
+      if (count > 0) {
+        return res.status(409).json({
+          error: { message: `Cannot delete "${name}" — ${count} active deal${count === 1 ? '' : 's'} ${count === 1 ? 'is' : 'are'} in this stage. Move them first, or deactivate instead.` },
+        });
+      }
+      // Soft-delete if historical deals reference the key
+      const totalDeals = await pool.query(
+        `SELECT COUNT(*) AS count FROM deals WHERE org_id = $1 AND stage = $2`,
+        [req.orgId, key]
+      );
+      if (parseInt(totalDeals.rows[0].count) > 0) {
+        await pool.query(
+          `UPDATE pipeline_stages SET is_active = FALSE, updated_at = NOW() WHERE id = $1 AND org_id = $2 AND pipeline = $3`,
+          [id, req.orgId, pipeline]
+        );
+        return res.json({ message: `"${name}" deactivated (has historical deals).`, action: 'deactivated' });
+      }
+    }
+
+    // For prospecting pipeline — block delete if active prospects exist
+    if (pipeline === 'prospecting') {
+      const activeProspects = await pool.query(
+        `SELECT COUNT(*) AS count FROM prospects WHERE org_id = $1 AND stage = $2 AND deleted_at IS NULL`,
+        [req.orgId, key]
+      );
+      const count = parseInt(activeProspects.rows[0].count);
+      if (count > 0) {
+        return res.status(409).json({
+          error: { message: `Cannot delete "${name}" — ${count} active prospect${count === 1 ? '' : 's'} ${count === 1 ? 'is' : 'are'} in this stage. Move them first, or deactivate instead.` },
+        });
+      }
+      const totalProspects = await pool.query(
+        `SELECT COUNT(*) AS count FROM prospects WHERE org_id = $1 AND stage = $2`,
+        [req.orgId, key]
+      );
+      if (parseInt(totalProspects.rows[0].count) > 0) {
+        await pool.query(
+          `UPDATE pipeline_stages SET is_active = FALSE, updated_at = NOW() WHERE id = $1 AND org_id = $2 AND pipeline = $3`,
+          [id, req.orgId, pipeline]
+        );
+        return res.json({ message: `"${name}" deactivated (has historical prospects).`, action: 'deactivated' });
+      }
     }
 
     await pool.query(

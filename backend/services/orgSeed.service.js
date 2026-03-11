@@ -115,9 +115,9 @@ async function seedOrg(orgId) {
     // ── Prospect stages ──────────────────────────────────────────────
     for (const s of DEFAULT_PROSPECT_STAGES) {
       await db.query(
-        `INSERT INTO prospect_stages (org_id, key, name, stage_type, sort_order, is_active, is_terminal, is_system, color)
-         VALUES ($1, $2, $3, $4, $5, TRUE, $6, TRUE, $7)
-         ON CONFLICT DO NOTHING`,
+        `INSERT INTO pipeline_stages (org_id, pipeline, key, name, stage_type, sort_order, is_active, is_terminal, is_system, color)
+         VALUES ($1, 'prospecting', $2, $3, $4, $5, TRUE, $6, TRUE, $7)
+         ON CONFLICT (org_id, pipeline, key) DO NOTHING`,
         [orgId, s.key, s.name, s.stage_type, s.sort_order, s.is_terminal, s.color]
       );
     }
@@ -126,9 +126,9 @@ async function seedOrg(orgId) {
     // ── Deal stages ──────────────────────────────────────────────────
     for (const s of DEFAULT_DEAL_STAGES) {
       await db.query(
-        `INSERT INTO deal_stages (org_id, key, name, stage_type, sort_order, is_active, is_terminal, is_system)
-         VALUES ($1, $2, $3, $4, $5, TRUE, $6, TRUE)
-         ON CONFLICT (org_id, key) DO NOTHING`,
+        `INSERT INTO pipeline_stages (org_id, pipeline, key, name, stage_type, sort_order, is_active, is_terminal, is_system)
+         VALUES ($1, 'sales', $2, $3, $4, $5, TRUE, $6, TRUE)
+         ON CONFLICT (org_id, pipeline, key) DO NOTHING`,
         [orgId, s.key, s.name, s.stage_type, s.sort_order, s.is_terminal]
       );
     }

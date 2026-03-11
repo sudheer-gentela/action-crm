@@ -25,8 +25,7 @@ const aiContextRoutes  = require('./routes/ai-context.routes');
 const orgRolesRoutes   = require('./routes/org-roles.routes');
 const dealTeamRoutes   = require('./routes/deal-team.routes');
 const dealContactsRoutes = require('./routes/deal-contacts.routes');
-const dealStagesRoutes = require('./routes/deal-stages.routes');
-const prospectStagesRoutes = require('./routes/prospect-stages.routes');
+// deal-stages and prospect-stages removed — consolidated into pipeline-stages
 
 // STRAP Framework
 const strapRoutes = require('./routes/strap.routes');
@@ -179,10 +178,8 @@ app.use('/api/org-roles',  orgRolesRoutes);
 app.use('/api/deal-roles', orgRolesRoutes);
 app.use('/api/deal-team',  dealTeamRoutes);
 app.use('/api/deal-contacts', dealContactsRoutes);
-app.use('/api/deal-stages',   dealStagesRoutes);
 app.use('/api/straps',        strapRoutes);
-app.use('/api/prospect-stages', prospectStagesRoutes);
-app.use('/api/products',        productsRoutes);
+app.use('/api/products',      productsRoutes);
 
 const pipelineStagesRoutes = require('./routes/pipeline-stages.routes');
 app.use('/api/pipeline-stages', pipelineStagesRoutes);
