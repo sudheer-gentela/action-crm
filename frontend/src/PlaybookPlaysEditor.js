@@ -31,15 +31,6 @@ const CHANNELS = [
 
 const PRIORITIES = ['high', 'medium', 'low'];
 
-// Fixed stage keys for service playbooks — mirrors the case status CHECK constraint
-const SERVICE_STAGES = [
-  { key: 'open',             name: 'Open',             is_active: true, is_terminal: false },
-  { key: 'in_progress',      name: 'In Progress',      is_active: true, is_terminal: false },
-  { key: 'pending_customer', name: 'Pending Customer', is_active: true, is_terminal: false },
-  { key: 'resolved',         name: 'Resolved',         is_active: true, is_terminal: false },
-  { key: 'closed',           name: 'Closed',           is_active: true, is_terminal: false },
-];
-
 // ── PlayForm (create/edit) ──────────────────────────────────────────────────
 
 function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
@@ -594,27 +585,20 @@ export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
       // First get playbook info to determine type
       const pbRes = await apiFetch(`/playbooks/${playbookId}`);
       const pb = pbRes.playbook || pbRes;
-      const isProspecting = pb.type === 'prospecting';
-      const isCLM = pb.type === 'clm';
-      const isSalesType = !pb.type || ['sales', 'custom', 'market', 'product'].includes(pb.type);
       setPlaybookType(pb.type || 'sales');
 
-      // Determine stage source based on playbook type
-      const isService = pb.type === 'service';
+      // All stage sources are now unified through the org/admin/playbook-stages endpoint.
+      // sales uses deal_stages, prospecting uses prospect_stages — backend handles routing.
+      // All other types (service, clm, handover_s2i, custom) read from org settings.
+      const pbType = pb.type || 'sales';
       let stagesPromise;
-      if (isService) {
-        // Service stages are fixed case-status strings — no API call needed
-        stagesPromise = Promise.resolve({ stages: SERVICE_STAGES });
-      } else if (isProspecting) {
-        stagesPromise = apiFetch('/prospect-stages');
-      } else if (isCLM) {
-        // CLM stages live in pipeline_stages with pipeline='clm'
-        stagesPromise = apiFetch('/pipeline-stages/clm');
-      } else if (isSalesType) {
+      if (pbType === 'sales' || pbType === 'custom' || pbType === 'market' || pbType === 'product') {
         stagesPromise = apiFetch('/deal-stages');
+      } else if (pbType === 'prospecting') {
+        stagesPromise = apiFetch('/prospect-stages');
       } else {
-        // Custom pipeline type — try pipeline-stages, fall back to deal-stages
-        stagesPromise = apiFetch(`/pipeline-stages/${pb.type}`).catch(() => apiFetch('/deal-stages'));
+        // All other types read from org settings via the unified endpoint
+        stagesPromise = apiFetch(`/org/admin/playbook-stages/${pbType}`).then(d => ({ stages: d.stages }));
       }
 
       // Fetch plays, playbook-specific roles, and correct stages in parallel
@@ -748,6 +732,7 @@ export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
   const stageNoun = playbookType === 'prospecting' ? 'prospect stage'
     : playbookType === 'clm' ? 'contract stage'
     : playbookType === 'service' ? 'case status'
+    : playbookType === 'handover_s2i' ? 'handover stage'
     : 'stage';
 
   return (

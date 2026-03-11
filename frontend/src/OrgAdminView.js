@@ -2779,17 +2779,8 @@ function OAPlaybooks() {
   const isService     = typeFilter === 'service';
   const isCustomType  = !isSalesType && !isProspecting && !isCLM && !isService;
 
-  // Service stages are fixed case-status strings, not stored in pipeline_stages.
-  // Defined as synthetic stage objects so the guidance editor renders them
-  // identically to any other playbook type.
-  const SERVICE_STAGES = [
-    { id: 'svc-open',             key: 'open',             name: 'Open',             stage_type: 'open'             },
-    { id: 'svc-in_progress',      key: 'in_progress',      name: 'In Progress',      stage_type: 'in_progress'      },
-    { id: 'svc-pending_customer', key: 'pending_customer', name: 'Pending Customer', stage_type: 'pending_customer' },
-    { id: 'svc-resolved',         key: 'resolved',         name: 'Resolved',         stage_type: 'resolved'         },
-    { id: 'svc-closed',           key: 'closed',           name: 'Closed',           stage_type: 'closed'           },
-  ];
 
+  // Service stages are fixed case-status strings, not stored in pipeline_stages.
   // "sales" tab catches legacy types (custom, market, product) + explicit sales type
   // All other tabs filter by exact type key
   const SALES_LEGACY_TYPES = ['sales', 'custom', 'market', 'product'];
@@ -2797,52 +2788,52 @@ function OAPlaybooks() {
     ? playbooks.filter(p => SALES_LEGACY_TYPES.includes(p.type))
     : playbooks.filter(p => p.type === typeFilter);
 
-  // ── Prospect stages (loaded when prospecting tab is active) ────────────────
+  // ── Stage loader — unified for all types ─────────────────────────────────
+  // sales → deal-stages table
+  // prospecting → prospect-stages table
+  // all others (service, clm, handover_s2i, custom) → org/admin/playbook-stages/:type
   const [prospectLiveStages, setProspectLiveStages] = useState([]);
   const [prospectStagesLoading, setProspectStagesLoading] = useState(false);
-
-  useEffect(() => {
-    if (typeFilter !== 'prospecting') return;
-    setProspectStagesLoading(true);
-    (async () => {
-      try {
-        const res = await fetch(`${API}/prospect-stages`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const data = await res.json();
-        const active = (data.stages || [])
-          .filter(s => s.is_active && !s.is_terminal)
-          .sort((a, b) => a.sort_order - b.sort_order);
-        setProspectLiveStages(active);
-      } catch { /* non-fatal */ }
-      finally { setProspectStagesLoading(false); }
-    })();
-  }, [typeFilter, API, token]);
-
-  // ── Custom type stages (loaded when a custom type tab is active) ───────────
-  // Custom types default to using deal stages but PlaybookPlaysEditor handles
-  // stage loading independently per playbook type via its own fetchData.
   const [customLiveStages, setCustomLiveStages] = useState([]);
   const [customStagesLoading, setCustomStagesLoading] = useState(false);
 
   useEffect(() => {
-    if (isSalesType || isProspecting || isService) return;
-    // CLM and custom types all load from pipeline-stages/{type}
+    if (isSalesType) return; // sales uses liveStages already loaded from deal-stages
+
+    if (isProspecting) {
+      setProspectStagesLoading(true);
+      (async () => {
+        try {
+          const res = await fetch(`${API}/prospect-stages`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const data = await res.json();
+          const active = (data.stages || [])
+            .filter(s => s.is_active && !s.is_terminal)
+            .sort((a, b) => a.sort_order - b.sort_order);
+          setProspectLiveStages(active);
+        } catch { /* non-fatal */ }
+        finally { setProspectStagesLoading(false); }
+      })();
+      return;
+    }
+
+    // All other types — load from org settings via unified endpoint
     setCustomStagesLoading(true);
     (async () => {
       try {
-        const res = await fetch(`${API}/pipeline-stages/${typeFilter}`, {
+        const res = await fetch(`${API}/org/admin/playbook-stages/${typeFilter}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json();
         const active = (data.stages || [])
-          .filter(s => s.is_active && !s.is_terminal)
-          .sort((a, b) => a.sort_order - b.sort_order);
+          .filter(s => s.is_active !== false && !s.is_terminal)
+          .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
         setCustomLiveStages(active);
       } catch { /* non-fatal */ }
       finally { setCustomStagesLoading(false); }
     })();
-  }, [typeFilter, API, token, isSalesType, isProspecting, isService]);
+  }, [typeFilter, API, token, isSalesType, isProspecting]);
 
   // Re-select on type filter change
   useEffect(() => {
@@ -2858,17 +2849,12 @@ function OAPlaybooks() {
   }, [typeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Which stages to show in the editor
-  const isCLMType = typeFilter === 'clm';
   const activeLiveStages = isProspecting ? prospectLiveStages
-    : isService     ? SERVICE_STAGES      // fixed case-status stages, no API call needed
-    : isCLMType ? customLiveStages     // CLM uses the custom pipeline-stages loader (pipeline='clm')
-    : isCustomType ? customLiveStages
-    : liveStages;
+    : isSalesType ? liveStages
+    : customLiveStages; // service, clm, handover_s2i, custom all loaded from org settings
   const activeStagesLoading = isProspecting ? prospectStagesLoading
-    : isService     ? false
-    : isCLMType ? customStagesLoading
-    : isCustomType ? customStagesLoading
-    : stagesLoading;
+    : isSalesType ? stagesLoading
+    : customStagesLoading;
 
   const handleSetDefault = async (id) => {
     try {
@@ -3154,7 +3140,7 @@ function OAPlaybooks() {
                   <span style={{ fontSize: 12, color: '#9ca3af' }}>
                     {isProspecting ? 'Stages from Prospect Stages tab'
                       : isSalesType ? 'Stages from Deal Stages tab'
-                      : isService   ? 'Built-in case status stages'
+                      : isService   ? 'Service case status stages'
                       : isCLM ? 'CLM contract lifecycle stages'
                       : `Stages from ${activeType?.label || typeFilter} Stages tab`}
                     {' · save each stage individually'}
@@ -3165,7 +3151,7 @@ function OAPlaybooks() {
                   <div className="sv-loading" style={{ padding: 16 }}>Loading stages…</div>
                 ) : activeLiveStages.length === 0 ? (
                   <div className="sv-empty">
-                    No active pipeline stages found. {isProspecting ? 'Add stages in the Prospect Stages tab.' : isService ? 'Service stages are built-in (Open → In Progress → Pending Customer → Resolved → Closed).' : isCLM ? 'Run the CLM pipeline stages migration to seed CLM stages.' : 'Add stages in the Deal Stages tab.'}
+                    No active pipeline stages found. {isProspecting ? 'Add stages in the Prospect Stages tab.' : isSalesType ? 'Add stages in the Deal Stages tab.' : 'Add stages in Org Settings → Playbook Stages.'}
                   </div>
                 ) : (
                   <div className="sv-stages-list">
