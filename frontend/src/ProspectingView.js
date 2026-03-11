@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, createContext, useContext } fr
 import OutreachComposer from './OutreachComposer';
 import CoverageScorecard from './CoverageScorecard';
 import StrapPanel from './StrapPanel';
+import CSVImportModal from './CSVImportModal';
 import './ProspectingView.css';
 import './OutreachComposer.css';
 
@@ -91,6 +92,16 @@ export default function ProspectingView() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedProspect, setSelectedProspect] = useState(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+
+  const handleImportProspects = async (rows) => {
+    const res = await apiFetch('/prospects/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ prospects: rows, source: 'csv_import' }),
+    });
+    fetchProspects();
+    return res; // { imported, skipped, errors }
+  };
 
   // Dynamic stages from API
   const [PROSPECT_STAGES, setProspectStages] = useState(DEFAULT_PROSPECT_STAGES);
@@ -275,6 +286,10 @@ export default function ProspectingView() {
             📋 Playbooks
           </button>
 
+          <button className="pv-btn-secondary" onClick={() => setShowImportModal(true)}>
+            ⬆ Import CSV
+          </button>
+
           <button className="pv-add-btn" onClick={() => setShowCreateForm(true)}>
             + Add Prospect
           </button>
@@ -345,6 +360,15 @@ export default function ProspectingView() {
         <ProspectCreateModal
           onSave={handleCreateProspect}
           onClose={() => setShowCreateForm(false)}
+        />
+      )}
+
+      {/* ── CSV Import Modal ───────────────────────────────────────────────── */}
+      {showImportModal && (
+        <CSVImportModal
+          entity="prospects"
+          onImport={handleImportProspects}
+          onClose={() => setShowImportModal(false)}
         />
       )}
 
