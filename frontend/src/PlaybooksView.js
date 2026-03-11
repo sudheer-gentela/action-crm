@@ -65,10 +65,10 @@ export default function PlaybooksView({ initialTypeFilter }) {
   const isCLM         = typeFilter === 'clm';
   const isHandover    = typeFilter === 'handover_s2i';
 
-  // ── Live stage lists — all fetched dynamically ───────────
-  const [dealStages,    setDealStages]    = useState([]);
-  const [prospectStages, setProspectStages] = useState([]);
-  const [clmStages,     setClmStages]     = useState([]);
+  // ── Live stage lists — fetched dynamically per playbook type ─────────────
+  // stagesMap: { [typeKey]: Stage[] } — built from playbookTypes after they load.
+  // All types including sales and prospecting use /pipeline-stages/:key uniformly.
+  const [stagesMap,     setStagesMap]     = useState({});
   const [handoverStages, setHandoverStages] = useState([]);
   const [stagesLoading, setStagesLoading] = useState(false);
 
@@ -116,8 +116,9 @@ export default function PlaybooksView({ initialTypeFilter }) {
       .catch(() => { /* keep defaults — sales + prospecting */ });
   }, [API_BASE, token]);
 
-  // ── Fetch all stage lists in parallel on mount ───────────
+  // ── Fetch all stage lists — driven by playbookTypes so new modules auto-appear
   useEffect(() => {
+    if (!playbookTypes.length) return;
     setStagesLoading(true);
     const h = { Authorization: `Bearer ${token}` };
 
@@ -125,25 +126,29 @@ export default function PlaybooksView({ initialTypeFilter }) {
     // by reading distinct stage_keys from the playbook's plays
     setHandoverStages([{ key: 'closed_won', name: 'Closed Won', label: 'Closed Won', sort_order: 1, is_active: true, is_terminal: false, stage_type: 'closed_won' }]);
 
-    Promise.all([
-      fetch(`${API_BASE}/deal-stages`,          { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
-      fetch(`${API_BASE}/prospect-stages`,      { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
-      fetch(`${API_BASE}/pipeline-stages/clm`, { headers: h }).then(r => r.ok ? r.json() : { stages: [] }),
-    ])
-      .then(([deal, prospect, clm]) => {
-        const active = d => (d.stages || [])
-          .filter(s => s.is_active && !s.is_terminal)
-          .sort((a, b) => a.sort_order - b.sort_order);
-        setDealStages(active(deal));
-        setProspectStages(active(prospect));
-        setClmStages(active(clm));
+    const active = d => (d.stages || [])
+      .filter(s => s.is_active !== false)
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+
+    // Fetch stages for every enabled playbook type (excluding handover_s2i — derived from plays)
+    const types = playbookTypes.filter(t => t.key !== 'handover_s2i');
+
+    Promise.all(
+      types.map(t => fetch(`${API_BASE}/pipeline-stages/${t.key}`, { headers: h }).then(r => r.ok ? r.json() : { stages: [] }))
+    )
+      .then(results => {
+        const map = {};
+        types.forEach((t, i) => { map[t.key] = active(results[i]); });
+        setStagesMap(map);
       })
       .catch(() => { /* non-fatal — degrade gracefully */ })
       .finally(() => setStagesLoading(false));
-  }, [API_BASE, token]);
+  }, [playbookTypes, API_BASE, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Active stage list for current tab ────────────────────
-  const activeLiveStages = isProspecting ? prospectStages : isCLM ? clmStages : isHandover ? handoverStages : dealStages;
+  const activeLiveStages = typeFilter === 'handover_s2i'
+    ? handoverStages
+    : (stagesMap[typeFilter] || []);
 
   // ── Filtered playbook list for current tab ───────────────
   const filteredPlaybooks = typeFilter === 'sales'
@@ -732,16 +737,16 @@ export default function PlaybooksView({ initialTypeFilter }) {
                           </div>
                         )}
 
-                        {/* Deal stages — live from /deal-stages */}
+                        {/* Deal stages — live from /pipeline-stages/sales */}
                         <div className="sv-card">
                           <h4 style={{ marginTop: 0, marginBottom: 16, fontSize: 15 }}>📋 Deal Stages</h4>
                           {stagesLoading ? (
                             <div className="sv-loading">Loading stages…</div>
-                          ) : dealStages.length === 0 ? (
+                          ) : activeLiveStages.length === 0 ? (
                             <div className="sv-empty">No active deal stages found. Add stages in the Deal Stages tab.</div>
                           ) : (
                             <div className="sv-stages-list">
-                              {dealStages.map((stage, i) => {
+                              {activeLiveStages.map((stage, i) => {
                                 // Guidance stored in playbook.content.deal_stages — look up by key or name
                                 const ds = playbook.content?.deal_stages;
                                 const stageData = ds
