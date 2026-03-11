@@ -2841,7 +2841,7 @@ function OAPlaybooks() {
       } catch { /* non-fatal */ }
       finally { setCustomStagesLoading(false); }
     })();
-  }, [typeFilter, API, token, isSalesType, isProspecting]);
+  }, [typeFilter, API, token, isSalesType, isProspecting, isService]);
 
   // Re-select on type filter change
   useEffect(() => {
