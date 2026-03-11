@@ -210,6 +210,7 @@ router.get('/unified', async (req, res) => {
 
     const allEmails = [];
 
+    const providerErrors = [];
     for (const provider of providers) {
       try {
         const result = await UnifiedEmailProvider.fetchEmails(
@@ -218,6 +219,7 @@ router.get('/unified', async (req, res) => {
         allEmails.push(...result.emails);
       } catch (err) {
         console.warn('Failed to fetch ' + provider + ' emails:', err.message);
+        providerErrors.push({ provider, error: err.message });
       }
     }
 
@@ -236,9 +238,10 @@ router.get('/unified', async (req, res) => {
     }
 
     res.json({
-      success:   true,
-      data:      filtered.slice(0, parseInt(top)),
-      providers: providers,
+      success:        true,
+      data:           filtered.slice(0, parseInt(top)),
+      providers:      providers,
+      providerErrors: providerErrors.length ? providerErrors : undefined,
     });
   } catch (error) {
     console.error('Error fetching unified emails:', error);

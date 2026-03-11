@@ -6,7 +6,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { google } = require('googleapis');
-const { getTokenByUserId, saveUserToken } = require('./tokenService');
+const { getTokenByUserId, saveUserToken, refreshUserToken } = require('./tokenService');
 
 // ── OAuth2 Client ─────────────────────────────────────────────────────────────
 
@@ -61,21 +61,35 @@ async function getTokenFromCode(code) {
 }
 
 /**
- * Get an authenticated OAuth2 client for a user (handles token refresh)
+ * Get an authenticated OAuth2 client for a user.
+ * Proactively refreshes the token if expired — mirrors outlookService/calendarService pattern.
  */
 async function getAuthenticatedClient(userId) {
-  const tokenData = await getTokenByUserId(userId, 'google');
-  const oauth2Client = getOAuth2Client();
+  let tokenData = await getTokenByUserId(userId, 'google');
 
+  // Proactively refresh if token is expired or within 60s of expiry
+  const expiresAt = new Date(tokenData.expires_at).getTime();
+  const isExpired = expiresAt < Date.now() + 60_000;
+  if (isExpired) {
+    console.log('🔄 Google token expired for user:', userId, '— refreshing proactively');
+    try {
+      tokenData = await refreshUserToken(userId, 'google');
+    } catch (err) {
+      console.error('❌ Google token refresh failed for user:', userId, err.message);
+      throw new Error('Google token expired. Please reconnect your Google account in Settings.');
+    }
+  }
+
+  const oauth2Client = getOAuth2Client();
   oauth2Client.setCredentials({
     access_token:  tokenData.access_token,
     refresh_token: tokenData.refresh_token,
     expiry_date:   new Date(tokenData.expires_at).getTime(),
   });
 
-  // Auto-refresh listener — save new tokens when refreshed
+  // Auto-refresh listener — save new tokens if Google refreshes mid-session
   oauth2Client.on('tokens', async (tokens) => {
-    console.log('🔄 Google token auto-refreshed for user:', userId);
+    console.log('🔄 Google token auto-refreshed mid-session for user:', userId);
     await saveUserToken(userId, 'google', {
       accessToken:  tokens.access_token,
       refreshToken: tokens.refresh_token || tokenData.refresh_token,

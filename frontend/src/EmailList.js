@@ -18,6 +18,7 @@ function EmailList({ userId, dealId, connectedProviders = [] }) {
   const [emails, setEmails]                 = useState([]);
   const [isLoading, setIsLoading]           = useState(false);
   const [error, setError]                   = useState(null);
+  const [providerErrors, setProviderErrors] = useState([]);
   const [processingIds, setProcessingIds]   = useState(new Set());
   const [providerFilter, setProviderFilter] = useState('all');
 
@@ -32,6 +33,9 @@ function EmailList({ userId, dealId, connectedProviders = [] }) {
       });
 
       let emailsArray = result?.data || [];
+
+      // Surface any per-provider errors (e.g. Gmail token expired)
+      setProviderErrors(result?.providerErrors || []);
 
       // Client-side provider filter
       if (providerFilter !== 'all') {
@@ -153,6 +157,26 @@ function EmailList({ userId, dealId, connectedProviders = [] }) {
           <button onClick={fetchEmails} className="btn btn-small btn-outline">Refresh</button>
         </div>
       </div>
+
+      {providerErrors.map(pe => (
+        <div key={pe.provider} style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '8px 14px', marginBottom: 8, borderRadius: 6,
+          background: '#fff7ed', border: '1px solid #fed7aa', fontSize: 13,
+        }}>
+          <span style={{ color: '#92400e' }}>
+            ⚠️ {pe.provider === 'gmail' ? 'Gmail' : 'Outlook'} failed to load: {pe.error}
+          </span>
+          {pe.error?.toLowerCase().includes('reconnect') && (
+            <a href="/settings" style={{
+              marginLeft: 12, color: '#b45309', fontWeight: 600,
+              textDecoration: 'underline', whiteSpace: 'nowrap',
+            }}>
+              Reconnect →
+            </a>
+          )}
+        </div>
+      ))}
 
       {(!emails || emails.length === 0) ? (
         <div className="empty-state">
