@@ -1397,6 +1397,13 @@ function ProspectingInbox({ scope }) {
 
   useEffect(() => { load(0); }, [load]);
 
+  // Refresh when tab becomes visible again
+  useEffect(() => {
+    const onVisibility = () => { if (document.visibilityState === 'visible') load(offset); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [load, offset]);
+
   const DIRECTION_OPTS = [
     { value: '',          label: 'All' },
     { value: 'outbound',  label: 'Sent' },
@@ -1443,6 +1450,18 @@ function ProspectingInbox({ scope }) {
         display: 'flex', gap: 8, alignItems: 'center', padding: '10px 16px',
         borderBottom: '1px solid #e5e7eb', background: '#f9fafb', flexShrink: 0, flexWrap: 'wrap',
       }}>
+        <button
+          onClick={() => load(offset)}
+          disabled={loading}
+          title="Refresh inbox"
+          style={{
+            padding: '5px 10px', border: '1px solid #e5e7eb', borderRadius: 6,
+            background: '#fff', cursor: loading ? 'default' : 'pointer',
+            fontSize: 13, color: '#6b7280',
+          }}
+        >
+          {loading ? '⏳' : '🔄'}
+        </button>
         <div style={{ display: 'flex', borderRadius: 6, overflow: 'hidden', border: '1px solid #e5e7eb' }}>
           {DIRECTION_OPTS.map(opt => (
             <button
