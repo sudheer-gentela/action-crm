@@ -2775,7 +2775,19 @@ function OAPlaybooks() {
   const isProspecting = typeFilter === 'prospecting';
   const isSalesType   = typeFilter === 'sales';
   const isCLM         = typeFilter === 'clm';
-  const isCustomType  = !isSalesType && !isProspecting && !isCLM;
+  const isService     = typeFilter === 'service';
+  const isCustomType  = !isSalesType && !isProspecting && !isCLM && !isService;
+
+  // Service stages are fixed case-status strings, not stored in pipeline_stages.
+  // Defined as synthetic stage objects so the guidance editor renders them
+  // identically to any other playbook type.
+  const SERVICE_STAGES = [
+    { id: 'svc-open',             key: 'open',             name: 'Open',             stage_type: 'open'             },
+    { id: 'svc-in_progress',      key: 'in_progress',      name: 'In Progress',      stage_type: 'in_progress'      },
+    { id: 'svc-pending_customer', key: 'pending_customer', name: 'Pending Customer', stage_type: 'pending_customer' },
+    { id: 'svc-resolved',         key: 'resolved',         name: 'Resolved',         stage_type: 'resolved'         },
+    { id: 'svc-closed',           key: 'closed',           name: 'Closed',           stage_type: 'closed'           },
+  ];
 
   // "sales" tab catches legacy types (custom, market, product) + explicit sales type
   // All other tabs filter by exact type key
@@ -2813,7 +2825,7 @@ function OAPlaybooks() {
   const [customStagesLoading, setCustomStagesLoading] = useState(false);
 
   useEffect(() => {
-    if (isSalesType || isProspecting) return;
+    if (isSalesType || isProspecting || isService) return;
     // CLM and custom types all load from pipeline-stages/{type}
     setCustomStagesLoading(true);
     (async () => {
@@ -2847,10 +2859,12 @@ function OAPlaybooks() {
   // Which stages to show in the editor
   const isCLMType = typeFilter === 'clm';
   const activeLiveStages = isProspecting ? prospectLiveStages
+    : isService     ? SERVICE_STAGES      // fixed case-status stages, no API call needed
     : isCLMType ? customLiveStages     // CLM uses the custom pipeline-stages loader (pipeline='clm')
     : isCustomType ? customLiveStages
     : liveStages;
   const activeStagesLoading = isProspecting ? prospectStagesLoading
+    : isService     ? false
     : isCLMType ? customStagesLoading
     : isCustomType ? customStagesLoading
     : stagesLoading;
@@ -3139,6 +3153,7 @@ function OAPlaybooks() {
                   <span style={{ fontSize: 12, color: '#9ca3af' }}>
                     {isProspecting ? 'Stages from Prospect Stages tab'
                       : isSalesType ? 'Stages from Deal Stages tab'
+                      : isService   ? 'Built-in case status stages'
                       : isCLM ? 'CLM contract lifecycle stages'
                       : `Stages from ${activeType?.label || typeFilter} Stages tab`}
                     {' · save each stage individually'}
@@ -3149,7 +3164,7 @@ function OAPlaybooks() {
                   <div className="sv-loading" style={{ padding: 16 }}>Loading stages…</div>
                 ) : activeLiveStages.length === 0 ? (
                   <div className="sv-empty">
-                    No active pipeline stages found. {isProspecting ? 'Add stages in the Prospect Stages tab.' : isCLM ? 'Run the CLM pipeline stages migration to seed CLM stages.' : 'Add stages in the Deal Stages tab.'}
+                    No active pipeline stages found. {isProspecting ? 'Add stages in the Prospect Stages tab.' : isService ? 'Service stages are built-in (Open → In Progress → Pending Customer → Resolved → Closed).' : isCLM ? 'Run the CLM pipeline stages migration to seed CLM stages.' : 'Add stages in the Deal Stages tab.'}
                   </div>
                 ) : (
                   <div className="sv-stages-list">
