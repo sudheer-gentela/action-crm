@@ -20,10 +20,9 @@ router.use(authenticateToken, orgContext);
 const adminOnly = requireRole('owner', 'admin');
 
 // ── Helper: validate a stage key belongs to this org ─────────────────────────
-// - sales/prospecting types: validated against deal_stages / prospect_stages
-// - all other types: any non-empty stage key is accepted — stages are defined
-//   by the admin in the playbook UI, not stored in a pipeline stages table
-async function validateStageKey(orgId, stageKey, playbookType) {
+// - sales/prospecting: validated against deal_stages / prospect_stages tables
+// - all other types: validated against playbook_stages table for that playbook
+async function validateStageKey(orgId, stageKey, playbookType, playbookId) {
   if (!stageKey || !stageKey.trim()) return false;
 
   if (playbookType === 'sales' || playbookType === 'custom' ||
@@ -43,9 +42,19 @@ async function validateStageKey(orgId, stageKey, playbookType) {
     return result.rows.length > 0;
   }
 
-  // All other types (service, clm, handover_s2i, any custom type) —
-  // accept any non-empty key. Stages are defined by the admin, not in a DB table.
-  return true;
+  // All other types — validate against playbook_stages table
+  // If no stages defined yet for this playbook, accept any non-empty key
+  const stageCount = await db.query(
+    `SELECT COUNT(*) FROM playbook_stages WHERE playbook_id = $1`,
+    [playbookId]
+  );
+  if (parseInt(stageCount.rows[0].count) === 0) return true;
+
+  const result = await db.query(
+    `SELECT key FROM playbook_stages WHERE playbook_id = $1 AND key = $2 LIMIT 1`,
+    [playbookId, stageKey]
+  );
+  return result.rows.length > 0;
 }
 
 // ── Helper: build default stage_guidance from salesPlaybook.js ───────────────
@@ -320,7 +329,7 @@ router.put('/:id/stages/:stageKey', adminOnly, async (req, res) => {
     }
     const playbookType = pbRow.rows[0].type;
 
-    const keyExists = await validateStageKey(req.orgId, stageKey, playbookType);
+    const keyExists = await validateStageKey(req.orgId, stageKey, playbookType, parseInt(req.params.id));
     if (!keyExists) {
       return res.status(400).json({
         error: { message: `Stage key "${stageKey}" does not exist in your organisation's stages` },

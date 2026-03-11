@@ -740,93 +740,101 @@ router.delete('/playbook-types/:typeKey', adminOnly, async (req, res) => {
 
 
 // ── Playbook Stages ──────────────────────────────────────────────────────────
-// Stored in organizations.settings->'playbook_stages' as a map of type → stage array.
-// System defaults are seeded on first read so existing orgs work without any setup.
-// Each stage: { key, name, sort_order, is_active, is_terminal }
+// Stages are stored in the playbook_stages table, scoped per playbook_id.
+// sales/prospecting fall back to deal_stages/prospect_stages (org-wide pipeline tables).
+// All other types (service, clm, handover_s2i, custom) use playbook_stages rows.
+//
+// GET  /org/admin/playbook-stages/:playbookId — returns stages for a specific playbook
+// PUT  /org/admin/playbook-stages/:playbookId — replaces all stages for a playbook (admin)
 
-const SYSTEM_PLAYBOOK_STAGES = {
-  sales: null,       // sales uses deal_stages table — not stored here
-  prospecting: null, // prospecting uses prospect_stages table — not stored here
-  service: [
-    { key: 'open',             name: 'Open',             sort_order: 1, is_active: true, is_terminal: false },
-    { key: 'in_progress',      name: 'In Progress',      sort_order: 2, is_active: true, is_terminal: false },
-    { key: 'pending_customer', name: 'Pending Customer', sort_order: 3, is_active: true, is_terminal: false },
-    { key: 'resolved',         name: 'Resolved',         sort_order: 4, is_active: true, is_terminal: false },
-    { key: 'closed',           name: 'Closed',           sort_order: 5, is_active: true, is_terminal: false },
-  ],
-  clm: [
-    { key: 'clm_draft',                  name: 'Draft',                  sort_order: 1, is_active: true, is_terminal: false },
-    { key: 'clm_in_review_with_legal',   name: 'In Review with Legal',   sort_order: 2, is_active: true, is_terminal: false },
-    { key: 'clm_in_review_with_sales',   name: 'In Review with Sales',   sort_order: 3, is_active: true, is_terminal: false },
-    { key: 'clm_in_review_with_customer',name: 'In Review with Customer',sort_order: 4, is_active: true, is_terminal: false },
-    { key: 'clm_in_signatures',          name: 'In Signatures',          sort_order: 5, is_active: true, is_terminal: false },
-    { key: 'clm_expiring_soon',          name: 'Expiring Soon',          sort_order: 6, is_active: true, is_terminal: false },
-    { key: 'clm_expiring_soon_urgent',   name: 'Expiring Soon (Urgent)', sort_order: 7, is_active: true, is_terminal: false },
-    { key: 'clm_expired_no_renewal',     name: 'Expired - No Renewal',   sort_order: 8, is_active: true, is_terminal: false },
-  ],
-  handover_s2i: [
-    { key: 'closed_won', name: 'Closed Won', sort_order: 1, is_active: true, is_terminal: false },
-  ],
-};
-
-async function getPlaybookStages(orgId, typeKey) {
-  const result = await pool.query(
-    `SELECT settings->'playbook_stages' AS stages FROM organizations WHERE id = $1`,
-    [orgId]
-  );
-  const allStored = result.rows[0]?.stages || {};
-
-  // If stored, return it directly
-  if (allStored[typeKey]) return allStored[typeKey];
-
-  // If this type has system defaults, seed them and return
-  if (SYSTEM_PLAYBOOK_STAGES[typeKey]) {
-    const defaults = SYSTEM_PLAYBOOK_STAGES[typeKey];
-    const updated = { ...allStored, [typeKey]: defaults };
-    await pool.query(
-      `UPDATE organizations
-       SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{playbook_stages}', $1::jsonb),
-           updated_at = NOW()
-       WHERE id = $2`,
-      [JSON.stringify(updated), orgId]
-    );
-    return defaults;
-  }
-
-  // No stages defined for this type yet
-  return [];
-}
-
-// GET /org/admin/playbook-stages/:type — any member can read
-router.get('/playbook-stages/:type', async (req, res) => {
+// GET — any member can read (needed for PlaybookPlaysEditor)
+router.get('/playbook-stages/:playbookId', async (req, res) => {
   try {
-    const stages = await getPlaybookStages(req.orgId, req.params.type);
-    res.json({ type: req.params.type, stages });
+    const playbookId = parseInt(req.params.playbookId, 10);
+    if (!playbookId) return res.status(400).json({ error: { message: 'Invalid playbookId' } });
+
+    // Verify playbook belongs to this org
+    const pbResult = await pool.query(
+      `SELECT id, type FROM playbooks WHERE id = $1 AND org_id = $2`,
+      [playbookId, req.orgId]
+    );
+    if (!pbResult.rows.length) {
+      return res.status(404).json({ error: { message: 'Playbook not found' } });
+    }
+    const { type: playbookType } = pbResult.rows[0];
+
+    // Sales types — read from deal_stages
+    if (!playbookType || ['sales', 'custom', 'market', 'product'].includes(playbookType)) {
+      const result = await pool.query(
+        `SELECT key, name, sort_order, is_active, is_terminal
+         FROM deal_stages WHERE org_id = $1 AND is_active = true AND is_terminal = false
+         ORDER BY sort_order`,
+        [req.orgId]
+      );
+      return res.json({ playbookId, type: playbookType, stages: result.rows });
+    }
+
+    // Prospecting — read from prospect_stages
+    if (playbookType === 'prospecting') {
+      const result = await pool.query(
+        `SELECT key, name, sort_order, is_active, is_terminal
+         FROM prospect_stages WHERE org_id = $1 AND is_active = true AND is_terminal = false
+         ORDER BY sort_order`,
+        [req.orgId]
+      );
+      return res.json({ playbookId, type: playbookType, stages: result.rows });
+    }
+
+    // All other types — read from playbook_stages table
+    const result = await pool.query(
+      `SELECT id, key, name, sort_order, is_active, is_terminal
+       FROM playbook_stages
+       WHERE playbook_id = $1
+       ORDER BY sort_order`,
+      [playbookId]
+    );
+    res.json({ playbookId, type: playbookType, stages: result.rows });
   } catch (err) {
     console.error('GET /org-admin/playbook-stages error:', err);
     res.status(500).json({ error: { message: 'Failed to fetch playbook stages' } });
   }
 });
 
-// PUT /org/admin/playbook-stages/:type — admin only, replaces stage list for a type
-router.put('/playbook-stages/:type', adminOnly, async (req, res) => {
+// PUT — admin only, replaces all stages for a playbook
+router.put('/playbook-stages/:playbookId', adminOnly, async (req, res) => {
   try {
+    const playbookId = parseInt(req.params.playbookId, 10);
+    if (!playbookId) return res.status(400).json({ error: { message: 'Invalid playbookId' } });
+
     const { stages } = req.body;
     if (!Array.isArray(stages)) {
       return res.status(400).json({ error: { message: 'stages must be an array' } });
     }
 
-    // Validate each stage has required fields
-    for (const s of stages) {
-      if (!s.key || !s.key.trim()) {
-        return res.status(400).json({ error: { message: 'Each stage must have a key' } });
-      }
-      if (!s.name || !s.name.trim()) {
-        return res.status(400).json({ error: { message: 'Each stage must have a name' } });
-      }
+    // Verify playbook belongs to this org
+    const pbResult = await pool.query(
+      `SELECT id, type FROM playbooks WHERE id = $1 AND org_id = $2`,
+      [playbookId, req.orgId]
+    );
+    if (!pbResult.rows.length) {
+      return res.status(404).json({ error: { message: 'Playbook not found' } });
+    }
+    const { type: playbookType } = pbResult.rows[0];
+
+    // Sales and prospecting stages are managed via deal_stages / prospect_stages
+    if (['sales', 'custom', 'market', 'product', 'prospecting'].includes(playbookType)) {
+      return res.status(400).json({
+        error: { message: `${playbookType} stages are managed via the pipeline stages settings, not per-playbook` }
+      });
     }
 
-    // Normalise — ensure sort_order, is_active, is_terminal are set
+    // Validate
+    for (const s of stages) {
+      if (!s.key?.trim()) return res.status(400).json({ error: { message: 'Each stage must have a key' } });
+      if (!s.name?.trim()) return res.status(400).json({ error: { message: 'Each stage must have a name' } });
+    }
+
+    // Normalise
     const normalised = stages.map((s, i) => ({
       key:        s.key.trim().toLowerCase().replace(/\s+/g, '_'),
       name:       s.name.trim(),
@@ -835,22 +843,27 @@ router.put('/playbook-stages/:type', adminOnly, async (req, res) => {
       is_terminal: s.is_terminal ?? false,
     }));
 
-    const result = await pool.query(
-      `SELECT settings->'playbook_stages' AS stages FROM organizations WHERE id = $1`,
-      [req.orgId]
-    );
-    const allStored = result.rows[0]?.stages || {};
-    const updated = { ...allStored, [req.params.type]: normalised };
+    // Replace all stages for this playbook in a transaction
+    await pool.query('BEGIN');
+    try {
+      await pool.query(
+        `DELETE FROM playbook_stages WHERE playbook_id = $1`,
+        [playbookId]
+      );
+      for (const s of normalised) {
+        await pool.query(
+          `INSERT INTO playbook_stages (org_id, playbook_id, key, name, sort_order, is_active, is_terminal)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [req.orgId, playbookId, s.key, s.name, s.sort_order, s.is_active, s.is_terminal]
+        );
+      }
+      await pool.query('COMMIT');
+    } catch (err) {
+      await pool.query('ROLLBACK');
+      throw err;
+    }
 
-    await pool.query(
-      `UPDATE organizations
-       SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{playbook_stages}', $1::jsonb),
-           updated_at = NOW()
-       WHERE id = $2`,
-      [JSON.stringify(updated), req.orgId]
-    );
-
-    res.json({ type: req.params.type, stages: normalised });
+    res.json({ playbookId, type: playbookType, stages: normalised });
   } catch (err) {
     console.error('PUT /org-admin/playbook-stages error:', err);
     res.status(500).json({ error: { message: 'Failed to update playbook stages' } });

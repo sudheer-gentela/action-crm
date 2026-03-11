@@ -587,19 +587,11 @@ export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
       const pb = pbRes.playbook || pbRes;
       setPlaybookType(pb.type || 'sales');
 
-      // All stage sources are now unified through the org/admin/playbook-stages endpoint.
-      // sales uses deal_stages, prospecting uses prospect_stages — backend handles routing.
-      // All other types (service, clm, handover_s2i, custom) read from org settings.
-      const pbType = pb.type || 'sales';
-      let stagesPromise;
-      if (pbType === 'sales' || pbType === 'custom' || pbType === 'market' || pbType === 'product') {
-        stagesPromise = apiFetch('/deal-stages');
-      } else if (pbType === 'prospecting') {
-        stagesPromise = apiFetch('/prospect-stages');
-      } else {
-        // All other types read from org settings via the unified endpoint
-        stagesPromise = apiFetch(`/org/admin/playbook-stages/${pbType}`).then(d => ({ stages: d.stages }));
-      }
+      // All stage sources unified through /org/admin/playbook-stages/:playbookId
+      // Backend routes to deal_stages, prospect_stages, or playbook_stages table
+      // based on the playbook's type — no branching needed here.
+      const stagesPromise = apiFetch(`/org/admin/playbook-stages/${playbookId}`)
+        .then(d => ({ stages: d.stages }));
 
       // Fetch plays, playbook-specific roles, and correct stages in parallel
       const [playsRes, pbRolesRes, stagesRes] = await Promise.all([
