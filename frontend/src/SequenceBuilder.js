@@ -445,10 +445,6 @@ function StepCard({ step, index, total, expanded, seqRequireApproval, onToggle, 
   const isAI       = step.mode === 'ai';
   const hasContent = channelCfg.hasContent;
 
-  // Effective approval for display: step override wins, else sequence setting
-  const effectiveApproval = step.require_approval !== null && step.require_approval !== undefined
-    ? step.require_approval
-    : seqRequireApproval;
   const isEmailChannel = step.channel === 'email';
 
   return (
