@@ -1532,7 +1532,7 @@ function ProspectingInbox({ scope }) {
                   const prospect   = email.prospect   || {};
                   const sentBy     = email.sentBy     || {};
                   const sender     = email.senderAccount || {};
-                  const isReply    = email.direction === 'inbound';
+                  const isReply    = email.direction === 'inbound' || email.direction === 'received';
                   const wasOpened  = !!email.openedAt;
                   const wasReplied = !!email.repliedAt;
                   return (
