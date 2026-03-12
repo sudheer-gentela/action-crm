@@ -1107,10 +1107,11 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
               {/* Existing intel card below */}
               <ProspectIntelCard
                 contextData={contextData}
-              loading={contextLoading}
-              prospect={prospect}
-              onOpenOutreach={(channel) => openOutreach(channel)}
-            />
+                loading={contextLoading}
+                prospect={prospect}
+                onOpenOutreach={(channel) => openOutreach(channel)}
+              />
+            </div>
           )}
 
           {activeTab === 'actions' && (
