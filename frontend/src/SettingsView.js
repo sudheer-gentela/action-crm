@@ -67,10 +67,11 @@ export default function SettingsView({ initialTab }) {
 // ════════════════════════════════════════════════════════════
 
 const PROMPT_KEYS = [
-  { key: 'email_analysis',       label: 'Email Analysis',         desc: 'Used when AI analyses incoming emails to generate actions and insights.' },
-  { key: 'deal_health_check',    label: 'Deal Health Check',      desc: 'Used when AI scores a deal\'s health from transcript and email content.' },
-  { key: 'prospecting_research', label: 'Prospecting — Research', desc: 'Used when AI generates research notes for a prospect. Use {{prospectInfo}} where prospect data should be inserted.' },
-  { key: 'prospecting_draft',    label: 'Prospecting — Draft',    desc: 'Used when AI drafts an outreach email. Use {{prospectInfo}} and {{researchNotes}} as placeholders.' },
+  { key: 'email_analysis',                label: 'Email Analysis',              desc: 'Used when AI analyses incoming emails to generate actions and insights.' },
+  { key: 'deal_health_check',             label: 'Deal Health Check',           desc: 'Used when AI scores a deal\'s health from transcript and email content.' },
+  { key: 'prospecting_research_account',  label: 'Prospecting — Account',       desc: 'Stage 1: AI researches the company. Cached per account for 30 days. Use {{companyInfo}} and {{productContext}}.' },
+  { key: 'prospecting_research',          label: 'Prospecting — Person',        desc: 'Stage 2: AI researches the individual using account context. Use {{prospectInfo}}, {{accountResearch}}, and {{productContext}}.' },
+  { key: 'prospecting_draft',             label: 'Prospecting — Draft Email',   desc: 'Used when AI drafts an outreach email. Use {{prospectInfo}}, {{researchNotes}}, and {{productContext}}.' },
 ];
 
 function PromptsSettings() {

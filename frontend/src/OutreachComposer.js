@@ -62,89 +62,6 @@ function ProviderBadge({ provider }) {
   );
 }
 
-
-// ── Rich Text Editor ──────────────────────────────────────────────────────────
-// Lightweight contentEditable editor with basic formatting toolbar.
-// Converts to/from HTML for sending; plain text fallback for other channels.
-
-function RichTextEditor({ value, onChange, placeholder, rows = 10 }) {
-  const editorRef = React.useRef(null);
-  const isInternalUpdate = React.useRef(false);
-
-  // Sync external value → editor (e.g. AI draft arriving)
-  React.useEffect(() => {
-    if (!editorRef.current) return;
-    if (isInternalUpdate.current) { isInternalUpdate.current = false; return; }
-    // Convert plain text newlines to <br> if no HTML tags present
-    const html = value.includes('<') ? value : value.replace(/\n/g, '<br>');
-    if (editorRef.current.innerHTML !== html) {
-      editorRef.current.innerHTML = html;
-    }
-  }, [value]);
-
-  const handleInput = () => {
-    isInternalUpdate.current = true;
-    onChange(editorRef.current.innerHTML);
-  };
-
-  const exec = (cmd, val = null) => {
-    editorRef.current?.focus();
-    document.execCommand(cmd, false, val);
-    handleInput();
-  };
-
-  const btnStyle = (active) => ({
-    padding: '3px 8px', border: '1px solid #d1d5db', borderRadius: 4,
-    background: active ? '#e5e7eb' : '#fff', cursor: 'pointer',
-    fontSize: 12, fontWeight: 600, color: '#374151', lineHeight: '18px',
-  });
-
-  return (
-    <div style={{ border: '1px solid #d1d5db', borderRadius: 8, overflow: 'hidden', background: '#fff' }}>
-      {/* Toolbar */}
-      <div style={{
-        display: 'flex', gap: 4, padding: '6px 8px', background: '#f9fafb',
-        borderBottom: '1px solid #e5e7eb', flexWrap: 'wrap', alignItems: 'center',
-      }}>
-        <button style={btnStyle(false)} onClick={() => exec('bold')} title="Bold"><b>B</b></button>
-        <button style={btnStyle(false)} onClick={() => exec('italic')} title="Italic"><i>I</i></button>
-        <button style={btnStyle(false)} onClick={() => exec('underline')} title="Underline"><u>U</u></button>
-        <div style={{ width: 1, background: '#d1d5db', height: 18, margin: '0 2px' }} />
-        <button style={btnStyle(false)} onClick={() => exec('insertUnorderedList')} title="Bullet list">• List</button>
-        <button style={btnStyle(false)} onClick={() => exec('insertOrderedList')} title="Numbered list">1. List</button>
-        <div style={{ width: 1, background: '#d1d5db', height: 18, margin: '0 2px' }} />
-        <button style={btnStyle(false)} onClick={() => exec('removeFormat')} title="Clear formatting">✕ Clear</button>
-      </div>
-      {/* Editable area */}
-      <div
-        ref={editorRef}
-        contentEditable
-        suppressContentEditableWarning
-        onInput={handleInput}
-        data-placeholder={placeholder}
-        style={{
-          minHeight: rows * 22,
-          padding: '10px 12px',
-          outline: 'none',
-          fontSize: 14,
-          lineHeight: 1.6,
-          color: '#1a202c',
-          whiteSpace: 'pre-wrap',
-          overflowY: 'auto',
-        }}
-        onFocus={e => { if (!editorRef.current.innerHTML) editorRef.current.style.color = '#1a202c'; }}
-      />
-      <style>{`
-        [contenteditable]:empty:before {
-          content: attr(data-placeholder);
-          color: #9ca3af;
-          pointer-events: none;
-        }
-      `}</style>
-    </div>
-  );
-}
-
 function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplete, onClose }) {
   const [channel, setChannel]         = useState(initialChannel || 'email');
   const [subject, setSubject]         = useState('');
@@ -189,46 +106,65 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
         setSubject(actionToExecute.messageSubject || actionToExecute.message_subject || '');
       }
       if (actionToExecute.messageBody || actionToExecute.message_body) {
-        const rawBody = actionToExecute.messageBody || actionToExecute.message_body || '';
-        // Convert plain-text newlines to HTML line breaks for the rich text editor
-        setBody(rawBody.includes('<') ? rawBody : rawBody.replace(/\n/g, '<br>'));
+        setBody(actionToExecute.messageBody || actionToExecute.message_body || '');
       }
     }
   }, [actionToExecute]);
 
   // ── AI Draft ──────────────────────────────────────────────────────────────
+  // Two-step flow:
+  //   1. Call /research to get account + person research (uses cache if fresh)
+  //   2. Use crispPitch + suggestedSubject directly if returned, otherwise
+  //      call /draft-email for a full AI-written email using the research notes
   const handleAiDraft = async () => {
     setDrafting(true);
     setError('');
     try {
-      // Call the backend research endpoint to get / refresh context
-      // then use that to pre-fill. We call the AI model directly via
-      // the Anthropic API using the prospect data we already have.
-      const res = await apiService.prospects.research(prospect.id);
-      const { researchNotes } = res.data;
+      const API   = process.env.REACT_APP_API_URL;
+      const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
-      // Build a suggested subject and body from research notes
-      const firstName = prospect.first_name;
-      const company   = prospect.company_name || '';
+      // Step 1: Research (fast if cached account research exists)
+      const researchRes = await fetch(`${API}/api/prospects/${prospect.id}/research`, {
+        method: 'POST', headers,
+      });
+      const research = researchRes.ok ? await researchRes.json() : null;
 
-      const lines = (researchNotes || '').split('\n').filter(l => l.trim());
-      const topLine = lines[0]?.replace(/^[•\-*]\s*/, '') || '';
-
-      // Simple templating — keeps things fast and deterministic
-      if (!subject) {
-        setSubject(`Quick question for ${firstName}${company ? ` at ${company}` : ''}`);
+      // Step 2a: If research returned a crisp pitch + subject, use them directly
+      if (research?.crispPitch && research?.suggestedSubject) {
+        if (!subject) setSubject(research.suggestedSubject);
+        if (!body) {
+          const bodyHtml = research.crispPitch.includes('<')
+            ? research.crispPitch
+            : research.crispPitch.replace(/\n/g, '<br>');
+          setBody(bodyHtml);
+        }
+        return; // Done — no need for second AI call
       }
 
-      if (!body) {
-        setBody(
-          `Hi ${firstName},\n\n` +
-          `${topLine}\n\n` +
-          `I'd love to explore whether we could help — would you be open to a quick 20-minute call this week?\n\n` +
-          `Best,`
-        );
+      // Step 2b: Fall back to draft-email endpoint (uses research notes as context)
+      const draftRes = await fetch(`${API}/api/prospecting/actions/outreach/draft-email`, {
+        method: 'POST', headers,
+        body:   JSON.stringify({ prospectId: prospect.id }),
+      });
+
+      if (!draftRes.ok) {
+        const err = await draftRes.json();
+        throw new Error(err.error?.message || 'Draft failed');
+      }
+
+      const draft = await draftRes.json();
+
+      if (!subject && draft.subject) setSubject(draft.subject);
+      if (!body    && draft.body) {
+        setBody(draft.body.includes('<') ? draft.body : draft.body.replace(/\n/g, '<br>'));
+      }
+
+      if (draft.confidence < 0.6) {
+        setError(`Draft generated with low confidence (${Math.round(draft.confidence * 100)}%) — review carefully.`);
       }
     } catch (err) {
-      setError('AI draft failed: ' + (err.response?.data?.error?.message || err.message));
+      setError('AI draft failed: ' + err.message);
     } finally {
       setDrafting(false);
     }
@@ -476,15 +412,14 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
 
               <div className="oc-field">
                 <label>Message <span className="oc-required">*</span></label>
-                <RichTextEditor
+                <textarea
                   value={body}
-                  onChange={setBody}
+                  onChange={e => setBody(e.target.value)}
                   placeholder={`Hi ${prospect.first_name},\n\n`}
                   rows={10}
+                  className="oc-textarea"
                 />
-                <div className="oc-char-count" style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
-                  {body.replace(/<[^>]*>/g, '').length} characters
-                </div>
+                <div className="oc-char-count">{body.length} characters</div>
               </div>
 
               {/* Rate limit info */}

@@ -444,25 +444,33 @@ router.post('/:id/research', async (req, res) => {
 
     const p = prospectResult.rows[0];
 
-    // Build research prompt from available data
-    const contextLines = [
+    // ── Build prospect info block ────────────────────────────────────────────
+    const prospectInfo = [
       `Name: ${p.first_name} ${p.last_name}`,
-      p.title         ? `Title: ${p.title}`                         : null,
-      p.email         ? `Email: ${p.email}`                         : null,
-      p.linkedin_url  ? `LinkedIn: ${p.linkedin_url}`               : null,
-      p.company_name  ? `Company: ${p.company_name}`                : null,
-      p.company_domain ? `Company domain: ${p.company_domain}`      : null,
-      p.company_industry ? `Industry: ${p.company_industry}`        : null,
-      p.company_size  ? `Company size: ${p.company_size}`           : null,
-      p.location      ? `Location: ${p.location}`                   : null,
-      p.account_name  ? `Account: ${p.account_name}`                : null,
-      p.account_industry ? `Account industry: ${p.account_industry}`: null,
-      p.tags?.length  ? `Tags: ${JSON.parse(p.tags || '[]').join(', ')}` : null,
+      p.title            ? `Title: ${p.title}`                          : null,
+      p.email            ? `Email: ${p.email}`                          : null,
+      p.linkedin_url     ? `LinkedIn: ${p.linkedin_url}`                : null,
+      p.company_name     ? `Company: ${p.company_name}`                 : null,
+      p.company_domain   ? `Company domain: ${p.company_domain}`        : null,
+      p.company_industry ? `Industry: ${p.company_industry}`            : null,
+      p.company_size     ? `Company size: ${p.company_size}`            : null,
+      p.location         ? `Location: ${p.location}`                    : null,
+      p.account_name     ? `Account: ${p.account_name}`                 : null,
+      p.account_industry ? `Account industry: ${p.account_industry}`    : null,
+      p.tags?.length     ? `Tags: ${JSON.parse(p.tags || '[]').join(', ')}` : null,
     ].filter(Boolean).join('\n');
 
-    // ── Load user + org AI settings with fallback chain ─────────────────────
-    // Priority: user_preferences → org_integrations config → system defaults
-    const [userPrefRes, orgIntRes, userPromptRes, orgPromptRes] = await Promise.all([
+    const companyInfo = [
+      p.company_name     ? `Company: ${p.company_name}`                 : null,
+      p.company_domain   ? `Domain: ${p.company_domain}`                : null,
+      p.company_industry ? `Industry: ${p.company_industry}`            : null,
+      p.company_size     ? `Size: ${p.company_size}`                    : null,
+      p.location         ? `HQ location: ${p.location}`                 : null,
+      p.account_name     ? `Account name: ${p.account_name}`            : null,
+    ].filter(Boolean).join('\n');
+
+    // ── Load AI settings + prompt templates ──────────────────────────────────
+    const [userPrefRes, orgIntRes, userStage1Res, orgStage1Res, userStage2Res, orgStage2Res] = await Promise.all([
       db.query(
         `SELECT preferences FROM user_preferences WHERE user_id = $1 AND org_id = $2`,
         [req.user.userId, req.orgId]
@@ -473,84 +481,229 @@ router.post('/:id/research', async (req, res) => {
       ),
       db.query(
         `SELECT template_data FROM user_prompts
+         WHERE user_id = $1 AND org_id = $2 AND template_type = 'prospecting_research_account'`,
+        [req.user.userId, req.orgId]
+      ),
+      db.query(
+        `SELECT id, template FROM prompts
+         WHERE org_id = $1 AND user_id IS NULL AND key = 'prospecting_research_account'`,
+        [req.orgId]
+      ),
+      db.query(
+        `SELECT template_data FROM user_prompts
          WHERE user_id = $1 AND org_id = $2 AND template_type = 'prospecting_research'`,
         [req.user.userId, req.orgId]
       ),
       db.query(
-        `SELECT template FROM prompts
-         WHERE org_id = $1 AND key = 'prospecting_research'
-           AND (user_id IS NULL OR user_id = $2)
-         ORDER BY (user_id IS NULL) ASC LIMIT 1`,
-        [req.orgId, req.user.userId]
+        `SELECT id, template FROM prompts
+         WHERE org_id = $1 AND user_id IS NULL AND key = 'prospecting_research'`,
+        [req.orgId]
       ),
     ]);
 
-    const userPrefs   = userPrefRes.rows[0]?.preferences || {};
-    const orgConfig   = orgIntRes.rows[0]?.config || {};
-    const prospPrefs  = userPrefs.prospecting || {};
+    const userPrefs  = userPrefRes.rows[0]?.preferences || {};
+    const orgConfig  = orgIntRes.rows[0]?.config || {};
+    const prospPrefs = userPrefs.prospecting || {};
 
     // Fallback chain: user → org → system default
-    const aiModel      = prospPrefs.ai_model      || orgConfig.ai_model      || 'claude-haiku-4-5-20251001';
-    const aiProvider   = prospPrefs.ai_provider   || orgConfig.ai_provider   || 'anthropic';
-    const productCtx   = prospPrefs.product_context !== undefined
-                           ? prospPrefs.product_context
-                           : (orgConfig.product_context || '');
+    const aiModel    = prospPrefs.ai_model    || orgConfig.ai_model    || 'claude-sonnet-4-5-20251022';
+    const aiProvider = prospPrefs.ai_provider || orgConfig.ai_provider || 'anthropic';
+    const productCtx = prospPrefs.product_context !== undefined
+                         ? prospPrefs.product_context
+                         : (orgConfig.product_context || '');
 
-    const systemDefault = `You are a B2B sales research assistant. Based on the following prospect information, generate concise research notes (3-5 bullet points) that a sales rep can use to personalise their outreach. Focus on: likely pain points, potential value propositions, relevant company context, and suggested conversation angles.
+    const AI_PROMPTS = require('../config/aiPrompts');
 
-Prospect information:
+    // ── Helper: call the configured AI provider ───────────────────────────────
+    async function callAI(prompt, maxTokens = 800) {
+      if (aiProvider === 'openai') {
+        const { OpenAI } = require('openai');
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+        const completion = await openai.chat.completions.create({
+          model: aiModel || 'gpt-4o-mini', max_tokens: maxTokens,
+          messages: [{ role: 'user', content: prompt }],
+        });
+        return completion.choices[0]?.message?.content || '';
+      } else if (aiProvider === 'gemini') {
+        const { GoogleGenerativeAI } = require('@google/generative-ai');
+        const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
+        const result = await genAI.getGenerativeModel({ model: aiModel || 'gemini-1.5-flash' })
+                                  .generateContent(prompt);
+        return result.response.text() || '';
+      } else {
+        const Anthropic = require('@anthropic-ai/sdk');
+        const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+        const message = await anthropic.messages.create({
+          model: aiModel, max_tokens: maxTokens,
+          messages: [{ role: 'user', content: prompt }],
+        });
+        return message.content[0]?.text || '';
+      }
+    }
+
+    // ── STAGE 1: Account research (cached, reused across prospects) ───────────
+    // Check if account already has fresh research (< 30 days old)
+    let accountResearchText = '';
+    let accountResearchJson = null;
+    const CACHE_DAYS = 30;
+
+    if (p.account_id) {
+      const accountRes = await db.query(
+        `SELECT research_notes, research_updated_at FROM accounts
+         WHERE id = $1 AND org_id = $2`,
+        [p.account_id, req.orgId]
+      );
+      const acct = accountRes.rows[0];
+      const isStale = !acct?.research_updated_at ||
+        (Date.now() - new Date(acct.research_updated_at).getTime()) > CACHE_DAYS * 24 * 60 * 60 * 1000;
+
+      if (acct?.research_notes && !isStale) {
+        // Use cached account research
+        accountResearchText = typeof acct.research_notes === 'string'
+          ? acct.research_notes
+          : JSON.stringify(acct.research_notes, null, 2);
+        console.log(`📋 Using cached account research for account ${p.account_id}`);
+      } else {
+        // Run Stage 1 — fresh account research
+        console.log(`🔍 Running Stage 1 account research for ${p.company_name}...`);
+        const stage1Template = userStage1Res.rows[0]?.template_data
+          || orgStage1Res.rows[0]?.template
+          || AI_PROMPTS.prospecting_research_account
+          || '';
+
+        if (stage1Template) {
+          const stage1Prompt = stage1Template
+            .replace('{{companyInfo}}',   companyInfo)
+            .replace('{{productContext}}', productCtx || 'Not specified');
+
+          const stage1Raw = await callAI(stage1Prompt, 1000);
+
+          // Parse JSON response from Stage 1
+          try {
+            const cleaned = stage1Raw.replace(/\`\`\`json\n?/gi, '').replace(/\`\`\`\n?/g, '').trim();
+            const start = cleaned.indexOf('{');
+            const end   = cleaned.lastIndexOf('}');
+            accountResearchJson = JSON.parse(cleaned.substring(start, end + 1));
+            accountResearchText = JSON.stringify(accountResearchJson, null, 2);
+          } catch {
+            accountResearchText = stage1Raw; // Use raw text if not valid JSON
+          }
+
+          // Determine which prompt was used for Stage 1
+          const stage1PromptId     = orgStage1Res.rows[0]?.id     || null;
+          const stage1PromptSource = userStage1Res.rows[0]
+            ? 'user_override'
+            : orgStage1Res.rows[0] ? 'org_default' : 'system_default';
+
+          const accountMeta = {
+            provider:            aiProvider,
+            model:               aiModel,
+            stage1_prompt_id:    stage1PromptId,
+            stage1_prompt_key:   'prospecting_research_account',
+            stage1_prompt_source: stage1PromptSource,
+            generated_by_user_id: req.user.userId,
+            generated_at:        new Date().toISOString(),
+          };
+
+          // Cache to accounts table
+          db.query(
+            `UPDATE accounts
+             SET research_notes       = $1,
+                 research_updated_at  = CURRENT_TIMESTAMP,
+                 research_meta        = $2::jsonb,
+                 updated_at           = CURRENT_TIMESTAMP
+             WHERE id = $3 AND org_id = $4`,
+            [accountResearchText, JSON.stringify(accountMeta), p.account_id, req.orgId]
+          ).catch(err => console.warn('Account research cache save failed:', err.message));
+        }
+      }
+    }
+
+    // ── STAGE 2: Individual person research + pitch ───────────────────────────
+    console.log(`🎯 Running Stage 2 person research for ${p.first_name} ${p.last_name}...`);
+    const stage2Template = userStage2Res.rows[0]?.template_data
+      || orgStage2Res.rows[0]?.template
+      || AI_PROMPTS.prospecting_research
+      || '';
+
+    const stage2SystemDefault = `You are an expert B2B sales researcher. Based on the prospect and account info below, generate research bullets and a crisp pitch.
+
+PERSON:
 {{prospectInfo}}
-${productCtx ? `\nContext about what we sell:\n${productCtx}` : ''}
 
-Respond with bullet points only. Each bullet should be actionable and specific. Do not include generic advice.`;
+ACCOUNT RESEARCH:
+{{accountResearch}}
 
-    // User prompt > org prompt > system default
-    const promptTemplate = userPromptRes.rows[0]?.template_data
-      || orgPromptRes.rows[0]?.template
-      || systemDefault;
+WHAT WE SELL:
+{{productContext}}
 
-    const prompt = promptTemplate.replace('{{prospectInfo}}', contextLines);
+Return ONLY valid JSON:
+{
+  "researchBullets": ["bullet 1", "bullet 2", "bullet 3", "bullet 4", "bullet 5"],
+  "pitchAngle": "Single strongest angle for this person",
+  "crispPitch": "3-5 sentence pitch written directly to them",
+  "subjectLine": "Email subject line",
+  "confidence": 0.8
+}`;
 
-    // ── Call the right AI provider ────────────────────────────────────────────
+    const stage2Prompt = (stage2Template || stage2SystemDefault)
+      .replace('{{prospectInfo}}',   prospectInfo)
+      .replace('{{accountResearch}}', accountResearchText || 'No account research available.')
+      .replace('{{productContext}}',  productCtx || 'Not specified');
+
+    const stage2Raw = await callAI(stage2Prompt, 900);
+
+    // Parse Stage 2 JSON
+    let parsed = null;
     let researchNotes = '';
+    try {
+      const cleaned = stage2Raw.replace(/\`\`\`json\n?/gi, '').replace(/\`\`\`\n?/g, '').trim();
+      const start = cleaned.indexOf('{');
+      const end   = cleaned.lastIndexOf('}');
+      parsed = JSON.parse(cleaned.substring(start, end + 1));
 
-    if (aiProvider === 'openai') {
-      const { OpenAI } = require('openai');
-      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const completion = await openai.chat.completions.create({
-        model:      aiModel || 'gpt-4o-mini',
-        max_tokens: 400,
-        messages:   [{ role: 'user', content: prompt }],
-      });
-      researchNotes = completion.choices[0]?.message?.content || '';
-    } else if (aiProvider === 'gemini') {
-      const { GoogleGenerativeAI } = require('@google/generative-ai');
-      const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
-      const model = genAI.getGenerativeModel({ model: aiModel || 'gemini-1.5-flash' });
-      const result = await model.generateContent(prompt);
-      researchNotes = result.response.text() || '';
-    } else {
-      // Default: Anthropic
-      const Anthropic = require('@anthropic-ai/sdk');
-      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-      const message = await anthropic.messages.create({
-        model:      aiModel,
-        max_tokens: 400,
-        messages:   [{ role: 'user', content: prompt }],
-      });
-      researchNotes = message.content[0]?.text || '';
+      // Format research notes as bullet points for storage
+      const bullets = parsed.researchBullets || [];
+      researchNotes = bullets.map(b => `• ${b}`).join('\n');
+      if (parsed.pitchAngle)  researchNotes += `\n\n💡 Pitch angle: ${parsed.pitchAngle}`;
+      if (parsed.crispPitch)  researchNotes += `\n\n✉️ Crisp pitch:\n${parsed.crispPitch}`;
+      if (parsed.subjectLine) researchNotes += `\n\n📧 Subject: ${parsed.subjectLine}`;
+    } catch {
+      // Fallback: store raw text
+      researchNotes = stage2Raw;
     }
 
     if (!researchNotes) {
       return res.status(500).json({ error: { message: 'Research generation returned empty response' } });
     }
 
-    // Save research notes
+    // Determine which prompt was used for Stage 2
+    const stage2PromptId     = orgStage2Res.rows[0]?.id || null;
+    const stage2PromptSource = userStage2Res.rows[0]
+      ? 'user_override'
+      : orgStage2Res.rows[0] ? 'org_default' : 'system_default';
+
+    const prospectMeta = {
+      provider:            aiProvider,
+      model:               aiModel,
+      stage2_prompt_id:    stage2PromptId,
+      stage2_prompt_key:   'prospecting_research',
+      stage2_prompt_source: stage2PromptSource,
+      account_research_used: !!accountResearchText,
+      account_research_cached: !!(p.account_id && accountResearchText),
+      generated_by_user_id: req.user.userId,
+      generated_at:        new Date().toISOString(),
+      confidence:          parsed?.confidence || null,
+    };
+
+    // Save research notes + meta to prospect
     await db.query(
       `UPDATE prospects
-       SET research_notes = $1, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2 AND org_id = $3`,
-      [researchNotes, req.params.id, req.orgId]
+       SET research_notes = $1,
+           research_meta  = $2::jsonb,
+           updated_at     = CURRENT_TIMESTAMP
+       WHERE id = $3 AND org_id = $4`,
+      [researchNotes, JSON.stringify(prospectMeta), req.params.id, req.orgId]
     );
 
     // Auto-advance target → researched
@@ -585,7 +738,25 @@ Respond with bullet points only. Each bullet should be actionable and specific. 
     res.json({
       researchNotes,
       stageAdvanced,
-      newStage: stageAdvanced ? 'researched' : p.stage,
+      newStage:           stageAdvanced ? 'researched' : p.stage,
+      // Structured fields from Stage 2 parse (null if parse failed)
+      researchBullets:    parsed?.researchBullets    || null,
+      pitchAngle:         parsed?.pitchAngle         || null,
+      crispPitch:         parsed?.crispPitch         || null,
+      suggestedSubject:   parsed?.subjectLine        || null,
+      confidence:         parsed?.confidence         || null,
+      // Account research cached flag
+      accountResearchCached: !!accountResearchText,
+      accountResearch:    accountResearchJson,
+      // Meta: what generated this research
+      meta: {
+        provider:      aiProvider,
+        model:         aiModel,
+        promptSources: {
+          account: userStage1Res.rows[0] ? 'user_override' : orgStage1Res.rows[0] ? 'org_default' : 'system_default',
+          person:  userStage2Res.rows[0] ? 'user_override' : orgStage2Res.rows[0] ? 'org_default' : 'system_default',
+        },
+      },
     });
   } catch (error) {
     console.error('Prospect research error:', error);

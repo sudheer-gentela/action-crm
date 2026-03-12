@@ -15,13 +15,17 @@ router.get('/', authenticateToken, orgContext, async (req, res) => {
     );
 
     const prompts = {
-      email_analysis:       AI_PROMPTS.email_analysis,
-      deal_health_check:    AI_PROMPTS.deal_health_check,
-      prospecting_research: AI_PROMPTS.prospecting_research || '',
-      prospecting_draft:    AI_PROMPTS.prospecting_draft    || '',
+      email_analysis:              AI_PROMPTS.email_analysis,
+      deal_health_check:           AI_PROMPTS.deal_health_check,
+      prospecting_research_account: AI_PROMPTS.prospecting_research_account || '',
+      prospecting_research:        AI_PROMPTS.prospecting_research || '',
+      prospecting_draft:           AI_PROMPTS.prospecting_draft    || '',
     };
 
-    const ALLOWED_TYPES = ['email_analysis', 'deal_health_check', 'prospecting_research', 'prospecting_draft'];
+    const ALLOWED_TYPES = [
+      'email_analysis', 'deal_health_check',
+      'prospecting_research_account', 'prospecting_research', 'prospecting_draft',
+    ];
     result.rows.forEach(row => {
       if (ALLOWED_TYPES.includes(row.template_type)) {
         prompts[row.template_type] = row.template_data;
@@ -43,7 +47,7 @@ router.put('/', authenticateToken, orgContext, async (req, res) => {
       return res.status(400).json({ success: false, error: 'Prompts data is required' });
     }
 
-    for (const templateType of ['email_analysis', 'deal_health_check', 'prospecting_research', 'prospecting_draft']) {
+    for (const templateType of ['email_analysis', 'deal_health_check', 'prospecting_research_account', 'prospecting_research', 'prospecting_draft']) {
       if (prompts[templateType]) {
         await db.query(
           `INSERT INTO user_prompts (user_id, org_id, template_type, template_data, updated_at)
@@ -99,7 +103,7 @@ function adminOnly(req, res, next) {
   next();
 }
 
-const ORG_PROMPT_KEYS = ['prospecting_research', 'prospecting_draft'];
+const ORG_PROMPT_KEYS = ['prospecting_research_account', 'prospecting_research', 'prospecting_draft'];
 
 // GET /api/prompts/org/prospecting — returns org-level templates
 router.get('/org/prospecting', authenticateToken, orgContext, async (req, res) => {
@@ -111,8 +115,9 @@ router.get('/org/prospecting', authenticateToken, orgContext, async (req, res) =
       [req.orgId, ORG_PROMPT_KEYS]
     );
     const prompts = {
-      prospecting_research: AI_PROMPTS.prospecting_research || '',
-      prospecting_draft:    AI_PROMPTS.prospecting_draft    || '',
+      prospecting_research_account: AI_PROMPTS.prospecting_research_account || '',
+      prospecting_research:         AI_PROMPTS.prospecting_research || '',
+      prospecting_draft:            AI_PROMPTS.prospecting_draft    || '',
     };
     result.rows.forEach(row => { prompts[row.key] = row.template; });
     res.json({ success: true, prompts });
