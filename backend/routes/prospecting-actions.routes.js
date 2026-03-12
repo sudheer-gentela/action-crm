@@ -1195,7 +1195,7 @@ Write a short personalised outreach email. Return ONLY valid JSON:
       .replace('{{prospectInfo}}',   prospectInfo)
       .replace('{{researchNotes}}',  researchNotes)
       .replace(/\{\{#if productContext\}\}[\s\S]*?\{\{\/if\}\}/g,
-        productCtx ? \`WHAT WE SELL:\n\${productCtx}\` : '')
+        productCtx ? `WHAT WE SELL:\n\${productCtx}` : '')
       .replace('{{productContext}}',  productCtx);
 
     // ── 5. Call AI provider ───────────────────────────────────────────────────
@@ -1247,7 +1247,7 @@ Write a short personalised outreach email. Return ONLY valid JSON:
     } catch {
       // Fallback: treat raw text as body
       parsed = {
-        subject: \`Quick question for \${p.first_name}\${p.company_name ? \` at \${p.company_name}\` : ''}\`,
+        subject: `Quick question for \${p.first_name}\${p.company_name ? ` at \${p.company_name}` : ''}`,
         body:    rawText,
         tone:    'consultative',
         confidence: 0.5,
