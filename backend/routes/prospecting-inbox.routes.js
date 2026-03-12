@@ -731,6 +731,7 @@ router.post('/sync', async (req, res) => {
             if (insertResult.rows.length > 0) {
               console.log(`    💾 SAVED: email ${email.externalId} for prospectId=${prospectId}`);
               saved++;
+
               // Log a prospecting activity (non-blocking)
               db.query(
                 `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
@@ -742,6 +743,46 @@ router.post('/sync', async (req, res) => {
                   JSON.stringify({ emailExternalId: email.externalId, fromAddress: email.fromAddress }),
                 ]
               ).catch(() => {});
+
+              // Auto-advance contacted → engaged when a reply is received
+              try {
+                const prospectRow = await db.query(
+                  `SELECT stage FROM prospects WHERE id = $1 AND org_id = $2`,
+                  [prospectId, orgId]
+                );
+                const currentStage = prospectRow.rows[0]?.stage;
+
+                if (currentStage === 'contacted') {
+                  await db.query(
+                    `UPDATE prospects
+                     SET stage = 'engaged', updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $1 AND org_id = $2`,
+                    [prospectId, orgId]
+                  );
+
+                  await db.query(
+                    `INSERT INTO prospecting_activities
+                       (prospect_id, user_id, activity_type, description, metadata)
+                     VALUES ($1, $2, 'stage_change', $3, $4)`,
+                    [
+                      prospectId,
+                      account.user_id,
+                      `Stage advanced: contacted → engaged (reply received)`,
+                      JSON.stringify({
+                        fromStage:   'contacted',
+                        toStage:     'engaged',
+                        trigger:     'reply_received',
+                        emailSubject: email.subject,
+                        fromAddress:  email.fromAddress,
+                      }),
+                    ]
+                  );
+
+                  console.log(`    🎯 Stage advanced: contacted → engaged for prospectId=${prospectId}`);
+                }
+              } catch (stageErr) {
+                console.warn(`    ⚠️  Stage advance failed for prospectId=${prospectId}:`, stageErr.message);
+              }
             }
           } catch (insertErr) {
             console.error(`    ❌ Insert error:`, insertErr.message, '| code:', insertErr.code);
