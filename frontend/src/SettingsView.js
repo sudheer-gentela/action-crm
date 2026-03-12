@@ -962,9 +962,7 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
                           <textarea
                             value={editValues.signature}
                             onChange={e => setEditValues(p => ({ ...p, signature: e.target.value }))}
-                            placeholder={'Alex Chen
-Account Executive · Action CRM
-alex@company.com'}
+                            placeholder={`e.g. Alex Chen\nAccount Executive · Action CRM\nalex@company.com`}
                             rows={4}
                             style={{ width: '100%', padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontFamily: 'inherit', resize: 'vertical', boxSizing: 'border-box' }}
                           />
