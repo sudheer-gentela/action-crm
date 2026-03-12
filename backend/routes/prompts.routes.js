@@ -141,11 +141,15 @@ router.put('/org/prospecting', authenticateToken, orgContext, adminOnly, async (
           [req.orgId, key]
         );
       } else if (prompts[key]) {
+        // Use DELETE + INSERT for org defaults (user_id IS NULL) since
+        // NULL != NULL means ON CONFLICT won't match a partial unique index.
+        await db.query(
+          `DELETE FROM prompts WHERE org_id = $1 AND user_id IS NULL AND key = $2`,
+          [req.orgId, key]
+        );
         await db.query(
           `INSERT INTO prompts (org_id, user_id, key, template)
-           VALUES ($1, NULL, $2, $3)
-           ON CONFLICT (user_id, org_id, key) DO UPDATE
-           SET template = $3, updated_at = CURRENT_TIMESTAMP`,
+           VALUES ($1, NULL, $2, $3)`,
           [req.orgId, key, prompts[key]]
         );
       }
