@@ -505,7 +505,7 @@ router.post('/:id/research', async (req, res) => {
     const prospPrefs = userPrefs.prospecting || {};
 
     // Fallback chain: user → org → system default
-    const aiModel    = prospPrefs.ai_model    || orgConfig.ai_model    || 'claude-sonnet-4-5-20251022';
+    const aiModel    = prospPrefs.ai_model    || orgConfig.ai_model    || 'claude-sonnet-4-6';
     const aiProvider = prospPrefs.ai_provider || orgConfig.ai_provider || 'anthropic';
     const productCtx = prospPrefs.product_context !== undefined
                          ? prospPrefs.product_context

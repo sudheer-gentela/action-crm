@@ -73,10 +73,10 @@ Respond ONLY with a JSON array:
       const orgConfig       = orgCfgRes.rows[0]?.config || {};
       return {
         provider: userProspecting.ai_provider || orgConfig.ai_provider || 'anthropic',
-        model:    userProspecting.ai_model    || orgConfig.ai_model    || 'claude-haiku-4-5-20251001',
+        model:    userProspecting.ai_model    || orgConfig.ai_model    || 'claude-haiku-4-5',
       };
     } catch {
-      return { provider: 'anthropic', model: 'claude-haiku-4-5-20251001' };
+      return { provider: 'anthropic', model: 'claude-haiku-4-5' };
     }
   }
 

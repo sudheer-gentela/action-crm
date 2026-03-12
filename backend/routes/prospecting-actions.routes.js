@@ -814,11 +814,10 @@ router.post('/outreach-send', async (req, res) => {
     }
 
     // ── 8. Send the email ─────────────────────────────────────────────────────
-    let sendError  = null;
-    let externalId = null;
+    let sendError = null;
     try {
       if (sender.provider === 'gmail') {
-        const sendResult = await sendGmailEmail(req.user.userId, {
+        await sendGmailEmail(req.user.userId, {
           to:           toAddress,
           subject,
           body,
@@ -827,9 +826,8 @@ router.post('/outreach-send', async (req, res) => {
           accessToken:  sender.access_token,
           refreshToken: sender.refresh_token,
         });
-        externalId = sendResult?.messageId || null;
       } else if (sender.provider === 'outlook') {
-        const sendResult = await sendOutlookEmail(req.user.userId, {
+        await sendOutlookEmail(req.user.userId, {
           to:           toAddress,
           subject,
           body,
@@ -838,9 +836,8 @@ router.post('/outreach-send', async (req, res) => {
           accessToken:  sender.access_token,
           refreshToken: sender.refresh_token,
         });
-        externalId = sendResult?.messageId || null;
       }
-      console.log(`📧 Outreach email sent from ${sender.email} to ${toAddress} — externalId: ${externalId}`);
+      console.log(`📧 Outreach email sent from ${sender.email} to ${toAddress}`);
     } catch (err) {
       sendError = err.message;
       console.warn(`⚠️  Email send failed (saving to DB anyway): ${err.message}`);
@@ -853,8 +850,8 @@ router.post('/outreach-send', async (req, res) => {
       `INSERT INTO emails (
          org_id, user_id, direction, subject, body,
          to_address, from_address, sent_at,
-         prospect_id, sender_account_id, provider, external_id
-       ) VALUES ($1, $2, 'sent', $3, $4, $5, $6, CURRENT_TIMESTAMP, $7, $8, $9, $10)
+         prospect_id, sender_account_id, provider
+       ) VALUES ($1, $2, 'sent', $3, $4, $5, $6, CURRENT_TIMESTAMP, $7, $8, $9)
        RETURNING *`,
       [
         req.orgId,
@@ -866,7 +863,6 @@ router.post('/outreach-send', async (req, res) => {
         prospectId,
         sender.id,
         sender.provider,
-        externalId,
       ]
     );
     const newEmail = emailResult.rows[0];
@@ -942,27 +938,6 @@ router.post('/outreach-send', async (req, res) => {
         }),
       ]
     );
-
-    // ── 14. Create completed action for Outreach/WK counter ───────────────────
-    // Only when no actionId was provided — ensures every send counts regardless
-    // of whether it was tied to a playbook action
-    if (!actionId) {
-      await client.query(
-        `INSERT INTO prospecting_actions
-           (org_id, user_id, prospect_id, title, action_type, channel,
-            status, outcome, completed_at, completed_by, message_metadata)
-         VALUES ($1, $2, $3, $4, 'outreach', 'email', 'completed', 'email_sent',
-                 CURRENT_TIMESTAMP, $5, $6)`,
-        [
-          req.orgId,
-          req.user.userId,
-          prospectId,
-          `Email: ${subject}`,
-          req.user.userId,
-          JSON.stringify({ emailId: newEmail.id, sentFrom: sender.email, autoCreated: true }),
-        ]
-      );
-    }
 
     await client.query('COMMIT');
 
@@ -1117,4 +1092,190 @@ function buildActionDescription(actionKey, stageKey, stageGuidance, prospect) {
   return parts.join('\n\n') || `Action for ${stageKey} stage.`;
 }
 
+
+// ── POST /outreach/draft-email ────────────────────────────────────────────────
+// Generates a personalised outreach email using AI.
+// Uses the fallback chain: user_prompts → org prompts → system default.
+// Called by OutreachComposer "✨ AI Draft" button.
+//
+// Body: { prospectId }
+// Returns: { subject, body, tone, confidence, personalisationHooks, model, provider }
+
+router.post('/outreach/draft-email', async (req, res) => {
+  const { prospectId } = req.body;
+  if (!prospectId) {
+    return res.status(400).json({ error: { message: 'prospectId is required' } });
+  }
+
+  try {
+    // ── 1. Load prospect ──────────────────────────────────────────────────────
+    const prospectRes = await db.query(
+      `SELECT p.*,
+              a.name  AS account_name,
+              a.industry AS account_industry
+       FROM prospects p
+       LEFT JOIN accounts a ON p.account_id = a.id
+       WHERE p.id = $1 AND p.org_id = $2`,
+      [prospectId, req.orgId]
+    );
+    if (prospectRes.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+    const p = prospectRes.rows[0];
+
+    // ── 2. Build prospect info block ──────────────────────────────────────────
+    const prospectInfo = [
+      `Name: ${p.first_name} ${p.last_name}`,
+      p.title            ? `Title: ${p.title}`                          : null,
+      p.company_name     ? `Company: ${p.company_name}`                 : null,
+      p.company_industry ? `Industry: ${p.company_industry}`            : null,
+      p.company_size     ? `Company size: ${p.company_size}`            : null,
+      p.location         ? `Location: ${p.location}`                    : null,
+      p.linkedin_url     ? `LinkedIn: ${p.linkedin_url}`                : null,
+      p.account_name     ? `Account: ${p.account_name}`                 : null,
+      p.research_notes   ? `\nExisting research:\n${p.research_notes}` : null,
+    ].filter(Boolean).join('\n');
+
+    // ── 3. Load AI settings with fallback chain ───────────────────────────────
+    const [userPrefRes, orgCfgRes, userPromptRes, orgPromptRes] = await Promise.all([
+      db.query(
+        `SELECT preferences->'prospecting' AS prospecting
+         FROM user_preferences WHERE user_id = $1 AND org_id = $2`,
+        [req.user.userId, req.orgId]
+      ),
+      db.query(
+        `SELECT config FROM org_integrations
+         WHERE org_id = $1 AND integration_type = 'prospecting'`,
+        [req.orgId]
+      ),
+      db.query(
+        `SELECT template_data FROM user_prompts
+         WHERE user_id = $1 AND org_id = $2 AND template_type = 'prospecting_draft'`,
+        [req.user.userId, req.orgId]
+      ),
+      db.query(
+        `SELECT template FROM prompts
+         WHERE org_id = $1 AND user_id IS NULL AND key = 'prospecting_draft'`,
+        [req.orgId]
+      ),
+    ]);
+
+    const userPrefs   = userPrefRes.rows[0]?.prospecting || {};
+    const orgConfig   = orgCfgRes.rows[0]?.config || {};
+
+    const aiProvider    = userPrefs.ai_provider    || orgConfig.ai_provider    || 'anthropic';
+    const aiModel       = userPrefs.ai_model       || orgConfig.ai_model       || 'claude-haiku-4-5';
+    const productCtx    = userPrefs.product_context !== undefined
+                            ? userPrefs.product_context
+                            : (orgConfig.product_context || '');
+
+    // ── 4. Build prompt from template ─────────────────────────────────────────
+    const AI_PROMPTS = require('../config/aiPrompts');
+    const systemDefault = AI_PROMPTS.prospecting_draft || `You are an expert B2B sales copywriter.
+
+PROSPECT:
+{{prospectInfo}}
+{{#if productContext}}
+WHAT WE SELL:
+{{productContext}}
+{{/if}}
+RESEARCH:
+{{researchNotes}}
+
+Write a short personalised outreach email. Return ONLY valid JSON:
+{"subject":"string","body":"string with \\n line breaks","tone":"consultative|direct|curious","confidence":0.8,"personalisationHooks":["hook"]}`;
+
+    const rawTemplate = userPromptRes.rows[0]?.template_data
+      || orgPromptRes.rows[0]?.template
+      || systemDefault;
+
+    // Replace placeholders
+    const researchNotes = p.research_notes || 'No research notes yet — use general knowledge about this role and industry.';
+    const prompt = rawTemplate
+      .replace('{{prospectInfo}}',   prospectInfo)
+      .replace('{{researchNotes}}',  researchNotes)
+      .replace(/\{\{#if productContext\}\}[\s\S]*?\{\{\/if\}\}/g,
+        productCtx ? \`WHAT WE SELL:\n\${productCtx}\` : '')
+      .replace('{{productContext}}',  productCtx);
+
+    // ── 5. Call AI provider ───────────────────────────────────────────────────
+    let rawText = '{}';
+
+    if (aiProvider === 'openai') {
+      const { OpenAI } = require('openai');
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      const completion = await openai.chat.completions.create({
+        model: aiModel || 'gpt-4o-mini', max_tokens: 800,
+        messages: [{ role: 'user', content: prompt }],
+        response_format: { type: 'json_object' },
+      });
+      rawText = completion.choices[0]?.message?.content || '{}';
+    } else if (aiProvider === 'gemini') {
+      const { GoogleGenerativeAI } = require('@google/generative-ai');
+      const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
+      const result = await genAI.getGenerativeModel({ model: aiModel || 'gemini-1.5-flash' })
+                                .generateContent(prompt);
+      rawText = result.response.text() || '{}';
+    } else {
+      const Anthropic = require('@anthropic-ai/sdk');
+      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      const message = await anthropic.messages.create({
+        model: aiModel, max_tokens: 800,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      rawText = message.content[0]?.text || '{}';
+
+      // Token tracking (non-blocking)
+      if (message.usage) {
+        const TokenTrackingService = require('../services/TokenTrackingService');
+        TokenTrackingService.log({
+          orgId: req.orgId, userId: req.user.userId,
+          callType: 'prospecting_draft',
+          model: aiModel,
+          usage: { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens },
+        }).catch(() => {});
+      }
+    }
+
+    // ── 6. Parse response ─────────────────────────────────────────────────────
+    let parsed;
+    try {
+      const cleaned = rawText.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim();
+      const start = cleaned.indexOf('{');
+      const end   = cleaned.lastIndexOf('}');
+      parsed = JSON.parse(cleaned.substring(start, end + 1));
+    } catch {
+      // Fallback: treat raw text as body
+      parsed = {
+        subject: \`Quick question for \${p.first_name}\${p.company_name ? \` at \${p.company_name}\` : ''}\`,
+        body:    rawText,
+        tone:    'consultative',
+        confidence: 0.5,
+      };
+    }
+
+    // ── 7. Log activity ───────────────────────────────────────────────────────
+    db.query(
+      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, 'ai_draft', 'AI email draft generated', $3)`,
+      [prospectId, req.user.userId, JSON.stringify({ model: aiModel, provider: aiProvider, confidence: parsed.confidence })]
+    ).catch(() => {});
+
+    res.json({
+      subject:              parsed.subject || '',
+      body:                 parsed.body    || '',
+      tone:                 parsed.tone    || 'consultative',
+      confidence:           parsed.confidence || 0.7,
+      personalisationHooks: parsed.personalisationHooks || [],
+      model:                aiModel,
+      provider:             aiProvider,
+    });
+
+  } catch (error) {
+    console.error('Draft email error:', error);
+    res.status(500).json({ error: { message: 'Failed to generate email draft: ' + error.message } });
+  }
+});
+
 module.exports = router;
+
