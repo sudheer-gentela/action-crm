@@ -909,13 +909,6 @@ function UserPreferencesSettings() {
 // ─────────────────────────────────────────────────────────────────────────────
 // UserAIUsageSettings — per-user AI token usage dashboard
 // ─────────────────────────────────────────────────────────────────────────────
-const MODULE_COLORS = {
-  prospecting: '#0F9D8E',
-  deals:       '#6366f1',
-  crm:         '#f59e0b',
-  other:       '#9ca3af',
-};
-
 function fmtTokens(n) {
   if (!n) return '0';
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
