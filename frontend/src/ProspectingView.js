@@ -680,6 +680,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   const [outreachChannel, setOutreachChannel] = useState(null);
   const [outreachAction, setOutreachAction] = useState(null);
   const [showEnrollModal, setShowEnrollModal] = useState(false);
+  const [activeEnrollment, setActiveEnrollment] = useState(null);
   const [generating, setGenerating] = useState(false);
   const [contextData, setContextData] = useState(null);
   const [contextLoading, setContextLoading] = useState(false);
@@ -692,6 +693,11 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
         setProspect(res.prospect);
         setActions(res.actions || []);
         setActivities(res.activities || []);
+        // Check for active enrollment so button can be disabled
+        try {
+          const er = await apiFetch(`/sequences/enrollments?prospectId=${prospectId}&status=active`);
+          setActiveEnrollment((er.enrollments || [])[0] || null);
+        } catch (_) {}
       } catch (err) {
         console.error('Failed to load prospect:', err);
       } finally {
@@ -890,12 +896,18 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
             <button
               style={{
                 fontSize: '12px', padding: '5px 12px',
-                background: '#f0fdf4', border: '1px solid #bbf7d0',
-                color: '#065f46', borderRadius: 6, cursor: 'pointer', fontWeight: 600,
+                background: activeEnrollment ? '#f3f4f6' : '#f0fdf4',
+                border: `1px solid ${activeEnrollment ? '#e5e7eb' : '#bbf7d0'}`,
+                color: activeEnrollment ? '#9ca3af' : '#065f46',
+                borderRadius: 6,
+                cursor: activeEnrollment ? 'not-allowed' : 'pointer',
+                fontWeight: 600,
               }}
-              onClick={() => setShowEnrollModal(true)}
+              onClick={() => !activeEnrollment && setShowEnrollModal(true)}
+              disabled={!!activeEnrollment}
+              title={activeEnrollment ? `Active in: ${activeEnrollment.sequence_name}` : 'Enroll in Sequence'}
             >
-              📨 Enroll in Sequence
+              📨 {activeEnrollment ? `In Sequence: ${activeEnrollment.sequence_name}` : 'Enroll in Sequence'}
             </button>
             {prospect.stage === 'qualified' && (
               <button className="pv-btn-convert" onClick={handleConvert}>🎉 Convert</button>
@@ -1219,7 +1231,23 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
         {showEnrollModal && prospect && (
           <SequenceEnrollModal
             prospects={[prospect]}
-            onEnrolled={() => setShowEnrollModal(false)}
+            onEnrolled={async () => {
+              setShowEnrollModal(false);
+              // Fix 1: refresh prospect so Intel tab shows updated research_notes
+              // Fix 2: refresh activities so Activity tab shows sequence_enrolled entry
+              // Fix 3: refresh activeEnrollment so button becomes disabled
+              try {
+                const res = await apiFetch(`/prospects/${prospectId}`);
+                setProspect(res.prospect);
+                setActivities(res.activities || []);
+              } catch (err) {
+                console.error('Refresh after enrollment:', err);
+              }
+              try {
+                const er = await apiFetch(`/sequences/enrollments?prospectId=${prospectId}&status=active`);
+                setActiveEnrollment((er.enrollments || [])[0] || null);
+              } catch (_) {}
+            }}
             onClose={() => setShowEnrollModal(false)}
           />
         )}
