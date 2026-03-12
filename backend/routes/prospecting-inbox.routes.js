@@ -495,13 +495,16 @@ router.post('/sync', async (req, res) => {
     const outlookService = require('../services/outlookService');
 
     // 3. For each sender account, fetch inbound emails
+    console.log(`\n🔍 SYNC: Starting for org ${orgId}, looking back ${days} days`);
+    console.log(`🔍 SYNC: ${senderResult.rows.length} sender account(s), ${prospectResult.rows.length} prospects`);
+    console.log(`🔍 SYNC: prospectBySentTo has ${Object.keys(prospectBySentTo).length} sent-to addresses:`, Object.keys(prospectBySentTo));
+
     for (const account of senderResult.rows) {
+      console.log(`\n📬 SYNC: Processing sender account: ${account.email} (${account.provider}), active=${account.is_active}`);
       try {
         let rawEmails = [];
 
         if (account.provider === 'gmail') {
-          // Use the sender account's own tokens, not the user's oauth_tokens
-          // We temporarily override by calling Gmail directly with this account's token
           const { google } = require('googleapis');
           const oauth2Client = new (require('googleapis').google.auth.OAuth2)(
             process.env.GOOGLE_CLIENT_ID,
@@ -514,11 +517,14 @@ router.post('/sync', async (req, res) => {
             expiry_date:   account.expires_at ? new Date(account.expires_at).getTime() : undefined,
           });
 
+          const tokenExpired = account.expires_at && new Date(account.expires_at) < new Date(Date.now() + 60_000);
+          console.log(`🔍 SYNC: Token expires_at=${account.expires_at}, expired=${tokenExpired}`);
+
           // Handle token refresh if expired
-          if (account.expires_at && new Date(account.expires_at) < new Date(Date.now() + 60_000)) {
+          if (tokenExpired) {
             try {
               const { credentials } = await oauth2Client.refreshAccessToken();
-              // Save refreshed token back
+              console.log(`🔄 SYNC: Token refreshed successfully for ${account.email}`);
               await db.query(
                 `UPDATE prospecting_sender_accounts
                  SET access_token = $1, expires_at = $2, updated_at = CURRENT_TIMESTAMP
@@ -536,6 +542,7 @@ router.post('/sync', async (req, res) => {
           const gmail = require('googleapis').google.gmail({ version: 'v1', auth: oauth2Client });
 
           const sinceFormatted = `${sinceDate.getFullYear()}/${String(sinceDate.getMonth() + 1).padStart(2, '0')}/${String(sinceDate.getDate()).padStart(2, '0')}`;
+          console.log(`🔍 SYNC: Gmail query = "after:${sinceFormatted}"`);
 
           const listRes = await gmail.users.messages.list({
             userId: 'me',
@@ -544,6 +551,7 @@ router.post('/sync', async (req, res) => {
           });
 
           const messageIds = listRes.data.messages || [];
+          console.log(`📨 SYNC: Gmail returned ${messageIds.length} messages (estimate: ${listRes.data.resultSizeEstimate})`);
 
           for (let i = 0; i < messageIds.length; i += 10) {
             const batch = messageIds.slice(i, i + 10);
@@ -612,6 +620,8 @@ router.post('/sync', async (req, res) => {
           }
         }
 
+        console.log(`\n🔍 SYNC: Matching ${rawEmails.length} raw emails against prospects...`);
+
         // 4. Match each email to a prospect using 3 strategies
         for (const email of rawEmails) {
           const fromRaw    = email.fromAddress || '';
@@ -625,28 +635,40 @@ router.post('/sync', async (req, res) => {
             return (m ? m[1] : a).toLowerCase().trim();
           }).filter(Boolean);
 
+          console.log(`  📧 from="${fromAddr}" to=${JSON.stringify(toAddrs)} subject="${(email.subject||'').slice(0,50)}"`);
+
           // Strategy 1: exact from_address match (normal replies)
           let prospectId = prospectByEmail[fromAddr];
+          if (prospectId) console.log(`    ✅ Strategy 1 match (exact from_address): prospectId=${prospectId}`);
 
           // Strategy 2: to_address matches a prospect we previously sent to
-          // Catches auto-replies where from_address is a mail server / noreply
           if (!prospectId) {
             for (const toAddr of toAddrs) {
-              if (prospectBySentTo[toAddr]) { prospectId = prospectBySentTo[toAddr]; break; }
+              if (prospectBySentTo[toAddr]) {
+                prospectId = prospectBySentTo[toAddr];
+                console.log(`    ✅ Strategy 2 match (sent-to reverse): toAddr="${toAddr}" prospectId=${prospectId}`);
+                break;
+              }
             }
           }
 
           // Strategy 3: domain match — only when email arrived at our sender account
-          // Avoids false positives at large orgs with multiple prospects per domain
           if (!prospectId && fromDomain) {
             const domainProspectId = prospectByDomain[fromDomain];
             if (domainProspectId) {
               const arrivedAtSender = toAddrs.some(a => a === account.email.toLowerCase());
-              if (arrivedAtSender) prospectId = domainProspectId;
+              console.log(`    🔍 Strategy 3 domain check: domain="${fromDomain}" arrivedAtSender=${arrivedAtSender}`);
+              if (arrivedAtSender) {
+                prospectId = domainProspectId;
+                console.log(`    ✅ Strategy 3 match (domain): prospectId=${prospectId}`);
+              }
             }
           }
 
-          if (!prospectId) { skipped++; continue; } // not a known prospect
+          if (!prospectId) {
+            console.log(`    ⏭️  No match — skipping`);
+            skipped++; continue;
+          }
 
           // 5. Upsert into emails table — skip if already saved
           try {
@@ -682,6 +704,7 @@ router.post('/sync', async (req, res) => {
             );
 
             if (upsertResult.rows.length > 0) {
+              console.log(`    💾 SAVED: email ${email.externalId} for prospectId=${prospectId}`);
               saved++;
               // Also log a prospecting activity
               await db.query(
@@ -696,10 +719,11 @@ router.post('/sync', async (req, res) => {
                 ]
               ).catch(() => {}); // non-blocking, ignore conflict errors
             } else {
+              console.log(`    ⏭️  Already saved (ON CONFLICT) — skipping`);
               skipped++;
             }
           } catch (upsertErr) {
-            // external_id unique constraint — already exists
+            console.error(`    ❌ Upsert error:`, upsertErr.message, '| code:', upsertErr.code);
             if (upsertErr.code === '23505') { skipped++; }
             else errors.push({ account: account.email, externalId: email.externalId, error: upsertErr.message });
           }
@@ -711,7 +735,8 @@ router.post('/sync', async (req, res) => {
       }
     }
 
-    console.log(`✅ Prospecting inbox sync complete — saved: ${saved}, skipped: ${skipped}, errors: ${errors.length}`);
+    console.log(`\n✅ SYNC COMPLETE — saved: ${saved}, skipped: ${skipped}, errors: ${errors.length}`);
+    if (errors.length) console.log('❌ Errors:', JSON.stringify(errors, null, 2));
 
     res.json({
       success: true,
