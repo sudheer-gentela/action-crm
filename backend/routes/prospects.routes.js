@@ -505,7 +505,14 @@ router.post('/:id/research', async (req, res) => {
     const prospPrefs = userPrefs.prospecting || {};
 
     // Fallback chain: user → org → system default
-    const aiModel    = prospPrefs.ai_model    || orgConfig.ai_model    || 'claude-sonnet-4-6';
+    const sanitiseModel = (m) => {
+      if (!m) return m;
+      return m
+        .replace('claude-sonnet-4-5-20251022', 'claude-sonnet-4-6')
+        .replace('claude-haiku-4-5-20251001', 'claude-haiku-4-5')
+        .replace('claude-sonnet-4-20250514',  'claude-sonnet-4-6');
+    };
+    const aiModel    = sanitiseModel(prospPrefs.ai_model || orgConfig.ai_model) || 'claude-sonnet-4-6';
     const aiProvider = prospPrefs.ai_provider || orgConfig.ai_provider || 'anthropic';
     const productCtx = prospPrefs.product_context !== undefined
                          ? prospPrefs.product_context

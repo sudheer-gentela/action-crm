@@ -1164,7 +1164,15 @@ router.post('/outreach/draft-email', async (req, res) => {
     const orgConfig   = orgCfgRes.rows[0]?.config || {};
 
     const aiProvider    = userPrefs.ai_provider    || orgConfig.ai_provider    || 'anthropic';
-    const aiModel       = userPrefs.ai_model       || orgConfig.ai_model       || 'claude-haiku-4-5';
+    // Sanitise model strings — strip any date suffixes that crept in during early config saves
+    const sanitiseModel = (m) => {
+      if (!m) return m;
+      return m
+        .replace('claude-sonnet-4-5-20251022', 'claude-sonnet-4-6')
+        .replace('claude-haiku-4-5-20251001', 'claude-haiku-4-5')
+        .replace('claude-sonnet-4-20250514',  'claude-sonnet-4-6');
+    };
+    const aiModel = sanitiseModel(userPrefs.ai_model || orgConfig.ai_model) || 'claude-haiku-4-5';
     const productCtx    = userPrefs.product_context !== undefined
                             ? userPrefs.product_context
                             : (orgConfig.product_context || '');
