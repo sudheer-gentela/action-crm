@@ -433,9 +433,9 @@ function UserPreferencesSettings() {
       const [sendersRes, limitsRes, prefsRes, orgCfgRes, userPromptsRes] = await Promise.all([
         apiService.prospectingSenders.getAll(),
         apiService.prospectingSenders.getOrgLimits(),
-        fetch(`${API}/api/users/me/preferences/prospecting`, { headers }).then(r => r.json()),
-        fetch(`${API}/api/org/admin/prospecting/ai-config`, { headers }).then(r => r.json()),
-        fetch(`${API}/api/prompts/user/prospecting`, { headers }).then(r => r.json()),
+        fetch(`${API}/users/me/preferences/prospecting`, { headers }).then(r => r.json()),
+        fetch(`${API}/org/admin/prospecting/ai-config`, { headers }).then(r => r.json()),
+        fetch(`${API}/prompts/user/prospecting`, { headers }).then(r => r.json()),
       ]);
 
       setSenders(sendersRes.data?.senders || []);
@@ -472,14 +472,14 @@ function UserPreferencesSettings() {
       const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
       // Save user_preferences (prospecting namespace)
-      await fetch(`${API}/api/users/me/preferences/prospecting`, {
+      await fetch(`${API}/users/me/preferences/prospecting`, {
         method:  'PATCH',
         headers,
         body: JSON.stringify(aiPrefs),
       });
 
       // Save user prompt overrides
-      await fetch(`${API}/api/prompts/user/prospecting`, {
+      await fetch(`${API}/prompts/user/prospecting`, {
         method:  'PUT',
         headers,
         body: JSON.stringify({

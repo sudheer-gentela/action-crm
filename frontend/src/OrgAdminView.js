@@ -4668,8 +4668,8 @@ function OAProspectingModule() {
 
   useEffect(() => {
     Promise.all([
-      fetch(`${API}/api/org/admin/prospecting/ai-config`, { headers }).then(r => r.json()),
-      fetch(`${API}/api/prompts/org/prospecting`, { headers }).then(r => r.json()),
+      fetch(`${API}/org/admin/prospecting/ai-config`, { headers }).then(r => r.json()),
+      fetch(`${API}/prompts/org/prospecting`, { headers }).then(r => r.json()),
     ]).then(([cfgRes, promptRes]) => {
       const c = cfgRes || {};
       setCfg({
@@ -4684,20 +4684,27 @@ function OAProspectingModule() {
 
   const handleSave = async () => {
     setSaving(true);
+    setSaveError('');
+    setSaveSuccess('');
     try {
-      await fetch(`${API}/api/org/admin/prospecting/ai-config`, {
+      const r1 = await fetch(`${API}/org/admin/prospecting/ai-config`, {
         method: 'PATCH', headers,
         body: JSON.stringify(cfg),
       });
-      await fetch(`${API}/api/prompts/org/prospecting`, {
+      if (!r1.ok) { const e = await r1.json(); throw new Error(e?.error?.message || 'AI config save failed'); }
+
+      const r2 = await fetch(`${API}/prompts/org/prospecting`, {
         method: 'PUT', headers,
         body: JSON.stringify({
           prompts: { prospecting_research: orgResearchPrompt, prospecting_draft: orgDraftPrompt },
         }),
       });
-      showFlash('success', 'Prospecting AI settings saved.');
-    } catch {
-      showFlash('error', 'Failed to save settings.');
+      if (!r2.ok) { const e = await r2.json(); throw new Error(e?.error?.message || 'Prompts save failed'); }
+
+      setSaveSuccess('Prospecting AI settings saved ✓');
+      setTimeout(() => setSaveSuccess(''), 3000);
+    } catch(err) {
+      setSaveError(err.message || 'Failed to save settings.');
     } finally {
       setSaving(false);
     }
