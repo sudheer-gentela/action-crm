@@ -4629,7 +4629,80 @@ function OAModuleGeneral({ moduleKey, icon, label, desc, toggleFn }) {
 // ─────────────────────────────────────────────────────────────────
 // PROSPECTING MODULE — General only
 // ─────────────────────────────────────────────────────────────────
+const ORG_AI_MODELS = {
+  anthropic: [
+    { value: 'claude-haiku-4-5-20251001',  label: 'Claude Haiku (fast, economical)' },
+    { value: 'claude-sonnet-4-5-20251022', label: 'Claude Sonnet (balanced)' },
+    { value: 'claude-opus-4-5-20251022',   label: 'Claude Opus (most capable)' },
+  ],
+  openai: [
+    { value: 'gpt-4o-mini', label: 'GPT-4o Mini (fast, economical)' },
+    { value: 'gpt-4o',      label: 'GPT-4o (most capable)' },
+  ],
+  gemini: [
+    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (fast)' },
+    { value: 'gemini-1.5-pro',   label: 'Gemini 1.5 Pro (most capable)' },
+  ],
+};
+
 function OAProspectingModule() {
+  const API    = process.env.REACT_APP_API_URL;
+  const token  = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+  const [cfg, setCfg]         = useState({
+    ai_provider:     'anthropic',
+    ai_model:        'claude-haiku-4-5-20251001',
+    product_context: '',
+  });
+  const [orgResearchPrompt, setOrgResearchPrompt] = useState('');
+  const [orgDraftPrompt,    setOrgDraftPrompt]    = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving,  setSaving]  = useState(false);
+  const [flash,   setFlash]   = useState(null);
+
+  const showFlash = (type, msg) => {
+    setFlash({ type, msg });
+    setTimeout(() => setFlash(null), 4000);
+  };
+
+  useEffect(() => {
+    Promise.all([
+      fetch(`${API}/api/org/admin/prospecting/ai-config`, { headers }).then(r => r.json()),
+      fetch(`${API}/api/prompts/org/prospecting`, { headers }).then(r => r.json()),
+    ]).then(([cfgRes, promptRes]) => {
+      const c = cfgRes || {};
+      setCfg({
+        ai_provider:     c.ai_provider     || 'anthropic',
+        ai_model:        c.ai_model        || 'claude-haiku-4-5-20251001',
+        product_context: c.product_context || '',
+      });
+      setOrgResearchPrompt(promptRes?.prompts?.prospecting_research || '');
+      setOrgDraftPrompt(promptRes?.prompts?.prospecting_draft       || '');
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []); // eslint-disable-line
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await fetch(`${API}/api/org/admin/prospecting/ai-config`, {
+        method: 'PATCH', headers,
+        body: JSON.stringify(cfg),
+      });
+      await fetch(`${API}/api/prompts/org/prospecting`, {
+        method: 'PUT', headers,
+        body: JSON.stringify({
+          prompts: { prospecting_research: orgResearchPrompt, prospecting_draft: orgDraftPrompt },
+        }),
+      });
+      showFlash('success', 'Prospecting AI settings saved.');
+    } catch {
+      showFlash('error', 'Failed to save settings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="sv-panel">
       <div className="sv-panel-header">
@@ -4638,6 +4711,7 @@ function OAProspectingModule() {
           <p className="sv-panel-desc">Full prospecting pipeline — prospect lists, outreach stages, ICP scoring, and playbooks.</p>
         </div>
       </div>
+
       <OAModuleGeneral
         moduleKey="prospecting"
         icon="🎯"
@@ -4645,6 +4719,113 @@ function OAProspectingModule() {
         desc="Enables the prospect pipeline, ICP scoring, outreach sequencing, and prospecting playbooks for your whole organisation."
         toggleFn={(enabled) => apiService.prospects.toggleModule(enabled)}
       />
+
+      {/* ── AI Settings ─────────────────────────────────────────────────── */}
+      <div style={{ marginTop: 32, borderTop: '1px solid #e5e7eb', paddingTop: 28 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+          <div>
+            <h3 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 600, color: '#111827' }}>🤖 Org AI Defaults</h3>
+            <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
+              Org-wide defaults for prospecting AI. Individual users can override these in My Preferences.
+            </p>
+          </div>
+          <button
+            onClick={handleSave}
+            disabled={saving || loading}
+            style={{ padding: '7px 18px', background: '#0F9D8E', color: '#fff', border: 'none', borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }}
+          >
+            {saving ? '⏳ Saving…' : '💾 Save'}
+          </button>
+        </div>
+
+        {flash && (
+          <div style={{
+            marginBottom: 16, padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 500,
+            background: flash.type === 'success' ? '#d1fae5' : '#fef2f2',
+            color:      flash.type === 'success' ? '#065f46'  : '#991b1b',
+            border:     `1px solid ${flash.type === 'success' ? '#a7f3d0' : '#fecaca'}`,
+          }}>
+            {flash.msg}
+          </div>
+        )}
+
+        {loading ? (
+          <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading…</div>
+        ) : (
+          <>
+            {/* Provider + Model row */}
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
+              <div style={{ flex: 1, minWidth: 180 }}>
+                <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>Default AI Provider</label>
+                <select
+                  value={cfg.ai_provider}
+                  onChange={e => setCfg(p => ({ ...p, ai_provider: e.target.value, ai_model: '' }))}
+                  style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+                >
+                  <option value="anthropic">Anthropic (Claude)</option>
+                  <option value="openai">OpenAI (GPT)</option>
+                  <option value="gemini">Google (Gemini)</option>
+                </select>
+              </div>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>Default Model</label>
+                <select
+                  value={cfg.ai_model}
+                  onChange={e => setCfg(p => ({ ...p, ai_model: e.target.value }))}
+                  style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+                >
+                  {(ORG_AI_MODELS[cfg.ai_provider] || ORG_AI_MODELS.anthropic).map(m => (
+                    <option key={m.value} value={m.value}>{m.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Product context */}
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>
+                What your org sells — AI context
+              </label>
+              <textarea
+                value={cfg.product_context}
+                onChange={e => setCfg(p => ({ ...p, product_context: e.target.value }))}
+                rows={4}
+                placeholder="Describe what your organisation sells and who you sell to. This context is injected into every AI research and drafting prompt.&#10;&#10;e.g. We sell revenue operations software to B2B consulting firms with 50-500 employees. Key pain points we solve: siloed pipeline data, manual reporting, and inconsistent sales processes."
+                style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, resize: 'vertical', boxSizing: 'border-box' }}
+              />
+            </div>
+
+            {/* Org prompt templates */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>
+                Research prompt template
+                <span style={{ color: '#9ca3af' }}> — use <code>{'{{prospectInfo}}'}</code> where prospect data should appear.</span>
+              </label>
+              <textarea
+                value={orgResearchPrompt}
+                onChange={e => setOrgResearchPrompt(e.target.value)}
+                rows={5}
+                placeholder="Leave blank to use the system default…"
+                style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, resize: 'vertical', fontFamily: 'monospace', boxSizing: 'border-box' }}
+              />
+            </div>
+
+            <div>
+              <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>
+                Draft email prompt template
+                <span style={{ color: '#9ca3af' }}> — use <code>{'{{prospectInfo}}'}</code> and <code>{'{{researchNotes}}'}</code>.</span>
+              </label>
+              <textarea
+                value={orgDraftPrompt}
+                onChange={e => setOrgDraftPrompt(e.target.value)}
+                rows={5}
+                placeholder="Leave blank to use the system default…"
+                style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, resize: 'vertical', fontFamily: 'monospace', boxSizing: 'border-box' }}
+              />
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

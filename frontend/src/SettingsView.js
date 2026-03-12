@@ -67,8 +67,10 @@ export default function SettingsView({ initialTab }) {
 // ════════════════════════════════════════════════════════════
 
 const PROMPT_KEYS = [
-  { key: 'email_analysis',    label: 'Email Analysis',    desc: 'Used when AI analyses incoming emails to generate actions and insights.' },
-  { key: 'deal_health_check', label: 'Deal Health Check', desc: 'Used when AI scores a deal\'s health from transcript and email content.' },
+  { key: 'email_analysis',       label: 'Email Analysis',         desc: 'Used when AI analyses incoming emails to generate actions and insights.' },
+  { key: 'deal_health_check',    label: 'Deal Health Check',      desc: 'Used when AI scores a deal\'s health from transcript and email content.' },
+  { key: 'prospecting_research', label: 'Prospecting — Research', desc: 'Used when AI generates research notes for a prospect. Use {{prospectInfo}} where prospect data should be inserted.' },
+  { key: 'prospecting_draft',    label: 'Prospecting — Draft',    desc: 'Used when AI drafts an outreach email. Use {{prospectInfo}} and {{researchNotes}} as placeholders.' },
 ];
 
 function PromptsSettings() {
@@ -376,6 +378,22 @@ function ProviderPill({ provider }) {
   );
 }
 
+const AI_MODELS = {
+  anthropic: [
+    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku (fast, economical)' },
+    { value: 'claude-sonnet-4-5-20251022', label: 'Claude Sonnet (balanced)' },
+    { value: 'claude-opus-4-5-20251022', label: 'Claude Opus (most capable)' },
+  ],
+  openai: [
+    { value: 'gpt-4o-mini', label: 'GPT-4o Mini (fast, economical)' },
+    { value: 'gpt-4o',      label: 'GPT-4o (most capable)' },
+  ],
+  gemini: [
+    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (fast)' },
+    { value: 'gemini-1.5-pro',   label: 'Gemini 1.5 Pro (most capable)' },
+  ],
+};
+
 function UserPreferencesSettings() {
   const [senders, setSenders]       = useState([]);
   const [orgLimits, setOrgLimits]   = useState(null);
@@ -385,6 +403,17 @@ function UserPreferencesSettings() {
   const [connecting, setConnecting] = useState(null); // 'gmail'|'outlook'|null
   const [editingId, setEditingId]   = useState(null);
   const [editValues, setEditValues] = useState({});
+
+  // ── Prospecting AI preferences ────────────────────────────────────────────
+  const [aiPrefs, setAiPrefs]         = useState({
+    ai_provider:     '',   // '' = use org default
+    ai_model:        '',
+    product_context: '',
+  });
+  const [orgAiDefaults, setOrgAiDefaults] = useState({});
+  const [aiSaving, setAiSaving]           = useState(false);
+  const [userResearchPrompt, setUserResearchPrompt] = useState('');
+  const [userDraftPrompt, setUserDraftPrompt]       = useState('');
 
   const showFlash = (type, msg) => {
     setFlash({ type, msg });
@@ -396,16 +425,72 @@ function UserPreferencesSettings() {
     setLoading(true);
     setError('');
     try {
-      const [sendersRes, limitsRes] = await Promise.all([
+      const API   = process.env.REACT_APP_API_URL;
+      const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+      const [sendersRes, limitsRes, prefsRes, orgCfgRes, userPromptsRes] = await Promise.all([
         apiService.prospectingSenders.getAll(),
         apiService.prospectingSenders.getOrgLimits(),
+        fetch(`${API}/api/users/me/preferences/prospecting`, { headers }).then(r => r.json()),
+        fetch(`${API}/api/org/admin/prospecting/ai-config`, { headers }).then(r => r.json()),
+        fetch(`${API}/api/prompts/user/prospecting`, { headers }).then(r => r.json()),
       ]);
+
       setSenders(sendersRes.data?.senders || []);
       setOrgLimits(limitsRes.data?.limits || null);
+
+      // AI preferences
+      const prospPrefs = prefsRes?.preferences || {};
+      setAiPrefs({
+        ai_provider:     prospPrefs.ai_provider     || '',
+        ai_model:        prospPrefs.ai_model        || '',
+        product_context: prospPrefs.product_context || '',
+      });
+
+      // Org defaults for placeholder text
+      const orgCfg = orgCfgRes?.config || {};
+      setOrgAiDefaults(orgCfg);
+
+      // User prompt overrides
+      setUserResearchPrompt(userPromptsRes?.prompts?.prospecting_research || '');
+      setUserDraftPrompt(userPromptsRes?.prompts?.prospecting_draft       || '');
+
     } catch (e) {
-      setError('Failed to load outreach settings: ' + e.message);
+      setError('Failed to load settings: ' + e.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveAiPrefs = async () => {
+    setAiSaving(true);
+    try {
+      const API   = process.env.REACT_APP_API_URL;
+      const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+      // Save user_preferences (prospecting namespace)
+      await fetch(`${API}/api/users/me/preferences/prospecting`, {
+        method:  'PATCH',
+        headers,
+        body: JSON.stringify(aiPrefs),
+      });
+
+      // Save user prompt overrides
+      await fetch(`${API}/api/prompts/user/prospecting`, {
+        method:  'PUT',
+        headers,
+        body: JSON.stringify({
+          prompts: { prospecting_research: userResearchPrompt, prospecting_draft: userDraftPrompt },
+        }),
+      });
+
+      showFlash('success', 'AI preferences saved.');
+    } catch (e) {
+      showFlash('error', 'Failed to save AI preferences: ' + e.message);
+    } finally {
+      setAiSaving(false);
     }
   };
 
@@ -714,6 +799,103 @@ function UserPreferencesSettings() {
             These accounts are separate from your main Outlook/Gmail integration and are used only for outreach.
             You can connect multiple accounts — they will be rotated automatically using the least-used strategy.
           </p>
+        </div>
+
+        {/* ── Prospecting AI Preferences ──────────────────────────────────── */}
+        <div className="sv-section" style={{ marginTop: 32 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+            <div>
+              <h3 className="sv-section-heading" style={{ margin: 0 }}>🤖 Prospecting AI</h3>
+              <p className="sv-hint" style={{ margin: '4px 0 0' }}>
+                Personal AI settings for prospecting. Leave blank to use org defaults.
+              </p>
+            </div>
+            <button
+              onClick={saveAiPrefs}
+              disabled={aiSaving}
+              style={{ padding: '7px 18px', background: '#0F9D8E', color: '#fff', border: 'none', borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }}
+            >
+              {aiSaving ? '⏳ Saving…' : '💾 Save AI Prefs'}
+            </button>
+          </div>
+
+          {/* AI Provider + Model */}
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>
+                AI Provider <span style={{ color: '#9ca3af' }}>(org default: {orgAiDefaults.ai_provider || 'Anthropic'})</span>
+              </label>
+              <select
+                value={aiPrefs.ai_provider}
+                onChange={e => setAiPrefs(p => ({ ...p, ai_provider: e.target.value, ai_model: '' }))}
+                style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+              >
+                <option value="">Use org default</option>
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="openai">OpenAI (GPT)</option>
+                <option value="gemini">Google (Gemini)</option>
+              </select>
+            </div>
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>
+                Model <span style={{ color: '#9ca3af' }}>(org default: {orgAiDefaults.ai_model || 'Claude Haiku'})</span>
+              </label>
+              <select
+                value={aiPrefs.ai_model}
+                onChange={e => setAiPrefs(p => ({ ...p, ai_model: e.target.value }))}
+                style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+              >
+                <option value="">Use org default</option>
+                {(AI_MODELS[aiPrefs.ai_provider] || AI_MODELS.anthropic).map(m => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Product context */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>
+              What you sell / your pitch context
+              <span style={{ color: '#9ca3af' }}> — personal override (leave blank to use org default)</span>
+            </label>
+            <textarea
+              value={aiPrefs.product_context}
+              onChange={e => setAiPrefs(p => ({ ...p, product_context: e.target.value }))}
+              rows={3}
+              placeholder={orgAiDefaults.product_context || 'e.g. I sell revenue operations software to B2B SaaS companies. Key pain: manual reporting and siloed data…'}
+              style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, resize: 'vertical', boxSizing: 'border-box' }}
+            />
+          </div>
+
+          {/* Prompt overrides */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>
+              Research prompt override
+              <span style={{ color: '#9ca3af' }}> — leave blank to use org/system default. Use <code>{'{{prospectInfo}}'}</code> as placeholder.</span>
+            </label>
+            <textarea
+              value={userResearchPrompt}
+              onChange={e => setUserResearchPrompt(e.target.value)}
+              rows={4}
+              placeholder="Leave blank to use org default…"
+              style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, resize: 'vertical', fontFamily: 'monospace', boxSizing: 'border-box' }}
+            />
+          </div>
+
+          <div>
+            <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>
+              Draft email prompt override
+              <span style={{ color: '#9ca3af' }}> — leave blank to use org/system default. Use <code>{'{{prospectInfo}}'}</code> and <code>{'{{researchNotes}}'}</code>.</span>
+            </label>
+            <textarea
+              value={userDraftPrompt}
+              onChange={e => setUserDraftPrompt(e.target.value)}
+              rows={4}
+              placeholder="Leave blank to use org default…"
+              style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, resize: 'vertical', fontFamily: 'monospace', boxSizing: 'border-box' }}
+            />
+          </div>
         </div>
 
       </div>

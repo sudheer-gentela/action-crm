@@ -905,4 +905,76 @@ router.put('/playbook-stages/:playbookId', adminOnly, async (req, res) => {
   }
 });
 
+
+// ── Prospecting AI Config ─────────────────────────────────────────────────────
+// Stored in org_integrations (integration_type='prospecting') config JSONB.
+// Separate from the module toggle — just the AI settings (model, provider, context, prompts).
+
+/**
+ * GET /org/admin/prospecting/ai-config
+ * Returns the org's prospecting AI defaults.
+ */
+router.get('/prospecting/ai-config', adminOnly, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT config FROM org_integrations
+       WHERE org_id = $1 AND integration_type = 'prospecting'`,
+      [req.orgId]
+    );
+    const config = result.rows[0]?.config || {};
+    res.json({
+      ai_provider:     config.ai_provider     || 'anthropic',
+      ai_model:        config.ai_model        || 'claude-haiku-4-5-20251001',
+      product_context: config.product_context || '',
+    });
+  } catch (err) {
+    console.error('GET /org/admin/prospecting/ai-config error:', err);
+    res.status(500).json({ error: { message: 'Failed to load prospecting AI config' } });
+  }
+});
+
+/**
+ * PATCH /org/admin/prospecting/ai-config
+ * Upserts org prospecting AI defaults.
+ * Body: { ai_provider, ai_model, product_context }
+ */
+router.patch('/prospecting/ai-config', adminOnly, async (req, res) => {
+  try {
+    const ALLOWED = ['ai_provider', 'ai_model', 'product_context'];
+    const patch = {};
+    for (const key of ALLOWED) {
+      if (key in req.body) patch[key] = req.body[key];
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ error: { message: 'No valid config keys supplied' } });
+    }
+
+    await db.query(`
+      INSERT INTO org_integrations (org_id, integration_type, config, status)
+      VALUES ($1, 'prospecting', $2::jsonb, 'active')
+      ON CONFLICT (org_id, integration_type) DO UPDATE
+      SET config     = org_integrations.config || $2::jsonb,
+          updated_at = CURRENT_TIMESTAMP
+    `, [req.orgId, JSON.stringify(patch)]);
+
+    // Return updated config
+    const result = await db.query(
+      `SELECT config FROM org_integrations WHERE org_id = $1 AND integration_type = 'prospecting'`,
+      [req.orgId]
+    );
+    const config = result.rows[0]?.config || {};
+    console.log(`🤖 Prospecting AI config updated for org ${req.orgId}:`, patch);
+    res.json({
+      ai_provider:     config.ai_provider     || 'anthropic',
+      ai_model:        config.ai_model        || 'claude-haiku-4-5-20251001',
+      product_context: config.product_context || '',
+    });
+  } catch (err) {
+    console.error('PATCH /org/admin/prospecting/ai-config error:', err);
+    res.status(500).json({ error: { message: 'Failed to save prospecting AI config' } });
+  }
+});
+
 module.exports = router;
+

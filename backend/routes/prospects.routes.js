@@ -430,7 +430,7 @@ router.post('/:id/research', async (req, res) => {
   try {
     const prospectResult = await db.query(
       `SELECT p.*,
-              acc.name AS account_name, acc.domain AS account_domain,
+              acc.name AS account_name, acc.website AS account_website,
               acc.industry AS account_industry
        FROM prospects p
        LEFT JOIN accounts acc ON p.account_id = acc.id
@@ -460,24 +460,86 @@ router.post('/:id/research', async (req, res) => {
       p.tags?.length  ? `Tags: ${JSON.parse(p.tags || '[]').join(', ')}` : null,
     ].filter(Boolean).join('\n');
 
-    const prompt = `You are a B2B sales research assistant. Based on the following prospect information, generate concise research notes (3-5 bullet points) that a sales rep can use to personalise their outreach. Focus on: likely pain points, potential value propositions, relevant company context, and suggested conversation angles.
+    // ── Load user + org AI settings with fallback chain ─────────────────────
+    // Priority: user_preferences → org_integrations config → system defaults
+    const [userPrefRes, orgIntRes, userPromptRes, orgPromptRes] = await Promise.all([
+      db.query(
+        `SELECT preferences FROM user_preferences WHERE user_id = $1 AND org_id = $2`,
+        [req.user.userId, req.orgId]
+      ),
+      db.query(
+        `SELECT config FROM org_integrations WHERE org_id = $1 AND integration_type = 'prospecting'`,
+        [req.orgId]
+      ),
+      db.query(
+        `SELECT template_data FROM user_prompts
+         WHERE user_id = $1 AND org_id = $2 AND template_type = 'prospecting_research'`,
+        [req.user.userId, req.orgId]
+      ),
+      db.query(
+        `SELECT template FROM prompts
+         WHERE org_id = $1 AND key = 'prospecting_research'
+           AND (user_id IS NULL OR user_id = $2)
+         ORDER BY (user_id IS NULL) ASC LIMIT 1`,
+        [req.orgId, req.user.userId]
+      ),
+    ]);
+
+    const userPrefs   = userPrefRes.rows[0]?.preferences || {};
+    const orgConfig   = orgIntRes.rows[0]?.config || {};
+    const prospPrefs  = userPrefs.prospecting || {};
+
+    // Fallback chain: user → org → system default
+    const aiModel      = prospPrefs.ai_model      || orgConfig.ai_model      || 'claude-haiku-4-5-20251001';
+    const aiProvider   = prospPrefs.ai_provider   || orgConfig.ai_provider   || 'anthropic';
+    const productCtx   = prospPrefs.product_context !== undefined
+                           ? prospPrefs.product_context
+                           : (orgConfig.product_context || '');
+
+    const systemDefault = `You are a B2B sales research assistant. Based on the following prospect information, generate concise research notes (3-5 bullet points) that a sales rep can use to personalise their outreach. Focus on: likely pain points, potential value propositions, relevant company context, and suggested conversation angles.
 
 Prospect information:
-${contextLines}
+{{prospectInfo}}
+${productCtx ? `\nContext about what we sell:\n${productCtx}` : ''}
 
 Respond with bullet points only. Each bullet should be actionable and specific. Do not include generic advice.`;
 
-    // Call Claude Haiku via the Anthropic API
-    const Anthropic = require('@anthropic-ai/sdk');
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    // User prompt > org prompt > system default
+    const promptTemplate = userPromptRes.rows[0]?.template_data
+      || orgPromptRes.rows[0]?.template
+      || systemDefault;
 
-    const message = await anthropic.messages.create({
-      model:      'claude-haiku-4-5-20251001',
-      max_tokens: 400,
-      messages:   [{ role: 'user', content: prompt }],
-    });
+    const prompt = promptTemplate.replace('{{prospectInfo}}', contextLines);
 
-    const researchNotes = message.content[0]?.text || '';
+    // ── Call the right AI provider ────────────────────────────────────────────
+    let researchNotes = '';
+
+    if (aiProvider === 'openai') {
+      const { OpenAI } = require('openai');
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      const completion = await openai.chat.completions.create({
+        model:      aiModel || 'gpt-4o-mini',
+        max_tokens: 400,
+        messages:   [{ role: 'user', content: prompt }],
+      });
+      researchNotes = completion.choices[0]?.message?.content || '';
+    } else if (aiProvider === 'gemini') {
+      const { GoogleGenerativeAI } = require('@google/generative-ai');
+      const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: aiModel || 'gemini-1.5-flash' });
+      const result = await model.generateContent(prompt);
+      researchNotes = result.response.text() || '';
+    } else {
+      // Default: Anthropic
+      const Anthropic = require('@anthropic-ai/sdk');
+      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      const message = await anthropic.messages.create({
+        model:      aiModel,
+        max_tokens: 400,
+        messages:   [{ role: 'user', content: prompt }],
+      });
+      researchNotes = message.content[0]?.text || '';
+    }
 
     if (!researchNotes) {
       return res.status(500).json({ error: { message: 'Research generation returned empty response' } });
@@ -516,7 +578,7 @@ Respond with bullet points only. Each bullet should be actionable and specific. 
       [
         req.params.id,
         req.user.userId,
-        JSON.stringify({ stageAdvanced, model: 'claude-haiku-4-5-20251001' }),
+        JSON.stringify({ stageAdvanced, model: aiModel, provider: aiProvider }),
       ]
     );
 

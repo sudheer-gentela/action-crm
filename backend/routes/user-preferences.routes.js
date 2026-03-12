@@ -85,4 +85,72 @@ router.patch('/preferences', async (req, res) => {
   }
 });
 
+
+// ── Prospecting AI Preferences ────────────────────────────────────────────────
+// Stored in user_preferences.preferences->'prospecting' JSONB
+// Separate from 'ui' namespace to keep concerns clean.
+
+const PROSPECTING_PREF_DEFAULTS = {
+  ai_provider:     '',   // '' = use org default
+  ai_model:        '',   // '' = use org default
+  product_context: '',   // '' = use org default
+};
+
+async function getProspectingPrefs(userId, orgId) {
+  const { rows: [row] } = await db.query(
+    `SELECT preferences->'prospecting' AS prospecting
+     FROM user_preferences
+     WHERE user_id = $1 AND org_id = $2`,
+    [userId, orgId]
+  );
+  const stored = row?.prospecting
+    ? (typeof row.prospecting === 'string' ? JSON.parse(row.prospecting) : row.prospecting)
+    : {};
+  return { ...PROSPECTING_PREF_DEFAULTS, ...stored };
+}
+
+// ── GET /users/me/preferences/prospecting ─────────────────────────────────────
+router.get('/preferences/prospecting', async (req, res) => {
+  try {
+    const preferences = await getProspectingPrefs(req.user.userId, req.orgId);
+    res.json({ preferences });
+  } catch (error) {
+    console.error('GET /users/me/preferences/prospecting error:', error);
+    res.status(500).json({ error: { message: 'Failed to load prospecting preferences' } });
+  }
+});
+
+// ── PATCH /users/me/preferences/prospecting ───────────────────────────────────
+router.patch('/preferences/prospecting', async (req, res) => {
+  try {
+    const allowed  = Object.keys(PROSPECTING_PREF_DEFAULTS);
+    const filtered = {};
+    for (const key of allowed) {
+      if (key in req.body) filtered[key] = req.body[key];
+    }
+
+    if (Object.keys(filtered).length === 0) {
+      return res.status(400).json({ error: { message: 'No valid preference keys supplied' } });
+    }
+
+    await db.query(`
+      INSERT INTO user_preferences (user_id, org_id, preferences)
+      VALUES ($1, $2, jsonb_build_object('prospecting', $3::jsonb))
+      ON CONFLICT (user_id, org_id) DO UPDATE
+      SET preferences = jsonb_set(
+        COALESCE(user_preferences.preferences, '{}'::jsonb),
+        '{prospecting}',
+        COALESCE(user_preferences.preferences->'prospecting', '{}'::jsonb) || $3::jsonb
+      ),
+      updated_at = CURRENT_TIMESTAMP
+    `, [req.user.userId, req.orgId, JSON.stringify(filtered)]);
+
+    const preferences = await getProspectingPrefs(req.user.userId, req.orgId);
+    res.json({ preferences });
+  } catch (error) {
+    console.error('PATCH /users/me/preferences/prospecting error:', error);
+    res.status(500).json({ error: { message: 'Failed to save prospecting preferences' } });
+  }
+});
+
 module.exports = router;
