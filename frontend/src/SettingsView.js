@@ -960,10 +960,9 @@ function UserPreferencesSettings({ showAIOnly = false }) {
             These accounts are separate from your main Outlook/Gmail integration and are used only for outreach.
             You can connect multiple accounts — they will be rotated automatically using the least-used strategy.
           </p>
-        </div>
+        </div>}
 
         {/* ── Prospecting AI Preferences ──────────────────────────────────── */}
-        }
         <div className="sv-section" style={{ marginTop: showAIOnly ? 0 : 32 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
             <div>
