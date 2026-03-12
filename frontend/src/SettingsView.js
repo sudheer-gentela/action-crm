@@ -192,8 +192,8 @@ export default function SettingsView({ initialTab }) {
         <div className="sv2-pane">
           {/* Personal */}
           {activeId === 'alerts'           && <NotificationSettings />}
-          {activeId === 'connections-my'   && <ConnectionsMy isAdmin={isAdmin} />}
-          {activeId === 'connections-org'  && <IntegrationsSettings readOnly={readOnly} />}
+          {activeId === 'connections-my'   && <MyConnectionsSettings />}
+          {activeId === 'connections-org'  && <OrgConnectionsSettings />}
           {activeId === 'usage'            && <UserAIUsageSettings />}
           {activeId === 'preferences'      && <UserPreferencesSettings />}
           {/* AI */}
@@ -209,19 +209,7 @@ export default function SettingsView({ initialTab }) {
   );
 }
 
-// ── ConnectionsMy — personal OAuth + outreach senders ────────────────────────
-// Extracts the "My Connections" section from the old IntegrationsSettings
-// so it can live under Personal > Connections > My Connections
-function ConnectionsMy({ isAdmin }) {
-  // Renders the personal OAuth connections (Outlook / Google)
-  // The sender accounts section is owned by UserPreferencesSettings —
-  // we embed a lightweight version here for discoverability
-  return (
-    <div>
-      <IntegrationsSettings showPersonalOnly={true} />
-    </div>
-  );
-}
+
 
 // ── AIPreferencesPanel — provider + model + product context ──────────────────
 // Extracts the Prospecting AI section from UserPreferencesSettings
@@ -337,37 +325,21 @@ function PromptsSettings() {
 // INTEGRATIONS SETTINGS
 // ════════════════════════════════════════════════════════════
 
-function IntegrationsSettings({ readOnly = false, showPersonalOnly = false }) {
+// ── MyConnectionsSettings — personal OAuth + outreach senders ────────────────
+// Rendered under Personal > Connections > My Connections
+function MyConnectionsSettings() {
   const userId = JSON.parse(localStorage.getItem('user') || '{}').id;
-  const orgRole  = sessionStorage.getItem('activeRole') || 'member';
-  const isAdmin  = orgRole === 'org-admin' || orgRole === 'super-admin';
-  // readOnly derived from props + role — used for future admin-gating
-  const [orgIntegrations, setOrgIntegrations] = useState(null);
-
-  useEffect(() => {
-    apiService.orgAdmin.getIntegrations()
-      .then(r => setOrgIntegrations(r.data.integrations || []))
-      .catch(() => setOrgIntegrations([]));
-  }, []);
-
-  const getOrgStatus = (type) => {
-    if (!orgIntegrations) return null;
-    return orgIntegrations.find(i => i.integration_type === type);
-  };
-
   return (
-    <div className="sv-panel">
-      <div className="sv-panel-header">
-        <div>
-          <h2>🔌 Integrations</h2>
-          <p className="sv-panel-desc">Connect external accounts to sync emails, calendar, and cloud files.</p>
+    <div>
+      {/* ── Personal email / calendar ─────────────────────────────────── */}
+      <div className="sv-panel">
+        <div className="sv-panel-header">
+          <div>
+            <h2>📬 Personal Email &amp; Calendar</h2>
+            <p className="sv-panel-desc">Connect your personal accounts for email tracking, calendar sync, and file import. These are private to you.</p>
+          </div>
         </div>
-      </div>
-      <div className="sv-panel-body">
-        <div className="sv-section">
-          <h3 className="sv-section-heading">My Connections</h3>
-          <p className="sv-hint" style={{ marginBottom: 16 }}>Connect your personal accounts. These connections are private to you.</p>
-
+        <div className="sv-panel-body">
           <div className="sv-card sv-integration-card">
             <div className="sv-integration-header">
               <div className="sv-integration-logo">📧</div>
@@ -387,7 +359,6 @@ function IntegrationsSettings({ readOnly = false, showPersonalOnly = false }) {
               </ul>
             </div>
           </div>
-
           <div className="sv-card sv-integration-card" style={{ marginTop: 16 }}>
             <div className="sv-integration-header">
               <div className="sv-integration-logo">🟢</div>
@@ -408,42 +379,136 @@ function IntegrationsSettings({ readOnly = false, showPersonalOnly = false }) {
             </div>
           </div>
         </div>
+      </div>
 
-        <div className="sv-section" style={{ marginTop: 32 }}>
-          <h3 className="sv-section-heading">Organisation Integrations</h3>
-          <p className="sv-hint" style={{ marginBottom: 16 }}>
-            {isAdmin
-              ? 'Manage integrations enabled for your entire organisation. Go to Org Admin → Integrations for full control.'
-              : 'Integrations enabled by your organisation admin.'}
-          </p>
+      {/* ── Separator ─────────────────────────────────────────────────── */}
+      <div className="sv2-section-sep">
+        <span>Prospecting</span>
+      </div>
+
+      {/* ── Outreach sender accounts ───────────────────────────────────── */}
+      <UserPreferencesSettings showAIOnly={false} showSendersOnly={true} />
+    </div>
+  );
+}
+
+// ── OrgConnectionsSettings — org-level integrations (admin view) ──────────────
+// Rendered under Personal > Connections > Org Connections
+function OrgConnectionsSettings() {
+  const orgRole = sessionStorage.getItem('activeRole') || 'member';
+  const isAdmin = orgRole === 'org-admin' || orgRole === 'super-admin';
+  const [orgIntegrations, setOrgIntegrations] = useState(null);
+
+  useEffect(() => {
+    apiService.orgAdmin.getIntegrations()
+      .then(r => setOrgIntegrations(r.data.integrations || []))
+      .catch(() => setOrgIntegrations([]));
+  }, []);
+
+  const getOrgStatus = (type) => {
+    if (!orgIntegrations) return null;
+    return orgIntegrations.find(i => i.integration_type === type);
+  };
+
+  return (
+    <div>
+      {!isAdmin && (
+        <div className="sv-alert" style={{ background: '#ebf8ff', borderColor: '#bee3f8', color: '#2b6cb0', marginBottom: 16 }}>
+          👁 View only — these integrations are managed by your org admin.
+        </div>
+      )}
+
+      {/* ── Email & Calendar ───────────────────────────────────────────── */}
+      <div className="sv-panel">
+        <div className="sv-panel-header">
+          <div>
+            <h2>📧 Email &amp; Calendar</h2>
+            <p className="sv-panel-desc">Org-wide email and calendar integrations. Enabled for all users.</p>
+          </div>
+          {isAdmin && (
+            <a href="#org-admin-integrations" className="sv-btn-secondary" style={{ fontSize: 12, textDecoration: 'none' }}>
+              Manage in Org Admin →
+            </a>
+          )}
+        </div>
+        <div className="sv-panel-body">
           <div className="sv-org-integrations-grid">
             {['microsoft', 'google'].map(type => {
               const integration = getOrgStatus(type);
               const enabled = integration?.status === 'active';
-              const label = type === 'microsoft' ? 'Microsoft (Outlook/OneDrive)' : 'Google (Gmail/Drive/Calendar)';
-              const icon = type === 'microsoft' ? '📧' : '🟢';
+              const label = type === 'microsoft' ? 'Microsoft (Outlook / OneDrive)' : 'Google (Gmail / Drive / Calendar)';
+              const icon  = type === 'microsoft' ? '📧' : '🟢';
               return (
                 <div key={type} className={`sv-org-integration-card ${enabled ? 'sv-org-int--active' : 'sv-org-int--inactive'}`}>
                   <span className="sv-org-int-icon">{icon}</span>
                   <div className="sv-org-int-info">
                     <div className="sv-org-int-name">{label}</div>
                     <div className={`sv-org-int-status ${enabled ? 'enabled' : 'disabled'}`}>
-                      {enabled ? '✓ Enabled for org' : '○ Not configured'}
+                      {orgIntegrations === null ? 'Loading…' : enabled ? '✓ Enabled for org' : '○ Not configured'}
+                    </div>
+                  </div>
+                  {enabled && integration?.connected_at && (
+                    <div className="sv-org-int-meta">
+                      Connected {new Date(integration.connected_at).toLocaleDateString()}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* ── CRM & Other ───────────────────────────────────────────────── */}
+      <div className="sv-panel" style={{ marginTop: 16 }}>
+        <div className="sv-panel-header">
+          <div>
+            <h2>🔌 CRM &amp; Other</h2>
+            <p className="sv-panel-desc">Third-party tools connected to your org.</p>
+          </div>
+          {isAdmin && (
+            <a href="#org-admin-integrations" className="sv-btn-secondary" style={{ fontSize: 12, textDecoration: 'none' }}>
+              Manage in Org Admin →
+            </a>
+          )}
+        </div>
+        <div className="sv-panel-body">
+          <div className="sv-org-integrations-grid">
+            {['salesforce', 'hubspot', 'slack'].map(type => {
+              const integration = getOrgStatus(type);
+              const enabled = integration?.status === 'active';
+              const meta = {
+                salesforce: { label: 'Salesforce CRM', icon: '☁️' },
+                hubspot:    { label: 'HubSpot CRM',    icon: '🟠' },
+                slack:      { label: 'Slack',           icon: '💬' },
+              }[type];
+              return (
+                <div key={type} className={`sv-org-integration-card ${enabled ? 'sv-org-int--active' : 'sv-org-int--inactive'}`}>
+                  <span className="sv-org-int-icon">{meta.icon}</span>
+                  <div className="sv-org-int-info">
+                    <div className="sv-org-int-name">{meta.label}</div>
+                    <div className={`sv-org-int-status ${enabled ? 'enabled' : 'disabled'}`}>
+                      {orgIntegrations === null ? 'Loading…' : enabled ? '✓ Connected' : '○ Not connected'}
                     </div>
                   </div>
                 </div>
               );
             })}
           </div>
-          {isAdmin && (
+          {orgIntegrations !== null && !['salesforce','hubspot','slack'].some(t => getOrgStatus(t)?.status === 'active') && (
             <p className="sv-hint" style={{ marginTop: 12 }}>
-              💡 Manage org-level integrations in the <strong>Org Admin → Integrations</strong> tab.
+              No CRM or messaging tools connected yet.{isAdmin ? ' Set them up in Org Admin → Integrations.' : ' Ask your admin to connect one.'}
             </p>
           )}
         </div>
       </div>
     </div>
   );
+}
+
+// ── IntegrationsSettings — kept for backward compat, routes to MyConnectionsSettings
+function IntegrationsSettings({ readOnly = false, showPersonalOnly = false }) {
+  return showPersonalOnly ? <MyConnectionsSettings /> : <OrgConnectionsSettings />;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -567,7 +632,7 @@ const AI_MODELS = {
   ],
 };
 
-function UserPreferencesSettings({ showAIOnly = false }) {
+function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }) {
   const [senders, setSenders]       = useState([]);
   const [orgLimits, setOrgLimits]   = useState(null);
   const [loading, setLoading]       = useState(true);
@@ -975,7 +1040,7 @@ function UserPreferencesSettings({ showAIOnly = false }) {
         </div>}
 
         {/* ── Prospecting AI Preferences ──────────────────────────────────── */}
-        <div className="sv-section" style={{ marginTop: showAIOnly ? 0 : 32 }}>
+        {!showSendersOnly && <div className="sv-section" style={{ marginTop: showAIOnly ? 0 : 32 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
             <div>
               <h3 className="sv-section-heading" style={{ margin: 0 }}>🤖 Prospecting AI</h3>
@@ -1069,7 +1134,7 @@ function UserPreferencesSettings({ showAIOnly = false }) {
               style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, resize: 'vertical', fontFamily: 'monospace', boxSizing: 'border-box' }}
             />
           </div>
-        </div>
+        </div>}
 
       </div>
     </div>

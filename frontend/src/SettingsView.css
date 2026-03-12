@@ -1030,3 +1030,51 @@
   border-radius: 8px;
   border: 1px dashed #e5e7eb;
 }
+
+/* ── Section separator (used between My Connections groups) ── */
+.sv2-section-sep {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 24px 0 20px;
+  color: #9ca3af;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.sv2-section-sep::before,
+.sv2-section-sep::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #e5e7eb;
+}
+
+/* ── Org integration cards ── */
+.sv-org-integration-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+}
+.sv-org-integration-card.sv-org-int--active  { border-color: #6ee7b7; background: #f0fdf9; }
+.sv-org-integration-card.sv-org-int--inactive { background: #f9fafb; }
+
+.sv-org-int-status {
+  font-size: 11px;
+  font-weight: 500;
+  margin-top: 2px;
+}
+.sv-org-int-status.enabled  { color: #065f46; }
+.sv-org-int-status.disabled { color: #9ca3af; }
+
+.sv-org-int-meta {
+  margin-left: auto;
+  font-size: 11px;
+  color: #9ca3af;
+  flex-shrink: 0;
+}
