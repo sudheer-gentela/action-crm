@@ -11,6 +11,8 @@
  *   1. Find all active enrollments where next_step_due <= now
  *   2. For each: check for inbound reply → auto-stop if found
  *   3. Fire the current step (email → insert into emails table)
+ *      Uses personalised_steps JSONB from enrollment if present,
+ *      otherwise falls back to renderTemplate on the master template.
  *   4. Log to sequence_step_logs
  *   5. Advance to next step, or mark complete
  */
@@ -119,8 +121,20 @@ const SequenceStepFirer = {
             ? { name: prospect.account_name, domain: prospect.account_domain, industry: prospect.account_industry }
             : null;
 
-          const subject = renderTemplate(step.subject_template, prospect || {}, account);
-          const body    = renderTemplate(step.body_template,    prospect || {}, account);
+          // FIX 2: use AI-personalised content if stored on enrollment,
+          // otherwise fall back to rendering the master template.
+          // personalised_steps is keyed by step_order (may be int or string key).
+          const personalisedSteps = enrollment.personalised_steps || {};
+          const personalisedStep  = personalisedSteps[step.step_order]
+                                 ?? personalisedSteps[String(step.step_order)];
+
+          const subject = personalisedStep?.subject
+            ? personalisedStep.subject
+            : renderTemplate(step.subject_template, prospect || {}, account);
+
+          const body = personalisedStep?.body
+            ? personalisedStep.body
+            : renderTemplate(step.body_template, prospect || {}, account);
 
           // ── Fire the step ─────────────────────────────────────────────────
           let emailId = null;

@@ -169,47 +169,9 @@ router.post('/ai-personalise-enrollment', async (req, res) => {
     const crispPitch    = researchMeta.crispPitch  || '';
     const researchBullets = Array.isArray(researchMeta.researchBullets) ? researchMeta.researchBullets : [];
 
-    const systemPrompt = `You are an expert SDR writing personalised outreach for a specific prospect.
-Return ONLY valid JSON — no markdown fences, no prose.`;
+    const systemPrompt = `You are an expert SDR writing personalised outreach for a specific prospect.\nReturn ONLY valid JSON — no markdown fences, no prose.`;
 
-    const userPrompt = `Personalise each step in this outreach sequence for the specific prospect below.
-Use their research data to make the copy relevant and specific. Keep emails under 150 words.
-Use {{first_name}}, {{company}}, {{title}} tokens where appropriate for remaining variables.
-
-PROSPECT:
-Name: ${prospect.first_name} ${prospect.last_name}
-Title: ${prospect.title || 'unknown'}
-Company: ${prospect.account_name || prospect.company_name || 'unknown'}
-Email: ${prospect.email || ''}
-Industry: ${prospect.account_industry || 'unknown'}
-${hasResearch ? `
-Research notes: ${prospect.research_notes || 'none'}
-Account research: ${prospect.account_research || 'none'}
-${researchBullets.length > 0 ? `Key insights:\n${researchBullets.map(b => `• ${b}`).join('\n')}` : ''}
-${pitchAngle ? `Recommended pitch angle: ${pitchAngle}` : ''}
-${crispPitch ? `Suggested opening pitch: ${crispPitch}` : ''}
-` : 'No research data available — use general personalisation based on their role and company.'}
-
-SEQUENCE: "${seqRes.rows[0].name}"
-Tone & Goal: ${seqRes.rows[0].description || 'Professional outreach'}
-
-STEPS TO PERSONALISE (${steps.length} total):
-${steps.map((s, i) => `Step ${i + 1}: channel=${s.channel}, delay_days=${s.delay_days}
-  Template subject: ${s.subject_template || '(none)'}
-  Template body: ${s.body_template || '(none)'}
-  Task note: ${s.task_note || '(none)'}`).join('\n\n')}
-
-Return JSON:
-{
-  "steps": [
-    {
-      "step_order": 1,
-      "subject": "...",
-      "body": "...",
-      "task_note": ""
-    }
-  ]
-}`;
+    const userPrompt = `Personalise each step in this outreach sequence for the specific prospect below.\nUse their research data to make the copy relevant and specific. Keep emails under 150 words.\nUse {{first_name}}, {{company}}, {{title}} tokens where appropriate for remaining variables.\n\nPROSPECT:\nName: ${prospect.first_name} ${prospect.last_name}\nTitle: ${prospect.title || 'unknown'}\nCompany: ${prospect.account_name || prospect.company_name || 'unknown'}\nEmail: ${prospect.email || ''}\nIndustry: ${prospect.account_industry || 'unknown'}\n${hasResearch ? `\nResearch notes: ${prospect.research_notes || 'none'}\nAccount research: ${prospect.account_research || 'none'}\n${researchBullets.length > 0 ? `Key insights:\n${researchBullets.map(b => `• ${b}`).join('\n')}` : ''}\n${pitchAngle ? `Recommended pitch angle: ${pitchAngle}` : ''}\n${crispPitch ? `Suggested opening pitch: ${crispPitch}` : ''}\n` : 'No research data available — use general personalisation based on their role and company.'}\n\nSEQUENCE: "${seqRes.rows[0].name}"\nTone & Goal: ${seqRes.rows[0].description || 'Professional outreach'}\n\nSTEPS TO PERSONALISE (${steps.length} total):\n${steps.map((s, i) => `Step ${i + 1}: channel=${s.channel}, delay_days=${s.delay_days}\n  Template subject: ${s.subject_template || '(none)'}\n  Template body: ${s.body_template || '(none)'}\n  Task note: ${s.task_note || '(none)'}`).join('\n\n')}\n\nReturn JSON:\n{\n  "steps": [\n    {\n      "step_order": 1,\n      "subject": "...",\n      "body": "...",\n      "task_note": ""\n    }\n  ]\n}`;
 
     const aiRes = await anthropic.messages.create({
       model:      'claude-sonnet-4-20250514',
@@ -250,19 +212,14 @@ Return JSON:
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SEQUENCE STATS
-// GET /api/sequences/:id/stats
-// Returns reply rate, step funnel, enrollment status breakdown
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────
 // ENROLL  (must be before /:id to avoid shadowing)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // POST /api/sequences/enroll
-// body: { sequenceId, prospectIds: [id, ...] }
+// body: { sequenceId, prospectIds: [id, ...], personalisedSteps?: { [prospectId]: { [step_order]: { subject, body, task_note } } } }
 router.post('/enroll', async (req, res) => {
-  const { sequenceId, prospectIds } = req.body;
+  // FIX 2: destructure personalisedSteps from body
+  const { sequenceId, prospectIds, personalisedSteps } = req.body;
   if (!sequenceId || !Array.isArray(prospectIds) || prospectIds.length === 0) {
     return res.status(400).json({ error: { message: 'sequenceId and prospectIds[] are required' } });
   }
@@ -273,6 +230,8 @@ router.post('/enroll', async (req, res) => {
     [sequenceId, req.orgId]
   );
   if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Sequence not found' } });
+
+  const sequenceName = seqRes.rows[0].name;
 
   // Get first step to calculate next_step_due
   const firstStepRes = await pool.query(
@@ -291,16 +250,43 @@ router.post('/enroll', async (req, res) => {
     for (const prospectId of prospectIds) {
       try {
         const nextDue = calcDueDate(firstDelayDays);
+
+        // FIX 2: pull per-prospect AI drafts if provided, keyed by step_order
+        const prosSteps = personalisedSteps?.[prospectId] ?? {};
+
         const er = await client.query(
           `INSERT INTO sequence_enrollments
-                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due)
-                VALUES ($1,$2,$3,$4,$5)
+                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps)
+                VALUES ($1,$2,$3,$4,$5,$6)
            ON CONFLICT (sequence_id, prospect_id) DO NOTHING
            RETURNING *`,
-          [req.orgId, sequenceId, prospectId, req.user.userId, nextDue]
+          [req.orgId, sequenceId, prospectId, req.user.userId, nextDue, JSON.stringify(prosSteps)]
         );
+
         if (er.rows.length) {
           enrolled.push(er.rows[0]);
+
+          // FIX 3: write activity so enrollment appears in the prospect's Activity tab
+          try {
+            await client.query(
+              `INSERT INTO prospecting_activities
+                           (prospect_id, user_id, activity_type, description, metadata)
+                    VALUES ($1, $2, 'sequence_enrolled', $3, $4)`,
+              [
+                prospectId,
+                req.user.userId,
+                `Enrolled in sequence "${sequenceName}"`,
+                JSON.stringify({
+                  sequenceId,
+                  sequenceName,
+                  enrollmentId: er.rows[0].id,
+                }),
+              ]
+            );
+          } catch (actErr) {
+            // Non-fatal — don't block enrollment if activity log fails
+            console.warn('sequence enroll: activity log failed for prospect', prospectId, actErr.message);
+          }
         } else {
           skipped.push({ prospectId, reason: 'already enrolled' });
         }
@@ -629,35 +615,9 @@ router.post('/:id/ai-generate', async (req, res) => {
     if (!prospectRes.rows.length) return res.status(404).json({ error: { message: 'Prospect not found' } });
     const prospect = prospectRes.rows[0];
 
-    const systemPrompt = `You are an expert sales development rep writing personalised outreach sequences.
-Return ONLY valid JSON — no markdown fences, no prose.`;
+    const systemPrompt = `You are an expert sales development rep writing personalised outreach sequences.\nReturn ONLY valid JSON — no markdown fences, no prose.`;
 
-    const userPrompt = `Generate personalised email subject and body for each step in this outreach sequence.
-
-PROSPECT:
-Name: ${prospect.first_name} ${prospect.last_name}
-Title: ${prospect.title || 'unknown'}
-Company: ${prospect.account_name || prospect.company_name || 'unknown'}
-Email: ${prospect.email || ''}
-Research notes: ${prospect.research_notes || 'none'}
-
-ACCOUNT RESEARCH:
-${prospect.account_research || 'none available'}
-
-SEQUENCE STEPS (${steps.length} total):
-${steps.map((s, i) => `Step ${i + 1}: channel=${s.channel}, delay_days=${s.delay_days}
-  Template subject: ${s.subject_template || '(none)'}
-  Template body: ${s.body_template || '(none)'}`).join('\n\n')}
-
-For each step generate personalised subject and body. Keep emails concise (under 150 words). Use the research to personalise.
-
-Return JSON:
-{
-  "steps": [
-    { "step_order": 1, "subject": "...", "body": "..." },
-    ...
-  ]
-}`;
+    const userPrompt = `Generate personalised email subject and body for each step in this outreach sequence.\n\nPROSPECT:\nName: ${prospect.first_name} ${prospect.last_name}\nTitle: ${prospect.title || 'unknown'}\nCompany: ${prospect.account_name || prospect.company_name || 'unknown'}\nEmail: ${prospect.email || ''}\nResearch notes: ${prospect.research_notes || 'none'}\n\nACCOUNT RESEARCH:\n${prospect.account_research || 'none available'}\n\nSEQUENCE STEPS (${steps.length} total):\n${steps.map((s, i) => `Step ${i + 1}: channel=${s.channel}, delay_days=${s.delay_days}\n  Template subject: ${s.subject_template || '(none)'}\n  Template body: ${s.body_template || '(none)'}`).join('\n\n')}\n\nFor each step generate personalised subject and body. Keep emails concise (under 150 words). Use the research to personalise.\n\nReturn JSON:\n{\n  "steps": [\n    { "step_order": 1, "subject": "...", "body": "..." },\n    ...\n  ]\n}`;
 
     const aiRes = await anthropic.messages.create({
       model:      'claude-sonnet-4-20250514',
@@ -700,38 +660,9 @@ router.post('/ai-build', async (req, res) => {
   if (!goal?.trim()) return res.status(400).json({ error: { message: 'goal is required' } });
 
   try {
-    const systemPrompt = `You are an expert sales development rep and copywriter building outreach sequences.
-Return ONLY valid JSON — no markdown fences, no preamble, no prose outside the JSON.`;
+    const systemPrompt = `You are an expert sales development rep and copywriter building outreach sequences.\nReturn ONLY valid JSON — no markdown fences, no preamble, no prose outside the JSON.`;
 
-    const userPrompt = `Build a complete outreach sequence based on this goal:
-
-GOAL: ${goal}
-STEPS: ${stepCount}
-CHANNELS AVAILABLE: ${channels.join(', ')}
-
-Rules:
-- Use {{first_name}}, {{last_name}}, {{full_name}}, {{title}}, {{company}}, {{industry}} as personalisation tokens
-- Keep email bodies under 120 words — concise, human, not salesy
-- Vary the approach across steps: opener → value → social proof → breakup
-- Space steps realistically: day 0, then 2–4 day gaps between follow-ups
-- For call/task steps, write a brief task_note (what to say/do), leave subject_template and body_template empty
-- sequence name should be short and descriptive (under 50 chars)
-
-Return this exact JSON shape:
-{
-  "name": "...",
-  "description": "...",
-  "steps": [
-    {
-      "step_order": 1,
-      "channel": "email",
-      "delay_days": 0,
-      "subject_template": "...",
-      "body_template": "...",
-      "task_note": ""
-    }
-  ]
-}`;
+    const userPrompt = `Build a complete outreach sequence based on this goal:\n\nGOAL: ${goal}\nSTEPS: ${stepCount}\nCHANNELS AVAILABLE: ${channels.join(', ')}\n\nRules:\n- Use {{first_name}}, {{last_name}}, {{full_name}}, {{title}}, {{company}}, {{industry}} as personalisation tokens\n- Keep email bodies under 120 words — concise, human, not salesy\n- Vary the approach across steps: opener → value → social proof → breakup\n- Space steps realistically: day 0, then 2–4 day gaps between follow-ups\n- For call/task steps, write a brief task_note (what to say/do), leave subject_template and body_template empty\n- sequence name should be short and descriptive (under 50 chars)\n\nReturn this exact JSON shape:\n{\n  "name": "...",\n  "description": "...",\n  "steps": [\n    {\n      "step_order": 1,\n      "channel": "email",\n      "delay_days": 0,\n      "subject_template": "...",\n      "body_template": "...",\n      "task_note": ""\n    }\n  ]\n}`;
 
     const aiRes = await anthropic.messages.create({
       model:      'claude-sonnet-4-20250514',
@@ -778,8 +709,7 @@ router.post('/ai-write-step', async (req, res) => {
   const hasContent = ['email', 'linkedin'].includes(channel);
 
   try {
-    const systemPrompt = `You are an expert SDR copywriter writing outreach message templates.
-Return ONLY valid JSON — no markdown fences, no prose.`;
+    const systemPrompt = `You are an expert SDR copywriter writing outreach message templates.\nReturn ONLY valid JSON — no markdown fences, no prose.`;
 
     const context = previousSteps.length > 0
       ? `\nPREVIOUS STEPS IN THIS SEQUENCE:\n${previousSteps.map((s, i) =>
@@ -787,26 +717,10 @@ Return ONLY valid JSON — no markdown fences, no prose.`;
         ).join('\n')}\n`
       : '';
 
-    const userPrompt = `Write step ${stepNumber} of ${totalSteps} in an outreach sequence.
-
-CHANNEL: ${channel}
-INSTRUCTION: ${prompt}
-${context}
-Rules:
-- Use {{first_name}}, {{company}}, {{title}}, {{industry}} as personalisation tokens
-- Keep it human and concise — under 100 words for email body
-- This is a TEMPLATE, not a personalised message
-${hasContent
+    const userPrompt = `Write step ${stepNumber} of ${totalSteps} in an outreach sequence.\n\nCHANNEL: ${channel}\nINSTRUCTION: ${prompt}\n${context}\nRules:\n- Use {{first_name}}, {{company}}, {{title}}, {{industry}} as personalisation tokens\n- Keep it human and concise — under 100 words for email body\n- This is a TEMPLATE, not a personalised message\n${hasContent
   ? '- Return subject_template and body_template; leave task_note as empty string'
   : '- This is a call/task step — return a brief task_note describing what to do; leave subject_template and body_template as empty strings'
-}
-
-Return JSON:
-{
-  "subject_template": "...",
-  "body_template": "...",
-  "task_note": ""
-}`;
+}\n\nReturn JSON:\n{\n  "subject_template": "...",\n  "body_template": "...",\n  "task_note": ""\n}`;
 
     const aiRes = await anthropic.messages.create({
       model:      'claude-sonnet-4-20250514',
@@ -872,7 +786,6 @@ router.get('/:id/stats', async (req, res) => {
     const totalReplied  = statusMap['replied'] || 0;
 
     // Per-step funnel: how many reached each step (sent) and replied at each step
-    // step_order lives on sequence_steps, not on the logs table — must JOIN through
     const stepFunnelRes = await pool.query(
       `SELECT
          ss.step_order,
