@@ -872,17 +872,19 @@ router.get('/:id/stats', async (req, res) => {
     const totalReplied  = statusMap['replied'] || 0;
 
     // Per-step funnel: how many reached each step (sent) and replied at each step
+    // step_order lives on sequence_steps, not on the logs table — must JOIN through
     const stepFunnelRes = await pool.query(
       `SELECT
-         ssl.step_order,
+         ss.step_order,
          COUNT(*) FILTER (WHERE ssl.status = 'sent')    AS sent,
          COUNT(*) FILTER (WHERE ssl.status = 'skipped') AS skipped,
          COUNT(*) FILTER (WHERE ssl.status = 'failed')  AS failed
        FROM sequence_step_logs ssl
+       JOIN sequence_steps ss       ON ss.id = ssl.sequence_step_id
        JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
       WHERE se.sequence_id = $1 AND se.org_id = $2
-   GROUP BY ssl.step_order
-   ORDER BY ssl.step_order`,
+   GROUP BY ss.step_order
+   ORDER BY ss.step_order`,
       [req.params.id, req.orgId]
     );
 
