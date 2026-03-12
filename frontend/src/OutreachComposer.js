@@ -113,58 +113,44 @@ function OutreachComposer({ prospect, initialChannel, actionToExecute, onComplet
 
   // ── AI Draft ──────────────────────────────────────────────────────────────
   // Two-step flow:
-  //   1. Call /research to get account + person research (uses cache if fresh)
-  //   2. Use crispPitch + suggestedSubject directly if returned, otherwise
-  //      call /draft-email for a full AI-written email using the research notes
+  //   1. apiService.prospects.research()  — account (cached 30d) + person research
+  //      If response has crispPitch + suggestedSubject → use directly, done.
+  //   2. apiService.prospectingActions.draftEmail() — full AI draft as fallback
   const handleAiDraft = async () => {
     setDrafting(true);
     setError('');
     try {
-      const API   = process.env.REACT_APP_API_URL;
-      const token = localStorage.getItem('token') || localStorage.getItem('authToken');
-      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+      // Step 1: Research (uses cached account research if < 30 days old)
+      let research = null;
+      try {
+        const res = await apiService.prospects.research(prospect.id);
+        research = res.data;
+      } catch (_) { /* non-fatal — fall through to draft endpoint */ }
 
-      // Step 1: Research (fast if cached account research exists)
-      const researchRes = await fetch(`${API}/api/prospects/${prospect.id}/research`, {
-        method: 'POST', headers,
-      });
-      const research = researchRes.ok ? await researchRes.json() : null;
-
-      // Step 2a: If research returned a crisp pitch + subject, use them directly
+      // Step 2a: Structured pitch came back from research — use directly
       if (research?.crispPitch && research?.suggestedSubject) {
         if (!subject) setSubject(research.suggestedSubject);
         if (!body) {
-          const bodyHtml = research.crispPitch.includes('<')
+          setBody(research.crispPitch.includes('<')
             ? research.crispPitch
-            : research.crispPitch.replace(/\n/g, '<br>');
-          setBody(bodyHtml);
+            : research.crispPitch.replace(/\n/g, '<br>'));
         }
-        return; // Done — no need for second AI call
+        return;
       }
 
-      // Step 2b: Fall back to draft-email endpoint (uses research notes as context)
-      const draftRes = await fetch(`${API}/api/prospecting/actions/outreach/draft-email`, {
-        method: 'POST', headers,
-        body:   JSON.stringify({ prospectId: prospect.id }),
-      });
-
-      if (!draftRes.ok) {
-        const err = await draftRes.json();
-        throw new Error(err.error?.message || 'Draft failed');
-      }
-
-      const draft = await draftRes.json();
+      // Step 2b: Fallback — dedicated draft endpoint
+      const draftRes = await apiService.prospectingActions.draftEmail(prospect.id);
+      const draft = draftRes.data;
 
       if (!subject && draft.subject) setSubject(draft.subject);
       if (!body    && draft.body) {
         setBody(draft.body.includes('<') ? draft.body : draft.body.replace(/\n/g, '<br>'));
       }
-
-      if (draft.confidence < 0.6) {
-        setError(`Draft generated with low confidence (${Math.round(draft.confidence * 100)}%) — review carefully.`);
+      if (draft.confidence && draft.confidence < 0.6) {
+        setError(`Draft generated — low confidence (${Math.round(draft.confidence * 100)}%), review before sending.`);
       }
     } catch (err) {
-      setError('AI draft failed: ' + err.message);
+      setError('AI draft failed: ' + (err.response?.data?.error?.message || err.message));
     } finally {
       setDrafting(false);
     }

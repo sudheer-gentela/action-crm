@@ -279,6 +279,8 @@ export const apiService = {
     // Send an actual email via a prospecting sender account.
     // data: { prospectId, subject, body, toAddress, senderAccountId?, actionId? }
     outreachSend: (data) => api.post('/prospecting-actions/outreach-send', data),
+    // AI draft email — returns { subject, body, tone, confidence, personalisationHooks }
+    draftEmail:   (prospectId) => api.post('/prospecting-actions/outreach/draft-email', { prospectId }),
   },
 
   // ── NEW: Prospecting sender accounts ──────────────────────────────────────

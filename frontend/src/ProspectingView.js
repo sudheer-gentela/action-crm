@@ -795,6 +795,31 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
     }
   };
 
+  // ── Research state ────────────────────────────────────────────────────────
+  const [researching,    setResearching]    = useState(false);
+  const [researchResult, setResearchResult] = useState(null);
+  const [researchError,  setResearchError]  = useState('');
+
+  const handleResearch = async () => {
+    setResearching(true);
+    setResearchError('');
+    try {
+      const res = await apiFetch(`/prospects/${prospectId}/research`, {
+        method: 'POST',
+        body:   JSON.stringify({}),
+      });
+      setResearchResult(res);
+      // Refresh prospect so research_notes updates in overview tab
+      const detail = await apiFetch(`/prospects/${prospectId}`);
+      setProspect(detail.prospect);
+      onUpdate();
+    } catch (err) {
+      setResearchError(err.message || 'Research failed');
+    } finally {
+      setResearching(false);
+    }
+  };
+
   const openOutreach = (channel, action) => {
     setOutreachChannel(channel || null);
     setOutreachAction(action || null);
@@ -925,8 +950,26 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
 
               {prospect.research_notes && (
                 <div className="pv-research-notes">
-                  <h4>Research Notes</h4>
-                  <p>{prospect.research_notes}</p>
+                  <h4>🔍 Research Notes</h4>
+                  {prospect.research_notes.split('\n').map((line, i) => (
+                    line.trim() ? (
+                      <p key={i} style={{
+                        margin: '4px 0',
+                        paddingLeft: line.startsWith('•') ? 0 : 8,
+                        fontWeight: line.startsWith('💡') || line.startsWith('✉️') || line.startsWith('📧') ? 600 : 400,
+                        borderTop: line.startsWith('💡') ? '1px solid #e5e7eb' : 'none',
+                        paddingTop: line.startsWith('💡') ? 8 : 0,
+                        marginTop:  line.startsWith('💡') ? 8 : 4,
+                      }}>{line}</p>
+                    ) : <br key={i} />
+                  ))}
+                  {prospect.research_meta && (
+                    <div style={{ marginTop: 10, fontSize: 11, color: '#9ca3af', borderTop: '1px solid #f3f4f6', paddingTop: 6 }}>
+                      Generated with {prospect.research_meta.model || prospect.research_meta.provider || 'AI'}
+                      {prospect.research_meta.generated_at ? ` · ${new Date(prospect.research_meta.generated_at).toLocaleDateString()}` : ''}
+                      {prospect.research_meta.stage2_prompt_source ? ` · ${prospect.research_meta.stage2_prompt_source} prompt` : ''}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -956,8 +999,114 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
           )}
 
           {activeTab === 'intel' && (
-            <ProspectIntelCard
-              contextData={contextData}
+            <div>
+              {/* Research button + result */}
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                  <button
+                    onClick={handleResearch}
+                    disabled={researching}
+                    style={{
+                      padding: '8px 18px', background: researching ? '#e5e7eb' : '#0F9D8E',
+                      color: researching ? '#6b7280' : '#fff', border: 'none', borderRadius: 7,
+                      fontSize: 13, fontWeight: 600, cursor: researching ? 'wait' : 'pointer',
+                    }}
+                  >
+                    {researching ? '⏳ Researching…' : prospect.research_notes ? '🔄 Re-research' : '🔍 Research Prospect'}
+                  </button>
+                  {prospect.research_meta?.generated_at && (
+                    <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                      Last run {new Date(prospect.research_meta.generated_at).toLocaleDateString()}
+                      {' · '}{prospect.research_meta.model || prospect.research_meta.provider || 'AI'}
+                      {prospect.research_meta.account_research_cached ? ' · account cached ✓' : ''}
+                    </span>
+                  )}
+                </div>
+
+                {researchError && (
+                  <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 13, color: '#dc2626', marginBottom: 12 }}>
+                    ⚠️ {researchError}
+                  </div>
+                )}
+
+                {/* Structured research result (current run) */}
+                {researchResult && (
+                  <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: 16, marginBottom: 16 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: '#065f46', marginBottom: 10 }}>✅ Research complete</div>
+
+                    {researchResult.researchBullets?.length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>KEY INSIGHTS</div>
+                        {researchResult.researchBullets.map((b, i) => (
+                          <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 5, fontSize: 13 }}>
+                            <span style={{ color: '#0F9D8E', flexShrink: 0 }}>•</span>
+                            <span style={{ color: '#374151' }}>{b}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {researchResult.pitchAngle && (
+                      <div style={{ marginBottom: 12, padding: '10px 12px', background: '#fff', borderRadius: 7, border: '1px solid #d1fae5' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#065f46', marginBottom: 4 }}>💡 PITCH ANGLE</div>
+                        <div style={{ fontSize: 13, color: '#1a202c' }}>{researchResult.pitchAngle}</div>
+                      </div>
+                    )}
+
+                    {researchResult.crispPitch && (
+                      <div style={{ marginBottom: 12, padding: '10px 12px', background: '#fff', borderRadius: 7, border: '1px solid #d1fae5' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#065f46', marginBottom: 4 }}>✉️ CRISP PITCH</div>
+                        <div style={{ fontSize: 13, color: '#1a202c', lineHeight: 1.6 }}>{researchResult.crispPitch}</div>
+                      </div>
+                    )}
+
+                    {researchResult.suggestedSubject && (
+                      <div style={{ padding: '8px 12px', background: '#fff', borderRadius: 7, border: '1px solid #d1fae5' }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: '#065f46', marginBottom: 4 }}>📧 SUGGESTED SUBJECT</div>
+                        <div style={{ fontSize: 13, color: '#1a202c', fontStyle: 'italic' }}>{researchResult.suggestedSubject}</div>
+                      </div>
+                    )}
+
+                    <div style={{ marginTop: 10, fontSize: 11, color: '#9ca3af' }}>
+                      {researchResult.meta?.provider} · {researchResult.meta?.model}
+                      {researchResult.accountResearchCached ? ' · account research from cache' : ' · fresh account research'}
+                      {researchResult.confidence ? ` · ${Math.round(researchResult.confidence * 100)}% confidence` : ''}
+                    </div>
+                  </div>
+                )}
+
+                {/* Persisted research notes (from previous runs) */}
+                {!researchResult && prospect.research_notes && (
+                  <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, padding: 16, marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 8 }}>SAVED RESEARCH NOTES</div>
+                    {prospect.research_notes.split('\n').map((line, i) => (
+                      line.trim() ? (
+                        <div key={i} style={{
+                          display: 'flex', gap: 8, marginBottom: 4, fontSize: 13,
+                          fontWeight: line.startsWith('💡') || line.startsWith('✉️') || line.startsWith('📧') ? 600 : 400,
+                          borderTop: line.startsWith('💡') ? '1px solid #e5e7eb' : 'none',
+                          paddingTop: line.startsWith('💡') ? 8 : 0,
+                          marginTop:  line.startsWith('💡') ? 8 : 0,
+                        }}>
+                          {line.startsWith('•') && <span style={{ color: '#0F9D8E', flexShrink: 0 }}></span>}
+                          <span style={{ color: '#374151' }}>{line}</span>
+                        </div>
+                      ) : <br key={i} />
+                    ))}
+                    {prospect.research_meta && (
+                      <div style={{ marginTop: 8, fontSize: 11, color: '#9ca3af', borderTop: '1px solid #e5e7eb', paddingTop: 6 }}>
+                        {prospect.research_meta.model || prospect.research_meta.provider || 'AI'}
+                        {prospect.research_meta.generated_at ? ` · ${new Date(prospect.research_meta.generated_at).toLocaleDateString()}` : ''}
+                        {' · '}{prospect.research_meta.stage2_prompt_source || 'system'} prompt
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Existing intel card below */}
+              <ProspectIntelCard
+                contextData={contextData}
               loading={contextLoading}
               prospect={prospect}
               onOpenOutreach={(channel) => openOutreach(channel)}
