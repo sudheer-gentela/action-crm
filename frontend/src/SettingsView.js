@@ -768,8 +768,10 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
   const startEdit = (sender) => {
     setEditingId(sender.id);
     setEditValues({
-      label:           sender.label || '',
-      dailyLimit:      sender.dailyLimit ?? '',
+      label:           sender.label           || '',
+      displayName:     sender.displayName     || '',
+      signature:       sender.signature       || '',
+      dailyLimit:      sender.dailyLimit      ?? '',
       minDelayMinutes: sender.minDelayMinutes ?? '',
       isActive:        sender.isActive,
     });
@@ -780,9 +782,11 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
   const saveEdit = async (senderId) => {
     try {
       const payload = {
-        label:           editValues.label || null,
+        label:           editValues.label           || null,
+        displayName:     editValues.displayName     || null,
+        signature:       editValues.signature       || null,
         isActive:        editValues.isActive,
-        dailyLimit:      editValues.dailyLimit !== '' ? parseInt(editValues.dailyLimit) : undefined,
+        dailyLimit:      editValues.dailyLimit      !== '' ? parseInt(editValues.dailyLimit)      : undefined,
         minDelayMinutes: editValues.minDelayMinutes !== '' ? parseInt(editValues.minDelayMinutes) : undefined,
       };
       await apiService.prospectingSenders.update(senderId, payload);
@@ -933,6 +937,43 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
                           Active (include in rotation)
                         </label>
                       </div>
+
+                      {/* ── Sender identity ──────────────────────────────── */}
+                      <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                          Sender Identity
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 11, color: '#6b7280', display: 'block', marginBottom: 4 }}>
+                            Display name <span style={{ color: '#9ca3af' }}>(used in AI-generated sign-offs)</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={editValues.displayName}
+                            onChange={e => setEditValues(p => ({ ...p, displayName: e.target.value }))}
+                            placeholder="e.g. Alex Chen"
+                            style={{ width: '100%', padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 11, color: '#6b7280', display: 'block', marginBottom: 4 }}>
+                            Email signature <span style={{ color: '#9ca3af' }}>(appended to every outreach email from this account)</span>
+                          </label>
+                          <textarea
+                            value={editValues.signature}
+                            onChange={e => setEditValues(p => ({ ...p, signature: e.target.value }))}
+                            placeholder={'Alex Chen
+Account Executive · Action CRM
+alex@company.com'}
+                            rows={4}
+                            style={{ width: '100%', padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontFamily: 'inherit', resize: 'vertical', boxSizing: 'border-box' }}
+                          />
+                          <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>
+                            Plain text or HTML. Appended automatically when emails are sent.
+                          </div>
+                        </div>
+                      </div>
+
                       <div style={{ display: 'flex', gap: 8 }}>
                         <button
                           onClick={() => saveEdit(sender.id)}
@@ -976,6 +1017,18 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
                           )}
                           {sender.lastSentAt && (
                             <span>Last sent {new Date(sender.lastSentAt).toLocaleDateString()}</span>
+                          )}
+                        </div>
+                        <div style={{ display: 'flex', gap: 16, fontSize: 12, marginTop: 4 }}>
+                          {sender.displayName ? (
+                            <span style={{ color: '#374151' }}>
+                              <span style={{ color: '#9ca3af' }}>Signs as</span> <strong>{sender.displayName}</strong>
+                            </span>
+                          ) : (
+                            <span style={{ color: '#f59e0b' }}>⚠ No display name set — edit to add your name for email sign-offs</span>
+                          )}
+                          {sender.signature && (
+                            <span style={{ color: '#6b7280' }}>✓ Signature set</span>
                           )}
                         </div>
                       </div>

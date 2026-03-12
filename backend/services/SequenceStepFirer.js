@@ -7,19 +7,33 @@
  *   - Called as: await SequenceStepFirer.fireDueSteps()
  *   - Returns { fired, stopped, errors, drafted }
  *
- * Draft-first flow (added v2):
- *   - sequences.require_approval   = true  → all email steps go to drafts by default
- *   - sequence_steps.require_approval      → NULL = inherit, true/false = override
+ * Draft-first flow (v2):
+ *   - sequences.require_approval  = true  → all email steps go to drafts by default
+ *   - sequence_steps.require_approval     → NULL = inherit, true/false = override
  *   - Effective: COALESCE(step.require_approval, sequence.require_approval)
  *   - Draft: write step_log status='draft', do NOT send, do NOT advance enrollment
  *   - Send:  existing path unchanged
  *
+ * Signature feature (v3):
+ *   - At draft creation the rep's primary sender account is fetched (same
+ *     rotation logic used at send-time: least-used active account for enrolled_by).
+ *   - If sender.signature is set it is appended to the draft body: \n\n${sender.signature}
+ *   - sender.display_name is stored in the draft's metadata so the AI
+ *     personalisation prompt can reference it as a sign-off name.
+ *   - The signature is appended ONLY when creating the draft — the
+ *     PATCH /drafts/:logId endpoint operates on whatever the rep saves,
+ *     so the signature is already in the body by then.
+ *   - In the auto-send branch the signature is likewise appended before dispatch.
+ *
  * syncOverdueDrafts():
  *   - Called by cron after fireDueSteps()
  *   - Inserts prospecting_actions for unactioned drafts → surface in ActionsView
+ *   - Idempotent
  */
 
-const { pool } = require('../config/database');
+const { pool }                        = require('../config/database');
+const { sendEmail: sendGmailEmail }   = require('./googleService');
+const { sendEmail: sendOutlookEmail } = require('./outlookService');
 
 // ── Template renderer ─────────────────────────────────────────────────────────
 function renderTemplate(template, prospect, account) {
@@ -29,9 +43,9 @@ function renderTemplate(template, prospect, account) {
     last_name:  prospect.last_name    || '',
     full_name:  `${prospect.first_name || ''} ${prospect.last_name || ''}`.trim(),
     title:      prospect.title        || '',
-    company:    account?.name         || prospect.company_name || '',
+    company:    account?.name         || prospect.company_name     || '',
     industry:   account?.industry     || prospect.company_industry || '',
-    domain:     account?.domain       || prospect.company_domain  || '',
+    domain:     account?.domain       || prospect.company_domain   || '',
   };
   return template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
 }
@@ -40,6 +54,39 @@ function calcDueDate(delayDays) {
   const d = new Date();
   d.setDate(d.getDate() + (parseInt(delayDays) || 0));
   return d;
+}
+
+// ── Sender fetcher ────────────────────────────────────────────────────────────
+// Returns the least-used active sender account for a given user/org, or null.
+// Mirrors the rotation query used in GET /sequences/drafts and POST .../send.
+// Selects only the columns needed — tokens are intentionally excluded.
+async function fetchPrimarySender(client, orgId, userId) {
+  const r = await client.query(
+    `SELECT id, email, provider, display_name, signature,
+            access_token, refresh_token,
+            emails_sent_today, last_reset_at
+       FROM prospecting_sender_accounts
+      WHERE org_id    = $1
+        AND user_id   = $2
+        AND is_active = true
+      ORDER BY
+        (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+        last_sent_at ASC NULLS FIRST
+      LIMIT 1`,
+    [orgId, userId]
+  );
+  return r.rows[0] || null;
+}
+
+// ── Append signature helper ───────────────────────────────────────────────────
+// Avoids double-appending if the signature text is already present in the body
+// (shouldn't happen on first draft, but defensive).
+function appendSignature(body, signature) {
+  if (!signature) return body;
+  const trimmedSig = signature.trim();
+  if (!trimmedSig) return body;
+  if (body && body.includes(trimmedSig)) return body; // already present
+  return (body || '') + `\n\n${trimmedSig}`;
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -55,7 +102,7 @@ const SequenceStepFirer = {
 
     const client = await pool.connect();
     try {
-      // Include sequence-level require_approval and name for drafts
+      // Include sequence-level require_approval and name for draft metadata
       const dueRes = await client.query(
         `SELECT se.*, s.id AS seq_id, s.name AS seq_name,
                 s.require_approval AS seq_require_approval
@@ -68,7 +115,7 @@ const SequenceStepFirer = {
 
       for (const enrollment of dueRes.rows) {
         try {
-          // ── Auto-stop check: inbound reply received since enrollment ──────
+          // ── Auto-stop: inbound reply received since enrollment ────────────
           const replyCheck = await client.query(
             `SELECT id FROM emails
               WHERE prospect_id = $1
@@ -110,8 +157,8 @@ const SequenceStepFirer = {
           const step = stepRes.rows[0];
 
           // ── Resolve effective approval setting ────────────────────────────
-          // Step-level wins when explicitly set (not NULL)
-          // seq_require_approval defaults to true if column not yet migrated
+          // Step-level wins when explicitly set (not NULL).
+          // seq_require_approval defaults to true if column not yet migrated.
           const seqApproval = enrollment.seq_require_approval !== false;
           const effectiveRequireApproval =
             step.require_approval !== null && step.require_approval !== undefined
@@ -132,13 +179,13 @@ const SequenceStepFirer = {
             ? { name: prospect.account_name, domain: prospect.account_domain, industry: prospect.account_industry }
             : null;
 
-          // ── Use personalised content if available, else render template ───
+          // ── Use personalised content if available, else render template ────
           const personalisedStep =
             enrollment.personalised_steps?.[enrollment.current_step] ||
             enrollment.personalised_steps?.[String(enrollment.current_step)];
 
           const subject = personalisedStep?.subject ?? renderTemplate(step.subject_template, prospect || {}, account);
-          const body    = personalisedStep?.body    ?? renderTemplate(step.body_template,    prospect || {}, account);
+          let   body    = personalisedStep?.body    ?? renderTemplate(step.body_template,    prospect || {}, account);
 
           // ── DRAFT BRANCH ──────────────────────────────────────────────────
           if (effectiveRequireApproval && step.channel === 'email') {
@@ -153,6 +200,15 @@ const SequenceStepFirer = {
             if (existingDraft.rows.length > 0) {
               // Draft already exists and is awaiting rep action — skip
               continue;
+            }
+
+            // ── Fetch sender for signature + display_name ─────────────────
+            // Non-fatal: if no sender is connected yet the draft is still
+            // created without a signature — the rep can edit before sending.
+            const sender = await fetchPrimarySender(client, enrollment.org_id, enrollment.enrolled_by);
+
+            if (sender?.signature) {
+              body = appendSignature(body, sender.signature);
             }
 
             // Write draft — fired_at=NULL until rep sends
@@ -189,6 +245,8 @@ const SequenceStepFirer = {
                     stepOrder:    enrollment.current_step,
                     stepId:       step.id,
                     subject:      subject || null,
+                    senderId:     sender?.id          || null,
+                    displayName:  sender?.display_name || null,
                   }),
                 ]
               );
@@ -200,26 +258,82 @@ const SequenceStepFirer = {
             continue; // Do NOT advance — enrollment stays on this step until rep sends
           }
 
-          // ── SEND BRANCH ───────────────────────────────────────────────────
-          let emailId = null;
+          // ── SEND BRANCH (auto-send, no approval required) ─────────────────
+          let emailId   = null;
+          let sendError = null;
 
           if (step.channel === 'email' && prospect?.email) {
-            const emailRes = await client.query(
-              `INSERT INTO emails
-                           (org_id, user_id, direction, subject, body,
-                            to_address, prospect_id, sent_at)
-                    VALUES ($1, $2, 'outbound', $3, $4, $5, $6, NOW())
-                 RETURNING id`,
-              [
-                enrollment.org_id,
-                enrollment.enrolled_by,
-                subject,
-                body,
-                prospect.email,
-                enrollment.prospect_id,
-              ]
-            );
-            emailId = emailRes.rows[0].id;
+            // Select least-used active sender for this rep
+            const sender = await fetchPrimarySender(client, enrollment.org_id, enrollment.enrolled_by);
+
+            if (sender) {
+              // Reset daily counter if it's a new day
+              if (new Date(sender.last_reset_at).toDateString() !== new Date().toDateString()) {
+                await client.query(
+                  `UPDATE prospecting_sender_accounts
+                      SET emails_sent_today=0, last_reset_at=CURRENT_DATE, updated_at=CURRENT_TIMESTAMP
+                    WHERE id=$1`,
+                  [sender.id]
+                );
+                sender.emails_sent_today = 0;
+              }
+
+              // Append signature so the sent copy matches what a rep would see
+              const sendBody = appendSignature(body, sender.signature);
+
+              // Dispatch via Gmail or Outlook
+              try {
+                if (sender.provider === 'gmail') {
+                  await sendGmailEmail(enrollment.enrolled_by, {
+                    to:           prospect.email,
+                    subject,
+                    body:         sendBody,
+                    isHtml:       true,
+                    senderEmail:  sender.email,
+                    accessToken:  sender.access_token,
+                    refreshToken: sender.refresh_token,
+                  });
+                } else if (sender.provider === 'outlook') {
+                  await sendOutlookEmail(enrollment.enrolled_by, {
+                    to:     prospect.email,
+                    subject,
+                    body:   sendBody,
+                    isHtml: true,
+                  });
+                }
+              } catch (err) {
+                sendError = err.message;
+                console.warn(`SequenceStepFirer: send failed for enrollment ${enrollment.id}:`, err.message);
+              }
+
+              // Persist email record with full sender metadata
+              const emailRes = await client.query(
+                `INSERT INTO emails
+                             (org_id, user_id, direction, subject, body,
+                              to_address, from_address, sent_at,
+                              prospect_id, sender_account_id, provider)
+                      VALUES ($1, $2, 'sent', $3, $4, $5, $6, NOW(), $7, $8, $9)
+                   RETURNING id`,
+                [
+                  enrollment.org_id, enrollment.enrolled_by,
+                  subject, sendBody,
+                  prospect.email, sender.email,
+                  enrollment.prospect_id, sender.id, sender.provider,
+                ]
+              );
+              emailId = emailRes.rows[0].id;
+
+              // Update sender counters
+              await client.query(
+                `UPDATE prospecting_sender_accounts
+                    SET emails_sent_today=emails_sent_today+1,
+                        last_sent_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+                  WHERE id=$1`,
+                [sender.id]
+              );
+            } else {
+              console.warn(`SequenceStepFirer: no active sender for user ${enrollment.enrolled_by} (enrollment ${enrollment.id}) — email not sent`);
+            }
           }
 
           // ── Log sent step ─────────────────────────────────────────────────
@@ -261,8 +375,9 @@ const SequenceStepFirer = {
                   stepOrder:    enrollment.current_step,
                   stepId:       step.id,
                   channel:      step.channel,
-                  subject:      subject || null,
-                  emailId:      emailId || null,
+                  subject:      subject   || null,
+                  emailId:      emailId   || null,
+                  sendError:    sendError || null,
                 }),
               ]
             );

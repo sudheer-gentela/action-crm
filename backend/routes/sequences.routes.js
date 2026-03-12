@@ -166,15 +166,87 @@ router.post('/ai-personalise-enrollment', async (req, res) => {
 
     const hasResearch = !!(prospect.research_notes || prospect.account_research);
 
-    // Extract structured Intel data from research_meta if present
-    const researchMeta  = prospect.research_meta  || {};
-    const pitchAngle    = researchMeta.pitchAngle  || '';
-    const crispPitch    = researchMeta.crispPitch  || '';
+    // Extract ALL structured Intel fields from research_meta
+    const researchMeta    = prospect.research_meta  || {};
+    const pitchAngle      = researchMeta.pitchAngle  || '';
+    const crispPitch      = researchMeta.crispPitch  || '';
+    const subjectLine     = researchMeta.subjectLine || '';
     const researchBullets = Array.isArray(researchMeta.researchBullets) ? researchMeta.researchBullets : [];
 
-    const systemPrompt = `You are an expert SDR writing personalised outreach for a specific prospect.\nReturn ONLY valid JSON — no markdown fences, no prose.`;
+    // ── Fetch sender display_name so AI writes the sign-off naturally ──────
+    // Best-effort: if no sender account exists, AI omits the sign-off token.
+    let senderDisplayName = '';
+    try {
+      const senderRes = await pool.query(
+        `SELECT display_name FROM prospecting_sender_accounts
+          WHERE org_id   = $1
+            AND user_id  = $2
+            AND is_active = true
+          ORDER BY
+            (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+            last_sent_at ASC NULLS FIRST
+          LIMIT 1`,
+        [req.orgId, req.user.userId]
+      );
+      senderDisplayName = senderRes.rows[0]?.display_name || '';
+    } catch (_) {
+      // Non-fatal — proceed without display_name
+    }
 
-    const userPrompt = `Personalise each step in this outreach sequence for the specific prospect below.\nUse their research data to make the copy relevant and specific. Keep emails under 150 words.\nUse {{first_name}}, {{company}}, {{title}} tokens where appropriate for remaining variables.\n\nPROSPECT:\nName: ${prospect.first_name} ${prospect.last_name}\nTitle: ${prospect.title || 'unknown'}\nCompany: ${prospect.account_name || prospect.company_name || 'unknown'}\nEmail: ${prospect.email || ''}\nIndustry: ${prospect.account_industry || 'unknown'}\n${hasResearch ? `\nResearch notes: ${prospect.research_notes || 'none'}\nAccount research: ${prospect.account_research || 'none'}\n${researchBullets.length > 0 ? `Key insights:\n${researchBullets.map(b => `• ${b}`).join('\n')}` : ''}\n${pitchAngle ? `Recommended pitch angle: ${pitchAngle}` : ''}\n${crispPitch ? `Suggested opening pitch: ${crispPitch}` : ''}\n` : 'No research data available — use general personalisation based on their role and company.'}\n\nSEQUENCE: "${seqRes.rows[0].name}"\nTone & Goal: ${seqRes.rows[0].description || 'Professional outreach'}\n\nSTEPS TO PERSONALISE (${steps.length} total):\n${steps.map((s, i) => `Step ${i + 1}: channel=${s.channel}, delay_days=${s.delay_days}\n  Template subject: ${s.subject_template || '(none)'}\n  Template body: ${s.body_template || '(none)'}\n  Task note: ${s.task_note || '(none)'}`).join('\n\n')}\n\nReturn JSON:\n{\n  "steps": [\n    {\n      "step_order": 1,\n      "subject": "...",\n      "body": "...",\n      "task_note": ""\n    }\n  ]\n}`;
+    // Build research block
+    const researchBlock = hasResearch
+      ? [
+          'PROSPECT RESEARCH (write FROM this — not around it):',
+          researchBullets.length > 0 ? 'Key insights:\n' + researchBullets.map(b => '  - ' + b).join('\n') : '',
+          pitchAngle   ? '\nStrongest pitch angle: ' + pitchAngle : '',
+          crispPitch   ? '\nPre-written pitch (use as core of step 1 body — adapt tone, do not ignore it):\n' + crispPitch : '',
+          subjectLine  ? '\nSuggested subject line for step 1: ' + subjectLine : '',
+          prospect.research_notes   ? '\nFull research notes:\n' + prospect.research_notes : '',
+          prospect.account_research ? '\nAccount research:\n' + prospect.account_research  : '',
+        ].filter(Boolean).join('\n')
+      : 'No research available — write from first principles using their role, company and industry.';
+
+    const systemPrompt = `You are an expert SDR writing highly personalised outreach emails. You write from research, not from templates.
+Return ONLY valid JSON — no markdown fences, no prose.`;
+
+    const userPrompt = `Write personalised outreach emails for this prospect. The research is your primary input — templates below are structural guides only. Do NOT copy template wording.
+
+PROSPECT:
+Name: ${prospect.first_name} ${prospect.last_name}
+Title: ${prospect.title || 'unknown'}
+Company: ${prospect.account_name || prospect.company_name || 'unknown'}
+Industry: ${prospect.account_industry || 'unknown'}
+${researchBlock}
+
+SENDER: ${senderDisplayName || prospect.account_name || 'the sender'}
+${senderDisplayName ? 'End each email body with a natural sign-off using the sender name above (e.g. "Best,\n' + senderDisplayName + '"). Do NOT add a signature block — just the name sign-off.' : ''}
+
+SEQUENCE: "${seqRes.rows[0].name}"
+Tone & Goal: ${seqRes.rows[0].description || 'Professional outreach'}
+
+WRITING RULES:
+- Step 1: Open with the most specific insight from the research. Write something that could only be for this person.
+- If a crispPitch is provided, use it as the backbone of step 1.
+- If a subjectLine is provided, use it (or a close variant) for the step 1 subject.
+- Follow-ups: reference the first email, vary the angle, stay specific.
+- Under 120 words per email body (excluding the sign-off). No filler openers.
+- Use {{first_name}}, {{company}}, {{title}} tokens only where natural.
+- Non-email steps (call, task, linkedin): write a specific task_note referencing what was sent.
+
+STRUCTURAL REFERENCE (format/CTA style only — do not copy wording):
+${steps.map((s, i) => 'Step ' + (i+1) + ': channel=' + s.channel + ', delay=' + s.delay_days + 'd\n  Template subject: ' + (s.subject_template || '(none)') + '\n  Template body: ' + (s.body_template || '(none)') + '\n  Task note: ' + (s.task_note || '(none)')).join('\n\n')}
+
+Return JSON:
+{
+  "steps": [
+    {
+      "step_order": 1,
+      "subject": "...",
+      "body": "...",
+      "task_note": ""
+    }
+  ]
+}`;
 
     const aiRes = await anthropic.messages.create({
       model:      'claude-sonnet-4-20250514',
@@ -221,7 +293,6 @@ router.post('/ai-personalise-enrollment', async (req, res) => {
 // POST /api/sequences/enroll
 // body: { sequenceId, prospectIds: [id, ...], personalisedSteps?: { [prospectId]: { [step_order]: { subject, body, task_note } } } }
 router.post('/enroll', async (req, res) => {
-  // FIX 2: destructure personalisedSteps from body
   const { sequenceId, prospectIds, personalisedSteps } = req.body;
   if (!sequenceId || !Array.isArray(prospectIds) || prospectIds.length === 0) {
     return res.status(400).json({ error: { message: 'sequenceId and prospectIds[] are required' } });
@@ -254,7 +325,7 @@ router.post('/enroll', async (req, res) => {
       try {
         const nextDue = calcDueDate(firstDelayDays);
 
-        // FIX 2: pull per-prospect AI drafts if provided, keyed by step_order
+        // Pull per-prospect AI drafts if provided, keyed by step_order
         const prosSteps = personalisedSteps?.[prospectId] ?? {};
 
         const er = await client.query(
@@ -269,7 +340,7 @@ router.post('/enroll', async (req, res) => {
         if (er.rows.length) {
           enrolled.push(er.rows[0]);
 
-          // FIX 3: write activity so enrollment appears in the prospect's Activity tab
+          // Write activity so enrollment appears in the prospect's Activity tab
           try {
             await client.query(
               `INSERT INTO prospecting_activities
@@ -417,7 +488,6 @@ router.post('/enrollments/:enrollId/resume', async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 // DRAFT ROUTES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -628,14 +698,27 @@ router.post('/drafts/:logId/send', async (req, res) => {
       });
     }
 
-    // ── 5. Send via Gmail or Outlook ───────────────────────────────────────
+    // ── 5. Ensure signature is present (safety-net) ────────────────────────
+    // SequenceStepFirer appends the signature when creating the draft.
+    // If for any reason it is absent (e.g. sender had no signature at draft
+    // creation but has one now, or draft was created before this feature
+    // shipped), append it here so it is never missing from a sent email.
+    let bodyToSend = draft.body || '';
+    if (sender.signature) {
+      const trimmedSig = sender.signature.trim();
+      if (trimmedSig && !bodyToSend.includes(trimmedSig)) {
+        bodyToSend = bodyToSend + `\n\n${trimmedSig}`;
+      }
+    }
+
+    // ── 6. Send via Gmail or Outlook ───────────────────────────────────────
     let sendError = null;
     try {
       if (sender.provider === 'gmail') {
         await sendGmailEmail(req.user.userId, {
           to:           prospect.email,
           subject:      draft.subject,
-          body:         draft.body,
+          body:         bodyToSend,
           isHtml:       true,
           senderEmail:  sender.email,
           accessToken:  sender.access_token,
@@ -645,7 +728,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
         await sendOutlookEmail(req.user.userId, {
           to:      prospect.email,
           subject: draft.subject,
-          body:    draft.body,
+          body:    bodyToSend,
           isHtml:  true,
         });
       }
@@ -656,27 +739,27 @@ router.post('/drafts/:logId/send', async (req, res) => {
 
     await client.query('BEGIN');
 
-    // ── 6. Save email to DB ────────────────────────────────────────────────
+    // ── 7. Save email to DB ────────────────────────────────────────────────
     const emailRes = await client.query(
       `INSERT INTO emails
          (org_id, user_id, direction, subject, body,
           to_address, from_address, sent_at, prospect_id, sender_account_id, provider)
        VALUES ($1,$2,'sent',$3,$4,$5,$6,CURRENT_TIMESTAMP,$7,$8,$9)
        RETURNING *`,
-      [req.orgId, req.user.userId, draft.subject, draft.body,
+      [req.orgId, req.user.userId, draft.subject, bodyToSend,
        prospect.email, sender.email, draft.prospect_id, sender.id, sender.provider]
     );
     const newEmail = emailRes.rows[0];
 
-    // ── 7. Flip draft → sent ───────────────────────────────────────────────
+    // ── 8. Flip draft → sent (also writes back final body for audit trail) ─
     await client.query(
       `UPDATE sequence_step_logs
-          SET status='sent', fired_at=NOW(), email_id=$1
-        WHERE id=$2`,
-      [newEmail.id, draft.id]
+          SET status='sent', fired_at=NOW(), email_id=$1, body=$2
+        WHERE id=$3`,
+      [newEmail.id, bodyToSend, draft.id]
     );
 
-    // ── 8. Update sender counters ──────────────────────────────────────────
+    // ── 9. Update sender counters ──────────────────────────────────────────
     await client.query(
       `UPDATE prospecting_sender_accounts
           SET emails_sent_today=emails_sent_today+1,
@@ -685,7 +768,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
       [sender.id]
     );
 
-    // ── 9. Update prospect outreach tracking ──────────────────────────────
+    // ── 10. Update prospect outreach tracking ──────────────────────────────
     await client.query(
       `UPDATE prospects
           SET outreach_count=outreach_count+1, last_outreach_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
@@ -702,7 +785,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
       );
     }
 
-    // ── 10. Advance enrollment to next step ────────────────────────────────
+    // ── 11. Advance enrollment to next step ────────────────────────────────
     const enrollRes = await client.query(
       `SELECT se.*, s.id AS seq_id FROM sequence_enrollments se
          JOIN sequences s ON s.id = se.sequence_id
@@ -732,7 +815,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
       }
     }
 
-    // ── 11. Mark any linked overdue action completed ───────────────────────
+    // ── 12. Mark any linked overdue action completed ───────────────────────
     await client.query(
       `UPDATE prospecting_actions
           SET status='completed', completed_at=CURRENT_TIMESTAMP,
@@ -744,7 +827,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
       [req.user.userId, req.orgId, draft.id]
     );
 
-    // ── 12. Write activity ─────────────────────────────────────────────────
+    // ── 13. Write activity ─────────────────────────────────────────────────
     await client.query(
       `INSERT INTO prospecting_activities
          (prospect_id, user_id, activity_type, description, metadata)
@@ -1066,10 +1149,11 @@ router.post('/:id/ai-generate', async (req, res) => {
     );
     const steps = stepsRes.rows;
 
-    // Load prospect + account
+    // Load prospect + account — include research_meta and account_industry for full Intel data
     const prospectRes = await pool.query(
       `SELECT p.*, a.name AS account_name, a.research_notes AS account_research,
-              a.domain AS account_domain, a.research_meta AS account_research_meta
+              a.domain AS account_domain, a.industry AS account_industry,
+              a.research_meta AS account_research_meta
          FROM prospects p
     LEFT JOIN accounts a ON a.id = p.account_id
         WHERE p.id=$1 AND p.org_id=$2`,
@@ -1078,9 +1162,79 @@ router.post('/:id/ai-generate', async (req, res) => {
     if (!prospectRes.rows.length) return res.status(404).json({ error: { message: 'Prospect not found' } });
     const prospect = prospectRes.rows[0];
 
-    const systemPrompt = `You are an expert sales development rep writing personalised outreach sequences.\nReturn ONLY valid JSON — no markdown fences, no prose.`;
+    // Extract all Intel fields from research_meta
+    const researchMeta    = prospect.research_meta  || {};
+    const pitchAngle      = researchMeta.pitchAngle  || '';
+    const crispPitch      = researchMeta.crispPitch  || '';
+    const subjectLine     = researchMeta.subjectLine || '';
+    const researchBullets = Array.isArray(researchMeta.researchBullets) ? researchMeta.researchBullets : [];
+    const hasResearch     = !!(prospect.research_notes || prospect.account_research);
 
-    const userPrompt = `Generate personalised email subject and body for each step in this outreach sequence.\n\nPROSPECT:\nName: ${prospect.first_name} ${prospect.last_name}\nTitle: ${prospect.title || 'unknown'}\nCompany: ${prospect.account_name || prospect.company_name || 'unknown'}\nEmail: ${prospect.email || ''}\nResearch notes: ${prospect.research_notes || 'none'}\n\nACCOUNT RESEARCH:\n${prospect.account_research || 'none available'}\n\nSEQUENCE STEPS (${steps.length} total):\n${steps.map((s, i) => `Step ${i + 1}: channel=${s.channel}, delay_days=${s.delay_days}\n  Template subject: ${s.subject_template || '(none)'}\n  Template body: ${s.body_template || '(none)'}`).join('\n\n')}\n\nFor each step generate personalised subject and body. Keep emails concise (under 150 words). Use the research to personalise.\n\nReturn JSON:\n{\n  "steps": [\n    { "step_order": 1, "subject": "...", "body": "..." },\n    ...\n  ]\n}`;
+    // ── Fetch sender display_name so AI writes the sign-off naturally ──────
+    // Best-effort: if no sender account exists, AI omits the sign-off token.
+    let senderDisplayName = '';
+    try {
+      const senderRes = await pool.query(
+        `SELECT display_name FROM prospecting_sender_accounts
+          WHERE org_id=$1 AND user_id=$2 AND is_active=true
+          ORDER BY (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+                   last_sent_at ASC NULLS FIRST
+          LIMIT 1`,
+        [req.orgId, req.user.userId]
+      );
+      senderDisplayName = senderRes.rows[0]?.display_name || '';
+    } catch (_) {
+      // Non-fatal — proceed without display_name
+    }
+
+    const researchBlock = hasResearch
+      ? [
+          'PROSPECT RESEARCH (write FROM this — not around it):',
+          researchBullets.length > 0 ? 'Key insights:\n' + researchBullets.map(b => '  - ' + b).join('\n') : '',
+          pitchAngle  ? '\nStrongest pitch angle: ' + pitchAngle : '',
+          crispPitch  ? '\nPre-written pitch (use as core of step 1 — adapt tone, keep substance):\n' + crispPitch : '',
+          subjectLine ? '\nSuggested subject line for step 1: ' + subjectLine : '',
+          prospect.research_notes   ? '\nResearch notes:\n' + prospect.research_notes : '',
+          prospect.account_research ? '\nAccount research:\n' + prospect.account_research : '',
+        ].filter(Boolean).join('\n')
+      : 'No research available — write from first principles using their role, company and industry.';
+
+    const systemPrompt = `You are an expert SDR writing highly personalised outreach emails. You write from research, not from templates.
+Return ONLY valid JSON — no markdown fences, no prose.`;
+
+    const userPrompt = `Write personalised outreach emails for this prospect. Research is your primary input — templates are structural guides only. Do NOT copy template wording.
+
+PROSPECT:
+Name: ${prospect.first_name} ${prospect.last_name}
+Title: ${prospect.title || 'unknown'}
+Company: ${prospect.account_name || prospect.company_name || 'unknown'}
+Industry: ${prospect.account_industry || 'unknown'}
+${researchBlock}
+
+SENDER: ${senderDisplayName || 'the sender'}
+${senderDisplayName ? 'End each email body with a natural sign-off using the sender name above (e.g. "Best,\n' + senderDisplayName + '"). Do NOT add a signature block — just the name sign-off.' : ''}
+
+SEQUENCE: "${seqRes.rows[0].name}"
+Tone & Goal: ${seqRes.rows[0].description || 'Professional outreach'}
+
+WRITING RULES:
+- Step 1: Open with the most specific insight from the research. Write something that could only be for this person.
+- If a crispPitch is provided, use it as the backbone of step 1.
+- If a subjectLine is provided, use it (or a close variant) for the step 1 subject.
+- Follow-ups: reference the first email, vary the angle, stay specific.
+- Under 120 words per email body (excluding sign-off). No filler openers.
+- Use {{first_name}}, {{company}}, {{title}} tokens only where natural.
+
+STRUCTURAL REFERENCE (format/CTA style only — do not copy wording):
+${steps.map((s, i) => 'Step ' + (i+1) + ': channel=' + s.channel + ', delay=' + s.delay_days + 'd\n  Template subject: ' + (s.subject_template || '(none)') + '\n  Template body: ' + (s.body_template || '(none)')).join('\n\n')}
+
+Return JSON:
+{
+  "steps": [
+    { "step_order": 1, "subject": "...", "body": "..." },
+    ...
+  ]
+}`;
 
     const aiRes = await anthropic.messages.create({
       model:      'claude-sonnet-4-20250514',
