@@ -670,23 +670,39 @@ router.post('/sync', async (req, res) => {
             skipped++; continue;
           }
 
-          // 5. Upsert into emails table — skip if already saved
+          // 5. Save to emails table — explicit dedup, no ON CONFLICT constraint needed
           try {
-            // First check: if external_id exists, skip (fast path)
+            // Dedup check 1: by external_id
             if (email.externalId) {
               const existing = await db.query(
                 `SELECT id FROM emails WHERE external_id = $1`, [email.externalId]
               );
-              if (existing.rows.length > 0) { skipped++; continue; }
+              if (existing.rows.length > 0) {
+                console.log(`    ⏭️  Already saved (external_id match) — skipping`);
+                skipped++; continue;
+              }
             }
 
-            const upsertResult = await db.query(
+            // Dedup check 2: same prospect + direction + subject within last 7 days
+            const dupCheck = await db.query(
+              `SELECT id FROM emails
+               WHERE prospect_id = $1
+                 AND direction   = 'received'
+                 AND subject     = $2
+                 AND sent_at     > NOW() - INTERVAL '7 days'`,
+              [prospectId, email.subject]
+            );
+            if (dupCheck.rows.length > 0) {
+              console.log(`    ⏭️  Already saved (prospect+subject match) — skipping`);
+              skipped++; continue;
+            }
+
+            const insertResult = await db.query(
               `INSERT INTO emails
                  (org_id, user_id, prospect_id, sender_account_id, provider,
                   direction, subject, body, from_address, to_address,
                   sent_at, external_id)
                VALUES ($1, $2, $3, $4, $5, 'received', $6, $7, $8, $9, $10, $11)
-               ON CONFLICT (external_id) DO NOTHING
                RETURNING id`,
               [
                 orgId,
@@ -703,29 +719,25 @@ router.post('/sync', async (req, res) => {
               ]
             );
 
-            if (upsertResult.rows.length > 0) {
+            if (insertResult.rows.length > 0) {
               console.log(`    💾 SAVED: email ${email.externalId} for prospectId=${prospectId}`);
               saved++;
-              // Also log a prospecting activity
-              await db.query(
+              // Log a prospecting activity (non-blocking)
+              db.query(
                 `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-                 VALUES ($1, $2, 'email_received', $3, $4)
-                 ON CONFLICT DO NOTHING`,
+                 VALUES ($1, $2, 'email_received', $3, $4)`,
                 [
                   prospectId,
                   account.user_id,
                   `Reply received: ${email.subject}`,
                   JSON.stringify({ emailExternalId: email.externalId, fromAddress: email.fromAddress }),
                 ]
-              ).catch(() => {}); // non-blocking, ignore conflict errors
-            } else {
-              console.log(`    ⏭️  Already saved (ON CONFLICT) — skipping`);
-              skipped++;
+              ).catch(() => {});
             }
-          } catch (upsertErr) {
-            console.error(`    ❌ Upsert error:`, upsertErr.message, '| code:', upsertErr.code);
-            if (upsertErr.code === '23505') { skipped++; }
-            else errors.push({ account: account.email, externalId: email.externalId, error: upsertErr.message });
+          } catch (insertErr) {
+            console.error(`    ❌ Insert error:`, insertErr.message, '| code:', insertErr.code);
+            if (insertErr.code === '23505') { skipped++; }
+            else errors.push({ account: account.email, externalId: email.externalId, error: insertErr.message });
           }
         }
 
