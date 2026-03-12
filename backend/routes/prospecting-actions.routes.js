@@ -1247,7 +1247,7 @@ Write a short personalised outreach email. Return ONLY valid JSON:
     } catch {
       // Fallback: treat raw text as body
       parsed = {
-        subject: `Quick question for \${p.first_name}\${p.company_name ? ` at \${p.company_name}` : ''}`,
+        subject: 'Quick question for ' + p.first_name + (p.company_name ? ' at ' + p.company_name : ''),
         body:    rawText,
         tone:    'consultative',
         confidence: 0.5,
