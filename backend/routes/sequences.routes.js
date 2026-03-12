@@ -121,6 +121,183 @@ router.post('/', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ENROLL  (must be before /:id to avoid shadowing)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /api/sequences/enroll
+// body: { sequenceId, prospectIds: [id, ...] }
+router.post('/enroll', async (req, res) => {
+  const { sequenceId, prospectIds } = req.body;
+  if (!sequenceId || !Array.isArray(prospectIds) || prospectIds.length === 0) {
+    return res.status(400).json({ error: { message: 'sequenceId and prospectIds[] are required' } });
+  }
+
+  // Validate sequence belongs to org
+  const seqRes = await pool.query(
+    `SELECT * FROM sequences WHERE id=$1 AND org_id=$2 AND status='active'`,
+    [sequenceId, req.orgId]
+  );
+  if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Sequence not found' } });
+
+  // Get first step to calculate next_step_due
+  const firstStepRes = await pool.query(
+    `SELECT delay_days FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order LIMIT 1`,
+    [sequenceId]
+  );
+  const firstDelayDays = firstStepRes.rows[0]?.delay_days ?? 0;
+
+  const enrolled = [];
+  const skipped  = [];
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    for (const prospectId of prospectIds) {
+      try {
+        const nextDue = calcDueDate(firstDelayDays);
+        const er = await client.query(
+          `INSERT INTO sequence_enrollments
+                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due)
+                VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (sequence_id, prospect_id) DO NOTHING
+           RETURNING *`,
+          [req.orgId, sequenceId, prospectId, req.user.userId, nextDue]
+        );
+        if (er.rows.length) {
+          enrolled.push(er.rows[0]);
+        } else {
+          skipped.push({ prospectId, reason: 'already enrolled' });
+        }
+      } catch (err) {
+        skipped.push({ prospectId, reason: err.message });
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({ enrolled: enrolled.length, skipped, enrollments: enrolled });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('enroll error', err);
+    res.status(500).json({ error: { message: 'Enrollment failed' } });
+  } finally {
+    client.release();
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENROLLMENTS  (must be before /:id to avoid shadowing)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/sequences/enrollments
+router.get('/enrollments', async (req, res) => {
+  const { prospectId, status } = req.query;
+  try {
+    let query = `
+      SELECT se.*,
+             s.name AS sequence_name,
+             p.first_name, p.last_name, p.email, p.company_name
+        FROM sequence_enrollments se
+        JOIN sequences s     ON s.id = se.sequence_id
+        JOIN prospects p     ON p.id = se.prospect_id
+       WHERE se.org_id = $1`;
+    const params = [req.orgId];
+
+    if (prospectId) { params.push(prospectId); query += ` AND se.prospect_id = $${params.length}`; }
+    if (status)     { params.push(status);     query += ` AND se.status = $${params.length}`; }
+
+    query += ' ORDER BY se.enrolled_at DESC LIMIT 200';
+    const { rows } = await pool.query(query, params);
+    res.json({ enrollments: rows });
+  } catch (err) {
+    console.error('enrollments GET', err);
+    res.status(500).json({ error: { message: 'Failed to load enrollments' } });
+  }
+});
+
+// GET /api/sequences/enrollments/:enrollId
+router.get('/enrollments/:enrollId', async (req, res) => {
+  try {
+    const er = await pool.query(
+      `SELECT se.*, s.name AS sequence_name,
+              p.first_name, p.last_name, p.email, p.company_name
+         FROM sequence_enrollments se
+         JOIN sequences s ON s.id = se.sequence_id
+         JOIN prospects p ON p.id = se.prospect_id
+        WHERE se.id=$1 AND se.org_id=$2`,
+      [req.params.enrollId, req.orgId]
+    );
+    if (!er.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+
+    const logs = await pool.query(
+      `SELECT ssl.*, ss.step_order, ss.channel AS step_channel
+         FROM sequence_step_logs ssl
+         JOIN sequence_steps ss ON ss.id = ssl.sequence_step_id
+        WHERE ssl.enrollment_id=$1
+        ORDER BY ssl.fired_at`,
+      [req.params.enrollId]
+    );
+
+    res.json({ enrollment: er.rows[0], logs: logs.rows });
+  } catch (err) {
+    console.error('enrollment GET /:id', err);
+    res.status(500).json({ error: { message: 'Failed to load enrollment' } });
+  }
+});
+
+// POST /api/sequences/enrollments/:enrollId/stop
+router.post('/enrollments/:enrollId/stop', async (req, res) => {
+  const { reason = 'manual' } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE sequence_enrollments
+          SET status='stopped', stopped_at=NOW(), stop_reason=$1
+        WHERE id=$2 AND org_id=$3 RETURNING *`,
+      [reason, req.params.enrollId, req.orgId]
+    );
+    if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+    res.json({ enrollment: rows[0] });
+  } catch (err) {
+    console.error('enrollment stop', err);
+    res.status(500).json({ error: { message: 'Failed to stop enrollment' } });
+  }
+});
+
+// POST /api/sequences/enrollments/:enrollId/pause
+router.post('/enrollments/:enrollId/pause', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE sequence_enrollments SET status='paused'
+        WHERE id=$1 AND org_id=$2 AND status='active' RETURNING *`,
+      [req.params.enrollId, req.orgId]
+    );
+    if (!rows.length) return res.status(404).json({ error: { message: 'Not found or not active' } });
+    res.json({ enrollment: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: { message: 'Failed to pause' } });
+  }
+});
+
+// POST /api/sequences/enrollments/:enrollId/resume
+router.post('/enrollments/:enrollId/resume', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE sequence_enrollments SET status='active', next_step_due=NOW()
+        WHERE id=$1 AND org_id=$2 AND status='paused' RETURNING *`,
+      [req.params.enrollId, req.orgId]
+    );
+    if (!rows.length) return res.status(404).json({ error: { message: 'Not found or not paused' } });
+    res.json({ enrollment: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: { message: 'Failed to resume' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEQUENCES CRUD  — /:id routes last so literals above aren't shadowed
+// ─────────────────────────────────────────────────────────────────────────────
+
 // GET /api/sequences/:id
 router.get('/:id', async (req, res) => {
   try {
@@ -374,179 +551,6 @@ Return JSON:
   } catch (err) {
     console.error('ai-generate error:', err);
     res.status(500).json({ error: { message: 'AI generation failed: ' + err.message } });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ENROLL
-// ─────────────────────────────────────────────────────────────────────────────
-
-// POST /api/sequences/enroll
-// body: { sequenceId, prospectIds: [id, ...], generatedSteps?: [{prospect_id, steps:[{step_order,subject,body}]}] }
-router.post('/enroll', async (req, res) => {
-  const { sequenceId, prospectIds, generatedSteps } = req.body;
-  if (!sequenceId || !Array.isArray(prospectIds) || prospectIds.length === 0) {
-    return res.status(400).json({ error: { message: 'sequenceId and prospectIds[] are required' } });
-  }
-
-  // Validate sequence belongs to org
-  const seqRes = await pool.query(
-    `SELECT * FROM sequences WHERE id=$1 AND org_id=$2 AND status='active'`,
-    [sequenceId, req.orgId]
-  );
-  if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Sequence not found' } });
-
-  // Get first step to calculate next_step_due
-  const firstStepRes = await pool.query(
-    `SELECT delay_days FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order LIMIT 1`,
-    [sequenceId]
-  );
-  const firstDelayDays = firstStepRes.rows[0]?.delay_days ?? 0;
-
-  const enrolled = [];
-  const skipped  = [];
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    for (const prospectId of prospectIds) {
-      try {
-        const nextDue = calcDueDate(firstDelayDays);
-        const er = await client.query(
-          `INSERT INTO sequence_enrollments
-                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due)
-                VALUES ($1,$2,$3,$4,$5)
-           ON CONFLICT (sequence_id, prospect_id) DO NOTHING
-           RETURNING *`,
-          [req.orgId, sequenceId, prospectId, req.user.userId, nextDue]
-        );
-        if (er.rows.length) {
-          enrolled.push(er.rows[0]);
-        } else {
-          skipped.push({ prospectId, reason: 'already enrolled' });
-        }
-      } catch (err) {
-        skipped.push({ prospectId, reason: err.message });
-      }
-    }
-
-    await client.query('COMMIT');
-    res.json({ enrolled: enrolled.length, skipped, enrollments: enrolled });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('enroll error', err);
-    res.status(500).json({ error: { message: 'Enrollment failed' } });
-  } finally {
-    client.release();
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ENROLLMENTS
-// ─────────────────────────────────────────────────────────────────────────────
-
-// GET /api/sequences/enrollments
-router.get('/enrollments', async (req, res) => {
-  const { prospectId, status } = req.query;
-  try {
-    let query = `
-      SELECT se.*,
-             s.name AS sequence_name,
-             p.first_name, p.last_name, p.email, p.company_name
-        FROM sequence_enrollments se
-        JOIN sequences s     ON s.id = se.sequence_id
-        JOIN prospects p     ON p.id = se.prospect_id
-       WHERE se.org_id = $1`;
-    const params = [req.orgId];
-
-    if (prospectId) { params.push(prospectId); query += ` AND se.prospect_id = $${params.length}`; }
-    if (status)     { params.push(status);     query += ` AND se.status = $${params.length}`; }
-
-    query += ' ORDER BY se.enrolled_at DESC LIMIT 200';
-    const { rows } = await pool.query(query, params);
-    res.json({ enrollments: rows });
-  } catch (err) {
-    console.error('enrollments GET', err);
-    res.status(500).json({ error: { message: 'Failed to load enrollments' } });
-  }
-});
-
-// GET /api/sequences/enrollments/:enrollId
-router.get('/enrollments/:enrollId', async (req, res) => {
-  try {
-    const er = await pool.query(
-      `SELECT se.*, s.name AS sequence_name,
-              p.first_name, p.last_name, p.email, p.company_name
-         FROM sequence_enrollments se
-         JOIN sequences s ON s.id = se.sequence_id
-         JOIN prospects p ON p.id = se.prospect_id
-        WHERE se.id=$1 AND se.org_id=$2`,
-      [req.params.enrollId, req.orgId]
-    );
-    if (!er.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
-
-    const logs = await pool.query(
-      `SELECT ssl.*, ss.step_order, ss.channel AS step_channel
-         FROM sequence_step_logs ssl
-         JOIN sequence_steps ss ON ss.id = ssl.sequence_step_id
-        WHERE ssl.enrollment_id=$1
-        ORDER BY ssl.fired_at`,
-      [req.params.enrollId]
-    );
-
-    res.json({ enrollment: er.rows[0], logs: logs.rows });
-  } catch (err) {
-    console.error('enrollment GET /:id', err);
-    res.status(500).json({ error: { message: 'Failed to load enrollment' } });
-  }
-});
-
-// POST /api/sequences/enrollments/:enrollId/stop
-router.post('/enrollments/:enrollId/stop', async (req, res) => {
-  const { reason = 'manual' } = req.body;
-  try {
-    const { rows } = await pool.query(
-      `UPDATE sequence_enrollments
-          SET status='stopped', stopped_at=NOW(), stop_reason=$1
-        WHERE id=$2 AND org_id=$3 RETURNING *`,
-      [reason, req.params.enrollId, req.orgId]
-    );
-    if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
-    res.json({ enrollment: rows[0] });
-  } catch (err) {
-    console.error('enrollment stop', err);
-    res.status(500).json({ error: { message: 'Failed to stop enrollment' } });
-  }
-});
-
-// POST /api/sequences/enrollments/:enrollId/pause
-router.post('/enrollments/:enrollId/pause', async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `UPDATE sequence_enrollments SET status='paused'
-        WHERE id=$1 AND org_id=$2 AND status='active' RETURNING *`,
-      [req.params.enrollId, req.orgId]
-    );
-    if (!rows.length) return res.status(404).json({ error: { message: 'Not found or not active' } });
-    res.json({ enrollment: rows[0] });
-  } catch (err) {
-    res.status(500).json({ error: { message: 'Failed to pause' } });
-  }
-});
-
-// POST /api/sequences/enrollments/:enrollId/resume
-router.post('/enrollments/:enrollId/resume', async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `UPDATE sequence_enrollments SET status='active', next_step_due=NOW()
-        WHERE id=$1 AND org_id=$2 AND status='paused' RETURNING *`,
-      [req.params.enrollId, req.orgId]
-    );
-    if (!rows.length) return res.status(404).json({ error: { message: 'Not found or not paused' } });
-    res.json({ enrollment: rows[0] });
-  } catch (err) {
-    res.status(500).json({ error: { message: 'Failed to resume' } });
   }
 });
 
