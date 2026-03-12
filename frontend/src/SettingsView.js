@@ -506,10 +506,7 @@ function OrgConnectionsSettings() {
   );
 }
 
-// ── IntegrationsSettings — kept for backward compat, routes to MyConnectionsSettings
-function IntegrationsSettings({ readOnly = false, showPersonalOnly = false }) {
-  return showPersonalOnly ? <MyConnectionsSettings /> : <OrgConnectionsSettings />;
-}
+
 
 // ════════════════════════════════════════════════════════════
 // AI AGENT
