@@ -60,9 +60,10 @@ router.get('/', async (req, res) => {
     }
 
     // ── Direction filter ──────────────────────────────────────────────────────
+    // Accept both DB values (sent/received) and frontend values (outbound/inbound)
     let directionFilter = '';
-    if (direction === 'sent')     directionFilter = `AND e.direction = 'sent'`;
-    if (direction === 'received') directionFilter = `AND e.direction = 'received'`;
+    if (direction === 'sent'     || direction === 'outbound') directionFilter = `AND e.direction = 'sent'`;
+    if (direction === 'received' || direction === 'inbound')  directionFilter = `AND e.direction = 'received'`;
 
     // ── Date range filter ─────────────────────────────────────────────────────
     let dateFilter = '';
