@@ -328,15 +328,44 @@ router.post('/sync', async (req, res) => {
 
     // 2. Load all prospect emails for this org (for fast lookup)
     const prospectResult = await db.query(
-      `SELECT id, email FROM prospects
+      `SELECT id, email, company_domain FROM prospects
        WHERE org_id = $1 AND deleted_at IS NULL AND email IS NOT NULL`,
       [orgId]
     );
 
-    // Build a map: lowercased prospect email → prospect id
+    // Map 1: lowercased prospect email → prospect id  (exact match)
     const prospectByEmail = {};
+    // Map 2: lowercased prospect email domain → prospect id  (domain match for auto-replies)
+    const prospectByDomain = {};
     for (const p of prospectResult.rows) {
-      if (p.email) prospectByEmail[p.email.toLowerCase().trim()] = p.id;
+      if (p.email) {
+        const addr = p.email.toLowerCase().trim();
+        prospectByEmail[addr] = p.id;
+        const domain = addr.split('@')[1];
+        if (domain && !prospectByDomain[domain]) {
+          // Only store first prospect per domain to avoid false matches at large companies
+          // We will validate further using the to_address check below
+          prospectByDomain[domain] = p.id;
+        }
+      }
+    }
+
+    // Map 3: to_address of already-sent outreach emails → prospect id
+    // This lets us match replies even when from_address differs (e.g. auto-reply servers)
+    const sentEmailsResult = await db.query(
+      `SELECT DISTINCT to_address, prospect_id
+       FROM emails
+       WHERE org_id = $1
+         AND prospect_id IS NOT NULL
+         AND direction = 'sent'
+         AND to_address IS NOT NULL`,
+      [orgId]
+    );
+    const prospectBySentTo = {};
+    for (const row of sentEmailsResult.rows) {
+      if (row.to_address) {
+        prospectBySentTo[row.to_address.toLowerCase().trim()] = row.prospect_id;
+      }
     }
 
     const sinceDate = new Date();
@@ -391,7 +420,7 @@ router.post('/sync', async (req, res) => {
           const listRes = await gmail.users.messages.list({
             userId: 'me',
             maxResults: 100,
-            q: `in:inbox after:${sinceFormatted}`,
+            q: `after:${sinceFormatted}`,  // no folder filter — catches auto-replies in Updates/other tabs
           });
 
           const messageIds = listRes.data.messages || [];
@@ -463,14 +492,40 @@ router.post('/sync', async (req, res) => {
           }
         }
 
-        // 4. Match each email's from address to a prospect
+        // 4. Match each email to a prospect using 3 strategies
         for (const email of rawEmails) {
-          // Parse "Name <email@domain.com>" format
-          const fromRaw = email.fromAddress || '';
-          const fromMatch = fromRaw.match(/<(.+?)>/) || [];
-          const fromAddr = (fromMatch[1] || fromRaw).toLowerCase().trim();
+          const fromRaw    = email.fromAddress || '';
+          const fromMatch  = fromRaw.match(/<(.+?)>/);
+          const fromAddr   = (fromMatch ? fromMatch[1] : fromRaw).toLowerCase().trim();
+          const fromDomain = fromAddr.split('@')[1] || '';
 
-          const prospectId = prospectByEmail[fromAddr];
+          // Parse to_addresses
+          const toAddrs = (email.toAddress || '').split(',').map(a => {
+            const m = a.trim().match(/<(.+?)>/);
+            return (m ? m[1] : a).toLowerCase().trim();
+          }).filter(Boolean);
+
+          // Strategy 1: exact from_address match (normal replies)
+          let prospectId = prospectByEmail[fromAddr];
+
+          // Strategy 2: to_address matches a prospect we previously sent to
+          // Catches auto-replies where from_address is a mail server / noreply
+          if (!prospectId) {
+            for (const toAddr of toAddrs) {
+              if (prospectBySentTo[toAddr]) { prospectId = prospectBySentTo[toAddr]; break; }
+            }
+          }
+
+          // Strategy 3: domain match — only when email arrived at our sender account
+          // Avoids false positives at large orgs with multiple prospects per domain
+          if (!prospectId && fromDomain) {
+            const domainProspectId = prospectByDomain[fromDomain];
+            if (domainProspectId) {
+              const arrivedAtSender = toAddrs.some(a => a === account.email.toLowerCase());
+              if (arrivedAtSender) prospectId = domainProspectId;
+            }
+          }
+
           if (!prospectId) { skipped++; continue; } // not a known prospect
 
           // 5. Upsert into emails table — skip if external_id already exists
