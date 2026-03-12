@@ -149,13 +149,30 @@ router.get('/pipeline/summary', async (req, res) => {
     }
     actionParams.push(weekStart);
 
+    // Outreach/WK — count sent emails directly (more reliable than action rows)
+    // Responses/WK — count received emails (replies) this week
+    let emailOwnerFilter = '';
+    const emailParams = [req.orgId];
+    if (scope === 'team' && req.subordinateIds?.length > 0) {
+      const teamIds = [req.user.userId, ...req.subordinateIds];
+      emailOwnerFilter = `AND e.user_id = ANY($${emailParams.length + 1}::int[])`;
+      emailParams.push(teamIds);
+    } else if (scope !== 'org') {
+      emailOwnerFilter = `AND e.user_id = $${emailParams.length + 1}`;
+      emailParams.push(req.user.userId);
+    }
+    emailParams.push(weekStart);
+
     const outreachResult = await db.query(
       `SELECT
-         COUNT(CASE WHEN status = 'completed' AND channel IS NOT NULL THEN 1 END) AS outreach_this_week,
-         COUNT(CASE WHEN outcome IN ('replied','call_connected','meeting_booked') THEN 1 END) AS responses_this_week
-       FROM prospecting_actions
-       WHERE org_id = $1 ${actionOwnerFilter} AND created_at >= $${actionParams.length}`,
-      actionParams
+         COUNT(CASE WHEN e.direction = 'sent' THEN 1 END)     AS outreach_this_week,
+         COUNT(CASE WHEN e.direction IN ('received','inbound') THEN 1 END) AS responses_this_week
+       FROM emails e
+       WHERE e.org_id = $1
+         AND e.prospect_id IS NOT NULL
+         ${emailOwnerFilter}
+         AND e.sent_at >= $${emailParams.length}`,
+      emailParams
     );
 
     res.json({

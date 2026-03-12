@@ -755,7 +755,9 @@ router.post('/sync', async (req, res) => {
                 if (currentStage === 'contacted') {
                   await db.query(
                     `UPDATE prospects
-                     SET stage = 'engaged', updated_at = CURRENT_TIMESTAMP
+                     SET stage = 'engaged',
+                         last_response_at = CURRENT_TIMESTAMP,
+                         updated_at = CURRENT_TIMESTAMP
                      WHERE id = $1 AND org_id = $2`,
                     [prospectId, orgId]
                   );
@@ -779,6 +781,14 @@ router.post('/sync', async (req, res) => {
                   );
 
                   console.log(`    🎯 Stage advanced: contacted → engaged for prospectId=${prospectId}`);
+                } else {
+                  // Already past contacted — just update last_response_at
+                  await db.query(
+                    `UPDATE prospects
+                     SET last_response_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $1 AND org_id = $2 AND last_response_at IS NULL`,
+                    [prospectId, orgId]
+                  );
                 }
 
                 // Update Responses/WK — mark the most recent completed outreach
