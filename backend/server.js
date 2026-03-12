@@ -68,6 +68,9 @@ const handoversRoutes      = require('./routes/handovers.routes');
 // ── Service / Customer Support Module ────────────────────────
 const supportRoutes = require('./routes/support.routes');
 
+// ── Sequences (Prospecting Phase 3) ──────────────────────────
+const sequencesRoutes = require('./routes/sequences.routes');
+
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
 // ─────────────────────────────────────────────────────────────
@@ -214,6 +217,9 @@ app.use('/api/handovers',       handoversRoutes);
 // ─── Service / Customer Support Module ───────────────────────
 app.use('/api/support', supportRoutes);
 
+// ─── Sequences (Prospecting Phase 3) ─────────────────────────
+app.use('/api/sequences', sequencesRoutes);
+
 // ─── Public org context ───────────────────────────────────────
 const authenticateToken   = require('./middleware/auth.middleware');
 const { orgContext }      = require('./middleware/orgContext.middleware');
@@ -308,8 +314,22 @@ app.listen(PORT, () => {
       }
     });
 
+    // ── Sequences: fire due steps every 15 minutes ────────────
+    cron.schedule('*/15 * * * *', async () => {
+      try {
+        const SequenceStepFirer = require('./services/SequenceStepFirer');
+        const { fired, stopped, errors } = await SequenceStepFirer.fireDueSteps();
+        if (fired > 0 || stopped > 0) {
+          console.log(`📨 Sequences Cron: ${fired} steps fired, ${stopped} auto-stopped on reply, ${errors} errors`);
+        }
+      } catch (err) {
+        console.error('📨 Sequences Cron: error:', err.message);
+      }
+    });
+
     console.log('✅ Agentic framework cron jobs initialized (proposal expiry: hourly)');
     console.log('✅ CLM cron jobs initialized (contract expiry: hourly, notifications: daily 9am)');
+    console.log('✅ Sequences cron initialized (fire due steps: every 15 min)');
   } catch (error) {
     console.error('⚠️  Failed to initialize cron jobs:', error.message);
     console.error('   Install node-cron: npm install node-cron');

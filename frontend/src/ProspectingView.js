@@ -1,9 +1,11 @@
-// ProspectingView v1.1 — bulk CSV import enabled
+// ProspectingView v1.2 — Sequences feature added
 import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
 import OutreachComposer from './OutreachComposer';
 import CoverageScorecard from './CoverageScorecard';
 import StrapPanel from './StrapPanel';
 import CSVImportModal from './CSVImportModal';
+import SequenceBuilder from './SequenceBuilder';
+import SequenceEnrollModal from './SequenceEnrollModal';
 import './ProspectingView.css';
 import './OutreachComposer.css';
 
@@ -265,10 +267,11 @@ export default function ProspectingView() {
 
           <div className="pv-view-toggle">
             {[
-              { key: 'pipeline', icon: '▦', label: 'Pipeline' },
-              { key: 'list',     icon: '≡', label: 'List' },
-              { key: 'account',  icon: '🏢', label: 'Accounts' },
-              { key: 'inbox',    icon: '📥', label: 'Inbox' },
+              { key: 'pipeline',  icon: '▦',  label: 'Pipeline' },
+              { key: 'list',      icon: '≡',  label: 'List' },
+              { key: 'account',   icon: '🏢', label: 'Accounts' },
+              { key: 'inbox',     icon: '📥', label: 'Inbox' },
+              { key: 'sequences', icon: '📨', label: 'Sequences' },
             ].map(v => (
               <button
                 key={v.key}
@@ -352,6 +355,8 @@ export default function ProspectingView() {
           groups={Object.values(groupedByAccount)}
           onSelect={setSelectedProspect}
         />
+      ) : viewMode === 'sequences' ? (
+        <SequencesView prospects={prospects} />
       ) : (
         <ProspectingInbox scope={scope} />
       )}
@@ -674,6 +679,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   const [showOutreach, setShowOutreach] = useState(false);
   const [outreachChannel, setOutreachChannel] = useState(null);
   const [outreachAction, setOutreachAction] = useState(null);
+  const [showEnrollModal, setShowEnrollModal] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [contextData, setContextData] = useState(null);
   const [contextLoading, setContextLoading] = useState(false);
@@ -880,6 +886,16 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
           <div className="pv-detail-stage-actions">
             <button className="pv-btn-primary" style={{ fontSize: '12px', padding: '5px 12px' }} onClick={() => openOutreach()}>
               📤 New Outreach
+            </button>
+            <button
+              style={{
+                fontSize: '12px', padding: '5px 12px',
+                background: '#f0fdf4', border: '1px solid #bbf7d0',
+                color: '#065f46', borderRadius: 6, cursor: 'pointer', fontWeight: 600,
+              }}
+              onClick={() => setShowEnrollModal(true)}
+            >
+              📨 Enroll in Sequence
             </button>
             {prospect.stage === 'qualified' && (
               <button className="pv-btn-convert" onClick={handleConvert}>🎉 Convert</button>
@@ -1199,6 +1215,15 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
           )}
         </div>
 
+        {/* SequenceEnrollModal */}
+        {showEnrollModal && prospect && (
+          <SequenceEnrollModal
+            prospects={[prospect]}
+            onEnrolled={() => setShowEnrollModal(false)}
+            onClose={() => setShowEnrollModal(false)}
+          />
+        )}
+
         {/* OutreachComposer slide-out */}
         {showOutreach && prospect && (
           <OutreachComposer
@@ -1492,6 +1517,359 @@ function InfoRow({ label, value }) {
   );
 }
 
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SEQUENCES VIEW
+// Manage sequences + enrollments. Embedded in the Sequences tab of ProspectingView.
+// ═════════════════════════════════════════════════════════════════════════════
+
+function SequencesView({ prospects }) {
+  const [subTab,       setSubTab]       = useState('library');   // library | enrollments
+  const [sequences,    setSequences]    = useState([]);
+  const [enrollments,  setEnrollments]  = useState([]);
+  const [loadingSeq,   setLoadingSeq]   = useState(true);
+  const [loadingEnr,   setLoadingEnr]   = useState(false);
+  const [showBuilder,  setShowBuilder]  = useState(false);
+  const [editingSeq,   setEditingSeq]   = useState(null);   // null = new, object = edit
+  const [showEnroll,   setShowEnroll]   = useState(false);
+  const [enrollSeqId,  setEnrollSeqId]  = useState(null);
+  const [selectedProspects, setSelectedProspects] = useState([]);
+  const [error,        setError]        = useState('');
+
+  const loadSequences = useCallback(async () => {
+    setLoadingSeq(true);
+    setError('');
+    try {
+      const r = await apiFetch('/sequences');
+      setSequences(r.sequences || []);
+    } catch (err) {
+      setError('Failed to load sequences: ' + err.message);
+    } finally {
+      setLoadingSeq(false);
+    }
+  }, []);
+
+  const loadEnrollments = useCallback(async () => {
+    setLoadingEnr(true);
+    try {
+      const r = await apiFetch('/sequences/enrollments');
+      setEnrollments(r.enrollments || []);
+    } catch (err) {
+      setError('Failed to load enrollments: ' + err.message);
+    } finally {
+      setLoadingEnr(false);
+    }
+  }, []);
+
+  useEffect(() => { loadSequences(); }, [loadSequences]);
+  useEffect(() => {
+    if (subTab === 'enrollments') loadEnrollments();
+  }, [subTab, loadEnrollments]);
+
+  const handleArchive = async (seqId) => {
+    if (!window.confirm('Archive this sequence? Existing enrollments will not be affected.')) return;
+    try {
+      await apiFetch(`/sequences/${seqId}`, { method: 'DELETE' });
+      loadSequences();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleStopEnrollment = async (enrollId) => {
+    if (!window.confirm('Stop this enrollment? No further steps will fire.')) return;
+    try {
+      await apiFetch(`/sequences/enrollments/${enrollId}/stop`, { method: 'POST', body: JSON.stringify({ reason: 'manual' }) });
+      loadEnrollments();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const openEnroll = (seqId) => {
+    setEnrollSeqId(seqId);
+    // Use all prospects or let user pick — for now open modal with full list
+    setSelectedProspects(prospects.slice(0, 1)); // default: first prospect; bulk via checkboxes TBD
+    setShowEnroll(true);
+  };
+
+  const STATUS_COLORS = {
+    active:    { bg: '#d1fae5', color: '#065f46' },
+    paused:    { bg: '#fef3c7', color: '#92400e' },
+    completed: { bg: '#eff6ff', color: '#1d4ed8' },
+    stopped:   { bg: '#fee2e2', color: '#991b1b' },
+    replied:   { bg: '#f0fdf4', color: '#166534' },
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+
+      {/* ── Sub-tab bar ─────────────────────────────────────────────────── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '10px 16px', borderBottom: '1px solid #e5e7eb', background: '#fff', flexShrink: 0,
+      }}>
+        <div style={{ display: 'flex', gap: 0 }}>
+          {[
+            { key: 'library',     label: `📚 Library (${sequences.length})` },
+            { key: 'enrollments', label: '🗓 Enrollments' },
+          ].map(t => (
+            <button
+              key={t.key}
+              onClick={() => setSubTab(t.key)}
+              style={{
+                padding: '6px 16px', border: 'none', borderRadius: 7,
+                background: subTab === t.key ? '#0F9D8E' : 'transparent',
+                color: subTab === t.key ? '#fff' : '#6b7280',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                marginRight: 2,
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {subTab === 'library' && (
+          <button
+            onClick={() => { setEditingSeq(null); setShowBuilder(true); }}
+            style={{
+              padding: '7px 16px', borderRadius: 7, border: 'none',
+              background: '#0F9D8E', color: '#fff',
+              fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            + New Sequence
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <div style={{ margin: '10px 16px 0', padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 7, fontSize: 12, color: '#dc2626' }}>
+          ⚠️ {error}
+        </div>
+      )}
+
+      {/* ── Library tab ─────────────────────────────────────────────────── */}
+      {subTab === 'library' && (
+        <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+          {loadingSeq ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading sequences…</div>
+          ) : sequences.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 60 }}>
+              <div style={{ fontSize: 36, marginBottom: 10 }}>📨</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#374151', marginBottom: 6 }}>No sequences yet</div>
+              <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 18 }}>
+                Build a multi-step outreach sequence, then enroll prospects to automate follow-ups.
+              </div>
+              <button
+                onClick={() => { setEditingSeq(null); setShowBuilder(true); }}
+                style={{
+                  padding: '9px 22px', borderRadius: 8, border: 'none',
+                  background: '#0F9D8E', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                }}
+              >
+                Create First Sequence
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+              {sequences.map(seq => (
+                <div key={seq.id} style={{
+                  border: '1px solid #e5e7eb', borderRadius: 12, background: '#fff',
+                  overflow: 'hidden',
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+                }}>
+                  <div style={{ padding: '14px 16px 10px', borderBottom: '1px solid #f3f4f6' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+                      <div style={{ fontWeight: 700, fontSize: 14, color: '#111827', lineHeight: 1.3 }}>
+                        {seq.name}
+                      </div>
+                      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                        <button
+                          onClick={() => { setEditingSeq(seq); setShowBuilder(true); }}
+                          title="Edit"
+                          style={{ padding: '3px 8px', borderRadius: 5, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', fontSize: 11, cursor: 'pointer' }}
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={() => handleArchive(seq.id)}
+                          title="Archive"
+                          style={{ padding: '3px 8px', borderRadius: 5, border: '1px solid #e5e7eb', background: '#fff', color: '#9ca3af', fontSize: 11, cursor: 'pointer' }}
+                        >
+                          🗃
+                        </button>
+                      </div>
+                    </div>
+                    {seq.description && (
+                      <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>{seq.description}</div>
+                    )}
+                  </div>
+
+                  <div style={{ padding: '10px 16px', display: 'flex', gap: 16, fontSize: 12 }}>
+                    <span style={{ color: '#374151', fontWeight: 600 }}>{seq.step_count || 0} steps</span>
+                    {seq.enrollment_count > 0 && (
+                      <span style={{ color: '#0F9D8E', fontWeight: 600 }}>{seq.enrollment_count} active</span>
+                    )}
+                    <span style={{ color: '#9ca3af', fontSize: 11 }}>
+                      {seq.created_at ? new Date(seq.created_at).toLocaleDateString() : ''}
+                    </span>
+                  </div>
+
+                  <div style={{ padding: '0 16px 14px', display: 'flex', gap: 8 }}>
+                    <button
+                      onClick={() => openEnroll(seq.id)}
+                      style={{
+                        flex: 1, padding: '7px', borderRadius: 7,
+                        background: '#f0fdf4', border: '1px solid #bbf7d0',
+                        color: '#065f46', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                      }}
+                    >
+                      🚀 Enroll Prospect
+                    </button>
+                    <button
+                      onClick={() => { setSubTab('enrollments'); loadEnrollments(); }}
+                      style={{
+                        padding: '7px 12px', borderRadius: 7,
+                        border: '1px solid #e5e7eb', background: '#fff',
+                        color: '#6b7280', fontSize: 12, cursor: 'pointer',
+                      }}
+                    >
+                      📊 View Enrollments
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Enrollments tab ─────────────────────────────────────────────── */}
+      {subTab === 'enrollments' && (
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {loadingEnr ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading…</div>
+          ) : enrollments.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 60, color: '#9ca3af' }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>📭</div>
+              No enrollments yet. Enroll prospects from the Library tab.
+            </div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
+                  {['Prospect', 'Sequence', 'Status', 'Step', 'Next Due', 'Enrolled', ''].map(h => (
+                    <th key={h} style={{
+                      padding: '9px 14px', textAlign: 'left', fontSize: 11,
+                      fontWeight: 700, color: '#6b7280', textTransform: 'uppercase',
+                      letterSpacing: 0.5, whiteSpace: 'nowrap',
+                    }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {enrollments.map(e => {
+                  const sc = STATUS_COLORS[e.status] || { bg: '#f3f4f6', color: '#6b7280' };
+                  return (
+                    <tr key={e.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                      <td style={{ padding: '9px 14px' }}>
+                        <div style={{ fontWeight: 600, color: '#1a202c' }}>{e.first_name} {e.last_name}</div>
+                        {e.email && <div style={{ fontSize: 11, color: '#94a3b8' }}>{e.email}</div>}
+                      </td>
+                      <td style={{ padding: '9px 14px', color: '#374151' }}>{e.sequence_name}</td>
+                      <td style={{ padding: '9px 14px' }}>
+                        <span style={{
+                          padding: '2px 9px', borderRadius: 10, fontSize: 11, fontWeight: 600,
+                          background: sc.bg, color: sc.color,
+                        }}>
+                          {e.status}
+                        </span>
+                        {e.stop_reason && (
+                          <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 1 }}>{e.stop_reason}</div>
+                        )}
+                      </td>
+                      <td style={{ padding: '9px 14px', color: '#374151', textAlign: 'center' }}>
+                        {e.status === 'active' ? e.current_step : '—'}
+                      </td>
+                      <td style={{ padding: '9px 14px', color: '#6b7280', fontSize: 12, whiteSpace: 'nowrap' }}>
+                        {e.next_step_due && e.status === 'active'
+                          ? new Date(e.next_step_due).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+                          : '—'}
+                      </td>
+                      <td style={{ padding: '9px 14px', color: '#9ca3af', fontSize: 11, whiteSpace: 'nowrap' }}>
+                        {new Date(e.enrolled_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                      </td>
+                      <td style={{ padding: '9px 14px' }}>
+                        {e.status === 'active' && (
+                          <button
+                            onClick={() => handleStopEnrollment(e.id)}
+                            style={{
+                              padding: '3px 10px', borderRadius: 6, fontSize: 11,
+                              border: '1px solid #fecaca', background: '#fef2f2',
+                              color: '#dc2626', cursor: 'pointer', fontWeight: 500,
+                            }}
+                          >
+                            Stop
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* ── SequenceBuilder slide-over ───────────────────────────────────── */}
+      {showBuilder && (
+        <div
+          onClick={() => setShowBuilder(false)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)',
+            zIndex: 900, display: 'flex', justifyContent: 'flex-end',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: 620, maxWidth: '95vw', height: '100%',
+              background: '#fff', boxShadow: '-8px 0 32px rgba(0,0,0,0.12)',
+              display: 'flex', flexDirection: 'column', overflowY: 'auto',
+            }}
+          >
+            <SequenceBuilder
+              sequence={editingSeq}
+              onSave={(saved) => {
+                setShowBuilder(false);
+                loadSequences();
+              }}
+              onClose={() => setShowBuilder(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ── SequenceEnrollModal ──────────────────────────────────────────── */}
+      {showEnroll && selectedProspects.length > 0 && (
+        <SequenceEnrollModal
+          prospects={selectedProspects}
+          preSequenceId={enrollSeqId}
+          onEnrolled={(result) => {
+            setShowEnroll(false);
+            loadEnrollments();
+            setSubTab('enrollments');
+          }}
+          onClose={() => setShowEnroll(false)}
+        />
+      )}
+    </div>
+  );
+}
 
 
 // ═════════════════════════════════════════════════════════════════════════════

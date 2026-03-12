@@ -503,6 +503,36 @@ export const apiService = {
   },
 
   // ══════════════════════════════════════════════════════════
+  // Sequences — Prospecting Phase 3
+  // ══════════════════════════════════════════════════════════
+  sequences: {
+    // ── Library ────────────────────────────────────────────────────────────
+    getAll:  ()           => api.get('/sequences'),
+    getById: (id)         => api.get(`/sequences/${id}`),
+    create:  (data)       => api.post('/sequences', data),
+    update:  (id, data)   => api.put(`/sequences/${id}`, data),
+    archive: (id)         => api.delete(`/sequences/${id}`),
+    // ── Steps ──────────────────────────────────────────────────────────────
+    addStep:     (seqId, data)          => api.post(`/sequences/${seqId}/steps`, data),
+    updateStep:  (seqId, stepId, data)  => api.put(`/sequences/${seqId}/steps/${stepId}`, data),
+    deleteStep:  (seqId, stepId)        => api.delete(`/sequences/${seqId}/steps/${stepId}`),
+    reorderSteps:(seqId, order)         => api.post(`/sequences/${seqId}/steps/reorder`, { order }),
+    // ── AI ─────────────────────────────────────────────────────────────────
+    aiGenerate: (seqId, prospectId)     => api.post(`/sequences/${seqId}/ai-generate`, { prospectId }),
+    // ── Enroll ─────────────────────────────────────────────────────────────
+    enroll: (sequenceId, prospectIds)   => api.post('/sequences/enroll', { sequenceId, prospectIds }),
+    // ── Enrollments ────────────────────────────────────────────────────────
+    getEnrollments:  (params = {})      => {
+      const qs = new URLSearchParams(params).toString();
+      return api.get(`/sequences/enrollments${qs ? '?' + qs : ''}`);
+    },
+    getEnrollment:   (enrollId)         => api.get(`/sequences/enrollments/${enrollId}`),
+    stopEnrollment:  (enrollId, reason) => api.post(`/sequences/enrollments/${enrollId}/stop`, { reason }),
+    pauseEnrollment: (enrollId)         => api.post(`/sequences/enrollments/${enrollId}/pause`),
+    resumeEnrollment:(enrollId)         => api.post(`/sequences/enrollments/${enrollId}/resume`),
+  },
+
+  // ══════════════════════════════════════════════════════════
   // Handovers — Sales → Implementation  (Phase 3)
   // ══════════════════════════════════════════════════════════
   handovers: {
