@@ -685,6 +685,65 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   const [contextData, setContextData] = useState(null);
   const [contextLoading, setContextLoading] = useState(false);
 
+  // Drafts for this prospect (pinned in Activity tab)
+  const [prospectDrafts,        setProspectDrafts]        = useState([]);
+  const [prospectDraftEdits,    setProspectDraftEdits]    = useState({});
+  const [loadingProspectDrafts, setLoadingProspectDrafts] = useState(false);
+
+  const loadProspectDrafts = useCallback(async () => {
+    setLoadingProspectDrafts(true);
+    try {
+      const r = await apiFetch(`/sequences/drafts?prospectId=${prospectId}`);
+      setProspectDrafts(r.drafts || []);
+    } catch (err) {
+      console.error('Failed to load prospect drafts:', err);
+    } finally {
+      setLoadingProspectDrafts(false);
+    }
+  }, [prospectId]);
+
+  const handleSendProspectDraft = async (draft) => {
+    const edit = prospectDraftEdits[draft.id] || {};
+    setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
+    try {
+      if (edit.subject !== undefined || edit.body !== undefined) {
+        await apiFetch(`/sequences/drafts/${draft.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            subject: edit.subject !== undefined ? edit.subject : draft.subject,
+            body:    edit.body    !== undefined ? edit.body    : draft.body,
+          }),
+        });
+      }
+      await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
+      setProspectDrafts(prev => prev.filter(d => d.id !== draft.id));
+      setProspectDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
+      // Refresh activity feed to show the sent step
+      try {
+        const res = await apiFetch(`/prospects/${prospectId}`);
+        setActivities(res.activities || []);
+      } catch (_) {}
+    } catch (err) {
+      setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: false, error: err.message } }));
+    }
+  };
+
+  const handleDiscardProspectDraft = async (draftId) => {
+    if (!window.confirm('Discard this draft? The step will be skipped and the sequence will advance.')) return;
+    try {
+      await apiFetch(`/sequences/drafts/${draftId}`, { method: 'DELETE' });
+      setProspectDrafts(prev => prev.filter(d => d.id !== draftId));
+      setProspectDraftEdits(prev => { const n = { ...prev }; delete n[draftId]; return n; });
+      // Refresh activities to show skipped step
+      try {
+        const res = await apiFetch(`/prospects/${prospectId}`);
+        setActivities(res.activities || []);
+      } catch (_) {}
+    } catch (err) {
+      console.error('Failed to discard draft:', err);
+    }
+  };
+
   useEffect(() => {
     const fetchDetail = async () => {
       try {
@@ -722,7 +781,8 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
 
   const handleTabChange = (t) => {
     setActiveTab(t);
-    if (t === 'intel') fetchContext();
+    if (t === 'intel')    fetchContext();
+    if (t === 'activity') loadProspectDrafts();
   };
 
   const handleStageChange = async (newStage) => {
@@ -1212,9 +1272,63 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
 
           {activeTab === 'activity' && (
             <div className="pv-activity-tab">
-              {activities.length === 0 ? (
+
+              {/* ── Pending drafts pinned at top ─────────────────────────── */}
+              {loadingProspectDrafts && (
+                <div style={{ padding: '10px 0', fontSize: 12, color: '#9ca3af', textAlign: 'center' }}>
+                  Loading drafts…
+                </div>
+              )}
+              {!loadingProspectDrafts && prospectDrafts.length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{
+                    fontSize: 11, fontWeight: 700, color: '#374151',
+                    textTransform: 'uppercase', letterSpacing: 0.5,
+                    marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6,
+                  }}>
+                    <span>📋 Pending Drafts</span>
+                    <span style={{
+                      background: '#fef3c7', color: '#92400e',
+                      fontSize: 10, fontWeight: 700,
+                      padding: '1px 7px', borderRadius: 10,
+                      border: '1px solid #fde68a',
+                    }}>
+                      {prospectDrafts.length}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {prospectDrafts.map(draft => {
+                      const edit    = prospectDraftEdits[draft.id] || {};
+                      const subject = edit.subject !== undefined ? edit.subject : draft.subject;
+                      const body    = edit.body    !== undefined ? edit.body    : draft.body;
+                      const isOpen  = !!edit.open;
+                      return (
+                        <DraftCard
+                          key={draft.id}
+                          draft={draft}
+                          subject={subject}
+                          body={body}
+                          isOpen={isOpen}
+                          compact={true}
+                          sending={!!edit.sending}
+                          sendError={edit.error || null}
+                          onToggle={() => setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], open: !isOpen } }))}
+                          onSubjectChange={v => setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], subject: v } }))}
+                          onBodyChange={v => setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], body: v } }))}
+                          onSend={() => handleSendProspectDraft(draft)}
+                          onDiscard={() => handleDiscardProspectDraft(draft.id)}
+                        />
+                      );
+                    })}
+                  </div>
+                  <div style={{ borderTop: '1px solid #f0f0f0', margin: '14px 0 10px' }} />
+                </div>
+              )}
+
+              {/* ── Activity feed ────────────────────────────────────────── */}
+              {activities.length === 0 && prospectDrafts.length === 0 ? (
                 <div className="pv-empty-state">No activity yet</div>
-              ) : (
+              ) : activities.length > 0 ? (
                 activities.map(a => (
                   <div key={a.id} className="pv-activity-item">
                     <span className="pv-activity-type">{a.activity_type}</span>
@@ -1222,7 +1336,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                     <span className="pv-activity-time">{formatDate(a.created_at)}</span>
                   </div>
                 ))
-              )}
+              ) : null}
             </div>
           )}
         </div>
@@ -1535,6 +1649,145 @@ function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
 }
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DRAFT CARD  — reused in SequencesView Drafts tab and prospect Activity tab
+// ─────────────────────────────────────────────────────────────────────────────
+
+function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle, onSubjectChange, onBodyChange, onSend, onDiscard, compact = false }) {
+  const overdue = draft.isOverdue || (draft.scheduledSendAt && new Date(draft.scheduledSendAt) < new Date());
+  const scheduledLabel = draft.scheduledSendAt
+    ? new Date(draft.scheduledSendAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : null;
+
+  return (
+    <div style={{
+      border: `1.5px solid ${overdue ? '#fecaca' : '#e5e7eb'}`,
+      borderRadius: 10, background: '#fff', overflow: 'hidden',
+    }}>
+      {/* Header row */}
+      <div
+        onClick={onToggle}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '10px 14px', cursor: 'pointer',
+          background: overdue ? '#fef2f2' : '#f9fafb',
+        }}
+      >
+        <span style={{ fontSize: 14 }}>✉️</span>
+
+        {!compact && (
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', flexShrink: 0 }}>
+            {draft.prospect?.firstName} {draft.prospect?.lastName}
+            {draft.prospect?.companyName && (
+              <span style={{ fontWeight: 400, color: '#9ca3af' }}> · {draft.prospect.companyName}</span>
+            )}
+          </div>
+        )}
+
+        <div style={{
+          fontSize: 11, color: '#6b7280',
+          padding: '2px 8px', borderRadius: 10,
+          background: '#eff6ff', border: '1px solid #bfdbfe',
+          flexShrink: 0,
+        }}>
+          {draft.sequenceName} · step {draft.stepOrder}
+        </div>
+
+        <div style={{
+          flex: 1, fontSize: 12, color: '#374151',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {subject || '(no subject)'}
+        </div>
+
+        {overdue ? (
+          <span style={{
+            fontSize: 10, fontWeight: 700, padding: '2px 8px',
+            borderRadius: 10, background: '#fee2e2', color: '#dc2626', flexShrink: 0,
+          }}>
+            OVERDUE
+          </span>
+        ) : scheduledLabel && (
+          <span style={{ fontSize: 11, color: '#9ca3af', flexShrink: 0 }}>{scheduledLabel}</span>
+        )}
+
+        <span style={{ fontSize: 11, color: '#9ca3af' }}>{isOpen ? '▲' : '▼'}</span>
+      </div>
+
+      {/* Expanded edit + actions */}
+      {isOpen && (
+        <div style={{ padding: 14, borderTop: '1px solid #f3f4f6', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Sender badge */}
+          {draft.suggestedSender && (
+            <div style={{ fontSize: 11, color: '#6b7280' }}>
+              Sending from:{' '}
+              <span style={{
+                fontWeight: 600, color: '#374151',
+                background: '#f3f4f6', padding: '2px 8px', borderRadius: 5,
+              }}>
+                {draft.suggestedSender.provider === 'gmail' ? '📧' : '📮'} {draft.suggestedSender.email}
+                {draft.suggestedSender.label && ` (${draft.suggestedSender.label})`}
+              </span>
+            </div>
+          )}
+
+          {/* Subject */}
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+              Subject
+            </label>
+            <input
+              value={subject}
+              onChange={e => onSubjectChange(e.target.value)}
+              style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111' }}
+            />
+          </div>
+
+          {/* Body */}
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+              Body
+            </label>
+            <textarea
+              value={body}
+              onChange={e => onBodyChange(e.target.value)}
+              rows={8}
+              style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', resize: 'vertical', lineHeight: 1.6 }}
+            />
+          </div>
+
+          {sendError && (
+            <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, color: '#dc2626' }}>
+              ⚠️ {sendError}
+            </div>
+          )}
+
+          {/* Actions */}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button
+              onClick={onDiscard}
+              style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+            >
+              🗑 Discard
+            </button>
+            <button
+              onClick={onSend}
+              disabled={sending}
+              style={{
+                padding: '7px 18px', borderRadius: 7, border: 'none',
+                background: sending ? '#9ca3af' : '#0F9D8E', color: '#fff',
+                fontSize: 12, fontWeight: 600, cursor: sending ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {sending ? '⏳ Sending…' : '📤 Send Now'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InfoRow({ label, value }) {
   if (!value && value !== 0) return null;
   return (
@@ -1553,11 +1806,13 @@ function InfoRow({ label, value }) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 function SequencesView({ prospects }) {
-  const [subTab,       setSubTab]       = useState('library');   // library | enrollments | stats
+  const [subTab,       setSubTab]       = useState('library');   // library | drafts | enrollments | stats
   const [sequences,    setSequences]    = useState([]);
   const [enrollments,  setEnrollments]  = useState([]);
+  const [drafts,       setDrafts]       = useState([]);
   const [loadingSeq,   setLoadingSeq]   = useState(true);
   const [loadingEnr,   setLoadingEnr]   = useState(false);
+  const [loadingDrafts,setLoadingDrafts]= useState(false);
   const [showBuilder,  setShowBuilder]  = useState(false);
   const [editingSeq,   setEditingSeq]   = useState(null);
   const [showEnroll,   setShowEnroll]   = useState(false);
@@ -1565,10 +1820,13 @@ function SequencesView({ prospects }) {
   const [selectedProspects, setSelectedProspects] = useState([]);
   const [error,        setError]        = useState('');
 
-  // Enrollment drill-down: which row is expanded + its step logs
+  // Enrollment drill-down
   const [expandedEnrollId,   setExpandedEnrollId]   = useState(null);
   const [expandedLogs,       setExpandedLogs]       = useState([]);
   const [loadingLogs,        setLoadingLogs]        = useState(false);
+
+  // Draft inline-edit state: { [draftId]: { subject, body, editing, sending, error } }
+  const [draftEdits,   setDraftEdits]   = useState({});
 
   const toggleEnrollLogs = async (enrollId) => {
     if (expandedEnrollId === enrollId) {
@@ -1586,6 +1844,51 @@ function SequencesView({ prospects }) {
       setError('Failed to load step history: ' + err.message);
     } finally {
       setLoadingLogs(false);
+    }
+  };
+
+  const loadDrafts = useCallback(async () => {
+    setLoadingDrafts(true);
+    try {
+      const r = await apiFetch('/sequences/drafts');
+      setDrafts(r.drafts || []);
+    } catch (err) {
+      setError('Failed to load drafts: ' + err.message);
+    } finally {
+      setLoadingDrafts(false);
+    }
+  }, []);
+
+  const handleSendDraft = async (draft) => {
+    const edit = draftEdits[draft.id] || {};
+    setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
+    try {
+      // Save edits first if any
+      if (edit.subject !== undefined || edit.body !== undefined) {
+        await apiFetch(`/sequences/drafts/${draft.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            subject: edit.subject !== undefined ? edit.subject : draft.subject,
+            body:    edit.body    !== undefined ? edit.body    : draft.body,
+          }),
+        });
+      }
+      await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
+      setDrafts(prev => prev.filter(d => d.id !== draft.id));
+      setDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
+    } catch (err) {
+      setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: false, error: err.message } }));
+    }
+  };
+
+  const handleDiscardDraft = async (draftId) => {
+    if (!window.confirm('Discard this draft? The step will be skipped and the sequence will advance.')) return;
+    try {
+      await apiFetch(`/sequences/drafts/${draftId}`, { method: 'DELETE' });
+      setDrafts(prev => prev.filter(d => d.id !== draftId));
+      setDraftEdits(prev => { const n = { ...prev }; delete n[draftId]; return n; });
+    } catch (err) {
+      setError('Failed to discard draft: ' + err.message);
     }
   };
 
@@ -1642,7 +1945,8 @@ function SequencesView({ prospects }) {
   useEffect(() => { loadSequences(); }, [loadSequences]);
   useEffect(() => {
     if (subTab === 'enrollments') loadEnrollments();
-  }, [subTab, loadEnrollments]);
+    if (subTab === 'drafts')      loadDrafts();
+  }, [subTab, loadEnrollments, loadDrafts]);
 
   const handleArchive = async (seqId) => {
     if (!window.confirm('Archive this sequence? Existing enrollments will not be affected.')) return;
@@ -1690,6 +1994,7 @@ function SequencesView({ prospects }) {
         <div style={{ display: 'flex', gap: 0 }}>
           {[
             { key: 'library',     label: `📚 Library (${sequences.length})` },
+            { key: 'drafts',      label: `📋 Drafts${drafts.length > 0 ? ` (${drafts.length})` : ''}` },
             { key: 'enrollments', label: '🗓 Enrollments' },
             { key: 'stats',       label: '📊 Stats' },
           ].map(t => (
@@ -1830,6 +2135,48 @@ function SequencesView({ prospects }) {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Drafts tab ──────────────────────────────────────────────────── */}
+      {subTab === 'drafts' && (
+        <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+          {loadingDrafts ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading drafts…</div>
+          ) : drafts.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 60 }}>
+              <div style={{ fontSize: 32, marginBottom: 10 }}>✅</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#374151', marginBottom: 6 }}>No drafts waiting</div>
+              <div style={{ fontSize: 13, color: '#9ca3af' }}>
+                Drafted emails will appear here when sequences fire steps that require review.
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {drafts.map(draft => {
+                const edit    = draftEdits[draft.id] || {};
+                const subject = edit.subject !== undefined ? edit.subject : draft.subject;
+                const body    = edit.body    !== undefined ? edit.body    : draft.body;
+                const isOpen  = !!edit.open;
+                return (
+                  <DraftCard
+                    key={draft.id}
+                    draft={draft}
+                    subject={subject}
+                    body={body}
+                    isOpen={isOpen}
+                    sending={!!edit.sending}
+                    sendError={edit.error || null}
+                    onToggle={() => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], open: !isOpen } }))}
+                    onSubjectChange={v => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], subject: v } }))}
+                    onBodyChange={v => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], body: v } }))}
+                    onSend={() => handleSendDraft(draft)}
+                    onDiscard={() => handleDiscardDraft(draft.id)}
+                  />
+                );
+              })}
             </div>
           )}
         </div>

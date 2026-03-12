@@ -60,6 +60,7 @@ function blankStep(order) {
     subject_template: '',
     body_template:    '',
     task_note:        '',
+    require_approval: null, // null = inherit from sequence
   };
 }
 
@@ -70,15 +71,19 @@ function blankStep(order) {
 export default function SequenceBuilder({ sequence: initialSequence, onSave, onClose }) {
   const isEdit = !!initialSequence?.id;
 
-  const [name,     setName]     = useState(initialSequence?.name        || '');
-  const [toneGoal, setToneGoal] = useState(initialSequence?.description || '');
-  const [steps,    setSteps]    = useState(
+  const [name,            setName]            = useState(initialSequence?.name        || '');
+  const [toneGoal,        setToneGoal]        = useState(initialSequence?.description || '');
+  const [requireApproval, setRequireApproval] = useState(
+    initialSequence?.require_approval !== undefined ? initialSequence.require_approval : true
+  );
+  const [steps, setSteps] = useState(
     (initialSequence?.steps || []).length > 0
       ? initialSequence.steps.map(s => ({
           ...s,
-          _id:          s.id,
-          mode:         s.mode || 'manual',
-          ai_generated: false,
+          _id:              s.id,
+          mode:             s.mode || 'manual',
+          ai_generated:     false,
+          require_approval: s.require_approval !== undefined ? s.require_approval : null,
         }))
       : [blankStep(1)]
   );
@@ -195,7 +200,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
       if (isEdit) {
         await apiFetch(`/sequences/${initialSequence.id}`, {
           method: 'PUT',
-          body:   JSON.stringify({ name, description: toneGoal }),
+          body:   JSON.stringify({ name, description: toneGoal, require_approval: requireApproval }),
         });
         const existingIds = (initialSequence.steps || []).map(s => s.id);
         const currentIds  = stepsPayload.filter(s => s.id).map(s => s.id);
@@ -226,7 +231,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
       } else {
         const res = await apiFetch('/sequences', {
           method: 'POST',
-          body:   JSON.stringify({ name, description: toneGoal, steps: stepsPayload }),
+          body:   JSON.stringify({ name, description: toneGoal, require_approval: requireApproval, steps: stepsPayload }),
         });
         saved = res.sequence;
       }
@@ -309,6 +314,42 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
           />
         </div>
 
+        {/* Draft approval setting */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '10px 14px', borderRadius: 8,
+          background: requireApproval ? '#f0fdf4' : '#f9fafb',
+          border: `1px solid ${requireApproval ? '#bbf7d0' : '#e5e7eb'}`,
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>
+              📋 Draft before sending
+            </div>
+            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+              {requireApproval
+                ? 'Email steps go to Drafts for review before sending (default)'
+                : 'Email steps fire automatically when due'}
+            </div>
+          </div>
+          <button
+            onClick={() => setRequireApproval(v => !v)}
+            style={{
+              position: 'relative', width: 40, height: 22, borderRadius: 11,
+              border: 'none', cursor: 'pointer', flexShrink: 0,
+              background: requireApproval ? TEAL : '#d1d5db',
+              transition: 'background 0.2s',
+            }}
+          >
+            <span style={{
+              position: 'absolute', top: 3,
+              left: requireApproval ? 21 : 3,
+              width: 16, height: 16, borderRadius: '50%',
+              background: '#fff', transition: 'left 0.2s',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+            }} />
+          </button>
+        </div>
+
         <div style={{ borderTop: '1px solid #f0f0f0' }} />
 
         {/* Steps header + Generate button */}
@@ -359,6 +400,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
               index={idx}
               total={steps.length}
               expanded={expandedStep === step._id}
+              seqRequireApproval={requireApproval}
               onToggle={() => setExpandedStep(expandedStep === step._id ? null : step._id)}
               onChange={(field, val) => updateStep(step._id, field, val)}
               onRemove={() => removeStep(step._id)}
@@ -398,10 +440,16 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
 // STEP CARD
 // ─────────────────────────────────────────────────────────────────────────────
 
-function StepCard({ step, index, total, expanded, onToggle, onChange, onRemove, onToggleMode, onMoveUp, onMoveDown }) {
+function StepCard({ step, index, total, expanded, seqRequireApproval, onToggle, onChange, onRemove, onToggleMode, onMoveUp, onMoveDown }) {
   const channelCfg = CHANNEL_OPTIONS.find(c => c.value === step.channel) || CHANNEL_OPTIONS[0];
   const isAI       = step.mode === 'ai';
   const hasContent = channelCfg.hasContent;
+
+  // Effective approval for display: step override wins, else sequence setting
+  const effectiveApproval = step.require_approval !== null && step.require_approval !== undefined
+    ? step.require_approval
+    : seqRequireApproval;
+  const isEmailChannel = step.channel === 'email';
 
   return (
     <div style={{
@@ -491,6 +539,44 @@ function StepCard({ step, index, total, expanded, onToggle, onChange, onRemove, 
               />
             </div>
           </div>
+
+          {/* Step-level approval override (email steps only) */}
+          {isEmailChannel && (
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '8px 12px', borderRadius: 7,
+              background: '#f9fafb', border: '1px solid #e5e7eb',
+            }}>
+              <div style={{ fontSize: 11, color: '#6b7280' }}>
+                <span style={{ fontWeight: 600, color: '#374151' }}>Draft setting: </span>
+                {step.require_approval === null || step.require_approval === undefined
+                  ? `Use sequence default (${seqRequireApproval ? 'draft' : 'auto-send'})`
+                  : step.require_approval ? 'Always draft' : 'Always auto-send'}
+              </div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {[
+                  { label: 'Inherit', value: null },
+                  { label: 'Draft',   value: true  },
+                  { label: 'Send',    value: false  },
+                ].map(opt => (
+                  <button
+                    key={String(opt.value)}
+                    onClick={() => onChange('require_approval', opt.value)}
+                    style={{
+                      padding: '3px 9px', borderRadius: 5, fontSize: 11, fontWeight: 600,
+                      border: '1px solid',
+                      borderColor: step.require_approval === opt.value ? TEAL : '#e5e7eb',
+                      background:  step.require_approval === opt.value ? TEAL : '#fff',
+                      color:       step.require_approval === opt.value ? '#fff' : '#6b7280',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* AI mode */}
           {isAI && (

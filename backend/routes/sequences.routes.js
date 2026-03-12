@@ -29,6 +29,8 @@
  */
 
 const express = require('express');
+const { sendEmail: sendGmailEmail }   = require('../services/googleService');
+const { sendEmail: sendOutlookEmail } = require('../services/outlookService');
 const router  = express.Router();
 
 const authenticateToken = require('../middleware/auth.middleware');
@@ -80,9 +82,9 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST /api/sequences  — body: { name, description, steps: [{channel, delay_days, subject_template, body_template, task_note}] }
+// POST /api/sequences  — body: { name, description, require_approval, steps: [{channel, delay_days, subject_template, body_template, task_note, require_approval}] }
 router.post('/', async (req, res) => {
-  const { name, description, steps = [] } = req.body;
+  const { name, description, require_approval = true, steps = [] } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: { message: 'name is required' } });
 
   const client = await pool.connect();
@@ -90,9 +92,9 @@ router.post('/', async (req, res) => {
     await client.query('BEGIN');
 
     const seqRes = await client.query(
-      `INSERT INTO sequences (org_id, name, description, created_by)
-            VALUES ($1, $2, $3, $4) RETURNING *`,
-      [req.orgId, name.trim(), description || null, req.user.userId]
+      `INSERT INTO sequences (org_id, name, description, created_by, require_approval)
+            VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [req.orgId, name.trim(), description || null, req.user.userId, require_approval]
     );
     const seq = seqRes.rows[0];
 
@@ -102,10 +104,11 @@ router.post('/', async (req, res) => {
       const sr = await client.query(
         `INSERT INTO sequence_steps
                      (sequence_id, org_id, step_order, channel, delay_days,
-                      subject_template, body_template, task_note)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+                      subject_template, body_template, task_note, require_approval)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
         [seq.id, req.orgId, i + 1, s.channel, s.delay_days ?? 0,
-         s.subject_template || null, s.body_template || null, s.task_note || null]
+         s.subject_template || null, s.body_template || null, s.task_note || null,
+         s.require_approval !== undefined ? s.require_approval : null]
       );
       insertedSteps.push(sr.rows[0]);
     }
@@ -440,12 +443,16 @@ router.get('/:id', async (req, res) => {
 
 // PUT /api/sequences/:id
 router.put('/:id', async (req, res) => {
-  const { name, description } = req.body;
+  const { name, description, require_approval } = req.body;
   try {
     const { rows } = await pool.query(
-      `UPDATE sequences SET name=$1, description=$2, updated_at=NOW()
-        WHERE id=$3 AND org_id=$4 RETURNING *`,
-      [name, description || null, req.params.id, req.orgId]
+      `UPDATE sequences SET name=$1, description=$2,
+        require_approval=COALESCE($3, require_approval),
+        updated_at=NOW()
+        WHERE id=$4 AND org_id=$5 RETURNING *`,
+      [name, description || null,
+       require_approval !== undefined ? require_approval : null,
+       req.params.id, req.orgId]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
     res.json({ sequence: rows[0] });
@@ -477,10 +484,9 @@ router.delete('/:id', async (req, res) => {
 
 // POST /api/sequences/:id/steps
 router.post('/:id/steps', async (req, res) => {
-  const { channel, delay_days, subject_template, body_template, task_note } = req.body;
+  const { channel, delay_days, subject_template, body_template, task_note, require_approval } = req.body;
   if (!channel) return res.status(400).json({ error: { message: 'channel is required' } });
   try {
-    // Get max step_order
     const maxRes = await pool.query(
       `SELECT COALESCE(MAX(step_order), 0) AS max_order FROM sequence_steps WHERE sequence_id=$1`,
       [req.params.id]
@@ -488,10 +494,12 @@ router.post('/:id/steps', async (req, res) => {
     const nextOrder = maxRes.rows[0].max_order + 1;
     const { rows } = await pool.query(
       `INSERT INTO sequence_steps
-               (sequence_id, org_id, step_order, channel, delay_days, subject_template, body_template, task_note)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+               (sequence_id, org_id, step_order, channel, delay_days,
+                subject_template, body_template, task_note, require_approval)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
       [req.params.id, req.orgId, nextOrder, channel, delay_days ?? 0,
-       subject_template || null, body_template || null, task_note || null]
+       subject_template || null, body_template || null, task_note || null,
+       require_approval !== undefined ? require_approval : null]
     );
     res.status(201).json({ step: rows[0] });
   } catch (err) {
@@ -502,15 +510,17 @@ router.post('/:id/steps', async (req, res) => {
 
 // PUT /api/sequences/:id/steps/:stepId
 router.put('/:id/steps/:stepId', async (req, res) => {
-  const { channel, delay_days, subject_template, body_template, task_note } = req.body;
+  const { channel, delay_days, subject_template, body_template, task_note, require_approval } = req.body;
   try {
     const { rows } = await pool.query(
       `UPDATE sequence_steps
           SET channel=$1, delay_days=$2, subject_template=$3, body_template=$4,
-              task_note=$5, updated_at=NOW()
-        WHERE id=$6 AND sequence_id=$7 AND org_id=$8 RETURNING *`,
+              task_note=$5, require_approval=$6, updated_at=NOW()
+        WHERE id=$7 AND sequence_id=$8 AND org_id=$9 RETURNING *`,
       [channel, delay_days ?? 0, subject_template || null, body_template || null,
-       task_note || null, req.params.stepId, req.params.id, req.orgId]
+       task_note || null,
+       require_approval !== undefined ? require_approval : null,
+       req.params.stepId, req.params.id, req.orgId]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Step not found' } });
     res.json({ step: rows[0] });
@@ -850,4 +860,458 @@ router.get('/:id/stats', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DRAFT ROUTES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /api/sequences/drafts  (?prospectId=X)
+// List all draft step logs for the current user.
+// Returns everything the UI needs to render + send the email.
+router.get('/drafts', async (req, res) => {
+  const { prospectId } = req.query;
+  try {
+    let query = `
+      SELECT
+        ssl.id, ssl.enrollment_id, ssl.subject, ssl.body,
+        ssl.scheduled_send_at, ssl.status,
+        ss.step_order, ss.channel,
+        se.sequence_id, se.enrolled_by,
+        s.name AS sequence_name,
+        p.id AS prospect_id, p.first_name, p.last_name,
+        p.email AS prospect_email, p.company_name,
+        -- Auto-select the rep's least-used active sender account
+        psa.id   AS sender_id,
+        psa.email AS sender_email,
+        psa.provider AS sender_provider,
+        psa.label AS sender_label
+      FROM sequence_step_logs ssl
+      JOIN sequence_enrollments se ON se.id  = ssl.enrollment_id
+      JOIN sequences s             ON s.id   = se.sequence_id
+      JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
+      JOIN prospects p             ON p.id   = ssl.prospect_id
+      -- Pick the rep's least-used sender via a lateral join
+      LEFT JOIN LATERAL (
+        SELECT id, email, provider, label
+          FROM prospecting_sender_accounts
+         WHERE org_id  = ssl.org_id
+           AND user_id = se.enrolled_by
+           AND is_active = true
+         ORDER BY
+           (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+           last_sent_at ASC NULLS FIRST
+         LIMIT 1
+      ) psa ON true
+      WHERE ssl.org_id = $1
+        AND ssl.status = 'draft'
+        AND se.enrolled_by = $2
+    `;
+    const params = [req.orgId, req.user.userId];
+    if (prospectId) {
+      params.push(parseInt(prospectId));
+      query += ` AND ssl.prospect_id = $${params.length}`;
+    }
+    query += ' ORDER BY ssl.scheduled_send_at ASC';
+
+    const { rows } = await pool.query(query, params);
+
+    const drafts = rows.map(r => ({
+      id:             r.id,
+      enrollmentId:   r.enrollment_id,
+      sequenceId:     r.sequence_id,
+      sequenceName:   r.sequence_name,
+      stepOrder:      r.step_order,
+      channel:        r.channel,
+      subject:        r.subject || '',
+      body:           r.body    || '',
+      scheduledSendAt: r.scheduled_send_at,
+      isOverdue:      new Date(r.scheduled_send_at) < new Date(),
+      prospect: {
+        id:          r.prospect_id,
+        firstName:   r.first_name,
+        lastName:    r.last_name,
+        email:       r.prospect_email,
+        companyName: r.company_name,
+      },
+      suggestedSender: r.sender_id ? {
+        id:       r.sender_id,
+        email:    r.sender_email,
+        provider: r.sender_provider,
+        label:    r.sender_label,
+      } : null,
+    }));
+
+    res.json({ drafts });
+  } catch (err) {
+    console.error('GET /sequences/drafts', err);
+    res.status(500).json({ error: { message: 'Failed to load drafts' } });
+  }
+});
+
+// ── PATCH /api/sequences/drafts/:logId
+// Rep edits subject and/or body before sending.
+router.patch('/drafts/:logId', async (req, res) => {
+  const { subject, body } = req.body;
+  try {
+    // Verify draft belongs to this org and is still a draft
+    const { rows } = await pool.query(
+      `UPDATE sequence_step_logs
+          SET subject = COALESCE($1, subject),
+              body    = COALESCE($2, body)
+        WHERE id = $3
+          AND org_id = $4
+          AND status = 'draft'
+        RETURNING *`,
+      [subject ?? null, body ?? null, req.params.logId, req.orgId]
+    );
+    if (!rows.length) return res.status(404).json({ error: { message: 'Draft not found or already sent' } });
+    res.json({ draft: rows[0] });
+  } catch (err) {
+    console.error('PATCH /sequences/drafts/:logId', err);
+    res.status(500).json({ error: { message: 'Failed to update draft' } });
+  }
+});
+
+// ── POST /api/sequences/drafts/:logId/send
+// Rep approves and sends the draft email via their prospecting sender account.
+// Mirrors the logic in POST /prospecting-actions/outreach-send.
+router.post('/drafts/:logId/send', async (req, res) => {
+  const { senderAccountId } = req.body; // optional — omit for auto-rotation
+  const client = await pool.connect();
+  try {
+    // ── 1. Load draft + enrollment + prospect ──────────────────────────────
+    const draftRes = await client.query(
+      `SELECT ssl.*, ss.step_order, se.enrolled_by, se.sequence_id,
+              se.current_step, se.org_id AS enroll_org_id,
+              s.name AS sequence_name
+         FROM sequence_step_logs ssl
+         JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
+         JOIN sequence_enrollments se ON se.id  = ssl.enrollment_id
+         JOIN sequences s             ON s.id   = se.sequence_id
+        WHERE ssl.id = $1 AND ssl.org_id = $2 AND ssl.status = 'draft'`,
+      [req.params.logId, req.orgId]
+    );
+    if (!draftRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Draft not found or already sent' } });
+    }
+    const draft = draftRes.rows[0];
+
+    // Guard: only the rep who enrolled can send
+    if (draft.enrolled_by !== req.user.userId) {
+      return res.status(403).json({ error: { message: 'Only the enrolling rep can send this draft' } });
+    }
+
+    const prospectRes = await client.query(
+      `SELECT p.*, a.name AS account_name
+         FROM prospects p
+    LEFT JOIN accounts a ON a.id = p.account_id
+        WHERE p.id = $1 AND p.org_id = $2`,
+      [draft.prospect_id, req.orgId]
+    );
+    if (!prospectRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+    const prospect = prospectRes.rows[0];
+
+    if (!prospect.email) {
+      return res.status(400).json({ error: { message: 'Prospect has no email address' } });
+    }
+
+    // ── 2. Select sender account ───────────────────────────────────────────
+    let sender;
+    if (senderAccountId) {
+      const r = await client.query(
+        `SELECT * FROM prospecting_sender_accounts
+          WHERE id=$1 AND org_id=$2 AND user_id=$3 AND is_active=true`,
+        [senderAccountId, req.orgId, req.user.userId]
+      );
+      if (!r.rows.length) return res.status(404).json({ error: { message: 'Sender account not found or inactive' } });
+      sender = r.rows[0];
+    } else {
+      const r = await client.query(
+        `SELECT * FROM prospecting_sender_accounts
+          WHERE org_id=$1 AND user_id=$2 AND is_active=true
+          ORDER BY
+            (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+            last_sent_at ASC NULLS FIRST
+          LIMIT 1`,
+        [req.orgId, req.user.userId]
+      );
+      if (!r.rows.length) {
+        return res.status(400).json({
+          error: { message: 'No active sender accounts. Connect a Gmail or Outlook account in Settings → Outreach.', code: 'NO_SENDER_ACCOUNTS' }
+        });
+      }
+      sender = r.rows[0];
+    }
+
+    // ── 3. Reset daily counter if new day ─────────────────────────────────
+    if (new Date(sender.last_reset_at).toDateString() !== new Date().toDateString()) {
+      await client.query(
+        `UPDATE prospecting_sender_accounts
+            SET emails_sent_today=0, last_reset_at=CURRENT_DATE, updated_at=CURRENT_TIMESTAMP
+          WHERE id=$1`,
+        [sender.id]
+      );
+      sender.emails_sent_today = 0;
+    }
+
+    // ── 4. Enforce daily limit ─────────────────────────────────────────────
+    const limitsRes = await client.query(
+      `SELECT config FROM org_integrations
+        WHERE org_id=$1 AND integration_type='prospecting_email'`,
+      [req.orgId]
+    );
+    const orgConfig = limitsRes.rows[0]?.config || {};
+    const dailyLimit = Math.min(sender.daily_limit ?? (orgConfig.defaultDailyLimit || 50), orgConfig.dailyLimitCeiling || 100);
+
+    if (sender.emails_sent_today >= dailyLimit) {
+      return res.status(429).json({
+        error: { message: `Daily send limit reached for ${sender.email} (${dailyLimit}/day). Resets tomorrow.`, code: 'DAILY_LIMIT_REACHED' }
+      });
+    }
+
+    // ── 5. Send via Gmail or Outlook ───────────────────────────────────────
+    let sendError = null;
+    try {
+      if (sender.provider === 'gmail') {
+        await sendGmailEmail(req.user.userId, {
+          to:           prospect.email,
+          subject:      draft.subject,
+          body:         draft.body,
+          isHtml:       true,
+          senderEmail:  sender.email,
+          accessToken:  sender.access_token,
+          refreshToken: sender.refresh_token,
+        });
+      } else if (sender.provider === 'outlook') {
+        await sendOutlookEmail(req.user.userId, {
+          to:      prospect.email,
+          subject: draft.subject,
+          body:    draft.body,
+          isHtml:  true,
+        });
+      }
+    } catch (err) {
+      sendError = err.message;
+      console.warn(`⚠️  Sequence draft send failed (saving to DB anyway): ${err.message}`);
+    }
+
+    await client.query('BEGIN');
+
+    // ── 6. Save email to DB ────────────────────────────────────────────────
+    const emailRes = await client.query(
+      `INSERT INTO emails
+         (org_id, user_id, direction, subject, body,
+          to_address, from_address, sent_at, prospect_id, sender_account_id, provider)
+       VALUES ($1,$2,'sent',$3,$4,$5,$6,CURRENT_TIMESTAMP,$7,$8,$9)
+       RETURNING *`,
+      [req.orgId, req.user.userId, draft.subject, draft.body,
+       prospect.email, sender.email, draft.prospect_id, sender.id, sender.provider]
+    );
+    const newEmail = emailRes.rows[0];
+
+    // ── 7. Flip draft → sent ───────────────────────────────────────────────
+    await client.query(
+      `UPDATE sequence_step_logs
+          SET status='sent', fired_at=NOW(), email_id=$1
+        WHERE id=$2`,
+      [newEmail.id, draft.id]
+    );
+
+    // ── 8. Update sender counters ──────────────────────────────────────────
+    await client.query(
+      `UPDATE prospecting_sender_accounts
+          SET emails_sent_today=emails_sent_today+1,
+              last_sent_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+        WHERE id=$1`,
+      [sender.id]
+    );
+
+    // ── 9. Update prospect outreach tracking ──────────────────────────────
+    await client.query(
+      `UPDATE prospects
+          SET outreach_count=outreach_count+1, last_outreach_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+        WHERE id=$1`,
+      [draft.prospect_id]
+    );
+
+    // Auto-advance stage on first outreach
+    const stageRes = await client.query(`SELECT stage FROM prospects WHERE id=$1`, [draft.prospect_id]);
+    if (['target', 'researched'].includes(stageRes.rows[0]?.stage)) {
+      await client.query(
+        `UPDATE prospects SET stage='contacted', stage_changed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+        [draft.prospect_id]
+      );
+    }
+
+    // ── 10. Advance enrollment to next step ────────────────────────────────
+    const enrollRes = await client.query(
+      `SELECT se.*, s.id AS seq_id FROM sequence_enrollments se
+         JOIN sequences s ON s.id = se.sequence_id
+        WHERE se.id=$1`,
+      [draft.enrollment_id]
+    );
+    const enrollment = enrollRes.rows[0];
+
+    if (enrollment) {
+      const nextStepRes = await client.query(
+        `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
+        [enrollment.seq_id, enrollment.current_step + 1]
+      );
+      if (nextStepRes.rows.length) {
+        const ns = nextStepRes.rows[0];
+        const nextDue = new Date();
+        nextDue.setDate(nextDue.getDate() + (parseInt(ns.delay_days) || 0));
+        await client.query(
+          `UPDATE sequence_enrollments SET current_step=$1, next_step_due=$2 WHERE id=$3`,
+          [enrollment.current_step + 1, nextDue, enrollment.id]
+        );
+      } else {
+        await client.query(
+          `UPDATE sequence_enrollments SET status='completed', completed_at=NOW() WHERE id=$1`,
+          [enrollment.id]
+        );
+      }
+    }
+
+    // ── 11. Mark any linked overdue action completed ───────────────────────
+    await client.query(
+      `UPDATE prospecting_actions
+          SET status='completed', completed_at=CURRENT_TIMESTAMP,
+              completed_by=$1, outcome='email_sent', updated_at=CURRENT_TIMESTAMP
+        WHERE org_id=$2
+          AND source='sequence_draft'
+          AND (metadata->>'draftLogId')::int = $3
+          AND status != 'completed'`,
+      [req.user.userId, req.orgId, draft.id]
+    );
+
+    // ── 12. Write activity ─────────────────────────────────────────────────
+    await client.query(
+      `INSERT INTO prospecting_activities
+         (prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1,$2,'sequence_step_sent',$3,$4)`,
+      [
+        draft.prospect_id, req.user.userId,
+        `Sequence step ${draft.step_order} sent — ${draft.sequence_name}: ${draft.subject || '(no subject)'}`,
+        JSON.stringify({
+          enrollmentId: draft.enrollment_id,
+          sequenceId:   draft.sequence_id,
+          sequenceName: draft.sequence_name,
+          stepOrder:    draft.step_order,
+          draftLogId:   draft.id,
+          emailId:      newEmail.id,
+          senderId:     sender.id,
+          fromEmail:    sender.email,
+          sendError:    sendError || null,
+        }),
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    res.status(201).json({
+      ok: true,
+      emailSent:   !sendError,
+      sendError:   sendError || null,
+      emailId:     newEmail.id,
+      fromAddress: sender.email,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('POST /sequences/drafts/:logId/send', err);
+    res.status(500).json({ error: { message: 'Failed to send draft: ' + err.message } });
+  } finally {
+    client.release();
+  }
+});
+
+// ── DELETE /api/sequences/drafts/:logId
+// Rep discards a draft — step is consumed and enrollment advances.
+router.delete('/drafts/:logId', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    // Load draft + enrollment
+    const draftRes = await client.query(
+      `SELECT ssl.*, ss.step_order, se.enrolled_by, se.current_step,
+              s.id AS seq_id, s.name AS sequence_name
+         FROM sequence_step_logs ssl
+         JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
+         JOIN sequence_enrollments se ON se.id  = ssl.enrollment_id
+         JOIN sequences s             ON s.id   = se.sequence_id
+        WHERE ssl.id=$1 AND ssl.org_id=$2 AND ssl.status='draft'`,
+      [req.params.logId, req.orgId]
+    );
+    if (!draftRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Draft not found or already actioned' } });
+    }
+    const draft = draftRes.rows[0];
+
+    if (draft.enrolled_by !== req.user.userId) {
+      return res.status(403).json({ error: { message: 'Only the enrolling rep can discard this draft' } });
+    }
+
+    await client.query('BEGIN');
+
+    // Flip to skipped
+    await client.query(
+      `UPDATE sequence_step_logs SET status='skipped', fired_at=NOW() WHERE id=$1`,
+      [draft.id]
+    );
+
+    // Advance enrollment (step consumed even when skipped)
+    const nextStepRes = await client.query(
+      `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
+      [draft.seq_id, draft.current_step + 1]
+    );
+    if (nextStepRes.rows.length) {
+      const ns = nextStepRes.rows[0];
+      const nextDue = new Date();
+      nextDue.setDate(nextDue.getDate() + (parseInt(ns.delay_days) || 0));
+      await client.query(
+        `UPDATE sequence_enrollments SET current_step=$1, next_step_due=$2 WHERE id=$3`,
+        [draft.current_step + 1, nextDue, draft.enrollment_id]
+      );
+    } else {
+      await client.query(
+        `UPDATE sequence_enrollments SET status='completed', completed_at=NOW() WHERE id=$1`,
+        [draft.enrollment_id]
+      );
+    }
+
+    // Mark linked overdue action completed
+    await client.query(
+      `UPDATE prospecting_actions
+          SET status='completed', completed_at=CURRENT_TIMESTAMP,
+              completed_by=$1, outcome='skipped', updated_at=CURRENT_TIMESTAMP
+        WHERE org_id=$2 AND source='sequence_draft'
+          AND (metadata->>'draftLogId')::int=$3
+          AND status != 'completed'`,
+      [req.user.userId, req.orgId, draft.id]
+    );
+
+    // Write activity
+    await client.query(
+      `INSERT INTO prospecting_activities
+         (prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1,$2,'sequence_step_skipped',$3,$4)`,
+      [
+        draft.prospect_id, req.user.userId,
+        `Draft discarded — ${draft.sequence_name} step ${draft.step_order}`,
+        JSON.stringify({ enrollmentId: draft.enrollment_id, draftLogId: draft.id, stepOrder: draft.step_order }),
+      ]
+    );
+
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('DELETE /sequences/drafts/:logId', err);
+    res.status(500).json({ error: { message: 'Failed to discard draft: ' + err.message } });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;
+

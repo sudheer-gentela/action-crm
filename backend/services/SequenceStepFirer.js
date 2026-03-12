@@ -5,14 +5,18 @@
  * Follows the exact pattern of AgentProposalService / contractService:
  *   - No HTTP self-call
  *   - Called as: await SequenceStepFirer.fireDueSteps()
- *   - Returns { fired, stopped, errors }
+ *   - Returns { fired, stopped, errors, drafted }
  *
- * Logic:
- *   1. Find all active enrollments where next_step_due <= now
- *   2. For each: check for inbound reply → auto-stop if found
- *   3. Fire the current step (email → insert into emails table)
- *   4. Log to sequence_step_logs
- *   5. Advance to next step, or mark complete
+ * Draft-first flow (added v2):
+ *   - sequences.require_approval   = true  → all email steps go to drafts by default
+ *   - sequence_steps.require_approval      → NULL = inherit, true/false = override
+ *   - Effective: COALESCE(step.require_approval, sequence.require_approval)
+ *   - Draft: write step_log status='draft', do NOT send, do NOT advance enrollment
+ *   - Send:  existing path unchanged
+ *
+ * syncOverdueDrafts():
+ *   - Called by cron after fireDueSteps()
+ *   - Inserts prospecting_actions for unactioned drafts → surface in ActionsView
  */
 
 const { pool } = require('../config/database');
@@ -44,16 +48,17 @@ const SequenceStepFirer = {
   /**
    * Fire all due sequence steps across all orgs.
    * Safe to call on a schedule — processes up to 100 enrollments per run.
-   * @returns {{ fired: number, stopped: number, errors: number }}
+   * @returns {{ fired: number, stopped: number, errors: number, drafted: number }}
    */
   async fireDueSteps() {
-    let fired = 0, stopped = 0, errors = 0;
+    let fired = 0, stopped = 0, errors = 0, drafted = 0;
 
     const client = await pool.connect();
     try {
-      // Grab up to 100 due enrollments across all orgs
+      // Include sequence-level require_approval and name for drafts
       const dueRes = await client.query(
-        `SELECT se.*, s.id AS seq_id
+        `SELECT se.*, s.id AS seq_id, s.name AS seq_name,
+                s.require_approval AS seq_require_approval
            FROM sequence_enrollments se
            JOIN sequences s ON s.id = se.sequence_id
           WHERE se.status = 'active'
@@ -92,7 +97,6 @@ const SequenceStepFirer = {
           );
 
           if (!stepRes.rows.length) {
-            // No step found — sequence is complete
             await client.query(
               `UPDATE sequence_enrollments
                   SET status='completed', completed_at=NOW()
@@ -104,6 +108,15 @@ const SequenceStepFirer = {
           }
 
           const step = stepRes.rows[0];
+
+          // ── Resolve effective approval setting ────────────────────────────
+          // Step-level wins when explicitly set (not NULL)
+          // seq_require_approval defaults to true if column not yet migrated
+          const seqApproval = enrollment.seq_require_approval !== false;
+          const effectiveRequireApproval =
+            step.require_approval !== null && step.require_approval !== undefined
+              ? !!step.require_approval
+              : seqApproval;
 
           // ── Load prospect + account for template rendering ────────────────
           const pRes = await client.query(
@@ -119,10 +132,75 @@ const SequenceStepFirer = {
             ? { name: prospect.account_name, domain: prospect.account_domain, industry: prospect.account_industry }
             : null;
 
-          const subject = renderTemplate(step.subject_template, prospect || {}, account);
-          const body    = renderTemplate(step.body_template,    prospect || {}, account);
+          // ── Use personalised content if available, else render template ───
+          const personalisedStep =
+            enrollment.personalised_steps?.[enrollment.current_step] ||
+            enrollment.personalised_steps?.[String(enrollment.current_step)];
 
-          // ── Fire the step ─────────────────────────────────────────────────
+          const subject = personalisedStep?.subject ?? renderTemplate(step.subject_template, prospect || {}, account);
+          const body    = personalisedStep?.body    ?? renderTemplate(step.body_template,    prospect || {}, account);
+
+          // ── DRAFT BRANCH ──────────────────────────────────────────────────
+          if (effectiveRequireApproval && step.channel === 'email') {
+            // Idempotency: don't create a second draft for this step
+            const existingDraft = await client.query(
+              `SELECT id FROM sequence_step_logs
+                WHERE enrollment_id=$1 AND sequence_step_id=$2 AND status='draft'
+                LIMIT 1`,
+              [enrollment.id, step.id]
+            );
+
+            if (existingDraft.rows.length > 0) {
+              // Draft already exists and is awaiting rep action — skip
+              continue;
+            }
+
+            // Write draft — fired_at=NULL until rep sends
+            await client.query(
+              `INSERT INTO sequence_step_logs
+                           (org_id, enrollment_id, sequence_step_id, prospect_id,
+                            channel, status, subject, body, scheduled_send_at, fired_at)
+                    VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, NOW(), NULL)`,
+              [
+                enrollment.org_id,
+                enrollment.id,
+                step.id,
+                enrollment.prospect_id,
+                step.channel,
+                subject,
+                body,
+              ]
+            );
+
+            // Activity: draft created
+            try {
+              await client.query(
+                `INSERT INTO prospecting_activities
+                             (prospect_id, user_id, activity_type, description, metadata)
+                      VALUES ($1, $2, 'sequence_draft_created', $3, $4)`,
+                [
+                  enrollment.prospect_id,
+                  enrollment.enrolled_by,
+                  `Draft ready for review — ${enrollment.seq_name} step ${enrollment.current_step}: ${subject || '(no subject)'}`,
+                  JSON.stringify({
+                    enrollmentId: enrollment.id,
+                    sequenceId:   enrollment.seq_id,
+                    sequenceName: enrollment.seq_name,
+                    stepOrder:    enrollment.current_step,
+                    stepId:       step.id,
+                    subject:      subject || null,
+                  }),
+                ]
+              );
+            } catch (actErr) {
+              console.warn(`SequenceStepFirer: draft activity log failed for enrollment ${enrollment.id}:`, actErr.message);
+            }
+
+            drafted++;
+            continue; // Do NOT advance — enrollment stays on this step until rep sends
+          }
+
+          // ── SEND BRANCH ───────────────────────────────────────────────────
           let emailId = null;
 
           if (step.channel === 'email' && prospect?.email) {
@@ -143,15 +221,13 @@ const SequenceStepFirer = {
             );
             emailId = emailRes.rows[0].id;
           }
-          // Non-email channels (call, task, linkedin) are logged but not auto-sent —
-          // they surface as tasks for the rep to action manually.
 
-          // ── Log the step ──────────────────────────────────────────────────
+          // ── Log sent step ─────────────────────────────────────────────────
           await client.query(
             `INSERT INTO sequence_step_logs
                          (org_id, enrollment_id, sequence_step_id, prospect_id,
-                          channel, status, subject, body, email_id)
-                  VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, $8)`,
+                          channel, status, subject, body, email_id, fired_at)
+                  VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, $8, NOW())`,
             [
               enrollment.org_id,
               enrollment.id,
@@ -164,7 +240,7 @@ const SequenceStepFirer = {
             ]
           );
 
-          // ── Write activity so step appears in prospect's Activity tab ──────
+          // ── Write activity ────────────────────────────────────────────────
           try {
             const channelLabel = step.channel.charAt(0).toUpperCase() + step.channel.slice(1);
             const description  = step.channel === 'email'
@@ -180,22 +256,21 @@ const SequenceStepFirer = {
                 enrollment.enrolled_by,
                 description,
                 JSON.stringify({
-                  enrollmentId:   enrollment.id,
-                  sequenceId:     enrollment.seq_id,
-                  stepOrder:      enrollment.current_step,
-                  stepId:         step.id,
-                  channel:        step.channel,
-                  subject:        subject || null,
-                  emailId:        emailId || null,
+                  enrollmentId: enrollment.id,
+                  sequenceId:   enrollment.seq_id,
+                  stepOrder:    enrollment.current_step,
+                  stepId:       step.id,
+                  channel:      step.channel,
+                  subject:      subject || null,
+                  emailId:      emailId || null,
                 }),
               ]
             );
           } catch (actErr) {
-            // Non-fatal — step is already logged, don't fail the enrollment
             console.warn(`SequenceStepFirer: activity log failed for enrollment ${enrollment.id}:`, actErr.message);
           }
 
-          // ── Advance to next step or mark complete ─────────────────────────
+          // ── Advance enrollment ────────────────────────────────────────────
           const nextStepRes = await client.query(
             `SELECT * FROM sequence_steps
               WHERE sequence_id=$1 AND step_order=$2`,
@@ -221,10 +296,7 @@ const SequenceStepFirer = {
 
           fired++;
         } catch (stepErr) {
-          console.error(
-            `📨 SequenceStepFirer: error on enrollment ${enrollment.id}:`,
-            stepErr.message
-          );
+          console.error(`📨 SequenceStepFirer: error on enrollment ${enrollment.id}:`, stepErr.message);
           errors++;
         }
       }
@@ -232,7 +304,71 @@ const SequenceStepFirer = {
       client.release();
     }
 
-    return { fired, stopped, errors };
+    console.log(`📨 SequenceStepFirer: fired=${fired} drafted=${drafted} stopped=${stopped} errors=${errors}`);
+    return { fired, stopped, errors, drafted };
+  },
+
+  /**
+   * Sync overdue drafts → prospecting_actions.
+   *
+   * Called by cron after fireDueSteps(). For any draft step log that has been
+   * sitting unactioned past its scheduled_send_at, insert a prospecting_action
+   * so it surfaces as overdue in ActionsView. Idempotent.
+   *
+   * @returns {{ inserted: number }}
+   */
+  async syncOverdueDrafts() {
+    const client = await pool.connect();
+    try {
+      const result = await client.query(
+        `INSERT INTO prospecting_actions
+           (org_id, user_id, prospect_id, title, description,
+            action_type, channel, status, priority, due_date, source, metadata)
+         SELECT
+           ssl.org_id,
+           se.enrolled_by,
+           ssl.prospect_id,
+           'Review & send sequence email — ' || s.name || ' (step ' || ss.step_order || ')',
+           'Draft ready: ' || COALESCE(ssl.subject, '(no subject)'),
+           'outreach',
+           'email',
+           'pending',
+           'high',
+           ssl.scheduled_send_at,
+           'sequence_draft',
+           jsonb_build_object(
+             'draftLogId',   ssl.id,
+             'enrollmentId', se.id,
+             'sequenceId',   s.id,
+             'sequenceName', s.name,
+             'stepOrder',    ss.step_order,
+             'subject',      ssl.subject
+           )
+         FROM sequence_step_logs ssl
+         JOIN sequence_enrollments se ON se.id  = ssl.enrollment_id
+         JOIN sequences s             ON s.id   = se.sequence_id
+         JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
+         WHERE ssl.status = 'draft'
+           AND ssl.scheduled_send_at < NOW()
+           AND NOT EXISTS (
+             SELECT 1 FROM prospecting_actions pa
+              WHERE (pa.metadata->>'draftLogId')::int = ssl.id
+                AND pa.status != 'completed'
+           )
+         RETURNING id`
+      );
+
+      const inserted = result.rowCount || 0;
+      if (inserted > 0) {
+        console.log(`📨 SequenceStepFirer.syncOverdueDrafts: inserted ${inserted} overdue action(s)`);
+      }
+      return { inserted };
+    } catch (err) {
+      console.error('SequenceStepFirer.syncOverdueDrafts error:', err.message);
+      return { inserted: 0 };
+    } finally {
+      client.release();
+    }
   },
 };
 
