@@ -418,448 +418,6 @@ router.post('/enrollments/:enrollId/resume', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SEQUENCES CRUD  — /:id routes last so literals above aren't shadowed
-// ─────────────────────────────────────────────────────────────────────────────
-
-// GET /api/sequences/:id
-router.get('/:id', async (req, res) => {
-  try {
-    const seqRes = await pool.query(
-      `SELECT * FROM sequences WHERE id = $1 AND org_id = $2`,
-      [req.params.id, req.orgId]
-    );
-    if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
-
-    const stepsRes = await pool.query(
-      `SELECT * FROM sequence_steps WHERE sequence_id = $1 ORDER BY step_order`,
-      [req.params.id]
-    );
-    res.json({ sequence: { ...seqRes.rows[0], steps: stepsRes.rows } });
-  } catch (err) {
-    console.error('sequences GET /:id', err);
-    res.status(500).json({ error: { message: 'Failed to load sequence' } });
-  }
-});
-
-// PUT /api/sequences/:id
-router.put('/:id', async (req, res) => {
-  const { name, description, require_approval } = req.body;
-  try {
-    const { rows } = await pool.query(
-      `UPDATE sequences SET name=$1, description=$2,
-        require_approval=COALESCE($3, require_approval),
-        updated_at=NOW()
-        WHERE id=$4 AND org_id=$5 RETURNING *`,
-      [name, description || null,
-       require_approval !== undefined ? require_approval : null,
-       req.params.id, req.orgId]
-    );
-    if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
-    res.json({ sequence: rows[0] });
-  } catch (err) {
-    console.error('sequences PUT /:id', err);
-    res.status(500).json({ error: { message: 'Failed to update sequence' } });
-  }
-});
-
-// DELETE /api/sequences/:id  — soft archive
-router.delete('/:id', async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `UPDATE sequences SET status='archived', updated_at=NOW()
-        WHERE id=$1 AND org_id=$2 RETURNING id`,
-      [req.params.id, req.orgId]
-    );
-    if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('sequences DELETE /:id', err);
-    res.status(500).json({ error: { message: 'Failed to archive sequence' } });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// STEPS
-// ─────────────────────────────────────────────────────────────────────────────
-
-// POST /api/sequences/:id/steps
-router.post('/:id/steps', async (req, res) => {
-  const { channel, delay_days, subject_template, body_template, task_note, require_approval } = req.body;
-  if (!channel) return res.status(400).json({ error: { message: 'channel is required' } });
-  try {
-    const maxRes = await pool.query(
-      `SELECT COALESCE(MAX(step_order), 0) AS max_order FROM sequence_steps WHERE sequence_id=$1`,
-      [req.params.id]
-    );
-    const nextOrder = maxRes.rows[0].max_order + 1;
-    const { rows } = await pool.query(
-      `INSERT INTO sequence_steps
-               (sequence_id, org_id, step_order, channel, delay_days,
-                subject_template, body_template, task_note, require_approval)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [req.params.id, req.orgId, nextOrder, channel, delay_days ?? 0,
-       subject_template || null, body_template || null, task_note || null,
-       require_approval !== undefined ? require_approval : null]
-    );
-    res.status(201).json({ step: rows[0] });
-  } catch (err) {
-    console.error('steps POST', err);
-    res.status(500).json({ error: { message: 'Failed to add step' } });
-  }
-});
-
-// PUT /api/sequences/:id/steps/:stepId
-router.put('/:id/steps/:stepId', async (req, res) => {
-  const { channel, delay_days, subject_template, body_template, task_note, require_approval } = req.body;
-  try {
-    const { rows } = await pool.query(
-      `UPDATE sequence_steps
-          SET channel=$1, delay_days=$2, subject_template=$3, body_template=$4,
-              task_note=$5, require_approval=$6, updated_at=NOW()
-        WHERE id=$7 AND sequence_id=$8 AND org_id=$9 RETURNING *`,
-      [channel, delay_days ?? 0, subject_template || null, body_template || null,
-       task_note || null,
-       require_approval !== undefined ? require_approval : null,
-       req.params.stepId, req.params.id, req.orgId]
-    );
-    if (!rows.length) return res.status(404).json({ error: { message: 'Step not found' } });
-    res.json({ step: rows[0] });
-  } catch (err) {
-    console.error('steps PUT', err);
-    res.status(500).json({ error: { message: 'Failed to update step' } });
-  }
-});
-
-// DELETE /api/sequences/:id/steps/:stepId
-router.delete('/:id/steps/:stepId', async (req, res) => {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(
-      `DELETE FROM sequence_steps WHERE id=$1 AND sequence_id=$2 AND org_id=$3`,
-      [req.params.stepId, req.params.id, req.orgId]
-    );
-    // Re-number remaining steps
-    await client.query(
-      `WITH ranked AS (
-         SELECT id, ROW_NUMBER() OVER (ORDER BY step_order) AS new_order
-           FROM sequence_steps WHERE sequence_id=$1
-       )
-       UPDATE sequence_steps ss
-          SET step_order = ranked.new_order
-         FROM ranked WHERE ss.id = ranked.id`,
-      [req.params.id]
-    );
-    await client.query('COMMIT');
-    res.json({ ok: true });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('steps DELETE', err);
-    res.status(500).json({ error: { message: 'Failed to delete step' } });
-  } finally {
-    client.release();
-  }
-});
-
-// POST /api/sequences/:id/steps/reorder  body: { order: [stepId, stepId, ...] }
-router.post('/:id/steps/reorder', async (req, res) => {
-  const { order } = req.body; // array of step IDs in desired order
-  if (!Array.isArray(order)) return res.status(400).json({ error: { message: 'order must be an array' } });
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    for (let i = 0; i < order.length; i++) {
-      await client.query(
-        `UPDATE sequence_steps SET step_order=$1 WHERE id=$2 AND sequence_id=$3 AND org_id=$4`,
-        [i + 1, order[i], req.params.id, req.orgId]
-      );
-    }
-    await client.query('COMMIT');
-    const { rows } = await pool.query(
-      `SELECT * FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order`,
-      [req.params.id]
-    );
-    res.json({ steps: rows });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('steps reorder', err);
-    res.status(500).json({ error: { message: 'Failed to reorder steps' } });
-  } finally {
-    client.release();
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AI GENERATE STEPS
-// ─────────────────────────────────────────────────────────────────────────────
-
-// POST /api/sequences/:id/ai-generate
-// body: { prospectId }  — generates personalised subject+body for each step
-router.post('/:id/ai-generate', async (req, res) => {
-  const { prospectId } = req.body;
-  if (!prospectId) return res.status(400).json({ error: { message: 'prospectId is required' } });
-
-  try {
-    // Load sequence + steps
-    const seqRes = await pool.query(
-      `SELECT * FROM sequences WHERE id=$1 AND org_id=$2`,
-      [req.params.id, req.orgId]
-    );
-    if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Sequence not found' } });
-
-    const stepsRes = await pool.query(
-      `SELECT * FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order`,
-      [req.params.id]
-    );
-    const steps = stepsRes.rows;
-
-    // Load prospect + account
-    const prospectRes = await pool.query(
-      `SELECT p.*, a.name AS account_name, a.research_notes AS account_research,
-              a.domain AS account_domain, a.research_meta AS account_research_meta
-         FROM prospects p
-    LEFT JOIN accounts a ON a.id = p.account_id
-        WHERE p.id=$1 AND p.org_id=$2`,
-      [prospectId, req.orgId]
-    );
-    if (!prospectRes.rows.length) return res.status(404).json({ error: { message: 'Prospect not found' } });
-    const prospect = prospectRes.rows[0];
-
-    const systemPrompt = `You are an expert sales development rep writing personalised outreach sequences.\nReturn ONLY valid JSON — no markdown fences, no prose.`;
-
-    const userPrompt = `Generate personalised email subject and body for each step in this outreach sequence.\n\nPROSPECT:\nName: ${prospect.first_name} ${prospect.last_name}\nTitle: ${prospect.title || 'unknown'}\nCompany: ${prospect.account_name || prospect.company_name || 'unknown'}\nEmail: ${prospect.email || ''}\nResearch notes: ${prospect.research_notes || 'none'}\n\nACCOUNT RESEARCH:\n${prospect.account_research || 'none available'}\n\nSEQUENCE STEPS (${steps.length} total):\n${steps.map((s, i) => `Step ${i + 1}: channel=${s.channel}, delay_days=${s.delay_days}\n  Template subject: ${s.subject_template || '(none)'}\n  Template body: ${s.body_template || '(none)'}`).join('\n\n')}\n\nFor each step generate personalised subject and body. Keep emails concise (under 150 words). Use the research to personalise.\n\nReturn JSON:\n{\n  "steps": [\n    { "step_order": 1, "subject": "...", "body": "..." },\n    ...\n  ]\n}`;
-
-    const aiRes = await anthropic.messages.create({
-      model:      'claude-sonnet-4-20250514',
-      max_tokens: 2000,
-      system:     systemPrompt,
-      messages:   [{ role: 'user', content: userPrompt }],
-    });
-
-    // Track tokens
-    try {
-      await TokenTrackingService.log({
-        orgId:    req.orgId,
-        userId:   req.user.userId,
-        callType: 'prospecting_sequence_generate',
-        model:    'claude-sonnet-4-20250514',
-        usage:    aiRes.usage,
-      });
-    } catch (_) {}
-
-    const raw = aiRes.content.find(b => b.type === 'text')?.text || '{}';
-    const clean = raw.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(clean);
-
-    res.json({ generatedSteps: parsed.steps || [] });
-  } catch (err) {
-    console.error('ai-generate error:', err);
-    res.status(500).json({ error: { message: 'AI generation failed: ' + err.message } });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AI BUILD SEQUENCE — generate full sequence structure from a plain-English goal
-// POST /api/sequences/ai-build
-// body: { goal, stepCount?, channels? }
-// Returns: { name, description, steps: [{channel, delay_days, subject_template, body_template}] }
-// Does NOT save — client reviews and calls POST / to save.
-// ─────────────────────────────────────────────────────────────────────────────
-router.post('/ai-build', async (req, res) => {
-  const { goal, stepCount = 5, channels = ['email'] } = req.body;
-  if (!goal?.trim()) return res.status(400).json({ error: { message: 'goal is required' } });
-
-  try {
-    const systemPrompt = `You are an expert sales development rep and copywriter building outreach sequences.\nReturn ONLY valid JSON — no markdown fences, no preamble, no prose outside the JSON.`;
-
-    const userPrompt = `Build a complete outreach sequence based on this goal:\n\nGOAL: ${goal}\nSTEPS: ${stepCount}\nCHANNELS AVAILABLE: ${channels.join(', ')}\n\nRules:\n- Use {{first_name}}, {{last_name}}, {{full_name}}, {{title}}, {{company}}, {{industry}} as personalisation tokens\n- Keep email bodies under 120 words — concise, human, not salesy\n- Vary the approach across steps: opener → value → social proof → breakup\n- Space steps realistically: day 0, then 2–4 day gaps between follow-ups\n- For call/task steps, write a brief task_note (what to say/do), leave subject_template and body_template empty\n- sequence name should be short and descriptive (under 50 chars)\n\nReturn this exact JSON shape:\n{\n  "name": "...",\n  "description": "...",\n  "steps": [\n    {\n      "step_order": 1,\n      "channel": "email",\n      "delay_days": 0,\n      "subject_template": "...",\n      "body_template": "...",\n      "task_note": ""\n    }\n  ]\n}`;
-
-    const aiRes = await anthropic.messages.create({
-      model:      'claude-sonnet-4-20250514',
-      max_tokens: 3000,
-      system:     systemPrompt,
-      messages:   [{ role: 'user', content: userPrompt }],
-    });
-
-    try {
-      await TokenTrackingService.log({
-        orgId:    req.orgId,
-        userId:   req.user.userId,
-        callType: 'prospecting_sequence_generate',
-        model:    'claude-sonnet-4-20250514',
-        usage:    aiRes.usage,
-      });
-    } catch (_) {}
-
-    const raw   = aiRes.content.find(b => b.type === 'text')?.text || '{}';
-    const clean = raw.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(clean);
-
-    res.json({
-      name:        parsed.name        || '',
-      description: parsed.description || '',
-      steps:       (parsed.steps      || []).map((s, i) => ({ ...s, step_order: i + 1 })),
-    });
-  } catch (err) {
-    console.error('ai-build error:', err);
-    res.status(500).json({ error: { message: 'AI build failed: ' + err.message } });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AI WRITE STEP — write a single step from a plain-English prompt
-// POST /api/sequences/ai-write-step
-// body: { prompt, channel, stepNumber, totalSteps, previousSteps? }
-// Returns: { subject_template, body_template, task_note }
-// ─────────────────────────────────────────────────────────────────────────────
-router.post('/ai-write-step', async (req, res) => {
-  const { prompt, channel = 'email', stepNumber = 1, totalSteps = 1, previousSteps = [] } = req.body;
-  if (!prompt?.trim()) return res.status(400).json({ error: { message: 'prompt is required' } });
-
-  const hasContent = ['email', 'linkedin'].includes(channel);
-
-  try {
-    const systemPrompt = `You are an expert SDR copywriter writing outreach message templates.\nReturn ONLY valid JSON — no markdown fences, no prose.`;
-
-    const context = previousSteps.length > 0
-      ? `\nPREVIOUS STEPS IN THIS SEQUENCE:\n${previousSteps.map((s, i) =>
-          `Step ${i + 1} (${s.channel}): ${s.subject_template || s.task_note || '(no subject)'}`
-        ).join('\n')}\n`
-      : '';
-
-    const userPrompt = `Write step ${stepNumber} of ${totalSteps} in an outreach sequence.\n\nCHANNEL: ${channel}\nINSTRUCTION: ${prompt}\n${context}\nRules:\n- Use {{first_name}}, {{company}}, {{title}}, {{industry}} as personalisation tokens\n- Keep it human and concise — under 100 words for email body\n- This is a TEMPLATE, not a personalised message\n${hasContent
-  ? '- Return subject_template and body_template; leave task_note as empty string'
-  : '- This is a call/task step — return a brief task_note describing what to do; leave subject_template and body_template as empty strings'
-}\n\nReturn JSON:\n{\n  "subject_template": "...",\n  "body_template": "...",\n  "task_note": ""\n}`;
-
-    const aiRes = await anthropic.messages.create({
-      model:      'claude-sonnet-4-20250514',
-      max_tokens: 800,
-      system:     systemPrompt,
-      messages:   [{ role: 'user', content: userPrompt }],
-    });
-
-    try {
-      await TokenTrackingService.log({
-        orgId:    req.orgId,
-        userId:   req.user.userId,
-        callType: 'prospecting_sequence_generate',
-        model:    'claude-sonnet-4-20250514',
-        usage:    aiRes.usage,
-      });
-    } catch (_) {}
-
-    const raw   = aiRes.content.find(b => b.type === 'text')?.text || '{}';
-    const clean = raw.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(clean);
-
-    res.json({
-      subject_template: parsed.subject_template || '',
-      body_template:    parsed.body_template    || '',
-      task_note:        parsed.task_note        || '',
-    });
-  } catch (err) {
-    console.error('ai-write-step error:', err);
-    res.status(500).json({ error: { message: 'AI step write failed: ' + err.message } });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SEQUENCE STATS
-// GET /api/sequences/:id/stats
-// Returns: enrollment status breakdown + per-step funnel (sent/replied counts)
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/:id/stats', async (req, res) => {
-  try {
-    // Verify sequence belongs to org
-    const seqRes = await pool.query(
-      `SELECT s.*, COUNT(ss.id) AS step_count
-         FROM sequences s
-    LEFT JOIN sequence_steps ss ON ss.sequence_id = s.id
-        WHERE s.id = $1 AND s.org_id = $2
-     GROUP BY s.id`,
-      [req.params.id, req.orgId]
-    );
-    if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
-
-    // Enrollment status breakdown
-    const statusRes = await pool.query(
-      `SELECT status, COUNT(*) AS count
-         FROM sequence_enrollments
-        WHERE sequence_id = $1 AND org_id = $2
-     GROUP BY status`,
-      [req.params.id, req.orgId]
-    );
-    const statusMap = {};
-    statusRes.rows.forEach(r => { statusMap[r.status] = parseInt(r.count); });
-    const totalEnrolled = Object.values(statusMap).reduce((a, b) => a + b, 0);
-    const totalReplied  = statusMap['replied'] || 0;
-
-    // Per-step funnel: how many reached each step (sent) and replied at each step
-    const stepFunnelRes = await pool.query(
-      `SELECT
-         ss.step_order,
-         COUNT(*) FILTER (WHERE ssl.status = 'sent')    AS sent,
-         COUNT(*) FILTER (WHERE ssl.status = 'skipped') AS skipped,
-         COUNT(*) FILTER (WHERE ssl.status = 'failed')  AS failed
-       FROM sequence_step_logs ssl
-       JOIN sequence_steps ss       ON ss.id = ssl.sequence_step_id
-       JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
-      WHERE se.sequence_id = $1 AND se.org_id = $2
-   GROUP BY ss.step_order
-   ORDER BY ss.step_order`,
-      [req.params.id, req.orgId]
-    );
-
-    // Reply step distribution — which step was active when prospect replied
-    const replyStepRes = await pool.query(
-      `SELECT current_step, COUNT(*) AS reply_count
-         FROM sequence_enrollments
-        WHERE sequence_id = $1 AND org_id = $2 AND status = 'replied'
-     GROUP BY current_step
-     ORDER BY current_step`,
-      [req.params.id, req.orgId]
-    );
-    const replyByStep = {};
-    replyStepRes.rows.forEach(r => { replyByStep[r.current_step] = parseInt(r.reply_count); });
-
-    // Average step at which replies occurred
-    let avgReplyStep = null;
-    if (totalReplied > 0) {
-      const weightedSum = replyStepRes.rows.reduce((sum, r) => sum + r.current_step * parseInt(r.reply_count), 0);
-      avgReplyStep = (weightedSum / totalReplied).toFixed(1);
-    }
-
-    // Merge funnel + reply data into step-level array
-    const stepFunnel = stepFunnelRes.rows.map(row => ({
-      step_order:  row.step_order,
-      sent:        parseInt(row.sent),
-      skipped:     parseInt(row.skipped),
-      failed:      parseInt(row.failed),
-      replied_here: replyByStep[row.step_order] || 0,
-    }));
-
-    res.json({
-      sequence:      seqRes.rows[0],
-      totalEnrolled,
-      totalReplied,
-      replyRate:     totalEnrolled > 0 ? ((totalReplied / totalEnrolled) * 100).toFixed(1) : '0.0',
-      avgReplyStep,
-      statusBreakdown: {
-        active:    statusMap['active']    || 0,
-        paused:    statusMap['paused']    || 0,
-        completed: statusMap['completed'] || 0,
-        stopped:   statusMap['stopped']   || 0,
-        replied:   statusMap['replied']   || 0,
-      },
-      stepFunnel,
-    });
-  } catch (err) {
-    console.error('sequence stats error:', err);
-    res.status(500).json({ error: { message: 'Failed to load stats' } });
-  }
-});
-
 // ─────────────────────────────────────────────────────────────────────────────
 // DRAFT ROUTES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1313,5 +871,446 @@ router.delete('/drafts/:logId', async (req, res) => {
   }
 });
 
-module.exports = router;
+// SEQUENCES CRUD  — /:id routes last so literals above aren't shadowed
+// ─────────────────────────────────────────────────────────────────────────────
 
+// GET /api/sequences/:id
+router.get('/:id', async (req, res) => {
+  try {
+    const seqRes = await pool.query(
+      `SELECT * FROM sequences WHERE id = $1 AND org_id = $2`,
+      [req.params.id, req.orgId]
+    );
+    if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+
+    const stepsRes = await pool.query(
+      `SELECT * FROM sequence_steps WHERE sequence_id = $1 ORDER BY step_order`,
+      [req.params.id]
+    );
+    res.json({ sequence: { ...seqRes.rows[0], steps: stepsRes.rows } });
+  } catch (err) {
+    console.error('sequences GET /:id', err);
+    res.status(500).json({ error: { message: 'Failed to load sequence' } });
+  }
+});
+
+// PUT /api/sequences/:id
+router.put('/:id', async (req, res) => {
+  const { name, description, require_approval } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE sequences SET name=$1, description=$2,
+        require_approval=COALESCE($3, require_approval),
+        updated_at=NOW()
+        WHERE id=$4 AND org_id=$5 RETURNING *`,
+      [name, description || null,
+       require_approval !== undefined ? require_approval : null,
+       req.params.id, req.orgId]
+    );
+    if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+    res.json({ sequence: rows[0] });
+  } catch (err) {
+    console.error('sequences PUT /:id', err);
+    res.status(500).json({ error: { message: 'Failed to update sequence' } });
+  }
+});
+
+// DELETE /api/sequences/:id  — soft archive
+router.delete('/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE sequences SET status='archived', updated_at=NOW()
+        WHERE id=$1 AND org_id=$2 RETURNING id`,
+      [req.params.id, req.orgId]
+    );
+    if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('sequences DELETE /:id', err);
+    res.status(500).json({ error: { message: 'Failed to archive sequence' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STEPS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /api/sequences/:id/steps
+router.post('/:id/steps', async (req, res) => {
+  const { channel, delay_days, subject_template, body_template, task_note, require_approval } = req.body;
+  if (!channel) return res.status(400).json({ error: { message: 'channel is required' } });
+  try {
+    const maxRes = await pool.query(
+      `SELECT COALESCE(MAX(step_order), 0) AS max_order FROM sequence_steps WHERE sequence_id=$1`,
+      [req.params.id]
+    );
+    const nextOrder = maxRes.rows[0].max_order + 1;
+    const { rows } = await pool.query(
+      `INSERT INTO sequence_steps
+               (sequence_id, org_id, step_order, channel, delay_days,
+                subject_template, body_template, task_note, require_approval)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [req.params.id, req.orgId, nextOrder, channel, delay_days ?? 0,
+       subject_template || null, body_template || null, task_note || null,
+       require_approval !== undefined ? require_approval : null]
+    );
+    res.status(201).json({ step: rows[0] });
+  } catch (err) {
+    console.error('steps POST', err);
+    res.status(500).json({ error: { message: 'Failed to add step' } });
+  }
+});
+
+// PUT /api/sequences/:id/steps/:stepId
+router.put('/:id/steps/:stepId', async (req, res) => {
+  const { channel, delay_days, subject_template, body_template, task_note, require_approval } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE sequence_steps
+          SET channel=$1, delay_days=$2, subject_template=$3, body_template=$4,
+              task_note=$5, require_approval=$6, updated_at=NOW()
+        WHERE id=$7 AND sequence_id=$8 AND org_id=$9 RETURNING *`,
+      [channel, delay_days ?? 0, subject_template || null, body_template || null,
+       task_note || null,
+       require_approval !== undefined ? require_approval : null,
+       req.params.stepId, req.params.id, req.orgId]
+    );
+    if (!rows.length) return res.status(404).json({ error: { message: 'Step not found' } });
+    res.json({ step: rows[0] });
+  } catch (err) {
+    console.error('steps PUT', err);
+    res.status(500).json({ error: { message: 'Failed to update step' } });
+  }
+});
+
+// DELETE /api/sequences/:id/steps/:stepId
+router.delete('/:id/steps/:stepId', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `DELETE FROM sequence_steps WHERE id=$1 AND sequence_id=$2 AND org_id=$3`,
+      [req.params.stepId, req.params.id, req.orgId]
+    );
+    // Re-number remaining steps
+    await client.query(
+      `WITH ranked AS (
+         SELECT id, ROW_NUMBER() OVER (ORDER BY step_order) AS new_order
+           FROM sequence_steps WHERE sequence_id=$1
+       )
+       UPDATE sequence_steps ss
+          SET step_order = ranked.new_order
+         FROM ranked WHERE ss.id = ranked.id`,
+      [req.params.id]
+    );
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('steps DELETE', err);
+    res.status(500).json({ error: { message: 'Failed to delete step' } });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/sequences/:id/steps/reorder  body: { order: [stepId, stepId, ...] }
+router.post('/:id/steps/reorder', async (req, res) => {
+  const { order } = req.body; // array of step IDs in desired order
+  if (!Array.isArray(order)) return res.status(400).json({ error: { message: 'order must be an array' } });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (let i = 0; i < order.length; i++) {
+      await client.query(
+        `UPDATE sequence_steps SET step_order=$1 WHERE id=$2 AND sequence_id=$3 AND org_id=$4`,
+        [i + 1, order[i], req.params.id, req.orgId]
+      );
+    }
+    await client.query('COMMIT');
+    const { rows } = await pool.query(
+      `SELECT * FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order`,
+      [req.params.id]
+    );
+    res.json({ steps: rows });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('steps reorder', err);
+    res.status(500).json({ error: { message: 'Failed to reorder steps' } });
+  } finally {
+    client.release();
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI GENERATE STEPS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /api/sequences/:id/ai-generate
+// body: { prospectId }  — generates personalised subject+body for each step
+router.post('/:id/ai-generate', async (req, res) => {
+  const { prospectId } = req.body;
+  if (!prospectId) return res.status(400).json({ error: { message: 'prospectId is required' } });
+
+  try {
+    // Load sequence + steps
+    const seqRes = await pool.query(
+      `SELECT * FROM sequences WHERE id=$1 AND org_id=$2`,
+      [req.params.id, req.orgId]
+    );
+    if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Sequence not found' } });
+
+    const stepsRes = await pool.query(
+      `SELECT * FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order`,
+      [req.params.id]
+    );
+    const steps = stepsRes.rows;
+
+    // Load prospect + account
+    const prospectRes = await pool.query(
+      `SELECT p.*, a.name AS account_name, a.research_notes AS account_research,
+              a.domain AS account_domain, a.research_meta AS account_research_meta
+         FROM prospects p
+    LEFT JOIN accounts a ON a.id = p.account_id
+        WHERE p.id=$1 AND p.org_id=$2`,
+      [prospectId, req.orgId]
+    );
+    if (!prospectRes.rows.length) return res.status(404).json({ error: { message: 'Prospect not found' } });
+    const prospect = prospectRes.rows[0];
+
+    const systemPrompt = `You are an expert sales development rep writing personalised outreach sequences.\nReturn ONLY valid JSON — no markdown fences, no prose.`;
+
+    const userPrompt = `Generate personalised email subject and body for each step in this outreach sequence.\n\nPROSPECT:\nName: ${prospect.first_name} ${prospect.last_name}\nTitle: ${prospect.title || 'unknown'}\nCompany: ${prospect.account_name || prospect.company_name || 'unknown'}\nEmail: ${prospect.email || ''}\nResearch notes: ${prospect.research_notes || 'none'}\n\nACCOUNT RESEARCH:\n${prospect.account_research || 'none available'}\n\nSEQUENCE STEPS (${steps.length} total):\n${steps.map((s, i) => `Step ${i + 1}: channel=${s.channel}, delay_days=${s.delay_days}\n  Template subject: ${s.subject_template || '(none)'}\n  Template body: ${s.body_template || '(none)'}`).join('\n\n')}\n\nFor each step generate personalised subject and body. Keep emails concise (under 150 words). Use the research to personalise.\n\nReturn JSON:\n{\n  "steps": [\n    { "step_order": 1, "subject": "...", "body": "..." },\n    ...\n  ]\n}`;
+
+    const aiRes = await anthropic.messages.create({
+      model:      'claude-sonnet-4-20250514',
+      max_tokens: 2000,
+      system:     systemPrompt,
+      messages:   [{ role: 'user', content: userPrompt }],
+    });
+
+    // Track tokens
+    try {
+      await TokenTrackingService.log({
+        orgId:    req.orgId,
+        userId:   req.user.userId,
+        callType: 'prospecting_sequence_generate',
+        model:    'claude-sonnet-4-20250514',
+        usage:    aiRes.usage,
+      });
+    } catch (_) {}
+
+    const raw = aiRes.content.find(b => b.type === 'text')?.text || '{}';
+    const clean = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+
+    res.json({ generatedSteps: parsed.steps || [] });
+  } catch (err) {
+    console.error('ai-generate error:', err);
+    res.status(500).json({ error: { message: 'AI generation failed: ' + err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI BUILD SEQUENCE — generate full sequence structure from a plain-English goal
+// POST /api/sequences/ai-build
+// body: { goal, stepCount?, channels? }
+// Returns: { name, description, steps: [{channel, delay_days, subject_template, body_template}] }
+// Does NOT save — client reviews and calls POST / to save.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/ai-build', async (req, res) => {
+  const { goal, stepCount = 5, channels = ['email'] } = req.body;
+  if (!goal?.trim()) return res.status(400).json({ error: { message: 'goal is required' } });
+
+  try {
+    const systemPrompt = `You are an expert sales development rep and copywriter building outreach sequences.\nReturn ONLY valid JSON — no markdown fences, no preamble, no prose outside the JSON.`;
+
+    const userPrompt = `Build a complete outreach sequence based on this goal:\n\nGOAL: ${goal}\nSTEPS: ${stepCount}\nCHANNELS AVAILABLE: ${channels.join(', ')}\n\nRules:\n- Use {{first_name}}, {{last_name}}, {{full_name}}, {{title}}, {{company}}, {{industry}} as personalisation tokens\n- Keep email bodies under 120 words — concise, human, not salesy\n- Vary the approach across steps: opener → value → social proof → breakup\n- Space steps realistically: day 0, then 2–4 day gaps between follow-ups\n- For call/task steps, write a brief task_note (what to say/do), leave subject_template and body_template empty\n- sequence name should be short and descriptive (under 50 chars)\n\nReturn this exact JSON shape:\n{\n  "name": "...",\n  "description": "...",\n  "steps": [\n    {\n      "step_order": 1,\n      "channel": "email",\n      "delay_days": 0,\n      "subject_template": "...",\n      "body_template": "...",\n      "task_note": ""\n    }\n  ]\n}`;
+
+    const aiRes = await anthropic.messages.create({
+      model:      'claude-sonnet-4-20250514',
+      max_tokens: 3000,
+      system:     systemPrompt,
+      messages:   [{ role: 'user', content: userPrompt }],
+    });
+
+    try {
+      await TokenTrackingService.log({
+        orgId:    req.orgId,
+        userId:   req.user.userId,
+        callType: 'prospecting_sequence_generate',
+        model:    'claude-sonnet-4-20250514',
+        usage:    aiRes.usage,
+      });
+    } catch (_) {}
+
+    const raw   = aiRes.content.find(b => b.type === 'text')?.text || '{}';
+    const clean = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+
+    res.json({
+      name:        parsed.name        || '',
+      description: parsed.description || '',
+      steps:       (parsed.steps      || []).map((s, i) => ({ ...s, step_order: i + 1 })),
+    });
+  } catch (err) {
+    console.error('ai-build error:', err);
+    res.status(500).json({ error: { message: 'AI build failed: ' + err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI WRITE STEP — write a single step from a plain-English prompt
+// POST /api/sequences/ai-write-step
+// body: { prompt, channel, stepNumber, totalSteps, previousSteps? }
+// Returns: { subject_template, body_template, task_note }
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/ai-write-step', async (req, res) => {
+  const { prompt, channel = 'email', stepNumber = 1, totalSteps = 1, previousSteps = [] } = req.body;
+  if (!prompt?.trim()) return res.status(400).json({ error: { message: 'prompt is required' } });
+
+  const hasContent = ['email', 'linkedin'].includes(channel);
+
+  try {
+    const systemPrompt = `You are an expert SDR copywriter writing outreach message templates.\nReturn ONLY valid JSON — no markdown fences, no prose.`;
+
+    const context = previousSteps.length > 0
+      ? `\nPREVIOUS STEPS IN THIS SEQUENCE:\n${previousSteps.map((s, i) =>
+          `Step ${i + 1} (${s.channel}): ${s.subject_template || s.task_note || '(no subject)'}`
+        ).join('\n')}\n`
+      : '';
+
+    const userPrompt = `Write step ${stepNumber} of ${totalSteps} in an outreach sequence.\n\nCHANNEL: ${channel}\nINSTRUCTION: ${prompt}\n${context}\nRules:\n- Use {{first_name}}, {{company}}, {{title}}, {{industry}} as personalisation tokens\n- Keep it human and concise — under 100 words for email body\n- This is a TEMPLATE, not a personalised message\n${hasContent
+  ? '- Return subject_template and body_template; leave task_note as empty string'
+  : '- This is a call/task step — return a brief task_note describing what to do; leave subject_template and body_template as empty strings'
+}\n\nReturn JSON:\n{\n  "subject_template": "...",\n  "body_template": "...",\n  "task_note": ""\n}`;
+
+    const aiRes = await anthropic.messages.create({
+      model:      'claude-sonnet-4-20250514',
+      max_tokens: 800,
+      system:     systemPrompt,
+      messages:   [{ role: 'user', content: userPrompt }],
+    });
+
+    try {
+      await TokenTrackingService.log({
+        orgId:    req.orgId,
+        userId:   req.user.userId,
+        callType: 'prospecting_sequence_generate',
+        model:    'claude-sonnet-4-20250514',
+        usage:    aiRes.usage,
+      });
+    } catch (_) {}
+
+    const raw   = aiRes.content.find(b => b.type === 'text')?.text || '{}';
+    const clean = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+
+    res.json({
+      subject_template: parsed.subject_template || '',
+      body_template:    parsed.body_template    || '',
+      task_note:        parsed.task_note        || '',
+    });
+  } catch (err) {
+    console.error('ai-write-step error:', err);
+    res.status(500).json({ error: { message: 'AI step write failed: ' + err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEQUENCE STATS
+// GET /api/sequences/:id/stats
+// Returns: enrollment status breakdown + per-step funnel (sent/replied counts)
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/:id/stats', async (req, res) => {
+  try {
+    // Verify sequence belongs to org
+    const seqRes = await pool.query(
+      `SELECT s.*, COUNT(ss.id) AS step_count
+         FROM sequences s
+    LEFT JOIN sequence_steps ss ON ss.sequence_id = s.id
+        WHERE s.id = $1 AND s.org_id = $2
+     GROUP BY s.id`,
+      [req.params.id, req.orgId]
+    );
+    if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+
+    // Enrollment status breakdown
+    const statusRes = await pool.query(
+      `SELECT status, COUNT(*) AS count
+         FROM sequence_enrollments
+        WHERE sequence_id = $1 AND org_id = $2
+     GROUP BY status`,
+      [req.params.id, req.orgId]
+    );
+    const statusMap = {};
+    statusRes.rows.forEach(r => { statusMap[r.status] = parseInt(r.count); });
+    const totalEnrolled = Object.values(statusMap).reduce((a, b) => a + b, 0);
+    const totalReplied  = statusMap['replied'] || 0;
+
+    // Per-step funnel: how many reached each step (sent) and replied at each step
+    const stepFunnelRes = await pool.query(
+      `SELECT
+         ss.step_order,
+         COUNT(*) FILTER (WHERE ssl.status = 'sent')    AS sent,
+         COUNT(*) FILTER (WHERE ssl.status = 'skipped') AS skipped,
+         COUNT(*) FILTER (WHERE ssl.status = 'failed')  AS failed
+       FROM sequence_step_logs ssl
+       JOIN sequence_steps ss       ON ss.id = ssl.sequence_step_id
+       JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
+      WHERE se.sequence_id = $1 AND se.org_id = $2
+   GROUP BY ss.step_order
+   ORDER BY ss.step_order`,
+      [req.params.id, req.orgId]
+    );
+
+    // Reply step distribution — which step was active when prospect replied
+    const replyStepRes = await pool.query(
+      `SELECT current_step, COUNT(*) AS reply_count
+         FROM sequence_enrollments
+        WHERE sequence_id = $1 AND org_id = $2 AND status = 'replied'
+     GROUP BY current_step
+     ORDER BY current_step`,
+      [req.params.id, req.orgId]
+    );
+    const replyByStep = {};
+    replyStepRes.rows.forEach(r => { replyByStep[r.current_step] = parseInt(r.reply_count); });
+
+    // Average step at which replies occurred
+    let avgReplyStep = null;
+    if (totalReplied > 0) {
+      const weightedSum = replyStepRes.rows.reduce((sum, r) => sum + r.current_step * parseInt(r.reply_count), 0);
+      avgReplyStep = (weightedSum / totalReplied).toFixed(1);
+    }
+
+    // Merge funnel + reply data into step-level array
+    const stepFunnel = stepFunnelRes.rows.map(row => ({
+      step_order:  row.step_order,
+      sent:        parseInt(row.sent),
+      skipped:     parseInt(row.skipped),
+      failed:      parseInt(row.failed),
+      replied_here: replyByStep[row.step_order] || 0,
+    }));
+
+    res.json({
+      sequence:      seqRes.rows[0],
+      totalEnrolled,
+      totalReplied,
+      replyRate:     totalEnrolled > 0 ? ((totalReplied / totalEnrolled) * 100).toFixed(1) : '0.0',
+      avgReplyStep,
+      statusBreakdown: {
+        active:    statusMap['active']    || 0,
+        paused:    statusMap['paused']    || 0,
+        completed: statusMap['completed'] || 0,
+        stopped:   statusMap['stopped']   || 0,
+        replied:   statusMap['replied']   || 0,
+      },
+      stepFunnel,
+    });
+  } catch (err) {
+    console.error('sequence stats error:', err);
+    res.status(500).json({ error: { message: 'Failed to load stats' } });
+  }
+});
+
+module.exports = router;
