@@ -75,7 +75,6 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
   const [saving,      setSaving]      = useState(false);
   const [error,       setError]       = useState('');
   const [aiLoading,   setAiLoading]   = useState(false);
-  const [aiPreviewId, setAiPreviewId] = useState(null); // prospectId used for AI preview
   const [aiPreviewInput, setAiPreviewInput] = useState('');
   const [showAiInput, setShowAiInput] = useState(false);
   const [expandedStep, setExpandedStep] = useState(steps[0]?._id || null);
@@ -133,7 +132,6 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
         if (!g) return s;
         return { ...s, subject_template: g.subject || s.subject_template, body_template: g.body || s.body_template };
       }));
-      setAiPreviewId(parseInt(aiPreviewInput));
       setShowAiInput(false);
     } catch (err) {
       setError('AI fill failed: ' + err.message);
