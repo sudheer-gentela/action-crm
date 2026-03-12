@@ -112,7 +112,6 @@ export default function SequenceEnrollModal({ prospects, preSequenceId, onEnroll
 
     // Identify which prospects need research first
     const needsResearch = prospects.filter(p => !p.research_notes && !p.account?.research_notes);
-    const alreadyHas    = prospects.filter(p => p.research_notes || p.account?.research_notes);
 
     // Initialise progress map
     const initProgress = {};
@@ -205,7 +204,6 @@ export default function SequenceEnrollModal({ prospects, preSequenceId, onEnroll
   };
 
   // ── Helpers ────────────────────────────────────────────────────────────────
-  const currentProspect     = prospects.find(p => p.id === previewProspect);
   const draftsForProspect   = aiDrafts[previewProspect] || {};
   const hasNoResearch       = (p) => !p.research_notes && !p.account?.research_notes;
   const noResearchCount     = prospects.filter(hasNoResearch).length;
@@ -398,7 +396,7 @@ export default function SequenceEnrollModal({ prospects, preSequenceId, onEnroll
                       onClick={handlePersonalise}
                       disabled={personalising}
                       style={{
-                        padding: '8px 16px', borderRadius: 8, border: 'none',
+                        padding: '8px 16px', borderRadius: 8,
                         background: personalising ? '#f0fdfa' : personalised ? '#fff' : TEAL,
                         color: personalising ? TEAL : personalised ? TEAL : '#fff',
                         border: personalised ? `1px solid ${TEAL}` : 'none',
@@ -409,7 +407,6 @@ export default function SequenceEnrollModal({ prospects, preSequenceId, onEnroll
                     >
                       {personalising
                         ? (() => {
-                            const researching = Object.values(researchProgress).filter(s => s === 'researching').length;
                             const researchDone = Object.values(researchProgress).filter(s => s === 'done' || s === 'failed').length;
                             const researchTotal = Object.values(researchProgress).filter(s => s !== 'skipped').length;
                             if (researchTotal > 0 && researchDone < researchTotal) {
