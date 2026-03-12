@@ -164,20 +164,53 @@ async function fetchEmailById(userId, emailId) {
 
 /**
  * Send an email via Gmail
+ *
+ * If accessToken is provided (prospecting sender accounts), uses those tokens directly
+ * instead of loading from oauth_tokens — so the email goes out from the correct address.
  */
-async function sendEmail(userId, { to, subject, body, isHtml = false }) {
-  const auth = await getAuthenticatedClient(userId);
+async function sendEmail(userId, { to, subject, body, isHtml = false, accessToken = null, refreshToken = null, senderEmail = null }) {
+  let auth;
+
+  if (accessToken) {
+    // Use the prospecting sender account's own tokens
+    const oauth2Client = getOAuth2Client();
+    oauth2Client.setCredentials({
+      access_token:  accessToken,
+      refresh_token: refreshToken || undefined,
+    });
+    // Save refreshed tokens back to prospecting_sender_accounts if auto-refreshed
+    oauth2Client.on('tokens', async (tokens) => {
+      if (senderEmail && tokens.access_token) {
+        const { pool } = require('../config/database');
+        await pool.query(
+          `UPDATE prospecting_sender_accounts
+           SET access_token = $1, expires_at = $2, updated_at = CURRENT_TIMESTAMP
+           WHERE email = $3`,
+          [tokens.access_token, tokens.expiry_date ? new Date(tokens.expiry_date) : null, senderEmail]
+        ).catch(err => console.warn('Failed to save refreshed sender token:', err.message));
+      }
+    });
+    auth = oauth2Client;
+  } else {
+    // Fall back to user's standard oauth_tokens
+    auth = await getAuthenticatedClient(userId);
+  }
+
   const gmail = google.gmail({ version: 'v1', auth });
 
   const contentType = isHtml ? 'text/html' : 'text/plain';
   const raw = _encodeEmail(to, subject, body, contentType);
 
-  await gmail.users.messages.send({
+  const sendRes = await gmail.users.messages.send({
     userId: 'me',
     requestBody: { raw },
   });
 
-  console.log(`📤 Sent email via Gmail to ${to} — subject: "${subject}"`);
+  const messageId = sendRes.data.id || null;
+  const threadId  = sendRes.data.threadId || null;
+  console.log(`📤 Sent email via Gmail (${senderEmail || 'default'}) to ${to} — messageId: ${messageId}`);
+
+  return { messageId, threadId };
 }
 
 // ── Calendar ──────────────────────────────────────────────────────────────────

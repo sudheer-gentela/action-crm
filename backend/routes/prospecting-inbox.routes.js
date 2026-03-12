@@ -306,6 +306,126 @@ router.get('/stats', async (req, res) => {
 // Query params:
 //   days  — how many days back to look (default: 30, max: 90)
 //
+// ── GET /sync/debug — diagnostic endpoint, returns full sync trace without saving ──
+// Call GET /api/prospecting/inbox/sync/debug to see exactly what's happening
+router.get('/sync/debug', async (req, res) => {
+  const orgId = req.orgId;
+  const days  = Math.min(parseInt(req.query.days || 30), 90);
+  const report = { senderAccounts: [], prospectCount: 0, sentOutreachCount: 0, emailsFetched: [], matchResults: [] };
+
+  try {
+    // 1. Sender accounts
+    const senderResult = await db.query(
+      `SELECT id, user_id, provider, email, is_active, expires_at
+       FROM prospecting_sender_accounts WHERE org_id = $1`,
+      [orgId]
+    );
+    report.senderAccounts = senderResult.rows.map(r => ({
+      id: r.id, email: r.email, provider: r.provider,
+      isActive: r.is_active,
+      tokenExpired: r.expires_at ? new Date(r.expires_at) < new Date() : 'unknown',
+      expiresAt: r.expires_at,
+    }));
+
+    // 2. Prospect emails
+    const prospectResult = await db.query(
+      `SELECT id, email FROM prospects WHERE org_id = $1 AND deleted_at IS NULL AND email IS NOT NULL`,
+      [orgId]
+    );
+    report.prospectCount = prospectResult.rows.length;
+    report.prospectEmails = prospectResult.rows.map(r => r.email);
+
+    // 3. Sent outreach emails
+    const sentResult = await db.query(
+      `SELECT to_address, prospect_id FROM emails
+       WHERE org_id = $1 AND prospect_id IS NOT NULL AND direction = 'sent'`,
+      [orgId]
+    );
+    report.sentOutreachCount = sentResult.rows.length;
+    report.sentToAddresses = sentResult.rows.map(r => r.to_address);
+
+    // 4. For each active sender, fetch raw emails and show match attempt
+    const sinceDate = new Date();
+    sinceDate.setDate(sinceDate.getDate() - days);
+
+    const prospectByEmail = {};
+    for (const p of prospectResult.rows) {
+      if (p.email) prospectByEmail[p.email.toLowerCase().trim()] = p.id;
+    }
+    const prospectBySentTo = {};
+    for (const row of sentResult.rows) {
+      if (row.to_address) prospectBySentTo[row.to_address.toLowerCase().trim()] = row.prospect_id;
+    }
+
+    for (const account of senderResult.rows.filter(a => a.is_active)) {
+      const accountReport = { account: account.email, provider: account.provider, rawEmailCount: 0, emails: [] };
+
+      try {
+        if (account.provider === 'gmail') {
+          const { google } = require('googleapis');
+          const oauth2Client = new google.auth.OAuth2(
+            process.env.GOOGLE_CLIENT_ID,
+            process.env.GOOGLE_CLIENT_SECRET,
+            process.env.GOOGLE_REDIRECT_URI
+          );
+          oauth2Client.setCredentials({
+            access_token:  account.access_token,
+            refresh_token: account.refresh_token,
+            expiry_date:   account.expires_at ? new Date(account.expires_at).getTime() : undefined,
+          });
+          const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+          const sinceFormatted = `${sinceDate.getFullYear()}/${String(sinceDate.getMonth()+1).padStart(2,'0')}/${String(sinceDate.getDate()).padStart(2,'0')}`;
+
+          const listRes = await gmail.users.messages.list({
+            userId: 'me', maxResults: 20,
+            q: `after:${sinceFormatted}`,
+          });
+
+          const messageIds = listRes.data.messages || [];
+          accountReport.rawEmailCount = listRes.data.resultSizeEstimate || messageIds.length;
+          accountReport.nextPageToken = listRes.data.nextPageToken || null;
+
+          for (const m of messageIds.slice(0, 20)) {
+            const d = await gmail.users.messages.get({
+              userId: 'me', id: m.id, format: 'metadata',
+              metadataHeaders: ['From', 'To', 'Subject', 'Date'],
+            });
+            const headers = {};
+            (d.data.payload?.headers || []).forEach(h => { headers[h.name.toLowerCase()] = h.value; });
+
+            const fromRaw   = headers['from'] || '';
+            const fromMatch = fromRaw.match(/<(.+?)>/);
+            const fromAddr  = (fromMatch ? fromMatch[1] : fromRaw).toLowerCase().trim();
+            const toRaw     = headers['to'] || '';
+            const toAddrs   = toRaw.split(',').map(a => { const m = a.trim().match(/<(.+?)>/); return (m?m[1]:a).toLowerCase().trim(); });
+
+            const exactMatch  = !!prospectByEmail[fromAddr];
+            const sentToMatch = toAddrs.some(a => !!prospectBySentTo[a]);
+            const alreadySaved = (await db.query(
+              `SELECT id FROM emails WHERE external_id = $1`, [m.id]
+            )).rows.length > 0;
+
+            accountReport.emails.push({
+              id: m.id, from: headers['from'], to: headers['to'],
+              subject: headers['subject'], date: headers['date'],
+              fromAddrParsed: fromAddr,
+              exactMatch, sentToMatch, alreadySaved,
+              wouldSave: (exactMatch || sentToMatch) && !alreadySaved,
+            });
+          }
+        }
+      } catch (err) {
+        accountReport.error = err.message;
+      }
+      report.emailsFetched.push(accountReport);
+    }
+
+    res.json({ success: true, debug: report });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message, partial: report });
+  }
+});
+
 router.post('/sync', async (req, res) => {
   const orgId  = req.orgId;
   const userId = req.user.userId;
@@ -528,8 +648,16 @@ router.post('/sync', async (req, res) => {
 
           if (!prospectId) { skipped++; continue; } // not a known prospect
 
-          // 5. Upsert into emails table — skip if external_id already exists
+          // 5. Upsert into emails table — skip if already saved
           try {
+            // First check: if external_id exists, skip (fast path)
+            if (email.externalId) {
+              const existing = await db.query(
+                `SELECT id FROM emails WHERE external_id = $1`, [email.externalId]
+              );
+              if (existing.rows.length > 0) { skipped++; continue; }
+            }
+
             const upsertResult = await db.query(
               `INSERT INTO emails
                  (org_id, user_id, prospect_id, sender_account_id, provider,
@@ -549,7 +677,7 @@ router.post('/sync', async (req, res) => {
                 email.fromAddress,
                 email.toAddress,
                 email.sentAt,
-                email.externalId,
+                email.externalId || null,
               ]
             );
 
