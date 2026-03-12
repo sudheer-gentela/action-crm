@@ -1565,6 +1565,30 @@ function SequencesView({ prospects }) {
   const [selectedProspects, setSelectedProspects] = useState([]);
   const [error,        setError]        = useState('');
 
+  // Enrollment drill-down: which row is expanded + its step logs
+  const [expandedEnrollId,   setExpandedEnrollId]   = useState(null);
+  const [expandedLogs,       setExpandedLogs]       = useState([]);
+  const [loadingLogs,        setLoadingLogs]        = useState(false);
+
+  const toggleEnrollLogs = async (enrollId) => {
+    if (expandedEnrollId === enrollId) {
+      setExpandedEnrollId(null);
+      setExpandedLogs([]);
+      return;
+    }
+    setExpandedEnrollId(enrollId);
+    setExpandedLogs([]);
+    setLoadingLogs(true);
+    try {
+      const r = await apiFetch(`/sequences/enrollments/${enrollId}`);
+      setExpandedLogs(r.logs || []);
+    } catch (err) {
+      setError('Failed to load step history: ' + err.message);
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
+
   // Stats
   const [statsSeqId,   setStatsSeqId]   = useState(null);
   const [stats,        setStats]        = useState(null);
@@ -1837,50 +1861,137 @@ function SequencesView({ prospects }) {
               <tbody>
                 {enrollments.map(e => {
                   const sc = STATUS_COLORS[e.status] || { bg: '#f3f4f6', color: '#6b7280' };
+                  const isExpanded = expandedEnrollId === e.id;
                   return (
-                    <tr key={e.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
-                      <td style={{ padding: '9px 14px' }}>
-                        <div style={{ fontWeight: 600, color: '#1a202c' }}>{e.first_name} {e.last_name}</div>
-                        {e.email && <div style={{ fontSize: 11, color: '#94a3b8' }}>{e.email}</div>}
-                      </td>
-                      <td style={{ padding: '9px 14px', color: '#374151' }}>{e.sequence_name}</td>
-                      <td style={{ padding: '9px 14px' }}>
-                        <span style={{
-                          padding: '2px 9px', borderRadius: 10, fontSize: 11, fontWeight: 600,
-                          background: sc.bg, color: sc.color,
-                        }}>
-                          {e.status}
-                        </span>
-                        {e.stop_reason && (
-                          <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 1 }}>{e.stop_reason}</div>
-                        )}
-                      </td>
-                      <td style={{ padding: '9px 14px', color: '#374151', textAlign: 'center' }}>
-                        {e.status === 'active' ? e.current_step : '—'}
-                      </td>
-                      <td style={{ padding: '9px 14px', color: '#6b7280', fontSize: 12, whiteSpace: 'nowrap' }}>
-                        {e.next_step_due && e.status === 'active'
-                          ? new Date(e.next_step_due).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-                          : '—'}
-                      </td>
-                      <td style={{ padding: '9px 14px', color: '#9ca3af', fontSize: 11, whiteSpace: 'nowrap' }}>
-                        {new Date(e.enrolled_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                      </td>
-                      <td style={{ padding: '9px 14px' }}>
-                        {e.status === 'active' && (
-                          <button
-                            onClick={() => handleStopEnrollment(e.id)}
-                            style={{
-                              padding: '3px 10px', borderRadius: 6, fontSize: 11,
-                              border: '1px solid #fecaca', background: '#fef2f2',
-                              color: '#dc2626', cursor: 'pointer', fontWeight: 500,
-                            }}
-                          >
-                            Stop
-                          </button>
-                        )}
-                      </td>
-                    </tr>
+                    <React.Fragment key={e.id}>
+                      <tr
+                        style={{ borderBottom: isExpanded ? 'none' : '1px solid #f3f4f6', cursor: 'pointer' }}
+                        onClick={() => toggleEnrollLogs(e.id)}
+                      >
+                        <td style={{ padding: '9px 14px' }}>
+                          <div style={{ fontWeight: 600, color: '#1a202c' }}>{e.first_name} {e.last_name}</div>
+                          {e.email && <div style={{ fontSize: 11, color: '#94a3b8' }}>{e.email}</div>}
+                        </td>
+                        <td style={{ padding: '9px 14px', color: '#374151' }}>{e.sequence_name}</td>
+                        <td style={{ padding: '9px 14px' }}>
+                          <span style={{
+                            padding: '2px 9px', borderRadius: 10, fontSize: 11, fontWeight: 600,
+                            background: sc.bg, color: sc.color,
+                          }}>
+                            {e.status}
+                          </span>
+                          {e.stop_reason && (
+                            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 1 }}>{e.stop_reason}</div>
+                          )}
+                        </td>
+                        <td style={{ padding: '9px 14px', color: '#374151', textAlign: 'center' }}>
+                          {e.status === 'active' ? e.current_step : '—'}
+                        </td>
+                        <td style={{ padding: '9px 14px', color: '#6b7280', fontSize: 12, whiteSpace: 'nowrap' }}>
+                          {e.next_step_due && e.status === 'active'
+                            ? new Date(e.next_step_due).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+                            : '—'}
+                        </td>
+                        <td style={{ padding: '9px 14px', color: '#9ca3af', fontSize: 11, whiteSpace: 'nowrap' }}>
+                          {new Date(e.enrolled_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                        </td>
+                        <td style={{ padding: '9px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                          {e.status === 'active' && (
+                            <button
+                              onClick={(ev) => { ev.stopPropagation(); handleStopEnrollment(e.id); }}
+                              style={{
+                                padding: '3px 10px', borderRadius: 6, fontSize: 11,
+                                border: '1px solid #fecaca', background: '#fef2f2',
+                                color: '#dc2626', cursor: 'pointer', fontWeight: 500,
+                              }}
+                            >
+                              Stop
+                            </button>
+                          )}
+                          <span style={{ fontSize: 11, color: '#9ca3af' }}>{isExpanded ? '▲' : '▼'}</span>
+                        </td>
+                      </tr>
+
+                      {/* ── Step log drill-down ───────────────────────────── */}
+                      {isExpanded && (
+                        <tr style={{ borderBottom: '1px solid #f3f4f6' }}>
+                          <td colSpan={7} style={{ padding: '0 14px 14px 40px', background: '#f9fafb' }}>
+                            {loadingLogs ? (
+                              <div style={{ padding: '12px 0', fontSize: 12, color: '#9ca3af' }}>Loading step history…</div>
+                            ) : expandedLogs.length === 0 ? (
+                              <div style={{ padding: '12px 0', fontSize: 12, color: '#9ca3af' }}>No steps fired yet.</div>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 10 }}>
+                                <div style={{ fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>
+                                  Step History
+                                </div>
+                                {expandedLogs.map((log, idx) => {
+                                  const CHANNEL_ICONS_LOCAL = { email: '✉️', linkedin: '🔗', call: '📞', task: '📋' };
+                                  const statusColor = log.status === 'sent' ? '#059669' : log.status === 'failed' ? '#dc2626' : '#6b7280';
+                                  const statusBg    = log.status === 'sent' ? '#d1fae5' : log.status === 'failed' ? '#fee2e2' : '#f3f4f6';
+                                  return (
+                                    <div key={log.id} style={{
+                                      display: 'flex', alignItems: 'flex-start', gap: 10,
+                                      padding: '8px 12px', background: '#fff',
+                                      border: '1px solid #e5e7eb', borderRadius: 8,
+                                    }}>
+                                      {/* Step number */}
+                                      <div style={{
+                                        width: 22, height: 22, borderRadius: '50%',
+                                        background: '#0F9D8E', color: '#fff',
+                                        fontSize: 11, fontWeight: 700, flexShrink: 0,
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                      }}>
+                                        {log.step_order}
+                                      </div>
+
+                                      {/* Channel + content */}
+                                      <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                                          <span style={{ fontSize: 12 }}>{CHANNEL_ICONS_LOCAL[log.step_channel || log.channel] || '📋'}</span>
+                                          <span style={{ fontSize: 12, fontWeight: 600, color: '#374151', textTransform: 'capitalize' }}>
+                                            {log.step_channel || log.channel}
+                                          </span>
+                                          <span style={{
+                                            fontSize: 10, fontWeight: 600, padding: '1px 7px',
+                                            borderRadius: 8, background: statusBg, color: statusColor,
+                                          }}>
+                                            {log.status}
+                                          </span>
+                                        </div>
+                                        {log.subject && (
+                                          <div style={{ fontSize: 12, color: '#1a202c', fontWeight: 500, marginBottom: 2 }}>
+                                            {log.subject}
+                                          </div>
+                                        )}
+                                        {log.body && (
+                                          <div style={{
+                                            fontSize: 11, color: '#6b7280', lineHeight: 1.5,
+                                            whiteSpace: 'pre-wrap',
+                                            maxHeight: 60, overflow: 'hidden',
+                                            maskImage: 'linear-gradient(to bottom, black 50%, transparent)',
+                                            WebkitMaskImage: 'linear-gradient(to bottom, black 50%, transparent)',
+                                          }}>
+                                            {log.body}
+                                          </div>
+                                        )}
+                                      </div>
+
+                                      {/* Fired at timestamp */}
+                                      <div style={{ fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                                        {log.fired_at
+                                          ? new Date(log.fired_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                                          : '—'}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>

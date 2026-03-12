@@ -11,8 +11,6 @@
  *   1. Find all active enrollments where next_step_due <= now
  *   2. For each: check for inbound reply → auto-stop if found
  *   3. Fire the current step (email → insert into emails table)
- *      Uses personalised_steps JSONB from enrollment if present,
- *      otherwise falls back to renderTemplate on the master template.
  *   4. Log to sequence_step_logs
  *   5. Advance to next step, or mark complete
  */
@@ -121,20 +119,8 @@ const SequenceStepFirer = {
             ? { name: prospect.account_name, domain: prospect.account_domain, industry: prospect.account_industry }
             : null;
 
-          // FIX 2: use AI-personalised content if stored on enrollment,
-          // otherwise fall back to rendering the master template.
-          // personalised_steps is keyed by step_order (may be int or string key).
-          const personalisedSteps = enrollment.personalised_steps || {};
-          const personalisedStep  = personalisedSteps[step.step_order]
-                                 ?? personalisedSteps[String(step.step_order)];
-
-          const subject = personalisedStep?.subject
-            ? personalisedStep.subject
-            : renderTemplate(step.subject_template, prospect || {}, account);
-
-          const body = personalisedStep?.body
-            ? personalisedStep.body
-            : renderTemplate(step.body_template, prospect || {}, account);
+          const subject = renderTemplate(step.subject_template, prospect || {}, account);
+          const body    = renderTemplate(step.body_template,    prospect || {}, account);
 
           // ── Fire the step ─────────────────────────────────────────────────
           let emailId = null;
@@ -177,6 +163,37 @@ const SequenceStepFirer = {
               emailId,
             ]
           );
+
+          // ── Write activity so step appears in prospect's Activity tab ──────
+          try {
+            const channelLabel = step.channel.charAt(0).toUpperCase() + step.channel.slice(1);
+            const description  = step.channel === 'email'
+              ? `Sequence step ${enrollment.current_step} sent — ${subject || '(no subject)'}`
+              : `Sequence step ${enrollment.current_step} fired (${channelLabel})${step.task_note ? ': ' + step.task_note : ''}`;
+
+            await client.query(
+              `INSERT INTO prospecting_activities
+                           (prospect_id, user_id, activity_type, description, metadata)
+                    VALUES ($1, $2, 'sequence_step_sent', $3, $4)`,
+              [
+                enrollment.prospect_id,
+                enrollment.enrolled_by,
+                description,
+                JSON.stringify({
+                  enrollmentId:   enrollment.id,
+                  sequenceId:     enrollment.seq_id,
+                  stepOrder:      enrollment.current_step,
+                  stepId:         step.id,
+                  channel:        step.channel,
+                  subject:        subject || null,
+                  emailId:        emailId || null,
+                }),
+              ]
+            );
+          } catch (actErr) {
+            // Non-fatal — step is already logged, don't fail the enrollment
+            console.warn(`SequenceStepFirer: activity log failed for enrollment ${enrollment.id}:`, actErr.message);
+          }
 
           // ── Advance to next step or mark complete ─────────────────────────
           const nextStepRes = await client.query(
