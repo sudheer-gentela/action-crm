@@ -7,61 +7,218 @@ import './SettingsView.css';
 import DealHealthSettings from './DealHealthSettings';
 import NotificationSettings from './NotificationSettings';
 
-const SETTINGS_TABS = [
-  { id: 'integrations', label: 'Integrations',   icon: '🔌' },
-  { id: 'health',       label: 'Deal Health',    icon: '🏥' },
-  { id: 'prompts',      label: 'AI Prompts',     icon: '🤖' },
-  { id: 'actions',      label: 'Actions',        icon: '🎯' },
-  { id: 'ai-agent',     label: 'AI Agent',       icon: '🤖' },
-  { id: 'ai-usage',     label: 'AI Usage',       icon: '📊' },
-  { id: 'notifications',label: 'Notifications',  icon: '🔔' },
-  { id: 'preferences',  label: 'My Preferences', icon: '🎛️' },
+// ── Sidebar nav structure ────────────────────────────────────────────────────
+// Each group has a label and items. Items with `children` expand inline.
+// `adminOnly` items are visible to all but marked read-only for non-admins.
+const NAV_GROUPS = [
+  {
+    group: 'Personal',
+    items: [
+      { id: 'alerts',       label: 'Alerts',            icon: '🔔' },
+      {
+        id: 'connections', label: 'Connections', icon: '🔗',
+        children: [
+          { id: 'connections-my',  label: 'My Connections'  },
+          { id: 'connections-org', label: 'Org Connections', adminOnly: true },
+        ],
+      },
+      { id: 'usage',        label: 'Usage & Billing',   icon: '📊' },
+      { id: 'preferences',  label: 'My Preferences',    icon: '🎛️' },
+    ],
+  },
+  {
+    group: 'AI',
+    items: [
+      {
+        id: 'ai', label: 'AI Settings', icon: '🤖',
+        children: [
+          { id: 'ai-prefs',   label: 'Preferences'  },
+          { id: 'ai-prompts', label: 'Prompts', adminOnly: true },
+          { id: 'ai-agent',   label: 'AI Agent'     },
+        ],
+      },
+    ],
+  },
+  {
+    group: 'Workflow',
+    items: [
+      { id: 'deal-health', label: 'Deal Health', icon: '🏥', adminOnly: true },
+      { id: 'actions',     label: 'Actions',     icon: '⚡', adminOnly: true },
+    ],
+  },
 ];
 
+// Flat map for reverse-lookup (child id → parent id)
+const CHILD_PARENT = {};
+NAV_GROUPS.forEach(g => g.items.forEach(item => {
+  if (item.children) item.children.forEach(c => { CHILD_PARENT[c.id] = item.id; });
+}));
+
 export default function SettingsView({ initialTab }) {
-  const [settingsTab, setSettingsTab] = useState(initialTab || 'integrations');
+  const orgRole  = sessionStorage.getItem('activeRole') || 'member';
+  const isAdmin  = orgRole === 'org-admin' || orgRole === 'super-admin';
+  const readOnly = !isAdmin;
+
+  // Default to 'alerts' unless a specific tab is requested
+  const [activeId,   setActiveId]   = useState(initialTab || 'alerts');
+  // Track which parent groups are expanded { 'connections': true, 'ai': true }
+  const [expanded,   setExpanded]   = useState({ connections: true, ai: false });
+  // Sidebar collapsed to icons (narrow/mobile)
+  const [collapsed,  setCollapsed]  = useState(false);
 
   // Allow other parts of the app to navigate here with a specific sub-tab
   useEffect(() => {
     const handler = (e) => {
-      if (e.detail?.settingsTab) setSettingsTab(e.detail.settingsTab);
+      if (!e.detail?.settingsTab) return;
+      const id = e.detail.settingsTab;
+      setActiveId(id);
+      // Auto-expand parent if navigating to a child
+      const parent = CHILD_PARENT[id];
+      if (parent) setExpanded(prev => ({ ...prev, [parent]: true }));
     };
     window.addEventListener('navigate', handler);
     return () => window.removeEventListener('navigate', handler);
   }, []);
 
+  function handleNavClick(item) {
+    if (item.children) {
+      // Toggle expansion and activate first child
+      setExpanded(prev => ({ ...prev, [item.id]: !prev[item.id] }));
+      if (!expanded[item.id]) {
+        // Opening — jump to first child
+        setActiveId(item.children[0].id);
+      }
+    } else {
+      setActiveId(item.id);
+      // Auto-expand parent group if this is a child
+      const parent = CHILD_PARENT[item.id];
+      if (parent) setExpanded(prev => ({ ...prev, [parent]: true }));
+    }
+  }
+
+  // Determine the active label for the page header
+  function getActiveLabel() {
+    for (const g of NAV_GROUPS) {
+      for (const item of g.items) {
+        if (item.id === activeId) return { icon: item.icon, label: item.label };
+        if (item.children) {
+          const child = item.children.find(c => c.id === activeId);
+          if (child) return { icon: item.icon, label: child.label };
+        }
+      }
+    }
+    return { icon: '⚙️', label: 'Settings' };
+  }
+
+  const { icon: activeIcon, label: activeLabel } = getActiveLabel();
+
   return (
-    <div className="settings-view">
-      <div className="settings-header">
-        <h1>Settings</h1>
-        <p className="settings-subtitle">Configure how your CRM works across all deals</p>
-      </div>
+    <div className={`sv2-layout ${collapsed ? 'sv2-collapsed' : ''}`}>
 
-      <div className="settings-tabs">
-        {SETTINGS_TABS.map(t => (
-          <button
-            key={t.id}
-            className={`settings-tab ${settingsTab === t.id ? 'active' : ''}`}
-            onClick={() => setSettingsTab(t.id)}
-          >
-            <span className="settings-tab-icon">{t.icon}</span>
-            {t.label}
+      {/* ── Sidebar ── */}
+      <nav className="sv2-sidebar">
+        <div className="sv2-sidebar-header">
+          <span className="sv2-sidebar-title">Settings</span>
+          <button className="sv2-collapse-btn" onClick={() => setCollapsed(c => !c)} title={collapsed ? 'Expand' : 'Collapse'}>
+            {collapsed ? '›' : '‹'}
           </button>
-        ))}
-      </div>
+        </div>
 
-      <div className="settings-body">
-        {settingsTab === 'integrations'  && <IntegrationsSettings />}
-        {settingsTab === 'health'        && <DealHealthSettings readOnly={(sessionStorage.getItem('activeRole') || 'member') === 'member'} />}
-        {settingsTab === 'prompts'       && <PromptsSettings />}
-        {settingsTab === 'actions'       && <ActionsSettings />}
-        {settingsTab === 'ai-agent'      && <AgentUserSettings />}
-        {settingsTab === 'notifications' && <NotificationSettings />}
-        {settingsTab === 'ai-usage'      && <UserAIUsageSettings />}
-        {settingsTab === 'preferences'   && <UserPreferencesSettings />}
-      </div>
+        {NAV_GROUPS.map(group => (
+          <div key={group.group} className="sv2-nav-group">
+            {!collapsed && <div className="sv2-nav-group-label">{group.group}</div>}
+            {group.items.map(item => {
+              const isParentActive = item.id === activeId || (item.children && item.children.some(c => c.id === activeId));
+              const isExpanded     = expanded[item.id];
+              return (
+                <div key={item.id}>
+                  <button
+                    className={`sv2-nav-item ${isParentActive ? 'active' : ''}`}
+                    onClick={() => handleNavClick(item)}
+                    title={collapsed ? item.label : undefined}
+                  >
+                    <span className="sv2-nav-icon">{item.icon}</span>
+                    {!collapsed && (
+                      <>
+                        <span className="sv2-nav-label">{item.label}</span>
+                        {item.adminOnly && <span className="sv2-nav-badge sv2-badge-admin">Admin</span>}
+                        {item.children && (
+                          <span className="sv2-nav-chevron">{isExpanded ? '▾' : '›'}</span>
+                        )}
+                      </>
+                    )}
+                  </button>
+                  {/* Sub-items */}
+                  {item.children && isExpanded && !collapsed && (
+                    <div className="sv2-nav-children">
+                      {item.children.map(child => (
+                        <button
+                          key={child.id}
+                          className={`sv2-nav-child ${activeId === child.id ? 'active' : ''}`}
+                          onClick={() => setActiveId(child.id)}
+                        >
+                          <span className="sv2-child-dot">›</span>
+                          {child.label}
+                          {child.adminOnly && <span className="sv2-nav-badge sv2-badge-admin">Admin</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </nav>
+
+      {/* ── Main content ── */}
+      <main className="sv2-content">
+        <div className="sv2-page-header">
+          <h1><span className="sv2-page-icon">{activeIcon}</span>{activeLabel}</h1>
+        </div>
+
+        <div className="sv2-pane">
+          {/* Personal */}
+          {activeId === 'alerts'           && <NotificationSettings />}
+          {activeId === 'connections-my'   && <ConnectionsMy isAdmin={isAdmin} />}
+          {activeId === 'connections-org'  && <IntegrationsSettings readOnly={readOnly} />}
+          {activeId === 'usage'            && <UserAIUsageSettings />}
+          {activeId === 'preferences'      && <UserPreferencesSettings />}
+          {/* AI */}
+          {activeId === 'ai-prefs'         && <AIPreferencesPanel />}
+          {activeId === 'ai-prompts'       && <PromptsSettings readOnly={readOnly} />}
+          {activeId === 'ai-agent'         && <AgentUserSettings />}
+          {/* Workflow */}
+          {activeId === 'deal-health'      && <DealHealthSettings readOnly={readOnly} />}
+          {activeId === 'actions'          && <ActionsSettings readOnly={readOnly} />}
+        </div>
+      </main>
     </div>
   );
+}
+
+// ── ConnectionsMy — personal OAuth + outreach senders ────────────────────────
+// Extracts the "My Connections" section from the old IntegrationsSettings
+// so it can live under Personal > Connections > My Connections
+function ConnectionsMy({ isAdmin }) {
+  // Renders the personal OAuth connections (Outlook / Google)
+  // The sender accounts section is owned by UserPreferencesSettings —
+  // we embed a lightweight version here for discoverability
+  return (
+    <div>
+      <IntegrationsSettings showPersonalOnly={true} />
+    </div>
+  );
+}
+
+// ── AIPreferencesPanel — provider + model + product context ──────────────────
+// Extracts the Prospecting AI section from UserPreferencesSettings
+// so it lives under AI > Preferences
+function AIPreferencesPanel() {
+  // The full AI prefs UI already lives inside UserPreferencesSettings.
+  // Until we extract it, we render UserPreferencesSettings scoped to AI prefs only.
+  // Pass a prop to let UserPreferencesSettings know to show only the AI section.
+  return <UserPreferencesSettings showAIOnly={true} />;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -168,10 +325,11 @@ function PromptsSettings() {
 // INTEGRATIONS SETTINGS
 // ════════════════════════════════════════════════════════════
 
-function IntegrationsSettings() {
+function IntegrationsSettings({ readOnly = false, showPersonalOnly = false }) {
   const userId = JSON.parse(localStorage.getItem('user') || '{}').id;
-  const orgRole = sessionStorage.getItem('activeRole') || 'member';
-  const isAdmin = orgRole === 'org-admin' || orgRole === 'super-admin';
+  const orgRole  = sessionStorage.getItem('activeRole') || 'member';
+  const isAdmin  = orgRole === 'org-admin' || orgRole === 'super-admin';
+  const _readOnly = readOnly || !isAdmin;
   const [orgIntegrations, setOrgIntegrations] = useState(null);
 
   useEffect(() => {
@@ -397,7 +555,7 @@ const AI_MODELS = {
   ],
 };
 
-function UserPreferencesSettings() {
+function UserPreferencesSettings({ showAIOnly = false }) {
   const [senders, setSenders]       = useState([]);
   const [orgLimits, setOrgLimits]   = useState(null);
   const [loading, setLoading]       = useState(true);
@@ -603,7 +761,7 @@ function UserPreferencesSettings() {
       <div className="sv-panel-body">
 
         {/* ── Outreach Sender Accounts ─────────────────────────────────────── */}
-        <div className="sv-section">
+        {!showAIOnly && <div className="sv-section">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
             <div>
               <h3 className="sv-section-heading" style={{ margin: 0 }}>📧 Outreach Sender Accounts</h3>
@@ -805,7 +963,8 @@ function UserPreferencesSettings() {
         </div>
 
         {/* ── Prospecting AI Preferences ──────────────────────────────────── */}
-        <div className="sv-section" style={{ marginTop: 32 }}>
+        }
+        <div className="sv-section" style={{ marginTop: showAIOnly ? 0 : 32 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
             <div>
               <h3 className="sv-section-heading" style={{ margin: 0 }}>🤖 Prospecting AI</h3>
