@@ -329,7 +329,7 @@ function IntegrationsSettings({ readOnly = false, showPersonalOnly = false }) {
   const userId = JSON.parse(localStorage.getItem('user') || '{}').id;
   const orgRole  = sessionStorage.getItem('activeRole') || 'member';
   const isAdmin  = orgRole === 'org-admin' || orgRole === 'super-admin';
-  const _readOnly = readOnly || !isAdmin;
+  // readOnly derived from props + role — used for future admin-gating
   const [orgIntegrations, setOrgIntegrations] = useState(null);
 
   useEffect(() => {
