@@ -620,10 +620,18 @@ router.post('/sync', async (req, res) => {
           }
         }
 
-        console.log(`\n🔍 SYNC: Matching ${rawEmails.length} raw emails against prospects...`);
+        // Filter out emails sent BY this account — they are outbound, not replies
+        const inboundEmails = rawEmails.filter(e => {
+          const fromRaw   = e.fromAddress || '';
+          const fromMatch = fromRaw.match(/<(.+?)>/);
+          const fromAddr  = (fromMatch ? fromMatch[1] : fromRaw).toLowerCase().trim();
+          return fromAddr !== account.email.toLowerCase();
+        });
 
-        // 4. Match each email to a prospect using 3 strategies
-        for (const email of rawEmails) {
+        console.log(`\n🔍 SYNC: ${rawEmails.length} total emails, ${inboundEmails.length} inbound (excluded ${rawEmails.length - inboundEmails.length} sent by self)`);
+
+        // 4. Match each inbound email to a prospect using 3 strategies
+        for (const email of inboundEmails) {
           const fromRaw    = email.fromAddress || '';
           const fromMatch  = fromRaw.match(/<(.+?)>/);
           const fromAddr   = (fromMatch ? fromMatch[1] : fromRaw).toLowerCase().trim();
