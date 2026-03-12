@@ -1517,20 +1517,23 @@ function ProspectingInbox({ scope }) {
           <>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
-                <tr style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-                  {['Prospect', 'Subject', 'From', 'Sent', 'Status'].map(h => (
+                <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
+                  {['Prospect', 'Company', 'Subject', 'Sent By', 'Date', 'Status'].map(h => (
                     <th key={h} style={{
-                      padding: '8px 14px', textAlign: 'left', fontSize: 11,
-                      fontWeight: 600, color: '#6b7280', textTransform: 'uppercase',
-                      letterSpacing: 0.3,
+                      padding: '9px 14px', textAlign: 'left', fontSize: 11,
+                      fontWeight: 700, color: '#6b7280', textTransform: 'uppercase',
+                      letterSpacing: 0.5, whiteSpace: 'nowrap',
                     }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {emails.map(email => {
-                  const isReply   = email.direction === 'inbound';
-                  const wasOpened = !!email.openedAt;
+                  const prospect   = email.prospect   || {};
+                  const sentBy     = email.sentBy     || {};
+                  const sender     = email.senderAccount || {};
+                  const isReply    = email.direction === 'inbound';
+                  const wasOpened  = !!email.openedAt;
                   const wasReplied = !!email.repliedAt;
                   return (
                     <tr
@@ -1540,15 +1543,32 @@ function ProspectingInbox({ scope }) {
                         background: isReply ? '#f0fdf4' : '#fff',
                       }}
                     >
-                      <td style={{ padding: '10px 14px' }}>
+                      {/* Prospect name + email */}
+                      <td style={{ padding: '10px 14px', minWidth: 160 }}>
                         <div style={{ fontWeight: 600, color: '#1a202c' }}>
-                          {email.firstName} {email.lastName}
+                          {prospect.firstName} {prospect.lastName}
                         </div>
-                        {email.companyName && (
-                          <div style={{ fontSize: 11, color: '#6b7280' }}>{email.companyName}</div>
+                        {prospect.email && (
+                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>
+                            {prospect.email}
+                          </div>
                         )}
                       </td>
-                      <td style={{ padding: '10px 14px', maxWidth: 300 }}>
+
+                      {/* Company */}
+                      <td style={{ padding: '10px 14px', minWidth: 130 }}>
+                        <div style={{ fontSize: 12, color: '#374151' }}>
+                          {prospect.companyName || '—'}
+                        </div>
+                        {prospect.stage && (
+                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1, textTransform: 'capitalize' }}>
+                            {prospect.stage}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Subject */}
+                      <td style={{ padding: '10px 14px', maxWidth: 280 }}>
                         <div style={{
                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                           color: isReply ? '#065f46' : '#374151',
@@ -1556,16 +1576,22 @@ function ProspectingInbox({ scope }) {
                         }}>
                           {isReply ? '↩ ' : ''}{email.subject || '(no subject)'}
                         </div>
-                        {email.senderFirst && (
-                          <div style={{ fontSize: 11, color: '#9ca3af' }}>
-                            by {email.senderFirst} {email.senderLast}
+                      </td>
+
+                      {/* Sent by — CRM user + sender account email */}
+                      <td style={{ padding: '10px 14px', minWidth: 140 }}>
+                        <div style={{ fontSize: 12, color: '#374151' }}>
+                          {sentBy.firstName} {sentBy.lastName}
+                        </div>
+                        {(sender.email || email.fromAddress) && (
+                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>
+                            {sender.email || email.fromAddress}
                           </div>
                         )}
                       </td>
-                      <td style={{ padding: '10px 14px', color: '#6b7280' }}>
-                        <div style={{ fontSize: 12 }}>{email.sentFrom || email.fromAddress || '—'}</div>
-                      </td>
-                      <td style={{ padding: '10px 14px', whiteSpace: 'nowrap', color: '#6b7280' }}>
+
+                      {/* Date */}
+                      <td style={{ padding: '10px 14px', whiteSpace: 'nowrap', color: '#6b7280', fontSize: 12 }}>
                         {email.sentAt
                           ? new Date(email.sentAt).toLocaleString(undefined, {
                               month: 'short', day: 'numeric',
@@ -1573,25 +1599,27 @@ function ProspectingInbox({ scope }) {
                             })
                           : '—'}
                       </td>
+
+                      {/* Status badges */}
                       <td style={{ padding: '10px 14px' }}>
                         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                           {isReply && (
-                            <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
-                              Reply
+                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
+                              ↩ Reply
                             </span>
                           )}
                           {wasOpened && !isReply && (
-                            <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 10, background: '#ede9fe', color: '#6d28d9', fontWeight: 600 }}>
+                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#ede9fe', color: '#6d28d9', fontWeight: 600 }}>
                               Opened
                             </span>
                           )}
                           {wasReplied && !isReply && (
-                            <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
+                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
                               ✓ Replied
                             </span>
                           )}
                           {!isReply && !wasOpened && !wasReplied && (
-                            <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 10, background: '#f3f4f6', color: '#9ca3af' }}>
+                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#f3f4f6', color: '#9ca3af' }}>
                               Sent
                             </span>
                           )}
