@@ -916,7 +916,7 @@ router.put('/playbook-stages/:playbookId', adminOnly, async (req, res) => {
  */
 router.get('/prospecting/ai-config', adminOnly, async (req, res) => {
   try {
-    const result = await db.query(
+    const result = await pool.query(
       `SELECT config FROM org_integrations
        WHERE org_id = $1 AND integration_type = 'prospecting'`,
       [req.orgId]
@@ -950,7 +950,7 @@ router.patch('/prospecting/ai-config', adminOnly, async (req, res) => {
       return res.status(400).json({ error: { message: 'No valid config keys supplied' } });
     }
 
-    await db.query(`
+    await pool.query(`
       INSERT INTO org_integrations (org_id, integration_type, config, status)
       VALUES ($1, 'prospecting', $2::jsonb, 'active')
       ON CONFLICT (org_id, integration_type) DO UPDATE
@@ -959,7 +959,7 @@ router.patch('/prospecting/ai-config', adminOnly, async (req, res) => {
     `, [req.orgId, JSON.stringify(patch)]);
 
     // Return updated config
-    const result = await db.query(
+    const result = await pool.query(
       `SELECT config FROM org_integrations WHERE org_id = $1 AND integration_type = 'prospecting'`,
       [req.orgId]
     );
