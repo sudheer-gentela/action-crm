@@ -48,6 +48,7 @@ const STATIC_NAV_GROUPS = [
     items: [
       { id: 'ai-agent',  icon: '🤖', label: 'AI Agent' },
       { id: 'action-ai', icon: '✨', label: 'Actions AI' },
+      { id: 'ai-usage',  icon: '📊', label: 'AI Usage' },
     ],
   },
   {
@@ -119,6 +120,225 @@ const TAB_META = {
   integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },
   settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
 };
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OATokenUsageModule — AI usage dashboard for Org Admin
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MODULE_COLORS = {
+  deals:        '#6366f1',
+  prospecting:  '#0F9D8E',
+  other:        '#9ca3af',
+};
+
+const CALL_TYPE_LABELS = {
+  action_generation:          'Action Generation',
+  ai_enhancement:             'AI Enhancement',
+  email_analysis:             'Email Analysis',
+  deal_health_check:          'Deal Health Check',
+  context_suggest:            'Context Suggest',
+  agent_proposal:             'Agent Proposal',
+  prospecting_research:       'Prospect Research',
+  prospecting_research_account: 'Account Research',
+  prospecting_draft:          'Draft Email',
+};
+
+function formatTokens(n) {
+  if (!n || n === 0) return '0';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000)    return (n / 1000).toFixed(1) + 'K';
+  return String(n);
+}
+
+function formatCost(c) {
+  if (!c || c === 0) return '$0.00';
+  if (c < 0.01) return '<$0.01';
+  return '$' + parseFloat(c).toFixed(2);
+}
+
+function UsageBar({ value, max, color = '#0F9D8E' }) {
+  const pct = max > 0 ? Math.round((value / max) * 100) : 0;
+  return (
+    <div style={{ background: '#f3f4f6', borderRadius: 4, height: 6, overflow: 'hidden', flex: 1, minWidth: 60 }}>
+      <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 4, transition: 'width 0.4s' }} />
+    </div>
+  );
+}
+
+function OATokenUsageModule() {
+  const API    = process.env.REACT_APP_API_URL;
+  const token  = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const [days,    setDays]    = React.useState(30);
+  const [data,    setData]    = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error,   setError]   = React.useState('');
+
+  React.useEffect(() => {
+    setLoading(true);
+    fetch(`${API}/ai-usage/org?days=${days}`, { headers })
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false); })
+      .catch(() => { setError('Failed to load usage data'); setLoading(false); });
+  }, [days]); // eslint-disable-line
+
+  const totals   = data?.totals  || {};
+  const byType   = data?.byType  || [];
+  const byUser   = data?.byUser  || [];
+  const daily    = data?.daily   || [];
+
+  const maxTypeTokens = byType.reduce((m, r) => Math.max(m, parseInt(r.total_tokens) || 0), 0);
+  const maxUserTokens = byUser.reduce((m, r) => Math.max(m, parseInt(r.total_tokens) || 0), 0);
+
+  const pillStyle = (active) => ({
+    padding: '4px 12px', borderRadius: 20, fontSize: 12, fontWeight: 500, cursor: 'pointer',
+    background: active ? '#0F9D8E' : '#f3f4f6',
+    color:      active ? '#fff'    : '#6b7280',
+    border: 'none',
+  });
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>🤖 AI Usage</h2>
+          <p className="sv-panel-desc">Token consumption and estimated cost across all AI features.</p>
+        </div>
+      </div>
+
+      {/* Period selector */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 24 }}>
+        {[7, 30, 60, 90].map(d => (
+          <button key={d} style={pillStyle(days === d)} onClick={() => setDays(d)}>
+            {d}d
+          </button>
+        ))}
+      </div>
+
+      {error && <div style={{ color: '#dc2626', fontSize: 13, marginBottom: 16 }}>{error}</div>}
+
+      {loading ? (
+        <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading…</div>
+      ) : (
+        <>
+          {/* ── Summary cards ── */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 28 }}>
+            {[
+              { label: 'Total Tokens',   value: formatTokens(totals.total_tokens),  sub: `${parseInt(totals.call_count)||0} calls`, color: '#6366f1' },
+              { label: 'Est. Cost',      value: formatCost(totals.estimated_cost),  sub: `last ${days} days`,                       color: '#f59e0b' },
+              { label: 'Avg per Call',   value: totals.call_count > 0 ? formatTokens(Math.round(totals.total_tokens / totals.call_count)) : '—', sub: 'tokens/call', color: '#0F9D8E' },
+            ].map(({ label, value, sub, color }) => (
+              <div key={label} style={{ background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 10, padding: '14px 16px' }}>
+                <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{label}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color, lineHeight: 1.2 }}>{value}</div>
+                <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* ── By module ── */}
+          {(data?.byModule || []).length > 0 && (
+            <div style={{ marginBottom: 28 }}>
+              <h4 style={{ margin: '0 0 12px', fontSize: 13, fontWeight: 600, color: '#374151' }}>By Module</h4>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {(data.byModule || []).map(m => (
+                  <div key={m.module} style={{ flex: '1 1 140px', background: '#f9fafb', border: `2px solid ${MODULE_COLORS[m.module] || '#e5e7eb'}`, borderRadius: 10, padding: '12px 16px' }}>
+                    <div style={{ fontSize: 11, color: MODULE_COLORS[m.module] || '#9ca3af', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{m.label}</div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: '#111827' }}>{formatTokens(m.total_tokens)}</div>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{m.call_count} calls · {formatCost(m.estimated_cost)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── By feature type ── */}
+          <div style={{ marginBottom: 28 }}>
+            <h4 style={{ margin: '0 0 12px', fontSize: 13, fontWeight: 600, color: '#374151' }}>By Feature</h4>
+            {byType.length === 0 ? (
+              <p style={{ color: '#9ca3af', fontSize: 13 }}>No data yet.</p>
+            ) : byType.map(row => (
+              <div key={row.call_type} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <div style={{ width: 180, fontSize: 12, color: '#374151', flexShrink: 0 }}>
+                  {CALL_TYPE_LABELS[row.call_type] || row.call_type}
+                </div>
+                <UsageBar value={parseInt(row.total_tokens)||0} max={maxTypeTokens} />
+                <div style={{ width: 60, textAlign: 'right', fontSize: 12, color: '#6b7280', flexShrink: 0 }}>
+                  {formatTokens(row.total_tokens)}
+                </div>
+                <div style={{ width: 52, textAlign: 'right', fontSize: 11, color: '#9ca3af', flexShrink: 0 }}>
+                  {formatCost(row.estimated_cost)}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* ── By user ── */}
+          {byUser.length > 0 && (
+            <div style={{ marginBottom: 28 }}>
+              <h4 style={{ margin: '0 0 12px', fontSize: 13, fontWeight: 600, color: '#374151' }}>By User</h4>
+              {byUser.map(row => (
+                <div key={row.user_id} style={{ marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid #f3f4f6' }}>
+                  {/* User total row */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                    <div style={{ width: 160, fontSize: 12, fontWeight: 600, color: '#374151', flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {row.user_name}
+                    </div>
+                    <UsageBar value={parseInt(row.total_tokens)||0} max={maxUserTokens} color="#6366f1" />
+                    <div style={{ width: 60, textAlign: 'right', fontSize: 12, color: '#374151', fontWeight: 600, flexShrink: 0 }}>
+                      {formatTokens(row.total_tokens)}
+                    </div>
+                    <div style={{ width: 52, textAlign: 'right', fontSize: 11, color: '#9ca3af', flexShrink: 0 }}>
+                      {formatCost(row.estimated_cost)}
+                    </div>
+                  </div>
+                  {/* Per-user module pills */}
+                  {(row.modules || []).length > 0 && (
+                    <div style={{ display: 'flex', gap: 6, paddingLeft: 170 }}>
+                      {(row.modules || []).map(m => (
+                        <span key={m.module} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: (MODULE_COLORS[m.module] || '#9ca3af') + '20', color: MODULE_COLORS[m.module] || '#6b7280', fontWeight: 600 }}>
+                          {m.label}: {formatTokens(m.total_tokens)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ── Daily history table ── */}
+          {daily.length > 0 && (
+            <div>
+              <h4 style={{ margin: '0 0 12px', fontSize: 13, fontWeight: 600, color: '#374151' }}>Daily History</h4>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
+                    {['Date', 'Calls', 'Tokens', 'Est. Cost'].map(h => (
+                      <th key={h} style={{ padding: '4px 8px', textAlign: h === 'Date' ? 'left' : 'right', color: '#9ca3af', fontWeight: 500 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {daily.slice(0, 14).map(row => (
+                    <tr key={row.day} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                      <td style={{ padding: '5px 8px', color: '#374151' }}>{row.day}</td>
+                      <td style={{ padding: '5px 8px', textAlign: 'right', color: '#6b7280' }}>{row.call_count}</td>
+                      <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151' }}>{formatTokens(row.total_tokens)}</td>
+                      <td style={{ padding: '5px 8px', textAlign: 'right', color: '#6b7280' }}>{formatCost(row.estimated_cost)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 export default function OrgAdminView() {
   const [tab, setTab]               = useState('members');
@@ -258,6 +478,7 @@ export default function OrgAdminView() {
             {/* ── Modules overview — always accessible for enable/disable ── */}
             {tab === 'modules'          && <OAModules />}
             {/* ── Per-module settings pages (only reachable when module is enabled) ── */}
+            {tab === 'ai-usage'          && <OATokenUsageModule />}
             {tab === 'mod-prospecting'  && <OAProspectingModule />}
             {tab === 'mod-contracts'    && <OACLMModule />}
             {tab === 'mod-handovers'    && <OAHandoverModule />}
@@ -5991,6 +6212,205 @@ function OAServiceSLATiers() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OAUsageDashboard — Org-level AI token usage (admin only)
+// ─────────────────────────────────────────────────────────────────────────────
+const ORG_MODULE_COLORS = {
+  prospecting: '#0F9D8E',
+  deals:       '#6366f1',
+  crm:         '#f59e0b',
+  other:       '#9ca3af',
+};
+
+function fmtTok(n) {
+  if (!n) return '0';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000)    return (n / 1000).toFixed(1) + 'K';
+  return String(n);
+}
+
+function OAUsageDashboard() {
+  const API     = process.env.REACT_APP_API_URL;
+  const token   = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const [days,       setDays]       = useState(30);
+  const [data,       setData]       = useState(null);
+  const [loading,    setLoading]    = useState(true);
+  const [error,      setError]      = useState('');
+  const [expandUser, setExpandUser] = useState(null);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`${API}/ai-usage/org?days=${days}`, { headers })
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false); })
+      .catch(() => { setError('Failed to load usage data'); setLoading(false); });
+  }, [days]); // eslint-disable-line
+
+  const card  = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '20px 24px', marginBottom: 16 };
+  const sBox  = { background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8, padding: '14px 18px', flex: 1, minWidth: 130 };
+
+  return (
+    <div style={{ padding: '0 0 40px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#111827' }}>📊 Org AI Usage</h2>
+          <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>Token usage across all users and modules.</p>
+        </div>
+        <select
+          value={days}
+          onChange={e => setDays(Number(e.target.value))}
+          style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+        >
+          <option value={7}>Last 7 days</option>
+          <option value={30}>Last 30 days</option>
+          <option value={90}>Last 90 days</option>
+        </select>
+      </div>
+
+      {loading && <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading…</div>}
+      {error   && <div style={{ color: '#dc2626', fontSize: 13 }}>{error}</div>}
+      {!loading && !error && data && (<>
+
+        {/* Summary */}
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
+          {[
+            { label: 'Total Tokens',   value: fmtTok(data.summary.totalTokens),  sub: `${data.summary.totalCalls} calls` },
+            { label: 'Input Tokens',   value: fmtTok(data.summary.totalInputTokens) },
+            { label: 'Output Tokens',  value: fmtTok(data.summary.totalOutputTokens) },
+            { label: 'Active Users',   value: data.summary.activeUsers, sub: 'this period' },
+          ].map(s => (
+            <div key={s.label} style={sBox}>
+              <div style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>{s.label}</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: '#111827' }}>{s.value}</div>
+              {s.sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{s.sub}</div>}
+            </div>
+          ))}
+        </div>
+
+        {/* By module */}
+        {data.byModule.length > 0 && (
+          <div style={card}>
+            <h3 style={{ margin: '0 0 14px', fontSize: 14, fontWeight: 600 }}>Usage by Module</h3>
+            {data.byModule.map(m => {
+              const pct = data.summary.totalTokens > 0 ? (m.totalTokens / data.summary.totalTokens * 100) : 0;
+              return (
+                <div key={m.module} style={{ marginBottom: 12 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+                    <span style={{ fontWeight: 500 }}>
+                      <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: ORG_MODULE_COLORS[m.module] || '#9ca3af', marginRight: 6 }} />
+                      {m.label}
+                    </span>
+                    <span style={{ color: '#6b7280' }}>{fmtTok(m.totalTokens)} · {m.calls} calls</span>
+                  </div>
+                  <div style={{ height: 6, background: '#f3f4f6', borderRadius: 3 }}>
+                    <div style={{ height: 6, borderRadius: 3, background: ORG_MODULE_COLORS[m.module] || '#9ca3af', width: `${pct}%`, transition: 'width .4s' }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* By call type */}
+        {data.byCallType.length > 0 && (
+          <div style={card}>
+            <h3 style={{ margin: '0 0 14px', fontSize: 14, fontWeight: 600 }}>Usage by AI Feature</h3>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
+                  {['Feature', 'Module', 'Model', 'Calls', 'Input', 'Output', 'Total'].map(h => (
+                    <th key={h} style={{ textAlign: 'left', padding: '6px 10px', fontSize: 11, color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.byCallType.map((r, i) => (
+                  <tr key={i} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                    <td style={{ padding: '8px 10px', fontWeight: 500 }}>{r.label}</td>
+                    <td style={{ padding: '8px 10px' }}>
+                      <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 10, background: (ORG_MODULE_COLORS[r.module] || '#9ca3af') + '20', color: ORG_MODULE_COLORS[r.module] || '#6b7280', fontWeight: 600 }}>
+                        {r.moduleLabel}
+                      </span>
+                    </td>
+                    <td style={{ padding: '8px 10px', color: '#6b7280', fontSize: 12, fontFamily: 'monospace' }}>{r.model}</td>
+                    <td style={{ padding: '8px 10px' }}>{r.calls}</td>
+                    <td style={{ padding: '8px 10px' }}>{fmtTok(r.inputTokens)}</td>
+                    <td style={{ padding: '8px 10px' }}>{fmtTok(r.outputTokens)}</td>
+                    <td style={{ padding: '8px 10px', fontWeight: 600 }}>{fmtTok(r.totalTokens)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Per-user breakdown */}
+        {data.byUser.length > 0 && (
+          <div style={card}>
+            <h3 style={{ margin: '0 0 14px', fontSize: 14, fontWeight: 600 }}>Usage by User</h3>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
+                  {['User', 'Calls', 'Input', 'Output', 'Total Tokens', 'Last Used', ''].map(h => (
+                    <th key={h} style={{ textAlign: 'left', padding: '6px 10px', fontSize: 11, color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.byUser.map(u => (<>
+                  <tr
+                    key={u.userId}
+                    style={{ borderBottom: '1px solid #f3f4f6', cursor: u.byModule.length > 0 ? 'pointer' : 'default' }}
+                    onClick={() => setExpandUser(expandUser === u.userId ? null : u.userId)}
+                  >
+                    <td style={{ padding: '9px 10px' }}>
+                      <div style={{ fontWeight: 500 }}>{u.name}</div>
+                      <div style={{ fontSize: 11, color: '#9ca3af' }}>{u.email}</div>
+                    </td>
+                    <td style={{ padding: '9px 10px' }}>{u.calls}</td>
+                    <td style={{ padding: '9px 10px' }}>{fmtTok(u.inputTokens)}</td>
+                    <td style={{ padding: '9px 10px' }}>{fmtTok(u.outputTokens)}</td>
+                    <td style={{ padding: '9px 10px', fontWeight: 600 }}>{fmtTok(u.totalTokens)}</td>
+                    <td style={{ padding: '9px 10px', color: '#6b7280', fontSize: 12 }}>
+                      {u.lastUsedAt ? new Date(u.lastUsedAt).toLocaleDateString() : '—'}
+                    </td>
+                    <td style={{ padding: '9px 10px', color: '#9ca3af', fontSize: 12 }}>
+                      {u.byModule.length > 0 && (expandUser === u.userId ? '▲' : '▼')}
+                    </td>
+                  </tr>
+                  {expandUser === u.userId && u.byModule.length > 0 && (
+                    <tr key={`${u.userId}-detail`}>
+                      <td colSpan={7} style={{ padding: '0 10px 12px 28px', background: '#f9fafb' }}>
+                        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', paddingTop: 10 }}>
+                          {u.byModule.map(m => (
+                            <div key={m.module} style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, background: '#fff', border: `1px solid ${ORG_MODULE_COLORS[m.module] || '#e5e7eb'}` }}>
+                              <span style={{ color: ORG_MODULE_COLORS[m.module] || '#6b7280', fontWeight: 600 }}>{m.label}</span>
+                              <span style={{ color: '#6b7280', marginLeft: 8 }}>{fmtTok(m.totalTokens)} · {m.calls} calls</span>
+                            </div>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </>))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {data.summary.totalCalls === 0 && (
+          <div style={{ textAlign: 'center', padding: '48px 24px', color: '#9ca3af', fontSize: 14, background: '#fff', borderRadius: 10, border: '1px solid #e5e7eb' }}>
+            No AI usage recorded in this period.<br />
+            <span style={{ fontSize: 12 }}>Usage will appear here once users start running AI features.</span>
+          </div>
+        )}
+      </>)}
     </div>
   );
 }

@@ -13,6 +13,7 @@ const SETTINGS_TABS = [
   { id: 'prompts',      label: 'AI Prompts',     icon: '🤖' },
   { id: 'actions',      label: 'Actions',        icon: '🎯' },
   { id: 'ai-agent',     label: 'AI Agent',       icon: '🤖' },
+  { id: 'ai-usage',     label: 'AI Usage',       icon: '📊' },
   { id: 'notifications',label: 'Notifications',  icon: '🔔' },
   { id: 'preferences',  label: 'My Preferences', icon: '🎛️' },
 ];
@@ -56,6 +57,7 @@ export default function SettingsView({ initialTab }) {
         {settingsTab === 'actions'       && <ActionsSettings />}
         {settingsTab === 'ai-agent'      && <AgentUserSettings />}
         {settingsTab === 'notifications' && <NotificationSettings />}
+        {settingsTab === 'ai-usage'      && <UserAIUsageSettings />}
         {settingsTab === 'preferences'   && <UserPreferencesSettings />}
       </div>
     </div>
@@ -899,6 +901,164 @@ function UserPreferencesSettings() {
           </div>
         </div>
 
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UserAIUsageSettings — per-user AI token usage dashboard
+// ─────────────────────────────────────────────────────────────────────────────
+const MODULE_COLORS = {
+  prospecting: '#0F9D8E',
+  deals:       '#6366f1',
+  crm:         '#f59e0b',
+  other:       '#9ca3af',
+};
+
+function fmtTokens(n) {
+  if (!n) return '0';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000)    return (n / 1000).toFixed(1) + 'K';
+  return String(n);
+}
+
+function UserAIUsageSettings() {
+  const API    = process.env.REACT_APP_API_URL;
+  const token  = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const headers = { Authorization: `Bearer ${token}` };
+
+  const [days,    setDays]    = useState(30);
+  const [data,    setData]    = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`${API}/users/me/ai-usage?days=${days}`, { headers })
+      .then(r => r.json())
+      .then(d => { setData(d); setLoading(false); })
+      .catch(() => { setError('Failed to load usage data'); setLoading(false); });
+  }, [days]); // eslint-disable-line
+
+  const panelStyle = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '20px 24px', marginBottom: 16 };
+  const statBoxStyle = { background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 8, padding: '14px 18px', flex: 1, minWidth: 140 };
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>📊 My AI Usage</h2>
+          <p className="sv-panel-desc">Token usage across all AI features — research, drafts, deal analysis, and more.</p>
+        </div>
+        <select
+          value={days}
+          onChange={e => setDays(Number(e.target.value))}
+          style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+        >
+          <option value={7}>Last 7 days</option>
+          <option value={30}>Last 30 days</option>
+          <option value={90}>Last 90 days</option>
+        </select>
+      </div>
+
+      <div className="sv-panel-body">
+        {loading && <div style={{ color: '#9ca3af', fontSize: 13, padding: 16 }}>Loading…</div>}
+        {error   && <div style={{ color: '#dc2626', fontSize: 13, padding: 16 }}>{error}</div>}
+        {!loading && !error && data && (<>
+
+          {/* Summary stats */}
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
+            {[
+              { label: 'Total Tokens',  value: fmtTokens(data.totals?.total_tokens),  sub: `${data.totals?.call_count || 0} calls` },
+              { label: 'Est. Cost',     value: data.totals?.estimated_cost > 0 ? '$' + parseFloat(data.totals.estimated_cost).toFixed(2) : '$0.00' },
+              { label: 'Avg / Call',    value: data.totals?.call_count > 0 ? fmtTokens(Math.round(data.totals.total_tokens / data.totals.call_count)) : '—' },
+            ].map(s => (
+              <div key={s.label} style={statBoxStyle}>
+                <div style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>{s.label}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: '#111827' }}>{s.value}</div>
+                {s.sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{s.sub}</div>}
+              </div>
+            ))}
+          </div>
+
+          {/* By module */}
+          {(data.byModule || []).length > 0 && (
+            <div style={panelStyle}>
+              <h3 style={{ margin: '0 0 14px', fontSize: 14, fontWeight: 600, color: '#111827' }}>By Module</h3>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {(data.byModule || []).map(m => {
+                  const moduleColor = m.module === 'prospecting' ? '#0F9D8E' : m.module === 'deals' ? '#6366f1' : '#9ca3af';
+                  return (
+                    <div key={m.module} style={{ flex: '1 1 130px', background: '#f9fafb', border: `2px solid ${moduleColor}`, borderRadius: 10, padding: '12px 16px' }}>
+                      <div style={{ fontSize: 11, color: moduleColor, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{m.label}</div>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: '#111827' }}>{fmtTokens(m.total_tokens)}</div>
+                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{m.call_count} calls · {m.estimated_cost > 0 ? '$' + parseFloat(m.estimated_cost).toFixed(3) : '$0.000'}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* By feature type */}
+          {(data.byType || []).length > 0 && (() => {
+            const LABELS = { action_generation: 'Action Generation', ai_enhancement: 'AI Enhancement', email_analysis: 'Email Analysis', deal_health_check: 'Deal Health Check', prospecting_research: 'Prospect Research', prospecting_research_account: 'Account Research', prospecting_draft: 'Draft Email', agent_proposal: 'Agent Proposal' };
+            const maxT = (data.byType || []).reduce((m, r) => Math.max(m, parseInt(r.total_tokens)||0), 0);
+            return (
+              <div style={panelStyle}>
+                <h3 style={{ margin: '0 0 14px', fontSize: 14, fontWeight: 600, color: '#111827' }}>Usage by Feature</h3>
+                {(data.byType || []).map(row => {
+                  const pct = maxT > 0 ? Math.round((parseInt(row.total_tokens)||0) / maxT * 100) : 0;
+                  return (
+                    <div key={row.call_type} style={{ marginBottom: 10 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
+                        <span style={{ fontWeight: 500, color: '#374151' }}>{LABELS[row.call_type] || row.call_type}</span>
+                        <span style={{ color: '#6b7280' }}>{fmtTokens(row.total_tokens)} · {row.call_count} calls</span>
+                      </div>
+                      <div style={{ height: 6, background: '#f3f4f6', borderRadius: 3 }}>
+                        <div style={{ height: 6, borderRadius: 3, background: '#0F9D8E', width: `${pct}%`, transition: 'width .4s' }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
+          {/* By call type */}
+          {(data.daily || []).length > 0 && (
+            <div style={panelStyle}>
+              <h3 style={{ margin: '0 0 14px', fontSize: 14, fontWeight: 600, color: '#111827' }}>Daily History</h3>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
+                    {['Date', 'Calls', 'Tokens', 'Est. Cost'].map(h => (
+                      <th key={h} style={{ textAlign: h === 'Date' ? 'left' : 'right', padding: '5px 8px', color: '#9ca3af', fontWeight: 500 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(data.daily || []).slice(0, 14).map(row => (
+                    <tr key={row.day} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                      <td style={{ padding: '5px 8px', color: '#374151' }}>{row.day}</td>
+                      <td style={{ padding: '5px 8px', textAlign: 'right', color: '#6b7280' }}>{row.call_count}</td>
+                      <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151' }}>{fmtTokens(row.total_tokens)}</td>
+                      <td style={{ padding: '5px 8px', textAlign: 'right', color: '#6b7280' }}>{row.estimated_cost > 0 ? '$' + parseFloat(row.estimated_cost).toFixed(3) : '$0.000'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {(!data.totals?.call_count || data.totals.call_count === 0) && (
+            <div style={{ textAlign: 'center', padding: '48px 24px', color: '#9ca3af', fontSize: 14 }}>
+              No AI usage recorded in this period yet.<br />
+              <span style={{ fontSize: 12 }}>Use Research, AI Draft, Deal Analysis, or other AI features to see usage here.</span>
+            </div>
+          )}
+        </>)}
       </div>
     </div>
   );

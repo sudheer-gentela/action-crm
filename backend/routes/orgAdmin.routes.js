@@ -978,3 +978,22 @@ router.patch('/prospecting/ai-config', adminOnly, async (req, res) => {
 
 module.exports = router;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Token Usage — Org Admin
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /org/admin/ai-usage?days=30
+ * Returns org-wide AI token usage aggregated by day, user, and call type.
+ */
+router.get('/ai-usage', adminOnly, async (req, res) => {
+  try {
+    const TokenTrackingService = require('../services/TokenTrackingService');
+    const days = Math.min(parseInt(req.query.days) || 30, 90);
+    const data = await TokenTrackingService.getOrgUsage(req.orgId, days);
+    res.json(data);
+  } catch (err) {
+    console.error('GET /org/admin/ai-usage error:', err);
+    res.status(500).json({ error: { message: 'Failed to load AI usage data' } });
+  }
+});

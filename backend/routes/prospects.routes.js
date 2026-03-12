@@ -538,7 +538,10 @@ router.post('/:id/research', async (req, res) => {
     const AI_PROMPTS = require('../config/aiPrompts');
 
     // ── Helper: call the configured AI provider ───────────────────────────────
-    async function callAI(prompt, maxTokens = 800) {
+    const TokenTrackingService = require('../services/TokenTrackingService');
+
+    // callAI — returns { text, usage } so callers can log tokens
+    async function callAI(prompt, maxTokens = 800, callType = 'prospecting_research') {
       if (aiProvider === 'openai') {
         const { OpenAI } = require('openai');
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -546,13 +549,19 @@ router.post('/:id/research', async (req, res) => {
           model: aiModel || 'gpt-4o-mini', max_tokens: maxTokens,
           messages: [{ role: 'user', content: prompt }],
         });
-        return completion.choices[0]?.message?.content || '';
+        const usage = completion.usage
+          ? { input_tokens: completion.usage.prompt_tokens, output_tokens: completion.usage.completion_tokens }
+          : {};
+        TokenTrackingService.log({ orgId: req.orgId, userId: req.user.userId, callType, provider: 'openai', model: aiModel, usage }).catch(() => {});
+        return { text: completion.choices[0]?.message?.content || '', usage };
       } else if (aiProvider === 'gemini') {
         const { GoogleGenerativeAI } = require('@google/generative-ai');
         const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
         const result = await genAI.getGenerativeModel({ model: aiModel || 'gemini-1.5-flash' })
                                   .generateContent(prompt);
-        return result.response.text() || '';
+        // Gemini doesn't return token counts in basic API — log with zeros
+        TokenTrackingService.log({ orgId: req.orgId, userId: req.user.userId, callType, provider: 'gemini', model: aiModel, usage: {} }).catch(() => {});
+        return { text: result.response.text() || '', usage: {} };
       } else {
         const Anthropic = require('@anthropic-ai/sdk');
         const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -560,7 +569,11 @@ router.post('/:id/research', async (req, res) => {
           model: aiModel, max_tokens: maxTokens,
           messages: [{ role: 'user', content: prompt }],
         });
-        return message.content[0]?.text || '';
+        const usage = message.usage
+          ? { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }
+          : {};
+        TokenTrackingService.log({ orgId: req.orgId, userId: req.user.userId, callType, provider: 'anthropic', model: aiModel, usage }).catch(() => {});
+        return { text: message.content[0]?.text || '', usage };
       }
     }
 
@@ -599,7 +612,7 @@ router.post('/:id/research', async (req, res) => {
             .replace('{{companyInfo}}',   companyInfo)
             .replace('{{productContext}}', productCtx || 'Not specified');
 
-          const stage1Raw = await callAI(stage1Prompt, 1000);
+          const { text: stage1Raw } = await callAI(stage1Prompt, 1000, 'research_account');
 
           // Parse JSON response from Stage 1
           try {
@@ -674,7 +687,7 @@ Return ONLY valid JSON:
       .replace('{{accountResearch}}', accountResearchText || 'No account research available.')
       .replace('{{productContext}}',  productCtx || 'Not specified');
 
-    const stage2Raw = await callAI(stage2Prompt, 900);
+    const { text: stage2Raw } = await callAI(stage2Prompt, 900, 'research_person');
 
     // Parse Stage 2 JSON
     let parsed = null;

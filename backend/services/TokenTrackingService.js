@@ -22,6 +22,25 @@ const MODEL_COSTS = {
   'claude-opus':   { input: 0.000015,   output: 0.000075 },
 };
 
+// Map call_type → product module (for module-level rollups)
+const MODULE_MAP = {
+  action_generation:              'deals',
+  ai_enhancement:                 'deals',
+  email_analysis:                 'deals',
+  deal_health_check:              'deals',
+  context_suggest:                'deals',
+  agent_proposal:                 'deals',
+  prospecting_research:           'prospecting',
+  prospecting_research_account:   'prospecting',
+  prospecting_draft:              'prospecting',
+};
+
+const MODULE_LABELS = {
+  deals:        'Deals & CRM',
+  prospecting:  'Prospecting',
+  other:        'Other',
+};
+
 class TokenTrackingService {
 
   /**
@@ -80,7 +99,7 @@ class TokenTrackingService {
    */
   static async getOrgUsage(orgId, days = 30) {
     try {
-      const [dailyRes, byUserRes, byTypeRes, totalRes] = await Promise.all([
+      const [dailyRes, byUserRes, byTypeRes, totalRes, byModuleRes, byUserModuleRes] = await Promise.all([
         // Daily totals
         db.query(
           `SELECT DATE(created_at) AS day,
@@ -131,12 +150,67 @@ class TokenTrackingService {
            WHERE org_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2`,
           [orgId, days]
         ),
+        // By module (derived from call_type)
+        db.query(
+          `SELECT call_type,
+                  SUM(total_tokens)       AS total_tokens,
+                  SUM(estimated_cost_usd) AS estimated_cost,
+                  COUNT(*)                AS call_count
+           FROM ai_token_usage
+           WHERE org_id = $1 AND created_at >= NOW() - INTERVAL '1 day' * $2
+           GROUP BY call_type`,
+          [orgId, days]
+        ),
+        // By user + module (for per-user module breakdown)
+        db.query(
+          `SELECT t.user_id,
+                  u.first_name || ' ' || u.last_name AS user_name,
+                  t.call_type,
+                  SUM(t.total_tokens)       AS total_tokens,
+                  SUM(t.estimated_cost_usd) AS estimated_cost,
+                  COUNT(*)                  AS call_count
+           FROM ai_token_usage t
+           JOIN users u ON u.id = t.user_id
+           WHERE t.org_id = $1 AND t.created_at >= NOW() - INTERVAL '1 day' * $2
+           GROUP BY t.user_id, u.first_name, u.last_name, t.call_type
+           ORDER BY t.user_id, total_tokens DESC`,
+          [orgId, days]
+        ),
       ]);
+
+      // Roll up call_type rows into module buckets
+      const moduleMap = {};
+      for (const row of byModuleRes.rows) {
+        const mod = MODULE_MAP[row.call_type] || 'other';
+        if (!moduleMap[mod]) moduleMap[mod] = { module: mod, label: MODULE_LABELS[mod] || mod, total_tokens: 0, estimated_cost: 0, call_count: 0 };
+        moduleMap[mod].total_tokens    += parseInt(row.total_tokens)    || 0;
+        moduleMap[mod].estimated_cost  += parseFloat(row.estimated_cost) || 0;
+        moduleMap[mod].call_count      += parseInt(row.call_count)      || 0;
+      }
+      const byModule = Object.values(moduleMap).sort((a, b) => b.total_tokens - a.total_tokens);
+
+      // Per-user module breakdown: { userId -> { userName, modules: { mod -> stats } } }
+      const userModuleMap = {};
+      for (const row of byUserModuleRes.rows) {
+        if (!userModuleMap[row.user_id]) userModuleMap[row.user_id] = { user_id: row.user_id, user_name: row.user_name, modules: {} };
+        const mod = MODULE_MAP[row.call_type] || 'other';
+        const um  = userModuleMap[row.user_id].modules;
+        if (!um[mod]) um[mod] = { module: mod, label: MODULE_LABELS[mod] || mod, total_tokens: 0, estimated_cost: 0, call_count: 0 };
+        um[mod].total_tokens   += parseInt(row.total_tokens)    || 0;
+        um[mod].estimated_cost += parseFloat(row.estimated_cost) || 0;
+        um[mod].call_count     += parseInt(row.call_count)      || 0;
+      }
+      // Merge module breakdown into byUser rows
+      const byUserWithModules = byUserRes.rows.map(u => ({
+        ...u,
+        modules: Object.values(userModuleMap[u.user_id]?.modules || {}).sort((a, b) => b.total_tokens - a.total_tokens),
+      }));
 
       return {
         daily:   dailyRes.rows,
-        byUser:  byUserRes.rows,
+        byUser:  byUserWithModules,
         byType:  byTypeRes.rows,
+        byModule,
         totals:  totalRes.rows[0] || { total_tokens: 0, estimated_cost: 0, call_count: 0 },
         period:  days,
       };
@@ -151,7 +225,7 @@ class TokenTrackingService {
    */
   static async getUserUsage(userId, orgId, days = 30) {
     try {
-      const [dailyRes, byTypeRes, totalRes] = await Promise.all([
+      const [dailyRes, byTypeRes, totalRes, byModuleRes] = await Promise.all([
         db.query(
           `SELECT DATE(created_at) AS day,
                   SUM(total_tokens) AS total_tokens,
@@ -182,13 +256,36 @@ class TokenTrackingService {
            WHERE user_id = $1 AND org_id = $2 AND created_at >= NOW() - INTERVAL '1 day' * $3`,
           [userId, orgId, days]
         ),
+        // By module (derived from call_type)
+        db.query(
+          `SELECT call_type,
+                  SUM(total_tokens)       AS total_tokens,
+                  SUM(estimated_cost_usd) AS estimated_cost,
+                  COUNT(*)                AS call_count
+           FROM ai_token_usage
+           WHERE user_id = $1 AND org_id = $2 AND created_at >= NOW() - INTERVAL '1 day' * $3
+           GROUP BY call_type`,
+          [userId, orgId, days]
+        ),
       ]);
 
+      // Roll up into module buckets
+      const moduleMap = {};
+      for (const row of byModuleRes.rows) {
+        const mod = MODULE_MAP[row.call_type] || 'other';
+        if (!moduleMap[mod]) moduleMap[mod] = { module: mod, label: MODULE_LABELS[mod] || mod, total_tokens: 0, estimated_cost: 0, call_count: 0 };
+        moduleMap[mod].total_tokens   += parseInt(row.total_tokens)    || 0;
+        moduleMap[mod].estimated_cost += parseFloat(row.estimated_cost) || 0;
+        moduleMap[mod].call_count     += parseInt(row.call_count)      || 0;
+      }
+      const byModule = Object.values(moduleMap).sort((a, b) => b.total_tokens - a.total_tokens);
+
       return {
-        daily:  dailyRes.rows,
-        byType: byTypeRes.rows,
-        totals: totalRes.rows[0] || { total_tokens: 0, estimated_cost: 0, call_count: 0 },
-        period: days,
+        daily:    dailyRes.rows,
+        byType:   byTypeRes.rows,
+        byModule,
+        totals:   totalRes.rows[0] || { total_tokens: 0, estimated_cost: 0, call_count: 0 },
+        period:   days,
       };
     } catch (err) {
       console.error('TokenTrackingService.getUserUsage error:', err.message);

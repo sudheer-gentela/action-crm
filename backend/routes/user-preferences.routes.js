@@ -154,3 +154,22 @@ router.patch('/preferences/prospecting', async (req, res) => {
 });
 
 module.exports = router;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Token Usage — Personal (My Preferences)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /users/me/ai-usage?days=30
+ */
+router.get('/me/ai-usage', async (req, res) => {
+  try {
+    const TokenTrackingService = require('../services/TokenTrackingService');
+    const days = Math.min(parseInt(req.query.days) || 30, 90);
+    const data = await TokenTrackingService.getUserUsage(req.user.userId, req.orgId, days);
+    res.json(data);
+  } catch (err) {
+    console.error('GET /users/me/ai-usage error:', err);
+    res.status(500).json({ error: { message: 'Failed to load AI usage data' } });
+  }
+});
