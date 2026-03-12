@@ -757,6 +757,11 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
           const er = await apiFetch(`/sequences/enrollments?prospectId=${prospectId}&status=active`);
           setActiveEnrollment((er.enrollments || [])[0] || null);
         } catch (_) {}
+        // Load drafts upfront so they show immediately on Activity tab
+        try {
+          const dr = await apiFetch(`/sequences/drafts?prospectId=${prospectId}`);
+          setProspectDrafts(dr.drafts || []);
+        } catch (_) {}
       } catch (err) {
         console.error('Failed to load prospect:', err);
       } finally {
@@ -1279,8 +1284,8 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                   Loading drafts…
                 </div>
               )}
-              {!loadingProspectDrafts && prospectDrafts.length > 0 && (
-                <div style={{ marginBottom: 16 }}>
+              {!loadingProspectDrafts && (
+                <div style={{ marginBottom: prospectDrafts.length > 0 ? 16 : 8 }}>
                   <div style={{
                     fontSize: 11, fontWeight: 700, color: '#374151',
                     textTransform: 'uppercase', letterSpacing: 0.5,
@@ -1288,40 +1293,47 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                   }}>
                     <span>📋 Pending Drafts</span>
                     <span style={{
-                      background: '#fef3c7', color: '#92400e',
+                      background: prospectDrafts.length > 0 ? '#fef3c7' : '#f3f4f6',
+                      color: prospectDrafts.length > 0 ? '#92400e' : '#9ca3af',
                       fontSize: 10, fontWeight: 700,
                       padding: '1px 7px', borderRadius: 10,
-                      border: '1px solid #fde68a',
+                      border: `1px solid ${prospectDrafts.length > 0 ? '#fde68a' : '#e5e7eb'}`,
                     }}>
                       {prospectDrafts.length}
                     </span>
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {prospectDrafts.map(draft => {
-                      const edit    = prospectDraftEdits[draft.id] || {};
-                      const subject = edit.subject !== undefined ? edit.subject : draft.subject;
-                      const body    = edit.body    !== undefined ? edit.body    : draft.body;
-                      const isOpen  = !!edit.open;
-                      return (
-                        <DraftCard
-                          key={draft.id}
-                          draft={draft}
-                          subject={subject}
-                          body={body}
-                          isOpen={isOpen}
-                          compact={true}
-                          sending={!!edit.sending}
-                          sendError={edit.error || null}
-                          onToggle={() => setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], open: !isOpen } }))}
-                          onSubjectChange={v => setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], subject: v } }))}
-                          onBodyChange={v => setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], body: v } }))}
-                          onSend={() => handleSendProspectDraft(draft)}
-                          onDiscard={() => handleDiscardProspectDraft(draft.id)}
-                        />
-                      );
-                    })}
-                  </div>
-                  <div style={{ borderTop: '1px solid #f0f0f0', margin: '14px 0 10px' }} />
+                  {prospectDrafts.length === 0 ? (
+                    <div style={{ fontSize: 12, color: '#9ca3af', padding: '6px 0 4px', fontStyle: 'italic' }}>
+                      No pending drafts — sequence emails will appear here for review before sending.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {prospectDrafts.map(draft => {
+                        const edit    = prospectDraftEdits[draft.id] || {};
+                        const subject = edit.subject !== undefined ? edit.subject : draft.subject;
+                        const body    = edit.body    !== undefined ? edit.body    : draft.body;
+                        const isOpen  = !!edit.open;
+                        return (
+                          <DraftCard
+                            key={draft.id}
+                            draft={draft}
+                            subject={subject}
+                            body={body}
+                            isOpen={isOpen}
+                            compact={true}
+                            sending={!!edit.sending}
+                            sendError={edit.error || null}
+                            onToggle={() => setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], open: !isOpen } }))}
+                            onSubjectChange={v => setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], subject: v } }))}
+                            onBodyChange={v => setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], body: v } }))}
+                            onSend={() => handleSendProspectDraft(draft)}
+                            onDiscard={() => handleDiscardProspectDraft(draft.id)}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div style={{ borderTop: '1px solid #f0f0f0', margin: '12px 0 10px' }} />
                 </div>
               )}
 
