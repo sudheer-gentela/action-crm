@@ -4684,8 +4684,6 @@ function OAProspectingModule() {
 
   const handleSave = async () => {
     setSaving(true);
-    setSaveError('');
-    setSaveSuccess('');
     try {
       const r1 = await fetch(`${API}/org/admin/prospecting/ai-config`, {
         method: 'PATCH', headers,
@@ -4701,10 +4699,9 @@ function OAProspectingModule() {
       });
       if (!r2.ok) { const e = await r2.json(); throw new Error(e?.error?.message || 'Prompts save failed'); }
 
-      setSaveSuccess('Prospecting AI settings saved ✓');
-      setTimeout(() => setSaveSuccess(''), 3000);
+      showFlash('success', 'Prospecting AI settings saved ✓');
     } catch(err) {
-      setSaveError(err.message || 'Failed to save settings.');
+      showFlash('error', err.message || 'Failed to save settings.');
     } finally {
       setSaving(false);
     }
