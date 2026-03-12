@@ -1359,6 +1359,8 @@ function ProspectingInbox({ scope }) {
   const [dateRange, setDateRange] = useState('30'); // days
   const [offset, setOffset]       = useState(0);
   const [total, setTotal]         = useState(0);
+  const [syncing, setSyncing]     = useState(false);
+  const [syncMsg, setSyncMsg]     = useState('');
 
   const LIMIT = 50;
 
@@ -1403,6 +1405,22 @@ function ProspectingInbox({ scope }) {
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, [load, offset]);
+
+  // Sync replies from Gmail/Outlook and refresh inbox
+  const handleSync = async () => {
+    setSyncing(true);
+    setSyncMsg('');
+    try {
+      const res = await apiFetch(`/prospecting/inbox/sync?days=${dateRange || 30}`, { method: 'POST' });
+      setSyncMsg(res.message || `${res.saved} new replies synced`);
+      await load(0); // refresh list after sync
+    } catch (err) {
+      setSyncMsg('Sync failed: ' + (err.message || 'Unknown error'));
+    } finally {
+      setSyncing(false);
+      setTimeout(() => setSyncMsg(''), 5000); // clear message after 5s
+    }
+  };
 
   const DIRECTION_OPTS = [
     { value: '',          label: 'All' },
@@ -1450,18 +1468,6 @@ function ProspectingInbox({ scope }) {
         display: 'flex', gap: 8, alignItems: 'center', padding: '10px 16px',
         borderBottom: '1px solid #e5e7eb', background: '#f9fafb', flexShrink: 0, flexWrap: 'wrap',
       }}>
-        <button
-          onClick={() => load(offset)}
-          disabled={loading}
-          title="Refresh inbox"
-          style={{
-            padding: '5px 10px', border: '1px solid #e5e7eb', borderRadius: 6,
-            background: '#fff', cursor: loading ? 'default' : 'pointer',
-            fontSize: 13, color: '#6b7280',
-          }}
-        >
-          {loading ? '⏳' : '🔄'}
-        </button>
         <div style={{ display: 'flex', borderRadius: 6, overflow: 'hidden', border: '1px solid #e5e7eb' }}>
           {DIRECTION_OPTS.map(opt => (
             <button
@@ -1490,9 +1496,45 @@ function ProspectingInbox({ scope }) {
           {RANGE_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
 
-        <span style={{ fontSize: 12, color: '#94a3b8', marginLeft: 'auto' }}>
-          {total} email{total !== 1 ? 's' : ''}
-        </span>
+        {syncMsg && (
+          <span style={{ fontSize: 12, color: syncMsg.includes('failed') ? '#dc2626' : '#059669', fontWeight: 500 }}>
+            {syncMsg}
+          </span>
+        )}
+
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 12, color: '#94a3b8' }}>
+            {total} email{total !== 1 ? 's' : ''}
+          </span>
+
+          <button
+            onClick={handleSync}
+            disabled={syncing}
+            title="Fetch new replies from Gmail / Outlook"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              padding: '5px 12px', fontSize: 12, fontWeight: 500,
+              border: '1px solid #0F9D8E', borderRadius: 6,
+              background: syncing ? '#f0fdfa' : '#fff',
+              color: '#0F9D8E', cursor: syncing ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {syncing ? '⏳ Syncing…' : '↻ Sync Replies'}
+          </button>
+
+          <button
+            onClick={() => load(offset)}
+            disabled={loading}
+            title="Refresh inbox"
+            style={{
+              padding: '5px 9px', fontSize: 13, border: '1px solid #e5e7eb',
+              borderRadius: 6, background: '#fff', color: '#6b7280',
+              cursor: loading ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {loading ? '⏳' : '🔄'}
+          </button>
+        </div>
       </div>
 
       {/* ── Email list ─────────────────────────────────────────────────────── */}
@@ -1517,23 +1559,20 @@ function ProspectingInbox({ scope }) {
           <>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
-                <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
-                  {['Prospect', 'Company', 'Subject', 'Sent By', 'Date', 'Status'].map(h => (
+                <tr style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+                  {['Prospect', 'Subject', 'From', 'Sent', 'Status'].map(h => (
                     <th key={h} style={{
-                      padding: '9px 14px', textAlign: 'left', fontSize: 11,
-                      fontWeight: 700, color: '#6b7280', textTransform: 'uppercase',
-                      letterSpacing: 0.5, whiteSpace: 'nowrap',
+                      padding: '8px 14px', textAlign: 'left', fontSize: 11,
+                      fontWeight: 600, color: '#6b7280', textTransform: 'uppercase',
+                      letterSpacing: 0.3,
                     }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {emails.map(email => {
-                  const prospect   = email.prospect   || {};
-                  const sentBy     = email.sentBy     || {};
-                  const sender     = email.senderAccount || {};
-                  const isReply    = email.direction === 'inbound' || email.direction === 'received';
-                  const wasOpened  = !!email.openedAt;
+                  const isReply   = email.direction === 'inbound';
+                  const wasOpened = !!email.openedAt;
                   const wasReplied = !!email.repliedAt;
                   return (
                     <tr
@@ -1543,32 +1582,15 @@ function ProspectingInbox({ scope }) {
                         background: isReply ? '#f0fdf4' : '#fff',
                       }}
                     >
-                      {/* Prospect name + email */}
-                      <td style={{ padding: '10px 14px', minWidth: 160 }}>
+                      <td style={{ padding: '10px 14px' }}>
                         <div style={{ fontWeight: 600, color: '#1a202c' }}>
-                          {prospect.firstName} {prospect.lastName}
+                          {email.firstName} {email.lastName}
                         </div>
-                        {prospect.email && (
-                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>
-                            {prospect.email}
-                          </div>
+                        {email.companyName && (
+                          <div style={{ fontSize: 11, color: '#6b7280' }}>{email.companyName}</div>
                         )}
                       </td>
-
-                      {/* Company */}
-                      <td style={{ padding: '10px 14px', minWidth: 130 }}>
-                        <div style={{ fontSize: 12, color: '#374151' }}>
-                          {prospect.companyName || '—'}
-                        </div>
-                        {prospect.stage && (
-                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1, textTransform: 'capitalize' }}>
-                            {prospect.stage}
-                          </div>
-                        )}
-                      </td>
-
-                      {/* Subject */}
-                      <td style={{ padding: '10px 14px', maxWidth: 280 }}>
+                      <td style={{ padding: '10px 14px', maxWidth: 300 }}>
                         <div style={{
                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                           color: isReply ? '#065f46' : '#374151',
@@ -1576,22 +1598,16 @@ function ProspectingInbox({ scope }) {
                         }}>
                           {isReply ? '↩ ' : ''}{email.subject || '(no subject)'}
                         </div>
-                      </td>
-
-                      {/* Sent by — CRM user + sender account email */}
-                      <td style={{ padding: '10px 14px', minWidth: 140 }}>
-                        <div style={{ fontSize: 12, color: '#374151' }}>
-                          {sentBy.firstName} {sentBy.lastName}
-                        </div>
-                        {(sender.email || email.fromAddress) && (
-                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>
-                            {sender.email || email.fromAddress}
+                        {email.senderFirst && (
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                            by {email.senderFirst} {email.senderLast}
                           </div>
                         )}
                       </td>
-
-                      {/* Date */}
-                      <td style={{ padding: '10px 14px', whiteSpace: 'nowrap', color: '#6b7280', fontSize: 12 }}>
+                      <td style={{ padding: '10px 14px', color: '#6b7280' }}>
+                        <div style={{ fontSize: 12 }}>{email.sentFrom || email.fromAddress || '—'}</div>
+                      </td>
+                      <td style={{ padding: '10px 14px', whiteSpace: 'nowrap', color: '#6b7280' }}>
                         {email.sentAt
                           ? new Date(email.sentAt).toLocaleString(undefined, {
                               month: 'short', day: 'numeric',
@@ -1599,27 +1615,25 @@ function ProspectingInbox({ scope }) {
                             })
                           : '—'}
                       </td>
-
-                      {/* Status badges */}
                       <td style={{ padding: '10px 14px' }}>
                         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                           {isReply && (
-                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
-                              ↩ Reply
+                            <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
+                              Reply
                             </span>
                           )}
                           {wasOpened && !isReply && (
-                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#ede9fe', color: '#6d28d9', fontWeight: 600 }}>
+                            <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 10, background: '#ede9fe', color: '#6d28d9', fontWeight: 600 }}>
                               Opened
                             </span>
                           )}
                           {wasReplied && !isReply && (
-                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
+                            <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
                               ✓ Replied
                             </span>
                           )}
                           {!isReply && !wasOpened && !wasReplied && (
-                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#f3f4f6', color: '#9ca3af' }}>
+                            <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 10, background: '#f3f4f6', color: '#9ca3af' }}>
                               Sent
                             </span>
                           )}
