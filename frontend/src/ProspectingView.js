@@ -1525,17 +1525,42 @@ function InfoRow({ label, value }) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 function SequencesView({ prospects }) {
-  const [subTab,       setSubTab]       = useState('library');   // library | enrollments
+  const [subTab,       setSubTab]       = useState('library');   // library | enrollments | stats
   const [sequences,    setSequences]    = useState([]);
   const [enrollments,  setEnrollments]  = useState([]);
   const [loadingSeq,   setLoadingSeq]   = useState(true);
   const [loadingEnr,   setLoadingEnr]   = useState(false);
   const [showBuilder,  setShowBuilder]  = useState(false);
-  const [editingSeq,   setEditingSeq]   = useState(null);   // null = new, object = edit
+  const [editingSeq,   setEditingSeq]   = useState(null);
   const [showEnroll,   setShowEnroll]   = useState(false);
   const [enrollSeqId,  setEnrollSeqId]  = useState(null);
   const [selectedProspects, setSelectedProspects] = useState([]);
   const [error,        setError]        = useState('');
+
+  // Stats
+  const [statsSeqId,   setStatsSeqId]   = useState(null);
+  const [stats,        setStats]        = useState(null);
+  const [loadingStats, setLoadingStats] = useState(false);
+
+  const loadStats = useCallback(async (seqId) => {
+    setLoadingStats(true);
+    setStats(null);
+    setError('');
+    try {
+      const r = await apiFetch(`/sequences/${seqId}/stats`);
+      setStats(r);
+    } catch (err) {
+      setError('Failed to load stats: ' + err.message);
+    } finally {
+      setLoadingStats(false);
+    }
+  }, []);
+
+  const openStats = (seqId) => {
+    setStatsSeqId(seqId);
+    setSubTab('stats');
+    loadStats(seqId);
+  };
 
   const loadSequences = useCallback(async () => {
     setLoadingSeq(true);
@@ -1614,6 +1639,7 @@ function SequencesView({ prospects }) {
           {[
             { key: 'library',     label: `📚 Library (${sequences.length})` },
             { key: 'enrollments', label: '🗓 Enrollments' },
+            { key: 'stats',       label: '📊 Stats' },
           ].map(t => (
             <button
               key={t.key}
@@ -1732,12 +1758,22 @@ function SequencesView({ prospects }) {
                     <button
                       onClick={() => { setSubTab('enrollments'); loadEnrollments(); }}
                       style={{
-                        padding: '7px 12px', borderRadius: 7,
+                        padding: '7px 10px', borderRadius: 7,
                         border: '1px solid #e5e7eb', background: '#fff',
                         color: '#6b7280', fontSize: 12, cursor: 'pointer',
                       }}
                     >
-                      📊 View Enrollments
+                      🗓
+                    </button>
+                    <button
+                      onClick={() => openStats(seq.id)}
+                      style={{
+                        padding: '7px 10px', borderRadius: 7,
+                        border: '1px solid #e5e7eb', background: '#fff',
+                        color: '#6b7280', fontSize: 12, cursor: 'pointer',
+                      }}
+                    >
+                      📊
                     </button>
                   </div>
                 </div>
@@ -1821,6 +1857,138 @@ function SequencesView({ prospects }) {
                 })}
               </tbody>
             </table>
+          )}
+        </div>
+      )}
+
+      {/* ── Stats tab ───────────────────────────────────────────────────── */}
+      {subTab === 'stats' && (
+        <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+          {/* Sequence picker */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'block', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+              Select Sequence
+            </label>
+            <select
+              value={statsSeqId || ''}
+              onChange={e => { const v = parseInt(e.target.value); setStatsSeqId(v); loadStats(v); }}
+              style={{ padding: '7px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, background: '#fff', minWidth: 260 }}
+            >
+              <option value="">— choose a sequence —</option>
+              {sequences.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+
+          {loadingStats && (
+            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading stats…</div>
+          )}
+
+          {!loadingStats && !stats && !statsSeqId && (
+            <div style={{ textAlign: 'center', padding: 60, color: '#9ca3af' }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>📊</div>
+              Select a sequence above to view its performance stats.
+            </div>
+          )}
+
+          {!loadingStats && stats && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+              {/* Top-line numbers */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                {[
+                  { label: 'Enrolled',    value: stats.totalEnrolled,              color: '#374151' },
+                  { label: 'Replied',     value: stats.totalReplied,               color: '#0F9D8E' },
+                  { label: 'Reply Rate',  value: `${stats.replyRate}%`,            color: '#0F9D8E' },
+                  { label: 'Avg Reply At',value: stats.avgReplyStep ? `Step ${stats.avgReplyStep}` : '—', color: '#6b7280' },
+                ].map(({ label, value, color }) => (
+                  <div key={label} style={{
+                    padding: '14px 16px', background: '#fff',
+                    border: '1px solid #e5e7eb', borderRadius: 10,
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                  }}>
+                    <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>{label}</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Status breakdown */}
+              <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '14px 16px' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 12 }}>Enrollment Status</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {[
+                    { key: 'active',    label: 'Active',    bg: '#d1fae5', color: '#065f46' },
+                    { key: 'replied',   label: 'Replied',   bg: '#ccfbf1', color: '#0d9488' },
+                    { key: 'completed', label: 'Completed', bg: '#eff6ff', color: '#1d4ed8' },
+                    { key: 'paused',    label: 'Paused',    bg: '#fef3c7', color: '#92400e' },
+                    { key: 'stopped',   label: 'Stopped',   bg: '#fee2e2', color: '#991b1b' },
+                  ].map(({ key, label, bg, color }) => (
+                    <div key={key} style={{
+                      padding: '6px 14px', borderRadius: 20, background: bg,
+                      fontSize: 12, fontWeight: 600, color,
+                    }}>
+                      {label}: {stats.statusBreakdown[key] || 0}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Step funnel */}
+              {stats.stepFunnel && stats.stepFunnel.length > 0 && (
+                <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '14px 16px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 14 }}>Step Funnel</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {stats.stepFunnel.map((s) => {
+                      const barMax   = stats.totalEnrolled || 1;
+                      const barPct   = Math.round((s.sent / barMax) * 100);
+                      const replyPct = s.sent > 0 ? Math.round((s.replied_here / s.sent) * 100) : 0;
+                      return (
+                        <div key={s.step_order}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                            <div style={{
+                              width: 22, height: 22, borderRadius: '50%',
+                              background: '#0F9D8E', color: '#fff',
+                              fontSize: 11, fontWeight: 700,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                            }}>
+                              {s.step_order}
+                            </div>
+                            <div style={{ flex: 1 }}>
+                              <div style={{
+                                height: 10, borderRadius: 5, background: '#f3f4f6', overflow: 'hidden',
+                              }}>
+                                <div style={{
+                                  width: `${barPct}%`, height: '100%',
+                                  background: 'linear-gradient(90deg, #0F9D8E, #0d8a7c)',
+                                  borderRadius: 5, transition: 'width 0.4s ease',
+                                }} />
+                              </div>
+                            </div>
+                            <div style={{ fontSize: 12, color: '#374151', minWidth: 70, textAlign: 'right' }}>
+                              <strong>{s.sent}</strong> <span style={{ color: '#9ca3af' }}>sent</span>
+                            </div>
+                            {s.replied_here > 0 && (
+                              <div style={{
+                                fontSize: 11, color: '#0d9488', fontWeight: 600,
+                                background: '#ccfbf1', padding: '2px 8px', borderRadius: 10,
+                                minWidth: 80, textAlign: 'center',
+                              }}>
+                                {s.replied_here} replied ({replyPct}%)
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {stats.totalEnrolled === 0 && (
+                    <div style={{ textAlign: 'center', padding: '20px 0', color: '#9ca3af', fontSize: 13 }}>
+                      No steps fired yet — enroll some prospects to start seeing data.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}

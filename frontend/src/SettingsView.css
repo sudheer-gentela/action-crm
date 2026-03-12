@@ -1,3 +1,313 @@
+/* ═══════════════════════════════════════════════════════════════
+   SETTINGS — Core panel & component styles (sv- prefix)
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Layout */
+.settings-view {
+  max-width: 100%;
+}
+
+.settings-header {
+  margin-bottom: 24px;
+}
+
+.settings-header h1 {
+  font-size: 22px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0 0 4px;
+}
+
+.settings-subtitle {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0;
+}
+
+/* Panel */
+.sv-panel {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+
+.sv-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.sv-panel-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sv-panel-desc {
+  font-size: 12px;
+  color: #6b7280;
+  margin: 0;
+}
+
+.sv-panel-body {
+  padding: 20px 24px;
+}
+
+/* Sections within panels */
+.sv-section {
+  margin-bottom: 24px;
+}
+
+.sv-section:last-child {
+  margin-bottom: 0;
+}
+
+.sv-section-heading {
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+  margin: 0 0 12px;
+}
+
+/* Cards */
+.sv-card {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 10px;
+}
+
+.sv-card:last-child {
+  margin-bottom: 0;
+}
+
+.sv-integration-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.sv-integration-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.sv-integration-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 6px;
+}
+
+.sv-integration-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0;
+}
+
+.sv-hint {
+  font-size: 12px;
+  color: #9ca3af;
+  margin: 4px 0 0;
+  line-height: 1.5;
+}
+
+.sv-scope-list {
+  list-style: none;
+  padding: 8px 0 0;
+  margin: 0;
+}
+
+.sv-scope-list li {
+  font-size: 12px;
+  color: #6b7280;
+  padding: 2px 0;
+}
+
+.sv-integration-scopes {
+  margin-top: 8px;
+}
+
+/* Org integrations grid */
+.sv-org-integrations-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sv-org-int-icon {
+  font-size: 20px;
+  width: 36px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.sv-org-int-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.sv-org-int-info {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: 2px;
+}
+
+/* Prompt editor */
+.sv-prompt-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 12px;
+}
+
+.sv-prompt-tab {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.sv-prompt-tab:hover {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.sv-prompt-tab.active {
+  background: #0F9D8E;
+  color: #fff;
+  border-color: #0F9D8E;
+  font-weight: 600;
+}
+
+.sv-prompt-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.sv-prompt-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 4px;
+}
+
+.sv-prompt-editor {
+  width: 100%;
+  min-height: 200px;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  padding: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  resize: vertical;
+  color: #374151;
+  background: #fafafa;
+  line-height: 1.6;
+}
+
+.sv-prompt-editor:focus {
+  outline: none;
+  border-color: #0F9D8E;
+  box-shadow: 0 0 0 3px rgba(15, 157, 142, 0.1);
+}
+
+/* Buttons */
+.sv-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: #0F9D8E;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.sv-btn-primary:hover { background: #0d8a7c; }
+.sv-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.sv-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  background: #fff;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.sv-btn-secondary:hover { background: #f9fafb; border-color: #9ca3af; }
+.sv-btn-secondary:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Status messages */
+.sv-error {
+  background: #fee2e2;
+  border: 1px solid #fca5a5;
+  color: #dc2626;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.sv-success {
+  background: #d1fae5;
+  border: 1px solid #6ee7b7;
+  color: #065f46;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.sv-loading {
+  padding: 32px;
+  color: #9ca3af;
+  font-size: 13px;
+  text-align: center;
+}
+
 
 /* ═══════════════════════════════════════════════════════════════
    SETTINGS V2 — Sidebar layout
@@ -215,4 +525,76 @@
   .sv2-content {
     padding: 20px 16px;
   }
+}
+
+/* Breadcrumb in page header */
+.sv2-breadcrumb {
+  font-size: 11px;
+  font-weight: 500;
+  color: #9ca3af;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sv2-breadcrumb-sep {
+  color: #d1d5db;
+}
+
+/* Ensure panels don't stretch awkwardly in the new layout */
+.sv2-pane .sv-panel {
+  max-width: 860px;
+}
+
+.sv2-pane .sv-prompt-editor {
+  max-width: 100%;
+}
+
+/* Legacy settings-body/settings-view wrapper styles (kept for compatibility) */
+.settings-view {
+  height: 100%;
+}
+
+.settings-body {
+  padding: 0;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 0 0 0 0;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 24px;
+}
+
+.settings-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: none;
+  border-bottom: 3px solid transparent;
+  background: none;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  border-radius: 0;
+  margin-bottom: -1px;
+}
+
+.settings-tab:hover { color: #374151; }
+
+.settings-tab.active {
+  color: #0F9D8E;
+  border-bottom-color: #0F9D8E;
+  font-weight: 600;
+}
+
+.settings-tab-icon {
+  font-size: 15px;
 }

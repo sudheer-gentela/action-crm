@@ -1,17 +1,19 @@
 /**
- * SequenceBuilder.js
+ * SequenceBuilder.js  v2.0
  *
- * Full sequence builder UI:
- *  - Create / edit a sequence name + description
- *  - Add / edit / remove / reorder steps (channel, delay, subject template, body template)
- *  - "AI Fill" button — given a prospect, calls /api/sequences/:id/ai-generate
- *    and populates step subject/body previews
- *  - Save sequence
+ * Changes from v1:
+ *   - Each step has an AI / Manual mode toggle (default: AI)
+ *   - description field repurposed as "Tone & Goal" — AI brief for whole sequence
+ *   - Single "Generate AI Steps ✨" button writes all AI-mode steps at once
+ *     via POST /sequences/ai-build
+ *   - Manual steps are fully editable and never touched by AI
+ *   - AI steps show a placeholder until generated; fields are editable after
+ *   - Re-generating overwrites AI steps silently
  *
  * Props:
- *   sequence    — existing sequence object (null = create new)
- *   onSave      — called with saved sequence
- *   onClose     — close/cancel handler
+ *   sequence  — existing sequence object (null = create new)
+ *   onSave    — called with saved sequence
+ *   onClose   — close / cancel handler
  */
 
 import React, { useState, useCallback } from 'react';
@@ -33,6 +35,10 @@ function apiFetch(path, options = {}) {
   });
 }
 
+const TEAL       = '#0F9D8E';
+const TEAL_LIGHT = '#e6f7f6';
+const TEAL_MID   = '#0d8a7c';
+
 const CHANNEL_OPTIONS = [
   { value: 'email',    label: '✉️  Email',    hasContent: true  },
   { value: 'linkedin', label: '🔗  LinkedIn',  hasContent: true  },
@@ -40,18 +46,17 @@ const CHANNEL_OPTIONS = [
   { value: 'task',     label: '📋  Task',      hasContent: false },
 ];
 
-const TEAL = '#0F9D8E';
-
 const TEMPLATE_TOKENS = ['{{first_name}}', '{{last_name}}', '{{full_name}}', '{{title}}', '{{company}}', '{{industry}}'];
 
-// ── Empty step factory ───────────────────────────────────────────────────────
 function blankStep(order) {
   return {
-    _id:              Date.now() + Math.random(), // client-only temp id
+    _id:              Date.now() + Math.random(),
     id:               null,
     step_order:       order,
     channel:          'email',
-    delay_days:       order === 1 ? 0 : 2,
+    delay_days:       order === 1 ? 0 : 3,
+    mode:             'ai',
+    ai_generated:     false,
     subject_template: '',
     body_template:    '',
     task_note:        '',
@@ -65,135 +70,163 @@ function blankStep(order) {
 export default function SequenceBuilder({ sequence: initialSequence, onSave, onClose }) {
   const isEdit = !!initialSequence?.id;
 
-  const [name,        setName]        = useState(initialSequence?.name        || '');
-  const [description, setDescription] = useState(initialSequence?.description || '');
-  const [steps,       setSteps]       = useState(
+  const [name,     setName]     = useState(initialSequence?.name        || '');
+  const [toneGoal, setToneGoal] = useState(initialSequence?.description || '');
+  const [steps,    setSteps]    = useState(
     (initialSequence?.steps || []).length > 0
-      ? initialSequence.steps.map(s => ({ ...s, _id: s.id }))
+      ? initialSequence.steps.map(s => ({
+          ...s,
+          _id:          s.id,
+          mode:         s.mode || 'manual',
+          ai_generated: false,
+        }))
       : [blankStep(1)]
   );
-  const [saving,      setSaving]      = useState(false);
-  const [error,       setError]       = useState('');
-  const [aiLoading,   setAiLoading]   = useState(false);
-  const [aiPreviewInput, setAiPreviewInput] = useState('');
-  const [showAiInput, setShowAiInput] = useState(false);
+
+  const [saving,       setSaving]       = useState(false);
+  const [generating,   setGenerating]   = useState(false);
+  const [error,        setError]        = useState('');
+  const [generated,    setGenerated]    = useState(false);
   const [expandedStep, setExpandedStep] = useState(steps[0]?._id || null);
+
+  const aiStepCount = steps.filter(s => s.mode === 'ai').length;
 
   // ── Step CRUD ──────────────────────────────────────────────────────────────
 
   const addStep = () => {
-    const newStep = blankStep(steps.length + 1);
-    setSteps(prev => [...prev, newStep]);
-    setExpandedStep(newStep._id);
+    const ns = blankStep(steps.length + 1);
+    setSteps(prev => [...prev, ns]);
+    setExpandedStep(ns._id);
   };
 
   const removeStep = (tempId) => {
-    setSteps(prev => {
-      const next = prev.filter(s => s._id !== tempId);
-      return next.map((s, i) => ({ ...s, step_order: i + 1 }));
-    });
+    setSteps(prev =>
+      prev.filter(s => s._id !== tempId).map((s, i) => ({ ...s, step_order: i + 1 }))
+    );
   };
 
   const updateStep = useCallback((tempId, field, value) => {
     setSteps(prev => prev.map(s => s._id === tempId ? { ...s, [field]: value } : s));
   }, []);
 
+  const toggleMode = useCallback((tempId) => {
+    setSteps(prev => prev.map(s => {
+      if (s._id !== tempId) return s;
+      const newMode = s.mode === 'ai' ? 'manual' : 'ai';
+      return { ...s, mode: newMode, ai_generated: newMode === 'manual' ? false : s.ai_generated };
+    }));
+  }, []);
+
   const moveStep = (tempId, dir) => {
     setSteps(prev => {
-      const idx = prev.findIndex(s => s._id === tempId);
-      if (idx < 0) return prev;
-      const next = [...prev];
+      const idx     = prev.findIndex(s => s._id === tempId);
       const swapIdx = dir === 'up' ? idx - 1 : idx + 1;
-      if (swapIdx < 0 || swapIdx >= next.length) return prev;
+      if (idx < 0 || swapIdx < 0 || swapIdx >= prev.length) return prev;
+      const next = [...prev];
       [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
       return next.map((s, i) => ({ ...s, step_order: i + 1 }));
     });
   };
 
-  // ── AI Fill ────────────────────────────────────────────────────────────────
+  // ── AI Generate ────────────────────────────────────────────────────────────
 
-  const handleAiFill = async () => {
-    if (!aiPreviewInput.trim()) return;
-    if (!isEdit) {
-      setError('Save the sequence first before AI-filling steps.');
-      return;
-    }
-    setAiLoading(true);
+  const handleGenerate = async () => {
+    if (!name.trim()) { setError('Please enter a sequence name first.'); return; }
+    if (aiStepCount === 0) { setError('Mark at least one step as AI to generate.'); return; }
+
+    setGenerating(true);
     setError('');
+    setGenerated(false);
+
     try {
-      const res = await apiFetch(`/sequences/${initialSequence.id}/ai-generate`, {
+      const aiSteps = steps
+        .filter(s => s.mode === 'ai')
+        .map(s => ({ step_order: s.step_order, channel: s.channel, delay_days: s.delay_days }));
+
+      const res = await apiFetch('/sequences/ai-build', {
         method: 'POST',
-        body: JSON.stringify({ prospectId: parseInt(aiPreviewInput) }),
+        body: JSON.stringify({
+          goal:      (toneGoal || name).trim(),
+          stepCount: aiSteps.length,
+          channels:  [...new Set(aiSteps.map(s => s.channel))],
+          steps:     aiSteps,
+        }),
       });
+
+      // Map generated content back by step_order
       const generatedMap = {};
-      (res.generatedSteps || []).forEach(g => { generatedMap[g.step_order] = g; });
+      (res.steps || []).forEach(g => { generatedMap[g.step_order] = g; });
+
       setSteps(prev => prev.map(s => {
+        if (s.mode !== 'ai') return s;
         const g = generatedMap[s.step_order];
         if (!g) return s;
-        return { ...s, subject_template: g.subject || s.subject_template, body_template: g.body || s.body_template };
+        return {
+          ...s,
+          subject_template: g.subject_template || s.subject_template,
+          body_template:    g.body_template    || s.body_template,
+          task_note:        g.task_note        || s.task_note,
+          ai_generated:     true,
+        };
       }));
-      setShowAiInput(false);
+
+      setGenerated(true);
+      const firstAiStep = steps.find(s => s.mode === 'ai');
+      if (firstAiStep) setExpandedStep(firstAiStep._id);
+
     } catch (err) {
-      setError('AI fill failed: ' + err.message);
+      setError('AI generation failed: ' + err.message);
     } finally {
-      setAiLoading(false);
+      setGenerating(false);
     }
   };
 
   // ── Save ───────────────────────────────────────────────────────────────────
 
   const handleSave = async () => {
-    if (!name.trim()) { setError('Sequence name is required'); return; }
+    if (!name.trim()) { setError('Sequence name is required.'); return; }
     setSaving(true);
     setError('');
+
+    const stepsPayload = steps.map(s => ({ ...s, mode: s.mode }));
+
     try {
       let saved;
       if (isEdit) {
-        // Update name/description
         await apiFetch(`/sequences/${initialSequence.id}`, {
           method: 'PUT',
-          body: JSON.stringify({ name, description }),
+          body:   JSON.stringify({ name, description: toneGoal }),
         });
-
-        // Sync steps: delete removed, update existing, add new
         const existingIds = (initialSequence.steps || []).map(s => s.id);
-        const currentIds  = steps.filter(s => s.id).map(s => s.id);
-
-        // Delete removed steps
+        const currentIds  = stepsPayload.filter(s => s.id).map(s => s.id);
         for (const eid of existingIds) {
           if (!currentIds.includes(eid)) {
             await apiFetch(`/sequences/${initialSequence.id}/steps/${eid}`, { method: 'DELETE' });
           }
         }
-        // Update / create steps
-        for (const step of steps) {
+        for (const step of stepsPayload) {
           if (step.id) {
             await apiFetch(`/sequences/${initialSequence.id}/steps/${step.id}`, {
-              method: 'PUT',
-              body: JSON.stringify(step),
+              method: 'PUT', body: JSON.stringify(step),
             });
           } else {
             await apiFetch(`/sequences/${initialSequence.id}/steps`, {
-              method: 'POST',
-              body: JSON.stringify(step),
+              method: 'POST', body: JSON.stringify(step),
             });
           }
         }
-        // Reorder
-        const ids = steps.filter(s => s.id).map(s => s.id);
+        const ids = stepsPayload.filter(s => s.id).map(s => s.id);
         if (ids.length) {
           await apiFetch(`/sequences/${initialSequence.id}/steps/reorder`, {
-            method: 'POST',
-            body: JSON.stringify({ order: ids }),
+            method: 'POST', body: JSON.stringify({ order: ids }),
           });
         }
         const reloaded = await apiFetch(`/sequences/${initialSequence.id}`);
         saved = reloaded.sequence;
       } else {
-        // Create new
         const res = await apiFetch('/sequences', {
           method: 'POST',
-          body: JSON.stringify({ name, description, steps }),
+          body:   JSON.stringify({ name, description: toneGoal, steps: stepsPayload }),
         });
         saved = res.sequence;
       }
@@ -205,152 +238,120 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
     }
   };
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // RENDER
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div style={{
-      display: 'flex', flexDirection: 'column', height: '100%',
-      fontFamily: "'Inter', system-ui, sans-serif",
-    }}>
-      {/* ── Header ─────────────────────────────────────────────────────── */}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: "'Inter', system-ui, sans-serif" }}>
+
+      {/* Header */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '18px 24px 14px', borderBottom: '1px solid #e5e7eb',
+        padding: '18px 24px 14px', borderBottom: '1px solid #e5e7eb', flexShrink: 0,
       }}>
         <div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: TEAL, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 3 }}>
+            Sequence Builder
+          </div>
           <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#111827' }}>
             {isEdit ? 'Edit Sequence' : 'New Sequence'}
           </h3>
-          <p style={{ margin: '2px 0 0', fontSize: 12, color: '#6b7280' }}>
-            {steps.length} step{steps.length !== 1 ? 's' : ''}
-          </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          {isEdit && (
-            <div style={{ position: 'relative' }}>
-              <button
-                onClick={() => setShowAiInput(v => !v)}
-                disabled={aiLoading}
-                style={{
-                  padding: '7px 14px', borderRadius: 7, border: '1px solid #0F9D8E',
-                  background: aiLoading ? '#f0fdfa' : '#fff',
-                  color: '#0F9D8E', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', gap: 5,
-                }}
-              >
-                {aiLoading ? '⏳ Filling…' : '✨ AI Fill'}
-              </button>
-              {showAiInput && (
-                <div style={{
-                  position: 'absolute', right: 0, top: '110%', zIndex: 100,
-                  background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
-                  padding: 14, width: 260,
-                  boxShadow: '0 4px 20px rgba(0,0,0,0.12)',
-                }}>
-                  <p style={{ margin: '0 0 8px', fontSize: 12, color: '#374151', fontWeight: 600 }}>
-                    AI-fill steps for a prospect
-                  </p>
-                  <input
-                    placeholder="Prospect ID"
-                    value={aiPreviewInput}
-                    onChange={e => setAiPreviewInput(e.target.value)}
-                    style={{
-                      width: '100%', padding: '6px 10px', borderRadius: 6,
-                      border: '1px solid #d1d5db', fontSize: 12, marginBottom: 8,
-                      boxSizing: 'border-box',
-                    }}
-                  />
-                  <button
-                    onClick={handleAiFill}
-                    disabled={!aiPreviewInput.trim() || aiLoading}
-                    style={{
-                      width: '100%', padding: '7px', borderRadius: 6,
-                      background: TEAL, color: '#fff', border: 'none',
-                      fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                    }}
-                  >
-                    Generate
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+          <button onClick={onClose} style={ghostBtn}>Cancel</button>
           <button
             onClick={handleSave}
             disabled={saving}
             style={{
-              padding: '7px 18px', borderRadius: 7, border: 'none',
-              background: saving ? '#9ca3af' : TEAL,
-              color: '#fff', fontSize: 12, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer',
+              padding: '8px 20px', borderRadius: 8, border: 'none',
+              background: saving ? '#9ca3af' : TEAL, color: '#fff',
+              fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer',
             }}
           >
-            {saving ? 'Saving…' : 'Save Sequence'}
-          </button>
-          <button
-            onClick={onClose}
-            style={{
-              padding: '7px 12px', borderRadius: 7, border: '1px solid #e5e7eb',
-              background: '#fff', color: '#6b7280', fontSize: 12, cursor: 'pointer',
-            }}
-          >
-            ✕
+            {saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Create Sequence'}
           </button>
         </div>
       </div>
 
-      {/* ── Error ──────────────────────────────────────────────────────── */}
-      {error && (
-        <div style={{
-          margin: '10px 24px 0', padding: '8px 12px',
-          background: '#fef2f2', border: '1px solid #fecaca',
-          borderRadius: 7, fontSize: 12, color: '#dc2626',
-        }}>
-          ⚠️ {error}
-        </div>
-      )}
+      {/* Scrollable body */}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-      {/* ── Body ───────────────────────────────────────────────────────── */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 24px' }}>
+        {error && (
+          <div style={{ padding: '9px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 7, fontSize: 12, color: '#dc2626' }}>
+            ⚠️ {error}
+          </div>
+        )}
 
-        {/* Name + Description */}
-        <div style={{ marginBottom: 20 }}>
-          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>
-            Sequence Name *
-          </label>
+        {/* Sequence name */}
+        <div>
+          <label style={labelStyle}>Sequence Name</label>
           <input
             value={name}
             onChange={e => setName(e.target.value)}
-            placeholder="e.g. Cold Outreach — SaaS CFOs"
-            style={{
-              width: '100%', padding: '8px 12px', borderRadius: 7,
-              border: '1px solid #d1d5db', fontSize: 13, boxSizing: 'border-box',
-            }}
-          />
-          <input
-            value={description}
-            onChange={e => setDescription(e.target.value)}
-            placeholder="Optional description"
-            style={{
-              width: '100%', padding: '7px 12px', borderRadius: 7,
-              border: '1px solid #d1d5db', fontSize: 12, marginTop: 8,
-              boxSizing: 'border-box', color: '#6b7280',
-            }}
+            placeholder="e.g. VP Finance Cold Outreach — Q3"
+            style={{ ...inputStyle, width: '100%' }}
           />
         </div>
 
-        {/* Token hint */}
-        <div style={{
-          marginBottom: 14, padding: '8px 12px',
-          background: '#f0fdf4', border: '1px solid #bbf7d0',
-          borderRadius: 7, fontSize: 11, color: '#065f46',
-        }}>
-          💡 Use tokens in templates: {TEMPLATE_TOKENS.join(' ')}
+        {/* Tone & Goal */}
+        <div>
+          <label style={labelStyle}>
+            Tone & Goal
+            <span style={{ marginLeft: 6, fontSize: 10, color: '#9ca3af', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
+              — AI uses this to write all AI steps
+            </span>
+          </label>
+          <textarea
+            value={toneGoal}
+            onChange={e => setToneGoal(e.target.value)}
+            placeholder="e.g. Professional but conversational. Targeting VP Finance at mid-market SaaS. Focus on cost savings and reducing manual reporting time."
+            rows={3}
+            style={{ ...inputStyle, width: '100%', resize: 'vertical', lineHeight: 1.6 }}
+          />
         </div>
 
-        {/* ── Steps ──────────────────────────────────────────────────────── */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ borderTop: '1px solid #f0f0f0' }} />
+
+        {/* Steps header + Generate button */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#111827' }}>Steps</div>
+            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
+              {aiStepCount} AI · {steps.length - aiStepCount} Manual
+            </div>
+          </div>
+          <button
+            onClick={handleGenerate}
+            disabled={generating || aiStepCount === 0}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 7,
+              padding: '9px 18px', borderRadius: 9,
+              background: aiStepCount === 0 ? '#f3f4f6' : generating ? TEAL_MID : TEAL,
+              color: aiStepCount === 0 ? '#9ca3af' : '#fff',
+              border: 'none', fontSize: 13, fontWeight: 600,
+              cursor: aiStepCount === 0 ? 'not-allowed' : 'pointer',
+              transition: 'background 0.2s',
+              boxShadow: aiStepCount > 0 && !generating ? '0 2px 8px rgba(15,157,142,0.25)' : 'none',
+            }}
+          >
+            {generating
+              ? '⟳ Generating…'
+              : `✨ Generate ${aiStepCount > 0 ? aiStepCount + ' ' : ''}AI Step${aiStepCount !== 1 ? 's' : ''}`}
+          </button>
+        </div>
+
+        {/* Success banner */}
+        {generated && !generating && (
+          <div style={{
+            padding: '10px 14px', background: TEAL_LIGHT,
+            border: `1px solid ${TEAL}40`, borderRadius: 8,
+            fontSize: 12, color: TEAL_MID, display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            ✅ AI steps generated — review and edit below, then save.
+          </div>
+        )}
+
+        {/* Steps list */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {steps.map((step, idx) => (
             <StepCard
               key={step._id}
@@ -361,24 +362,33 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
               onToggle={() => setExpandedStep(expandedStep === step._id ? null : step._id)}
               onChange={(field, val) => updateStep(step._id, field, val)}
               onRemove={() => removeStep(step._id)}
+              onToggleMode={() => toggleMode(step._id)}
               onMoveUp={() => moveStep(step._id, 'up')}
               onMoveDown={() => moveStep(step._id, 'down')}
             />
           ))}
         </div>
 
-        <button
-          onClick={addStep}
-          style={{
-            width: '100%', marginTop: 12, padding: '10px',
-            border: '2px dashed #d1d5db', borderRadius: 8,
-            background: '#fafafa', color: '#6b7280',
-            fontSize: 13, fontWeight: 500, cursor: 'pointer',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-          }}
-        >
+        {/* Add step */}
+        <button onClick={addStep} style={{
+          width: '100%', padding: '10px',
+          border: '2px dashed #e5e7eb', borderRadius: 8,
+          background: '#fafafa', color: '#9ca3af',
+          fontSize: 13, fontWeight: 500, cursor: 'pointer',
+        }}>
           + Add Step
         </button>
+
+        {/* Token hint */}
+        <div style={{
+          padding: '8px 12px', background: '#fffbeb',
+          border: '1px solid #fde68a', borderRadius: 7,
+          fontSize: 11, color: '#92400e',
+        }}>
+          💡 Tokens: {TEMPLATE_TOKENS.map(t => (
+            <code key={t} style={{ background: '#fef3c7', padding: '1px 4px', borderRadius: 3, marginRight: 4 }}>{t}</code>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -388,95 +398,91 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
 // STEP CARD
 // ─────────────────────────────────────────────────────────────────────────────
 
-function StepCard({ step, index, total, expanded, onToggle, onChange, onRemove, onMoveUp, onMoveDown }) {
+function StepCard({ step, index, total, expanded, onToggle, onChange, onRemove, onToggleMode, onMoveUp, onMoveDown }) {
   const channelCfg = CHANNEL_OPTIONS.find(c => c.value === step.channel) || CHANNEL_OPTIONS[0];
+  const isAI       = step.mode === 'ai';
   const hasContent = channelCfg.hasContent;
 
   return (
     <div style={{
-      border: `1px solid ${expanded ? '#0F9D8E' : '#e5e7eb'}`,
-      borderRadius: 10,
-      background: '#fff',
-      overflow: 'hidden',
+      border: `1.5px solid ${expanded ? TEAL : '#e5e7eb'}`,
+      borderRadius: 10, background: '#fff', overflow: 'hidden',
       transition: 'border-color 0.15s',
     }}>
-      {/* ── Step header ─────────────────────────────────────────────────── */}
-      <div
-        onClick={onToggle}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          padding: '10px 14px', cursor: 'pointer',
-          background: expanded ? '#f0fdf4' : '#fff',
-          userSelect: 'none',
-        }}
-      >
-        {/* Step number */}
+      <div onClick={onToggle} style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '10px 14px', cursor: 'pointer',
+        background: expanded ? TEAL_LIGHT : '#fff', userSelect: 'none',
+      }}>
         <div style={{
           width: 24, height: 24, borderRadius: '50%',
-          background: expanded ? '#0F9D8E' : '#f3f4f6',
+          background: expanded ? TEAL : '#f3f4f6',
           color: expanded ? '#fff' : '#6b7280',
-          fontSize: 11, fontWeight: 700,
+          fontSize: 11, fontWeight: 700, flexShrink: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          flexShrink: 0,
         }}>
           {index + 1}
         </div>
 
         <span style={{ fontSize: 13, color: '#374151' }}>{channelCfg.label}</span>
-
-        <span style={{ fontSize: 12, color: '#9ca3af' }}>
-          {step.delay_days === 0
-            ? index === 0 ? 'Day 0 (on enroll)' : 'same day'
-            : `+${step.delay_days}d`}
+        <span style={{ fontSize: 11, color: '#9ca3af' }}>
+          {step.delay_days === 0 ? (index === 0 ? 'Day 0' : 'same day') : `+${step.delay_days}d`}
         </span>
 
-        {step.subject_template && (
+        {isAI && !step.ai_generated && (
           <span style={{
-            flex: 1, fontSize: 12, color: '#6b7280',
+            fontSize: 10, fontWeight: 600, color: TEAL,
+            background: TEAL_LIGHT, padding: '2px 7px', borderRadius: 20,
+            border: `1px solid ${TEAL}40`,
+          }}>✨ AI</span>
+        )}
+
+        {(step.subject_template || step.task_note) && (
+          <span style={{
+            flex: 1, fontSize: 11, color: '#6b7280',
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
-            {step.subject_template}
+            {step.subject_template || step.task_note}
           </span>
         )}
 
-        <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
+        <div style={{ display: 'flex', gap: 4, marginLeft: 'auto', alignItems: 'center' }}>
+          <div
+            onClick={e => { e.stopPropagation(); onToggleMode(); }}
+            style={{
+              padding: '3px 10px', borderRadius: 20,
+              border: `1px solid ${isAI ? TEAL : '#d1d5db'}`,
+              background: isAI ? TEAL_LIGHT : '#f9fafb',
+              cursor: 'pointer', fontSize: 11, fontWeight: 600,
+              color: isAI ? TEAL : '#6b7280', transition: 'all 0.15s', whiteSpace: 'nowrap',
+            }}
+          >
+            {isAI ? '✨ AI' : '✏️ Manual'}
+          </div>
           {index > 0 && (
-            <button onClick={e => { e.stopPropagation(); onMoveUp(); }}
-              style={iconBtn}>▲</button>
+            <button onClick={e => { e.stopPropagation(); onMoveUp(); }} style={iconBtn}>▲</button>
           )}
           {index < total - 1 && (
-            <button onClick={e => { e.stopPropagation(); onMoveDown(); }}
-              style={iconBtn}>▼</button>
+            <button onClick={e => { e.stopPropagation(); onMoveDown(); }} style={iconBtn}>▼</button>
           )}
           <button
             onClick={e => { e.stopPropagation(); if (window.confirm('Remove this step?')) onRemove(); }}
-            style={{ ...iconBtn, color: '#ef4444' }}
+            style={{ ...iconBtn, color: '#ef4444', borderColor: '#fecaca' }}
           >✕</button>
         </div>
       </div>
 
-      {/* ── Step body ───────────────────────────────────────────────────── */}
       {expanded && (
-        <div style={{ padding: '12px 14px', borderTop: '1px solid #e5e7eb', display: 'flex', flexDirection: 'column', gap: 12 }}>
-
-          {/* Channel + delay row */}
+        <div style={{ padding: '14px', borderTop: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ display: 'flex', gap: 10 }}>
             <div style={{ flex: 1 }}>
               <label style={labelStyle}>Channel</label>
-              <select
-                value={step.channel}
-                onChange={e => onChange('channel', e.target.value)}
-                style={selectStyle}
-              >
-                {CHANNEL_OPTIONS.map(c => (
-                  <option key={c.value} value={c.value}>{c.label}</option>
-                ))}
+              <select value={step.channel} onChange={e => onChange('channel', e.target.value)} style={selectStyle}>
+                {CHANNEL_OPTIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
               </select>
             </div>
-            <div style={{ width: 130 }}>
-              <label style={labelStyle}>
-                {index === 0 ? 'Delay (days from enroll)' : 'Delay (days from prev step)'}
-              </label>
+            <div style={{ width: 150 }}>
+              <label style={labelStyle}>{index === 0 ? 'Delay from enroll (days)' : 'Delay from prev (days)'}</label>
               <input
                 type="number" min="0" max="365"
                 value={step.delay_days}
@@ -486,41 +492,69 @@ function StepCard({ step, index, total, expanded, onToggle, onChange, onRemove, 
             </div>
           </div>
 
-          {/* Email/LinkedIn content */}
-          {hasContent ? (
+          {/* AI mode */}
+          {isAI && (
+            <div style={{
+              padding: '12px 14px',
+              background: step.ai_generated ? '#f8fffd' : TEAL_LIGHT,
+              border: `1px solid ${TEAL}25`, borderRadius: 8,
+            }}>
+              {!step.ai_generated ? (
+                <div style={{ fontSize: 12, color: TEAL_MID, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <span style={{ fontSize: 18, lineHeight: 1 }}>✨</span>
+                  <span>AI will write this step using the <strong>Tone & Goal</strong> above. Hit <strong>Generate AI Steps</strong> when ready.</span>
+                </div>
+              ) : hasContent ? (
+                <>
+                  <div style={{ marginBottom: 10 }}>
+                    <label style={{ ...labelStyle, color: TEAL }}>
+                      Subject <span style={{ fontWeight: 400, color: '#9ca3af', textTransform: 'none', letterSpacing: 0 }}>— AI generated, editable</span>
+                    </label>
+                    <input value={step.subject_template} onChange={e => onChange('subject_template', e.target.value)}
+                      style={{ ...inputStyle, width: '100%', background: '#fff' }} />
+                  </div>
+                  <div>
+                    <label style={{ ...labelStyle, color: TEAL }}>
+                      Body <span style={{ fontWeight: 400, color: '#9ca3af', textTransform: 'none', letterSpacing: 0 }}>— AI generated, editable</span>
+                    </label>
+                    <textarea value={step.body_template} onChange={e => onChange('body_template', e.target.value)}
+                      rows={7} style={{ ...inputStyle, width: '100%', resize: 'vertical', lineHeight: 1.6, fontFamily: 'inherit', background: '#fff' }} />
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <label style={{ ...labelStyle, color: TEAL }}>
+                    Task Note <span style={{ fontWeight: 400, color: '#9ca3af', textTransform: 'none', letterSpacing: 0 }}>— AI generated, editable</span>
+                  </label>
+                  <input value={step.task_note} onChange={e => onChange('task_note', e.target.value)}
+                    style={{ ...inputStyle, width: '100%', background: '#fff' }} />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Manual mode */}
+          {!isAI && hasContent && (
             <>
               <div>
                 <label style={labelStyle}>Subject Template</label>
-                <input
-                  value={step.subject_template}
-                  onChange={e => onChange('subject_template', e.target.value)}
-                  placeholder="e.g. Quick question for you, {{first_name}}"
-                  style={{ ...inputStyle, width: '100%' }}
-                />
+                <input value={step.subject_template} onChange={e => onChange('subject_template', e.target.value)}
+                  placeholder="e.g. Quick question for {{first_name}}" style={{ ...inputStyle, width: '100%' }} />
               </div>
               <div>
                 <label style={labelStyle}>Body Template</label>
-                <textarea
-                  value={step.body_template}
-                  onChange={e => onChange('body_template', e.target.value)}
+                <textarea value={step.body_template} onChange={e => onChange('body_template', e.target.value)}
                   placeholder={`Hi {{first_name}},\n\nI noticed {{company}} recently...\n\nWould it make sense to connect?`}
-                  rows={6}
-                  style={{
-                    ...inputStyle, width: '100%', resize: 'vertical',
-                    lineHeight: 1.6, fontFamily: 'inherit',
-                  }}
-                />
+                  rows={7} style={{ ...inputStyle, width: '100%', resize: 'vertical', lineHeight: 1.6, fontFamily: 'inherit' }} />
               </div>
             </>
-          ) : (
+          )}
+          {!isAI && !hasContent && (
             <div>
               <label style={labelStyle}>Task Note</label>
-              <input
-                value={step.task_note}
-                onChange={e => onChange('task_note', e.target.value)}
-                placeholder="e.g. Call and introduce yourself. Reference the email sent on day 1."
-                style={{ ...inputStyle, width: '100%' }}
-              />
+              <input value={step.task_note} onChange={e => onChange('task_note', e.target.value)}
+                placeholder="e.g. Call and introduce yourself, reference the email sent on day 0"
+                style={{ ...inputStyle, width: '100%' }} />
             </div>
           )}
         </div>
@@ -529,22 +563,23 @@ function StepCard({ step, index, total, expanded, onToggle, onChange, onRemove, 
   );
 }
 
-// ── Shared micro-styles ───────────────────────────────────────────────────────
+// ── Micro-styles ──────────────────────────────────────────────────────────────
 const iconBtn = {
   padding: '2px 6px', borderRadius: 4, border: '1px solid #e5e7eb',
   background: '#fff', color: '#6b7280', fontSize: 11, cursor: 'pointer',
 };
-
+const ghostBtn = {
+  padding: '8px 16px', borderRadius: 8, border: '1px solid #e5e7eb',
+  background: '#fff', color: '#374151', fontSize: 13, cursor: 'pointer',
+};
 const labelStyle = {
   display: 'block', fontSize: 11, fontWeight: 600,
   color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3,
 };
-
 const inputStyle = {
-  padding: '7px 10px', borderRadius: 6,
-  border: '1px solid #d1d5db', fontSize: 13, boxSizing: 'border-box',
+  padding: '8px 11px', borderRadius: 7,
+  border: '1px solid #e5e7eb', fontSize: 13,
+  boxSizing: 'border-box', outline: 'none',
+  fontFamily: 'inherit', color: '#111', background: '#fff',
 };
-
-const selectStyle = {
-  ...inputStyle, width: '100%', background: '#fff',
-};
+const selectStyle = { ...inputStyle, width: '100%' };

@@ -62,7 +62,16 @@ export default function SettingsView({ initialTab }) {
   // Default to 'alerts' unless a specific tab is requested
   const [activeId,   setActiveId]   = useState(initialTab || 'alerts');
   // Track which parent groups are expanded { 'connections': true, 'ai': true }
-  const [expanded,   setExpanded]   = useState({ connections: true, ai: false });
+  // Auto-expand the group containing initialTab if it's a child item
+  function getInitialExpanded() {
+    const state = { connections: true, ai: false };
+    if (initialTab) {
+      const parent = CHILD_PARENT[initialTab];
+      if (parent) state[parent] = true;
+    }
+    return state;
+  }
+  const [expanded,   setExpanded]   = useState(getInitialExpanded);
   // Sidebar collapsed to icons (narrow/mobile)
   const [collapsed,  setCollapsed]  = useState(false);
 
@@ -96,21 +105,21 @@ export default function SettingsView({ initialTab }) {
     }
   }
 
-  // Determine the active label for the page header
+  // Determine active label + optional parent for breadcrumb
   function getActiveLabel() {
     for (const g of NAV_GROUPS) {
       for (const item of g.items) {
-        if (item.id === activeId) return { icon: item.icon, label: item.label };
+        if (item.id === activeId) return { icon: item.icon, label: item.label, parent: null };
         if (item.children) {
           const child = item.children.find(c => c.id === activeId);
-          if (child) return { icon: item.icon, label: child.label };
+          if (child) return { icon: item.icon, label: child.label, parent: item.label };
         }
       }
     }
-    return { icon: '⚙️', label: 'Settings' };
+    return { icon: '⚙️', label: 'Settings', parent: null };
   }
 
-  const { icon: activeIcon, label: activeLabel } = getActiveLabel();
+  const { icon: activeIcon, label: activeLabel, parent: activeParent } = getActiveLabel();
 
   return (
     <div className={`sv2-layout ${collapsed ? 'sv2-collapsed' : ''}`}>
@@ -174,7 +183,10 @@ export default function SettingsView({ initialTab }) {
       {/* ── Main content ── */}
       <main className="sv2-content">
         <div className="sv2-page-header">
-          <h1><span className="sv2-page-icon">{activeIcon}</span>{activeLabel}</h1>
+          {activeParent && (
+            <div className="sv2-breadcrumb">{activeParent} <span className="sv2-breadcrumb-sep">›</span> {activeLabel}</div>
+          )}
+          <h1><span className="sv2-page-icon">{activeIcon}</span>{activeParent ? activeLabel : activeLabel}</h1>
         </div>
 
         <div className="sv2-pane">

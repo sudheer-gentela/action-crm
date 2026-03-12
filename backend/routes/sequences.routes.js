@@ -122,6 +122,140 @@ router.post('/', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// AI PERSONALISE ENROLLMENT
+// POST /api/sequences/ai-personalise-enrollment
+// body: { sequenceId, prospectId }
+// Returns personalised step content for ONE prospect using their research.
+// Content is stored against the enrollment — master template is never modified.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/ai-personalise-enrollment', async (req, res) => {
+  const { sequenceId, prospectId } = req.body;
+  if (!sequenceId || !prospectId) {
+    return res.status(400).json({ error: { message: 'sequenceId and prospectId are required' } });
+  }
+
+  try {
+    // Load sequence + steps
+    const seqRes = await pool.query(
+      `SELECT * FROM sequences WHERE id=$1 AND org_id=$2`,
+      [sequenceId, req.orgId]
+    );
+    if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Sequence not found' } });
+
+    const stepsRes = await pool.query(
+      `SELECT * FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order`,
+      [sequenceId]
+    );
+    const steps = stepsRes.rows;
+
+    // Load prospect + account research
+    const prospectRes = await pool.query(
+      `SELECT p.*, a.name AS account_name, a.research_notes AS account_research,
+              a.domain AS account_domain, a.industry AS account_industry,
+              a.research_meta AS account_research_meta
+         FROM prospects p
+    LEFT JOIN accounts a ON a.id = p.account_id
+        WHERE p.id=$1 AND p.org_id=$2`,
+      [prospectId, req.orgId]
+    );
+    if (!prospectRes.rows.length) return res.status(404).json({ error: { message: 'Prospect not found' } });
+    const prospect = prospectRes.rows[0];
+
+    const hasResearch = !!(prospect.research_notes || prospect.account_research);
+
+    // Extract structured Intel data from research_meta if present
+    const researchMeta  = prospect.research_meta  || {};
+    const pitchAngle    = researchMeta.pitchAngle  || '';
+    const crispPitch    = researchMeta.crispPitch  || '';
+    const researchBullets = Array.isArray(researchMeta.researchBullets) ? researchMeta.researchBullets : [];
+
+    const systemPrompt = `You are an expert SDR writing personalised outreach for a specific prospect.
+Return ONLY valid JSON — no markdown fences, no prose.`;
+
+    const userPrompt = `Personalise each step in this outreach sequence for the specific prospect below.
+Use their research data to make the copy relevant and specific. Keep emails under 150 words.
+Use {{first_name}}, {{company}}, {{title}} tokens where appropriate for remaining variables.
+
+PROSPECT:
+Name: ${prospect.first_name} ${prospect.last_name}
+Title: ${prospect.title || 'unknown'}
+Company: ${prospect.account_name || prospect.company_name || 'unknown'}
+Email: ${prospect.email || ''}
+Industry: ${prospect.account_industry || 'unknown'}
+${hasResearch ? `
+Research notes: ${prospect.research_notes || 'none'}
+Account research: ${prospect.account_research || 'none'}
+${researchBullets.length > 0 ? `Key insights:\n${researchBullets.map(b => `• ${b}`).join('\n')}` : ''}
+${pitchAngle ? `Recommended pitch angle: ${pitchAngle}` : ''}
+${crispPitch ? `Suggested opening pitch: ${crispPitch}` : ''}
+` : 'No research data available — use general personalisation based on their role and company.'}
+
+SEQUENCE: "${seqRes.rows[0].name}"
+Tone & Goal: ${seqRes.rows[0].description || 'Professional outreach'}
+
+STEPS TO PERSONALISE (${steps.length} total):
+${steps.map((s, i) => `Step ${i + 1}: channel=${s.channel}, delay_days=${s.delay_days}
+  Template subject: ${s.subject_template || '(none)'}
+  Template body: ${s.body_template || '(none)'}
+  Task note: ${s.task_note || '(none)'}`).join('\n\n')}
+
+Return JSON:
+{
+  "steps": [
+    {
+      "step_order": 1,
+      "subject": "...",
+      "body": "...",
+      "task_note": ""
+    }
+  ]
+}`;
+
+    const aiRes = await anthropic.messages.create({
+      model:      'claude-sonnet-4-20250514',
+      max_tokens: 3000,
+      system:     systemPrompt,
+      messages:   [{ role: 'user', content: userPrompt }],
+    });
+
+    try {
+      await TokenTrackingService.log({
+        orgId:    req.orgId,
+        userId:   req.user.userId,
+        callType: 'prospecting_sequence_generate',
+        model:    'claude-sonnet-4-20250514',
+        usage:    aiRes.usage,
+      });
+    } catch (_) {}
+
+    const raw    = aiRes.content.find(b => b.type === 'text')?.text || '{}';
+    const clean  = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+
+    res.json({
+      prospectId,
+      hasResearch,
+      steps: (parsed.steps || []).map(s => ({
+        step_order: s.step_order,
+        subject:    s.subject    || '',
+        body:       s.body       || '',
+        task_note:  s.task_note  || '',
+      })),
+    });
+
+  } catch (err) {
+    console.error('ai-personalise-enrollment error:', err);
+    res.status(500).json({ error: { message: 'AI personalisation failed: ' + err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEQUENCE STATS
+// GET /api/sequences/:id/stats
+// Returns reply rate, step funnel, enrollment status breakdown
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ENROLL  (must be before /:id to avoid shadowing)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -551,6 +685,253 @@ Return JSON:
   } catch (err) {
     console.error('ai-generate error:', err);
     res.status(500).json({ error: { message: 'AI generation failed: ' + err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI BUILD SEQUENCE — generate full sequence structure from a plain-English goal
+// POST /api/sequences/ai-build
+// body: { goal, stepCount?, channels? }
+// Returns: { name, description, steps: [{channel, delay_days, subject_template, body_template}] }
+// Does NOT save — client reviews and calls POST / to save.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/ai-build', async (req, res) => {
+  const { goal, stepCount = 5, channels = ['email'] } = req.body;
+  if (!goal?.trim()) return res.status(400).json({ error: { message: 'goal is required' } });
+
+  try {
+    const systemPrompt = `You are an expert sales development rep and copywriter building outreach sequences.
+Return ONLY valid JSON — no markdown fences, no preamble, no prose outside the JSON.`;
+
+    const userPrompt = `Build a complete outreach sequence based on this goal:
+
+GOAL: ${goal}
+STEPS: ${stepCount}
+CHANNELS AVAILABLE: ${channels.join(', ')}
+
+Rules:
+- Use {{first_name}}, {{last_name}}, {{full_name}}, {{title}}, {{company}}, {{industry}} as personalisation tokens
+- Keep email bodies under 120 words — concise, human, not salesy
+- Vary the approach across steps: opener → value → social proof → breakup
+- Space steps realistically: day 0, then 2–4 day gaps between follow-ups
+- For call/task steps, write a brief task_note (what to say/do), leave subject_template and body_template empty
+- sequence name should be short and descriptive (under 50 chars)
+
+Return this exact JSON shape:
+{
+  "name": "...",
+  "description": "...",
+  "steps": [
+    {
+      "step_order": 1,
+      "channel": "email",
+      "delay_days": 0,
+      "subject_template": "...",
+      "body_template": "...",
+      "task_note": ""
+    }
+  ]
+}`;
+
+    const aiRes = await anthropic.messages.create({
+      model:      'claude-sonnet-4-20250514',
+      max_tokens: 3000,
+      system:     systemPrompt,
+      messages:   [{ role: 'user', content: userPrompt }],
+    });
+
+    try {
+      await TokenTrackingService.log({
+        orgId:    req.orgId,
+        userId:   req.user.userId,
+        callType: 'prospecting_sequence_generate',
+        model:    'claude-sonnet-4-20250514',
+        usage:    aiRes.usage,
+      });
+    } catch (_) {}
+
+    const raw   = aiRes.content.find(b => b.type === 'text')?.text || '{}';
+    const clean = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+
+    res.json({
+      name:        parsed.name        || '',
+      description: parsed.description || '',
+      steps:       (parsed.steps      || []).map((s, i) => ({ ...s, step_order: i + 1 })),
+    });
+  } catch (err) {
+    console.error('ai-build error:', err);
+    res.status(500).json({ error: { message: 'AI build failed: ' + err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI WRITE STEP — write a single step from a plain-English prompt
+// POST /api/sequences/ai-write-step
+// body: { prompt, channel, stepNumber, totalSteps, previousSteps? }
+// Returns: { subject_template, body_template, task_note }
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/ai-write-step', async (req, res) => {
+  const { prompt, channel = 'email', stepNumber = 1, totalSteps = 1, previousSteps = [] } = req.body;
+  if (!prompt?.trim()) return res.status(400).json({ error: { message: 'prompt is required' } });
+
+  const hasContent = ['email', 'linkedin'].includes(channel);
+
+  try {
+    const systemPrompt = `You are an expert SDR copywriter writing outreach message templates.
+Return ONLY valid JSON — no markdown fences, no prose.`;
+
+    const context = previousSteps.length > 0
+      ? `\nPREVIOUS STEPS IN THIS SEQUENCE:\n${previousSteps.map((s, i) =>
+          `Step ${i + 1} (${s.channel}): ${s.subject_template || s.task_note || '(no subject)'}`
+        ).join('\n')}\n`
+      : '';
+
+    const userPrompt = `Write step ${stepNumber} of ${totalSteps} in an outreach sequence.
+
+CHANNEL: ${channel}
+INSTRUCTION: ${prompt}
+${context}
+Rules:
+- Use {{first_name}}, {{company}}, {{title}}, {{industry}} as personalisation tokens
+- Keep it human and concise — under 100 words for email body
+- This is a TEMPLATE, not a personalised message
+${hasContent
+  ? '- Return subject_template and body_template; leave task_note as empty string'
+  : '- This is a call/task step — return a brief task_note describing what to do; leave subject_template and body_template as empty strings'
+}
+
+Return JSON:
+{
+  "subject_template": "...",
+  "body_template": "...",
+  "task_note": ""
+}`;
+
+    const aiRes = await anthropic.messages.create({
+      model:      'claude-sonnet-4-20250514',
+      max_tokens: 800,
+      system:     systemPrompt,
+      messages:   [{ role: 'user', content: userPrompt }],
+    });
+
+    try {
+      await TokenTrackingService.log({
+        orgId:    req.orgId,
+        userId:   req.user.userId,
+        callType: 'prospecting_sequence_generate',
+        model:    'claude-sonnet-4-20250514',
+        usage:    aiRes.usage,
+      });
+    } catch (_) {}
+
+    const raw   = aiRes.content.find(b => b.type === 'text')?.text || '{}';
+    const clean = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+
+    res.json({
+      subject_template: parsed.subject_template || '',
+      body_template:    parsed.body_template    || '',
+      task_note:        parsed.task_note        || '',
+    });
+  } catch (err) {
+    console.error('ai-write-step error:', err);
+    res.status(500).json({ error: { message: 'AI step write failed: ' + err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEQUENCE STATS
+// GET /api/sequences/:id/stats
+// Returns: enrollment status breakdown + per-step funnel (sent/replied counts)
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/:id/stats', async (req, res) => {
+  try {
+    // Verify sequence belongs to org
+    const seqRes = await pool.query(
+      `SELECT s.*, COUNT(ss.id) AS step_count
+         FROM sequences s
+    LEFT JOIN sequence_steps ss ON ss.sequence_id = s.id
+        WHERE s.id = $1 AND s.org_id = $2
+     GROUP BY s.id`,
+      [req.params.id, req.orgId]
+    );
+    if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+
+    // Enrollment status breakdown
+    const statusRes = await pool.query(
+      `SELECT status, COUNT(*) AS count
+         FROM sequence_enrollments
+        WHERE sequence_id = $1 AND org_id = $2
+     GROUP BY status`,
+      [req.params.id, req.orgId]
+    );
+    const statusMap = {};
+    statusRes.rows.forEach(r => { statusMap[r.status] = parseInt(r.count); });
+    const totalEnrolled = Object.values(statusMap).reduce((a, b) => a + b, 0);
+    const totalReplied  = statusMap['replied'] || 0;
+
+    // Per-step funnel: how many reached each step (sent) and replied at each step
+    const stepFunnelRes = await pool.query(
+      `SELECT
+         ssl.step_order,
+         COUNT(*) FILTER (WHERE ssl.status = 'sent')    AS sent,
+         COUNT(*) FILTER (WHERE ssl.status = 'skipped') AS skipped,
+         COUNT(*) FILTER (WHERE ssl.status = 'failed')  AS failed
+       FROM sequence_step_logs ssl
+       JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
+      WHERE se.sequence_id = $1 AND se.org_id = $2
+   GROUP BY ssl.step_order
+   ORDER BY ssl.step_order`,
+      [req.params.id, req.orgId]
+    );
+
+    // Reply step distribution — which step was active when prospect replied
+    const replyStepRes = await pool.query(
+      `SELECT current_step, COUNT(*) AS reply_count
+         FROM sequence_enrollments
+        WHERE sequence_id = $1 AND org_id = $2 AND status = 'replied'
+     GROUP BY current_step
+     ORDER BY current_step`,
+      [req.params.id, req.orgId]
+    );
+    const replyByStep = {};
+    replyStepRes.rows.forEach(r => { replyByStep[r.current_step] = parseInt(r.reply_count); });
+
+    // Average step at which replies occurred
+    let avgReplyStep = null;
+    if (totalReplied > 0) {
+      const weightedSum = replyStepRes.rows.reduce((sum, r) => sum + r.current_step * parseInt(r.reply_count), 0);
+      avgReplyStep = (weightedSum / totalReplied).toFixed(1);
+    }
+
+    // Merge funnel + reply data into step-level array
+    const stepFunnel = stepFunnelRes.rows.map(row => ({
+      step_order:  row.step_order,
+      sent:        parseInt(row.sent),
+      skipped:     parseInt(row.skipped),
+      failed:      parseInt(row.failed),
+      replied_here: replyByStep[row.step_order] || 0,
+    }));
+
+    res.json({
+      sequence:      seqRes.rows[0],
+      totalEnrolled,
+      totalReplied,
+      replyRate:     totalEnrolled > 0 ? ((totalReplied / totalEnrolled) * 100).toFixed(1) : '0.0',
+      avgReplyStep,
+      statusBreakdown: {
+        active:    statusMap['active']    || 0,
+        paused:    statusMap['paused']    || 0,
+        completed: statusMap['completed'] || 0,
+        stopped:   statusMap['stopped']   || 0,
+        replied:   statusMap['replied']   || 0,
+      },
+      stepFunnel,
+    });
+  } catch (err) {
+    console.error('sequence stats error:', err);
+    res.status(500).json({ error: { message: 'Failed to load stats' } });
   }
 });
 
