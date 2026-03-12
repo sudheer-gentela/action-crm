@@ -744,7 +744,7 @@ router.post('/sync', async (req, res) => {
                 ]
               ).catch(() => {});
 
-              // Auto-advance contacted → engaged when a reply is received
+              // Auto-advance contacted → engaged + update Responses/WK counter
               try {
                 const prospectRow = await db.query(
                   `SELECT stage FROM prospects WHERE id = $1 AND org_id = $2`,
@@ -769,9 +769,9 @@ router.post('/sync', async (req, res) => {
                       account.user_id,
                       `Stage advanced: contacted → engaged (reply received)`,
                       JSON.stringify({
-                        fromStage:   'contacted',
-                        toStage:     'engaged',
-                        trigger:     'reply_received',
+                        fromStage:    'contacted',
+                        toStage:      'engaged',
+                        trigger:      'reply_received',
                         emailSubject: email.subject,
                         fromAddress:  email.fromAddress,
                       }),
@@ -780,8 +780,29 @@ router.post('/sync', async (req, res) => {
 
                   console.log(`    🎯 Stage advanced: contacted → engaged for prospectId=${prospectId}`);
                 }
+
+                // Update Responses/WK — mark the most recent completed outreach
+                // action for this prospect as 'replied' so the weekly counter increments
+                await db.query(
+                  `UPDATE prospecting_actions
+                   SET outcome     = 'replied',
+                       updated_at  = CURRENT_TIMESTAMP
+                   WHERE id = (
+                     SELECT id FROM prospecting_actions
+                     WHERE prospect_id = $1
+                       AND org_id      = $2
+                       AND status      = 'completed'
+                       AND channel     = 'email'
+                       AND outcome     != 'replied'
+                     ORDER BY completed_at DESC
+                     LIMIT 1
+                   )`,
+                  [prospectId, orgId]
+                );
+                console.log(`    📊 Responses/WK counter updated for prospectId=${prospectId}`);
+
               } catch (stageErr) {
-                console.warn(`    ⚠️  Stage advance failed for prospectId=${prospectId}:`, stageErr.message);
+                console.warn(`    ⚠️  Stage/counter update failed for prospectId=${prospectId}:`, stageErr.message);
               }
             }
           } catch (insertErr) {

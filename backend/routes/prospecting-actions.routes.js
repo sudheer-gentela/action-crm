@@ -815,7 +815,7 @@ router.post('/outreach-send', async (req, res) => {
 
     // ── 8. Send the email ─────────────────────────────────────────────────────
     let sendError  = null;
-    let externalId = null;  // Gmail/Outlook message ID — saved for reply matching
+    let externalId = null;
     try {
       if (sender.provider === 'gmail') {
         const sendResult = await sendGmailEmail(req.user.userId, {
@@ -866,7 +866,7 @@ router.post('/outreach-send', async (req, res) => {
         prospectId,
         sender.id,
         sender.provider,
-        externalId,  // Gmail/Outlook message ID — enables reply thread matching
+        externalId,
       ]
     );
     const newEmail = emailResult.rows[0];
@@ -942,6 +942,27 @@ router.post('/outreach-send', async (req, res) => {
         }),
       ]
     );
+
+    // ── 14. Create completed action for Outreach/WK counter ───────────────────
+    // Only when no actionId was provided — ensures every send counts regardless
+    // of whether it was tied to a playbook action
+    if (!actionId) {
+      await client.query(
+        `INSERT INTO prospecting_actions
+           (org_id, user_id, prospect_id, title, action_type, channel,
+            status, outcome, completed_at, completed_by, message_metadata)
+         VALUES ($1, $2, $3, $4, 'outreach', 'email', 'completed', 'email_sent',
+                 CURRENT_TIMESTAMP, $5, $6)`,
+        [
+          req.orgId,
+          req.user.userId,
+          prospectId,
+          `Email: ${subject}`,
+          req.user.userId,
+          JSON.stringify({ emailId: newEmail.id, sentFrom: sender.email, autoCreated: true }),
+        ]
+      );
+    }
 
     await client.query('COMMIT');
 
