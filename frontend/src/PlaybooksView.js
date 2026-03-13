@@ -111,35 +111,37 @@ export default function PlaybooksView({ initialTypeFilter }) {
           const cleaned  = data.playbook_types.filter(t => t.key !== 'handovers');
           const apiKeys  = new Set(cleaned.map(t => t.key));
           const missing  = SYSTEM_TYPES.filter(t => !apiKeys.has(t.key));
+          const merged   = [...cleaned, ...missing];
           console.log('[PB types] from API:', cleaned.map(t=>t.key), 'merged missing:', missing.map(t=>t.key));
-          setPlaybookTypes([...cleaned, ...missing]);
+          // Only update state if the type keys actually changed — prevents
+          // the stages effect from re-running on every mount unnecessarily.
+          setPlaybookTypes(prev => {
+            const prevKeys = prev.map(t => t.key).sort().join(',');
+            const nextKeys = merged.map(t => t.key).sort().join(',');
+            return prevKeys === nextKeys ? prev : merged;
+          });
         }
       })
       .catch(() => { /* keep defaults — sales + prospecting */ });
   }, [API_BASE, token]);
 
-  // ── Fetch all stage lists — driven by playbookTypes so new modules auto-appear
+  // ── Fetch stage list for the ACTIVE tab only — lazy, cached in stagesMap ──
+  // Only fetches when the user switches to a tab whose stages haven't been
+  // loaded yet. This avoids firing N requests for all pipeline types on mount.
   useEffect(() => {
-    if (!playbookTypes.length) return;
+    if (!typeFilter) return;
+    if (stagesMap[typeFilter]) return; // already cached — skip
     setStagesLoading(true);
     const h = { Authorization: `Bearer ${token}` };
-
     const active = d => (d.stages || [])
       .filter(s => s.is_active !== false)
       .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
-
-    // All types use /pipeline-stages/:key — including handover_s2i, no exclusions
-    Promise.all(
-      playbookTypes.map(t => fetch(`${API_BASE}/pipeline-stages/${t.key}`, { headers: h }).then(r => r.ok ? r.json() : { stages: [] }))
-    )
-      .then(results => {
-        const map = {};
-        playbookTypes.forEach((t, i) => { map[t.key] = active(results[i]); });
-        setStagesMap(map);
-      })
-      .catch(() => { /* non-fatal — degrade gracefully */ })
+    fetch(`${API_BASE}/pipeline-stages/${typeFilter}`, { headers: h })
+      .then(r => r.ok ? r.json() : { stages: [] })
+      .then(data => setStagesMap(prev => ({ ...prev, [typeFilter]: active(data) })))
+      .catch(() => setStagesMap(prev => ({ ...prev, [typeFilter]: [] })))
       .finally(() => setStagesLoading(false));
-  }, [playbookTypes, API_BASE, token]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [typeFilter, API_BASE, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Active stage list for current tab ────────────────────
   const activeLiveStages = stagesMap[typeFilter] || [];
