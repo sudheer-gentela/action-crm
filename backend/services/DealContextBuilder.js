@@ -19,7 +19,7 @@
  *   - _getFiles(dealId, userId, orgId) — queries storage_files with org_id guard
  *   - _getPlaybook(userId, orgId)       — delegates to PlaybookService.getPlaybook(userId, orgId)
  *   - _getHealthConfig(userId, orgId)   — queries deal_health_config with (user_id, org_id)
- *   - _getPlaybookStageActions uses getStageActions(userId, orgId, stageName)
+ *   - _getPlaybookStageActions uses getPlaysForStage(orgId, playbookId, stageKey)
  *
  * All _deriveSignals logic and the other DB fetchers (_getDeal, _getAccount,
  * _getContacts, _getMeetings, _getEmails) are unchanged — they operate on
@@ -69,9 +69,9 @@ class DealContextBuilder {
           : deal.health_score_breakdown)
       : null;
 
-    // Get playbook stage actions for the deal's current stage
-    const playbookStageActions = deal.stage
-      ? await PlaybookService.getStageActions(userId, orgId, deal.stage).catch(() => [])
+    // Get playbook plays for the deal's current stage (read-only, for AI context)
+    const playbookStageActions = (deal.stage && playbook?.id)
+      ? await PlaybookService.getPlaysForStage(orgId, playbook.id, deal.stage).catch(() => [])
       : [];
 
     // Pre-compute derived signals useful to rules engine

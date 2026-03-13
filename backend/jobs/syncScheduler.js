@@ -3,12 +3,19 @@
  *
  * DROP-IN LOCATION: backend/jobs/syncScheduler.js
  *
- * Unified email sync - works with both Outlook and Gmail.
- * Key changes from original:
- *   - Uses UnifiedEmailProvider instead of outlookService directly
- *   - triggerSync() accepts a provider parameter ('outlook' | 'gmail')
- *   - storeEmailToDatabase() stores provider column
- *   - syncAllUsers() iterates both Outlook and Gmail connected users
+ * Key changes from previous version:
+ *   - findEmailAssociations now scans ALL addresses (from, all tos, all ccs)
+ *     rather than just the single primary lookup address — catches CC'd team
+ *     members and multi-recipient threads
+ *   - Deal matching now queries deal_contacts directly (contact → deal_contacts
+ *     → deal_id) rather than contact → account → deal. This is more precise
+ *     and avoids false matches when one account has multiple concurrent deals.
+ *   - Falls back to account-level match only when no direct deal_contacts row
+ *     exists (preserves backward compatibility)
+ *   - Terminal-stage filter uses pipeline_stages.is_terminal instead of the
+ *     hardcoded 'closed_won'/'closed_lost' strings
+ *   - storeEmailToDatabase stamps tag_source = 'auto' when a deal is matched
+ *     automatically, so DealEmailHistory can distinguish auto-linked vs manual
  */
 
 const cron      = require('node-cron');
@@ -21,7 +28,7 @@ const ContractActionsGenerator     = require('../services/ContractActionsGenerat
 
 /**
  * Store email to database with deduplication.
- * Now accepts normalized email shape from UnifiedEmailProvider.
+ * Accepts normalized email shape from UnifiedEmailProvider.
  */
 async function storeEmailToDatabase(client, userId, orgId, email, userEmail, provider) {
   // Dedup scoped to user + org
@@ -49,7 +56,7 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail, pro
 
   // Find contact and deal associations
   const associations = await findEmailAssociations(
-    client, userId, orgId, fromAddress, toAddresses, direction
+    client, userId, orgId, fromAddress, toAddresses, ccAddresses, direction
   );
 
   // Skip if dealRelatedOnly is enabled and no deal found
@@ -60,7 +67,13 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail, pro
     return { skipped: true, reason: 'not_deal_related' };
   }
 
-  // Store email -- now includes provider column
+  // tag_source: 'auto' when the deal was resolved automatically during sync,
+  // null otherwise (manual tagging sets 'manual', team suggestions set 'team')
+  const tagSource  = associations.dealId ? 'auto' : null;
+  const taggedAt   = associations.dealId ? new Date() : null;
+  const taggedBy   = associations.dealId ? userId : null;
+
+  // Store email
   const insertResult = await client.query(
     `INSERT INTO emails (
       org_id, user_id, deal_id, contact_id, direction,
@@ -68,8 +81,9 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail, pro
       to_address, from_address, cc_addresses,
       sent_at, external_id, external_data,
       conversation_id, provider,
+      tag_source, tagged_at, tagged_by,
       created_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
     RETURNING id`,
     [
       orgId,
@@ -93,13 +107,17 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail, pro
       }),
       email.conversationId || null,
       provider,
+      tagSource,
+      taggedAt,
+      taggedBy,
     ]
   );
 
   const newEmailId = insertResult.rows[0].id;
 
   if (config.system.debug) {
-    console.log('Stored ' + provider + ' email ' + newEmailId + ': ' + email.subject);
+    console.log('Stored ' + provider + ' email ' + newEmailId + ': ' + email.subject
+      + (associations.dealId ? ' [deal ' + associations.dealId + ']' : ''));
   }
 
   // Add contact activity if associated
@@ -115,45 +133,152 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail, pro
 
 /**
  * Find contact and deal associations for an email.
- * Unchanged from original except uses normalized address format.
+ *
+ * Strategy (in priority order):
+ *
+ * 1. Collect all unique non-self addresses across from, to, and cc fields.
+ *    "Self" means the syncing user's own email — we skip it so we don't
+ *    accidentally resolve our own address as a contact.
+ *
+ * 2. For each candidate address, look up the contact in this org.
+ *    Take the first match as contactId.
+ *
+ * 3. For each matched contact, check deal_contacts for a direct link to an
+ *    active deal the syncing user owns or is a team member of.
+ *    This is more precise than account-level matching when one account has
+ *    multiple concurrent deals.
+ *
+ * 4. If no deal_contacts row exists for any matched contact, fall back to the
+ *    original account-level query: contact.account_id → deals WHERE owner or
+ *    team member.
+ *
+ * 5. Terminal deals are excluded using pipeline_stages.is_terminal = true,
+ *    with a hardcoded fallback for orgs that haven't migrated yet.
+ *
+ * @param {object} client       - pg transaction client
+ * @param {number} userId       - syncing user's id
+ * @param {number} orgId
+ * @param {string} fromAddress
+ * @param {string[]} toAddresses
+ * @param {string[]} ccAddresses
+ * @param {string} direction    - 'sent' | 'received'
+ * @returns {{ contactId: number|null, dealId: number|null }}
  */
-async function findEmailAssociations(client, userId, orgId, fromAddress, toAddresses, direction) {
+async function findEmailAssociations(client, userId, orgId, fromAddress, toAddresses, ccAddresses, direction) {
   let contactId = null;
   let dealId    = null;
 
-  const lookupEmail = direction === 'received' ? fromAddress : toAddresses[0];
-  if (!lookupEmail) return { contactId, dealId };
+  // Build a deduplicated list of all external addresses on this email.
+  // For sent emails we skip our own fromAddress (it's us).
+  // For received emails we skip our own address wherever it appears in to/cc.
+  const allAddresses = [
+    ...(direction === 'received' ? [fromAddress] : []),
+    ...toAddresses,
+    ...ccAddresses,
+  ]
+    .filter(Boolean)
+    .map(a => a.toLowerCase().trim())
+    .filter((a, idx, arr) => arr.indexOf(a) === idx); // dedupe
 
+  if (allAddresses.length === 0) return { contactId, dealId };
+
+  // ── Step 1: resolve contacts ──────────────────────────────────────────────
+  // Look up all addresses in one query and take the first match.
   const contactResult = await client.query(
-    'SELECT id, account_id FROM contacts WHERE org_id = $1 AND LOWER(email) = LOWER($2) AND deleted_at IS NULL LIMIT 1',
-    [orgId, lookupEmail]
+    `SELECT id, account_id, email
+     FROM contacts
+     WHERE org_id    = $1
+       AND LOWER(email) = ANY($2::text[])
+       AND deleted_at IS NULL
+     ORDER BY id ASC`,
+    [orgId, allAddresses]
   );
 
-  if (contactResult.rows.length > 0) {
-    contactId = contactResult.rows[0].id;
-    const accountId = contactResult.rows[0].account_id;
+  if (contactResult.rows.length === 0) return { contactId, dealId };
 
-    if (accountId) {
-      const dealResult = await client.query(
-        `SELECT id FROM deals
-         WHERE org_id = $2
-           AND account_id = $3
-           AND stage NOT IN ('closed_won', 'closed_lost')
-           AND deleted_at IS NULL
-           AND (
-             user_id = $1
-             OR id IN (SELECT deal_id FROM deal_team_members WHERE user_id = $1 AND org_id = $2)
+  // Use the first matched contact as the primary contact for this email.
+  // If multiple contacts match (e.g. a thread with several deal contacts),
+  // subsequent contacts still contribute to deal matching below.
+  contactId = contactResult.rows[0].id;
+  const contactIds  = contactResult.rows.map(r => r.id);
+  const accountIds  = [...new Set(contactResult.rows.map(r => r.account_id).filter(Boolean))];
+
+  // ── Step 2: deal_contacts match (preferred) ───────────────────────────────
+  // Check if any matched contact is directly linked to a deal the syncing
+  // user owns or is a team member of, and the deal is still active.
+  if (contactIds.length > 0) {
+    const dealContactsResult = await client.query(
+      `SELECT d.id AS deal_id
+       FROM deal_contacts dc
+       JOIN deals d ON d.id = dc.deal_id
+       LEFT JOIN pipeline_stages ps
+         ON ps.org_id = d.org_id AND ps.pipeline = 'sales' AND ps.key = d.stage
+       WHERE dc.contact_id = ANY($1::int[])
+         AND d.org_id  = $2
+         AND d.deleted_at IS NULL
+         AND (
+           -- Exclude terminal stages: use pipeline_stages if available,
+           -- fall back to hardcoded keys for pre-migration orgs
+           CASE
+             WHEN ps.id IS NOT NULL THEN ps.is_terminal = false
+             ELSE d.stage NOT IN ('closed_won', 'closed_lost')
+           END
+         )
+         AND (
+           d.owner_id = $3
+           OR d.id IN (
+             SELECT deal_id FROM deal_team_members
+             WHERE user_id = $3 AND org_id = $2
            )
-         ORDER BY
-           CASE WHEN user_id = $1 THEN 0 ELSE 1 END,
-           created_at DESC
-         LIMIT 1`,
-        [userId, orgId, accountId]
-      );
+         )
+       ORDER BY
+         CASE WHEN d.owner_id = $3 THEN 0 ELSE 1 END,
+         d.created_at DESC
+       LIMIT 1`,
+      [contactIds, orgId, userId]
+    );
 
-      if (dealResult.rows.length > 0) {
-        dealId = dealResult.rows[0].id;
-      }
+    if (dealContactsResult.rows.length > 0) {
+      dealId = dealContactsResult.rows[0].deal_id;
+      return { contactId, dealId };
+    }
+  }
+
+  // ── Step 3: account-level fallback ───────────────────────────────────────
+  // No direct deal_contacts link found. Fall back to: contact.account_id →
+  // deals on that account. This preserves behaviour for deals where contacts
+  // haven't been explicitly linked yet.
+  if (accountIds.length > 0) {
+    const dealResult = await client.query(
+      `SELECT d.id AS deal_id
+       FROM deals d
+       LEFT JOIN pipeline_stages ps
+         ON ps.org_id = d.org_id AND ps.pipeline = 'sales' AND ps.key = d.stage
+       WHERE d.org_id     = $1
+         AND d.account_id = ANY($2::int[])
+         AND d.deleted_at IS NULL
+         AND (
+           CASE
+             WHEN ps.id IS NOT NULL THEN ps.is_terminal = false
+             ELSE d.stage NOT IN ('closed_won', 'closed_lost')
+           END
+         )
+         AND (
+           d.owner_id = $3
+           OR d.id IN (
+             SELECT deal_id FROM deal_team_members
+             WHERE user_id = $3 AND org_id = $1
+           )
+         )
+       ORDER BY
+         CASE WHEN d.owner_id = $3 THEN 0 ELSE 1 END,
+         d.created_at DESC
+       LIMIT 1`,
+      [orgId, accountIds, userId]
+    );
+
+    if (dealResult.rows.length > 0) {
+      dealId = dealResult.rows[0].deal_id;
     }
   }
 
@@ -311,7 +436,7 @@ async function getSyncStatus(userId, orgId) {
 
 /**
  * Sync all connected users across all orgs.
- * Now iterates BOTH Outlook and Gmail connected users.
+ * Iterates BOTH Outlook and Gmail connected users.
  */
 async function syncAllUsers() {
   try {

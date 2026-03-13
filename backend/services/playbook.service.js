@@ -4,6 +4,7 @@
 // Responsibilities:
 //   resolvePlaybook()    — find the right playbook for an entity (explicit or type default)
 //   getStagesForPlaybook() — fetch stages from pipeline_stages table
+//   getPlaysForStage()   — fetch active plays for a specific playbook stage (read-only)
 //   firePlaybookPlays()  — evaluate plays and insert into the module's play instances table
 //
 // Each module calls this service instead of implementing its own play-firing logic.
@@ -64,6 +65,30 @@ async function getStagesForPlaybook(orgId, playbookId, playbookType) {
      WHERE org_id = $1 AND pipeline = $2 AND is_active = true AND is_terminal = false
      ORDER BY sort_order`,
     [orgId, pipeline]
+  );
+  return result.rows;
+}
+
+// ── getPlaysForStage ─────────────────────────────────────────────────────────
+// Read-only fetch of active plays for a specific playbook + stage.
+// Used by DealContextBuilder to supply stage play context to the STRAP AI prompt.
+// Does NOT insert or fire anything.
+//
+// params:
+//   orgId      {number}
+//   playbookId {number|null}  — if null, returns []
+//   stageKey   {string}       — the stage key to fetch plays for
+//
+// returns: Array<{ id, title, execution_type, due_offset_days, is_gate }>
+async function getPlaysForStage(orgId, playbookId, stageKey) {
+  if (!playbookId) return [];
+
+  const result = await db.query(
+    `SELECT id, title, execution_type, due_offset_days, is_gate
+     FROM playbook_plays
+     WHERE playbook_id = $1 AND stage_key = $2 AND is_active = true
+     ORDER BY id`,
+    [playbookId, stageKey]
   );
   return result.rows;
 }
@@ -272,6 +297,7 @@ async function fireForEntity({ orgId, playbookType, playbookId, stageKey, entity
 module.exports = {
   resolvePlaybook,
   getStagesForPlaybook,
+  getPlaysForStage,
   firePlaybookPlays,
   fireForEntity,
   evaluateConditions,

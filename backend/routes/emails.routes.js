@@ -1,435 +1,206 @@
+/**
+ * emails.routes.js
+ *
+ * DROP-IN LOCATION: backend/routes/emails.routes.js
+ *
+ * Mount in server.js:
+ *   const emailsRoutes = require('./routes/emails.routes');
+ *   app.use('/api/emails', emailsRoutes);
+ *
+ * Endpoints:
+ *   GET  /deal/:dealId                   — email history for a deal (DealEmailHistory)
+ *   GET  /untagged                       — emails with no deal_id for the manual tagging modal
+ *   PATCH /:id/tag                       — manually tag an email to a deal
+ *   GET  /deal/:dealId/snoozed-contacts  — contacts snoozed from email suggestions on this deal
+ *
+ * Access pattern (consistent with deal-team.routes and deal-contacts.routes):
+ *   READ  (GET)  — org check only; any org member can read deal email history
+ *   WRITE (PATCH /:id/tag) — email must belong to calling user (user_id check);
+ *                            deal must exist in org
+ *
+ * Contact snooze/unsnooze endpoints are in contacts.routes.js (already present).
+ * Column names used here match what contacts.routes.js writes:
+ *   email_snoozed, email_snooze_reason
+ */
+
 const express = require('express');
 const router  = express.Router();
 const db      = require('../config/database');
-const authenticateToken        = require('../middleware/auth.middleware');
-const { orgContext }           = require('../middleware/orgContext.middleware');
-const ActionsGenerator         = require('../services/actionsGenerator');
-const ActionCompletionDetector = require('../services/actionCompletionDetector.service');
-
-const { fetchEmails, fetchEmailById, sendEmail } = require('../services/outlookService');
-const AIProcessor  = require('../services/aiProcessor');
-const { emailQueue } = require('../jobs/emailProcessor');
+const authenticateToken = require('../middleware/auth.middleware');
+const { orgContext }    = require('../middleware/orgContext.middleware');
 
 router.use(authenticateToken);
 router.use(orgContext);
 
-// ── GET / ─────────────────────────────────────────────────────
-router.get('/', async (req, res) => {
-  try {
-    const { dealId, contactId } = req.query;
-    let query    = 'SELECT * FROM emails WHERE org_id = $1 AND user_id = $2';
-    const params = [req.orgId, req.user.userId];
+// ── Helper: verify deal exists in this org ────────────────────────────────────
+// Mirrors resolveDeal in deal-team.routes and deal-contacts.routes —
+// org-scoped only, no per-user ownership filter.
+async function resolveDeal(req, res, dealId) {
+  const result = await db.query(
+    `SELECT d.id, d.owner_id, d.org_id, d.account_id
+     FROM deals d
+     WHERE d.id = $1 AND d.org_id = $2`,
+    [dealId, req.orgId]
+  );
 
-    if (dealId) {
-      query += ` AND deal_id = $${params.length + 1}`;
-      params.push(dealId);
-    } else if (contactId) {
-      query += ` AND contact_id = $${params.length + 1}`;
-      params.push(contactId);
-    }
-
-    query += ' ORDER BY sent_at DESC LIMIT 50';
-    const result = await db.query(query, params);
-    res.json({ emails: result.rows });
-  } catch (error) {
-    res.status(500).json({ error: { message: 'Failed to fetch emails' } });
+  if (result.rows.length === 0) {
+    res.status(404).json({ error: { message: 'Deal not found' } });
+    return null;
   }
-});
 
-// ── POST / — compose and send email ──────────────────────────
-router.post('/', async (req, res) => {
-  try {
-    const { dealId, contactId, subject, body, toAddress, actionId, replyToId } = req.body;
-    const userId = req.user.userId;
-    const orgId  = req.orgId;
+  return result.rows[0];
+}
 
-    // ── 1. Send via Outlook if connected ─────────────────────
-    let outlookSent  = false;
-    let outlookError = null;
-
-    try {
-      await sendEmail(userId, {
-        to:        toAddress,
-        subject,
-        body,
-        isHtml:    false,
-        replyToId: replyToId || null,
-      });
-      outlookSent = true;
-    } catch (err) {
-      outlookError = err.message;
-      console.warn('⚠️  Outlook send failed, saving to DB only:', err.message);
-    }
-
-    // ── 2. Save to DB with org_id ─────────────────────────────
-    const result = await db.query(
-      `INSERT INTO emails
-         (org_id, user_id, deal_id, contact_id, direction, subject, body,
-          to_address, from_address, sent_at)
-       VALUES ($1, $2, $3, $4, 'sent', $5, $6, $7, $8, CURRENT_TIMESTAMP)
-       RETURNING *`,
-      [orgId, userId, dealId || null, contactId || null,
-       subject, body, toAddress, req.user.email]
-    );
-
-    const newEmail = result.rows[0];
-
-    // ── 3. Contact activity log ───────────────────────────────
-    if (contactId) {
-      db.query(
-        `INSERT INTO contact_activities (contact_id, user_id, activity_type, description)
-         VALUES ($1, $2, 'email_sent', $3)`,
-        [contactId, userId, subject]
-      ).catch(err => console.error('Contact activity log error:', err));
-    }
-
-    // ── 4. Advance action to in_progress ─────────────────────
-    if (actionId) {
-      db.query(
-        `UPDATE actions
-         SET status = CASE WHEN status = 'yet_to_start' THEN 'in_progress' ELSE status END,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND org_id = $2 AND user_id = $3`,
-        [actionId, orgId, userId]
-      ).catch(err => console.error('Action status update error:', err));
-    }
-
-    // ── 5. Completion detection (non-blocking) ────────────────
-    if (actionId) {
-      ActionCompletionDetector
-        .detectFromEmailForAction(newEmail.id, userId, parseInt(actionId), orgId)
-        .catch(err => console.error('Targeted completion detection error:', err));
-    } else {
-      ActionCompletionDetector
-        .detectFromEmail(newEmail.id, userId, orgId)
-        .catch(err => console.error('Broad completion detection error:', err));
-    }
-
-    // ── 6. Regenerate actions (non-blocking) ──────────────────
-    ActionsGenerator
-      .generateForEmail(newEmail.id)
-      .catch(err => console.error('Action generation error:', err));
-
-    res.status(201).json({ email: newEmail, outlookSent, outlookError });
-
-  } catch (error) {
-    console.error('Send email error:', error);
-    res.status(500).json({ error: { message: 'Failed to send email' } });
-  }
-});
-
-// ── GET /outlook — fetch from Outlook inbox ───────────────────
-router.get('/outlook', async (req, res) => {
-  try {
-    const { top = 50, skip = 0, since } = req.query;
-    const result = await fetchEmails(req.user.userId, {
-      top:  parseInt(top),
-      skip: parseInt(skip),
-      since
-    });
-    res.json({ success: true, data: result.emails, hasMore: result.hasMore, count: result.emails.length });
-  } catch (error) {
-    if (error.message.includes('No tokens found')) {
-      return res.status(403).json({ success: false, error: 'Outlook not connected', code: 'NOT_CONNECTED' });
-    }
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ── POST /analyze ─────────────────────────────────────────────
-router.post('/analyze', async (req, res) => {
-  try {
-    const { emailId } = req.body;
-    if (!emailId) return res.status(400).json({ success: false, error: 'emailId is required' });
-
-    const email    = await fetchEmailById(req.user.userId, emailId);
-    const analysis = await AIProcessor.analyzeEmailSimple(email);
-    res.json({ success: true, data: { email, analysis } });
-  } catch (error) {
-    if (error.message.includes('No tokens found')) {
-      return res.status(403).json({ success: false, error: 'Outlook not connected', code: 'NOT_CONNECTED' });
-    }
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ── POST /process ─────────────────────────────────────────────
-router.post('/process', async (req, res) => {
-  try {
-    const { emailId } = req.body;
-    if (!emailId) return res.status(400).json({ success: false, error: 'emailId is required' });
-
-    const job = await emailQueue.add({ userId: req.user.userId, emailId });
-    res.json({ success: true, message: 'Email queued for processing', jobId: job.id });
-  } catch (error) {
-    if (error.message.includes('No tokens found')) {
-      return res.status(403).json({ success: false, error: 'Outlook not connected', code: 'NOT_CONNECTED' });
-    }
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-
-// ── GET /gmail — fetch from Gmail inbox ─────────────────────
-router.get('/gmail', async (req, res) => {
-  try {
-    const { top = 50, skip = 0, dealId } = req.query;
-    const UnifiedEmailProvider = require('../services/UnifiedEmailProvider');
-
-    const result = await UnifiedEmailProvider.fetchEmails(
-      req.user.userId, 'gmail', { top: parseInt(top), skip: parseInt(skip) }
-    );
-
-    let emails = result.emails;
-
-    if (dealId) {
-      const dbResult = await db.query(
-        "SELECT external_id FROM emails WHERE deal_id = $1 AND user_id = $2 AND org_id = $3 AND provider = 'gmail'",
-        [dealId, req.user.userId, req.orgId]
-      );
-      const dealEmailIds = new Set(dbResult.rows.map(r => r.external_id));
-      emails = emails.filter(e => dealEmailIds.has(e.id));
-    }
-
-    res.json({ success: true, data: emails });
-  } catch (error) {
-    console.error('Error fetching Gmail emails:', error);
-    if (error.message.includes('No tokens found')) {
-      return res.status(403).json({ success: false, error: 'Gmail not connected' });
-    }
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ── GET /unified — fetch from ALL connected providers ────────
-router.get('/unified', async (req, res) => {
-  try {
-    const { top = 50, dealId } = req.query;
-    const UnifiedEmailProvider = require('../services/UnifiedEmailProvider');
-    const providers = await UnifiedEmailProvider.getConnectedProviders(req.user.userId);
-
-    const allEmails = [];
-
-    const providerErrors = [];
-    for (const provider of providers) {
-      try {
-        const result = await UnifiedEmailProvider.fetchEmails(
-          req.user.userId, provider, { top: parseInt(top) }
-        );
-        allEmails.push(...result.emails);
-      } catch (err) {
-        console.warn('Failed to fetch ' + provider + ' emails:', err.message);
-        providerErrors.push({ provider, error: err.message });
-      }
-    }
-
-    // Sort by date descending
-    allEmails.sort((a, b) => new Date(b.receivedDateTime) - new Date(a.receivedDateTime));
-
-    // Optionally filter by deal
-    let filtered = allEmails;
-    if (dealId) {
-      const dbResult = await db.query(
-        'SELECT external_id, provider FROM emails WHERE deal_id = $1 AND user_id = $2 AND org_id = $3',
-        [dealId, req.user.userId, req.orgId]
-      );
-      const dealEmailIds = new Set(dbResult.rows.map(r => r.external_id));
-      filtered = allEmails.filter(e => dealEmailIds.has(e.id));
-    }
-
-    res.json({
-      success:        true,
-      data:           filtered.slice(0, parseInt(top)),
-      providers:      providers,
-      providerErrors: providerErrors.length ? providerErrors : undefined,
-    });
-  } catch (error) {
-    console.error('Error fetching unified emails:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ── GET /deal/:dealId — emails for a deal including team members' emails ────────
-// Fetches from DB only (not Outlook). Includes emails from all deal team members.
-// Returns threads grouped by conversation_id, ordered newest first.
+// ── GET /deal/:dealId ─────────────────────────────────────────────────────────
+// Returns all emails tagged to this deal, enriched with contact and sender info.
+// DealEmailHistory.js groups these into threads client-side via groupIntoThreads().
+//
+// Response shape expected by DealEmailHistory:
+//   { emails: [ { id, direction, subject, body, bodyPreview, fromAddress,
+//                 toAddress, ccAddresses, sentAt, conversationId, tagSource,
+//                 provider,
+//                 contact: { id, name, accountName } | null,
+//                 sender:  { name } | null } ] }
 router.get('/deal/:dealId', async (req, res) => {
   try {
-    const { dealId } = req.params;
+    const deal = await resolveDeal(req, res, req.params.dealId);
+    if (!deal) return;
 
-    // Verify deal belongs to this org
-    const dealCheck = await db.query(
-      `SELECT id FROM deals WHERE id = $1 AND org_id = $2`,
-      [dealId, req.orgId]
-    );
-    if (dealCheck.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'Deal not found' } });
-    }
-
-    // Fetch emails for this deal — includes the deal owner's AND all team members' emails
     const result = await db.query(
       `SELECT
          e.id,
          e.direction,
          e.subject,
          e.body,
+         LEFT(regexp_replace(COALESCE(e.body, ''), '<[^>]+>', '', 'g'), 300) AS body_preview,
          e.from_address,
          e.to_address,
          e.cc_addresses,
          e.sent_at,
          e.conversation_id,
-         e.tagged_by,
          e.tag_source,
-         e.contact_id,
-         e.user_id,
-         c.first_name  AS contact_first,
-         c.last_name   AS contact_last,
-         c.email       AS contact_email,
-         u.first_name  AS sender_first,
-         u.last_name   AS sender_last
+         e.provider,
+         c.id         AS contact_id,
+         c.first_name AS contact_first_name,
+         c.last_name  AS contact_last_name,
+         acc.name     AS contact_account_name,
+         u.first_name AS sender_first_name,
+         u.last_name  AS sender_last_name
        FROM emails e
-       LEFT JOIN contacts c ON c.id = e.contact_id
-       LEFT JOIN users    u ON u.id = e.user_id
-       WHERE e.deal_id = $1
-         AND e.org_id  = $2
-         AND (
-           -- Deal owner's emails
-           e.user_id = $3
-           OR
-           -- Any deal team member's emails
-           e.user_id IN (
-             SELECT user_id FROM deal_team_members
-             WHERE deal_id = $1 AND org_id = $2
-           )
-         )
-       ORDER BY e.sent_at DESC
-       LIMIT 100`,
-      [dealId, req.orgId, req.user.userId]
+       LEFT JOIN contacts c   ON c.id   = e.contact_id
+       LEFT JOIN accounts acc ON acc.id = c.account_id
+       LEFT JOIN users u      ON u.id   = e.user_id
+       WHERE e.deal_id    = $1
+         AND e.org_id     = $2
+         AND e.deleted_at IS NULL
+       ORDER BY e.sent_at DESC`,
+      [deal.id, req.orgId]
     );
 
-    // Collect all CC addresses across emails, resolve to org users in one query
-    const allCcEmails = new Set();
-    result.rows.forEach(e => {
-      if (e.cc_addresses) {
-        e.cc_addresses.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
-          .forEach(addr => allCcEmails.add(addr));
-      }
-    });
-
-    const ccUserMap = new Map(); // lowercase email → { userId, name, email }
-    if (allCcEmails.size > 0) {
-      const ccUsersResult = await db.query(
-        `SELECT id, first_name, last_name, email FROM users
-         WHERE org_id = $1 AND LOWER(email) = ANY($2::text[])`,
-        [req.orgId, [...allCcEmails]]
-      );
-      ccUsersResult.rows.forEach(u => {
-        ccUserMap.set(u.email.toLowerCase(), {
-          userId: u.id,
-          name:   `${u.first_name} ${u.last_name}`.trim(),
-          email:  u.email,
-        });
-      });
-    }
-
-    const emails = result.rows.map(e => {
-      const ccAddresses = (e.cc_addresses || '').split(',').map(s => s.trim()).filter(Boolean);
-      const ccUsers = ccAddresses
-        .map(addr => ccUserMap.get(addr.toLowerCase()))
-        .filter(Boolean);
-
-      return {
-        id:             e.id,
-        direction:      e.direction,
-        subject:        e.subject,
-        bodyPreview:    (e.body || '').replace(/<[^>]+>/g, '').slice(0, 200),
-        body:           e.body,
-        fromAddress:    e.from_address,
-        toAddress:      e.to_address,
-        ccAddresses,
-        sentAt:         e.sent_at,
-        conversationId: e.conversation_id,
-        tagSource:      e.tag_source,
-        contact: e.contact_id ? {
-          id:        e.contact_id,
-          name:      `${e.contact_first || ''} ${e.contact_last || ''}`.trim(),
-          email:     e.contact_email,
+    res.json({
+      emails: result.rows.map(row => ({
+        id:             row.id,
+        direction:      row.direction,
+        subject:        row.subject,
+        body:           row.body,
+        bodyPreview:    row.body_preview,
+        fromAddress:    row.from_address,
+        toAddress:      row.to_address,
+        ccAddresses:    row.cc_addresses,
+        sentAt:         row.sent_at,
+        conversationId: row.conversation_id,
+        tagSource:      row.tag_source,
+        provider:       row.provider,
+        contact: row.contact_id ? {
+          id:          row.contact_id,
+          name:        `${row.contact_first_name || ''} ${row.contact_last_name || ''}`.trim(),
+          accountName: row.contact_account_name || null,
         } : null,
-        sender: {
-          name: `${e.sender_first || ''} ${e.sender_last || ''}`.trim() || e.from_address,
-        },
-        senderId:   e.user_id,
-        senderName: `${e.sender_first || ''} ${e.sender_last || ''}`.trim(),
-        ccUsers,   // org users found in CC — used by DealTeamPanel for suggestions
-      };
+        sender: row.sender_first_name ? {
+          name: `${row.sender_first_name} ${row.sender_last_name}`.trim(),
+        } : null,
+      })),
     });
-
-    res.json({ emails });
   } catch (err) {
     console.error('Get deal emails error:', err);
     res.status(500).json({ error: { message: 'Failed to fetch deal emails' } });
   }
 });
 
-// ── GET /untagged — emails with a contact but no deal, not from snoozed contacts
-// Used to power the "Tag to deal" flow in the deal panel.
-// Optional ?accountId=X to scope to contacts from a specific account.
+// ── GET /untagged ─────────────────────────────────────────────────────────────
+// Returns emails from the calling user's mailbox that have a contact_id but no
+// deal_id — used by the "Tag Emails" modal in DealEmailHistory so reps can
+// manually link them to the current deal.
+//
+// Query params:
+//   accountId (optional) — scope to contacts on this account only
+//
+// Excludes contacts who have been snoozed (email_snoozed = true) so dismissed
+// contacts don't keep reappearing in the modal.
+// Scoped to the calling user's own emails only — reps should not see
+// emails from a colleague's mailbox.
 router.get('/untagged', async (req, res) => {
   try {
     const { accountId } = req.query;
 
-    let query = `
-      SELECT
-        e.id,
-        e.direction,
-        e.subject,
-        e.body,
-        e.from_address,
-        e.to_address,
-        e.sent_at,
-        e.conversation_id,
-        c.id          AS contact_id,
-        c.first_name  AS contact_first,
-        c.last_name   AS contact_last,
-        c.email       AS contact_email,
-        c.account_id,
-        acc.name      AS account_name
-      FROM emails e
-      JOIN contacts c   ON c.id  = e.contact_id AND c.org_id = e.org_id
-      LEFT JOIN accounts acc ON acc.id = c.account_id
-      WHERE e.org_id     = $1
-        AND e.user_id    = $2
-        AND e.deal_id    IS NULL
-        AND e.contact_id IS NOT NULL
-        AND (c.email_snoozed IS NULL OR c.email_snoozed = false)
-    `;
-
     const params = [req.orgId, req.user.userId];
+    let accountFilter = '';
 
     if (accountId) {
-      query += ` AND c.account_id = $${params.length + 1}`;
-      params.push(accountId);
+      params.push(parseInt(accountId));
+      accountFilter = `AND c.account_id = $${params.length}`;
     }
 
-    query += ` ORDER BY e.sent_at DESC LIMIT 50`;
-
-    const result = await db.query(query, params);
+    const result = await db.query(
+      `SELECT
+         e.id,
+         e.direction,
+         e.subject,
+         LEFT(regexp_replace(COALESCE(e.body, ''), '<[^>]+>', '', 'g'), 300) AS body_preview,
+         e.from_address,
+         e.to_address,
+         e.sent_at,
+         e.conversation_id,
+         e.provider,
+         c.id         AS contact_id,
+         c.first_name AS contact_first_name,
+         c.last_name  AS contact_last_name,
+         c.email      AS contact_email,
+         acc.name     AS contact_account_name
+       FROM emails e
+       JOIN contacts c    ON c.id   = e.contact_id
+       LEFT JOIN accounts acc ON acc.id = c.account_id
+       WHERE e.org_id      = $1
+         AND e.user_id     = $2
+         AND e.deal_id     IS NULL
+         AND e.prospect_id IS NULL
+         AND e.deleted_at  IS NULL
+         AND c.deleted_at  IS NULL
+         AND c.email_snoozed = false
+         ${accountFilter}
+       ORDER BY e.sent_at DESC
+       LIMIT 100`,
+      params
+    );
 
     res.json({
-      emails: result.rows.map(e => ({
-        id:          e.id,
-        direction:   e.direction,
-        subject:     e.subject,
-        bodyPreview: (e.body || '').replace(/<[^>]+>/g, '').slice(0, 150),
-        fromAddress: e.from_address,
-        sentAt:      e.sent_at,
+      emails: result.rows.map(row => ({
+        id:             row.id,
+        direction:      row.direction,
+        subject:        row.subject,
+        bodyPreview:    row.body_preview,
+        fromAddress:    row.from_address,
+        toAddress:      row.to_address,
+        sentAt:         row.sent_at,
+        conversationId: row.conversation_id,
+        provider:       row.provider,
         contact: {
-          id:          e.contact_id,
-          name:        `${e.contact_first || ''} ${e.contact_last || ''}`.trim(),
-          email:       e.contact_email,
-          accountId:   e.account_id,
-          accountName: e.account_name,
+          id:          row.contact_id,
+          name:        `${row.contact_first_name || ''} ${row.contact_last_name || ''}`.trim(),
+          email:       row.contact_email,
+          accountName: row.contact_account_name || null,
         },
-      }))
+      })),
     });
   } catch (err) {
     console.error('Get untagged emails error:', err);
@@ -437,7 +208,13 @@ router.get('/untagged', async (req, res) => {
   }
 });
 
-// ── PATCH /:id/tag — manually tag an email to a deal ─────────────────────────
+// ── PATCH /:id/tag ────────────────────────────────────────────────────────────
+// Manually tag an email to a deal.
+// Body: { dealId: number }
+//
+// The email must belong to the calling user (prevents tagging a colleague's email).
+// The deal must exist in this org.
+// Sets tag_source = 'manual' so DealEmailHistory renders the '🏷️ Manually tagged' badge.
 router.patch('/:id/tag', async (req, res) => {
   try {
     const { dealId } = req.body;
@@ -445,63 +222,45 @@ router.patch('/:id/tag', async (req, res) => {
       return res.status(400).json({ error: { message: 'dealId is required' } });
     }
 
-    // Verify deal belongs to this org and caller has access (owner or team member)
-    const dealCheck = await db.query(
-      `SELECT d.id FROM deals d
-       WHERE d.id = $1 AND d.org_id = $2
-         AND (
-           d.user_id = $3
-           OR EXISTS (
-             SELECT 1 FROM deal_team_members dtm
-             WHERE dtm.deal_id = d.id AND dtm.user_id = $3 AND dtm.org_id = $2
-           )
-         )`,
-      [dealId, req.orgId, req.user.userId]
-    );
-    if (dealCheck.rows.length === 0) {
-      return res.status(403).json({ error: { message: 'Deal not found or access denied' } });
-    }
-
-    // Verify email belongs to this org and this user (or a team member)
+    // Email must belong to the calling user and org
     const emailCheck = await db.query(
-      `SELECT id FROM emails WHERE id = $1 AND org_id = $2`,
-      [req.params.id, req.orgId]
+      `SELECT id FROM emails
+       WHERE id = $1 AND org_id = $2 AND user_id = $3 AND deleted_at IS NULL`,
+      [req.params.id, req.orgId, req.user.userId]
     );
     if (emailCheck.rows.length === 0) {
       return res.status(404).json({ error: { message: 'Email not found' } });
     }
 
-    const result = await db.query(
+    // Deal must exist in this org
+    const deal = await resolveDeal(req, res, dealId);
+    if (!deal) return;
+
+    await db.query(
       `UPDATE emails
        SET deal_id    = $1,
+           tag_source = 'manual',
            tagged_by  = $2,
-           tagged_at  = CURRENT_TIMESTAMP,
-           tag_source = 'manual'
-       WHERE id = $3 AND org_id = $4
-       RETURNING id, deal_id, tag_source, tagged_at`,
+           tagged_at  = NOW()
+       WHERE id = $3 AND org_id = $4`,
       [dealId, req.user.userId, req.params.id, req.orgId]
     );
 
-    res.json({ email: result.rows[0] });
+    res.json({ success: true });
   } catch (err) {
     console.error('Tag email error:', err);
     res.status(500).json({ error: { message: 'Failed to tag email' } });
   }
 });
 
-// ── GET /deal/:dealId/snoozed-contacts — contacts snoozed on this deal ────────
-// Shows which contacts' emails are being suppressed from tagging prompts,
-// scoped to contacts whose account matches this deal's account.
+// ── GET /deal/:dealId/snoozed-contacts ────────────────────────────────────────
+// Returns contacts on this deal's account that have been snoozed from email
+// suggestions. Shown in the SnoozedContacts component so reps can unsnooze
+// them if they change their mind.
 router.get('/deal/:dealId/snoozed-contacts', async (req, res) => {
   try {
-    const dealCheck = await db.query(
-      `SELECT d.id, d.account_id FROM deals d WHERE d.id = $1 AND d.org_id = $2`,
-      [req.params.dealId, req.orgId]
-    );
-    if (dealCheck.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'Deal not found' } });
-    }
-    const { account_id } = dealCheck.rows[0];
+    const deal = await resolveDeal(req, res, req.params.dealId);
+    if (!deal) return;
 
     const result = await db.query(
       `SELECT
@@ -509,16 +268,14 @@ router.get('/deal/:dealId/snoozed-contacts', async (req, res) => {
          c.first_name,
          c.last_name,
          c.email,
-         c.email_snooze_reason,
-         c.email_snoozed_at,
-         u.first_name AS snoozed_by_first,
-         u.last_name  AS snoozed_by_last
+         c.email_snooze_reason AS snooze_reason
        FROM contacts c
-       LEFT JOIN users u ON u.id = c.email_snoozed_by
-       WHERE c.account_id = $1
-         AND c.org_id     = $2
-         AND c.email_snoozed = true`,
-      [account_id, req.orgId]
+       WHERE c.org_id        = $1
+         AND c.account_id    = $2
+         AND c.email_snoozed = true
+         AND c.deleted_at    IS NULL
+       ORDER BY c.first_name, c.last_name`,
+      [req.orgId, deal.account_id]
     );
 
     res.json({
@@ -526,12 +283,8 @@ router.get('/deal/:dealId/snoozed-contacts', async (req, res) => {
         id:           c.id,
         name:         `${c.first_name || ''} ${c.last_name || ''}`.trim(),
         email:        c.email,
-        snoozeReason: c.email_snooze_reason,
-        snoozedAt:    c.email_snoozed_at,
-        snoozedBy:    c.snoozed_by_first
-                        ? `${c.snoozed_by_first} ${c.snoozed_by_last}`.trim()
-                        : null,
-      }))
+        snoozeReason: c.snooze_reason || null,
+      })),
     });
   } catch (err) {
     console.error('Get snoozed contacts error:', err);
