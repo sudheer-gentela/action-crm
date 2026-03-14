@@ -441,7 +441,6 @@ function StrapChoiceModal({ preview, busy, onConfirm, onCancel }) {
 
   const pc = PRI[hurdle.priority] || PRI.medium;
   const showBothCards = effectiveMode === 'both' && aiDraft;
-  const showOneCard   = !showBothCards;
 
   return (
     <div className="sp-modal-overlay">
