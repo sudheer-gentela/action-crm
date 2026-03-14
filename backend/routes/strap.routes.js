@@ -5,13 +5,15 @@
  * Mounted at /api/straps in server.js.
  *
  * Routes:
- *   GET    /:entityType/:entityId          — active STRAP
- *   GET    /:entityType/:entityId/history  — timeline
- *   POST   /:entityType/:entityId/generate — auto generate
- *   POST   /:entityType/:entityId/override — manual override
- *   GET    /:strapId                       — by ID (numeric)
- *   PUT    /:strapId/resolve               — resolve
- *   PUT    /:strapId/reassess              — reassess
+ *   POST   /:entityType/:entityId/preview    — generate both drafts, return for user selection
+ *   POST   /:entityType/:entityId/confirm    — save chosen + edited draft, generate actions
+ *   GET    /:entityType/:entityId            — active STRAP
+ *   GET    /:entityType/:entityId/history    — timeline
+ *   POST   /:entityType/:entityId/generate  — auto generate (system / reassess use)
+ *   POST   /:entityType/:entityId/override  — manual override
+ *   GET    /:strapId                         — by ID (numeric)
+ *   PUT    /:strapId/resolve                 — resolve
+ *   PUT    /:strapId/reassess                — reassess
  */
 
 const express = require('express');
@@ -21,7 +23,6 @@ const authenticateToken = require('../middleware/auth.middleware');
 const orgContext        = require('../middleware/orgContext.middleware');
 const StrapEngine       = require('../services/StrapEngine');
 
-// Handle both `module.exports = fn` and `module.exports = { authenticateToken: fn }` patterns
 const authMiddleware = typeof authenticateToken === 'function'
   ? authenticateToken
   : authenticateToken.authenticateToken || authenticateToken.default;
@@ -32,7 +33,7 @@ const orgMiddleware = typeof orgContext === 'function'
 router.use(authMiddleware);
 router.use(orgMiddleware);
 
-// ── Validation ──────────────────────────────────────────────────────────────
+// ── Validation helpers ───────────────────────────────────────────────────────
 
 const VALID_ENTITY_TYPES = new Set(['deal', 'account', 'prospect', 'implementation']);
 
@@ -50,10 +51,7 @@ function validateEntityType(req, res, next) {
 function parseEntityId(req, res, next) {
   const id = parseInt(req.params.entityId);
   if (isNaN(id) || id <= 0) {
-    return res.status(400).json({
-      success: false,
-      error: { message: 'entityId must be a positive integer' },
-    });
+    return res.status(400).json({ success: false, error: { message: 'entityId must be a positive integer' } });
   }
   req.entityId = id;
   next();
@@ -62,16 +60,92 @@ function parseEntityId(req, res, next) {
 function parseStrapId(req, res, next) {
   const id = parseInt(req.params.strapId);
   if (isNaN(id) || id <= 0) {
-    return res.status(400).json({
-      success: false,
-      error: { message: 'strapId must be a positive integer' },
-    });
+    return res.status(400).json({ success: false, error: { message: 'strapId must be a positive integer' } });
   }
   req.strapId = id;
   next();
 }
 
-// ── Entity-scoped routes ────────────────────────────────────────────────────
+// ── Entity-scoped routes ─────────────────────────────────────────────────────
+
+/**
+ * POST /api/straps/:entityType/:entityId/preview
+ *
+ * Generates playbook and/or AI drafts for user selection.
+ * Nothing is written to the database.
+ *
+ * Response:
+ *   {
+ *     success: true,
+ *     hurdle: { hurdleType, title, priority, evidence } | null,
+ *     message?: string,         — set when no hurdle found
+ *     playbookDraft: { situation, target, response, actionPlan } | null,
+ *     aiDraft: { situation, target, response, actionPlan, aiModel } | null,
+ *     aiUnavailable: boolean,
+ *     aiUnavailableReason: string | null,
+ *     effectiveMode: 'both'|'playbook'|'ai'|'playbook_only'|'none'
+ *   }
+ */
+router.post('/:entityType/:entityId/preview', validateEntityType, parseEntityId, async (req, res) => {
+  try {
+    const result = await StrapEngine.preview(
+      req.params.entityType,
+      req.entityId,
+      req.user.userId,
+      req.orgId
+    );
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('❌ STRAP preview error:', err.message);
+    const status = err.message.includes('Access denied') ? 403 : 500;
+    res.status(status).json({ success: false, error: { message: err.message } });
+  }
+});
+
+/**
+ * POST /api/straps/:entityType/:entityId/confirm
+ *
+ * Saves the user's chosen (and optionally edited) STRAP draft to the database
+ * and generates action rows from the confirmed action_plan text.
+ *
+ * Body:
+ *   {
+ *     chosenSource: 'playbook' | 'ai',
+ *     hurdle: { hurdleType: string, title: string, priority: string },
+ *     draft: { situation: string, target: string, response: string, actionPlan: string }
+ *   }
+ *
+ * Response:
+ *   { success: true, strap: object, actionCount: number }
+ */
+router.post('/:entityType/:entityId/confirm', validateEntityType, parseEntityId, async (req, res) => {
+  try {
+    const { chosenSource, hurdle, draft } = req.body;
+
+    if (!chosenSource || !hurdle || !draft) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'Body must include chosenSource, hurdle, and draft' },
+      });
+    }
+
+    const result = await StrapEngine.confirm(
+      req.params.entityType,
+      req.entityId,
+      req.user.userId,
+      req.orgId,
+      { chosenSource, hurdle, draft }
+    );
+
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('❌ STRAP confirm error:', err.message);
+    const status = err.message.includes('Access denied') ? 403
+                 : err.message.includes('requires') ? 400
+                 : 500;
+    res.status(status).json({ success: false, error: { message: err.message } });
+  }
+});
 
 // GET /api/straps/:entityType/:entityId — active STRAP
 router.get('/:entityType/:entityId', validateEntityType, parseEntityId, async (req, res) => {
@@ -95,12 +169,15 @@ router.get('/:entityType/:entityId/history', validateEntityType, parseEntityId, 
   }
 });
 
-// POST /api/straps/:entityType/:entityId/generate — auto generate
+// POST /api/straps/:entityType/:entityId/generate — auto generate (system use)
 router.post('/:entityType/:entityId/generate', validateEntityType, parseEntityId, async (req, res) => {
   try {
-    const { useAI = true } = req.body;
     const result = await StrapEngine.generate(
-      req.params.entityType, req.entityId, req.userId, req.orgId, { useAI }
+      req.params.entityType,
+      req.entityId,
+      req.user.userId,
+      req.orgId
+      // No useAI param — engine reads config
     );
     res.json({ success: true, ...result });
   } catch (err) {
@@ -114,7 +191,11 @@ router.post('/:entityType/:entityId/generate', validateEntityType, parseEntityId
 router.post('/:entityType/:entityId/override', validateEntityType, parseEntityId, async (req, res) => {
   try {
     const result = await StrapEngine.override(
-      req.params.entityType, req.entityId, req.userId, req.orgId, req.body
+      req.params.entityType,
+      req.entityId,
+      req.user.userId,
+      req.orgId,
+      req.body
     );
     res.json({ success: true, ...result });
   } catch (err) {
@@ -124,15 +205,13 @@ router.post('/:entityType/:entityId/override', validateEntityType, parseEntityId
   }
 });
 
-// ── STRAP-ID-scoped routes ──────────────────────────────────────────────────
+// ── STRAP-ID-scoped routes ───────────────────────────────────────────────────
 
 // GET /api/straps/:strapId — by ID
 router.get('/:strapId', parseStrapId, async (req, res) => {
   try {
     const strap = await StrapEngine.getById(req.strapId, req.orgId);
-    if (!strap) {
-      return res.status(404).json({ success: false, error: { message: 'STRAP not found' } });
-    }
+    if (!strap) return res.status(404).json({ success: false, error: { message: 'STRAP not found' } });
     res.json({ success: true, strap });
   } catch (err) {
     console.error('❌ GET STRAP by ID error:', err.message);
@@ -144,9 +223,7 @@ router.get('/:strapId', parseStrapId, async (req, res) => {
 router.put('/:strapId/resolve', parseStrapId, async (req, res) => {
   try {
     const { resolutionType, note } = req.body;
-    const result = await StrapEngine.resolve(req.strapId, req.userId, req.orgId, {
-      resolutionType, note,
-    });
+    const result = await StrapEngine.resolve(req.strapId, req.user.userId, req.orgId, { resolutionType, note });
     res.json({ success: true, ...result });
   } catch (err) {
     console.error('❌ STRAP resolve error:', err.message);
@@ -160,7 +237,7 @@ router.put('/:strapId/resolve', parseStrapId, async (req, res) => {
 // PUT /api/straps/:strapId/reassess
 router.put('/:strapId/reassess', parseStrapId, async (req, res) => {
   try {
-    const result = await StrapEngine.reassess(req.strapId, req.userId, req.orgId);
+    const result = await StrapEngine.reassess(req.strapId, req.user.userId, req.orgId);
     res.json({ success: true, ...result });
   } catch (err) {
     console.error('❌ STRAP reassess error:', err.message);

@@ -328,3 +328,44 @@
     flex-direction: column;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════
+   ActionsSettings additions — STRAP generation radio options
+   ═══════════════════════════════════════════════════════════ */
+
+.setting-radio-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  background: #fff;
+}
+
+.setting-radio-option:hover {
+  border-color: #a5b4fc;
+  background: #fafafa;
+}
+
+.setting-radio-option--selected {
+  border-color: #6366f1;
+  background: #eef2ff;
+}
+
+.setting-radio-option input[type="radio"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+  accent-color: #6366f1;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.setting-radio-option span {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1f2937;
+}

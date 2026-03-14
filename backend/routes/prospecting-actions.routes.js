@@ -8,6 +8,7 @@ const requireModule = require('../middleware/requireModule.middleware');
 // Email send services (reused from existing infrastructure)
 const { sendEmail: sendGmailEmail }    = require('../services/googleService');
 const { sendEmail: sendOutlookEmail }  = require('../services/outlookService');
+const StrapActionGenerator             = require('../services/StrapActionGenerator');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -271,6 +272,12 @@ router.patch('/:id/status', async (req, res) => {
     }
 
     const action = result.rows[0];
+
+    // STRAP auto-resolve check — mirrors the same block in actions_routes.js
+    if (isCompleting && action.strap_id) {
+      StrapActionGenerator.checkAutoResolve(action.strap_id, req.user.userId, req.orgId)
+        .catch(err => console.error('STRAP auto-resolve check error (prospecting):', err.message));
+    }
 
     // If completing an outreach action, update prospect's engagement tracking
     if (isCompleting && action.channel) {

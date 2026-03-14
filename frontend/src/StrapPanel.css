@@ -370,3 +370,224 @@
   margin-top: 4px;
   font-style: italic;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   StrapPanel additions — Choice modal, edit mode, AI badge
+   ═══════════════════════════════════════════════════════════ */
+
+/* ── AI badge ────────────────────────────────────────────── */
+
+.sp-ai-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  background: #eff6ff;
+  color: #1d4ed8;
+  white-space: nowrap;
+}
+
+.sp-ai-badge-sm {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 600;
+  background: #eff6ff;
+  color: #1d4ed8;
+  margin-left: 4px;
+}
+
+/* ── Inline edit mode (active STRAP) ─────────────────────── */
+
+.sp-edit-inline-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+  border: 1px solid #4f46e5;
+  border-radius: 5px;
+  padding: 2px 8px;
+  background: #fff;
+  min-width: 200px;
+}
+
+.sp-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sp-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sp-edit-field-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.sp-edit-textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #1f2937;
+  line-height: 1.5;
+  font-family: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+  transition: border-color 0.15s;
+}
+
+.sp-edit-textarea:focus {
+  outline: none;
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.1);
+}
+
+.sp-edit-priority {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sp-edit-priority label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.sp-edit-priority select {
+  padding: 5px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #1f2937;
+  background: #fff;
+}
+
+/* ── Choice modal ────────────────────────────────────────── */
+
+.sp-choice-modal {
+  padding: 0;
+}
+
+.sp-choice-header {
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.sp-choice-hurdle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.sp-choice-prompt {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0;
+}
+
+.sp-choice-warning {
+  margin: 10px 16px 0;
+  padding: 8px 12px;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #92400e;
+}
+
+/* ── Draft cards ─────────────────────────────────────────── */
+
+.sp-choice-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+@media (max-width: 640px) {
+  .sp-choice-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.sp-draft-card {
+  padding: 14px 16px;
+  border-right: 1px solid #e5e7eb;
+  transition: background 0.15s;
+}
+
+.sp-draft-card:last-child {
+  border-right: none;
+}
+
+.sp-draft-card--chosen {
+  background: #f5f3ff;
+  border-right: 1px solid #c4b5fd;
+}
+
+.sp-draft-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  gap: 8px;
+}
+
+.sp-draft-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #4f46e5;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.sp-draft-selected {
+  font-size: 12px;
+  color: #059669;
+  font-weight: 600;
+}
+
+.sp-draft-preview {
+  /* intentionally empty — inherits sp-section styles */
+}
+
+.sp-draft-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Small button variant ────────────────────────────────── */
+
+.sp-btn--sm {
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+/* ── Choice modal footer ─────────────────────────────────── */
+
+.sp-choice-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: #f9fafb;
+}
+
+.sp-choice-hint {
+  font-size: 12px;
+  color: #9ca3af;
+  font-style: italic;
+}
