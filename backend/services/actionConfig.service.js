@@ -1,9 +1,13 @@
 /**
  * Action Config Service
  * Manages per-user per-org configuration for action generation and completion detection.
- * 
+ *
  * MULTI-ORG: getConfig and updateConfig now require (userId, orgId).
  * The action_config table has UNIQUE(user_id, org_id) so one config per user per org.
+ *
+ * FIX: _normaliseAiSettings now preserves strap_generation_mode and strap_ai_provider.
+ * Previously these fields were silently stripped on every getConfig call, causing the
+ * STRAP generation radio button to reset to 'both' on every page load.
  */
 
 const db = require('../config/database');
@@ -34,26 +38,42 @@ class ActionConfigService {
     }
   }
 
-  // Returns default ai_settings structure
+  // ── _normaliseAiSettings ─────────────────────────────────────────────────
+  // Merges stored JSONB with defaults so missing keys always have a value.
+  //
+  // FIX: Previously only preserved master_enabled and modules{}.
+  // Now also preserves:
+  //   - strap_generation_mode  ('both' | 'playbook' | 'ai')
+  //   - strap_ai_provider      ('anthropic' | 'openai' | 'grok')
+  //
+  // Rule: any key present in stored is kept as-is; only missing keys get defaults.
   static _normaliseAiSettings(stored) {
     const defaults = {
-      master_enabled: true,
+      master_enabled:       true,
       modules: {
         deals:       true,
         straps:      true,
         clm:         false,
         prospecting: false,
       },
+      strap_generation_mode: 'both',
+      strap_ai_provider:     'anthropic',
     };
+
     if (!stored || typeof stored !== 'object') return defaults;
+
     return {
-      master_enabled: stored.master_enabled ?? defaults.master_enabled,
+      // Existing keys — preserved exactly as stored
+      master_enabled:       stored.master_enabled       ?? defaults.master_enabled,
       modules: {
         deals:       stored.modules?.deals       ?? defaults.modules.deals,
         straps:      stored.modules?.straps      ?? defaults.modules.straps,
         clm:         stored.modules?.clm         ?? defaults.modules.clm,
         prospecting: stored.modules?.prospecting ?? defaults.modules.prospecting,
       },
+      // STRAP keys — previously dropped, now preserved
+      strap_generation_mode: stored.strap_generation_mode ?? defaults.strap_generation_mode,
+      strap_ai_provider:     stored.strap_ai_provider     ?? defaults.strap_ai_provider,
     };
   }
 
@@ -78,7 +98,10 @@ class ActionConfigService {
         RETURNING *`,
         [userId, orgId, 'playbook', 'hybrid', 70, 95]
       );
-      return result.rows[0];
+      const row = result.rows[0];
+      // Normalise ai_settings on the newly created row too
+      row.ai_settings = this._normaliseAiSettings(row.ai_settings);
+      return row;
     } catch (error) {
       console.error('❌ Error creating default config:', error.message);
       throw error;
@@ -107,9 +130,10 @@ class ActionConfigService {
         }
       });
 
-      // Handle ai_settings JSONB separately — merge rather than overwrite
+      // Handle ai_settings JSONB — merge with existing rather than full overwrite,
+      // so partial updates (e.g. only strap_generation_mode) don't wipe other keys.
       if (updates.ai_settings !== undefined) {
-        setClauses.push(`ai_settings = $${paramCount++}`);
+        setClauses.push(`ai_settings = COALESCE(ai_settings, '{}'::jsonb) || $${paramCount++}::jsonb`);
         values.push(JSON.stringify(updates.ai_settings));
       }
 
@@ -129,7 +153,11 @@ class ActionConfigService {
         return this.createDefaultConfig(userId, orgId);
       }
 
-      return result.rows[0];
+      const row = result.rows[0];
+      // Normalise ai_settings on the returned row so the response shape is
+      // identical to getConfig — frontend gets consistent data either way.
+      row.ai_settings = this._normaliseAiSettings(row.ai_settings);
+      return row;
     } catch (error) {
       console.error('Error updating action config:', error);
       throw error;
