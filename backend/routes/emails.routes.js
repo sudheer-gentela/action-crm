@@ -8,19 +8,15 @@
  *   app.use('/api/emails', emailsRoutes);
  *
  * Endpoints:
+ *   GET  /gmail                          — fetch Gmail emails for display
+ *   GET  /unified                        — fetch from all connected providers
  *   GET  /deal/:dealId                   — email history for a deal (DealEmailHistory)
  *   GET  /untagged                       — emails with no deal_id for the manual tagging modal
  *   PATCH /:id/tag                       — manually tag an email to a deal
  *   GET  /deal/:dealId/snoozed-contacts  — contacts snoozed from email suggestions on this deal
  *
- * Access pattern (consistent with deal-team.routes and deal-contacts.routes):
- *   READ  (GET)  — org check only; any org member can read deal email history
- *   WRITE (PATCH /:id/tag) — email must belong to calling user (user_id check);
- *                            deal must exist in org
- *
- * Contact snooze/unsnooze endpoints are in contacts.routes.js (already present).
- * Column names used here match what contacts.routes.js writes:
- *   email_snoozed, email_snooze_reason
+ * NOTE: /gmail and /unified must be defined BEFORE /:id routes to prevent
+ * Express matching 'gmail' or 'unified' as an id parameter.
  */
 
 const express = require('express');
@@ -33,8 +29,6 @@ router.use(authenticateToken);
 router.use(orgContext);
 
 // ── Helper: verify deal exists in this org ────────────────────────────────────
-// Mirrors resolveDeal in deal-team.routes and deal-contacts.routes —
-// org-scoped only, no per-user ownership filter.
 async function resolveDeal(req, res, dealId) {
   const result = await db.query(
     `SELECT d.id, d.owner_id, d.org_id, d.account_id
@@ -51,16 +45,108 @@ async function resolveDeal(req, res, dealId) {
   return result.rows[0];
 }
 
+// ── GET /gmail ────────────────────────────────────────────────────────────────
+// Fetch Gmail emails for the calling user via UnifiedEmailProvider.
+// Must be defined BEFORE /:id to avoid Express matching 'gmail' as an id.
+//
+// Query params:
+//   top    (default 50)  — max emails to return
+//   skip   (default 0)   — pagination offset
+//   dealId (optional)    — filter to emails tagged to this deal
+router.get('/gmail', async (req, res) => {
+  try {
+    const { top = 50, skip = 0, dealId } = req.query;
+    const UnifiedEmailProvider = require('../services/UnifiedEmailProvider');
+
+    const result = await UnifiedEmailProvider.fetchEmails(
+      req.user.userId, 'gmail', { top: parseInt(top), skip: parseInt(skip) }
+    );
+
+    let emails = result.emails || [];
+
+    if (dealId) {
+      const dbResult = await db.query(
+        `SELECT external_id FROM emails
+         WHERE deal_id = $1 AND user_id = $2 AND org_id = $3 AND provider = 'gmail'`,
+        [dealId, req.user.userId, req.orgId]
+      );
+      const dealEmailIds = new Set(dbResult.rows.map(r => r.external_id));
+      emails = emails.filter(e => dealEmailIds.has(e.id));
+    }
+
+    res.json({ success: true, data: emails });
+  } catch (error) {
+    console.error('Error fetching Gmail emails:', error);
+    if (error.message?.includes('No tokens found') || error.message?.includes('not connected')) {
+      return res.status(403).json({ success: false, error: 'Gmail not connected' });
+    }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ── GET /unified ──────────────────────────────────────────────────────────────
+// Fetch emails from ALL providers the user has connected (Gmail + Outlook).
+// Must be defined BEFORE /:id to avoid Express matching 'unified' as an id.
+//
+// Query params:
+//   top    (default 50)  — max emails to return (applied after merge + sort)
+//   dealId (optional)    — filter to emails tagged to this deal
+router.get('/unified', async (req, res) => {
+  try {
+    const { top = 50, dealId } = req.query;
+    const UnifiedEmailProvider = require('../services/UnifiedEmailProvider');
+
+    // Get all providers this user has connected
+    const providers = await UnifiedEmailProvider.getConnectedProviders(req.user.userId);
+
+    // If no providers connected, return empty list rather than erroring
+    if (!providers || providers.length === 0) {
+      return res.json({ success: true, data: [], providers: [] });
+    }
+
+    const allEmails = [];
+
+    for (const provider of providers) {
+      try {
+        const result = await UnifiedEmailProvider.fetchEmails(
+          req.user.userId, provider, { top: parseInt(top) }
+        );
+        allEmails.push(...(result.emails || []));
+      } catch (err) {
+        // Non-blocking — one provider failing should not prevent others from loading
+        console.warn(`[emails/unified] Failed to fetch ${provider} emails:`, err.message);
+      }
+    }
+
+    // Sort by date descending across all providers
+    allEmails.sort((a, b) => new Date(b.receivedDateTime || b.sentAt || 0) - new Date(a.receivedDateTime || a.sentAt || 0));
+
+    // Optionally filter to emails tagged to a specific deal
+    let filtered = allEmails;
+    if (dealId) {
+      const dbResult = await db.query(
+        `SELECT external_id, provider FROM emails
+         WHERE deal_id = $1 AND user_id = $2 AND org_id = $3`,
+        [dealId, req.user.userId, req.orgId]
+      );
+      const dealEmailIds = new Set(dbResult.rows.map(r => r.external_id));
+      filtered = allEmails.filter(e => dealEmailIds.has(e.id));
+    }
+
+    res.json({
+      success:   true,
+      data:      filtered.slice(0, parseInt(top)),
+      providers,
+    });
+  } catch (error) {
+    console.error('Error fetching unified emails:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ── GET /deal/:dealId ─────────────────────────────────────────────────────────
 // Returns all emails tagged to this deal, enriched with contact and sender info.
 // DealEmailHistory.js groups these into threads client-side via groupIntoThreads().
-//
-// Response shape expected by DealEmailHistory:
-//   { emails: [ { id, direction, subject, body, bodyPreview, fromAddress,
-//                 toAddress, ccAddresses, sentAt, conversationId, tagSource,
-//                 provider,
-//                 contact: { id, name, accountName } | null,
-//                 sender:  { name } | null } ] }
 router.get('/deal/:dealId', async (req, res) => {
   try {
     const deal = await resolveDeal(req, res, req.params.dealId);
@@ -129,16 +215,7 @@ router.get('/deal/:dealId', async (req, res) => {
 
 // ── GET /untagged ─────────────────────────────────────────────────────────────
 // Returns emails from the calling user's mailbox that have a contact_id but no
-// deal_id — used by the "Tag Emails" modal in DealEmailHistory so reps can
-// manually link them to the current deal.
-//
-// Query params:
-//   accountId (optional) — scope to contacts on this account only
-//
-// Excludes contacts who have been snoozed (email_snoozed = true) so dismissed
-// contacts don't keep reappearing in the modal.
-// Scoped to the calling user's own emails only — reps should not see
-// emails from a colleague's mailbox.
+// deal_id — used by the "Tag Emails" modal in DealEmailHistory.
 router.get('/untagged', async (req, res) => {
   try {
     const { accountId } = req.query;
@@ -168,7 +245,7 @@ router.get('/untagged', async (req, res) => {
          c.email      AS contact_email,
          acc.name     AS contact_account_name
        FROM emails e
-       JOIN contacts c    ON c.id   = e.contact_id
+       JOIN contacts c        ON c.id   = e.contact_id
        LEFT JOIN accounts acc ON acc.id = c.account_id
        WHERE e.org_id      = $1
          AND e.user_id     = $2
@@ -211,10 +288,6 @@ router.get('/untagged', async (req, res) => {
 // ── PATCH /:id/tag ────────────────────────────────────────────────────────────
 // Manually tag an email to a deal.
 // Body: { dealId: number }
-//
-// The email must belong to the calling user (prevents tagging a colleague's email).
-// The deal must exist in this org.
-// Sets tag_source = 'manual' so DealEmailHistory renders the '🏷️ Manually tagged' badge.
 router.patch('/:id/tag', async (req, res) => {
   try {
     const { dealId } = req.body;
@@ -222,7 +295,6 @@ router.patch('/:id/tag', async (req, res) => {
       return res.status(400).json({ error: { message: 'dealId is required' } });
     }
 
-    // Email must belong to the calling user and org
     const emailCheck = await db.query(
       `SELECT id FROM emails
        WHERE id = $1 AND org_id = $2 AND user_id = $3 AND deleted_at IS NULL`,
@@ -232,7 +304,6 @@ router.patch('/:id/tag', async (req, res) => {
       return res.status(404).json({ error: { message: 'Email not found' } });
     }
 
-    // Deal must exist in this org
     const deal = await resolveDeal(req, res, dealId);
     if (!deal) return;
 
@@ -254,9 +325,7 @@ router.patch('/:id/tag', async (req, res) => {
 });
 
 // ── GET /deal/:dealId/snoozed-contacts ────────────────────────────────────────
-// Returns contacts on this deal's account that have been snoozed from email
-// suggestions. Shown in the SnoozedContacts component so reps can unsnooze
-// them if they change their mind.
+// Returns contacts snoozed from email suggestions on this deal's account.
 router.get('/deal/:dealId/snoozed-contacts', async (req, res) => {
   try {
     const deal = await resolveDeal(req, res, req.params.dealId);
