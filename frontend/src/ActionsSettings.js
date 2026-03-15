@@ -3,10 +3,10 @@ import { apiService } from './apiService';
 import './ActionsSettings.css';
 
 function ActionsSettings() {
-  const [config, setConfig]               = useState(null);
-  const [loading, setLoading]             = useState(true);
-  const [saving, setSaving]               = useState(false);
-  const [error, setError]                 = useState(null);
+  const [config, setConfig]                 = useState(null);
+  const [loading, setLoading]               = useState(true);
+  const [saving, setSaving]                 = useState(false);
+  const [error, setError]                   = useState(null);
   const [successMessage, setSuccessMessage] = useState('');
 
   useEffect(() => { loadConfig(); }, []);
@@ -49,13 +49,26 @@ function ActionsSettings() {
     ai_settings: { ...(prev.ai_settings || {}), [key]: value },
   }));
 
+  // Helper to read/write ai_settings.modules keys
+  const getModule = (key) => config?.ai_settings?.modules?.[key] ?? true;
+  const setModule = (key, value) => setConfig(prev => ({
+    ...prev,
+    ai_settings: {
+      ...(prev.ai_settings || {}),
+      modules: {
+        ...(prev.ai_settings?.modules || {}),
+        [key]: value,
+      },
+    },
+  }));
+
   if (loading) return <div className="actions-settings"><div className="loading">Loading configuration...</div></div>;
   if (!config)  return <div className="actions-settings"><div className="error">Failed to load configuration</div></div>;
 
-  const masterEnabled        = getAI('master_enabled', true);
-  const strapGenMode         = getAI('strap_generation_mode', 'both');
-  const strapAIProvider      = getAI('strap_ai_provider', 'anthropic');
-  const aiDisabledForStraps  = !masterEnabled;
+  const masterEnabled       = getAI('master_enabled', true);
+  const strapGenMode        = getAI('strap_generation_mode', 'both');
+  const strapAIProvider     = getAI('strap_ai_provider', 'anthropic');
+  const aiDisabledForStraps = !masterEnabled;
 
   return (
     <div className="actions-settings">
@@ -127,6 +140,57 @@ function ActionsSettings() {
         </div>
       </section>
 
+      {/* ── AI MODULE TOGGLES ── */}
+      <section className="settings-section">
+        <h3>🤖 AI per Module</h3>
+        <p className="subtitle" style={{ marginBottom: 16 }}>
+          Control which modules use AI. Master AI toggle must be on for any module to use AI.
+          Turning a module off means it falls back to rules / playbook template only.
+        </p>
+
+        {/* Master toggle */}
+        <div className="setting-group">
+          <label className="setting-checkbox">
+            <input
+              type="checkbox"
+              checked={masterEnabled}
+              onChange={e => setAI('master_enabled', e.target.checked)}
+            />
+            <span style={{ fontWeight: 600 }}>Master AI toggle — enable AI across all modules</span>
+          </label>
+          {!masterEnabled && (
+            <p className="help-text" style={{ color: '#d97706' }}>
+              ⚠️ Master AI is off — all modules below are using rules / playbook template only.
+            </p>
+          )}
+        </div>
+
+        {/* Per-module checkboxes */}
+        <div className="setting-group" style={{ opacity: masterEnabled ? 1 : 0.45, pointerEvents: masterEnabled ? 'auto' : 'none' }}>
+          <label className="setting-label">Enable AI for:</label>
+
+          {[
+            { key: 'deals',       icon: '💼', label: 'Deals',        desc: 'AI-enhanced action generation and health analysis for deals.' },
+            { key: 'straps',      icon: '🎯', label: 'STRAPs',       desc: 'AI-generated STRAP strategies for deals, accounts, and prospects.' },
+            { key: 'prospecting', icon: '🔍', label: 'Prospecting',  desc: 'AI research, outreach drafts, and action generation for prospects.' },
+            { key: 'clm',         icon: '📋', label: 'Contracts',    desc: 'AI-enhanced action suggestions for contract lifecycle management.' },
+          ].map(mod => (
+            <label key={mod.key} className="setting-checkbox" style={{ alignItems: 'flex-start', marginBottom: 8 }}>
+              <input
+                type="checkbox"
+                checked={getModule(mod.key)}
+                onChange={e => setModule(mod.key, e.target.checked)}
+                style={{ marginTop: 2 }}
+              />
+              <span>
+                <span style={{ fontWeight: 500 }}>{mod.icon} {mod.label}</span>
+                <span className="help-text" style={{ display: 'block', marginTop: 2 }}>{mod.desc}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
+
       {/* ── STRAP GENERATION (user-level override) ── */}
       <section className="settings-section">
         <h3>🎯 STRAP Generation</h3>
@@ -141,9 +205,9 @@ function ActionsSettings() {
           <label className="setting-label">How should STRAPs be generated for you?</label>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
             {[
-              { value: 'both',     icon: '⚖️', label: 'Both (I choose)',    desc: 'Show me both playbook and AI versions side-by-side so I can compare and pick.' },
-              { value: 'playbook', icon: '📘', label: 'Playbook template',  desc: 'Always use the playbook — fast, no AI needed.' },
-              { value: 'ai',       icon: '🤖', label: 'AI-generated',       desc: 'Always use AI. Falls back to playbook if AI is unavailable.' },
+              { value: 'both',     icon: '⚖️', label: 'Both (I choose)',   desc: 'Show me both playbook and AI versions side-by-side so I can compare and pick.' },
+              { value: 'playbook', icon: '📘', label: 'Playbook template', desc: 'Always use the playbook — fast, no AI needed.' },
+              { value: 'ai',       icon: '🤖', label: 'AI-generated',      desc: 'Always use AI. Falls back to playbook if AI is unavailable.' },
             ].map(opt => {
               const isSelected = strapGenMode === opt.value;
               const isAiOpt    = opt.value !== 'playbook';
@@ -171,8 +235,8 @@ function ActionsSettings() {
           </div>
           {aiDisabledForStraps && (
             <p className="help-text" style={{ color: '#d97706', marginTop: 8 }}>
-              ⚠️ Master AI is disabled — only Playbook mode is available. Enable AI in your
-              org admin settings to unlock AI generation.
+              ⚠️ Master AI is disabled — only Playbook mode is available. Enable AI above to
+              unlock AI generation.
             </p>
           )}
         </div>
