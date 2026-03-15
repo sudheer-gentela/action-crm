@@ -1365,7 +1365,6 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
                 ) : sec.key === 'A' && strapActions.length > 0 ? (
                   <div className="av-strap-actions-list">
                     {strapActions.map(act => {
-                      const stMeta = STATUS_META[act.status] || STATUS_META.yet_to_start;
                       const chMeta = CHANNEL_META[act.next_step] || CHANNEL_META.email;
                       return (
                         <div key={`${act.action_table}-${act.action_id}`}
