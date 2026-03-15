@@ -3,17 +3,17 @@ const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
-const ActionsGenerator    = require('../services/actionsGenerator');
-const ActionConfigService = require('../services/actionConfig.service');
-const HandoverService     = require('../services/handover.service');
+const ActionsGenerator        = require('../services/actionsGenerator');
+const ActionConfigService     = require('../services/actionConfig.service');
+const HandoverService         = require('../services/handover.service');
+const DealContextBuilder      = require('../services/DealContextBuilder');
+const PlaybookActionGenerator = require('../services/PlaybookActionGenerator');
+const ActionWriter            = require('../services/ActionWriter');
 
 router.use(authenticateToken);
 router.use(orgContext);
 
 // ── Helper: validate a stage key belongs to this org and is active ────────────
-// Returns the stage row { key, stage_type, is_active, is_terminal } or throws.
-// Falls back gracefully — if deal_stages table doesn't exist yet (pre-migration),
-// skips validation so the route still works during a rolling deploy.
 async function validateStage(orgId, stageKey) {
   if (!stageKey) return null;
   try {
@@ -32,7 +32,6 @@ async function validateStage(orgId, stageKey) {
     return result.rows[0];
   } catch (err) {
     throw err;
-    throw err;
   }
 }
 
@@ -47,15 +46,11 @@ async function resolveDefaultStage(orgId) {
     );
     return result.rows[0]?.key || 'qualified';
   } catch {
-    return 'qualified'; // pre-migration fallback
+    return 'qualified';
   }
 }
 
 // ── GET / ─────────────────────────────────────────────────────
-// Supports ?scope=mine|team|org (default: mine)
-//   mine — only the current user's deals (original behaviour)
-//   team — current user + all subordinates (hierarchy-based)
-//   org  — all deals in the org (admin/owner only, or if no hierarchy)
 router.get('/', async (req, res) => {
   try {
     const { stage, health, scope = 'mine' } = req.query;
@@ -83,17 +78,13 @@ router.get('/', async (req, res) => {
 
     const params = [req.orgId];
 
-    // Scope filtering
     if (scope === 'team' && req.subordinateIds?.length > 0) {
-      // Team = self + all subordinates
       const teamIds = [req.user.userId, ...req.subordinateIds];
       query += ` AND d.owner_id = ANY($${params.length + 1}::int[])`;
       params.push(teamIds);
     } else if (scope === 'org') {
-      // Org-wide — no owner filter (all deals in org)
-      // No additional WHERE clause needed
+      // no owner filter
     } else {
-      // Default: mine only
       query += ` AND d.owner_id = $${params.length + 1}`;
       params.push(req.user.userId);
     }
@@ -119,7 +110,7 @@ router.get('/', async (req, res) => {
         name:                row.name,
         value:               parseFloat(row.value),
         stage:               row.stage,
-        stage_type:          row.stage_type || null,    // included post-migration
+        stage_type:          row.stage_type || null,
         health:              row.health,
         expected_close_date: row.expected_close_date,
         probability:         row.probability,
@@ -143,10 +134,6 @@ router.get('/', async (req, res) => {
 });
 
 // ── GET /pipeline/summary ─────────────────────────────────────
-// Updated: joins pipeline_stages so ordering follows org sort_order instead of
-// a hardcoded CASE WHEN. Backward compatible — falls back to count-only if
-// deal_stages table doesn't exist yet.
-// Supports ?scope=mine|team|org (same as GET /)
 router.get('/pipeline/summary', async (req, res) => {
   try {
     const { scope = 'mine' } = req.query;
@@ -188,7 +175,7 @@ router.get('/pipeline/summary', async (req, res) => {
     res.json({
       pipeline: result.rows.map(row => ({
         stage:      row.stage,
-        stageName:  row.stage_name  || row.stage,   // display name (new) or raw key (fallback)
+        stageName:  row.stage_name  || row.stage,
         stageType:  row.stage_type  || 'custom',
         sortOrder:  parseInt(row.stage_order) || 0,
         count:      parseInt(row.count),
@@ -277,8 +264,6 @@ router.get('/:id', async (req, res) => {
 });
 
 // ── GET /:id/playbook-guide ─────────────────────────────────
-// Returns the playbook info + stage guidance for the deal's current stage.
-// Used by the deal detail panel to show the collapsible playbook guide card.
 router.get('/:id/playbook-guide', async (req, res) => {
   try {
     const dealResult = await db.query(
@@ -301,8 +286,6 @@ router.get('/:id/playbook-guide', async (req, res) => {
 
     const stageKey = deal.stage;
     const stageGuidance = deal.stage_guidance?.[stageKey] || null;
-
-    // Also pull company context from playbook content
     const company = deal.content?.company || null;
 
     res.json({
@@ -328,16 +311,14 @@ router.post('/', async (req, res) => {
   try {
     const { accountId, name, value, stage, health, expectedCloseDate, probability, notes, playbookId } = req.body;
 
-    // Validate stage if provided; resolve org default if not
     let resolvedStage;
     if (stage) {
-      await validateStage(req.orgId, stage); // throws if invalid
+      await validateStage(req.orgId, stage);
       resolvedStage = stage;
     } else {
       resolvedStage = await resolveDefaultStage(req.orgId);
     }
 
-    // Resolve playbook: use the provided one, or fall back to the org default
     let resolvedPlaybookId = playbookId || null;
     if (!resolvedPlaybookId) {
       const defaultPb = await db.query(
@@ -373,7 +354,6 @@ router.post('/', async (req, res) => {
     res.status(201).json({ deal: newDeal });
   } catch (error) {
     console.error('Create deal error:', error);
-    // Surface stage validation errors as 400 instead of 500
     if (error.message?.includes('Invalid stage') || error.message?.includes('inactive')) {
       return res.status(400).json({ error: { message: error.message } });
     }
@@ -381,9 +361,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-// ── POST /bulk — bulk-create deals from CSV import ───────────────────────────
-// Body: { rows: [{ name, value, stage?, health?, expectedCloseDate?, probability?, notes?, accountId? }] }
-// Returns: { imported: number, deals: [], errors: [{ row, message }] }
+// ── POST /bulk ───────────────────────────────────────────────────────────────
 router.post('/bulk', async (req, res) => {
   try {
     const { rows } = req.body;
@@ -396,7 +374,6 @@ router.post('/bulk', async (req, res) => {
       return res.status(400).json({ error: { message: `Maximum ${MAX_ROWS} rows per import` } });
     }
 
-    // Resolve the default stage and playbook for this org
     const defaultStage = await resolveDefaultStage(req.orgId);
     const defaultPbRes = await db.query(
       `SELECT id FROM playbooks WHERE org_id = $1 AND is_default = TRUE LIMIT 1`,
@@ -421,14 +398,13 @@ router.post('/bulk', async (req, res) => {
           continue;
         }
 
-        // Validate stage if provided
         let resolvedStage = defaultStage;
         if (row.stage) {
           try {
             await validateStage(req.orgId, row.stage);
             resolvedStage = row.stage;
           } catch {
-            // Use default stage if validation fails
+            // use default if validation fails
           }
         }
 
@@ -463,7 +439,6 @@ router.put('/:id', async (req, res) => {
   try {
     const { name, value, stage, health, expectedCloseDate, probability, notes, playbookId } = req.body;
 
-    // Validate stage if being changed
     if (stage) {
       await validateStage(req.orgId, stage);
     }
@@ -486,7 +461,6 @@ router.put('/:id', async (req, res) => {
       }
     }
 
-    // closed_at: check against org terminal stages if available, fallback to hardcoded keys
     const isClosingStage = async (stageKey) => {
       try {
         const r = await db.query(
@@ -541,17 +515,12 @@ router.put('/:id', async (req, res) => {
         console.error('Error generating playbook actions on stage change:', err);
       }
 
-      // ── Handover initiation on won stage ────────────────────────────────────
-      // Fires unconditionally when a deal reaches a won terminal stage.
-      // HandoverService.initiate() is idempotent — safe to call multiple times.
-      // Failure is non-fatal and never blocks a deal stage update.
       try {
         if (willClose) {
           const stageRow = await db.query(
             `SELECT stage_type FROM pipeline_stages WHERE org_id = $1 AND pipeline = 'sales' AND key = $2 LIMIT 1`,
             [req.orgId, stage]
           );
-          // Treat stage_type = 'won' OR the literal key 'closed_won' as a win
           const isWonStage =
             stageRow.rows[0]?.stage_type === 'won' ||
             stage === 'closed_won';
@@ -573,7 +542,6 @@ router.put('/:id', async (req, res) => {
       } catch (err) {
         console.error('Error initiating handover on won stage:', err);
       }
-      // ── end handover initiation ─────────────────────────────────────────────
     }
 
     if (closeDatePushIncrement > 0) {
@@ -717,6 +685,88 @@ router.patch('/:id/signal-override', async (req, res) => {
   } catch (error) {
     console.error('Signal override error:', error);
     res.status(500).json({ error: { message: 'Failed to update signal override' } });
+  }
+});
+
+// ── POST /:id/generate-actions ────────────────────────────────────────────────
+// Generate actions from the deal's playbook for the current (or specified) stage.
+//
+// Body: {
+//   stageKey?:    string,              — defaults to deal's current stage
+//   mode?:        'template' | 'ai',   — defaults to 'template'
+//   deduplicate?: boolean,             — skip plays already actioned (default true)
+// }
+router.post('/:id/generate-actions', async (req, res) => {
+  try {
+    const dealId = parseInt(req.params.id);
+    const userId = req.user.userId;
+    const orgId  = req.orgId;
+    const { mode = 'template', deduplicate = true } = req.body;
+
+    // Validate deal belongs to org
+    const dealRes = await db.query(
+      'SELECT * FROM deals WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL',
+      [dealId, orgId]
+    );
+    if (dealRes.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Deal not found' } });
+    }
+    const deal     = dealRes.rows[0];
+    const stageKey = req.body.stageKey || deal.stage;
+
+    if (!stageKey) {
+      return res.status(400).json({ error: { message: 'Deal has no stage assigned' } });
+    }
+
+    // Build full context (fixes broken PlaybookService calls, loads playbook correctly)
+    const context = await DealContextBuilder.build(dealId, userId, orgId);
+
+    // Generate action rows (template or AI)
+    const { actions, playbookId, playbookName, mode: effectiveMode } =
+      await PlaybookActionGenerator.generate({
+        entityType: 'deal',
+        context,
+        playbookId: context.playbookId || deal.playbook_id || null,
+        stageKey,
+        mode,
+        orgId,
+        userId,
+      });
+
+    if (actions.length === 0) {
+      return res.json({
+        inserted: 0, skipped: 0,
+        playbookName: playbookName || null,
+        mode: effectiveMode,
+        message: playbookName
+          ? `No plays defined for stage "${stageKey}" in "${playbookName}"`
+          : 'No playbook found for this deal',
+      });
+    }
+
+    // Persist to actions table
+    const result = await ActionWriter.write({
+      entityType:        'deal',
+      entityId:          dealId,
+      actions,
+      playbookId,
+      playbookName,
+      orgId,
+      userId,
+      deduplicateSource: deduplicate ? 'playbook' : null,
+    });
+
+    res.json({
+      inserted:     result.inserted,
+      skipped:      result.skipped,
+      playbookName: playbookName || null,
+      mode:         effectiveMode,
+      message:      `Generated ${result.inserted} action(s) from "${playbookName || 'playbook'}"`,
+    });
+
+  } catch (err) {
+    console.error('generate-actions (deal) error:', err);
+    res.status(500).json({ error: { message: err.message } });
   }
 });
 

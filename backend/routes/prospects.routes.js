@@ -4,6 +4,10 @@ const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
 const requireModule = require('../middleware/requireModule.middleware');
+const ProspectContextBuilder  = require('../services/ProspectContextBuilder');
+const PlaybookActionGenerator = require('../services/PlaybookActionGenerator');
+const ActionWriter            = require('../services/ActionWriter');
+
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -1322,5 +1326,101 @@ router.delete('/:id', async (req, res) => {
     res.status(500).json({ error: { message: 'Failed to delete prospect' } });
   }
 });
+
+
+// ── POST /:id/generate-actions ───────────────────────────────────────────────
+// Generate actions from the prospect's playbook for the current stage.
+//
+// Body: {
+//   mode?:        'template' | 'ai',   — defaults to 'template'
+//   deduplicate?: boolean,             — skip plays already actioned (default true)
+// }
+router.post('/:id/generate-actions', async (req, res) => {
+  try {
+    const prospectId = parseInt(req.params.id);
+    const userId     = req.user.userId;
+    const orgId      = req.orgId;
+    const { mode = 'template', deduplicate = true } = req.body;
+
+    // Validate prospect belongs to org
+    const prospectRes = await db.query(
+      'SELECT * FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL',
+      [prospectId, orgId]
+    );
+    if (prospectRes.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+    const prospect = prospectRes.rows[0];
+    const stageKey = prospect.stage;
+
+    if (!stageKey) {
+      return res.status(400).json({ error: { message: 'Prospect has no stage assigned' } });
+    }
+
+    // Build full context
+    const context = await ProspectContextBuilder.build(prospectId, userId, orgId);
+
+    // Generate action rows
+    const { actions, playbookId, playbookName, mode: effectiveMode } =
+      await PlaybookActionGenerator.generate({
+        entityType: 'prospect',
+        context,
+        playbookId: prospect.playbook_id || context.playbook?.id || null,
+        stageKey,
+        mode,
+        orgId,
+        userId,
+      });
+
+    if (actions.length === 0) {
+      return res.json({
+        inserted: 0, skipped: 0,
+        playbookName: playbookName || null,
+        mode: effectiveMode,
+        message: playbookName
+          ? `No plays defined for stage "${stageKey}" in "${playbookName}"`
+          : 'No playbook found for this prospect',
+      });
+    }
+
+    // Write to prospecting_actions table
+    const result = await ActionWriter.write({
+      entityType:        'prospect',
+      entityId:          prospectId,
+      actions,
+      playbookId,
+      playbookName,
+      orgId,
+      userId,
+      deduplicateSource: deduplicate ? 'playbook' : null,
+    });
+
+    // Log activity
+    if (result.inserted > 0) {
+      await db.query(
+        `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
+         VALUES ($1, $2, 'actions_generated', $3, $4)`,
+        [
+          prospectId, userId,
+          `Generated ${result.inserted} action(s) from "${playbookName || 'playbook'}" via ${effectiveMode} mode`,
+          JSON.stringify({ playbookId, stage: stageKey, mode: effectiveMode, inserted: result.inserted }),
+        ]
+      ).catch(() => {});
+    }
+
+    res.json({
+      inserted:     result.inserted,
+      skipped:      result.skipped,
+      playbookName: playbookName || null,
+      mode:         effectiveMode,
+      message:      `Generated ${result.inserted} action(s) from "${playbookName || 'playbook'}"`,
+    });
+
+  } catch (err) {
+    console.error('generate-actions (prospect) error:', err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
 
 module.exports = router;

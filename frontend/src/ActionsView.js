@@ -1120,6 +1120,77 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
   );
 }
 
+// ── STRAP Action Status Pill ─────────────────────────────────────────────────
+// Option B: pill showing current status + forward-only arrow button.
+// Grey = not started, Amber = in progress, Green = completed.
+
+const STRAP_ACTION_STATUS = {
+  yet_to_start: { label: 'Not started', pill: { background: '#F1EFE8', color: '#5F5E5A' }, next: 'in_progress' },
+  in_progress:  { label: 'In progress', pill: { background: '#FAEEDA', color: '#854F0B' }, next: 'completed'  },
+  completed:    { label: 'Completed',   pill: { background: '#EAF3DE', color: '#3B6D11' }, next: null         },
+};
+
+function StrapActionStatusPill({ act, onStatusChanged }) {
+  const [updating, setUpdating] = useState(false);
+  const cfg = STRAP_ACTION_STATUS[act.status] || STRAP_ACTION_STATUS.yet_to_start;
+
+  async function advance(e) {
+    e.stopPropagation();
+    if (!cfg.next || updating) return;
+    setUpdating(true);
+    try {
+      const isProspecting = act.action_table === 'prospecting_actions';
+      // prospecting_actions uses 'pending' instead of 'yet_to_start'
+      const statusToSend = isProspecting && cfg.next === 'yet_to_start' ? 'pending' : cfg.next;
+      const endpoint = isProspecting
+        ? `/prospecting-actions/${act.action_id}/status`
+        : `/actions/${act.action_id}/status`;
+      await apiFetch(endpoint, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: statusToSend }),
+      });
+      onStatusChanged(act.action_id, act.action_table, cfg.next);
+    } catch (err) {
+      alert('Failed to update status: ' + err.message);
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+      <span style={{
+        ...cfg.pill,
+        fontSize: 11,
+        fontWeight: 500,
+        padding: '3px 9px',
+        borderRadius: 20,
+        whiteSpace: 'nowrap',
+        opacity: updating ? 0.6 : 1,
+      }}>
+        {cfg.label}
+      </span>
+      {cfg.next && (
+        <button
+          onClick={advance}
+          disabled={updating}
+          title={`Advance to ${STRAP_ACTION_STATUS[cfg.next]?.label}`}
+          style={{
+            width: 22, height: 22, borderRadius: '50%',
+            border: '0.5px solid #d1d5db',
+            background: 'transparent',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: updating ? 'not-allowed' : 'pointer',
+            fontSize: 13, color: '#6b7280', lineHeight: 1, padding: 0,
+          }}
+        >
+          {updating ? '…' : '›'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── STRAP Pinned Card ────────────────────────────────────────────────────────
 
 function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onUpdate }) {
@@ -1131,6 +1202,7 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
   const [strapActions, setStrapActions] = useState([]);
   const [teamMembers, setTeamMembers] = useState([]);
   const [assigningId, setAssigningId] = useState(null);
+  const [allDoneConfirm, setAllDoneConfirm] = useState(false);
 
   const pri = PRIORITY_COLORS[strap.priority] || PRIORITY_COLORS.medium;
   const ent = STRAP_ENTITY_CONFIG[strap.entity_type] || STRAP_ENTITY_CONFIG.deal;
@@ -1192,6 +1264,29 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
       alert('Failed to reassign: ' + err.message);
     } finally {
       setAssigningId(null);
+    }
+  }
+
+  // Called by StrapActionStatusPill after a successful status update
+  function handleStrapActionStatusChanged(actionId, actionTable, newStatus) {
+    const updated = strapActions.map(a =>
+      a.action_id === actionId && a.action_table === actionTable
+        ? { ...a, status: newStatus }
+        : a
+    );
+    setStrapActions(updated);
+
+    // Recompute progress locally so the header bar updates immediately
+    const total     = updated.length;
+    const completed = updated.filter(a => a.status === 'completed').length;
+    const inProg    = updated.filter(a => a.status === 'in_progress').length;
+    const pending   = total - completed - inProg;
+    const percent   = total > 0 ? Math.round((completed / total) * 100) : 0;
+    setProgress({ total, completed, inProgress: inProg, pending, percent });
+
+    // If this was the last action completing, prompt to resolve the STRAP
+    if (newStatus === 'completed' && completed === total && total > 0) {
+      setAllDoneConfirm(true);
     }
   }
 
@@ -1275,9 +1370,6 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
                       return (
                         <div key={`${act.action_table}-${act.action_id}`}
                           className={`av-strap-action-row ${act.status === 'completed' ? 'av-strap-action-row--done' : ''}`}>
-                          <span className="av-strap-action-status" style={{ color: stMeta.color }} title={stMeta.label}>
-                            {stMeta.icon}
-                          </span>
                           <span className="av-strap-action-channel" style={{ background: chMeta.color + '14', color: chMeta.color }}>
                             {chMeta.icon}
                           </span>
@@ -1289,6 +1381,10 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
                               {new Date(act.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
                             </span>
                           )}
+                          <StrapActionStatusPill
+                            act={act}
+                            onStatusChanged={handleStrapActionStatusChanged}
+                          />
                           <select
                             className="av-strap-action-assignee"
                             value={act.user_id || ''}
@@ -1338,6 +1434,40 @@ function StrapPinnedCard({ strap, expanded, onToggle, onResolve, onReassess, onU
               {progress.percent === 100 && (
                 <span className="av-strap-progress-complete">✓ All actions complete — ready to resolve</span>
               )}
+            </div>
+          )}
+
+          {/* All-done confirmation — shown when last action is completed */}
+          {allDoneConfirm && (
+            <div style={{
+              background: '#f0fdf4', border: '1px solid #bbf7d0',
+              borderRadius: 10, padding: '14px 16px', marginBottom: 12,
+              display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+            }}>
+              <span style={{ fontSize: 18 }}>🎉</span>
+              <span style={{ flex: 1, fontSize: 13, color: '#166534', fontWeight: 500 }}>
+                All actions complete — mark this STRAP as resolved?
+              </span>
+              <button
+                onClick={() => { onResolve(strap.id, 'manual', 'All actions completed'); setAllDoneConfirm(false); }}
+                style={{
+                  padding: '6px 14px', borderRadius: 7, border: 'none',
+                  background: '#16a34a', color: '#fff', fontSize: 13,
+                  fontWeight: 500, cursor: 'pointer',
+                }}
+              >
+                Yes, Resolve
+              </button>
+              <button
+                onClick={() => setAllDoneConfirm(false)}
+                style={{
+                  padding: '6px 12px', borderRadius: 7,
+                  border: '1px solid #bbf7d0', background: '#fff',
+                  color: '#16a34a', fontSize: 13, cursor: 'pointer',
+                }}
+              >
+                Not yet
+              </button>
             </div>
           )}
 

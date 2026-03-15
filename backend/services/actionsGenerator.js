@@ -3,13 +3,13 @@
  *
  * Builds deal context, runs ActionsRulesEngine, optionally runs ActionsAIEnhancer.
  *
- * CHANGES FROM PREVIOUS VERSION:
- *   - PlaybookService.getStageActions / getStageGuidance now called with orgId
- *     instead of userId. PlaybookService no longer does a JOIN through users —
- *     it queries playbooks directly by org_id (cleaner, one fewer join).
- *   - buildContext signature unchanged — userId still passed for insertAction
- *     and AgentObserver, but orgId is derived from deal.org_id and passed
- *     separately to PlaybookService calls.
+ * FIXES IN THIS VERSION:
+ *   - PlaybookService.getStageActions(orgId, stageKey) now EXISTS — fixed call
+ *   - PlaybookService.getStageGuidance(orgId, stageKey) now EXISTS — fixed call
+ *   - PlaybookService.getPlaysForStage now receives correct (orgId, playbookId, stageKey)
+ *     by resolving playbookId from DealContextBuilder's playbook field first
+ *   - playbookStageGuidance now correctly flows into ActionsAIEnhancer context
+ *   - context now includes playbookId for downstream use
  */
 
 const db = require('../config/database');
@@ -113,7 +113,8 @@ function buildDerived(deal, contacts, emails, meetings, files) {
 }
 
 // ── Context builder ───────────────────────────────────────────────────────────
-// orgId added as explicit param — passed to PlaybookService instead of userId.
+// Used by generateAll() / generateForDeal() which pass pre-loaded bulk arrays.
+// For per-deal calls use DealContextBuilder.build() instead — it's more complete.
 
 async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles, userId, orgId) {
   const contacts = allContacts.filter(c => c.account_id === deal.account_id);
@@ -133,16 +134,27 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
     } catch (_) {}
   }
 
-  // Use orgId directly — PlaybookService no longer needs userId for lookup.
+  // FIXED: getStageActions and getStageGuidance now exist in playbook.service.js
+  // FIXED: getPlaysForStage signature is (orgId, playbookId, stageKey) but
+  //        here we use getStageActions which internally resolves the default playbook
   let playbookStageActions  = [];
   let playbookStageGuidance = null;
   let playbookPlays         = [];
+  let playbookId            = null;
+
   try {
-    [playbookStageActions, playbookStageGuidance, playbookPlays] = await Promise.all([
+    // getStageActions resolves the org default playbook internally
+    [playbookStageActions, playbookStageGuidance] = await Promise.all([
       PlaybookService.getStageActions(orgId, deal.stage),
       PlaybookService.getStageGuidance(orgId, deal.stage),
-      PlaybookService.getPlaysForStage(orgId, deal.stage),
     ]);
+
+    // Also resolve playbookId for ActionWriter stamping downstream
+    const pb = await PlaybookService.getPlaybook(userId, orgId);
+    if (pb) {
+      playbookId   = pb.id;
+      playbookPlays = playbookStageActions; // same data, two names for compat
+    }
   } catch (err) {
     console.error('buildContext: PlaybookService error:', err.message);
   }
@@ -158,8 +170,9 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
     healthScore:          deal.health_score || null,
     stageType,
     derived,
+    playbookId,
     playbookStageActions,
-    playbookStageGuidance,
+    playbookStageGuidance,  // NOW POPULATED — ActionsAIEnhancer.enhance() uses this
     playbookPlays,
   };
 }
@@ -177,12 +190,16 @@ async function insertAction(action, userId, orgId) {
        due_date, deal_id, contact_id, account_id, contract_id,
        suggested_action, context, source, source_rule, health_param,
        keywords, deal_stage, requires_external_evidence,
-       is_internal, next_step, playbook_play_id, status, created_at
+       is_internal, next_step, playbook_play_id,
+       playbook_id, playbook_name,
+       status, created_at
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
        $13,$14,$15,$16,$17,
        $18,$19,$20,
-       $21,$22,$23,'yet_to_start',NOW()
+       $21,$22,$23,
+       $24,$25,
+       'yet_to_start',NOW()
      ) RETURNING id`,
     [
       orgId,
@@ -208,14 +225,14 @@ async function insertAction(action, userId, orgId) {
       internal,
       next_step,
       action.playbook_play_id           || null,
+      action.playbook_id                || null,
+      action.playbook_name              || null,
     ]
   );
   return result.rows[0]?.id || null;
 }
 
 // ── Calendar entry helper ─────────────────────────────────────────────────────
-// Creates a lightweight `meetings` row so the action shows up in CalendarView.
-// Only fires for meeting/scheduling action types — internal tasks don't need it.
 
 const CALENDAR_ACTION_TYPES = new Set([
   'meeting_schedule', 'meeting', 'meeting_prep', 'meeting_followup',
@@ -250,7 +267,6 @@ async function createCalendarEntryForAction(action, insertedId, userId, orgId) {
       ]
     );
   } catch (err) {
-    // Best-effort — calendar entry failure must never block action generation
     console.error(`📅 Calendar entry creation failed (non-blocking) for action "${action.title}":`, err.message);
   }
 }
@@ -291,7 +307,7 @@ class ActionsGenerator {
       console.log(`📊 Loaded: ${deals.length} deals, ${contacts.length} contacts, ${emails.length} emails, ${meetings.length} meetings, ${files.length} files`);
 
       await db.query(
-        "DELETE FROM actions WHERE source IN ('auto_generated', 'ai_generated') AND status IN ('yet_to_start', 'in_progress') AND contract_id IS NULL"
+        "DELETE FROM actions WHERE source IN ('auto_generated', 'ai_generated') AND status IN ('yet_to_start', 'in_progress') AND contract_id IS NULL AND case_id IS NULL"
       );
 
       let totalGenerated = 0;
@@ -348,7 +364,6 @@ class ActionsGenerator {
 
       console.log(`✅ generateAll complete — generated: ${totalGenerated} inserted: ${totalInserted}`);
 
-      // Phase 5: stamp last_generated_at for all users who had actions generated
       try {
         await db.query(
           `UPDATE action_config SET last_generated_at = NOW()
@@ -389,9 +404,9 @@ class ActionsGenerator {
       if (isTerminalDeal(deal)) return 0;
 
       const [contactsRes, emailsRes, meetingsRes, filesRes] = await Promise.all([
-        db.query('SELECT * FROM contacts      WHERE account_id = $1 AND org_id = $2',                       [deal.account_id, orgId]),
-        db.query('SELECT * FROM emails        WHERE deal_id = $1    AND org_id = $2',                       [dealId, orgId]),
-        db.query('SELECT * FROM meetings      WHERE deal_id = $1    AND org_id = $2',                       [dealId, orgId]),
+        db.query('SELECT * FROM contacts      WHERE account_id = $1 AND org_id = $2', [deal.account_id, orgId]),
+        db.query('SELECT * FROM emails        WHERE deal_id = $1    AND org_id = $2', [dealId, orgId]),
+        db.query('SELECT * FROM meetings      WHERE deal_id = $1    AND org_id = $2', [dealId, orgId]),
         db.query("SELECT * FROM storage_files WHERE deal_id = $1    AND org_id = $2 AND processing_status = 'completed'", [dealId, orgId]),
       ]);
 
@@ -466,7 +481,9 @@ class ActionsGenerator {
       return this.generateForDeal(dealId);
     } catch (error) { return []; }
   }
-  // ── buildContextPublic — called from actions_routes for gate condition eval ──
+
+  // ── buildContextPublic ──────────────────────────────────────────────────────
+  // Called from actions_routes for gate condition eval
   static async buildContextPublic(deal, contacts, emails, meetings, files, userId, orgId) {
     return buildContext(deal, contacts, emails, meetings, files, userId, orgId);
   }

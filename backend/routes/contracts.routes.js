@@ -14,6 +14,9 @@ const CS  = require('../services/contractService');
 const AS  = require('../services/contractApprovalService');
 const NS  = require('../services/contractNotificationService');
 const ContractActionsGenerator = require('../services/ContractActionsGenerator');
+const PlaybookActionGenerator  = require('../services/PlaybookActionGenerator');
+const ActionWriter             = require('../services/ActionWriter');
+const PlaybookService          = require('../services/playbook.service');
 
 router.use(auth);
 router.use(orgContext);
@@ -635,5 +638,99 @@ router.post('/:id/notes', async (req, res) => {
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: { message: 'Failed' } }); }
 });
+
+
+// ── POST /:id/generate-actions ───────────────────────────────────────────────
+// Generate actions from the CLM playbook for a contract's current status.
+//
+// Body: {
+//   mode?:        'template' | 'ai',   — defaults to 'template'
+//   stageKey?:    string,              — defaults to contract.status
+//   deduplicate?: boolean,             — default true
+// }
+router.post('/:id/generate-actions', gate, async (req, res) => {
+  try {
+    const contractId = parseInt(req.params.id, 10);
+    const userId     = req.user?.userId || req.userId;
+    const orgId      = req.orgId;
+    const { mode = 'template', deduplicate = true } = req.body;
+
+    // Load contract
+    const contractRes = await db.query(
+      'SELECT * FROM contracts WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL',
+      [contractId, orgId]
+    );
+    if (contractRes.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Contract not found' } });
+    }
+    const contract = contractRes.rows[0];
+    const stageKey = req.body.stageKey || contract.status;
+
+    // Build a lightweight context object for PlaybookActionGenerator
+    // (contracts don't have a full context builder yet — use what we have)
+    const context = {
+      contract,
+      entityType:           'contract',
+      playbookStageGuidance: null,
+      orgId,
+      userId,
+    };
+
+    // Resolve playbook — use contract's explicit playbook_id or org CLM default
+    const resolvedPlaybookId = contract.playbook_id
+      || (await PlaybookService.getDefaultPlaybookForEntity(orgId, 'contract'))?.id
+      || null;
+
+    // Generate action rows
+    const { actions, playbookId, playbookName, mode: effectiveMode } =
+      await PlaybookActionGenerator.generate({
+        entityType: 'contract',
+        context,
+        playbookId: resolvedPlaybookId,
+        stageKey,
+        mode,
+        orgId,
+        userId,
+      });
+
+    if (actions.length === 0) {
+      return res.json({
+        inserted: 0, skipped: 0,
+        playbookName: playbookName || null,
+        mode: effectiveMode,
+        message: playbookName
+          ? `No plays defined for status "${stageKey}" in "${playbookName}"`
+          : 'No CLM playbook found',
+      });
+    }
+
+    // Write to actions table (with contract_id FK)
+    const result = await ActionWriter.write({
+      entityType:        'contract',
+      entityId:          contractId,
+      actions,
+      playbookId,
+      playbookName,
+      orgId,
+      userId:            contract.owner_id || userId,
+      deduplicateSource: deduplicate ? 'playbook' : null,
+    });
+
+    res.json({
+      inserted:     result.inserted,
+      skipped:      result.skipped,
+      playbookName: playbookName || null,
+      mode:         effectiveMode,
+      message:      `Generated ${result.inserted} action(s) from "${playbookName || 'CLM playbook'}"`,
+    });
+
+  } catch (err) {
+    console.error('generate-actions (contract) error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+
+
 
 module.exports = router;

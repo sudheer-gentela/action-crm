@@ -719,4 +719,158 @@
   .dpp-add-form__row {
     flex-direction: column;
   }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DealPlaysPanel.css — ADDITIONS
+   Append these rules to the end of your existing DealPlaysPanel.css file.
+   Do not replace the existing file — just paste at the bottom.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Generate Actions button ─────────────────────────────────────────────── */
+
+.dpp-generate {
+  position: relative;
+}
+
+.dpp-btn--generate {
+  background: #f0fdf4;
+  color: #16a34a;
+  border: 1px solid #bbf7d0;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+.dpp-btn--generate:hover {
+  background: #dcfce7;
+  border-color: #86efac;
+}
+
+/* ── Dropdown panel ──────────────────────────────────────────────────────── */
+
+.dpp-generate-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  min-width: 270px;
+  padding: 12px;
+  z-index: 200;
+}
+
+.dpp-generate-dropdown__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.dpp-generate-dropdown__title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.dpp-generate-close {
+  background: none;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+  line-height: 1;
+}
+.dpp-generate-close:hover {
+  color: #374151;
+}
+
+/* ── Option buttons ──────────────────────────────────────────────────────── */
+
+.dpp-generate-option {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  text-align: left;
+  padding: 9px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  background: white;
+  cursor: pointer;
+  margin-bottom: 6px;
+  transition: background 0.12s, border-color 0.12s;
+}
+.dpp-generate-option:last-of-type {
+  margin-bottom: 0;
+}
+.dpp-generate-option:hover:not(:disabled) {
+  background: #f9fafb;
+  border-color: #d1d5db;
+}
+.dpp-generate-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dpp-generate-option__icon {
+  font-size: 18px;
+  line-height: 1;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+.dpp-generate-option__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dpp-generate-option__label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #111827;
+}
+
+.dpp-generate-option__desc {
+  font-size: 11px;
+  color: #6b7280;
+  line-height: 1.4;
+}
+
+/* ── Result states ───────────────────────────────────────────────────────── */
+
+.dpp-generate-result {
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+
+.dpp-generate-result--success {
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+
+.dpp-generate-result--empty {
+  background: #f9fafb;
+  color: #6b7280;
+  border: 1px solid #e5e7eb;
+}
+
+.dpp-generate-result__skipped {
+  color: #9ca3af;
+  font-size: 11px;
+}
+
 }

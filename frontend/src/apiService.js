@@ -67,6 +67,8 @@ export const apiService = {
     update: (id, data) => api.put(`/deals/${id}`, data),
     delete: (id) => api.delete(`/deals/${id}`),
     bulk: (rows) => api.post('/deals/bulk', { rows }),
+    generateActions: (id, data) => api.post(`/deals/${id}/generate-actions`, data),
+
   },
 
   emails: {
@@ -263,6 +265,7 @@ export const apiService = {
     bulkImport: (prospects, source = 'csv_import') => api.post('/prospects/bulk', { prospects, source }),
     research: (id) => api.post(`/prospects/${id}/research`),
     getEmails: (id) => api.get(`/prospects/${id}/emails`),
+    generateActions: (id, data) => api.post(`/prospects/${id}/generate-actions`, data),
   },
 
   prospectingActions: {
@@ -467,6 +470,7 @@ export const apiService = {
     addSignatory:    (id, data) => api.post(`/contracts/${id}/signatories`, data),
     removeSignatory: (id, sigId) => api.delete(`/contracts/${id}/signatories/${sigId}`),
     addNote: (id, note) => api.post(`/contracts/${id}/notes`, { note }),
+    generateActions: (id, data) => api.post(`/contracts/${id}/generate-actions`, data),
   },
 
   // ══════════════════════════════════════════════════════════
@@ -591,6 +595,7 @@ export const apiService = {
     updatePlay:    (caseId, playId, data) => api.patch(`/support/cases/${caseId}/plays/${playId}`, data),
     // Dashboard
     getDashboard:  (scope = 'mine') => api.get(`/support/dashboard?scope=${scope}`),
+    generateCaseActions: (caseId, data) => api.post(`/support/cases/${caseId}/generate-actions`, data),
   },
 };
 

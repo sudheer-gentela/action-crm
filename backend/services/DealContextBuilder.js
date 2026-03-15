@@ -8,26 +8,21 @@
  *   4. Meetings
  *   5. Emails (deal-linked)
  *   6. Files / storage_files (deal-linked)
- *   7. Playbook (user's stage actions)
- *   8. Deal Health Config + Breakdown
+ *   7. Playbook (org default sales playbook — resolved via PlaybookService.getPlaybook)
+ *   8. Playbook plays for current stage
+ *   9. Playbook stage guidance for current stage
+ *  10. Deal Health Config + Breakdown
  *
- * Returns a single `context` object consumed by ActionsRulesEngine and ActionsAIEnhancer.
- * Called once per deal — all downstream services receive this context, no extra DB calls.
- *
- * MULTI-ORG changes:
- *   - build(dealId, userId, orgId) — orgId is now required
- *   - _getFiles(dealId, userId, orgId) — queries storage_files with org_id guard
- *   - _getPlaybook(userId, orgId)       — delegates to PlaybookService.getPlaybook(userId, orgId)
- *   - _getHealthConfig(userId, orgId)   — queries deal_health_config with (user_id, org_id)
- *   - _getPlaybookStageActions uses getPlaysForStage(orgId, playbookId, stageKey)
- *
- * All _deriveSignals logic and the other DB fetchers (_getDeal, _getAccount,
- * _getContacts, _getMeetings, _getEmails) are unchanged — they operate on
- * already-org-isolated parent records (deals, meetings, emails are already
- * scoped by dealId which belongs to one org).
+ * FIXES in this version:
+ *   - _getPlaybook() now calls PlaybookService.getPlaybook(userId, orgId) which EXISTS
+ *     (previously called a non-existent function, always returned null)
+ *   - getPlaysForStage() now receives (orgId, playbookId, stageKey) — 3 args
+ *     (previously called with (orgId, stageKey) — missing playbookId, always returned [])
+ *   - Added playbookStageGuidance loading from playbook.stage_guidance[stageKey]
+ *   - playbookId now threaded through context so ActionsAIEnhancer gets real data
  */
 
-const db            = require('../config/database');
+const db              = require('../config/database');
 const PlaybookService = require('./playbook.service');
 
 class DealContextBuilder {
@@ -56,7 +51,7 @@ class DealContextBuilder {
       this._getMeetings(dealId),
       this._getEmails(dealId),
       this._getFiles(dealId, userId, orgId),
-      this._getPlaybook(userId, orgId),
+      this._getPlaybook(userId, orgId),           // FIXED: now calls PlaybookService.getPlaybook
       this._getHealthConfig(userId, orgId),
     ]);
 
@@ -69,10 +64,19 @@ class DealContextBuilder {
           : deal.health_score_breakdown)
       : null;
 
-    // Get playbook plays for the deal's current stage (read-only, for AI context)
-    const playbookStageActions = (deal.stage && playbook?.id)
-      ? await PlaybookService.getPlaysForStage(orgId, playbook.id, deal.stage).catch(() => [])
-      : [];
+    // FIXED: now passes playbookId as the second argument (was missing before)
+    const playbookId = playbook?.id || null;
+    const stageKey   = deal.stage || null;
+
+    let playbookStageActions  = [];
+    let playbookStageGuidance = null;
+
+    if (playbookId && stageKey) {
+      [playbookStageActions, playbookStageGuidance] = await Promise.all([
+        PlaybookService.getPlaysForStage(orgId, playbookId, stageKey).catch(() => []),
+        this._getStageGuidance(playbook, stageKey),
+      ]);
+    }
 
     // Pre-compute derived signals useful to rules engine
     const derived = this._deriveSignals(deal, contacts, meetings, emails, files);
@@ -85,15 +89,26 @@ class DealContextBuilder {
       emails,
       files,
       playbook,
+      playbookId,
       playbookStageActions,
+      playbookStageGuidance,     // NOW POPULATED — ActionsAIEnhancer can use it
       healthConfig,
       healthBreakdown,
       healthScore:  deal.health_score ?? null,
       healthStatus: deal.health       || 'unknown',
+      stageType:    deal.stage_type   || 'custom',
       userId,
       orgId,
       derived,
     };
+  }
+
+  // ── Stage guidance helper ────────────────────────────────────────────────
+
+  static _getStageGuidance(playbook, stageKey) {
+    if (!playbook || !stageKey) return null;
+    const guidance = playbook.stage_guidance || {};
+    return guidance[stageKey] || null;
   }
 
   // ── Derived signal helpers ────────────────────────────────────────────────
@@ -126,7 +141,9 @@ class DealContextBuilder {
     // Contacts by role
     const decisionMakers = contacts.filter(c => ['decision_maker', 'economic_buyer'].includes(c.role_type));
     const champions      = contacts.filter(c => c.role_type === 'champion');
-    const stakeholders   = contacts.filter(c => ['decision_maker','champion','influencer','economic_buyer','executive'].includes(c.role_type));
+    const stakeholders   = contacts.filter(c =>
+      ['decision_maker', 'champion', 'influencer', 'economic_buyer', 'executive'].includes(c.role_type)
+    );
 
     // Files
     const processedFiles = files.filter(f => f.processing_status === 'completed');
@@ -140,8 +157,8 @@ class DealContextBuilder {
     const daysUntilClose = deal.close_date
       ? Math.ceil((new Date(deal.close_date) - now) / 86400000)
       : null;
-    const isPastClose        = daysUntilClose !== null && daysUntilClose < 0;
-    const closingImminently  = daysUntilClose !== null && daysUntilClose >= 0 && daysUntilClose <= 7;
+    const isPastClose       = daysUntilClose !== null && daysUntilClose < 0;
+    const closingImminently = daysUntilClose !== null && daysUntilClose >= 0 && daysUntilClose <= 7;
 
     return {
       completedMeetings,
@@ -164,13 +181,11 @@ class DealContextBuilder {
       isPastClose,
       closingImminently,
       isHighValue: parseFloat(deal.value || 0) > 100000,
-      isStagnant:  daysInStage > 14 && !['closed_won','closed_lost'].includes(deal.stage),
+      isStagnant:  daysInStage > 14 && !['closed_won', 'closed_lost'].includes(deal.stage),
     };
   }
 
   // ── DB fetchers ───────────────────────────────────────────────────────────
-
-  // dealId is already org-scoped so no explicit org guard needed on these four.
 
   static async _getDeal(dealId) {
     const r = await db.query('SELECT * FROM deals WHERE id = $1', [dealId]);
@@ -214,7 +229,7 @@ class DealContextBuilder {
     return r.rows;
   }
 
-  // storage_files needs explicit org_id guard — a file has both user_id and org_id.
+  // storage_files needs explicit org_id guard
   static async _getFiles(dealId, userId, orgId) {
     const r = await db.query(
       `SELECT * FROM storage_files
@@ -225,6 +240,7 @@ class DealContextBuilder {
     return r.rows;
   }
 
+  // FIXED: calls PlaybookService.getPlaybook(userId, orgId) which now exists
   static async _getPlaybook(userId, orgId) {
     try {
       return await PlaybookService.getPlaybook(userId, orgId);

@@ -78,24 +78,24 @@ function AssigneePills({ assignees }) {
   );
 }
 
-function DependencyTag({ instance, allInstances }) {
+function DependencyTag({ instance }) {
   if (instance.status !== 'pending' || instance.execution_type !== 'sequential') return null;
   return (
     <span className="dpp-dep-tag">⏳ Waiting on earlier plays</span>
   );
 }
 
-// ── Add Play Modal ──────────────────────────────────────────────────────────
+// ── Add Play Form ────────────────────────────────────────────────────────────
 
 function AddPlayForm({ dealId, teamMembers, onAdd, onCancel }) {
-  const [title, setTitle] = useState('');
-  const [channel, setChannel] = useState('');
-  const [priority, setPriority] = useState('medium');
-  const [isGate, setIsGate] = useState(false);
-  const [dueDate, setDueDate] = useState('');
+  const [title, setTitle]           = useState('');
+  const [channel, setChannel]       = useState('');
+  const [priority, setPriority]     = useState('medium');
+  const [isGate, setIsGate]         = useState(false);
+  const [dueDate, setDueDate]       = useState('');
   const [assigneeIds, setAssigneeIds] = useState([]);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [saving, setSaving]         = useState(false);
+  const [error, setError]           = useState('');
 
   async function handleSubmit() {
     if (!title.trim()) { setError('Title is required'); return; }
@@ -164,10 +164,10 @@ function AddPlayForm({ dealId, teamMembers, onAdd, onCancel }) {
   );
 }
 
-// ── Reassign Dropdown ───────────────────────────────────────────────────────
+// ── Reassign Dropdown ─────────────────────────────────────────────────────────
 
 function ReassignDropdown({ instance, teamMembers, dealId, onReassigned }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen]         = useState(false);
   const [assigning, setAssigning] = useState(false);
 
   async function handleAssign(userId) {
@@ -188,7 +188,7 @@ function ReassignDropdown({ instance, teamMembers, dealId, onReassigned }) {
   }
 
   const currentIds = new Set((instance.assignees || []).map(a => a.user_id));
-  const available = teamMembers.filter(m => !currentIds.has(m.userId));
+  const available  = teamMembers.filter(m => !currentIds.has(m.userId));
 
   if (available.length === 0) return null;
 
@@ -210,7 +210,121 @@ function ReassignDropdown({ instance, teamMembers, dealId, onReassigned }) {
   );
 }
 
-// ── Main Panel ──────────────────────────────────────────────────────────────
+// ── Generate Actions Button ──────────────────────────────────────────────────
+// Dropdown with two modes: template (direct from plays) or AI-enriched.
+// Calls POST /deals/:id/generate-actions and refreshes the ActionsView
+// via the onGenerated callback (parent should re-fetch actions if needed).
+
+function GenerateActionsButton({ dealId, stageKey, onGenerated }) {
+  const [open,       setOpen]       = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [result,     setResult]     = useState(null);
+  const [error,      setError]      = useState('');
+
+  async function handleGenerate(mode) {
+    setGenerating(true);
+    setError('');
+    setResult(null);
+    try {
+      const res = await apiFetch(`/deals/${dealId}/generate-actions`, {
+        method: 'POST',
+        body: JSON.stringify({ stageKey, mode, deduplicate: true }),
+      });
+      setResult(res);
+      if (res.inserted > 0 && onGenerated) onGenerated();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function handleClose() {
+    setOpen(false);
+    setResult(null);
+    setError('');
+  }
+
+  return (
+    <div className="dpp-generate" style={{ position: 'relative' }}>
+      <button
+        className="dpp-btn dpp-btn--generate"
+        onClick={() => { setOpen(v => !v); setResult(null); setError(''); }}
+        title="Generate actions from playbook"
+      >
+        ⚡ Actions
+      </button>
+
+      {open && (
+        <div className="dpp-generate-dropdown">
+          <div className="dpp-generate-dropdown__header">
+            <span className="dpp-generate-dropdown__title">Generate from Playbook</span>
+            <button className="dpp-generate-close" onClick={handleClose}>✕</button>
+          </div>
+
+          {result && (
+            <div className={`dpp-generate-result ${result.inserted > 0 ? 'dpp-generate-result--success' : 'dpp-generate-result--empty'}`}>
+              {result.inserted > 0
+                ? `✓ Created ${result.inserted} action${result.inserted !== 1 ? 's' : ''}${result.playbookName ? ' from "' + result.playbookName + '"' : ''}`
+                : (result.message || 'No new actions generated')}
+              {result.skipped > 0 && (
+                <span className="dpp-generate-result__skipped"> ({result.skipped} already existed)</span>
+              )}
+            </div>
+          )}
+
+          {error && (
+            <div className="dpp-error" style={{ margin: '4px 0', fontSize: 12 }}>{error}</div>
+          )}
+
+          {!result && (
+            <>
+              <button
+                className="dpp-generate-option"
+                onClick={() => handleGenerate('template')}
+                disabled={generating}
+              >
+                <span className="dpp-generate-option__icon">📋</span>
+                <span className="dpp-generate-option__body">
+                  <span className="dpp-generate-option__label">
+                    {generating ? 'Generating…' : 'From Playbook'}
+                  </span>
+                  <span className="dpp-generate-option__desc">
+                    Create actions directly from defined plays
+                  </span>
+                </span>
+              </button>
+
+              <button
+                className="dpp-generate-option"
+                onClick={() => handleGenerate('ai')}
+                disabled={generating}
+              >
+                <span className="dpp-generate-option__icon">🤖</span>
+                <span className="dpp-generate-option__body">
+                  <span className="dpp-generate-option__label">
+                    {generating ? 'Generating…' : 'With AI'}
+                  </span>
+                  <span className="dpp-generate-option__desc">
+                    AI enriches plays with deal-specific context
+                  </span>
+                </span>
+              </button>
+            </>
+          )}
+
+          {result && (
+            <button className="dpp-btn dpp-btn--subtle" onClick={handleClose} style={{ marginTop: 8, width: '100%' }}>
+              Close
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main Panel ───────────────────────────────────────────────────────────────
 
 export default function DealPlaysPanel({ deal, stageKey }) {
   const [instances, setInstances]     = useState([]);
@@ -220,15 +334,15 @@ export default function DealPlaysPanel({ deal, stageKey }) {
   const [error, setError]             = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [filterRole, setFilterRole]   = useState('all');
-  const [viewMode, setViewMode]       = useState('all'); // 'all' or 'mine'
+  const [viewMode, setViewMode]       = useState('all');
 
-  const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
-  const userOrgRole = currentUser.org_role || currentUser.role || currentUser.orgRole || '';
+  const currentUser   = JSON.parse(localStorage.getItem('user') || '{}');
+  const userOrgRole   = currentUser.org_role || currentUser.role || currentUser.orgRole || '';
   const activeNavRole = sessionStorage.getItem('activeRole') || '';
-  const isAdmin = userOrgRole === 'owner' || userOrgRole === 'admin'
+  const isAdmin       = userOrgRole === 'owner' || userOrgRole === 'admin'
     || activeNavRole === 'org-admin' || activeNavRole === 'super-admin';
-  const isDealOwner = deal?.user_id === currentUser.id;
-  const canManage = isAdmin || isDealOwner;
+  const isDealOwner   = deal?.user_id === currentUser.id;
+  const canManage     = isAdmin || isDealOwner;
 
   const fetchData = useCallback(async () => {
     if (!deal?.id) return;
@@ -243,7 +357,6 @@ export default function DealPlaysPanel({ deal, stageKey }) {
         userId: m.userId, name: m.name, roleId: m.roleId, roleName: m.roleName, roleKey: m.roleKey,
       })));
 
-      // Gate check
       if (sk) {
         try {
           const gateRes = await apiFetch(`/deal-plays/${deal.id}/gate-check?stageKey=${sk}`);
@@ -259,7 +372,7 @@ export default function DealPlaysPanel({ deal, stageKey }) {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // ── Actions ────────────────────────────────────────────────────────────────
+  // ── Handlers ──────────────────────────────────────────────────────────────
 
   async function handleComplete(instance) {
     try {
@@ -302,7 +415,14 @@ export default function DealPlaysPanel({ deal, stageKey }) {
     }
   }
 
-  // ── Filter ─────────────────────────────────────────────────────────────────
+  // Called after GenerateActionsButton successfully creates actions.
+  // The plays panel doesn't need to re-fetch (actions go to ActionsView),
+  // but we re-fetch to update any play instance status that may have changed.
+  function handleActionsGenerated() {
+    fetchData();
+  }
+
+  // ── Filter + Stats ────────────────────────────────────────────────────────
 
   const uniqueRoles = [...new Map(
     instances.flatMap(i => (i.assignees || []).map(a => [a.role_key, a.role_name]))
@@ -316,14 +436,12 @@ export default function DealPlaysPanel({ deal, stageKey }) {
     filtered = filtered.filter(i => (i.assignees || []).some(a => a.role_key === filterRole));
   }
 
-  // ── Stats ──────────────────────────────────────────────────────────────────
-
   const total     = instances.length;
   const completed = instances.filter(i => i.status === 'completed').length;
   const gates     = instances.filter(i => i.is_gate && i.status !== 'completed' && i.status !== 'skipped').length;
   const pct       = total > 0 ? Math.round((completed / total) * 100) : 0;
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
 
   if (loading) {
     return <div className="dpp-loading"><span className="dpp-spinner" /> Loading plays…</div>;
@@ -358,6 +476,15 @@ export default function DealPlaysPanel({ deal, stageKey }) {
               ))}
             </select>
           )}
+          {/* Generate Actions button — creates action rows in ActionsView */}
+          {canManage && (
+            <GenerateActionsButton
+              dealId={deal.id}
+              stageKey={stageKey || deal.stage_key}
+              onGenerated={handleActionsGenerated}
+            />
+          )}
+          {/* Add custom play button */}
           {canManage && (
             <button className="dpp-btn dpp-btn--add" onClick={() => setShowAddForm(v => !v)}>
               {showAddForm ? 'Cancel' : '+ Add Play'}
@@ -375,7 +502,7 @@ export default function DealPlaysPanel({ deal, stageKey }) {
 
       {error && <div className="dpp-error">{error} <button className="dpp-error-dismiss" onClick={() => setError('')}>✕</button></div>}
 
-      {/* Gate warning */}
+      {/* Gate warnings */}
       {gateStatus && !gateStatus.canAdvance && gateStatus.enforcement === 'strict' && (
         <div className="dpp-gate-warning dpp-gate-warning--strict">
           🚧 <strong>Stage advancement blocked</strong> — {gateStatus.incompleteGates.length} gate{gateStatus.incompleteGates.length !== 1 ? 's' : ''} must be completed:
@@ -393,7 +520,7 @@ export default function DealPlaysPanel({ deal, stageKey }) {
         </div>
       )}
 
-      {/* Add form */}
+      {/* Add play form */}
       {showAddForm && (
         <AddPlayForm
           dealId={deal.id}
@@ -418,17 +545,17 @@ export default function DealPlaysPanel({ deal, stageKey }) {
       {/* Play list */}
       <div className="dpp-plays">
         {filtered.map((instance, idx) => {
-          const overdue = isOverdue(instance.due_date, instance.status);
+          const overdue  = isOverdue(instance.due_date, instance.status);
           const isMyPlay = (instance.assignees || []).some(a => a.user_id === currentUser.id);
-          const canAct = canManage || isMyPlay;
-          const prCfg = PRIORITY_COLORS[instance.priority] || PRIORITY_COLORS.medium;
+          const canAct   = canManage || isMyPlay;
+          const prCfg    = PRIORITY_COLORS[instance.priority] || PRIORITY_COLORS.medium;
 
           return (
             <div
               key={instance.id}
               className={`dpp-play ${instance.status === 'completed' ? 'dpp-play--completed' : ''} ${instance.status === 'skipped' ? 'dpp-play--skipped' : ''} ${overdue ? 'dpp-play--overdue' : ''}`}
             >
-              {/* Left: status + sequence indicator */}
+              {/* Left: order + sequence line */}
               <div className="dpp-play__left">
                 <div className="dpp-play__order">{idx + 1}</div>
                 {instance.execution_type === 'sequential' && (
@@ -479,7 +606,7 @@ export default function DealPlaysPanel({ deal, stageKey }) {
                 </div>
               </div>
 
-              {/* Right: actions */}
+              {/* Right: action buttons */}
               <div className="dpp-play__actions">
                 {canAct && instance.status === 'active' && (
                   <>
@@ -505,7 +632,7 @@ export default function DealPlaysPanel({ deal, stageKey }) {
         })}
       </div>
 
-      {/* Footer: activate button if plays exist but might have new ones */}
+      {/* Footer: re-sync button when plays already exist */}
       {total > 0 && canManage && (
         <div className="dpp-footer">
           <button className="dpp-btn dpp-btn--subtle" onClick={handleActivate} title="Re-sync plays from playbook">
