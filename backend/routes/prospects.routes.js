@@ -14,17 +14,31 @@ router.use(orgContext);
 router.use(requireModule('prospecting'));
 
 // ── Valid stage transitions ──────────────────────────────────────────────────
-const VALID_STAGES = ['target', 'researched', 'contacted', 'engaged', 'qualified', 'converted', 'disqualified', 'nurture'];
+// const VALID_STAGES = ['target', 'researched', 'contacted', 'engaged', 'qualified', 'converted', 'disqualified', 'nurture'];
+
+const VALID_STAGES = ['target', 'research', 'outreach', 'engaged', 'discovery_call', 'qualified_sal', 'disqualified', 'nurture'];
+
+//const STAGE_TRANSITIONS = {
+//  target:       ['researched', 'contacted', 'disqualified', 'nurture'],
+//  researched:   ['contacted', 'disqualified', 'nurture'],
+//  contacted:    ['engaged', 'qualified', 'disqualified', 'nurture'],
+//  engaged:      ['qualified', 'disqualified', 'nurture'],
+//  qualified:    ['converted', 'disqualified', 'nurture'],
+//  disqualified: ['target'],
+//  nurture:      ['target', 'contacted'],
+//};
 
 const STAGE_TRANSITIONS = {
-  target:       ['researched', 'contacted', 'disqualified', 'nurture'],
-  researched:   ['contacted', 'disqualified', 'nurture'],
-  contacted:    ['engaged', 'qualified', 'disqualified', 'nurture'],
-  engaged:      ['qualified', 'disqualified', 'nurture'],
-  qualified:    ['converted', 'disqualified', 'nurture'],
-  disqualified: ['target'],
-  nurture:      ['target', 'contacted'],
+  target:        ['research', 'disqualified', 'nurture'],
+  research:      ['outreach', 'disqualified', 'nurture'],
+  outreach:      ['engaged', 'disqualified', 'nurture'],
+  engaged:       ['discovery_call', 'disqualified', 'nurture'],
+  discovery_call:['qualified_sal', 'disqualified', 'nurture'],
+  qualified_sal: [],                 // terminal — no transitions out
+  disqualified:  ['outreach'],       // re-engagement via outreach only
+  nurture:       ['outreach'],       // re-entry to outreach only
 };
+
 
 // ── GET / — list prospects ───────────────────────────────────────────────────
 router.get('/', async (req, res) => {
@@ -126,12 +140,20 @@ router.get('/pipeline/summary', async (req, res) => {
        FROM prospects
        WHERE org_id = $1 AND deleted_at IS NULL ${ownerFilter}
        GROUP BY stage
+
        ORDER BY CASE stage
-         WHEN 'target' THEN 1 WHEN 'researched' THEN 2
-         WHEN 'contacted' THEN 3 WHEN 'engaged' THEN 4
-         WHEN 'qualified' THEN 5 WHEN 'converted' THEN 6
-         WHEN 'disqualified' THEN 7 WHEN 'nurture' THEN 8
-         ELSE 9 END`,
+       WHEN 'target' THEN 1 WHEN 'research' THEN 2
+       WHEN 'outreach' THEN 3 WHEN 'engaged' THEN 4
+       WHEN 'discovery_call' THEN 5 WHEN 'qualified_sal' THEN 6
+       WHEN 'disqualified' THEN 7 WHEN 'nurture' THEN 8
+       ELSE 9 END
+
+//       ORDER BY CASE stage
+//         WHEN 'target' THEN 1 WHEN 'researched' THEN 2
+//         WHEN 'contacted' THEN 3 WHEN 'engaged' THEN 4
+//         WHEN 'qualified' THEN 5 WHEN 'converted' THEN 6
+//         WHEN 'disqualified' THEN 7 WHEN 'nurture' THEN 8
+//         ELSE 9 END`,
       params
     );
 
