@@ -188,7 +188,8 @@ const SequenceStepFirer = {
           let   body    = personalisedStep?.body    ?? renderTemplate(step.body_template,    prospect || {}, account);
 
           // ── DRAFT BRANCH ──────────────────────────────────────────────────
-          if (effectiveRequireApproval && step.channel === 'email') {
+//          if (effectiveRequireApproval && step.channel === 'email') {
+          if (step.channel !== 'email' || effectiveRequireApproval) {
             // Idempotency: don't create a second draft for this step
             const existingDraft = await client.query(
               `SELECT id FROM sequence_step_logs

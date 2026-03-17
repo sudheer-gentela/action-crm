@@ -704,21 +704,27 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
 
   const handleSendProspectDraft = async (draft) => {
     const edit = prospectDraftEdits[draft.id] || {};
+    const isEmail = !draft.channel || draft.channel === 'email';
     setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
     try {
-      if (edit.subject !== undefined || edit.body !== undefined) {
-        await apiFetch(`/sequences/drafts/${draft.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            subject: edit.subject !== undefined ? edit.subject : draft.subject,
-            body:    edit.body    !== undefined ? edit.body    : draft.body,
-          }),
-        });
+      if (isEmail) {
+        if (edit.subject !== undefined || edit.body !== undefined) {
+          await apiFetch(`/sequences/drafts/${draft.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              subject: edit.subject !== undefined ? edit.subject : draft.subject,
+              body:    edit.body    !== undefined ? edit.body    : draft.body,
+            }),
+          });
+        }
+        await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
+      } else {
+        // Non-email step (linkedin, call, task) — mark done, no send
+        await apiFetch(`/sequences/drafts/${draft.id}/mark-done`, { method: 'POST', body: JSON.stringify({}) });
       }
-      await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
       setProspectDrafts(prev => prev.filter(d => d.id !== draft.id));
       setProspectDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
-      // Refresh activity feed to show the sent step
+      // Refresh activity feed to show the completed step
       try {
         const res = await apiFetch(`/prospects/${prospectId}`);
         setActivities(res.activities || []);
@@ -1671,6 +1677,10 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
     ? new Date(draft.scheduledSendAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     : null;
 
+  const isEmail = !draft.channel || draft.channel === 'email';
+  const DRAFT_CHANNEL_ICONS = { email: '✉️', linkedin: '🔗', call: '📞', task: '📋', manual: '📋' };
+  const channelIcon = DRAFT_CHANNEL_ICONS[draft.channel] || '📋';
+
   return (
     <div style={{
       border: `1.5px solid ${overdue ? '#fecaca' : '#e5e7eb'}`,
@@ -1685,7 +1695,7 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
           background: overdue ? '#fef2f2' : '#f9fafb',
         }}
       >
-        <span style={{ fontSize: 14 }}>✉️</span>
+        <span style={{ fontSize: 14 }}>{channelIcon}</span>
 
         {!compact && (
           <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', flexShrink: 0 }}>
@@ -1729,8 +1739,8 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
       {/* Expanded edit + actions */}
       {isOpen && (
         <div style={{ padding: 14, borderTop: '1px solid #f3f4f6', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {/* Sender badge */}
-          {draft.suggestedSender && (
+          {/* Sender badge — email only */}
+          {isEmail && draft.suggestedSender && (
             <div style={{ fontSize: 11, color: '#6b7280' }}>
               Sending from:{' '}
               <span style={{
@@ -1743,30 +1753,42 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
             </div>
           )}
 
-          {/* Subject */}
-          <div>
-            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-              Subject
-            </label>
-            <input
-              value={subject}
-              onChange={e => onSubjectChange(e.target.value)}
-              style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111' }}
-            />
-          </div>
+          {/* Task note — non-email channels */}
+          {!isEmail && body && (
+            <div style={{ padding: '10px 12px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 7 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>Task Note</div>
+              <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.5 }}>{body}</div>
+            </div>
+          )}
 
-          {/* Body */}
-          <div>
-            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-              Body
-            </label>
-            <textarea
-              value={body}
-              onChange={e => onBodyChange(e.target.value)}
-              rows={8}
-              style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', resize: 'vertical', lineHeight: 1.6 }}
-            />
-          </div>
+          {/* Subject — email only */}
+          {isEmail && (
+            <div>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                Subject
+              </label>
+              <input
+                value={subject}
+                onChange={e => onSubjectChange(e.target.value)}
+                style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111' }}
+              />
+            </div>
+          )}
+
+          {/* Body — email only */}
+          {isEmail && (
+            <div>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                Body
+              </label>
+              <textarea
+                value={body}
+                onChange={e => onBodyChange(e.target.value)}
+                rows={8}
+                style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', resize: 'vertical', lineHeight: 1.6 }}
+              />
+            </div>
+          )}
 
           {sendError && (
             <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, color: '#dc2626' }}>
@@ -1791,7 +1813,9 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
                 fontSize: 12, fontWeight: 600, cursor: sending ? 'not-allowed' : 'pointer',
               }}
             >
-              {sending ? '⏳ Sending…' : '📤 Send Now'}
+              {sending
+                ? (isEmail ? '⏳ Sending…' : '⏳ Saving…')
+                : (isEmail ? '📤 Send Now' : '✅ Mark Done')}
             </button>
           </div>
         </div>
@@ -1873,19 +1897,25 @@ function SequencesView({ prospects }) {
 
   const handleSendDraft = async (draft) => {
     const edit = draftEdits[draft.id] || {};
+    const isEmail = !draft.channel || draft.channel === 'email';
     setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
     try {
-      // Save edits first if any
-      if (edit.subject !== undefined || edit.body !== undefined) {
-        await apiFetch(`/sequences/drafts/${draft.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            subject: edit.subject !== undefined ? edit.subject : draft.subject,
-            body:    edit.body    !== undefined ? edit.body    : draft.body,
-          }),
-        });
+      if (isEmail) {
+        // Save edits first if any
+        if (edit.subject !== undefined || edit.body !== undefined) {
+          await apiFetch(`/sequences/drafts/${draft.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              subject: edit.subject !== undefined ? edit.subject : draft.subject,
+              body:    edit.body    !== undefined ? edit.body    : draft.body,
+            }),
+          });
+        }
+        await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
+      } else {
+        // Non-email step (linkedin, call, task) — just mark done, no send
+        await apiFetch(`/sequences/drafts/${draft.id}/mark-done`, { method: 'POST', body: JSON.stringify({}) });
       }
-      await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
       setDrafts(prev => prev.filter(d => d.id !== draft.id));
       setDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
     } catch (err) {
