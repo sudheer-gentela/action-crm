@@ -55,16 +55,18 @@ router.get('/unified', authenticateToken, async (req, res) => {
     const UnifiedEmailProvider = require('../services/UnifiedEmailProvider');
     const providers = await UnifiedEmailProvider.getConnectedProviders(req.user.userId);
 
-    const allEmails = [];
+    const allEmails      = [];
+    const providerErrors = [];
 
     for (const provider of providers) {
       try {
         const result = await UnifiedEmailProvider.fetchEmails(
           req.user.userId, provider, { top: parseInt(top) }
         );
-        allEmails.push(...result.emails);
+        allEmails.push(...result.emails.map(e => ({ ...e, provider })));
       } catch (err) {
         console.warn('Failed to fetch ' + provider + ' emails:', err.message);
+        providerErrors.push({ provider, error: err.message });
       }
     }
 
@@ -82,10 +84,38 @@ router.get('/unified', authenticateToken, async (req, res) => {
       filtered = allEmails.filter(e => dealEmailIds.has(e.id));
     }
 
+    const sliced = filtered.slice(0, parseInt(top));
+
+    // ── Attach DB integer id (dbId) to each email ────────────────────────────
+    // The provider email objects carry the provider message id in `id` (e.g. the
+    // Gmail hex string). The analyze endpoint needs the integer DB row id.
+    // We look up all external_ids in one query and attach the result as `dbId`.
+    if (sliced.length > 0) {
+      const externalIds = sliced.map(e => e.id).filter(Boolean);
+      const dbRows = await pool.query(
+        `SELECT id AS db_id, external_id, provider
+         FROM emails
+         WHERE external_id = ANY($1::text[])
+           AND user_id = $2
+           AND org_id  = $3`,
+        [externalIds, req.user.userId, req.orgId]
+      );
+      // Build a lookup: externalId → db integer id
+      const dbIdMap = {};
+      for (const row of dbRows.rows) {
+        dbIdMap[row.external_id] = row.db_id;
+      }
+      // Stamp dbId onto each email object
+      for (const email of sliced) {
+        email.dbId = dbIdMap[email.id] || null;
+      }
+    }
+
     res.json({
-      success:   true,
-      data:      filtered.slice(0, parseInt(top)),
-      providers: providers,
+      success:        true,
+      data:           sliced,
+      providers:      providers,
+      providerErrors: providerErrors,
     });
   } catch (error) {
     console.error('Error fetching unified emails:', error);
