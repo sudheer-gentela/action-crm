@@ -142,18 +142,11 @@ router.get('/pipeline/summary', async (req, res) => {
        GROUP BY stage
 
        ORDER BY CASE stage
-       WHEN 'target' THEN 1 WHEN 'research' THEN 2
-       WHEN 'outreach' THEN 3 WHEN 'engaged' THEN 4
-       WHEN 'discovery_call' THEN 5 WHEN 'qualified_sal' THEN 6
-       WHEN 'disqualified' THEN 7 WHEN 'nurture' THEN 8
-       ELSE 9 END
-
-//       ORDER BY CASE stage
-//         WHEN 'target' THEN 1 WHEN 'researched' THEN 2
-//         WHEN 'contacted' THEN 3 WHEN 'engaged' THEN 4
-//         WHEN 'qualified' THEN 5 WHEN 'converted' THEN 6
-//         WHEN 'disqualified' THEN 7 WHEN 'nurture' THEN 8
-//         ELSE 9 END`,
+         WHEN 'target' THEN 1 WHEN 'researched' THEN 2
+         WHEN 'contacted' THEN 3 WHEN 'engaged' THEN 4
+         WHEN 'qualified' THEN 5 WHEN 'converted' THEN 6
+         WHEN 'disqualified' THEN 7 WHEN 'nurture' THEN 8
+         ELSE 9 END`,
       params
     );
 
