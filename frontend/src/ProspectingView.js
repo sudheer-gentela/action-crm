@@ -1836,6 +1836,7 @@ function SequencesView({ prospects }) {
   const [expandedEnrollId,   setExpandedEnrollId]   = useState(null);
   const [expandedLogs,       setExpandedLogs]       = useState([]);
   const [loadingLogs,        setLoadingLogs]        = useState(false);
+  const [expandedStepBody,   setExpandedStepBody]   = useState({}); // { [step_order]: bool }
 
   // Draft inline-edit state: { [draftId]: { subject, body, editing, sending, error } }
   const [draftEdits,   setDraftEdits]   = useState({});
@@ -1844,10 +1845,12 @@ function SequencesView({ prospects }) {
     if (expandedEnrollId === enrollId) {
       setExpandedEnrollId(null);
       setExpandedLogs([]);
+      setExpandedStepBody({});
       return;
     }
     setExpandedEnrollId(enrollId);
     setExpandedLogs([]);
+    setExpandedStepBody({});
     setLoadingLogs(true);
     try {
       const r = await apiFetch(`/sequences/enrollments/${enrollId}`);
@@ -2390,14 +2393,31 @@ function SequencesView({ prospects }) {
 
                                         {/* Body preview — sent emails only */}
                                         {isSent && step.body && (
-                                          <div style={{
-                                            fontSize: 11, color: '#6b7280', lineHeight: 1.5,
-                                            marginTop: 4, whiteSpace: 'pre-wrap',
-                                            maxHeight: 48, overflow: 'hidden',
-                                            maskImage: 'linear-gradient(to bottom, black 40%, transparent)',
-                                            WebkitMaskImage: 'linear-gradient(to bottom, black 40%, transparent)',
-                                          }}>
-                                            {step.body.replace(/<[^>]+>/g, '')}
+                                          <div style={{ marginTop: 4 }}>
+                                            <div style={{
+                                              fontSize: 11, color: '#6b7280', lineHeight: 1.6,
+                                              whiteSpace: 'pre-wrap',
+                                              maxHeight: expandedStepBody[step.step_order] ? 'none' : 48,
+                                              overflow: 'hidden',
+                                              ...(!expandedStepBody[step.step_order] ? {
+                                                maskImage: 'linear-gradient(to bottom, black 40%, transparent)',
+                                                WebkitMaskImage: 'linear-gradient(to bottom, black 40%, transparent)',
+                                              } : {}),
+                                            }}>
+                                              {step.body.replace(/<[^>]+>/g, '')}
+                                            </div>
+                                            <button
+                                              onClick={() => setExpandedStepBody(prev => ({ ...prev, [step.step_order]: !prev[step.step_order] }))}
+                                              style={{
+                                                marginTop: 4, padding: '2px 8px',
+                                                fontSize: 11, fontWeight: 600,
+                                                color: '#0F9D8E', background: 'none',
+                                                border: '1px solid #0F9D8E',
+                                                borderRadius: 5, cursor: 'pointer',
+                                              }}
+                                            >
+                                              {expandedStepBody[step.step_order] ? '▲ Collapse' : '▼ View full email'}
+                                            </button>
                                           </div>
                                         )}
 
