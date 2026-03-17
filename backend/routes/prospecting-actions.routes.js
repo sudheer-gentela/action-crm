@@ -821,10 +821,12 @@ router.post('/outreach-send', async (req, res) => {
     }
 
     // ── 8. Send the email ─────────────────────────────────────────────────────
-    let sendError = null;
+    let sendError   = null;
+    let externalId  = null;
+    let threadId    = null;
     try {
       if (sender.provider === 'gmail') {
-        await sendGmailEmail(req.user.userId, {
+        const sendResult = await sendGmailEmail(req.user.userId, {
           to:           toAddress,
           subject,
           body,
@@ -833,8 +835,10 @@ router.post('/outreach-send', async (req, res) => {
           accessToken:  sender.access_token,
           refreshToken: sender.refresh_token,
         });
+        externalId = sendResult?.messageId || null;
+        threadId   = sendResult?.threadId  || null;
       } else if (sender.provider === 'outlook') {
-        await sendOutlookEmail(req.user.userId, {
+        const sendResult = await sendOutlookEmail(req.user.userId, {
           to:           toAddress,
           subject,
           body,
@@ -843,8 +847,10 @@ router.post('/outreach-send', async (req, res) => {
           accessToken:  sender.access_token,
           refreshToken: sender.refresh_token,
         });
+        externalId = sendResult?.messageId || null;
+        threadId   = sendResult?.threadId  || null;
       }
-      console.log(`📧 Outreach email sent from ${sender.email} to ${toAddress}`);
+      console.log(`📧 Outreach email sent from ${sender.email} to ${toAddress}` + (externalId ? ` (${externalId})` : ''));
     } catch (err) {
       sendError = err.message;
       console.warn(`⚠️  Email send failed (saving to DB anyway): ${err.message}`);
@@ -857,8 +863,9 @@ router.post('/outreach-send', async (req, res) => {
       `INSERT INTO emails (
          org_id, user_id, direction, subject, body,
          to_address, from_address, sent_at,
-         prospect_id, sender_account_id, provider
-       ) VALUES ($1, $2, 'sent', $3, $4, $5, $6, CURRENT_TIMESTAMP, $7, $8, $9)
+         prospect_id, sender_account_id, provider,
+         external_id, conversation_id
+       ) VALUES ($1, $2, 'sent', $3, $4, $5, $6, CURRENT_TIMESTAMP, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
         req.orgId,
@@ -870,6 +877,8 @@ router.post('/outreach-send', async (req, res) => {
         prospectId,
         sender.id,
         sender.provider,
+        externalId,
+        threadId,
       ]
     );
     const newEmail = emailResult.rows[0];

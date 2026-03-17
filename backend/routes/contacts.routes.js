@@ -418,9 +418,23 @@ router.get('/:id', async (req, res) => {
 
     const [activitiesQuery, startersQuery] = await Promise.all([
       db.query(
-        `SELECT * FROM contact_activities
+        `SELECT id, activity_type, description, metadata, created_at, 'crm' AS source
+         FROM contact_activities
          WHERE contact_id = $1
-         ORDER BY created_at DESC LIMIT 20`,
+         UNION ALL
+         SELECT pa.id, pa.activity_type, pa.description,
+                pa.metadata || jsonb_build_object('source', 'prospecting', 'prospect_id', pa.prospect_id) AS metadata,
+                pa.created_at, 'prospecting' AS source
+         FROM prospecting_activities pa
+         JOIN contacts c ON c.converted_from_prospect_id = pa.prospect_id
+         WHERE c.id = $1
+           AND pa.activity_type IN (
+             'outreach_sent', 'response_received', 'stage_change',
+             'call_completed', 'meeting_booked', 'converted',
+             'email_sent', 'linkedin_sent', 'note_added'
+           )
+         ORDER BY created_at DESC
+         LIMIT 50`,
         [req.params.id]
       ),
       db.query(
