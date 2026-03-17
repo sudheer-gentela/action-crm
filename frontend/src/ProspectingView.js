@@ -2421,6 +2421,42 @@ function SequencesView({ prospects }) {
                                           </div>
                                         )}
 
+                                        {/* Body template — future email steps */}
+                                        {isFuture && step.channel === 'email' && step.body_template && (
+                                          <div style={{ marginTop: 4 }}>
+                                            {expandedStepBody[step.step_order] && (
+                                              <div style={{
+                                                fontSize: 11, color: '#9ca3af', lineHeight: 1.6,
+                                                whiteSpace: 'pre-wrap',
+                                                padding: '8px 10px',
+                                                background: '#f9fafb',
+                                                border: '1px dashed #e5e7eb',
+                                                borderRadius: 6,
+                                                marginBottom: 4,
+                                              }}>
+                                                {step.body_template}
+                                                {!step.is_personalised && (
+                                                  <div style={{ marginTop: 6, fontSize: 10, color: '#d1d5db', fontStyle: 'italic' }}>
+                                                    Template — tokens like {'{{first_name}}'} will be replaced when sent
+                                                  </div>
+                                                )}
+                                              </div>
+                                            )}
+                                            <button
+                                              onClick={() => setExpandedStepBody(prev => ({ ...prev, [step.step_order]: !prev[step.step_order] }))}
+                                              style={{
+                                                marginTop: 2, padding: '2px 8px',
+                                                fontSize: 11, fontWeight: 600,
+                                                color: '#6b7280', background: 'none',
+                                                border: '1px solid #d1d5db',
+                                                borderRadius: 5, cursor: 'pointer',
+                                              }}
+                                            >
+                                              {expandedStepBody[step.step_order] ? '▲ Hide template' : '▼ Preview template'}
+                                            </button>
+                                          </div>
+                                        )}
+
                                         {/* Error message */}
                                         {isFailed && step.error_message && (
                                           <div style={{ fontSize: 11, color: '#dc2626', marginTop: 4 }}>

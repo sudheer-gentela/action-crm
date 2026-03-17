@@ -502,22 +502,27 @@ router.get('/enrollments/:enrollId', async (req, res) => {
         rollingDate = due;
       }
 
+      // Use personalised content if pre-generated, else fall back to template
+      const personalised = enrollment.personalised_steps?.[step.step_order]
+        || enrollment.personalised_steps?.[String(step.step_order)];
+
       return {
-        step_order:       step.step_order,
-        step_id:          step.id,
-        channel:          step.channel,
-        delay_days:       step.delay_days,
-        task_note:        step.task_note || null,
-        subject_template: step.subject_template || null,
-        // No log yet
-        log_id:           null,
-        status:           enrollment.status === 'active' ? 'pending' : 'skipped',
-        fired_at:         null,
+        step_order:        step.step_order,
+        step_id:           step.id,
+        channel:           step.channel,
+        delay_days:        step.delay_days,
+        task_note:         step.task_note || null,
+        subject_template:  personalised?.subject || step.subject_template || null,
+        body_template:     personalised?.body    || step.body_template    || null,
+        log_id:            null,
+        status:            enrollment.status === 'active' ? 'pending' : 'skipped',
+        fired_at:          null,
         scheduled_send_at: due || null,
-        subject:          null,
-        body:             null,
-        error_message:    null,
-        is_future:        true,
+        subject:           null,
+        body:              null,
+        error_message:     null,
+        is_future:         true,
+        is_personalised:   !!personalised,
       };
     });
 
