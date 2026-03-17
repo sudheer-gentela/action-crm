@@ -221,6 +221,7 @@ function EmailList({ userId, dealId, connectedProviders = [] }) {
                 </div>
 
                 <div className="email-actions">
+                  {email.direction !== 'sent' && (
                   <button
                     onClick={() => handleProcessEmail(email)}
                     disabled={!email.dbId || processingIds.has(email.dbId)}
@@ -235,6 +236,7 @@ function EmailList({ userId, dealId, connectedProviders = [] }) {
                       <>Create Actions</>
                     )}
                   </button>
+                  )}
                 </div>
               </div>
             );

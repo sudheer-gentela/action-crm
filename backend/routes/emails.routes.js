@@ -144,7 +144,7 @@ router.get('/unified', async (req, res) => {
     if (sliced.length > 0) {
       const externalIds = sliced.map(e => e.id).filter(Boolean);
       const dbRows = await db.query(
-        `SELECT id AS db_id, external_id
+        `SELECT id AS db_id, external_id, direction
          FROM emails
          WHERE external_id = ANY($1::text[])
            AND user_id = $2
@@ -153,10 +153,12 @@ router.get('/unified', async (req, res) => {
       );
       const dbIdMap = {};
       for (const row of dbRows.rows) {
-        dbIdMap[row.external_id] = row.db_id;
+        dbIdMap[row.external_id] = { dbId: row.db_id, direction: row.direction };
       }
       for (const email of sliced) {
-        email.dbId = dbIdMap[email.id] || null;
+        const match = dbIdMap[email.id];
+        email.dbId      = match?.dbId      || null;
+        email.direction = match?.direction || null;
       }
     }
 
