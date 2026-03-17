@@ -21,7 +21,7 @@ const VALID_STAGES = ['target', 'research', 'outreach', 'engaged', 'discovery_ca
 //const STAGE_TRANSITIONS = {
 //  target:       ['researched', 'contacted', 'disqualified', 'nurture'],
 //  researched:   ['contacted', 'disqualified', 'nurture'],
-//  contacted:    ['engaged', 'qualified', 'disqualified', 'nurture'],
+//  contacted:    ['engaged', 'qualified', 'disqualified', 'ss'],
 //  engaged:      ['qualified', 'disqualified', 'nurture'],
 //  qualified:    ['converted', 'disqualified', 'nurture'],
 //  disqualified: ['target'],
@@ -1029,16 +1029,162 @@ router.post('/:id/stage', async (req, res) => {
 });
 
 // ── POST /:id/disqualify ──────────────────────────────────────────────────────
+//router.post('/:id/disqualify', async (req, res) => {
+//  req.body.stage = 'disqualified';
+//  req.body.reason = req.body.reason || 'Not a fit';
+//  return router.handle(Object.assign(req, { url: `/${req.params.id}/stage`, method: 'POST' }), res);
+//});
+
 router.post('/:id/disqualify', async (req, res) => {
-  req.body.stage = 'disqualified';
-  req.body.reason = req.body.reason || 'Not a fit';
-  return router.handle(Object.assign(req, { url: `/${req.params.id}/stage`, method: 'POST' }), res);
+  const client = await require('../config/database').pool.connect();
+  try {
+    const {
+      reason,                // 'kill' | 'long_term' | 'unable_to_decide'  (required)
+      accountDisposition,    // 'kill_account' | 'long_term_account' | 'unable_to_decide_account'  (optional)
+      revisitDate,           // ISO date string override — if omitted, defaults are applied
+      accountRevisitDate,    // ISO date string for account — optional
+    } = req.body;
+
+    // ── Validate reason ──────────────────────────────────────────
+    const VALID_REASONS = ['kill', 'long_term', 'unable_to_decide'];
+    if (!reason || !VALID_REASONS.includes(reason)) {
+      return res.status(400).json({
+        error: {
+          message: `reason is required and must be one of: ${VALID_REASONS.join(', ')}`,
+        },
+      });
+    }
+
+    // ── Validate accountDisposition if provided ──────────────────
+    const VALID_DISPOSITIONS = ['kill_account', 'long_term_account', 'unable_to_decide_account'];
+    if (accountDisposition && !VALID_DISPOSITIONS.includes(accountDisposition)) {
+      return res.status(400).json({
+        error: {
+          message: `accountDisposition must be one of: ${VALID_DISPOSITIONS.join(', ')}`,
+        },
+      });
+    }
+
+    // ── Load prospect ────────────────────────────────────────────
+    const current = await client.query(
+      `SELECT id, stage, account_id, owner_id
+       FROM prospects
+       WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+      [req.params.id, req.orgId]
+    );
+
+    if (current.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+
+    const prospect     = current.rows[0];
+    const currentStage = prospect.stage;
+
+    // ── Check transition is permitted ────────────────────────────
+    const allowed = STAGE_TRANSITIONS[currentStage] || [];
+    if (currentStage !== 'disqualified' && !allowed.includes('disqualified')) {
+      return res.status(400).json({
+        error: {
+          message: `Cannot disqualify a prospect in stage "${currentStage}"`,
+        },
+      });
+    }
+
+    // ── Compute revisit_date default if not provided ─────────────
+    let computedRevisitDate = revisitDate || null;
+    if (!computedRevisitDate) {
+      const today = new Date();
+      if (reason === 'long_term') {
+        today.setDate(today.getDate() + 90);
+        computedRevisitDate = today.toISOString().split('T')[0];
+      } else if (reason === 'unable_to_decide') {
+        today.setDate(today.getDate() + 45);
+        computedRevisitDate = today.toISOString().split('T')[0];
+      }
+      // reason === 'kill' → computedRevisitDate stays null
+    }
+
+    await client.query('BEGIN');
+
+    // ── 1. Update prospect ───────────────────────────────────────
+    const prospectResult = await client.query(
+      `UPDATE prospects
+       SET stage               = 'disqualified',
+           stage_changed_at    = CURRENT_TIMESTAMP,
+           disqualified_reason = $1,
+           revisit_date        = $2,
+           updated_at          = CURRENT_TIMESTAMP
+       WHERE id = $3 AND org_id = $4
+       RETURNING *`,
+      [reason, computedRevisitDate, req.params.id, req.orgId]
+    );
+
+    // ── 2. Update account disposition if provided ────────────────
+    let updatedAccount = null;
+    if (accountDisposition && prospect.account_id) {
+      const computedAccountRevisitDate = accountRevisitDate || (
+        accountDisposition === 'long_term_account'
+          ? (() => { const d = new Date(); d.setDate(d.getDate() + 90); return d.toISOString().split('T')[0]; })()
+          : accountDisposition === 'unable_to_decide_account'
+          ? (() => { const d = new Date(); d.setDate(d.getDate() + 45); return d.toISOString().split('T')[0]; })()
+          : null
+      );
+
+      const accResult = await client.query(
+        `UPDATE accounts
+         SET account_disposition  = $1,
+             account_revisit_date = $2,
+             updated_at           = CURRENT_TIMESTAMP
+         WHERE id = $3 AND org_id = $4
+         RETURNING id, name, account_disposition, account_revisit_date`,
+        [accountDisposition, computedAccountRevisitDate, prospect.account_id, req.orgId]
+      );
+      updatedAccount = accResult.rows[0] || null;
+    }
+
+    // ── 3. Log activity ──────────────────────────────────────────
+    await client.query(
+      `INSERT INTO prospecting_activities
+         (prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, 'stage_change', $3, $4)`,
+      [
+        req.params.id,
+        req.user.userId,
+        `Disqualified from ${currentStage} — reason: ${reason}`,
+        JSON.stringify({
+          from:               currentStage,
+          to:                 'disqualified',
+          reason,
+          revisitDate:        computedRevisitDate,
+          accountDisposition: accountDisposition || null,
+          accountRevisitDate: accountRevisitDate || null,
+        }),
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    console.log(`🚫 Prospect #${req.params.id} disqualified (reason: ${reason}, revisit: ${computedRevisitDate || 'none'}) by user ${req.user.userId} (org ${req.orgId})`);
+
+    res.json({
+      prospect:        prospectResult.rows[0],
+      account:         updatedAccount,
+      revisitDate:     computedRevisitDate,
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Disqualify prospect error:', error);
+    res.status(500).json({ error: { message: 'Failed to disqualify prospect' } });
+  } finally {
+    client.release();
+  }
 });
 
 // ── POST /:id/nurture ─────────────────────────────────────────────────────────
 router.post('/:id/nurture', async (req, res) => {
   try {
-    const { nurtureUntil, reason } = req.body;
+    const { revisit_date, reason } = req.body;
 
     const current = await db.query(
       `SELECT id, stage FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
@@ -1052,10 +1198,10 @@ router.post('/:id/nurture', async (req, res) => {
     const result = await db.query(
       `UPDATE prospects
        SET stage = 'nurture', stage_changed_at = CURRENT_TIMESTAMP,
-           nurture_until = $1, updated_at = CURRENT_TIMESTAMP
+           revisit_date = $1, updated_at = CURRENT_TIMESTAMP
        WHERE id = $2 AND org_id = $3
        RETURNING *`,
-      [nurtureUntil || null, req.params.id, req.orgId]
+      [revisit_date || null, req.params.id, req.orgId]
     );
 
     await db.query(
@@ -1064,7 +1210,7 @@ router.post('/:id/nurture', async (req, res) => {
       [
         req.params.id, req.user.userId,
         `Moved to nurture from ${current.rows[0].stage}`,
-        JSON.stringify({ from: current.rows[0].stage, to: 'nurture', nurtureUntil, reason }),
+        JSON.stringify({ from: current.rows[0].stage, to: 'nurture', revisit_date, reason }),
       ]
     );
 

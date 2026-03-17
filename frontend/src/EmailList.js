@@ -57,7 +57,11 @@ function EmailList({ userId, dealId, connectedProviders = [] }) {
   }, [fetchEmails, userId, dealId]);
 
   const handleProcessEmail = async (email) => {
-    const emailDbId = email.dbId || email.id;
+    const emailDbId = email.dbId;
+    if (!emailDbId || typeof emailDbId !== 'number') {
+      alert('This email hasn\'t been synced to the database yet. Try refreshing in a moment.');
+      return;
+    }
     try {
       setProcessingIds(prev => new Set(prev).add(emailDbId));
 
@@ -219,12 +223,14 @@ function EmailList({ userId, dealId, connectedProviders = [] }) {
                 <div className="email-actions">
                   <button
                     onClick={() => handleProcessEmail(email)}
-                    disabled={processingIds.has(email.dbId || email.id)}
+                    disabled={!email.dbId || processingIds.has(email.dbId)}
                     className="btn btn-small btn-primary"
-                    title="Process with AI and create actions"
+                    title={!email.dbId ? 'Email not yet synced — refresh to retry' : 'Process with AI and create actions'}
                   >
-                    {processingIds.has(email.dbId || email.id) ? (
+                    {processingIds.has(email.dbId) ? (
                       <><span className="spinner-small"></span> Processing...</>
+                    ) : !email.dbId ? (
+                      <>Not synced</>
                     ) : (
                       <>Create Actions</>
                     )}

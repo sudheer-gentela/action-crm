@@ -71,7 +71,10 @@ router.post('/emails', async (req, res) => {
 // -- POST /emails/:emailId/analyze -- unchanged --
 router.post('/emails/:emailId/analyze', async (req, res) => {
   try {
-    const { emailId } = req.params;
+    const emailId = parseInt(req.params.emailId, 10);
+    if (isNaN(emailId)) {
+      return res.status(400).json({ success: false, error: 'Invalid emailId — must be a numeric DB id, not a provider message id.' });
+    }
     console.log('Manual AI analysis requested for email ' + emailId + ' by user ' + req.user.userId);
 
     const emailResult = await pool.query(
@@ -119,7 +122,9 @@ router.post('/emails/analyze-bulk', async (req, res) => {
     const queuedJobs = [];
     const errors     = [];
 
-    for (const emailId of emailIds) {
+    for (const rawId of emailIds) {
+      const emailId = parseInt(rawId, 10);
+      if (isNaN(emailId)) { errors.push({ emailId: rawId, error: 'Invalid emailId — must be a numeric DB id' }); continue; }
       try {
         const emailResult = await pool.query(
           'SELECT * FROM emails WHERE id = $1 AND org_id = $2 AND user_id = $3',
@@ -161,7 +166,10 @@ router.post('/emails/analyze-bulk', async (req, res) => {
 // -- GET /emails/:emailId/analysis -- unchanged --
 router.get('/emails/:emailId/analysis', async (req, res) => {
   try {
-    const { emailId } = req.params;
+    const emailId = parseInt(req.params.emailId, 10);
+    if (isNaN(emailId)) {
+      return res.status(400).json({ success: false, error: 'Invalid emailId — must be a numeric DB id.' });
+    }
 
     const emailResult = await pool.query(
       'SELECT id, subject, external_data, provider, created_at FROM emails WHERE id = $1 AND org_id = $2 AND user_id = $3',

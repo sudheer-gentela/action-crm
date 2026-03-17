@@ -65,10 +65,12 @@ router.get('/gmail', async (req, res) => {
     let emails = result.emails || [];
 
     if (dealId) {
+      const dealIdInt = parseInt(dealId, 10);
+      if (isNaN(dealIdInt)) return res.status(400).json({ success: false, error: 'Invalid dealId' });
       const dbResult = await db.query(
         `SELECT external_id FROM emails
          WHERE deal_id = $1 AND user_id = $2 AND org_id = $3 AND provider = 'gmail'`,
-        [dealId, req.user.userId, req.orgId]
+        [dealIdInt, req.user.userId, req.orgId]
       );
       const dealEmailIds = new Set(dbResult.rows.map(r => r.external_id));
       emails = emails.filter(e => dealEmailIds.has(e.id));
@@ -124,18 +126,43 @@ router.get('/unified', async (req, res) => {
     // Optionally filter to emails tagged to a specific deal
     let filtered = allEmails;
     if (dealId) {
+      const dealIdInt = parseInt(dealId, 10);
+      if (isNaN(dealIdInt)) return res.status(400).json({ success: false, error: 'Invalid dealId' });
       const dbResult = await db.query(
         `SELECT external_id, provider FROM emails
          WHERE deal_id = $1 AND user_id = $2 AND org_id = $3`,
-        [dealId, req.user.userId, req.orgId]
+        [dealIdInt, req.user.userId, req.orgId]
       );
       const dealEmailIds = new Set(dbResult.rows.map(r => r.external_id));
       filtered = allEmails.filter(e => dealEmailIds.has(e.id));
     }
 
+    const sliced = filtered.slice(0, parseInt(top));
+
+    // Attach DB integer id (dbId) to each email so the frontend can call
+    // /sync/emails/:id/analyze with a real integer, not a provider string id.
+    if (sliced.length > 0) {
+      const externalIds = sliced.map(e => e.id).filter(Boolean);
+      const dbRows = await db.query(
+        `SELECT id AS db_id, external_id
+         FROM emails
+         WHERE external_id = ANY($1::text[])
+           AND user_id = $2
+           AND org_id  = $3`,
+        [externalIds, req.user.userId, req.orgId]
+      );
+      const dbIdMap = {};
+      for (const row of dbRows.rows) {
+        dbIdMap[row.external_id] = row.db_id;
+      }
+      for (const email of sliced) {
+        email.dbId = dbIdMap[email.id] || null;
+      }
+    }
+
     res.json({
       success:   true,
-      data:      filtered.slice(0, parseInt(top)),
+      data:      sliced,
       providers,
     });
   } catch (error) {
