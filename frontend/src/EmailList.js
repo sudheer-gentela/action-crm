@@ -221,17 +221,20 @@ function EmailList({ userId, dealId, connectedProviders = [] }) {
                 </div>
 
                 <div className="email-actions">
-                  {email.direction !== 'sent' && (
+                  {email.direction === 'sent' || !email.dbId ? (
+                    <span style={{
+                      fontSize: 12, color: '#9ca3af',
+                      fontStyle: 'italic', padding: '6px 12px'
+                    }}>Outreach - No Actions</span>
+                  ) : (
                   <button
                     onClick={() => handleProcessEmail(email)}
-                    disabled={!email.dbId || processingIds.has(email.dbId)}
+                    disabled={processingIds.has(email.dbId)}
                     className="btn btn-small btn-primary"
-                    title={!email.dbId ? 'Email not yet synced — refresh to retry' : 'Process with AI and create actions'}
+                    title="Process with AI and create actions"
                   >
                     {processingIds.has(email.dbId) ? (
                       <><span className="spinner-small"></span> Processing...</>
-                    ) : !email.dbId ? (
-                      <>Not synced</>
                     ) : (
                       <>Create Actions</>
                     )}
