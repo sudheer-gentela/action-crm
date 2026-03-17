@@ -704,27 +704,21 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
 
   const handleSendProspectDraft = async (draft) => {
     const edit = prospectDraftEdits[draft.id] || {};
-    const isEmail = !draft.channel || draft.channel === 'email';
     setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
     try {
-      if (isEmail) {
-        if (edit.subject !== undefined || edit.body !== undefined) {
-          await apiFetch(`/sequences/drafts/${draft.id}`, {
-            method: 'PATCH',
-            body: JSON.stringify({
-              subject: edit.subject !== undefined ? edit.subject : draft.subject,
-              body:    edit.body    !== undefined ? edit.body    : draft.body,
-            }),
-          });
-        }
-        await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
-      } else {
-        // Non-email step (linkedin, call, task) — mark done, no send
-        await apiFetch(`/sequences/drafts/${draft.id}/mark-done`, { method: 'POST', body: JSON.stringify({}) });
+      if (edit.subject !== undefined || edit.body !== undefined) {
+        await apiFetch(`/sequences/drafts/${draft.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            subject: edit.subject !== undefined ? edit.subject : draft.subject,
+            body:    edit.body    !== undefined ? edit.body    : draft.body,
+          }),
+        });
       }
+      await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
       setProspectDrafts(prev => prev.filter(d => d.id !== draft.id));
       setProspectDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
-      // Refresh activity feed to show the completed step
+      // Refresh activity feed to show the sent step
       try {
         const res = await apiFetch(`/prospects/${prospectId}`);
         setActivities(res.activities || []);
@@ -1677,10 +1671,6 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
     ? new Date(draft.scheduledSendAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     : null;
 
-  const isEmail = !draft.channel || draft.channel === 'email';
-  const DRAFT_CHANNEL_ICONS = { email: '✉️', linkedin: '🔗', call: '📞', task: '📋', manual: '📋' };
-  const channelIcon = DRAFT_CHANNEL_ICONS[draft.channel] || '📋';
-
   return (
     <div style={{
       border: `1.5px solid ${overdue ? '#fecaca' : '#e5e7eb'}`,
@@ -1695,7 +1685,7 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
           background: overdue ? '#fef2f2' : '#f9fafb',
         }}
       >
-        <span style={{ fontSize: 14 }}>{channelIcon}</span>
+        <span style={{ fontSize: 14 }}>✉️</span>
 
         {!compact && (
           <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', flexShrink: 0 }}>
@@ -1739,8 +1729,8 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
       {/* Expanded edit + actions */}
       {isOpen && (
         <div style={{ padding: 14, borderTop: '1px solid #f3f4f6', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {/* Sender badge — email only */}
-          {isEmail && draft.suggestedSender && (
+          {/* Sender badge */}
+          {draft.suggestedSender && (
             <div style={{ fontSize: 11, color: '#6b7280' }}>
               Sending from:{' '}
               <span style={{
@@ -1753,42 +1743,30 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
             </div>
           )}
 
-          {/* Task note — non-email channels */}
-          {!isEmail && body && (
-            <div style={{ padding: '10px 12px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 7 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>Task Note</div>
-              <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.5 }}>{body}</div>
-            </div>
-          )}
+          {/* Subject */}
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+              Subject
+            </label>
+            <input
+              value={subject}
+              onChange={e => onSubjectChange(e.target.value)}
+              style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111' }}
+            />
+          </div>
 
-          {/* Subject — email only */}
-          {isEmail && (
-            <div>
-              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                Subject
-              </label>
-              <input
-                value={subject}
-                onChange={e => onSubjectChange(e.target.value)}
-                style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111' }}
-              />
-            </div>
-          )}
-
-          {/* Body — email only */}
-          {isEmail && (
-            <div>
-              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                Body
-              </label>
-              <textarea
-                value={body}
-                onChange={e => onBodyChange(e.target.value)}
-                rows={8}
-                style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', resize: 'vertical', lineHeight: 1.6 }}
-              />
-            </div>
-          )}
+          {/* Body */}
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+              Body
+            </label>
+            <textarea
+              value={body}
+              onChange={e => onBodyChange(e.target.value)}
+              rows={8}
+              style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', resize: 'vertical', lineHeight: 1.6 }}
+            />
+          </div>
 
           {sendError && (
             <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, color: '#dc2626' }}>
@@ -1813,9 +1791,7 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
                 fontSize: 12, fontWeight: 600, cursor: sending ? 'not-allowed' : 'pointer',
               }}
             >
-              {sending
-                ? (isEmail ? '⏳ Sending…' : '⏳ Saving…')
-                : (isEmail ? '📤 Send Now' : '✅ Mark Done')}
+              {sending ? '⏳ Sending…' : '📤 Send Now'}
             </button>
           </div>
         </div>
@@ -1897,25 +1873,19 @@ function SequencesView({ prospects }) {
 
   const handleSendDraft = async (draft) => {
     const edit = draftEdits[draft.id] || {};
-    const isEmail = !draft.channel || draft.channel === 'email';
     setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
     try {
-      if (isEmail) {
-        // Save edits first if any
-        if (edit.subject !== undefined || edit.body !== undefined) {
-          await apiFetch(`/sequences/drafts/${draft.id}`, {
-            method: 'PATCH',
-            body: JSON.stringify({
-              subject: edit.subject !== undefined ? edit.subject : draft.subject,
-              body:    edit.body    !== undefined ? edit.body    : draft.body,
-            }),
-          });
-        }
-        await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
-      } else {
-        // Non-email step (linkedin, call, task) — just mark done, no send
-        await apiFetch(`/sequences/drafts/${draft.id}/mark-done`, { method: 'POST', body: JSON.stringify({}) });
+      // Save edits first if any
+      if (edit.subject !== undefined || edit.body !== undefined) {
+        await apiFetch(`/sequences/drafts/${draft.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            subject: edit.subject !== undefined ? edit.subject : draft.subject,
+            body:    edit.body    !== undefined ? edit.body    : draft.body,
+          }),
+        });
       }
+      await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
       setDrafts(prev => prev.filter(d => d.id !== draft.id));
       setDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
     } catch (err) {
@@ -2301,76 +2271,142 @@ function SequencesView({ prospects }) {
                         </td>
                       </tr>
 
-                      {/* ── Step log drill-down ───────────────────────────── */}
+                      {/* ── Step timeline drill-down ──────────────────────── */}
                       {isExpanded && (
                         <tr style={{ borderBottom: '1px solid #f3f4f6' }}>
                           <td colSpan={7} style={{ padding: '0 14px 14px 40px', background: '#f9fafb' }}>
                             {loadingLogs ? (
-                              <div style={{ padding: '12px 0', fontSize: 12, color: '#9ca3af' }}>Loading step history…</div>
+                              <div style={{ padding: '12px 0', fontSize: 12, color: '#9ca3af' }}>Loading timeline…</div>
                             ) : expandedLogs.length === 0 ? (
-                              <div style={{ padding: '12px 0', fontSize: 12, color: '#9ca3af' }}>No steps fired yet.</div>
+                              <div style={{ padding: '12px 0', fontSize: 12, color: '#9ca3af' }}>No steps yet.</div>
                             ) : (
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 10 }}>
-                                <div style={{ fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 2 }}>
-                                  Step History
-                                </div>
-                                {expandedLogs.map((log, idx) => {
-                                  const CHANNEL_ICONS_LOCAL = { email: '✉️', linkedin: '🔗', call: '📞', task: '📋' };
-                                  const statusColor = log.status === 'sent' ? '#059669' : log.status === 'failed' ? '#dc2626' : '#6b7280';
-                                  const statusBg    = log.status === 'sent' ? '#d1fae5' : log.status === 'failed' ? '#fee2e2' : '#f3f4f6';
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 0, paddingTop: 12 }}>
+                                {expandedLogs.map((step, idx) => {
+                                  const STEP_CHANNEL_ICONS = { email: '✉️', linkedin: '🔗', call: '📞', task: '📋', manual: '📋' };
+                                  const icon = STEP_CHANNEL_ICONS[step.channel] || '📋';
+                                  const isFuture  = step.is_future;
+                                  const isDraft   = step.status === 'draft';
+                                  const isSent    = step.status === 'sent';
+                                  const isSkipped = step.status === 'skipped';
+                                  const isFailed  = step.status === 'failed';
+                                  const isLast    = idx === expandedLogs.length - 1;
+
+                                  // Status pill config
+                                  const pillCfg = isSent    ? { bg: '#d1fae5', color: '#065f46', label: 'Sent' }
+                                    : isDraft   ? { bg: '#fef3c7', color: '#92400e', label: 'Draft – awaiting send' }
+                                    : isSkipped ? { bg: '#f3f4f6', color: '#6b7280', label: 'Skipped' }
+                                    : isFailed  ? { bg: '#fee2e2', color: '#dc2626', label: 'Failed' }
+                                    : isFuture  ? { bg: '#eff6ff', color: '#3b82f6', label: 'Planned' }
+                                    :             { bg: '#f3f4f6', color: '#6b7280', label: step.status };
+
+                                  // Timestamp to show
+                                  const timestamp = isSent || isDraft
+                                    ? (step.fired_at || step.scheduled_send_at)
+                                    : step.scheduled_send_at;
+
+                                  const formattedDate = timestamp
+                                    ? new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                                    : null;
+
+                                  // Content to show: actual subject for sent, template for planned
+                                  const displaySubject = step.subject || step.subject_template || null;
+                                  const displayNote    = step.task_note || null;
+
                                   return (
-                                    <div key={log.id} style={{
-                                      display: 'flex', alignItems: 'flex-start', gap: 10,
-                                      padding: '8px 12px', background: '#fff',
-                                      border: '1px solid #e5e7eb', borderRadius: 8,
-                                    }}>
-                                      {/* Step number */}
-                                      <div style={{
-                                        width: 22, height: 22, borderRadius: '50%',
-                                        background: '#0F9D8E', color: '#fff',
-                                        fontSize: 11, fontWeight: 700, flexShrink: 0,
-                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                      }}>
-                                        {log.step_order}
+                                    <div key={step.step_order} style={{ display: 'flex', gap: 0 }}>
+                                      {/* Timeline spine */}
+                                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 32, flexShrink: 0 }}>
+                                        <div style={{
+                                          width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
+                                          background: isSent ? '#0F9D8E' : isFuture ? '#e5e7eb' : isDraft ? '#f59e0b' : '#6b7280',
+                                          color: isSent ? '#fff' : isFuture ? '#9ca3af' : '#fff',
+                                          fontSize: 11, fontWeight: 700,
+                                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                          border: isFuture ? '2px dashed #d1d5db' : 'none',
+                                        }}>
+                                          {isSent ? '✓' : step.step_order}
+                                        </div>
+                                        {!isLast && (
+                                          <div style={{
+                                            width: 2, flex: 1, minHeight: 16,
+                                            background: isFuture ? '#e5e7eb' : '#0F9D8E',
+                                            margin: '2px 0',
+                                          }} />
+                                        )}
                                       </div>
 
-                                      {/* Channel + content */}
-                                      <div style={{ flex: 1, minWidth: 0 }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
-                                          <span style={{ fontSize: 12 }}>{CHANNEL_ICONS_LOCAL[log.step_channel || log.channel] || '📋'}</span>
+                                      {/* Step content */}
+                                      <div style={{
+                                        flex: 1, marginLeft: 10, marginBottom: isLast ? 0 : 12,
+                                        padding: '8px 12px',
+                                        background: isFuture ? '#f9fafb' : '#fff',
+                                        border: `1px solid ${isDraft ? '#fde68a' : isFuture ? '#e5e7eb' : '#e5e7eb'}`,
+                                        borderRadius: 8,
+                                        opacity: isSkipped ? 0.5 : 1,
+                                      }}>
+                                        {/* Top row: channel + status + date */}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                          <span style={{ fontSize: 13 }}>{icon}</span>
                                           <span style={{ fontSize: 12, fontWeight: 600, color: '#374151', textTransform: 'capitalize' }}>
-                                            {log.step_channel || log.channel}
+                                            {step.channel}
                                           </span>
+                                          {step.delay_days > 0 && (
+                                            <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                                              +{step.delay_days}d
+                                            </span>
+                                          )}
                                           <span style={{
-                                            fontSize: 10, fontWeight: 600, padding: '1px 7px',
-                                            borderRadius: 8, background: statusBg, color: statusColor,
+                                            fontSize: 10, fontWeight: 700, padding: '2px 8px',
+                                            borderRadius: 10, background: pillCfg.bg, color: pillCfg.color,
                                           }}>
-                                            {log.status}
+                                            {pillCfg.label}
                                           </span>
+                                          {formattedDate && (
+                                            <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 'auto' }}>
+                                              {isSent ? '✉ Sent ' : isFuture ? '📅 Due ' : ''}{formattedDate}
+                                            </span>
+                                          )}
                                         </div>
-                                        {log.subject && (
-                                          <div style={{ fontSize: 12, color: '#1a202c', fontWeight: 500, marginBottom: 2 }}>
-                                            {log.subject}
+
+                                        {/* Subject / task note */}
+                                        {displaySubject && (
+                                          <div style={{
+                                            fontSize: 12, color: isFuture ? '#9ca3af' : '#1a202c',
+                                            fontWeight: isFuture ? 400 : 500,
+                                            marginTop: 5,
+                                            fontStyle: isFuture && !step.subject ? 'italic' : 'normal',
+                                          }}>
+                                            {displaySubject}
+                                            {isFuture && !step.subject && (
+                                              <span style={{ fontSize: 10, color: '#9ca3af', marginLeft: 6 }}>(template)</span>
+                                            )}
                                           </div>
                                         )}
-                                        {log.body && (
+                                        {!displaySubject && displayNote && (
+                                          <div style={{ fontSize: 12, color: isFuture ? '#9ca3af' : '#374151', marginTop: 5 }}>
+                                            {displayNote}
+                                          </div>
+                                        )}
+
+                                        {/* Body preview — sent emails only */}
+                                        {isSent && step.body && (
                                           <div style={{
                                             fontSize: 11, color: '#6b7280', lineHeight: 1.5,
-                                            whiteSpace: 'pre-wrap',
-                                            maxHeight: 60, overflow: 'hidden',
-                                            maskImage: 'linear-gradient(to bottom, black 50%, transparent)',
-                                            WebkitMaskImage: 'linear-gradient(to bottom, black 50%, transparent)',
+                                            marginTop: 4, whiteSpace: 'pre-wrap',
+                                            maxHeight: 48, overflow: 'hidden',
+                                            maskImage: 'linear-gradient(to bottom, black 40%, transparent)',
+                                            WebkitMaskImage: 'linear-gradient(to bottom, black 40%, transparent)',
                                           }}>
-                                            {log.body}
+                                            {step.body.replace(/<[^>]+>/g, '')}
                                           </div>
                                         )}
-                                      </div>
 
-                                      {/* Fired at timestamp */}
-                                      <div style={{ fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap', flexShrink: 0 }}>
-                                        {log.fired_at
-                                          ? new Date(log.fired_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                                          : '—'}
+                                        {/* Error message */}
+                                        {isFailed && step.error_message && (
+                                          <div style={{ fontSize: 11, color: '#dc2626', marginTop: 4 }}>
+                                            ⚠️ {step.error_message}
+                                          </div>
+                                        )}
                                       </div>
                                     </div>
                                   );

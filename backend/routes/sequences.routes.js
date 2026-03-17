@@ -411,10 +411,13 @@ router.get('/enrollments', async (req, res) => {
 });
 
 // GET /api/sequences/enrollments/:enrollId
+// Returns enrollment + full step timeline:
+//   - Executed steps (from sequence_step_logs) with fired_at, subject, body, status
+//   - Future planned steps (from sequence_steps) with calculated due dates
 router.get('/enrollments/:enrollId', async (req, res) => {
   try {
     const er = await pool.query(
-      `SELECT se.*, s.name AS sequence_name,
+      `SELECT se.*, s.name AS sequence_name, s.id AS seq_id,
               p.first_name, p.last_name, p.email, p.company_name
          FROM sequence_enrollments se
          JOIN sequences s ON s.id = se.sequence_id
@@ -423,17 +426,102 @@ router.get('/enrollments/:enrollId', async (req, res) => {
       [req.params.enrollId, req.orgId]
     );
     if (!er.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+    const enrollment = er.rows[0];
 
-    const logs = await pool.query(
-      `SELECT ssl.*, ss.step_order, ss.channel AS step_channel
+    // All executed / drafted logs for this enrollment
+    const logsRes = await pool.query(
+      `SELECT ssl.id, ssl.status, ssl.fired_at, ssl.scheduled_send_at,
+              ssl.subject, ssl.body, ssl.channel, ssl.error_message,
+              ss.step_order, ss.channel AS step_channel, ss.task_note,
+              ss.delay_days, ss.id AS step_id
          FROM sequence_step_logs ssl
          JOIN sequence_steps ss ON ss.id = ssl.sequence_step_id
-        WHERE ssl.enrollment_id=$1
-        ORDER BY ssl.fired_at`,
+        WHERE ssl.enrollment_id = $1
+        ORDER BY ss.step_order ASC, ssl.fired_at ASC NULLS LAST`,
       [req.params.enrollId]
     );
 
-    res.json({ enrollment: er.rows[0], logs: logs.rows });
+    // All steps in the sequence (to build future planned steps)
+    const stepsRes = await pool.query(
+      `SELECT id, step_order, channel, delay_days, subject_template,
+              body_template, task_note, require_approval
+         FROM sequence_steps
+        WHERE sequence_id = $1
+        ORDER BY step_order ASC`,
+      [enrollment.seq_id]
+    );
+
+    // Build a map of step_order → log (most recent if multiple)
+    const logByStep = {};
+    for (const log of logsRes.rows) {
+      logByStep[log.step_order] = log;
+    }
+
+    // Calculate due dates for future steps by walking from next_step_due
+    // Starting point: next_step_due is the due date for current_step
+    const now = new Date();
+    let rollingDate = enrollment.next_step_due
+      ? new Date(enrollment.next_step_due)
+      : now;
+
+    const timeline = stepsRes.rows.map(step => {
+      const log = logByStep[step.step_order];
+
+      if (log) {
+        // Executed or drafted step — use actual data
+        return {
+          step_order:       step.step_order,
+          step_id:          step.id,
+          channel:          step.channel,
+          delay_days:       step.delay_days,
+          task_note:        step.task_note || null,
+          subject_template: step.subject_template || null,
+          // Log data
+          log_id:           log.id,
+          status:           log.status,           // sent | draft | skipped | failed
+          fired_at:         log.fired_at || null,
+          scheduled_send_at: log.scheduled_send_at || null,
+          subject:          log.subject || null,
+          body:             log.body    || null,
+          error_message:    log.error_message || null,
+          is_future:        false,
+        };
+      }
+
+      // Future step — calculate expected due date
+      // For current_step: use next_step_due directly
+      // For steps beyond current: add delay_days cumulatively
+      let due;
+      if (step.step_order === enrollment.current_step) {
+        due = rollingDate;
+      } else if (step.step_order > enrollment.current_step) {
+        // Add this step's delay onto the rolling date
+        const d = new Date(rollingDate);
+        d.setDate(d.getDate() + (parseInt(step.delay_days) || 0));
+        due = d;
+        rollingDate = due;
+      }
+
+      return {
+        step_order:       step.step_order,
+        step_id:          step.id,
+        channel:          step.channel,
+        delay_days:       step.delay_days,
+        task_note:        step.task_note || null,
+        subject_template: step.subject_template || null,
+        // No log yet
+        log_id:           null,
+        status:           enrollment.status === 'active' ? 'pending' : 'skipped',
+        fired_at:         null,
+        scheduled_send_at: due || null,
+        subject:          null,
+        body:             null,
+        error_message:    null,
+        is_future:        true,
+      };
+    });
+
+    res.json({ enrollment, logs: timeline });
   } catch (err) {
     console.error('enrollment GET /:id', err);
     res.status(500).json({ error: { message: 'Failed to load enrollment' } });
