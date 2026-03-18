@@ -178,16 +178,21 @@ router.get('/dashboard', portalAuth, async (req, res) => {
       [clientId, orgId, weekStart]
     );
 
-    // Sequence performance
+    // Sequence performance — join via enrollments→prospects (org-wide sequences)
     const seqRes = await pool.query(
       `SELECT s.name,
          COUNT(DISTINCT se.id)::int                                         AS enrolled,
          COUNT(DISTINCT se.id) FILTER (WHERE se.status='replied')::int     AS replied,
          COUNT(DISTINCT se.id) FILTER (WHERE se.status='active')::int      AS active,
-         COUNT(DISTINCT se.id) FILTER (WHERE se.status='completed')::int   AS completed
+         COUNT(DISTINCT se.id) FILTER (WHERE se.status='completed')::int   AS completed,
+         COUNT(DISTINCT se.id) FILTER (WHERE se.status='stopped')::int     AS stopped
        FROM sequences s
-       LEFT JOIN sequence_enrollments se ON se.sequence_id = s.id
-       WHERE s.client_id = $1 AND s.org_id = $2
+       JOIN sequence_enrollments se ON se.sequence_id = s.id
+       JOIN prospects p             ON p.id = se.prospect_id
+       WHERE p.client_id = $1
+         AND s.org_id    = $2
+         AND p.org_id    = $2
+         AND p.deleted_at IS NULL
        GROUP BY s.id, s.name
        ORDER BY enrolled DESC`,
       [clientId, orgId]

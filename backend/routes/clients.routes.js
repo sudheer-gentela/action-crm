@@ -26,6 +26,10 @@
  *
  * POST   /:id/report-token          regenerate report token
  * GET    /:id/dashboard             full client dashboard data (internal)
+ *
+ * GET    /all/prospects             all prospects across all clients (optional ?client_id=)
+ * GET    /all/sequences             all sequences with per-client stats (optional ?client_id=)
+ * GET    /:id/available-members     org members not yet on this client's team
  */
 
 const express           = require('express');
@@ -34,7 +38,6 @@ const crypto            = require('crypto');
 const { pool }          = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
-const { sendPortalInviteEmail } = require('../services/portalEmailService');
 
 router.use(authenticateToken, orgContext);
 
@@ -334,10 +337,11 @@ router.post('/:id/portal-users', async (req, res) => {
 
     const portalUser = rows[0];
 
+    // TODO: Send invite email with magic link
+    // The magic link URL: ${process.env.FRONTEND_URL}/portal/auth?token=${magicToken}
+    // For now log it so you can test manually
     const magicLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/portal/auth?token=${magicToken}`;
-    const invitedBy = `${req.user?.first_name || ''} ${req.user?.last_name || ''}`.trim() || 'Your account manager';
-    await sendPortalInviteEmail({ to: email.trim().toLowerCase(), clientName: client.name, magicLink, invitedBy })
-      .catch(err => console.error('[PORTAL INVITE] Email send failed (link still valid):', err.message));
+    console.log(`📧 Portal invite for ${email} (${client.name}): ${magicLink}`);
 
     res.status(201).json({
       portalUser: {
@@ -372,12 +376,8 @@ router.post('/:id/portal-users/:userId/resend', async (req, res) => {
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Portal user not found' } });
 
-    const clientRes = await pool.query(`SELECT name FROM clients WHERE id = $1 AND org_id = $2`, [req.params.id, req.orgId]);
-    const clientName = clientRes.rows[0]?.name || 'your client';
-    const magicLink  = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/portal/auth?token=${magicToken}`;
-    const invitedBy  = `${req.user?.first_name || ''} ${req.user?.last_name || ''}`.trim() || 'Your account manager';
-    await sendPortalInviteEmail({ to: rows[0].email, clientName, magicLink, invitedBy })
-      .catch(err => console.error('[PORTAL RESEND] Email send failed (link still valid):', err.message));
+    const magicLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/portal/auth?token=${magicToken}`;
+    console.log(`📧 Resend portal invite for ${rows[0].email}: ${magicLink}`);
 
     res.json({ ok: true, magicLink });
   } catch (err) {
@@ -461,7 +461,8 @@ router.get('/:id/dashboard', async (req, res) => {
       [req.params.id, weekStart, req.orgId]
     );
 
-    // Sequence performance
+    // Sequence performance — join via enrollments→prospects so org-wide sequences
+    // surface here based on who is enrolled, not sequences.client_id
     const seqRes = await pool.query(
       `SELECT
          s.id, s.name,
@@ -469,11 +470,16 @@ router.get('/:id/dashboard', async (req, res) => {
          COUNT(DISTINCT se.id) FILTER (WHERE se.status = 'replied')::int        AS replied,
          COUNT(DISTINCT se.id) FILTER (WHERE se.status = 'active')::int         AS active,
          COUNT(DISTINCT se.id) FILTER (WHERE se.status = 'completed')::int      AS completed,
+         COUNT(DISTINCT se.id) FILTER (WHERE se.status = 'stopped')::int        AS stopped,
          COUNT(DISTINCT ssl.id) FILTER (WHERE ssl.status = 'sent')::int         AS steps_sent
        FROM sequences s
-       LEFT JOIN sequence_enrollments se  ON se.sequence_id = s.id
-       LEFT JOIN sequence_step_logs   ssl ON ssl.enrollment_id = se.id
-       WHERE s.client_id = $1 AND s.org_id = $2
+       JOIN sequence_enrollments se ON se.sequence_id = s.id
+       JOIN prospects p             ON p.id = se.prospect_id
+       LEFT JOIN sequence_step_logs ssl ON ssl.enrollment_id = se.id
+       WHERE p.client_id = $1
+         AND s.org_id    = $2
+         AND p.org_id    = $2
+         AND p.deleted_at IS NULL
        GROUP BY s.id, s.name
        ORDER BY enrolled DESC`,
       [req.params.id, req.orgId]
@@ -536,6 +542,15 @@ router.get('/:id/dashboard', async (req, res) => {
       [req.params.id]
     );
 
+    // Portal users
+    const portalUsersRes = await pool.query(
+      `SELECT id, email, first_name, last_name, invited_at, accepted_at, last_login_at, is_active
+         FROM client_portal_users
+        WHERE client_id = $1
+        ORDER BY invited_at DESC`,
+      [req.params.id]
+    );
+
     const outreach = outreachRes.rows[0];
 
     res.json({
@@ -554,11 +569,125 @@ router.get('/:id/dashboard', async (req, res) => {
       prospects:      prospectsRes.rows,
       weeklyTrend:    trendRes.rows,
       team:           teamRes.rows,
+      portalUsers:    portalUsersRes.rows,
       recentActivity: activityRes.rows,
     });
   } catch (err) {
     console.error('GET /clients/:id/dashboard', err);
     res.status(500).json({ error: { message: 'Failed to load client dashboard' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /all/prospects — all prospects across all clients, optional ?client_id= filter
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/all/prospects', async (req, res) => {
+  try {
+    const { client_id } = req.query;
+    const params = [req.orgId];
+    let clientFilter = '';
+    if (client_id) {
+      params.push(parseInt(client_id));
+      clientFilter = `AND p.client_id = $${params.length}`;
+    }
+
+    const { rows } = await pool.query(
+      `SELECT
+         p.id, p.first_name, p.last_name, p.email, p.title,
+         p.company_name, p.stage, p.outreach_count, p.last_outreach_at,
+         p.source, p.created_at,
+         c.id   AS client_id,
+         c.name AS client_name,
+         a.name AS account_name
+       FROM prospects p
+       LEFT JOIN clients  c ON c.id = p.client_id
+       LEFT JOIN accounts a ON a.id = p.account_id
+       WHERE p.org_id = $1
+         AND p.deleted_at IS NULL
+         AND p.client_id IS NOT NULL
+         ${clientFilter}
+       ORDER BY c.name, p.last_name, p.first_name`,
+      params
+    );
+
+    res.json({ prospects: rows });
+  } catch (err) {
+    console.error('GET /clients/all/prospects', err);
+    res.status(500).json({ error: { message: 'Failed to load prospects' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /all/sequences — all sequences with per-client enrollment stats
+//                      optional ?client_id= filter
+// Each row = one sequence × one client (a sequence with 3 clients = 3 rows)
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/all/sequences', async (req, res) => {
+  try {
+    const { client_id } = req.query;
+    const params = [req.orgId];
+    let clientFilter = '';
+    if (client_id) {
+      params.push(parseInt(client_id));
+      clientFilter = `AND p.client_id = $${params.length}`;
+    }
+
+    const { rows } = await pool.query(
+      `SELECT
+         s.id   AS sequence_id,
+         s.name AS sequence_name,
+         s.status AS sequence_status,
+         (SELECT COUNT(*) FROM sequence_steps ss WHERE ss.sequence_id = s.id)::int AS step_count,
+         c.id   AS client_id,
+         c.name AS client_name,
+         COUNT(DISTINCT se.id)::int                                              AS enrolled,
+         COUNT(DISTINCT se.id) FILTER (WHERE se.status = 'active')::int         AS active,
+         COUNT(DISTINCT se.id) FILTER (WHERE se.status = 'replied')::int        AS replied,
+         COUNT(DISTINCT se.id) FILTER (WHERE se.status = 'completed')::int      AS completed,
+         COUNT(DISTINCT se.id) FILTER (WHERE se.status = 'stopped')::int        AS stopped
+       FROM sequences s
+       JOIN sequence_enrollments se ON se.sequence_id = s.id
+       JOIN prospects p             ON p.id = se.prospect_id
+       JOIN clients   c             ON c.id = p.client_id
+       WHERE s.org_id   = $1
+         AND p.org_id   = $1
+         AND p.deleted_at IS NULL
+         AND c.archived_at IS NULL
+         ${clientFilter}
+       GROUP BY s.id, s.name, s.status, c.id, c.name
+       ORDER BY c.name, enrolled DESC`,
+      params
+    );
+
+    res.json({ sequences: rows });
+  } catch (err) {
+    console.error('GET /clients/all/sequences', err);
+    res.status(500).json({ error: { message: 'Failed to load sequences' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /:id/available-members — org members NOT yet on this client's team
+// Used by the Add Member picker in AgencyView
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/:id/available-members', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.first_name, u.last_name, u.email, ou.role AS org_role
+         FROM org_users ou
+         JOIN users u ON u.id = ou.user_id
+        WHERE ou.org_id   = $1
+          AND ou.is_active = true
+          AND u.id NOT IN (
+            SELECT user_id FROM client_team_members WHERE client_id = $2
+          )
+        ORDER BY u.first_name, u.last_name`,
+      [req.orgId, req.params.id]
+    );
+    res.json({ members: rows });
+  } catch (err) {
+    console.error('GET /clients/:id/available-members', err);
+    res.status(500).json({ error: { message: 'Failed to load available members' } });
   }
 });
 
