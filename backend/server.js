@@ -71,6 +71,10 @@ const supportRoutes = require('./routes/support.routes');
 // ── Sequences (Prospecting Phase 3) ──────────────────────────
 const sequencesRoutes = require('./routes/sequences.routes');
 
+// ── Agency / Client Module ────────────────────────────────────
+const clientsRoutes      = require('./routes/clients.routes');
+const clientPortalRoutes = require('./routes/client-portal.routes');
+
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
 // ─────────────────────────────────────────────────────────────
@@ -220,6 +224,10 @@ app.use('/api/support', supportRoutes);
 // ─── Sequences (Prospecting Phase 3) ─────────────────────────
 app.use('/api/sequences', sequencesRoutes);
 
+// ─── Agency / Client Module ───────────────────────────────────
+app.use('/api/clients', clientsRoutes);
+app.use('/api/portal',  clientPortalRoutes);
+
 // ─── Public org context ───────────────────────────────────────
 const authenticateToken   = require('./middleware/auth.middleware');
 const { orgContext }      = require('./middleware/orgContext.middleware');
@@ -269,7 +277,7 @@ app.listen(PORT, () => {
 ╚═══════════════════════════════════════╝
   `);
 
-  console.log('🚨 DEPLOY CHECK v7 — playbook.service merged, playbook_stages table, contract_plays');
+  console.log('🚨 DEPLOY CHECK v8 — agency module: clients + portal routes mounted');
   console.log('🚀 Starting Bull queue worker...');
   try {
     require('./jobs/worker');
