@@ -278,7 +278,7 @@ function ClientDetail({ clientId, onBack }) {
     <div style={{ padding: 40, color: '#dc2626' }}>⚠️ {error}</div>
   );
 
-  const { client, pipeline, outreach, sequences, prospects, weeklyTrend, team, recentActivity, portalUsers } = data || {};
+  const { client, pipeline, outreach, sequences, prospects, weeklyTrend, team, recentActivity } = data || {};
 
   const TABS = [
     { key: 'overview',   label: '📊 Overview'   },
@@ -665,7 +665,6 @@ function TrendChart({ data }) {
   const W = 560, H = 120, BAR_W = 18, GAP = 8;
   const colW  = BAR_W * 2 + GAP + 12;
   const totalW = data.length * colW;
-  const scale  = (v) => H - (v / maxVal) * H;
 
   return (
     <div style={{ overflowX: 'auto' }}>
