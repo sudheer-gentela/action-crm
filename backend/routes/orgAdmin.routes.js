@@ -631,6 +631,29 @@ router.patch('/module/prospecting', adminOnly, async (req, res) => {
   }
 });
 
+/**
+ * PATCH /org/admin/module/agency
+ * Enable or disable the agency module for this org.
+ */
+router.patch('/module/agency', adminOnly, async (req, res) => {
+  try {
+    const enabled = req.body.enabled === true || req.body.enabled === 'true';
+    await pool.query(
+      `UPDATE organizations
+       SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{modules,agency}', $2::jsonb, true),
+           updated_at = NOW()
+       WHERE id = $1`,
+      [req.orgId, JSON.stringify(enabled)]
+    );
+    requireModule.invalidate(req.orgId, 'agency');
+    console.log(`🏢 Agency module ${enabled ? 'enabled' : 'disabled'} for org ${req.orgId}`);
+    res.json({ enabled });
+  } catch (err) {
+    console.error('PATCH /org/admin/module/agency error:', err);
+    res.status(500).json({ error: { message: 'Failed to update agency module' } });
+  }
+});
+
 // ── Playbook Types (configurable per org) ────────────────────────────────────
 // Stored in organizations.settings->'playbook_types' as a JSON array.
 // System types (sales, prospecting) cannot be removed or renamed.

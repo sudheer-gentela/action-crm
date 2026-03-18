@@ -597,6 +597,43 @@ export const apiService = {
     getDashboard:  (scope = 'mine') => api.get(`/support/dashboard?scope=${scope}`),
     generateCaseActions: (caseId, data) => api.post(`/support/cases/${caseId}/generate-actions`, data),
   },
+
+  // ══════════════════════════════════════════════════════════
+  // Agency / Client Management Module
+  // ══════════════════════════════════════════════════════════
+  agency: {
+    toggleModule: (enabled) => api.patch('/org/admin/module/agency', { enabled }),
+
+    // Clients CRUD
+    getAll:   (params = {}) => {
+      const qs = new URLSearchParams(params).toString();
+      return api.get(`/clients${qs ? '?' + qs : ''}`);
+    },
+    getById:  (id)          => api.get(`/clients/${id}`),
+    create:   (data)        => api.post('/clients', data),
+    update:   (id, data)    => api.put(`/clients/${id}`, data),
+    archive:  (id)          => api.delete(`/clients/${id}`),
+
+    // Team assignment
+    addTeamMember:    (clientId, data)        => api.post(`/clients/${clientId}/team`, data),
+    removeTeamMember: (clientId, userId)      => api.delete(`/clients/${clientId}/team/${userId}`),
+
+    // Prospect / Account scoping
+    assignProspects:  (clientId, prospectIds) => api.post(`/clients/${clientId}/prospects/assign`, { prospectIds }),
+    assignAccounts:   (clientId, accountIds)  => api.post(`/clients/${clientId}/accounts/assign`, { accountIds }),
+
+    // Portal users
+    getPortalUsers:   (clientId)              => api.get(`/clients/${clientId}/portal-users`),
+    invitePortalUser: (clientId, data)        => api.post(`/clients/${clientId}/portal-users`, data),
+    revokePortalUser: (clientId, userId)      => api.delete(`/clients/${clientId}/portal-users/${userId}`),
+    resendInvite:     (clientId, userId)      => api.post(`/clients/${clientId}/portal-users/${userId}/resend`),
+
+    // Dashboard
+    getDashboard:     (clientId)              => api.get(`/clients/${clientId}/dashboard`),
+
+    // Report token
+    regenerateToken:  (clientId)              => api.post(`/clients/${clientId}/report-token`),
+  },
 };
 
 // ============================================================

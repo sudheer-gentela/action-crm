@@ -73,6 +73,7 @@ const MODULE_NAV_DEFS = [
   { moduleKey: 'contracts',   navId: 'mod-contracts',   icon: '📄', label: 'CLM' },
   { moduleKey: 'handovers',   navId: 'mod-handovers',   icon: '🤝', label: 'Handover S→I' },
   { moduleKey: 'service',     navId: 'mod-service',     icon: '🎧', label: 'Service' },
+  { moduleKey: 'agency',      navId: 'mod-agency',      icon: '🏢', label: 'Agency' },
 ];
 
 // Builds the full nav group list, inserting enabled module items before 'General'
@@ -117,6 +118,7 @@ const TAB_META = {
   'mod-contracts':     { title: 'Contract Lifecycle Management',      desc: 'CLM module settings — eSign configuration and contract templates' },
   'mod-handovers':     { title: 'Sales → Implementation Handover',   desc: 'Handover module settings' },
   'mod-service':       { title: 'Customer Support & Service',         desc: 'Service module settings — SLA tiers and general configuration' },
+  'mod-agency':        { title: 'Agency Client Management',           desc: 'Agency module settings — client portal and team configuration' },
   integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },
   settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
 };
@@ -352,6 +354,7 @@ export default function OrgAdminView() {
     prospecting: false,
     handovers:   false,
     service:     false,
+    agency:      false,
   });
 
   useEffect(() => {
@@ -377,6 +380,7 @@ export default function OrgAdminView() {
           prospecting: mods.prospecting || false,
           handovers:   mods.handovers   || false,
           service:     mods.service     || false,
+          agency:      mods.agency      || false,
         });
       })
       .catch(e => console.error('[OrgAdminView] getProfile failed:', e));
@@ -483,6 +487,7 @@ export default function OrgAdminView() {
             {tab === 'mod-contracts'    && <OACLMModule />}
             {tab === 'mod-handovers'    && <OAHandoverModule />}
             {tab === 'mod-service'      && <OAServiceModule />}
+            {tab === 'mod-agency'       && <OAAgencyModule />}
             {/* ── All other existing sections (untouched) ── */}
             {tab === 'members'          && <OAMembers currentUserId={currentUser.id} />}
             {tab === 'hierarchy'        && <OAHierarchy />}
@@ -5322,6 +5327,75 @@ function OAServiceModule() {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// AGENCY MODULE SETTINGS TAB
+// ─────────────────────────────────────────────────────────────────
+
+function OAAgencyModule() {
+  const [enabled, setEnabled] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    apiService.orgAdmin.getProfile()
+      .then(r => setEnabled(r.data.org?.settings?.modules?.agency || false))
+      .catch(console.error)
+      .finally(() => setLoading(false));
+
+    const handler = (e) => {
+      if (e.detail.module === 'agency') setEnabled(e.detail.enabled);
+    };
+    window.addEventListener('moduleToggle', handler);
+    return () => window.removeEventListener('moduleToggle', handler);
+  }, []);
+
+  if (loading) return <div className="sv-loading">Loading…</div>;
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>🏢 Agency Client Management</h2>
+          <p className="sv-panel-desc">
+            Manage client accounts on behalf of your customers — dedicated portals, team assignment,
+            outreach tracking, and client-scoped dashboards.
+          </p>
+        </div>
+      </div>
+
+      {!enabled && (
+        <div style={{ padding: '20px 0', color: '#6b7280', fontSize: 13 }}>
+          This module is currently disabled. Enable it from the{' '}
+          <strong>Modules</strong> tab to access agency settings.
+        </div>
+      )}
+
+      {enabled && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{
+            background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8,
+            padding: '14px 18px', marginBottom: 20, fontSize: 13, color: '#166534',
+          }}>
+            ✅ Agency module is enabled. Create and manage clients from the Agency tab in the main navigation.
+          </div>
+          <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '18px 20px' }}>
+            <h4 style={{ margin: '0 0 10px', fontSize: 14, fontWeight: 600, color: '#111827' }}>Portal Configuration</h4>
+            <p style={{ margin: '0 0 8px', fontSize: 13, color: '#6b7280', lineHeight: 1.6 }}>
+              Client portal invites are sent via magic link. Each link is one-time use and expires after 7 days.
+            </p>
+            <p style={{ margin: 0, fontSize: 13, color: '#6b7280', lineHeight: 1.6 }}>
+              To wire up email delivery for portal invites, configure{' '}
+              <code style={{ fontSize: 12, background: '#f3f4f6', padding: '1px 5px', borderRadius: 4 }}>
+                backend/services/portalEmailService.js
+              </code>{' '}
+              with your email provider.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
 // MODULES TAB — enable/disable product modules per org
 // ─────────────────────────────────────────────────────────────────
 
@@ -5331,6 +5405,7 @@ function OAModules() {
     prospecting:  false,
     handovers:    false,
     service:      false,
+    agency:       false,
   });
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(null);
@@ -5347,6 +5422,7 @@ function OAModules() {
           prospecting: settings.modules?.prospecting || false,
           handovers:   settings.modules?.handovers   || false,
           service:     settings.modules?.service     || false,
+          agency:      settings.modules?.agency      || false,
         });
       })
       .catch(() => setError('Failed to load module settings'))
@@ -5358,6 +5434,7 @@ function OAModules() {
     prospecting: (enabled) => apiService.prospects.toggleModule(enabled),
     handovers:   (enabled) => apiService.handovers.toggleModule(enabled),
     service:     (enabled) => apiService.support.toggleModule(enabled),
+    agency:      (enabled) => apiService.agency.toggleModule(enabled),
   };
 
   const handleToggle = async (moduleName, newVal) => {
@@ -5441,6 +5518,22 @@ function OAModules() {
         'Internal notes and customer-facing comments',
       ],
       color: '#0891b2',
+    },
+    {
+      key: 'agency',
+      icon: '🏢',
+      label: 'Agency Client Management',
+      desc: 'Manage client accounts on behalf of your customers — dedicated portals, team assignment, outreach tracking, and client-scoped dashboards.',
+      features: [
+        'Client records linked to existing accounts',
+        'Team assignment — assign internal users as client leads or members',
+        'Prospect, account, and sequence scoping per client',
+        'Read-only client portal with magic link authentication',
+        'Portal dashboard: pipeline, outreach stats, sequences, and open cases',
+        'Client activity log — full audit trail of work done for each client',
+        'Portal users can raise support cases directly from the portal',
+      ],
+      color: '#7c3aed',
     },
   ];
 
