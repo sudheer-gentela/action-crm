@@ -4,7 +4,7 @@
  * Mount at: app.use('/api/sequences', sequencesRoutes)
  *
  * Endpoints
- * ─────────────────────────────────────────────────────────
+ * ─────────────────────────────────────────────────────
  * GET    /                          list sequences for org
  * POST   /                          create sequence (+ steps)
  * GET    /:id                       get sequence with steps
@@ -174,13 +174,16 @@ router.post('/ai-personalise-enrollment', async (req, res) => {
     const researchBullets = Array.isArray(researchMeta.researchBullets) ? researchMeta.researchBullets : [];
 
     // ── Fetch sender display_name so AI writes the sign-off naturally ──────
+    // CHANGED: AND client_id IS NULL — only look up the rep's personal sender,
+    // not a client-owned sender account.
     // Best-effort: if no sender account exists, AI omits the sign-off token.
     let senderDisplayName = '';
     try {
       const senderRes = await pool.query(
         `SELECT display_name FROM prospecting_sender_accounts
-          WHERE org_id   = $1
-            AND user_id  = $2
+          WHERE org_id    = $1
+            AND user_id   = $2
+            AND client_id IS NULL
             AND is_active = true
           ORDER BY
             (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
@@ -458,7 +461,6 @@ router.get('/enrollments/:enrollId', async (req, res) => {
     }
 
     // Calculate due dates for future steps by walking from next_step_due
-    // Starting point: next_step_due is the due date for current_step
     const now = new Date();
     let rollingDate = enrollment.next_step_due
       ? new Date(enrollment.next_step_due)
@@ -468,7 +470,6 @@ router.get('/enrollments/:enrollId', async (req, res) => {
       const log = logByStep[step.step_order];
 
       if (log) {
-        // Executed or drafted step — use actual data
         return {
           step_order:       step.step_order,
           step_id:          step.id,
@@ -476,9 +477,8 @@ router.get('/enrollments/:enrollId', async (req, res) => {
           delay_days:       step.delay_days,
           task_note:        step.task_note || null,
           subject_template: step.subject_template || null,
-          // Log data
           log_id:           log.id,
-          status:           log.status,           // sent | draft | skipped | failed
+          status:           log.status,
           fired_at:         log.fired_at || null,
           scheduled_send_at: log.scheduled_send_at || null,
           subject:          log.subject || null,
@@ -488,21 +488,16 @@ router.get('/enrollments/:enrollId', async (req, res) => {
         };
       }
 
-      // Future step — calculate expected due date
-      // For current_step: use next_step_due directly
-      // For steps beyond current: add delay_days cumulatively
       let due;
       if (step.step_order === enrollment.current_step) {
         due = rollingDate;
       } else if (step.step_order > enrollment.current_step) {
-        // Add this step's delay onto the rolling date
         const d = new Date(rollingDate);
         d.setDate(d.getDate() + (parseInt(step.delay_days) || 0));
         due = d;
         rollingDate = due;
       }
 
-      // Use personalised content if pre-generated, else fall back to template
       const personalised = enrollment.personalised_steps?.[step.step_order]
         || enrollment.personalised_steps?.[String(step.step_order)];
 
@@ -600,7 +595,8 @@ router.get('/drafts', async (req, res) => {
         s.name AS sequence_name,
         p.id AS prospect_id, p.first_name, p.last_name,
         p.email AS prospect_email, p.company_name,
-        -- Auto-select the rep's least-used active sender account
+        -- Auto-select the rep's least-used active personal sender account
+        -- CHANGED: client_id IS NULL — excludes client-owned sender accounts
         psa.id   AS sender_id,
         psa.email AS sender_email,
         psa.provider AS sender_provider,
@@ -610,13 +606,14 @@ router.get('/drafts', async (req, res) => {
       JOIN sequences s             ON s.id   = se.sequence_id
       JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
       JOIN prospects p             ON p.id   = ssl.prospect_id
-      -- Pick the rep's least-used sender via a lateral join
+      -- Pick the rep's least-used personal sender via a lateral join
       LEFT JOIN LATERAL (
         SELECT id, email, provider, label
           FROM prospecting_sender_accounts
-         WHERE org_id  = ssl.org_id
-           AND user_id = se.enrolled_by
-           AND is_active = true
+         WHERE org_id     = ssl.org_id
+           AND user_id    = se.enrolled_by
+           AND client_id  IS NULL
+           AND is_active  = true
          ORDER BY
            (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
            last_sent_at ASC NULLS FIRST
@@ -673,7 +670,6 @@ router.get('/drafts', async (req, res) => {
 router.patch('/drafts/:logId', async (req, res) => {
   const { subject, body } = req.body;
   try {
-    // Verify draft belongs to this org and is still a draft
     const { rows } = await pool.query(
       `UPDATE sequence_step_logs
           SET subject = COALESCE($1, subject),
@@ -738,11 +734,14 @@ router.post('/drafts/:logId/send', async (req, res) => {
     }
 
     // ── 2. Select sender account ───────────────────────────────────────────
+    // CHANGED: AND client_id IS NULL on both branches — rep's personal senders only.
+    // Client senders are selected automatically by SequenceStepFirer at draft
+    // creation time; the rep sends from whichever account the draft was created for.
     let sender;
     if (senderAccountId) {
       const r = await client.query(
         `SELECT * FROM prospecting_sender_accounts
-          WHERE id=$1 AND org_id=$2 AND user_id=$3 AND is_active=true`,
+          WHERE id=$1 AND org_id=$2 AND user_id=$3 AND client_id IS NULL AND is_active=true`,
         [senderAccountId, req.orgId, req.user.userId]
       );
       if (!r.rows.length) return res.status(404).json({ error: { message: 'Sender account not found or inactive' } });
@@ -750,7 +749,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
     } else {
       const r = await client.query(
         `SELECT * FROM prospecting_sender_accounts
-          WHERE org_id=$1 AND user_id=$2 AND is_active=true
+          WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true
           ORDER BY
             (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
             last_sent_at ASC NULLS FIRST
@@ -792,10 +791,6 @@ router.post('/drafts/:logId/send', async (req, res) => {
     }
 
     // ── 5. Ensure signature is present (safety-net) ────────────────────────
-    // SequenceStepFirer appends the signature when creating the draft.
-    // If for any reason it is absent (e.g. sender had no signature at draft
-    // creation but has one now, or draft was created before this feature
-    // shipped), append it here so it is never missing from a sent email.
     let bodyToSend = draft.body || '';
     if (sender.signature) {
       const trimmedSig = sender.signature.trim();
@@ -844,7 +839,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
     );
     const newEmail = emailRes.rows[0];
 
-    // ── 8. Flip draft → sent (also writes back final body for audit trail) ─
+    // ── 8. Flip draft → sent ───────────────────────────────────────────────
     await client.query(
       `UPDATE sequence_step_logs
           SET status='sent', fired_at=NOW(), email_id=$1, body=$2
@@ -965,7 +960,6 @@ router.post('/drafts/:logId/send', async (req, res) => {
 router.delete('/drafts/:logId', async (req, res) => {
   const client = await pool.connect();
   try {
-    // Load draft + enrollment
     const draftRes = await client.query(
       `SELECT ssl.*, ss.step_order, se.enrolled_by, se.current_step,
               s.id AS seq_id, s.name AS sequence_name
@@ -987,13 +981,11 @@ router.delete('/drafts/:logId', async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Flip to skipped
     await client.query(
       `UPDATE sequence_step_logs SET status='skipped', fired_at=NOW() WHERE id=$1`,
       [draft.id]
     );
 
-    // Advance enrollment (step consumed even when skipped)
     const nextStepRes = await client.query(
       `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
       [draft.seq_id, draft.current_step + 1]
@@ -1013,7 +1005,6 @@ router.delete('/drafts/:logId', async (req, res) => {
       );
     }
 
-    // Mark linked overdue action completed
     await client.query(
       `UPDATE prospecting_actions
           SET status='completed', completed_at=CURRENT_TIMESTAMP,
@@ -1024,7 +1015,6 @@ router.delete('/drafts/:logId', async (req, res) => {
       [req.user.userId, req.orgId, draft.id]
     );
 
-    // Write activity
     await client.query(
       `INSERT INTO prospecting_activities
          (prospect_id, user_id, activity_type, description, metadata)
@@ -1108,31 +1098,31 @@ router.delete('/:id', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STEPS
+// STEPS CRUD
 // ─────────────────────────────────────────────────────────────────────────────
 
 // POST /api/sequences/:id/steps
 router.post('/:id/steps', async (req, res) => {
   const { channel, delay_days, subject_template, body_template, task_note, require_approval } = req.body;
-  if (!channel) return res.status(400).json({ error: { message: 'channel is required' } });
   try {
     const maxRes = await pool.query(
       `SELECT COALESCE(MAX(step_order), 0) AS max_order FROM sequence_steps WHERE sequence_id=$1`,
       [req.params.id]
     );
     const nextOrder = maxRes.rows[0].max_order + 1;
+
     const { rows } = await pool.query(
       `INSERT INTO sequence_steps
-               (sequence_id, org_id, step_order, channel, delay_days,
-                subject_template, body_template, task_note, require_approval)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+         (sequence_id, org_id, step_order, channel, delay_days,
+          subject_template, body_template, task_note, require_approval)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
       [req.params.id, req.orgId, nextOrder, channel, delay_days ?? 0,
        subject_template || null, body_template || null, task_note || null,
        require_approval !== undefined ? require_approval : null]
     );
     res.status(201).json({ step: rows[0] });
   } catch (err) {
-    console.error('steps POST', err);
+    console.error('sequences POST /:id/steps', err);
     res.status(500).json({ error: { message: 'Failed to add step' } });
   }
 });
@@ -1143,18 +1133,21 @@ router.put('/:id/steps/:stepId', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE sequence_steps
-          SET channel=$1, delay_days=$2, subject_template=$3, body_template=$4,
-              task_note=$5, require_approval=$6, updated_at=NOW()
-        WHERE id=$7 AND sequence_id=$8 AND org_id=$9 RETURNING *`,
-      [channel, delay_days ?? 0, subject_template || null, body_template || null,
-       task_note || null,
+          SET channel=$1, delay_days=$2, subject_template=$3,
+              body_template=$4, task_note=$5,
+              require_approval=COALESCE($6, require_approval),
+              updated_at=NOW()
+        WHERE id=$7 AND sequence_id=$8
+        RETURNING *`,
+      [channel, delay_days ?? 0, subject_template || null,
+       body_template || null, task_note || null,
        require_approval !== undefined ? require_approval : null,
-       req.params.stepId, req.params.id, req.orgId]
+       req.params.stepId, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Step not found' } });
     res.json({ step: rows[0] });
   } catch (err) {
-    console.error('steps PUT', err);
+    console.error('sequences PUT /:id/steps/:stepId', err);
     res.status(500).json({ error: { message: 'Failed to update step' } });
   }
 });
@@ -1164,43 +1157,43 @@ router.delete('/:id/steps/:stepId', async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(
-      `DELETE FROM sequence_steps WHERE id=$1 AND sequence_id=$2 AND org_id=$3`,
-      [req.params.stepId, req.params.id, req.orgId]
+    const delRes = await client.query(
+      `DELETE FROM sequence_steps WHERE id=$1 AND sequence_id=$2 RETURNING step_order`,
+      [req.params.stepId, req.params.id]
     );
-    // Re-number remaining steps
+    if (!delRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: { message: 'Step not found' } });
+    }
+    const deletedOrder = delRes.rows[0].step_order;
+    // Re-number subsequent steps
     await client.query(
-      `WITH ranked AS (
-         SELECT id, ROW_NUMBER() OVER (ORDER BY step_order) AS new_order
-           FROM sequence_steps WHERE sequence_id=$1
-       )
-       UPDATE sequence_steps ss
-          SET step_order = ranked.new_order
-         FROM ranked WHERE ss.id = ranked.id`,
-      [req.params.id]
+      `UPDATE sequence_steps SET step_order=step_order-1 WHERE sequence_id=$1 AND step_order>$2`,
+      [req.params.id, deletedOrder]
     );
     await client.query('COMMIT');
     res.json({ ok: true });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('steps DELETE', err);
+    console.error('sequences DELETE /:id/steps/:stepId', err);
     res.status(500).json({ error: { message: 'Failed to delete step' } });
   } finally {
     client.release();
   }
 });
 
-// POST /api/sequences/:id/steps/reorder  body: { order: [stepId, stepId, ...] }
+// POST /api/sequences/:id/steps/reorder
 router.post('/:id/steps/reorder', async (req, res) => {
-  const { order } = req.body; // array of step IDs in desired order
-  if (!Array.isArray(order)) return res.status(400).json({ error: { message: 'order must be an array' } });
+  const { steps } = req.body; // [{ id, step_order }]
+  if (!Array.isArray(steps)) return res.status(400).json({ error: { message: 'steps[] required' } });
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    for (let i = 0; i < order.length; i++) {
+    for (const s of steps) {
       await client.query(
-        `UPDATE sequence_steps SET step_order=$1 WHERE id=$2 AND sequence_id=$3 AND org_id=$4`,
-        [i + 1, order[i], req.params.id, req.orgId]
+        `UPDATE sequence_steps SET step_order=$1 WHERE id=$2 AND sequence_id=$3`,
+        [s.step_order, s.id, req.params.id]
       );
     }
     await client.query('COMMIT');
@@ -1211,7 +1204,7 @@ router.post('/:id/steps/reorder', async (req, res) => {
     res.json({ steps: rows });
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('steps reorder', err);
+    console.error('sequences POST /:id/steps/reorder', err);
     res.status(500).json({ error: { message: 'Failed to reorder steps' } });
   } finally {
     client.release();
@@ -1220,16 +1213,14 @@ router.post('/:id/steps/reorder', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI GENERATE STEPS
-// ─────────────────────────────────────────────────────────────────────────────
-
 // POST /api/sequences/:id/ai-generate
-// body: { prospectId }  — generates personalised subject+body for each step
+// body: { prospectId }
+// ─────────────────────────────────────────────────────────────────────────────
 router.post('/:id/ai-generate', async (req, res) => {
   const { prospectId } = req.body;
   if (!prospectId) return res.status(400).json({ error: { message: 'prospectId is required' } });
 
   try {
-    // Load sequence + steps
     const seqRes = await pool.query(
       `SELECT * FROM sequences WHERE id=$1 AND org_id=$2`,
       [req.params.id, req.orgId]
@@ -1240,13 +1231,10 @@ router.post('/:id/ai-generate', async (req, res) => {
       `SELECT * FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order`,
       [req.params.id]
     );
-    const steps = stepsRes.rows;
 
-    // Load prospect + account — include research_meta and account_industry for full Intel data
     const prospectRes = await pool.query(
-      `SELECT p.*, a.name AS account_name, a.research_notes AS account_research,
-              a.domain AS account_domain, a.industry AS account_industry,
-              a.research_meta AS account_research_meta
+      `SELECT p.*, a.name AS account_name, a.domain AS account_domain,
+              a.industry AS account_industry
          FROM prospects p
     LEFT JOIN accounts a ON a.id = p.account_id
         WHERE p.id=$1 AND p.org_id=$2`,
@@ -1255,79 +1243,20 @@ router.post('/:id/ai-generate', async (req, res) => {
     if (!prospectRes.rows.length) return res.status(404).json({ error: { message: 'Prospect not found' } });
     const prospect = prospectRes.rows[0];
 
-    // Extract all Intel fields from research_meta
-    const researchMeta    = prospect.research_meta  || {};
-    const pitchAngle      = researchMeta.pitchAngle  || '';
-    const crispPitch      = researchMeta.crispPitch  || '';
-    const subjectLine     = researchMeta.subjectLine || '';
-    const researchBullets = Array.isArray(researchMeta.researchBullets) ? researchMeta.researchBullets : [];
-    const hasResearch     = !!(prospect.research_notes || prospect.account_research);
+    const systemPrompt = `You are an expert SDR copywriter. Personalise the following email sequence steps for the given prospect.
+Return ONLY valid JSON — no markdown, no prose.`;
 
-    // ── Fetch sender display_name so AI writes the sign-off naturally ──────
-    // Best-effort: if no sender account exists, AI omits the sign-off token.
-    let senderDisplayName = '';
-    try {
-      const senderRes = await pool.query(
-        `SELECT display_name FROM prospecting_sender_accounts
-          WHERE org_id=$1 AND user_id=$2 AND is_active=true
-          ORDER BY (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
-                   last_sent_at ASC NULLS FIRST
-          LIMIT 1`,
-        [req.orgId, req.user.userId]
-      );
-      senderDisplayName = senderRes.rows[0]?.display_name || '';
-    } catch (_) {
-      // Non-fatal — proceed without display_name
-    }
-
-    const researchBlock = hasResearch
-      ? [
-          'PROSPECT RESEARCH (write FROM this — not around it):',
-          researchBullets.length > 0 ? 'Key insights:\n' + researchBullets.map(b => '  - ' + b).join('\n') : '',
-          pitchAngle  ? '\nStrongest pitch angle: ' + pitchAngle : '',
-          crispPitch  ? '\nPre-written pitch (use as core of step 1 — adapt tone, keep substance):\n' + crispPitch : '',
-          subjectLine ? '\nSuggested subject line for step 1: ' + subjectLine : '',
-          prospect.research_notes   ? '\nResearch notes:\n' + prospect.research_notes : '',
-          prospect.account_research ? '\nAccount research:\n' + prospect.account_research : '',
-        ].filter(Boolean).join('\n')
-      : 'No research available — write from first principles using their role, company and industry.';
-
-    const systemPrompt = `You are an expert SDR writing highly personalised outreach emails. You write from research, not from templates.
-Return ONLY valid JSON — no markdown fences, no prose.`;
-
-    const userPrompt = `Write personalised outreach emails for this prospect. Research is your primary input — templates are structural guides only. Do NOT copy template wording.
-
-PROSPECT:
+    const userPrompt = `Personalise these sequence steps for:
 Name: ${prospect.first_name} ${prospect.last_name}
 Title: ${prospect.title || 'unknown'}
 Company: ${prospect.account_name || prospect.company_name || 'unknown'}
 Industry: ${prospect.account_industry || 'unknown'}
-${researchBlock}
+${prospect.research_notes ? 'Research: ' + prospect.research_notes : ''}
 
-SENDER: ${senderDisplayName || 'the sender'}
-${senderDisplayName ? 'End each email body with a natural sign-off using the sender name above (e.g. "Best,\n' + senderDisplayName + '"). Do NOT add a signature block — just the name sign-off.' : ''}
+STEPS:
+${stepsRes.rows.map((s, i) => `Step ${i+1} (${s.channel}): subject="${s.subject_template||''}" body="${(s.body_template||'').slice(0,200)}"`).join('\n')}
 
-SEQUENCE: "${seqRes.rows[0].name}"
-Tone & Goal: ${seqRes.rows[0].description || 'Professional outreach'}
-
-WRITING RULES:
-- Step 1: Open with the most specific insight from the research. Write something that could only be for this person.
-- If a crispPitch is provided, use it as the backbone of step 1.
-- If a subjectLine is provided, use it (or a close variant) for the step 1 subject.
-- Follow-ups: reference the first email, vary the angle, stay specific.
-- Under 120 words per email body (excluding sign-off). No filler openers.
-- Use {{first_name}}, {{company}}, {{title}} tokens only where natural.
-
-STRUCTURAL REFERENCE (format/CTA style only — do not copy wording):
-${steps.map((s, i) => 'Step ' + (i+1) + ': channel=' + s.channel + ', delay=' + s.delay_days + 'd\n  Template subject: ' + (s.subject_template || '(none)') + '\n  Template body: ' + (s.body_template || '(none)')).join('\n\n')}
-
-Return JSON:
-{
-  "steps": [
-    { "step_order": 1, "subject": "...", "body": "..." },
-    ...
-  ]
-}`;
+Return JSON: { "steps": [{ "step_order": 1, "subject": "...", "body": "...", "task_note": "" }] }`;
 
     const aiRes = await anthropic.messages.create({
       model:      'claude-sonnet-4-20250514',
@@ -1336,7 +1265,6 @@ Return JSON:
       messages:   [{ role: 'user', content: userPrompt }],
     });
 
-    // Track tokens
     try {
       await TokenTrackingService.log({
         orgId:    req.orgId,
@@ -1347,11 +1275,18 @@ Return JSON:
       });
     } catch (_) {}
 
-    const raw = aiRes.content.find(b => b.type === 'text')?.text || '{}';
+    const raw   = aiRes.content.find(b => b.type === 'text')?.text || '{}';
     const clean = raw.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
 
-    res.json({ generatedSteps: parsed.steps || [] });
+    res.json({
+      steps: (parsed.steps || []).map(s => ({
+        step_order: s.step_order,
+        subject:    s.subject    || '',
+        body:       s.body       || '',
+        task_note:  s.task_note  || '',
+      })),
+    });
   } catch (err) {
     console.error('ai-generate error:', err);
     res.status(500).json({ error: { message: 'AI generation failed: ' + err.message } });
@@ -1359,20 +1294,42 @@ Return JSON:
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI BUILD SEQUENCE — generate full sequence structure from a plain-English goal
+// AI BUILD SEQUENCE
 // POST /api/sequences/ai-build
-// body: { goal, stepCount?, channels? }
-// Returns: { name, description, steps: [{channel, delay_days, subject_template, body_template}] }
-// Does NOT save — client reviews and calls POST / to save.
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/ai-build', async (req, res) => {
-  const { goal, stepCount = 5, channels = ['email'] } = req.body;
-  if (!goal?.trim()) return res.status(400).json({ error: { message: 'goal is required' } });
+  const { name, description, channelMix, steps: stepCount, tone, goal } = req.body;
 
   try {
-    const systemPrompt = `You are an expert sales development rep and copywriter building outreach sequences.\nReturn ONLY valid JSON — no markdown fences, no preamble, no prose outside the JSON.`;
+    const systemPrompt = `You are an expert SDR sequence architect. Build a complete outreach sequence.
+Return ONLY valid JSON — no markdown fences, no prose.`;
 
-    const userPrompt = `Build a complete outreach sequence based on this goal:\n\nGOAL: ${goal}\nSTEPS: ${stepCount}\nCHANNELS AVAILABLE: ${channels.join(', ')}\n\nRules:\n- Use {{first_name}}, {{last_name}}, {{full_name}}, {{title}}, {{company}}, {{industry}} as personalisation tokens\n- Keep email bodies under 120 words — concise, human, not salesy\n- Vary the approach across steps: opener → value → social proof → breakup\n- Space steps realistically: day 0, then 2–4 day gaps between follow-ups\n- For call/task steps, write a brief task_note (what to say/do), leave subject_template and body_template empty\n- sequence name should be short and descriptive (under 50 chars)\n\nReturn this exact JSON shape:\n{\n  "name": "...",\n  "description": "...",\n  "steps": [\n    {\n      "step_order": 1,\n      "channel": "email",\n      "delay_days": 0,\n      "subject_template": "...",\n      "body_template": "...",\n      "task_note": ""\n    }\n  ]\n}`;
+    const userPrompt = `Build an outreach sequence with these requirements:
+Name: ${name || 'New Sequence'}
+Goal: ${goal || 'Book a discovery call'}
+Tone: ${tone || 'Professional, concise'}
+Description: ${description || ''}
+Number of steps: ${stepCount || 5}
+Channel mix: ${channelMix || 'Mostly email with 1-2 LinkedIn touchpoints'}
+
+For each step include: channel (email|linkedin|call|task), delay_days (days after previous step), subject_template (for email/linkedin), body_template (for email/linkedin), task_note (for call/task).
+Use {{first_name}}, {{company}}, {{title}}, {{industry}} as personalisation tokens.
+
+Return JSON:
+{
+  "name": "...",
+  "description": "...",
+  "steps": [
+    {
+      "step_order": 1,
+      "channel": "email",
+      "delay_days": 0,
+      "subject_template": "...",
+      "body_template": "...",
+      "task_note": ""
+    }
+  ]
+}`;
 
     const aiRes = await anthropic.messages.create({
       model:      'claude-sonnet-4-20250514',
@@ -1407,10 +1364,8 @@ router.post('/ai-build', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI WRITE STEP — write a single step from a plain-English prompt
+// AI WRITE STEP
 // POST /api/sequences/ai-write-step
-// body: { prompt, channel, stepNumber, totalSteps, previousSteps? }
-// Returns: { subject_template, body_template, task_note }
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/ai-write-step', async (req, res) => {
   const { prompt, channel = 'email', stepNumber = 1, totalSteps = 1, previousSteps = [] } = req.body;
@@ -1467,11 +1422,9 @@ router.post('/ai-write-step', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // SEQUENCE STATS
 // GET /api/sequences/:id/stats
-// Returns: enrollment status breakdown + per-step funnel (sent/replied counts)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/stats', async (req, res) => {
   try {
-    // Verify sequence belongs to org
     const seqRes = await pool.query(
       `SELECT s.*, COUNT(ss.id) AS step_count
          FROM sequences s
@@ -1482,7 +1435,6 @@ router.get('/:id/stats', async (req, res) => {
     );
     if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
 
-    // Enrollment status breakdown
     const statusRes = await pool.query(
       `SELECT status, COUNT(*) AS count
          FROM sequence_enrollments
@@ -1495,7 +1447,6 @@ router.get('/:id/stats', async (req, res) => {
     const totalEnrolled = Object.values(statusMap).reduce((a, b) => a + b, 0);
     const totalReplied  = statusMap['replied'] || 0;
 
-    // Per-step funnel: how many reached each step (sent) and replied at each step
     const stepFunnelRes = await pool.query(
       `SELECT
          ss.step_order,
@@ -1511,7 +1462,6 @@ router.get('/:id/stats', async (req, res) => {
       [req.params.id, req.orgId]
     );
 
-    // Reply step distribution — which step was active when prospect replied
     const replyStepRes = await pool.query(
       `SELECT current_step, COUNT(*) AS reply_count
          FROM sequence_enrollments
@@ -1523,14 +1473,12 @@ router.get('/:id/stats', async (req, res) => {
     const replyByStep = {};
     replyStepRes.rows.forEach(r => { replyByStep[r.current_step] = parseInt(r.reply_count); });
 
-    // Average step at which replies occurred
     let avgReplyStep = null;
     if (totalReplied > 0) {
       const weightedSum = replyStepRes.rows.reduce((sum, r) => sum + r.current_step * parseInt(r.reply_count), 0);
       avgReplyStep = (weightedSum / totalReplied).toFixed(1);
     }
 
-    // Merge funnel + reply data into step-level array
     const stepFunnel = stepFunnelRes.rows.map(row => ({
       step_order:  row.step_order,
       sent:        parseInt(row.sent),

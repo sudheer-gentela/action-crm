@@ -30,6 +30,12 @@
  * GET    /all/prospects             all prospects across all clients (optional ?client_id=)
  * GET    /all/sequences             all sequences with per-client stats (optional ?client_id=)
  * GET    /:id/available-members     org members not yet on this client's team
+ *
+ * ── Client sender accounts (Model B) ─────────────────────────────────────────
+ * GET    /:id/senders               list sender accounts for a client
+ * GET    /:id/senders/connect-url   generate OAuth URL (?provider=gmail|outlook&label=...)
+ * PATCH  /:id/senders/:senderId     update label / limits / active / display_name / signature
+ * DELETE /:id/senders/:senderId     remove a client sender account
  */
 
 const express           = require('express');
@@ -39,6 +45,10 @@ const { pool }          = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
 
+// Google + Outlook OAuth helpers (reuse existing services)
+const { getAuthUrl: getGoogleAuthUrl }  = require('../services/googleService');
+const { getAuthUrl: getOutlookAuthUrl } = require('../services/outlookService');
+
 router.use(authenticateToken, orgContext);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -47,6 +57,44 @@ router.use(authenticateToken, orgContext);
 
 function generateToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString('hex');
+}
+
+/**
+ * Verify that a client exists, belongs to req.orgId, and is not archived.
+ * Returns the client row or throws with a 404 response.
+ */
+async function requireClient(req, res, clientId) {
+  const { rows } = await pool.query(
+    `SELECT id FROM clients WHERE id=$1 AND org_id=$2 AND archived_at IS NULL`,
+    [clientId, req.orgId]
+  );
+  if (!rows.length) {
+    res.status(404).json({ error: { message: 'Client not found' } });
+    return null;
+  }
+  return rows[0];
+}
+
+/** Map a prospecting_sender_accounts row for API responses. Tokens never returned. */
+function mapSenderRow(row) {
+  return {
+    id:              row.id,
+    orgId:           row.org_id,
+    clientId:        row.client_id,
+    provider:        row.provider,
+    email:           row.email,
+    label:           row.label,
+    isActive:        row.is_active,
+    dailyLimit:      row.daily_limit,
+    minDelayMinutes: row.min_delay_minutes,
+    emailsSentToday: row.emails_sent_today,
+    lastResetAt:     row.last_reset_at,
+    lastSentAt:      row.last_sent_at,
+    displayName:     row.display_name,
+    signature:       row.signature,
+    createdAt:       row.created_at,
+    updatedAt:       row.updated_at,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -336,10 +384,6 @@ router.post('/:id/portal-users', async (req, res) => {
     );
 
     const portalUser = rows[0];
-
-    // TODO: Send invite email with magic link
-    // The magic link URL: ${process.env.FRONTEND_URL}/portal/auth?token=${magicToken}
-    // For now log it so you can test manually
     const magicLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/portal/auth?token=${magicToken}`;
     console.log(`📧 Portal invite for ${email} (${client.name}): ${magicLink}`);
 
@@ -353,7 +397,7 @@ router.post('/:id/portal-users', async (req, res) => {
         accepted_at: portalUser.accepted_at,
         is_active:   portalUser.is_active,
       },
-      magicLink, // return in response so you can share manually during dev
+      magicLink,
     });
   } catch (err) {
     console.error('POST /clients/:id/portal-users', err);
@@ -461,8 +505,7 @@ router.get('/:id/dashboard', async (req, res) => {
       [req.params.id, weekStart, req.orgId]
     );
 
-    // Sequence performance — join via enrollments→prospects so org-wide sequences
-    // surface here based on who is enrolled, not sequences.client_id
+    // Sequence performance
     const seqRes = await pool.query(
       `SELECT
          s.id, s.name,
@@ -619,8 +662,6 @@ router.get('/all/prospects', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /all/sequences — all sequences with per-client enrollment stats
-//                      optional ?client_id= filter
-// Each row = one sequence × one client (a sequence with 3 clients = 3 rows)
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/all/sequences', async (req, res) => {
   try {
@@ -667,8 +708,7 @@ router.get('/all/sequences', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /:id/available-members — org members NOT yet on this client's team
-// Used by the Add Member picker in AgencyView
+// GET /:id/available-members
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/available-members', async (req, res) => {
   try {
@@ -688,6 +728,167 @@ router.get('/:id/available-members', async (req, res) => {
   } catch (err) {
     console.error('GET /clients/:id/available-members', err);
     res.status(500).json({ error: { message: 'Failed to load available members' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLIENT SENDER ACCOUNTS (Model B)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /:id/senders — list sender accounts for this client ──────────────────
+router.get('/:id/senders', async (req, res) => {
+  try {
+    if (!await requireClient(req, res, req.params.id)) return;
+
+    const { rows } = await pool.query(
+      `SELECT * FROM prospecting_sender_accounts
+        WHERE org_id = $1 AND client_id = $2
+        ORDER BY created_at ASC`,
+      [req.orgId, req.params.id]
+    );
+
+    res.json({ senders: rows.map(mapSenderRow) });
+  } catch (err) {
+    console.error('GET /clients/:id/senders', err);
+    res.status(500).json({ error: { message: 'Failed to fetch client sender accounts' } });
+  }
+});
+
+// ── GET /:id/senders/connect-url — generate OAuth URL for client sender ───────
+// ?provider=gmail|outlook   &label=optional label
+//
+// The OAuth callback (google.routes.js / outlook.routes.js) detects
+// mode=prospecting_client in state and saves to prospecting_sender_accounts
+// with client_id set and user_id = NULL.
+router.get('/:id/senders/connect-url', async (req, res) => {
+  try {
+    if (!await requireClient(req, res, req.params.id)) return;
+
+    const { provider, label } = req.query;
+
+    if (!['gmail', 'outlook'].includes(provider)) {
+      return res.status(400).json({ error: { message: 'provider must be gmail or outlook' } });
+    }
+
+    const state = Buffer.from(JSON.stringify({
+      userId:    req.user.userId, // Rep who initiated the flow; needed by Google's getUserProfile path
+      orgId:     req.orgId,
+      clientId:  parseInt(req.params.id),
+      mode:      'prospecting_client',
+      label:     label || null,
+      timestamp: Date.now(),
+    })).toString('base64');
+
+    let authUrl;
+    if (provider === 'gmail') {
+      authUrl = getGoogleAuthUrl(state);
+    } else {
+      authUrl = await getOutlookAuthUrl(state);
+    }
+
+    res.json({ authUrl });
+  } catch (err) {
+    console.error('GET /clients/:id/senders/connect-url', err);
+    res.status(500).json({ error: { message: 'Failed to generate connect URL' } });
+  }
+});
+
+// ── PATCH /:id/senders/:senderId — update sender settings ────────────────────
+router.patch('/:id/senders/:senderId', async (req, res) => {
+  try {
+    if (!await requireClient(req, res, req.params.id)) return;
+
+    const { label, isActive, dailyLimit, minDelayMinutes, displayName, signature } = req.body;
+
+    // Enforce org-level ceilings
+    const limitsResult = await pool.query(
+      `SELECT config FROM org_integrations
+        WHERE org_id = $1 AND integration_type = 'prospecting_email'`,
+      [req.orgId]
+    );
+    const orgConfig    = limitsResult.rows[0]?.config || {};
+    const ceiling      = orgConfig.dailyLimitCeiling      || 100;
+    const delayCeiling = orgConfig.minDelayMinutesCeiling || 2;
+
+    let effectiveDailyLimit      = dailyLimit      !== undefined ? parseInt(dailyLimit)      : undefined;
+    let effectiveMinDelayMinutes = minDelayMinutes !== undefined ? parseInt(minDelayMinutes) : undefined;
+
+    if (effectiveDailyLimit !== undefined && effectiveDailyLimit > ceiling) {
+      return res.status(400).json({
+        error: { message: `Daily limit cannot exceed org ceiling of ${ceiling}` }
+      });
+    }
+    if (effectiveMinDelayMinutes !== undefined && effectiveMinDelayMinutes < delayCeiling) {
+      return res.status(400).json({
+        error: { message: `Min delay cannot be less than org minimum of ${delayCeiling} minutes` }
+      });
+    }
+
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    const maybeSet = (col, val) => {
+      if (val !== undefined) {
+        fields.push(`${col} = $${idx++}`);
+        values.push(val);
+      }
+    };
+
+    maybeSet('label',             label);
+    maybeSet('is_active',         isActive);
+    maybeSet('daily_limit',       effectiveDailyLimit);
+    maybeSet('min_delay_minutes', effectiveMinDelayMinutes);
+    maybeSet('display_name',      displayName);
+    maybeSet('signature',         signature);
+
+    if (fields.length === 0) {
+      return res.status(400).json({ error: { message: 'No fields to update' } });
+    }
+
+    fields.push('updated_at = CURRENT_TIMESTAMP');
+    values.push(req.params.senderId, req.orgId, req.params.id);
+
+    const result = await pool.query(
+      `UPDATE prospecting_sender_accounts
+          SET ${fields.join(', ')}
+        WHERE id = $${idx++} AND org_id = $${idx++} AND client_id = $${idx}
+        RETURNING *`,
+      values
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Sender account not found' } });
+    }
+
+    res.json({ sender: mapSenderRow(result.rows[0]) });
+  } catch (err) {
+    console.error('PATCH /clients/:id/senders/:senderId', err);
+    res.status(500).json({ error: { message: 'Failed to update sender account' } });
+  }
+});
+
+// ── DELETE /:id/senders/:senderId — remove a client sender account ────────────
+router.delete('/:id/senders/:senderId', async (req, res) => {
+  try {
+    if (!await requireClient(req, res, req.params.id)) return;
+
+    const result = await pool.query(
+      `DELETE FROM prospecting_sender_accounts
+        WHERE id = $1 AND org_id = $2 AND client_id = $3
+        RETURNING id, email`,
+      [req.params.senderId, req.orgId, req.params.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Sender account not found' } });
+    }
+
+    console.log(`🗑️  Client sender removed: ${result.rows[0].email} (client ${req.params.id})`);
+    res.json({ message: 'Sender account removed successfully' });
+  } catch (err) {
+    console.error('DELETE /clients/:id/senders/:senderId', err);
+    res.status(500).json({ error: { message: 'Failed to remove sender account' } });
   }
 });
 

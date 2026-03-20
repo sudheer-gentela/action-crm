@@ -7,7 +7,7 @@
  *   Clients | All Prospects | All Sequences
  *
  * Per-client detail tabs:
- *   Overview | Pipeline | Outreach | Sequences | Prospects | Team | Portal
+ *   Overview | Pipeline | Outreach | Sequences | Prospects | Team | Portal | Senders
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -81,6 +81,17 @@ export default function AgencyView() {
   }, []);
 
   useEffect(() => { loadClients(); }, [loadClients]);
+
+  // Listen for OAuth redirect completing for a client sender
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('prospecting_client_sender_connected') === 'true') {
+      const cid = params.get('clientId');
+      // Strip query params from URL so a refresh doesn't re-trigger
+      window.history.replaceState({}, '', window.location.pathname);
+      if (cid) setSelectedClient(parseInt(cid));
+    }
+  }, []);
 
   if (selectedClient) {
     return (
@@ -437,6 +448,7 @@ function ClientDetail({ clientId, onBack }) {
     { key: 'prospects', label: '👥 Prospects' },
     { key: 'team',      label: '🤝 Team'      },
     { key: 'portal',    label: '🔗 Portal'    },
+    { key: 'senders',   label: '📧 Senders'   },
   ];
 
   return (
@@ -598,7 +610,279 @@ function ClientDetail({ clientId, onBack }) {
             )}
           </div>
         )}
+
+        {tab === 'senders' && (
+          <SendersTab clientId={clientId} />
+        )}
+
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SENDERS TAB (per-client)
+//
+// Lazy-loads directly from GET /clients/:id/senders — not from the dashboard
+// payload, keeping the dashboard query lean.
+// ─────────────────────────────────────────────────────────────────────────────
+function SendersTab({ clientId }) {
+  const [senders,       setSenders]       = useState([]);
+  const [loading,       setLoading]       = useState(true);
+  const [error,         setError]         = useState('');
+  const [connecting,    setConnecting]    = useState(''); // 'gmail' | 'outlook' | ''
+  const [editingId,     setEditingId]     = useState(null);
+  const [removingId,    setRemovingId]    = useState(null);
+
+  const loadSenders = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const r = await apiFetch(`/clients/${clientId}/senders`);
+      setSenders(r.senders || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [clientId]);
+
+  useEffect(() => { loadSenders(); }, [loadSenders]);
+
+  const handleConnect = async (provider) => {
+    setConnecting(provider); setError('');
+    try {
+      const r = await apiFetch(`/clients/${clientId}/senders/connect-url?provider=${provider}`);
+      // Open OAuth in a new tab so the user returns to the same client view
+      window.open(r.authUrl, '_blank', 'noopener,noreferrer');
+      // The redirect lands on /?prospecting_client_sender_connected=true&clientId=...
+      // AgencyView's useEffect catches that and re-opens ClientDetail on the Senders tab
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setConnecting('');
+    }
+  };
+
+  const handleToggleActive = async (sender) => {
+    try {
+      const r = await apiFetch(`/clients/${clientId}/senders/${sender.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isActive: !sender.isActive }),
+      });
+      setSenders(prev => prev.map(s => s.id === sender.id ? r.sender : s));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleRemove = async (sender) => {
+    if (!window.confirm(`Remove ${sender.email} from this client's sender accounts?`)) return;
+    setRemovingId(sender.id); setError('');
+    try {
+      await apiFetch(`/clients/${clientId}/senders/${sender.id}`, { method: 'DELETE' });
+      setSenders(prev => prev.filter(s => s.id !== sender.id));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setRemovingId(null);
+    }
+  };
+
+  const PROVIDER_CFG = {
+    gmail:   { label: 'Gmail',   icon: '🔵', color: '#4285F4' },
+    outlook: { label: 'Outlook', icon: '🟠', color: '#0078D4' },
+  };
+
+  return (
+    <div>
+      {/* ── Header ── */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#111827' }}>Client Sender Accounts</div>
+          <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>
+            Outreach emails to this client's prospects will be sent from these mailboxes.
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => handleConnect('gmail')}
+            disabled={!!connecting}
+            style={{ ...ghostBtn, fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            🔵 {connecting === 'gmail' ? 'Opening…' : 'Connect Gmail'}
+          </button>
+          <button
+            onClick={() => handleConnect('outlook')}
+            disabled={!!connecting}
+            style={{ ...ghostBtn, fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}
+          >
+            🟠 {connecting === 'outlook' ? 'Opening…' : 'Connect Outlook'}
+          </button>
+        </div>
+      </div>
+
+      {error && <ErrorBox msg={error} />}
+
+      {/* ── Empty state ── */}
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading…</div>
+      ) : senders.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 48, background: '#f9fafb', borderRadius: 12, border: '1px dashed #e5e7eb' }}>
+          <div style={{ fontSize: 32, marginBottom: 10 }}>📧</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginBottom: 6 }}>No sender accounts connected</div>
+          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 18, maxWidth: 340, margin: '0 auto 18px' }}>
+            Connect a Gmail or Outlook mailbox branded for this client.
+            Sequence emails will be sent from here instead of the rep's personal account.
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+            <button onClick={() => handleConnect('gmail')}   disabled={!!connecting} style={primaryBtn(false)}>🔵 Connect Gmail</button>
+            <button onClick={() => handleConnect('outlook')} disabled={!!connecting} style={{ ...primaryBtn(false), background: '#0078D4' }}>🟠 Connect Outlook</button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {senders.map(sender => (
+            <SenderCard
+              key={sender.id}
+              sender={sender}
+              clientId={clientId}
+              providerCfg={PROVIDER_CFG[sender.provider] || {}}
+              isEditing={editingId === sender.id}
+              isRemoving={removingId === sender.id}
+              onEdit={() => setEditingId(editingId === sender.id ? null : sender.id)}
+              onToggleActive={() => handleToggleActive(sender)}
+              onRemove={() => handleRemove(sender)}
+              onSaved={(updated) => {
+                setSenders(prev => prev.map(s => s.id === updated.id ? updated : s));
+                setEditingId(null);
+              }}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SENDER CARD — individual sender row with inline edit
+// ─────────────────────────────────────────────────────────────────────────────
+function SenderCard({ sender, clientId, providerCfg, isEditing, isRemoving, onEdit, onToggleActive, onRemove, onSaved }) {
+  const [label,       setLabel]       = useState(sender.label || '');
+  const [displayName, setDisplayName] = useState(sender.displayName || '');
+  const [signature,   setSignature]   = useState(sender.signature || '');
+  const [dailyLimit,  setDailyLimit]  = useState(sender.dailyLimit ?? '');
+  const [saving,      setSaving]      = useState(false);
+  const [saveErr,     setSaveErr]     = useState('');
+
+  // Sync fields if parent updates sender (e.g. after toggle)
+  useEffect(() => {
+    setLabel(sender.label || '');
+    setDisplayName(sender.displayName || '');
+    setSignature(sender.signature || '');
+    setDailyLimit(sender.dailyLimit ?? '');
+  }, [sender]);
+
+  const handleSave = async () => {
+    setSaving(true); setSaveErr('');
+    try {
+      const r = await apiFetch(`/clients/${clientId}/senders/${sender.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          label:       label       || null,
+          displayName: displayName || null,
+          signature:   signature   || null,
+          dailyLimit:  dailyLimit !== '' ? parseInt(dailyLimit) : null,
+        }),
+      });
+      onSaved(r.sender);
+    } catch (err) {
+      setSaveErr(err.message);
+      setSaving(false);
+    }
+  };
+
+  const todayCount = sender.emailsSentToday || 0;
+  const limitLabel = sender.dailyLimit ? `${todayCount} / ${sender.dailyLimit} today` : `${todayCount} sent today`;
+
+  return (
+    <div style={{ background: '#fff', border: `1px solid ${isEditing ? TEAL : '#e5e7eb'}`, borderRadius: 12, overflow: 'hidden', transition: 'border-color 0.15s' }}>
+      {/* ── Row ── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px' }}>
+        {/* Provider badge */}
+        <div style={{ width: 36, height: 36, borderRadius: 8, background: '#f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>
+          {providerCfg.icon || '📧'}
+        </div>
+
+        {/* Email + meta */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {sender.label ? `${sender.label} — ` : ''}{sender.email}
+          </div>
+          <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
+            {providerCfg.label} · {limitLabel}
+            {sender.lastSentAt && ` · Last sent ${new Date(sender.lastSentAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`}
+          </div>
+        </div>
+
+        {/* Active toggle */}
+        <button
+          onClick={onToggleActive}
+          title={sender.isActive ? 'Deactivate' : 'Activate'}
+          style={{ position: 'relative', width: 38, height: 22, borderRadius: 11, border: 'none', background: sender.isActive ? TEAL : '#d1d5db', cursor: 'pointer', flexShrink: 0 }}
+        >
+          <span style={{ position: 'absolute', top: 3, left: sender.isActive ? 19 : 3, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }} />
+        </button>
+
+        {/* Edit / Remove */}
+        <button onClick={onEdit} style={{ ...ghostBtn, padding: '5px 12px', fontSize: 12 }}>
+          {isEditing ? 'Cancel' : 'Edit'}
+        </button>
+        <button
+          onClick={onRemove}
+          disabled={isRemoving}
+          style={{ padding: '5px 12px', borderRadius: 7, border: '1px solid #fecaca', background: '#fff', color: '#dc2626', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}
+        >
+          {isRemoving ? '…' : 'Remove'}
+        </button>
+      </div>
+
+      {/* ── Inline edit panel ── */}
+      {isEditing && (
+        <div style={{ padding: '0 16px 16px', borderTop: '1px solid #f3f4f6', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {saveErr && <ErrorBox msg={saveErr} />}
+          <div style={{ display: 'flex', gap: 12, marginTop: 12 }}>
+            <div style={{ flex: 1 }}>
+              <label style={labelStyle}>Label (internal)</label>
+              <input value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. Client outreach" style={inputStyle} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={labelStyle}>Display Name (From:)</label>
+              <input value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="e.g. Acme Sales Team" style={inputStyle} />
+            </div>
+            <div style={{ width: 130 }}>
+              <label style={labelStyle}>Daily Limit</label>
+              <input type="number" min="1" value={dailyLimit} onChange={e => setDailyLimit(e.target.value)} placeholder="—" style={inputStyle} />
+            </div>
+          </div>
+          <div>
+            <label style={labelStyle}>Email Signature</label>
+            <textarea
+              value={signature}
+              onChange={e => setSignature(e.target.value)}
+              rows={4}
+              placeholder="Signature appended to all outreach emails from this account…"
+              style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.6 }}
+            />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button onClick={onEdit} style={ghostBtn}>Cancel</button>
+            <button onClick={handleSave} disabled={saving} style={primaryBtn(saving)}>
+              {saving ? 'Saving…' : 'Save Changes'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

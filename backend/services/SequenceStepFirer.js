@@ -15,8 +15,8 @@
  *   - Send:  existing path unchanged
  *
  * Signature feature (v3):
- *   - At draft creation the rep's primary sender account is fetched (same
- *     rotation logic used at send-time: least-used active account for enrolled_by).
+ *   - At draft creation the sender account is fetched (client sender if the prospect
+ *     belongs to a client, otherwise rep's personal sender — least-used active account).
  *   - If sender.signature is set it is appended to the draft body: \n\n${sender.signature}
  *   - sender.display_name is stored in the draft's metadata so the AI
  *     personalisation prompt can reference it as a sign-off name.
@@ -24,6 +24,13 @@
  *     PATCH /drafts/:logId endpoint operates on whatever the rep saves,
  *     so the signature is already in the body by then.
  *   - In the auto-send branch the signature is likewise appended before dispatch.
+ *
+ * Client sender accounts (v4 — Model B):
+ *   - Prospects that belong to a client (prospect.client_id IS NOT NULL) use a
+ *     sender account from prospecting_sender_accounts WHERE client_id = prospect.client_id.
+ *   - If no active client sender is configured, the firer falls back to the rep's
+ *     personal sender and logs a warning.
+ *   - Prospects without a client_id use the original rep-sender path unchanged.
  *
  * syncOverdueDrafts():
  *   - Called by cron after fireDueSteps()
@@ -57,17 +64,59 @@ function calcDueDate(delayDays) {
 }
 
 // ── Sender fetcher ────────────────────────────────────────────────────────────
-// Returns the least-used active sender account for a given user/org, or null.
-// Mirrors the rotation query used in GET /sequences/drafts and POST .../send.
-// Selects only the columns needed — tokens are intentionally excluded.
-async function fetchPrimarySender(client, orgId, userId) {
-  const r = await client.query(
+/**
+ * Resolves the best sender account for a given step.
+ *
+ * Resolution order:
+ *   1. If clientId is provided, query for the least-used active client sender.
+ *   2. If no client sender is found (or clientId is null), fall back to the
+ *      rep's personal least-used active sender.
+ *
+ * Returns the sender row (with tokens) or null if nothing is connected.
+ * Logs a warning when falling back from client → user sender.
+ *
+ * @param {object} dbClient  - pg pool client
+ * @param {number} orgId
+ * @param {number} userId    - the rep (enrolled_by)
+ * @param {number|null} clientId - prospect.client_id, or null
+ * @returns {Promise<object|null>}
+ */
+async function resolveSender(dbClient, orgId, userId, clientId) {
+  // ── 1. Client sender (Model B) ──────────────────────────────────────────────
+  if (clientId) {
+    const r = await dbClient.query(
+      `SELECT id, email, provider, display_name, signature,
+              access_token, refresh_token,
+              emails_sent_today, last_reset_at
+         FROM prospecting_sender_accounts
+        WHERE org_id    = $1
+          AND client_id = $2
+          AND is_active = true
+        ORDER BY
+          (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+          last_sent_at ASC NULLS FIRST
+        LIMIT 1`,
+      [orgId, clientId]
+    );
+
+    if (r.rows[0]) return r.rows[0];
+
+    // Client has no active sender — fall back to rep sender with a warning
+    console.warn(
+      `SequenceStepFirer: no active client sender for client_id=${clientId} ` +
+      `(org ${orgId}) — falling back to rep sender for user ${userId}`
+    );
+  }
+
+  // ── 2. Rep / personal sender (original path) ────────────────────────────────
+  const r = await dbClient.query(
     `SELECT id, email, provider, display_name, signature,
             access_token, refresh_token,
             emails_sent_today, last_reset_at
        FROM prospecting_sender_accounts
       WHERE org_id    = $1
         AND user_id   = $2
+        AND client_id IS NULL
         AND is_active = true
       ORDER BY
         (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
@@ -166,16 +215,19 @@ const SequenceStepFirer = {
               : seqApproval;
 
           // ── Load prospect + account for template rendering ────────────────
+          // client_id is fetched here so the sender resolver can use it.
           const pRes = await client.query(
-            `SELECT p.*, a.name AS account_name, a.domain AS account_domain,
+            `SELECT p.*, p.client_id,
+                    a.name AS account_name, a.domain AS account_domain,
                     a.industry AS account_industry
                FROM prospects p
           LEFT JOIN accounts a ON a.id = p.account_id
               WHERE p.id=$1`,
             [enrollment.prospect_id]
           );
-          const prospect = pRes.rows[0];
-          const account  = prospect
+          const prospect  = pRes.rows[0];
+          const clientId  = prospect?.client_id || null; // null for non-agency prospects
+          const account   = prospect
             ? { name: prospect.account_name, domain: prospect.account_domain, industry: prospect.account_industry }
             : null;
 
@@ -188,7 +240,6 @@ const SequenceStepFirer = {
           let   body    = personalisedStep?.body    ?? renderTemplate(step.body_template,    prospect || {}, account);
 
           // ── DRAFT BRANCH ──────────────────────────────────────────────────
-//          if (effectiveRequireApproval && step.channel === 'email') {
           if (step.channel !== 'email' || effectiveRequireApproval) {
             // Idempotency: don't create a second draft for this step
             const existingDraft = await client.query(
@@ -204,9 +255,9 @@ const SequenceStepFirer = {
             }
 
             // ── Fetch sender for signature + display_name ─────────────────
-            // Non-fatal: if no sender is connected yet the draft is still
-            // created without a signature — the rep can edit before sending.
-            const sender = await fetchPrimarySender(client, enrollment.org_id, enrollment.enrolled_by);
+            // Client sender if the prospect belongs to a client, else rep's sender.
+            // Non-fatal: draft is still created without a signature if nothing connected.
+            const sender = await resolveSender(client, enrollment.org_id, enrollment.enrolled_by, clientId);
 
             if (sender?.signature) {
               body = appendSignature(body, sender.signature);
@@ -240,14 +291,17 @@ const SequenceStepFirer = {
                   enrollment.enrolled_by,
                   `Draft ready for review — ${enrollment.seq_name} step ${enrollment.current_step}: ${subject || '(no subject)'}`,
                   JSON.stringify({
-                    enrollmentId: enrollment.id,
-                    sequenceId:   enrollment.seq_id,
-                    sequenceName: enrollment.seq_name,
-                    stepOrder:    enrollment.current_step,
-                    stepId:       step.id,
-                    subject:      subject || null,
-                    senderId:     sender?.id          || null,
-                    displayName:  sender?.display_name || null,
+                    enrollmentId:  enrollment.id,
+                    sequenceId:    enrollment.seq_id,
+                    sequenceName:  enrollment.seq_name,
+                    stepOrder:     enrollment.current_step,
+                    stepId:        step.id,
+                    subject:       subject       || null,
+                    senderId:      sender?.id          || null,
+                    displayName:   sender?.display_name || null,
+                    // Record which owner type was used for observability
+                    senderOwner:   clientId ? 'client' : 'user',
+                    clientId:      clientId || null,
                   }),
                 ]
               );
@@ -264,8 +318,8 @@ const SequenceStepFirer = {
           let sendError = null;
 
           if (step.channel === 'email' && prospect?.email) {
-            // Select least-used active sender for this rep
-            const sender = await fetchPrimarySender(client, enrollment.org_id, enrollment.enrolled_by);
+            // Resolve sender: client sender for agency prospects, rep sender otherwise
+            const sender = await resolveSender(client, enrollment.org_id, enrollment.enrolled_by, clientId);
 
             if (sender) {
               // Reset daily counter if it's a new day
@@ -333,7 +387,10 @@ const SequenceStepFirer = {
                 [sender.id]
               );
             } else {
-              console.warn(`SequenceStepFirer: no active sender for user ${enrollment.enrolled_by} (enrollment ${enrollment.id}) — email not sent`);
+              console.warn(
+                `SequenceStepFirer: no active sender for enrollment ${enrollment.id} ` +
+                `(user ${enrollment.enrolled_by}${clientId ? `, client ${clientId}` : ''}) — email not sent`
+              );
             }
           }
 
@@ -379,6 +436,7 @@ const SequenceStepFirer = {
                   subject:      subject   || null,
                   emailId:      emailId   || null,
                   sendError:    sendError || null,
+                  clientId:     clientId  || null,
                 }),
               ]
             );

@@ -171,6 +171,78 @@ router.get('/callback', async (req, res) => {
       return res.redirect(`${frontendUrl}/?prospecting_sender_connected=true`);
     }
 
+
+// ── ADD THIS BLOCK immediately after the closing brace of the prospecting block,
+//    before the comment "// ── Standard mode" ──────────────────────────────────
+
+    // ── Prospecting client mode (Model B) ─────────────────────────────────────
+    // Saves a client-owned sender (client_id set, user_id = NULL).
+    // Triggered from GET /api/clients/:id/senders/connect-url
+    if (stateData.mode === 'prospecting_client') {
+      const { orgId, clientId } = stateData;
+
+      if (!orgId || !clientId) {
+        return res.redirect(`${frontendUrl}/?error=missing_org_or_client_id`);
+      }
+
+      // Outlook's getTokenFromCode returns snake_case keys (access_token, refresh_token).
+      // getUserProfile does NOT need a prior saveUserToken call for Outlook — it takes
+      // the userId and looks up the token from the token store, but for client senders
+      // there is no user token. We pass the access_token directly to the Graph API call.
+      // The existing getUserProfile(userId) path works here because stateData.userId
+      // is the rep who initiated the flow and already has an Outlook token from before
+      // (or we use the tokenResponse directly). To be safe we call it the same way as
+      // the existing prospecting branch — getUserProfile(userId) — which works because
+      // the rep's userId is always present in state.
+      const profile = await getUserProfile(stateData.userId);
+      const email   = profile.mail || profile.userPrincipalName;
+
+      if (!email) {
+        return res.redirect(`${frontendUrl}/?error=no_email_in_profile`);
+      }
+
+      console.log('📧 Saving client sender account (Outlook):', email, 'for client', clientId);
+
+      await pool.query(
+        `INSERT INTO prospecting_sender_accounts
+           (org_id, client_id, user_id, provider, email, label,
+            access_token, refresh_token, expires_at, account_data,
+            is_active, updated_at)
+         VALUES ($1, $2, NULL, 'outlook', $3, $4, $5, $6, $7, $8, true, CURRENT_TIMESTAMP)
+         ON CONFLICT ON CONSTRAINT idx_psa_client_email_unique DO UPDATE
+           SET access_token  = EXCLUDED.access_token,
+               refresh_token = COALESCE(EXCLUDED.refresh_token, prospecting_sender_accounts.refresh_token),
+               expires_at    = EXCLUDED.expires_at,
+               account_data  = EXCLUDED.account_data,
+               is_active     = true,
+               label         = COALESCE(EXCLUDED.label, prospecting_sender_accounts.label),
+               updated_at    = CURRENT_TIMESTAMP`,
+        [
+          orgId,
+          clientId,
+          email,
+          stateData.label || null,
+          tokenResponse.access_token,
+          tokenResponse.refresh_token || null,
+          tokenResponse.expires_in
+            ? new Date(Date.now() + tokenResponse.expires_in * 1000)
+            : null,
+          JSON.stringify({
+            email,
+            displayName: profile.displayName || null,
+            id:          profile.id || null,
+          }),
+        ]
+      );
+
+      console.log('✅ Client sender account (Outlook) saved for:', email, '(client', clientId, ')');
+      return res.redirect(`${frontendUrl}/?prospecting_client_sender_connected=true&clientId=${clientId}`);
+    }
+
+// ── END OF ADDED BLOCK ────────────────────────────────────────────────────────
+
+
+
     // ── Standard mode ──────────────────────────────────────────────────────────
     await saveUserToken(userId, 'outlook', tokenResponse);
     console.log('✅ Tokens saved');

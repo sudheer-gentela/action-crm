@@ -147,6 +147,76 @@ router.get('/callback', async (req, res) => {
       return res.redirect(`${frontendUrl}/?prospecting_sender_connected=true`);
     }
 
+// ── ADD THIS BLOCK immediately after the closing brace of the prospecting block,
+//    before the comment "// ── Standard mode" ──────────────────────────────────
+
+    // ── Prospecting client mode (Model B) ─────────────────────────────────────
+    // Saves a client-owned sender (client_id set, user_id = NULL).
+    // Triggered from GET /api/clients/:id/senders/connect-url
+    if (stateData.mode === 'prospecting_client') {
+      const { orgId, clientId } = stateData;
+
+      if (!orgId || !clientId) {
+        return res.redirect(`${frontendUrl}/?error=missing_org_or_client_id`);
+      }
+
+      // Reuse the token-save + profile path identical to the existing prospecting branch.
+      // saveUserToken is needed here because googleService.getUserProfile uses
+      // getAuthenticatedClient which reads the token from the token store.
+      const accessToken  = tokenResponse.accessToken;
+      const refreshToken = tokenResponse.refreshToken || null;
+      const expiresAt    = tokenResponse.expiresOn ? new Date(tokenResponse.expiresOn) : null;
+
+      if (!accessToken) {
+        console.error('❌ No accessToken in token response (prospecting_client):', Object.keys(tokenResponse));
+        return res.redirect(`${frontendUrl}/?error=no_access_token`);
+      }
+
+      await saveUserToken(stateData.userId, 'google', tokenResponse);
+      const profile = await getUserProfile(stateData.userId);
+      const email   = profile.email || null;
+
+      if (!email) {
+        return res.redirect(`${frontendUrl}/?error=no_email_in_profile`);
+      }
+
+      console.log('📧 Saving client sender account (Gmail):', email, 'for client', clientId);
+
+      // Upsert keyed on (client_id, email) — the partial unique index handles this.
+      // user_id is explicitly NULL so the ownership constraint is satisfied.
+      await pool.query(
+        `INSERT INTO prospecting_sender_accounts
+           (org_id, client_id, user_id, provider, email, label,
+            access_token, refresh_token, expires_at, account_data,
+            is_active, updated_at)
+         VALUES ($1, $2, NULL, 'gmail', $3, $4, $5, $6, $7, $8, true, CURRENT_TIMESTAMP)
+         ON CONFLICT ON CONSTRAINT idx_psa_client_email_unique DO UPDATE
+           SET access_token  = EXCLUDED.access_token,
+               refresh_token = COALESCE(EXCLUDED.refresh_token, prospecting_sender_accounts.refresh_token),
+               expires_at    = EXCLUDED.expires_at,
+               account_data  = EXCLUDED.account_data,
+               is_active     = true,
+               label         = COALESCE(EXCLUDED.label, prospecting_sender_accounts.label),
+               updated_at    = CURRENT_TIMESTAMP`,
+        [
+          orgId,
+          clientId,
+          email,
+          stateData.label || null,
+          accessToken,
+          refreshToken,
+          expiresAt,
+          JSON.stringify({ email, scope: tokenResponse.scope || null }),
+        ]
+      );
+
+      console.log('✅ Client sender account (Gmail) saved for:', email, '(client', clientId, ')');
+      return res.redirect(`${frontendUrl}/?prospecting_client_sender_connected=true&clientId=${clientId}`);
+    }
+
+// ── END OF ADDED BLOCK ────────────────────────────────────────────────────────
+
+
     // ── Standard mode ──────────────────────────────────────────────────────────
     await saveUserToken(userId, 'google', tokenResponse);
     console.log('✅ Google tokens saved');

@@ -714,9 +714,11 @@ router.post('/outreach-send', async (req, res) => {
 
     if (senderAccountId) {
       // Explicit sender
+      // CHANGED: AND client_id IS NULL — reps can only explicitly select their own
+      // personal sender accounts, not client-owned ones.
       const senderResult = await client.query(
         `SELECT * FROM prospecting_sender_accounts
-         WHERE id = $1 AND org_id = $2 AND user_id = $3 AND is_active = true`,
+         WHERE id = $1 AND org_id = $2 AND user_id = $3 AND client_id IS NULL AND is_active = true`,
         [senderAccountId, req.orgId, req.user.userId]
       );
       if (senderResult.rows.length === 0) {
@@ -725,9 +727,10 @@ router.post('/outreach-send', async (req, res) => {
       sender = senderResult.rows[0];
     } else {
       // Auto-rotation: pick the sender with most remaining capacity (least_used strategy)
+      // CHANGED: AND client_id IS NULL — excludes client-owned sender accounts from rotation.
       const sendersResult = await client.query(
         `SELECT * FROM prospecting_sender_accounts
-         WHERE org_id = $1 AND user_id = $2 AND is_active = true
+         WHERE org_id = $1 AND user_id = $2 AND client_id IS NULL AND is_active = true
          ORDER BY
            -- Reset counter if it's a new day
            (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
@@ -776,12 +779,14 @@ router.post('/outreach-send', async (req, res) => {
     }
 
     // ── 6. Enforce org-level user total (prevents rotation abuse) ─────────────
+    // CHANGED: AND client_id IS NULL — client sender daily counts are separate
+    // and must not inflate the rep's personal daily ceiling check.
     const orgUserTotalResult = await client.query(
       `SELECT COALESCE(SUM(
          CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END
        ), 0) AS total
        FROM prospecting_sender_accounts
-       WHERE org_id = $1 AND user_id = $2`,
+       WHERE org_id = $1 AND user_id = $2 AND client_id IS NULL`,
       [req.orgId, req.user.userId]
     );
     const orgUserTotal = parseInt(orgUserTotalResult.rows[0].total);
