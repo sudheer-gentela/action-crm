@@ -25,6 +25,8 @@ const { emailQueue }       = require('./emailProcessor');
 const config               = require('../config/config');
 const ActionsGenerator             = require('../services/actionsGenerator');
 const ContractActionsGenerator     = require('../services/ContractActionsGenerator');
+const { runNightlyAudit } = require('../services/auditWorker.service');
+
 
 /**
  * Store email to database with deduplication.
@@ -517,7 +519,22 @@ function startScheduler() {
       .catch(err => console.error('❌ CLM sweep error:', err.message));
   }, { timezone: 'UTC' });
 
+  // ── Workflow audit — nightly sweep ────────────────────────────────────────
+  // Runs at 03:00 UTC every day. Scans all entity records for all active orgs
+  // against audit-trigger workflow rules, writing new violations and resolving
+  // cleared ones in rule_violations.
+  cron.schedule('0 3 * * *', () => {
+    console.log('🔍 Running nightly workflow audit...');
+    runNightlyAudit()
+      .then(r => console.log(
+        `✅ Workflow audit done — orgs: ${r.orgsScanned}, ` +
+        `scanned: ${r.totalScanned}, new violations: ${r.totalNewViolations}, resolved: ${r.totalResolved}`
+      ))
+      .catch(err => console.error('❌ Workflow audit error:', err.message));
+  }, { timezone: 'UTC' });
+
   console.log('✅ CLM action scheduler started (nightly 02:00 UTC)');
+  console.log('✅ Workflow audit scheduler started (nightly 03:00 UTC)');
 }
 
 module.exports = {

@@ -6,6 +6,8 @@ import OAStages from './OAStages';
 import PlaybookPlaysEditor from './PlaybookPlaysEditor';
 import OAProducts from './OAProducts';
 import OATeamDimensions from './OATeamDimensions';
+import WorkflowCanvas from './WorkflowCanvas';
+import ExecutionLog from './ExecutionLog';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -55,6 +57,7 @@ const STATIC_NAV_GROUPS = [
     label: 'Data Quality',
     items: [
       { id: 'duplicates', icon: '🔍', label: 'Duplicates' },
+      { id: 'workflows',  icon: '⚙️', label: 'Workflows'  },
     ],
   },
   // 'Modules' group is injected here dynamically — see buildNavGroups()
@@ -112,6 +115,8 @@ const TAB_META = {
   health:        { title: 'Deal Health',   desc: 'Configure health scoring parameters' },
   'icp-scoring': { title: 'ICP Scoring',   desc: 'Define your Ideal Customer Profile and scoring criteria' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
+  'workflows':   { title: 'Workflows',     desc: 'Manage data-integrity workflows and standalone rules for deals, contacts, and accounts' },
+  'wf-log':      { title: 'Execution Log', desc: 'Workflow execution history and open violations' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
   modules:             { title: 'Modules',                           desc: 'Enable or disable product modules for your organisation' },
   'mod-prospecting':   { title: 'Prospecting',                       desc: 'Prospecting module settings' },
@@ -515,6 +520,7 @@ export default function OrgAdminView() {
             {tab === 'ai-agent'         && <OAAgentSettings />}
             {tab === 'action-ai'        && <OAActionsAI />}
             {tab === 'duplicates'       && <OADuplicateSettings />}
+            {tab === 'workflows'        && <OAWorkflows />}
             {tab === 'team-dimensions'  && <OATeamDimensions />}
             {tab === 'integrations'     && <OAIntegrations />}
             {tab === 'settings'         && <OASettings />}
@@ -6491,6 +6497,66 @@ function OAServiceSLATiers() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OAWorkflows — Workflow Engine tab for Org Admin
+// Placed in the Data Quality nav group alongside Duplicates.
+// Renders two sub-tabs:
+//   Workflows   — WorkflowCanvas (org scope)
+//   Exec Log    — ExecutionLog (org scope, includes Violations sub-tab)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function OAWorkflows() {
+  const [subTab, setSubTab] = useState('canvas');
+
+  const SUB_TABS = [
+    { id: 'canvas', label: '⚙️ Workflows & Rules' },
+    { id: 'log',    label: '📋 Execution Log'     },
+  ];
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>⚙️ Workflows</h2>
+          <p className="sv-panel-desc">
+            Define data-integrity rules for deals, contacts, and accounts.
+            Platform workflows (🔒) are managed by ActionCRM and cannot be modified.
+          </p>
+        </div>
+      </div>
+
+      {/* Sub-tab bar */}
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 20 }}>
+        {SUB_TABS.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setSubTab(t.id)}
+            style={{
+              padding: '7px 16px',
+              borderRadius: '7px 7px 0 0',
+              border: '1px solid transparent',
+              borderBottom: 'none',
+              background: subTab === t.id ? '#fff' : 'transparent',
+              borderColor: subTab === t.id ? '#e5e7eb' : 'transparent',
+              borderBottomColor: subTab === t.id ? '#fff' : 'transparent',
+              fontSize: 13,
+              fontWeight: subTab === t.id ? 600 : 500,
+              color: subTab === t.id ? '#111827' : '#6b7280',
+              cursor: 'pointer',
+              marginBottom: -1,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {subTab === 'canvas' && <WorkflowCanvas scope="org" />}
+      {subTab === 'log'    && <ExecutionLog   scope="org" />}
     </div>
   );
 }

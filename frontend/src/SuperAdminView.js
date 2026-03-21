@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import './SuperAdminView.css';
+import WorkflowCanvas from './WorkflowCanvas';
+import ExecutionLog from './ExecutionLog';
 
 // ═══════════════════════════════════════════════════════════════════
 // SUPER ADMIN VIEW — ActionCRM Platform Administration
@@ -12,6 +14,7 @@ const SA_TABS = [
   { id: 'orgs',       label: 'Organisations', icon: '🏢' },
   { id: 'admins',     label: 'Super Admins',  icon: '🔐' },
   { id: 'audit',      label: 'Audit Log',     icon: '📋' },
+  { id: 'workflows',  label: 'Workflows',     icon: '⚙️'  },
 ];
 
 export default function SuperAdminView() {
@@ -40,10 +43,11 @@ export default function SuperAdminView() {
       </div>
 
       <div className="sa-body">
-        {tab === 'overview' && <SAOverview />}
-        {tab === 'orgs'     && <SAOrgs />}
-        {tab === 'admins'   && <SAAdmins />}
-        {tab === 'audit'    && <SAAuditLog />}
+        {tab === 'overview'  && <SAOverview />}
+        {tab === 'orgs'      && <SAOrgs />}
+        {tab === 'admins'    && <SAAdmins />}
+        {tab === 'audit'     && <SAAuditLog />}
+        {tab === 'workflows' && <SAWorkflows />}
       </div>
     </div>
   );
@@ -1144,6 +1148,66 @@ function SAAuditLog() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// WORKFLOWS TAB — platform-scoped workflow + rule management
+// Fifth flat tab, after Audit Log.
+// Renders two sub-tabs:
+//   Workflows   — WorkflowCanvas (super scope)
+//   Exec Log    — ExecutionLog across all orgs (super scope)
+// ─────────────────────────────────────────────────────────────────
+
+function SAWorkflows() {
+  const [subTab, setSubTab] = useState('canvas');
+
+  const SUB_TABS = [
+    { id: 'canvas', label: '⚙️ Workflows & Rules' },
+    { id: 'log',    label: '📋 Execution Log'     },
+  ];
+
+  return (
+    <div className="sa-panel">
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: '0 0 4px', fontSize: 17, fontWeight: 700, color: '#111827' }}>
+          ⚙️ Platform Workflows
+        </h2>
+        <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
+          Platform-scoped workflows and standalone rules are inherited by all organisations.
+          Mark rules as <strong>is_locked = true</strong> to prevent org admins from modifying them.
+        </p>
+      </div>
+
+      {/* Sub-tab bar */}
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 20 }}>
+        {SUB_TABS.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setSubTab(t.id)}
+            style={{
+              padding: '7px 16px',
+              borderRadius: '7px 7px 0 0',
+              border: '1px solid transparent',
+              borderBottom: 'none',
+              background: subTab === t.id ? '#fff' : 'transparent',
+              borderColor: subTab === t.id ? '#e5e7eb' : 'transparent',
+              borderBottomColor: subTab === t.id ? '#fff' : 'transparent',
+              fontSize: 13,
+              fontWeight: subTab === t.id ? 600 : 500,
+              color: subTab === t.id ? '#111827' : '#6b7280',
+              cursor: 'pointer',
+              marginBottom: -1,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {subTab === 'canvas' && <WorkflowCanvas scope="super" />}
+      {subTab === 'log'    && <ExecutionLog   scope="super" />}
     </div>
   );
 }
