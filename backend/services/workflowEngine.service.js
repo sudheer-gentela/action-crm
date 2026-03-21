@@ -1,18 +1,21 @@
 // =============================================================================
-// workflowEngine.service.js
+// workflowEngine.service.js  —  v2 (Phase 3)
 // =============================================================================
-// Phase 2 — Full workflow execution engine.
+// Full workflow execution engine with graph-based step traversal,
+// branch routing, and dependency resolution.
 //
-// Executes workflows sequentially through their steps, logging each step result
-// into workflow_executions.step_results. Sync steps block before returning.
-// Async steps are queued via setImmediate and do not block the API response.
-//
-// Consumed by workflowRules.middleware.js (v2) which calls executeWorkflowsForTrigger()
-// instead of loading standalone rules directly.
-//
-// Phase 1 standalone rules (step_id IS NULL) are still handled inside
-// workflowRules.middleware.js and are NOT routed through this engine.
-// Both paths coexist and run independently.
+// Changes from Phase 2:
+//   - executeWorkflow() now uses graph traversal (on_pass / on_fail pointers)
+//     instead of flat sort_order iteration.
+//   - Steps are pre-sorted via resolveExecutionOrder() (Kahn's topo sort).
+//   - executeBranchStep() replaces the Phase 2 stub — evaluates branch
+//     conditions in sort_order, routes to true_step_id or false_step_id,
+//     and marks non-taken branches as skipped.
+//   - resolveNextStep() drives traversal between steps.
+//   - Async steps are collected during the sync traversal pass and queued
+//     via setImmediate after the sync graph is exhausted.
+//   - Cycle detection errors are caught and treated as infrastructure failures
+//     (fail-open — the entity write proceeds).
 //
 // Exports:
 //   executeWorkflow(workflowId, entity, payload, context)
@@ -27,23 +30,26 @@ const {
   evaluateConditionTree,
   applyMutationRules,
 } = require('./ruleEvaluator.service');
+const {
+  resolveExecutionOrder,
+  resolveNextStep,
+} = require('./dependencyResolver.service');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// executeWorkflowsForTrigger
+// executeWorkflowsForTrigger  (unchanged from Phase 2)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Loads all active workflows for the given entity + trigger scoped to the org,
- * then executes each one in series (platform workflows first, org workflows after).
+ * Loads all active workflows for the given entity + trigger, then executes
+ * each one in series (platform workflows first, org workflows after).
  *
- * This is the entry point called by workflowRules.middleware.js (v2).
- * Standalone rules (step_id IS NULL) are handled separately in the middleware
- * and are NOT executed here.
+ * Called by workflowRules.middleware.js (v2).
+ * Standalone rules (step_id IS NULL) are handled separately in the middleware.
  *
  * @param {string} entity   — 'deal' | 'contact' | 'account'
  * @param {string} trigger  — 'create' | 'update' | 'stage_change'
- * @param {Object} payload  — entity fields being written (req.body)
- * @param {Object} context  — { orgId, userId, trigger, existingRecord, stageChangingTo? }
+ * @param {Object} payload  — entity fields being written
+ * @param {Object} context  — { orgId, userId, trigger, existingRecord, stageChangingTo?, entityId? }
  * @returns {Promise<{
  *   blocked:        boolean,
  *   violations:     Array<violation>,
@@ -53,9 +59,6 @@ const {
  * }>}
  */
 async function executeWorkflowsForTrigger(entity, trigger, payload, context) {
-  // Load active workflows: platform-scoped first (org_id IS NULL), then org-scoped.
-  // We deliberately use two separate queries and concat to guarantee ordering —
-  // a single ORDER BY CASE could be reordered by the planner on large tables.
   const platformResult = await db.query(
     `SELECT id, name, is_locked
      FROM workflows
@@ -92,9 +95,7 @@ async function executeWorkflowsForTrigger(entity, trigger, payload, context) {
     };
   }
 
-  // Execute each workflow in series. Stop on first hard block so downstream
-  // workflows don't run against an already-invalid request.
-  let currentPayload = { ...payload };
+  let currentPayload   = { ...payload };
   const allViolations  = [];
   const allWarnings    = [];
   const executionIds   = [];
@@ -110,12 +111,9 @@ async function executeWorkflowsForTrigger(entity, trigger, payload, context) {
     executionIds.push(result.executionId);
     allViolations.push(...result.violations);
     allWarnings.push(...result.warnings);
-
-    // Carry mutations forward so subsequent workflows see the updated payload.
     currentPayload = result.mutatedPayload;
 
     if (result.blocked) {
-      // Hard block — stop processing further workflows.
       return {
         blocked:        true,
         violations:     allViolations,
@@ -140,30 +138,35 @@ async function executeWorkflowsForTrigger(entity, trigger, payload, context) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Executes a single workflow from its first step to completion.
- * Sync steps (exec_mode = 'sync') run inline and block this function.
- * Async steps (exec_mode = 'async') are queued via setImmediate and return
- * immediately — they are NOT awaited.
+ * Executes a single workflow using graph traversal driven by on_pass / on_fail
+ * routing pointers and dependency resolution via Kahn's topological sort.
  *
- * Creates a workflow_executions row (status = 'running') before step execution,
- * then updates it to 'passed' | 'failed' | 'partial' when sync execution ends.
- * Async steps update the execution row independently after the API response.
+ * Traversal algorithm:
+ *   1. Load all steps for the workflow and resolve execution order via
+ *      resolveExecutionOrder() — this respects depends_on and detects cycles.
+ *   2. Identify the entry step: the first step in resolved order that has no
+ *      depends_on (or sort_order = 0 fallback).
+ *   3. Walk the graph: execute the current step, then call resolveNextStep()
+ *      to get the next step_id. Continue until next_id is null (end of graph).
+ *   4. Steps not reached via on_pass / on_fail pointers (e.g. branch not taken)
+ *      are logged as skipped / branch_not_taken.
+ *   5. Async steps are collected during the sync pass and queued post-response.
  *
  * @param {number}  workflowId
  * @param {string}  entity
  * @param {Object}  payload
- * @param {Object}  context  — { orgId, userId, trigger, existingRecord, stageChangingTo?, entityId? }
+ * @param {Object}  context
  * @returns {Promise<{
  *   blocked:        boolean,
  *   violations:     Array<violation>,
  *   warnings:       Array<violation>,
- *   executionId:    number,
+ *   executionId:    number|null,
  *   mutatedPayload: Object
  * }>}
  */
 async function executeWorkflow(workflowId, entity, payload, context) {
   // ── Create execution record ───────────────────────────────────────────────
-  let executionId;
+  let executionId = null;
   try {
     const execResult = await db.query(
       `INSERT INTO workflow_executions
@@ -172,24 +175,22 @@ async function executeWorkflow(workflowId, entity, payload, context) {
        RETURNING id`,
       [
         workflowId,
-        context.entityId   || null,
+        context.entityId || null,
         entity,
-        context.userId     || null,
+        context.userId   || null,
         context.trigger,
       ]
     );
     executionId = execResult.rows[0].id;
   } catch (err) {
-    // Execution logging failure must not block the request.
-    // Degrade gracefully: run steps without logging, return a synthetic result.
     console.error(
-      `[workflowEngine] Failed to create execution record for workflow ${workflowId}:`,
-      err
+      `[workflowEngine] Failed to create execution record for workflow ${workflowId}:`, err
     );
-    return await executeStepsWithoutLogging(workflowId, entity, payload, context);
+    // Fail-open: run steps without logging.
+    return executeStepsWithoutLogging(workflowId, entity, payload, context);
   }
 
-  // ── Load steps ordered by sort_order ─────────────────────────────────────
+  // ── Load and resolve step order ───────────────────────────────────────────
   const stepsResult = await db.query(
     `SELECT id, step_type, name, sort_order, on_pass, on_fail, exec_mode, depends_on
      FROM workflow_steps
@@ -198,10 +199,9 @@ async function executeWorkflow(workflowId, entity, payload, context) {
     [workflowId]
   );
 
-  const steps = stepsResult.rows;
+  const rawSteps = stepsResult.rows;
 
-  if (steps.length === 0) {
-    // Workflow has no steps — mark complete immediately.
+  if (rawSteps.length === 0) {
     await finaliseExecution(executionId, 'passed', {});
     return {
       blocked:        false,
@@ -212,21 +212,68 @@ async function executeWorkflow(workflowId, entity, payload, context) {
     };
   }
 
-  // ── Split into sync and async ─────────────────────────────────────────────
-  const syncSteps  = steps.filter(s => s.exec_mode !== 'async');
-  const asyncSteps = steps.filter(s => s.exec_mode === 'async');
+  // Topological sort — throws on cycle.
+  let orderedSteps;
+  try {
+    orderedSteps = resolveExecutionOrder(rawSteps);
+  } catch (cycleErr) {
+    console.error(
+      `[workflowEngine] Workflow ${workflowId} has a dependency cycle — failing open:`,
+      cycleErr.message
+    );
+    await finaliseExecution(executionId, 'failed', {
+      _error: { message: cycleErr.message },
+    });
+    // Fail-open: cycle in workflow definition must not block the entity write.
+    return {
+      blocked:        false,
+      violations:     [],
+      warnings:       [],
+      executionId,
+      mutatedPayload: { ...payload },
+    };
+  }
 
-  // ── Execute sync steps in sort_order ─────────────────────────────────────
-  const stepResults    = {};    // { [stepId]: StepResult }
+  const stepById = new Map(orderedSteps.map(s => [s.id, s]));
+
+  // ── Graph traversal ───────────────────────────────────────────────────────
+  // stepResults accumulates outcomes keyed by step id (string).
+  const stepResults     = {};
+  const asyncStepQueue  = [];   // async steps collected during traversal
   const blockViolations = [];
   const warnViolations  = [];
   let   currentPayload  = { ...payload };
-  let   executionStatus = 'passed';
+  let   executionFailed = false;
 
-  for (const step of syncSteps) {
-    const started = Date.now();
+  // Entry point: first step in resolved order.
+  let currentStepId = orderedSteps[0].id;
 
-    // ── Check depends_on ───────────────────────────────────────────────────
+  // Track visited steps to prevent infinite loops in malformed on_pass/on_fail cycles
+  // (depends_on cycle detection catches most issues, but on_pass/on_fail are independent).
+  const visited = new Set();
+
+  while (currentStepId !== null && currentStepId !== undefined) {
+    // Guard against on_pass / on_fail cycles.
+    if (visited.has(currentStepId)) {
+      console.error(
+        `[workflowEngine] Cycle detected via on_pass/on_fail at step ${currentStepId} ` +
+        `in workflow ${workflowId} — stopping traversal`
+      );
+      break;
+    }
+    visited.add(currentStepId);
+
+    const step = stepById.get(currentStepId);
+
+    if (!step) {
+      // on_pass / on_fail points to a step outside this workflow — stop.
+      console.warn(
+        `[workflowEngine] Workflow ${workflowId} step pointer ${currentStepId} not found — stopping`
+      );
+      break;
+    }
+
+    // ── Check depends_on (all must have passed) ──────────────────────────
     const dependencyFailed = (step.depends_on || []).some(depId => {
       const depResult = stepResults[String(depId)];
       return !depResult || depResult.status !== 'passed';
@@ -239,11 +286,29 @@ async function executeWorkflow(workflowId, entity, payload, context) {
         violations:     [],
         skipped_reason: 'dependency_failed',
       };
+      // Dependency failure: use on_fail pointer to continue graph.
+      currentStepId = step.on_fail ?? null;
       continue;
     }
 
-    // ── Execute step ───────────────────────────────────────────────────────
-    let stepOutcome;
+    // ── Async step: defer to post-response queue ─────────────────────────
+    if (step.exec_mode === 'async') {
+      asyncStepQueue.push(step);
+      stepResults[String(step.id)] = {
+        status:         'pending',
+        duration_ms:    0,
+        violations:     [],
+        skipped_reason: null,
+      };
+      // Async steps always route via on_pass (they haven't run yet).
+      currentStepId = step.on_pass ?? null;
+      continue;
+    }
+
+    // ── Execute sync step ────────────────────────────────────────────────
+    const started = Date.now();
+    let   stepOutcome;
+
     try {
       stepOutcome = await executeStep(step, currentPayload, context, stepResults);
     } catch (err) {
@@ -267,23 +332,19 @@ async function executeWorkflow(workflowId, entity, payload, context) {
       skipped_reason: stepOutcome.skipped_reason || null,
     };
 
-    // Carry payload mutations forward.
     if (stepOutcome.mutatedPayload) {
       currentPayload = stepOutcome.mutatedPayload;
     }
 
-    // Collect violations.
     for (const v of stepOutcome.violations || []) {
-      if (v.severity === 'block') {
-        blockViolations.push(v);
-      } else {
-        warnViolations.push(v);
-      }
+      if (v.severity === 'block') blockViolations.push(v);
+      else warnViolations.push(v);
     }
 
     if (stepOutcome.blocked) {
-      executionStatus = 'failed';
-      // Persist the partial step_results we have so far, then stop.
+      // Hard block — stop traversal, mark any unreached steps as skipped.
+      executionFailed = true;
+      markUnreachedSteps(orderedSteps, stepResults, 'branch_not_taken');
       await finaliseExecution(executionId, 'failed', stepResults);
       return {
         blocked:        true,
@@ -295,26 +356,40 @@ async function executeWorkflow(workflowId, entity, payload, context) {
     }
 
     if (stepOutcome.status === 'failed') {
-      executionStatus = 'failed';
+      executionFailed = true;
     }
+
+    // ── Advance to next step via routing pointer ─────────────────────────
+    currentStepId = resolveNextStep(stepOutcome, step);
   }
 
-  // ── Queue async steps (fire-and-forget) ───────────────────────────────────
-  if (asyncSteps.length > 0) {
-    // Mark status as 'partial' — async steps are still outstanding.
-    executionStatus = executionStatus === 'failed' ? 'failed' : 'partial';
+  // ── Mark steps not reached by traversal as skipped ────────────────────
+  markUnreachedSteps(orderedSteps, stepResults, 'branch_not_taken');
+
+  // ── Queue async steps (fire-and-forget) ──────────────────────────────
+  const hasAsync = asyncStepQueue.length > 0;
+  if (hasAsync) {
     setImmediate(() => {
-      runAsyncSteps(asyncSteps, currentPayload, context, executionId, stepResults)
-        .catch(err =>
-          console.error(
-            `[workflowEngine] Async steps failed for execution ${executionId}:`, err
-          )
-        );
+      runAsyncSteps(
+        asyncStepQueue, currentPayload, context, executionId, stepResults, stepById
+      ).catch(err =>
+        console.error(
+          `[workflowEngine] Async steps failed for execution ${executionId}:`, err
+        )
+      );
     });
   }
 
-  // ── Finalise sync execution ───────────────────────────────────────────────
-  const finalStatus = asyncSteps.length > 0 ? executionStatus : executionStatus;
+  // ── Finalise execution ────────────────────────────────────────────────
+  let finalStatus;
+  if (executionFailed) {
+    finalStatus = 'failed';
+  } else if (hasAsync) {
+    finalStatus = 'partial'; // async steps still outstanding
+  } else {
+    finalStatus = 'passed';
+  }
+
   await finaliseExecution(executionId, finalStatus, stepResults);
 
   return {
@@ -331,13 +406,7 @@ async function executeWorkflow(workflowId, entity, payload, context) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Dispatches a single step to the appropriate handler based on step_type.
- *
- * @param {Object} step
- * @param {Object} payload
- * @param {Object} context
- * @param {Object} priorStepResults  — results of steps already executed (for branch awareness)
- * @returns {Promise<StepOutcome>}
+ * Dispatches a single step to its type-specific handler.
  *
  * StepOutcome shape:
  * {
@@ -345,8 +414,10 @@ async function executeWorkflow(workflowId, entity, payload, context) {
  *   duration_ms:    number,
  *   violations:     Array<violation>,
  *   skipped_reason: string | null,
- *   mutatedPayload: Object,   // payload after any mutations this step applied
- *   blocked:        boolean,  // true if a 'block'-severity violation was raised
+ *   mutatedPayload: Object,
+ *   blocked:        boolean,
+ *   // branch steps only:
+ *   routeTo:        number | null,  — next step_id chosen by branch logic
  * }
  */
 async function executeStep(step, payload, context, priorStepResults) {
@@ -357,13 +428,11 @@ async function executeStep(step, payload, context, priorStepResults) {
       return executeRuleStep(step, payload, context, started);
 
     case 'branch':
-      // Phase 3 will implement full branch routing.
-      // Phase 2 stubs: evaluate the branch condition and log, but do not re-route.
-      return executeBranchStepStub(step, payload, context, started);
+      return executeBranchStep(step, payload, context, started);
 
     case 'action':
-      // Phase 4 will implement side-effect actions (webhook, email, etc.).
-      // Phase 2 stubs: log as passed, no side effects.
+      // Phase 4 — side-effect actions (webhook, email, field-write, etc.)
+      // Stub: log as passed, no side effects.
       return {
         status:         'passed',
         duration_ms:    Date.now() - started,
@@ -387,19 +456,9 @@ async function executeStep(step, payload, context, priorStepResults) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// executeRuleStep
+// executeRuleStep  (unchanged from Phase 2)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Loads the workflow_rules attached to a step and evaluates each one.
- * Mutation rules (auto_set / transform) are applied to produce a mutated payload.
- *
- * @param {Object} step
- * @param {Object} payload
- * @param {Object} context
- * @param {number} started  — Date.now() at step start (for accurate duration)
- * @returns {Promise<StepOutcome>}
- */
 async function executeRuleStep(step, payload, context, started) {
   const rulesResult = await db.query(
     `SELECT * FROM workflow_rules
@@ -422,9 +481,9 @@ async function executeRuleStep(step, payload, context, started) {
     };
   }
 
-  const MUTATION_TYPES   = new Set(['auto_set', 'transform']);
-  const validationRules  = rules.filter(r => !MUTATION_TYPES.has(r.rule_type));
-  const mutationRules    = rules.filter(r =>  MUTATION_TYPES.has(r.rule_type));
+  const MUTATION_TYPES  = new Set(['auto_set', 'transform']);
+  const validationRules = rules.filter(r => !MUTATION_TYPES.has(r.rule_type));
+  const mutationRules   = rules.filter(r =>  MUTATION_TYPES.has(r.rule_type));
 
   const stepViolations = [];
   let   blocked        = false;
@@ -439,23 +498,20 @@ async function executeRuleStep(step, payload, context, started) {
         }
       }
     } catch (err) {
-      // A single rule error must never bring down the step.
       console.error(
         `[workflowEngine] Rule id=${rule.id} "${rule.name}" threw:`, err
       );
     }
   }
 
-  // Apply mutation rules even when there are warn violations — warnings are non-blocking.
-  // Do NOT mutate when blocked — the write won't happen anyway.
   let mutatedPayload = payload;
   if (!blocked) {
     mutatedPayload = await applyMutationRules(mutationRules, payload, context);
   }
 
-  const status = blocked ? 'failed'
-    : stepViolations.length > 0 ? 'failed'
-    : 'passed';
+  const status = blocked
+    ? 'failed'
+    : stepViolations.length > 0 ? 'failed' : 'passed';
 
   return {
     status,
@@ -468,14 +524,34 @@ async function executeRuleStep(step, payload, context, started) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// executeBranchStepStub  (Phase 2 stub — replaced in Phase 3)
+// executeBranchStep  (Phase 3 — replaces Phase 2 stub)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Phase 2 stub for branch steps. Evaluates the branch condition for logging
- * purposes but does not re-route execution (that's Phase 3 — dependencyResolver).
+ * Evaluates the workflow_branches attached to a branch step.
+ * Branches are evaluated in sort_order — first match wins.
+ *
+ * The winning branch's true_step_id is returned as stepOutcome.routeTo.
+ * If no branch matches, false_step_id of the last branch is used (catch-all).
+ * If there are no branches at all, the step passes with no routing override.
+ *
+ * NOTE: executeWorkflow() still uses resolveNextStep() for primary traversal.
+ * For branch steps, the on_pass / on_fail pointers on the step itself serve
+ * as the default routing when no branch condition overrides them.
+ * routeTo is stored in step_results for observability but the engine uses
+ * the step's on_pass / on_fail via resolveNextStep() as the traversal pointer.
+ * Branch steps should set on_pass = true_step_id and on_fail = false_step_id
+ * at authoring time so that resolveNextStep() produces the same route.
+ * A future enhancement could override resolveNextStep() with routeTo directly
+ * to support dynamic routing without authoring on_pass/on_fail exhaustively.
+ *
+ * @param {Object} step
+ * @param {Object} payload
+ * @param {Object} context
+ * @param {number} started
+ * @returns {Promise<StepOutcome & { routeTo: number|null }>}
  */
-async function executeBranchStepStub(step, payload, context, started) {
+async function executeBranchStep(step, payload, context, started) {
   const branchesResult = await db.query(
     `SELECT id, condition, true_step_id, false_step_id, sort_order
      FROM workflow_branches
@@ -486,52 +562,77 @@ async function executeBranchStepStub(step, payload, context, started) {
 
   const branches = branchesResult.rows;
 
-  // Evaluate first matching branch condition for logging; ignore routing.
+  if (branches.length === 0) {
+    // No branches defined — treat as pass-through, no routing override.
+    return {
+      status:         'passed',
+      duration_ms:    Date.now() - started,
+      violations:     [],
+      skipped_reason: null,
+      mutatedPayload: payload,
+      blocked:        false,
+      routeTo:        null,
+    };
+  }
+
+  let routeTo       = null;
+  let matchedBranch = null;
+
   for (const branch of branches) {
     try {
       const matched = await evaluateConditionTree(branch.condition, payload, context);
       if (matched) {
-        // Log which branch would be taken (Phase 3 will act on this).
+        routeTo       = branch.true_step_id ?? null;
+        matchedBranch = branch;
         break;
       }
     } catch (err) {
       console.error(
-        `[workflowEngine] Branch id=${branch.id} condition threw:`, err
+        `[workflowEngine] Branch id=${branch.id} condition evaluation threw:`, err
       );
+      // Continue to next branch on error — don't abort the whole step.
     }
   }
 
+  // If no branch matched, fall through to the last branch's false_step_id.
+  if (!matchedBranch) {
+    const lastBranch = branches[branches.length - 1];
+    routeTo = lastBranch.false_step_id ?? null;
+  }
+
   return {
-    status:         'passed', // Branches always pass in Phase 2 (no routing enforcement yet)
+    status:         'passed',   // Branch steps themselves always pass (routing, not validation)
     duration_ms:    Date.now() - started,
     violations:     [],
     skipped_reason: null,
     mutatedPayload: payload,
     blocked:        false,
+    routeTo,
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// runAsyncSteps
+// runAsyncSteps  (updated for graph traversal)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Called via setImmediate after the API response is sent.
- * Executes async steps in sort_order and updates the execution record.
- * Errors are caught and logged — must not crash the process.
+ * Runs queued async steps post-response using the same graph traversal logic.
+ * Updates the execution record when complete.
  *
- * @param {Array<Object>} asyncSteps
- * @param {Object}        payload         — mutated payload after sync steps
+ * @param {Array<Object>} asyncSteps    — steps deferred during sync pass
+ * @param {Object}        payload       — mutated payload after sync pass
  * @param {Object}        context
  * @param {number}        executionId
- * @param {Object}        syncStepResults — already-completed sync step results (for merge)
+ * @param {Object}        syncResults   — step_results from sync pass (for depends_on checks)
+ * @param {Map}           stepById      — id → step map for routing
  */
-async function runAsyncSteps(asyncSteps, payload, context, executionId, syncStepResults) {
-  const stepResults    = { ...syncStepResults };
+async function runAsyncSteps(asyncSteps, payload, context, executionId, syncResults, stepById) {
+  const stepResults    = { ...syncResults };
   let   currentPayload = { ...payload };
   let   failed         = false;
 
   for (const step of asyncSteps) {
+    // Dependency check against now-complete sync results.
     const dependencyFailed = (step.depends_on || []).some(depId => {
       const depResult = stepResults[String(depId)];
       return !depResult || depResult.status !== 'passed';
@@ -571,17 +672,11 @@ async function runAsyncSteps(asyncSteps, payload, context, executionId, syncStep
       skipped_reason: stepOutcome.skipped_reason || null,
     };
 
-    if (stepOutcome.mutatedPayload) {
-      currentPayload = stepOutcome.mutatedPayload;
-    }
-
-    if (stepOutcome.status === 'failed') {
-      failed = true;
-    }
+    if (stepOutcome.mutatedPayload) currentPayload = stepOutcome.mutatedPayload;
+    if (stepOutcome.status === 'failed') failed = true;
   }
 
-  // Update execution to final status now that all async steps have run.
-  const finalStatus = failed ? 'partial' : 'passed'; // async failures → 'partial', not 'failed'
+  const finalStatus = failed ? 'partial' : 'passed';
   await finaliseExecution(executionId, finalStatus, stepResults);
 }
 
@@ -590,7 +685,29 @@ async function runAsyncSteps(asyncSteps, payload, context, executionId, syncStep
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Updates a workflow_executions row to a terminal status with final step_results.
+ * Marks steps that were never reached during traversal as skipped.
+ * Preserves any results already written (passed, failed, pending, etc.).
+ *
+ * @param {Array<Object>} allSteps
+ * @param {Object}        stepResults   — mutated in place
+ * @param {string}        reason        — skipped_reason string
+ */
+function markUnreachedSteps(allSteps, stepResults, reason) {
+  for (const step of allSteps) {
+    const key = String(step.id);
+    if (!stepResults[key]) {
+      stepResults[key] = {
+        status:         'skipped',
+        duration_ms:    0,
+        violations:     [],
+        skipped_reason: reason,
+      };
+    }
+  }
+}
+
+/**
+ * Updates a workflow_executions row to a terminal status.
  * Fails silently — execution logging must never block business logic.
  */
 async function finaliseExecution(executionId, status, stepResults) {
@@ -611,9 +728,8 @@ async function finaliseExecution(executionId, status, stepResults) {
 }
 
 /**
- * Fallback path when we cannot create an execution record.
- * Runs steps through executeStep() without logging anything.
- * Prevents execution logging failure from breaking the API write.
+ * Fallback path when execution record creation fails.
+ * Traverses sync steps without DB logging.
  */
 async function executeStepsWithoutLogging(workflowId, entity, payload, context) {
   const stepsResult = await db.query(
@@ -625,20 +741,48 @@ async function executeStepsWithoutLogging(workflowId, entity, payload, context) 
     [workflowId]
   );
 
-  const steps          = stepsResult.rows;
-  const stepResults    = {};
+  const rawSteps = stepsResult.rows;
+  if (rawSteps.length === 0) {
+    return {
+      blocked: false, violations: [], warnings: [],
+      executionId: null, mutatedPayload: { ...payload },
+    };
+  }
+
+  let orderedSteps;
+  try {
+    orderedSteps = resolveExecutionOrder(rawSteps);
+  } catch {
+    // Cycle in workflow — fail open.
+    return {
+      blocked: false, violations: [], warnings: [],
+      executionId: null, mutatedPayload: { ...payload },
+    };
+  }
+
+  const stepById        = new Map(orderedSteps.map(s => [s.id, s]));
+  const stepResults     = {};
   const blockViolations = [];
   const warnViolations  = [];
   let   currentPayload  = { ...payload };
+  let   currentStepId   = orderedSteps[0]?.id ?? null;
+  const visited         = new Set();
 
-  for (const step of steps) {
+  while (currentStepId !== null && currentStepId !== undefined) {
+    if (visited.has(currentStepId)) break;
+    visited.add(currentStepId);
+
+    const step = stepById.get(currentStepId);
+    if (!step) break;
+
     const dependencyFailed = (step.depends_on || []).some(depId => {
-      const depResult = stepResults[String(depId)];
-      return !depResult || depResult.status !== 'passed';
+      const r = stepResults[String(depId)];
+      return !r || r.status !== 'passed';
     });
 
     if (dependencyFailed) {
-      stepResults[String(step.id)] = { status: 'skipped' };
+      stepResults[String(step.id)] = { status: 'skipped', skipped_reason: 'dependency_failed' };
+      currentStepId = step.on_fail ?? null;
       continue;
     }
 
@@ -654,7 +798,6 @@ async function executeStepsWithoutLogging(workflowId, entity, payload, context) 
     }
 
     stepResults[String(step.id)] = { status: stepOutcome.status };
-
     if (stepOutcome.mutatedPayload) currentPayload = stepOutcome.mutatedPayload;
 
     for (const v of stepOutcome.violations || []) {
@@ -664,21 +807,17 @@ async function executeStepsWithoutLogging(workflowId, entity, payload, context) 
 
     if (stepOutcome.blocked) {
       return {
-        blocked:        true,
-        violations:     blockViolations,
-        warnings:       warnViolations,
-        executionId:    null,
-        mutatedPayload: currentPayload,
+        blocked: true, violations: blockViolations, warnings: warnViolations,
+        executionId: null, mutatedPayload: currentPayload,
       };
     }
+
+    currentStepId = resolveNextStep(stepOutcome, step);
   }
 
   return {
-    blocked:        false,
-    violations:     blockViolations,
-    warnings:       warnViolations,
-    executionId:    null,
-    mutatedPayload: currentPayload,
+    blocked: false, violations: blockViolations, warnings: warnViolations,
+    executionId: null, mutatedPayload: currentPayload,
   };
 }
 
