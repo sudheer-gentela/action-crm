@@ -641,19 +641,6 @@ router.delete('/hierarchy/:userId', adminOnly, async (req, res) => {
 
 const requireModule = require('../middleware/requireModule.middleware');
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CHANGE 2 — Replace the existing module toggle handlers
-// (router.patch('/module/prospecting', ...) and router.patch('/module/agency', ...))
-// with this single generic handler that covers all five modules.
-//
-// It enforces:
-//   - Only modules that are `allowed` by the platform can be enabled.
-//   - Disabling always works regardless of allowed status.
-//   - The new object shape { allowed, enabled } is written instead of a scalar.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const requireModule = require('../middleware/requireModule.middleware');
-
 const MODULE_KEYS    = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
 const MODULE_LABELS  = {
   prospecting: 'Prospecting',
