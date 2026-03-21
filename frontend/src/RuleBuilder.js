@@ -652,7 +652,6 @@ export default function RuleBuilder({
 
   // Derived
   const ruleTypeMeta = RULE_TYPES.find(r => r.value === ruleType);
-  const triggerMeta  = TRIGGERS.find(t => t.value === trigger);
   const locked       = isLocked;
 
   return (
