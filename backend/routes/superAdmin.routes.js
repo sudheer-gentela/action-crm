@@ -258,6 +258,173 @@ router.post('/orgs/:orgId/suspend', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH: Add this block to superAdmin.routes.js
+//
+// Paste it immediately after the existing suspend/unsuspend route block
+// (after the closing brace of router.post('/orgs/:orgId/suspend', ...)),
+// before the USERS WITHIN AN ORG section.
+//
+// This adds one new endpoint:
+//   PATCH /super/orgs/:orgId/modules
+//
+// Body: { modules: { prospecting: true, contracts: false, ... } }
+//
+// Sets the `allowed` flag for each module in organizations.settings.modules.
+// The org admin can still independently control the `enabled` flag, but they
+// cannot enable a module that is not allowed by the platform.
+//
+// Modules not mentioned in the request body are left unchanged.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MODULE_KEYS = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MODULE PROVISIONING — super admin controls which modules an org may use
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /super/orgs/:orgId/modules
+ * Read the current allowed/enabled state for all modules of an org.
+ * Used to populate the module toggles in SAOrgDetail.
+ */
+router.get('/orgs/:orgId/modules', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+
+    const result = await pool.query(
+      `SELECT settings->'modules' AS modules FROM organizations WHERE id = $1`,
+      [orgId]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: { message: 'Organisation not found' } });
+    }
+
+    const rawModules = result.rows[0]?.modules || {};
+    const modules = {};
+
+    for (const key of MODULE_KEYS) {
+      const raw = rawModules[key];
+      if (raw === null || raw === undefined) {
+        modules[key] = { allowed: false, enabled: false };
+      } else if (typeof raw === 'object') {
+        modules[key] = { allowed: !!raw.allowed, enabled: !!raw.enabled };
+      } else {
+        // Legacy scalar — treat existing true as allowed+enabled
+        const b = raw === true || raw === 'true';
+        modules[key] = { allowed: b, enabled: b };
+      }
+    }
+
+    res.json({ modules });
+  } catch (err) {
+    console.error(`GET /super/orgs/${req.params.orgId}/modules error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+/**
+ * PATCH /super/orgs/:orgId/modules
+ * Set the `allowed` flag for one or more modules.
+ *
+ * Body: { modules: { prospecting: true, contracts: false, agency: true } }
+ *
+ * When a module is disallowed (allowed: false), its enabled flag is also
+ * forced to false so org admins cannot have it active while it's not provisioned.
+ *
+ * Modules not mentioned in the request body are left completely unchanged.
+ */
+router.patch('/orgs/:orgId/modules', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const { modules: incoming } = req.body;
+
+    if (!incoming || typeof incoming !== 'object') {
+      return res.status(400).json({ error: { message: 'modules object is required' } });
+    }
+
+    // Validate keys
+    const unknownKeys = Object.keys(incoming).filter(k => !MODULE_KEYS.includes(k));
+    if (unknownKeys.length) {
+      return res.status(400).json({ error: { message: `Unknown module(s): ${unknownKeys.join(', ')}` } });
+    }
+
+    // Load current settings so we can merge cleanly
+    const current = await pool.query(
+      `SELECT settings FROM organizations WHERE id = $1`,
+      [orgId]
+    );
+    if (!current.rows.length) {
+      return res.status(404).json({ error: { message: 'Organisation not found' } });
+    }
+
+    const settings    = current.rows[0].settings || {};
+    const rawModules  = settings.modules || {};
+
+    // Build merged module map
+    const merged = { ...rawModules };
+
+    for (const [moduleName, allowedValue] of Object.entries(incoming)) {
+      const allowed = allowedValue === true || allowedValue === 'true';
+
+      // Read existing object shape or legacy scalar
+      const existing = merged[moduleName];
+      let currentEnabled = false;
+      if (existing !== null && existing !== undefined) {
+        if (typeof existing === 'object') {
+          currentEnabled = !!existing.enabled;
+        } else {
+          currentEnabled = existing === true || existing === 'true';
+        }
+      }
+
+      // If revoking access, force enabled to false too
+      const newEnabled = allowed ? currentEnabled : false;
+
+      merged[moduleName] = { allowed, enabled: newEnabled };
+    }
+
+    // Write back using jsonb_set on the modules sub-key
+    await pool.query(
+      `UPDATE organizations
+          SET settings   = jsonb_set(COALESCE(settings, '{}'::jsonb), '{modules}', $2::jsonb, true),
+              updated_at = NOW()
+        WHERE id = $1`,
+      [orgId, JSON.stringify(merged)]
+    );
+
+    // Invalidate the requireModule cache for every changed module
+    const requireModule = require('../middleware/requireModule.middleware');
+    for (const moduleName of Object.keys(incoming)) {
+      requireModule.invalidate(orgId, moduleName);
+    }
+
+    await auditLog(req, 'update_org_modules', 'org', parseInt(orgId), {
+      changes: Object.entries(incoming).map(([k, v]) => `${k}=${v}`).join(', '),
+    });
+
+    // Return the full resolved module state
+    const finalModules = {};
+    for (const key of MODULE_KEYS) {
+      const v = merged[key];
+      if (!v || typeof v !== 'object') {
+        const b = v === true || v === 'true';
+        finalModules[key] = { allowed: b, enabled: b };
+      } else {
+        finalModules[key] = { allowed: !!v.allowed, enabled: !!v.enabled };
+      }
+    }
+
+    res.json({ modules: finalModules });
+  } catch (err) {
+    console.error(`PATCH /super/orgs/${req.params.orgId}/modules error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+
+
 // ═════════════════════════════════════════════════════════════════════════════
 // USERS WITHIN AN ORG (super admin view — can add users to any org)
 // ═════════════════════════════════════════════════════════════════════════════

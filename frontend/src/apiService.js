@@ -237,6 +237,10 @@ export const apiService = {
     grantAdmin: (data) => api.post('/super/admins', data),
     revokeAdmin: (userId) => api.delete(`/super/admins/${userId}`),
     getAuditLog: (params = {}) => api.get('/super/audit', { params }),
+    // ── Module provisioning ─────────────────────────────────────────────────
+    // modules: { prospecting: true, contracts: false, ... }
+    getOrgModules:    (orgId)          => api.get(`/super/orgs/${orgId}/modules`),
+    updateOrgModules: (orgId, modules) => api.patch(`/super/orgs/${orgId}/modules`, { modules }),
   },
 
   prospects: {

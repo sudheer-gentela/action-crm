@@ -361,29 +361,42 @@ export default function OrgAdminView() {
     apiService.orgAdmin.getStats()
       .then(r => setStats(r.data))
       .catch(console.error);
-    apiService.orgAdmin.getProfile()
-      .then(r => {
-        // Support both response shapes: r.data.org and r.data (axios wraps in .data)
-        const org  = r.data?.org ?? r.data ?? {};
-        const name = org.name || '';
-        if (name) setOrgName(name);
 
-        // Try both known response shapes for module flags
-        const mods =
-          org?.settings?.modules ||   // shape A: { org: { settings: { modules: {} } } }
-          org?.modules           ||   // shape B: { org: { modules: {} } }
-          r.data?.modules        ||   // shape C: { modules: {} } at top level
-          {};
+   apiService.orgAdmin.getProfile()
+     .then(r => {
+       const org  = r.data?.org ?? r.data ?? {};
+       const name = org.name || '';
+       if (name) setOrgName(name);
 
-        setOrgModules({
-          contracts:   mods.contracts   || false,
-          prospecting: mods.prospecting || false,
-          handovers:   mods.handovers   || false,
-          service:     mods.service     || false,
-          agency:      mods.agency      || false,
-        });
-      })
-      .catch(e => console.error('[OrgAdminView] getProfile failed:', e));
+       // New profile shape: r.data.modules = { key: { allowed, enabled } }
+       // Legacy shape:      r.data.org.settings.modules = { key: true/false }
+       // buildNavGroups and orgModules state only need `enabled` — extract that.
+       const normalisedMods = r.data.modules;
+       if (normalisedMods) {
+         setOrgModules({
+           contracts:   normalisedMods.contracts?.enabled   || false,
+           prospecting: normalisedMods.prospecting?.enabled || false,
+           handovers:   normalisedMods.handovers?.enabled   || false,
+           service:     normalisedMods.service?.enabled     || false,
+           agency:      normalisedMods.agency?.enabled      || false,
+         });
+       } else {
+         // Legacy fallback
+         const mods =
+           org?.settings?.modules ||
+           org?.modules           ||
+           {};
+         setOrgModules({
+           contracts:   mods.contracts   === true || mods.contracts?.enabled   || false,
+           prospecting: mods.prospecting === true || mods.prospecting?.enabled || false,
+           handovers:   mods.handovers   === true || mods.handovers?.enabled   || false,
+           service:     mods.service     === true || mods.service?.enabled     || false,
+           agency:      mods.agency      === true || mods.agency?.enabled      || false,
+         });
+       }
+     })
+     .catch(e => console.error('[OrgAdminView] getProfile failed:', e));
+
 
     // Listen for module toggle events fired by child General sub-tabs
     const handleModuleToggle = (e) => {
@@ -5399,31 +5412,63 @@ function OAAgencyModule() {
 // MODULES TAB — enable/disable product modules per org
 // ─────────────────────────────────────────────────────────────────
 
+// ═════════════════════════════════════════════════════════════════════════════
+// CHANGE 1 — Replace the entire OAModules function with this version.
+//
+// Key differences from the original:
+//   - Loads `allowed` flag per module from the profile response
+//   - Shows locked modules with a greyed-out toggle and "Not included in plan" message
+//   - Org admins can only toggle modules where allowed=true
+//   - handleToggle now writes the new { allowed, enabled } shape via the API
+// ═════════════════════════════════════════════════════════════════════════════
+
 function OAModules() {
+  // modules state now holds { allowed: bool, enabled: bool } per key
   const [modules, setModules] = useState({
-    contracts:    false,
-    prospecting:  false,
-    handovers:    false,
-    service:      false,
-    agency:       false,
+    contracts:   { allowed: false, enabled: false },
+    prospecting: { allowed: false, enabled: false },
+    handovers:   { allowed: false, enabled: false },
+    service:     { allowed: false, enabled: false },
+    agency:      { allowed: false, enabled: false },
   });
-  const [loading, setLoading]   = useState(true);
-  const [saving, setSaving]     = useState(null);
-  const [error, setError]       = useState('');
-  const [success, setSuccess]   = useState('');
+  const [loading, setLoading]  = useState(true);
+  const [saving, setSaving]    = useState(null); // key of module being toggled
+  const [error, setError]      = useState('');
+  const [success, setSuccess]  = useState('');
 
   useEffect(() => {
-    // Load current module flags from org profile
+    // The updated GET /profile now returns { org, modules } at the top level.
+    // modules is already normalised to { key: { allowed, enabled } } by the backend.
     apiService.orgAdmin.getProfile()
       .then(r => {
-        const settings = r.data.org?.settings || {};
-        setModules({
-          contracts:   settings.modules?.contracts   || false,
-          prospecting: settings.modules?.prospecting || false,
-          handovers:   settings.modules?.handovers   || false,
-          service:     settings.modules?.service     || false,
-          agency:      settings.modules?.agency      || false,
-        });
+        // Handle both response shapes gracefully:
+        //   New: r.data.modules = { prospecting: { allowed, enabled }, ... }
+        //   Old: r.data.org.settings.modules = { prospecting: true, ... }
+        const normalised = r.data.modules;
+        if (normalised) {
+          setModules({
+            contracts:   normalised.contracts   || { allowed: false, enabled: false },
+            prospecting: normalised.prospecting || { allowed: false, enabled: false },
+            handovers:   normalised.handovers   || { allowed: false, enabled: false },
+            service:     normalised.service     || { allowed: false, enabled: false },
+            agency:      normalised.agency      || { allowed: false, enabled: false },
+          });
+        } else {
+          // Fallback to legacy shape
+          const settings = r.data.org?.settings || {};
+          const mods = settings.modules || {};
+          const toLegacy = (v) => {
+            const b = v === true || v === 'true';
+            return { allowed: b, enabled: b };
+          };
+          setModules({
+            contracts:   toLegacy(mods.contracts),
+            prospecting: toLegacy(mods.prospecting),
+            handovers:   toLegacy(mods.handovers),
+            service:     toLegacy(mods.service),
+            agency:      toLegacy(mods.agency),
+          });
+        }
       })
       .catch(() => setError('Failed to load module settings'))
       .finally(() => setLoading(false));
@@ -5437,24 +5482,34 @@ function OAModules() {
     agency:      (enabled) => apiService.agency.toggleModule(enabled),
   };
 
-  const handleToggle = async (moduleName, newVal) => {
+  const handleToggle = async (moduleName, newEnabled) => {
     setSaving(moduleName);
     setError('');
     try {
-      await MODULE_TOGGLE_API[moduleName](newVal);
-      setModules(prev => ({ ...prev, [moduleName]: newVal }));
+      await MODULE_TOGGLE_API[moduleName](newEnabled);
+      setModules(prev => ({
+        ...prev,
+        [moduleName]: { ...prev[moduleName], enabled: newEnabled },
+      }));
       const label = MODULE_DEFS.find(m => m.key === moduleName)?.label || moduleName;
-      setSuccess(`${label} module ${newVal ? 'enabled' : 'disabled'} ✓`);
+      setSuccess(`${label} module ${newEnabled ? 'enabled' : 'disabled'} ✓`);
       setTimeout(() => setSuccess(''), 3000);
-      // Notify App.js to update orgModules state instantly — no hard refresh needed
-      window.dispatchEvent(new CustomEvent('moduleToggle', { detail: { module: moduleName, enabled: newVal } }));
+      // Notify App.js / OrgAdminView to update nav instantly
+      window.dispatchEvent(new CustomEvent('moduleToggle', { detail: { module: moduleName, enabled: newEnabled } }));
     } catch (e) {
-      setError(e.response?.data?.error?.message || e.message || 'Failed to update module');
+      const msg = e.response?.data?.error?.message || e.message || 'Failed to update module';
+      // Surface the specific "not provisioned" error clearly
+      if (e.response?.data?.error?.code === 'MODULE_NOT_ALLOWED') {
+        setError(msg); // backend already has a clear message
+      } else {
+        setError(msg);
+      }
     } finally {
       setSaving(null);
     }
   };
 
+  // MODULE_DEFS is unchanged from original — copy it from the existing OAModules
   const MODULE_DEFS = [
     {
       key: 'prospecting',
@@ -5528,115 +5583,153 @@ function OAModules() {
         'Client records linked to existing accounts',
         'Team assignment — assign internal users as client leads or members',
         'Prospect, account, and sequence scoping per client',
-        'Read-only client portal with magic link authentication',
-        'Portal dashboard: pipeline, outreach stats, sequences, and open cases',
-        'Client activity log — full audit trail of work done for each client',
-        'Portal users can raise support cases directly from the portal',
+        'Client portal with magic-link access for external stakeholders',
+        'Client-branded sender accounts for outreach sequences',
+        'Per-client outreach dashboard and reply tracking',
       ],
       color: '#7c3aed',
     },
   ];
 
-  if (loading) return <div className="sv-loading">Loading module settings…</div>;
-
+  // Render — same outer structure as original, but with locked state for disallowed modules
   return (
     <div className="sv-panel">
       <div className="sv-panel-header">
         <div>
           <h2>🧩 Modules</h2>
-          <p className="sv-panel-desc">Enable or disable product modules for your organisation. Changes take effect immediately.</p>
+          <p className="sv-panel-desc">
+            Enable or disable product modules for your organisation.
+            Modules must be provisioned by the platform before they can be activated.
+          </p>
         </div>
       </div>
 
       {error   && <div className="sv-error">⚠️ {error}</div>}
       {success && <div className="sv-success">{success}</div>}
 
-      <div className="sv-panel-body">
-        {MODULE_DEFS.map(mod => {
-          const isOn   = modules[mod.key];
-          const isBusy = saving === mod.key;
+      {loading ? (
+        <div className="sv-loading">Loading modules…</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {MODULE_DEFS.map(mod => {
+            const state     = modules[mod.key] || { allowed: false, enabled: false };
+            const isAllowed = state.allowed;
+            const isEnabled = state.enabled;
+            const isSaving  = saving === mod.key;
+            const isLocked  = !isAllowed;
 
-          return (
-            <div key={mod.key} style={{
-              background: '#fff',
-              border: `1.5px solid ${isOn ? mod.color + '40' : '#e5e7eb'}`,
-              borderRadius: 12,
-              padding: '20px 24px',
-              marginBottom: 16,
-              transition: 'border-color 0.2s',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
-                <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flex: 1 }}>
-                  <span style={{
-                    fontSize: 28, width: 44, height: 44, borderRadius: 10,
-                    background: isOn ? mod.color + '15' : '#f3f4f6',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                  }}>{mod.icon}</span>
+            return (
+              <div
+                key={mod.key}
+                style={{
+                  border: `1px solid ${isLocked ? '#e5e7eb' : isEnabled ? mod.color + '40' : '#e5e7eb'}`,
+                  borderRadius: 12,
+                  padding: '18px 20px',
+                  background: isLocked ? '#fafafa' : isEnabled ? mod.color + '08' : '#fff',
+                  opacity: isLocked ? 0.65 : 1,
+                  transition: 'all 0.15s',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+                  {/* Icon */}
+                  <div style={{ fontSize: 28, marginTop: 2, flexShrink: 0 }}>{mod.icon}</div>
 
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-                      <span style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>{mod.label}</span>
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
-                        background: isOn ? '#d1fae5' : '#f3f4f6',
-                        color: isOn ? '#065f46' : '#9ca3af',
-                        textTransform: 'uppercase', letterSpacing: '0.05em',
-                      }}>
-                        {isOn ? 'Enabled' : 'Disabled'}
-                      </span>
+                  {/* Content */}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: '#111827' }}>{mod.label}</div>
+                      {/* Status chip */}
+                      {isLocked ? (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
+                          background: '#f3f4f6', color: '#9ca3af',
+                          textTransform: 'uppercase', letterSpacing: 0.4,
+                        }}>
+                          🔒 Not included in plan
+                        </span>
+                      ) : isEnabled ? (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
+                          background: mod.color + '20', color: mod.color,
+                          textTransform: 'uppercase', letterSpacing: 0.4,
+                        }}>
+                          Active
+                        </span>
+                      ) : (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
+                          background: '#f3f4f6', color: '#9ca3af',
+                          textTransform: 'uppercase', letterSpacing: 0.4,
+                        }}>
+                          Available — not active
+                        </span>
+                      )}
                     </div>
-                    <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 10px', lineHeight: 1.6 }}>{mod.desc}</p>
-                    <ul style={{ margin: 0, padding: '0 0 0 16px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                      {mod.features.map(f => (
-                        <li key={f} style={{ fontSize: 12, color: '#374151', lineHeight: 1.5 }}>{f}</li>
-                      ))}
-                    </ul>
+
+                    <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 10px', lineHeight: 1.5 }}>
+                      {isLocked
+                        ? 'This module is not included in your current plan. Contact support to upgrade.'
+                        : mod.desc
+                      }
+                    </p>
+
+                    {/* Feature list — only show when not locked */}
+                    {!isLocked && mod.features && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {mod.features.map(f => (
+                          <span key={f} style={{
+                            fontSize: 11, padding: '2px 8px', borderRadius: 20,
+                            background: '#f3f4f6', color: '#374151',
+                          }}>
+                            ✓ {f}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Toggle — disabled for locked modules */}
+                  <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                    <button
+                      disabled={isLocked || isSaving}
+                      onClick={() => !isLocked && handleToggle(mod.key, !isEnabled)}
+                      title={
+                        isLocked
+                          ? 'Not included in your plan — contact support'
+                          : isEnabled ? 'Disable module' : 'Enable module'
+                      }
+                      style={{
+                        position: 'relative', width: 46, height: 26, borderRadius: 13,
+                        border: 'none',
+                        background: isLocked ? '#e5e7eb' : isEnabled ? mod.color : '#d1d5db',
+                        cursor: isLocked || isSaving ? 'not-allowed' : 'pointer',
+                        opacity: isSaving ? 0.7 : 1,
+                        transition: 'background 0.2s',
+                      }}
+                    >
+                      <span style={{
+                        position: 'absolute', top: 4,
+                        left: (!isLocked && isEnabled) ? 23 : 4,
+                        width: 18, height: 18, borderRadius: '50%',
+                        background: isLocked ? '#9ca3af' : '#fff',
+                        transition: 'left 0.2s',
+                        boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                      }} />
+                    </button>
+                    <span style={{ fontSize: 10, color: '#9ca3af', fontWeight: 500 }}>
+                      {isSaving ? '…' : isEnabled ? 'On' : 'Off'}
+                    </span>
                   </div>
                 </div>
-
-                {/* Toggle */}
-                <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-                  <button
-                    disabled={isBusy}
-                    onClick={() => handleToggle(mod.key, !isOn)}
-                    style={{
-                      padding: '9px 22px',
-                      borderRadius: 8,
-                      border: 'none',
-                      fontWeight: 700,
-                      fontSize: 13,
-                      cursor: isBusy ? 'wait' : 'pointer',
-                      background: isOn ? '#fee2e2' : mod.color,
-                      color: isOn ? '#dc2626' : '#fff',
-                      transition: 'all 0.15s',
-                      minWidth: 100,
-                    }}
-                  >
-                    {isBusy ? '…' : isOn ? 'Disable' : 'Enable'}
-                  </button>
-                  {isOn && (
-                    <span style={{ fontSize: 11, color: '#9ca3af', textAlign: 'right' }}>
-                      Visible to all members
-                    </span>
-                  )}
-                </div>
               </div>
-            </div>
-          );
-        })}
-
-        <div style={{
-          padding: '14px 18px', borderRadius: 10, background: '#f8fafc',
-          border: '1px solid #e2e8f0', fontSize: 12, color: '#64748b', lineHeight: 1.7,
-        }}>
-          <strong>Note:</strong> Enabling a module makes it visible in the sidebar for all members immediately.
-          Disabling hides it — existing data is preserved and can be re-enabled at any time.
-          Module-specific configuration (workflow rules, approval chains) is available inside each module's settings.
+            );
+          })}
         </div>
-      </div>
+      )}
     </div>
   );
 }
+
 
 // ─────────────────────────────────────────────────────────────────
 // CLM TEMPLATES TAB

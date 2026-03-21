@@ -691,12 +691,221 @@ function SAOrgDetail({ orgId, onClose }) {
                 </div>
               )}
             </section>
-          </div>
+          
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CHANGE 2 — Inside SAOrgDetail, add a "Modules" section after "Integrations"
+//
+// FIND this block (the Integrations section near the bottom of SAOrgDetail's JSX):
+//
+//   {/* Integrations */}
+//   <section className="sa-drawer-section">
+//     <h3>Integrations</h3>
+//     {data.integrations.length === 0 ? ( ... ) : ( ... )}
+//   </section>
+//
+// ADD immediately after it (before the closing </div> of the drawer body):
+// ═════════════════════════════════════════════════════════════════════════════
+
+            {/* Module Provisioning */}
+            <section className="sa-drawer-section">
+              <h3>Module Provisioning</h3>
+              <SAOrgModules orgId={orgId} />
+            </section>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// That's the full SuperAdminView patch.
+// SAOrgModules is a self-contained component — it loads and saves independently
+// and does not require any state changes in SAOrgDetail.
+// ─────────────────────────────────────────────────────────────────────────────
+
+	    </div>
         )}
       </div>
     </div>
   );
 }
+
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CHANGE 1 — NEW COMPONENT: SAOrgModules
+//
+// Paste this as a new function anywhere after the SAOrgDetail function,
+// before SACreateOrg.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const MODULE_DEFS_SA = [
+  {
+    key:   'prospecting',
+    icon:  '🎯',
+    label: 'Prospecting',
+    desc:  'Prospect pipeline, outreach sequences, ICP scoring, sender accounts.',
+  },
+  {
+    key:   'contracts',
+    icon:  '📄',
+    label: 'Contract Lifecycle Management',
+    desc:  'CLM workflow — create contracts, legal review, e-signature, versioning.',
+  },
+  {
+    key:   'handovers',
+    icon:  '🤝',
+    label: 'Sales → Implementation Handover',
+    desc:  'Structured handover workflow on deal close — checklist, stakeholders, commitments.',
+  },
+  {
+    key:   'service',
+    icon:  '🎧',
+    label: 'Customer Support & Service',
+    desc:  'Case management, SLA tiers, playbook-driven workflows, team assignment.',
+  },
+  {
+    key:   'agency',
+    icon:  '🏢',
+    label: 'Agency Client Management',
+    desc:  'Manage client accounts — portals, team scoping, outreach tracking.',
+  },
+];
+
+/**
+ * SAOrgModules — module provisioning panel inside the org detail drawer.
+ *
+ * Shows all five modules. For each:
+ *   - Allowed toggle: controlled by super admin (platform provisioning)
+ *   - Enabled indicator: read-only view of what the org admin has turned on
+ *
+ * Disallowing a module automatically forces its enabled state to false
+ * (enforced on the backend; reflected here immediately in the UI).
+ */
+function SAOrgModules({ orgId }) {
+  const [modules, setModules]   = useState(null);
+  const [loading, setLoading]   = useState(true);
+  const [saving, setSaving]     = useState(null); // key of module being saved
+  const [error, setError]       = useState('');
+  const [success, setSuccess]   = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const r = await apiService.superAdmin.getOrgModules(orgId);
+      setModules(r.data.modules);
+    } catch (e) {
+      setError('Failed to load module settings');
+    } finally {
+      setLoading(false);
+    }
+  }, [orgId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleToggleAllowed = async (moduleKey, newAllowed) => {
+    setSaving(moduleKey);
+    setError('');
+    try {
+      const r = await apiService.superAdmin.updateOrgModules(orgId, { [moduleKey]: newAllowed });
+      setModules(r.data.modules);
+      const label = MODULE_DEFS_SA.find(m => m.key === moduleKey)?.label || moduleKey;
+      setSuccess(`${label} ${newAllowed ? 'provisioned ✓' : 'removed from org'}`);
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to update module');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  if (loading) return <div className="sa-loading" style={{ padding: '12px 0' }}>Loading modules…</div>;
+
+  return (
+    <div>
+      {error   && <div className="sa-alert sa-alert--error" style={{ marginBottom: 12 }}>⚠️ {error}</div>}
+      {success && <div className="sa-alert sa-alert--success" style={{ marginBottom: 12 }}>✅ {success}</div>}
+
+      <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 14, lineHeight: 1.5 }}>
+        <strong>Allowed</strong> controls whether the org can activate a module.
+        Org admins can only turn on modules that are provisioned here.
+        Removing access immediately disables the module for the org.
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {MODULE_DEFS_SA.map(def => {
+          const state      = modules?.[def.key] || { allowed: false, enabled: false };
+          const isSaving   = saving === def.key;
+          const isAllowed  = state.allowed;
+          const isEnabled  = state.enabled;
+
+          return (
+            <div
+              key={def.key}
+              style={{
+                display: 'flex', alignItems: 'flex-start', gap: 12,
+                padding: '12px 14px',
+                borderRadius: 10,
+                border: `1px solid ${isAllowed ? '#d1fae5' : '#e5e7eb'}`,
+                background: isAllowed ? '#f0fdf4' : '#fafafa',
+                transition: 'all 0.15s',
+              }}
+            >
+              {/* Icon + label */}
+              <div style={{ fontSize: 20, marginTop: 1 }}>{def.icon}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#111827', marginBottom: 2 }}>
+                  {def.label}
+                </div>
+                <div style={{ fontSize: 11, color: '#6b7280', lineHeight: 1.4 }}>{def.desc}</div>
+                {/* Enabled indicator — read-only, set by org admin */}
+                <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div
+                    style={{
+                      width: 8, height: 8, borderRadius: '50%',
+                      background: isEnabled ? '#059669' : '#d1d5db',
+                      flexShrink: 0,
+                    }}
+                  />
+                  <span style={{ fontSize: 11, color: isEnabled ? '#059669' : '#9ca3af' }}>
+                    {isEnabled ? 'Active — org has turned this on' : 'Inactive — org has not enabled this'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Allowed toggle */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                <button
+                  disabled={isSaving}
+                  onClick={() => handleToggleAllowed(def.key, !isAllowed)}
+                  title={isAllowed ? 'Remove access' : 'Provision access'}
+                  style={{
+                    position: 'relative', width: 42, height: 24, borderRadius: 12,
+                    border: 'none',
+                    background: isAllowed ? '#059669' : '#d1d5db',
+                    cursor: isSaving ? 'not-allowed' : 'pointer',
+                    opacity: isSaving ? 0.6 : 1,
+                    transition: 'background 0.2s',
+                  }}
+                >
+                  <span style={{
+                    position: 'absolute', top: 4,
+                    left: isAllowed ? 21 : 4,
+                    width: 16, height: 16, borderRadius: '50%',
+                    background: '#fff',
+                    transition: 'left 0.2s',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }} />
+                </button>
+                <span style={{ fontSize: 10, fontWeight: 600, color: isAllowed ? '#059669' : '#9ca3af', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                  {isSaving ? '…' : (isAllowed ? 'Allowed' : 'Locked')}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 
 // ─────────────────────────────────────────────────────────────────
 // CREATE ORG MODAL

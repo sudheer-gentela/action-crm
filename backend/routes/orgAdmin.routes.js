@@ -14,33 +14,66 @@ const adminOnly = requireRole('owner', 'admin');
 
 // ── Org Profile ───────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CHANGE 1 — Replace the existing GET /profile handler with this version.
+// The only addition is the `modules` field at the bottom of the response.
+// ─────────────────────────────────────────────────────────────────────────────
+
 router.get('/profile', adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT id, name, status, plan, max_users, created_at, settings FROM organizations WHERE id = $1`,
       [req.orgId]
     );
-    res.json({ org: result.rows[0] });
+    if (!result.rows.length) {
+      return res.status(404).json({ error: { message: 'Organisation not found' } });
+    }
+
+    const org      = result.rows[0];
+    const settings = org.settings || {};
+    const rawMods  = settings.modules || {};
+
+    const MODULE_KEYS = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
+
+    // Normalize all modules into { allowed, enabled } regardless of legacy shape
+    const modules = {};
+    for (const key of MODULE_KEYS) {
+      const raw = rawMods[key];
+      if (raw === null || raw === undefined) {
+        modules[key] = { allowed: false, enabled: false };
+      } else if (typeof raw === 'object') {
+        modules[key] = { allowed: !!raw.allowed, enabled: !!raw.enabled };
+      } else {
+        // Legacy boolean/string scalar — treat as allowed + enabled
+        const b = raw === true || raw === 'true';
+        modules[key] = { allowed: b, enabled: b };
+      }
+    }
+
+    // Return both the org row AND a normalised modules map at the top level
+    // so OrgAdminView / OAModules can read r.data.modules without digging into settings
+    res.json({ org, modules });
   } catch (err) {
     res.status(500).json({ error: { message: err.message } });
   }
 });
 
-router.patch('/profile', adminOnly, async (req, res) => {
-  try {
-    const { name } = req.body;
-    if (!name?.trim()) {
-      return res.status(400).json({ error: { message: 'Name is required' } });
-    }
-    const result = await pool.query(
-      `UPDATE organizations SET name = $1 WHERE id = $2 RETURNING id, name`,
-      [name.trim(), req.orgId]
-    );
-    res.json({ org: result.rows[0] });
-  } catch (err) {
-    res.status(500).json({ error: { message: err.message } });
-  }
-});
+
+//router.patch('/profile', adminOnly, async (req, res) => {
+//  try {
+//    const { name } = req.body;
+//    if (!name?.trim()) {
+//      return res.status(400).json({ error: { message: 'Name is required' } });
+//    }
+//    const result = await pool.query(
+//      `UPDATE organizations SET name = $1 WHERE id = $2 RETURNING id, name`,
+//      [name.trim(), req.orgId]
+//    );
+//    res.json({ org: result.rows[0] });
+//  } catch (err) {
+//    res.status(500).json({ error: { message: err.message } });
+//  }
+//});
 
 // ── Members ───────────────────────────────────────────────────────────────────
 
@@ -608,51 +641,96 @@ router.delete('/hierarchy/:userId', adminOnly, async (req, res) => {
 
 const requireModule = require('../middleware/requireModule.middleware');
 
-/**
- * PATCH /org/admin/module/prospecting
- * Enable or disable the prospecting module for this org.
- */
-router.patch('/module/prospecting', adminOnly, async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// CHANGE 2 — Replace the existing module toggle handlers
+// (router.patch('/module/prospecting', ...) and router.patch('/module/agency', ...))
+// with this single generic handler that covers all five modules.
+//
+// It enforces:
+//   - Only modules that are `allowed` by the platform can be enabled.
+//   - Disabling always works regardless of allowed status.
+//   - The new object shape { allowed, enabled } is written instead of a scalar.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const requireModule = require('../middleware/requireModule.middleware');
+
+const MODULE_KEYS    = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
+const MODULE_LABELS  = {
+  prospecting: 'Prospecting',
+  contracts:   'Contract Lifecycle Management',
+  handovers:   'Sales → Implementation Handover',
+  service:     'Customer Support & Service',
+  agency:      'Agency Client Management',
+};
+
+// Generic module toggle — replaces the individual per-module routes
+// PATCH /org/admin/module/:moduleName
+router.patch('/module/:moduleName', adminOnly, async (req, res) => {
   try {
+    const { moduleName } = req.params;
+
+    if (!MODULE_KEYS.includes(moduleName)) {
+      return res.status(400).json({ error: { message: `Unknown module: ${moduleName}` } });
+    }
+
     const enabled = req.body.enabled === true || req.body.enabled === 'true';
+    const label   = MODULE_LABELS[moduleName] || moduleName;
+
+    // Read current settings
+    const current = await pool.query(
+      `SELECT settings->'modules'->$2 AS module_val FROM organizations WHERE id = $1`,
+      [req.orgId, moduleName]
+    );
+
+    const raw     = current.rows[0]?.module_val ?? null;
+    let   allowed = false;
+
+    if (raw === null || raw === undefined) {
+      allowed = false;
+    } else if (typeof raw === 'object') {
+      allowed = !!raw.allowed;
+    } else {
+      // Legacy scalar — treat as allowed
+      allowed = raw === true || raw === 'true';
+    }
+
+    // Enforce platform provisioning: org admins cannot enable a module that
+    // the super admin has not provisioned for their org.
+    if (enabled && !allowed) {
+      return res.status(403).json({
+        error: {
+          message: `The ${label} module has not been provisioned for your organisation. Contact support to enable it.`,
+          code: 'MODULE_NOT_ALLOWED',
+        },
+      });
+    }
+
+    // Write the new object shape, preserving the allowed flag
+    const newValue = { allowed, enabled };
+
     await pool.query(
       `UPDATE organizations
-       SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{modules,prospecting}', $2::jsonb, true),
-           updated_at = NOW()
-       WHERE id = $1`,
-      [req.orgId, JSON.stringify(enabled)]
+          SET settings   = jsonb_set(
+                             jsonb_set(COALESCE(settings, '{}'::jsonb), '{modules}', COALESCE(settings->'modules', '{}'::jsonb), true),
+                             $3::text[],
+                             $2::jsonb,
+                             true
+                           ),
+              updated_at = NOW()
+        WHERE id = $1`,
+      [req.orgId, JSON.stringify(newValue), `{modules,${moduleName}}`]
     );
-    requireModule.invalidate(req.orgId, 'prospecting');
-    console.log(`🎯 Prospecting module ${enabled ? 'enabled' : 'disabled'} for org ${req.orgId}`);
-    res.json({ enabled });
+
+    requireModule.invalidate(req.orgId, moduleName);
+    console.log(`🧩 ${label} module ${enabled ? 'enabled' : 'disabled'} for org ${req.orgId}`);
+
+    res.json({ enabled, allowed });
   } catch (err) {
-    console.error('PATCH /org/admin/module/prospecting error:', err);
-    res.status(500).json({ error: { message: 'Failed to update prospecting module' } });
+    console.error(`PATCH /org/admin/module/${req.params.moduleName} error:`, err);
+    res.status(500).json({ error: { message: `Failed to update module` } });
   }
 });
 
-/**
- * PATCH /org/admin/module/agency
- * Enable or disable the agency module for this org.
- */
-router.patch('/module/agency', adminOnly, async (req, res) => {
-  try {
-    const enabled = req.body.enabled === true || req.body.enabled === 'true';
-    await pool.query(
-      `UPDATE organizations
-       SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{modules,agency}', $2::jsonb, true),
-           updated_at = NOW()
-       WHERE id = $1`,
-      [req.orgId, JSON.stringify(enabled)]
-    );
-    requireModule.invalidate(req.orgId, 'agency');
-    console.log(`🏢 Agency module ${enabled ? 'enabled' : 'disabled'} for org ${req.orgId}`);
-    res.json({ enabled });
-  } catch (err) {
-    console.error('PATCH /org/admin/module/agency error:', err);
-    res.status(500).json({ error: { message: 'Failed to update agency module' } });
-  }
-});
 
 // ── Playbook Types (configurable per org) ────────────────────────────────────
 // Stored in organizations.settings->'playbook_types' as a JSON array.
