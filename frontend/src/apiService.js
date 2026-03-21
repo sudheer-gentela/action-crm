@@ -237,10 +237,29 @@ export const apiService = {
     grantAdmin: (data) => api.post('/super/admins', data),
     revokeAdmin: (userId) => api.delete(`/super/admins/${userId}`),
     getAuditLog: (params = {}) => api.get('/super/audit', { params }),
+
     // ── Module provisioning ─────────────────────────────────────────────────
     // modules: { prospecting: true, contracts: false, ... }
     getOrgModules:    (orgId)          => api.get(`/super/orgs/${orgId}/modules`),
     updateOrgModules: (orgId, modules) => api.patch(`/super/orgs/${orgId}/modules`, { modules }),
+
+    // ── Workflow engine (platform-scoped) ───────────────────────────────────
+    getWorkflows:        ()                  => api.get('/super/workflows'),
+    createWorkflow:      (data)              => api.post('/super/workflows', data),
+    updateWorkflow:      (id, data)          => api.patch(`/super/workflows/${id}`, data),
+    deleteWorkflow:      (id)               => api.delete(`/super/workflows/${id}`),
+
+    getWorkflowSteps:    (id)               => api.get(`/super/workflows/${id}/steps`),
+    createWorkflowStep:  (id, data)         => api.post(`/super/workflows/${id}/steps`, data),
+    updateWorkflowStep:  (id, stepId, data) => api.patch(`/super/workflows/${id}/steps/${stepId}`, data),
+    deleteWorkflowStep:  (id, stepId)       => api.delete(`/super/workflows/${id}/steps/${stepId}`),
+
+    getRules:            (params)           => api.get('/super/rules', { params }),
+    createRule:          (data)             => api.post('/super/rules', data),
+    updateRule:          (id, data)         => api.patch(`/super/rules/${id}`, data),
+    deleteRule:          (id)               => api.delete(`/super/rules/${id}`),
+
+    getExecutions:       (params)           => api.get('/super/executions', { params }),
   },
 
   prospects: {
@@ -370,6 +389,29 @@ export const apiService = {
     removeTeamMembership: (userId, teamId) => api.delete(`/org/admin/team-memberships/${userId}/${teamId}`),
     getUserTeamProfile: (userId) => api.get(`/org/admin/team-profile/${userId}`),
     bulkAssignTeams: (assignments) => api.post('/org/admin/team-memberships/bulk', { assignments }),
+
+    // Workflows (org-scoped + inherited platform)
+    getWorkflows:       ()                  => api.get('/org/admin/workflows'),
+    createWorkflow:     (data)              => api.post('/org/admin/workflows', data),
+    updateWorkflow:     (id, data)          => api.patch(`/org/admin/workflows/${id}`, data),
+    deleteWorkflow:     (id)               => api.delete(`/org/admin/workflows/${id}`),
+
+    // Workflow steps
+    getWorkflowSteps:   (id)               => api.get(`/org/admin/workflows/${id}/steps`),
+    createWorkflowStep: (id, data)         => api.post(`/org/admin/workflows/${id}/steps`, data),
+    updateWorkflowStep: (id, stepId, data) => api.patch(`/org/admin/workflows/${id}/steps/${stepId}`, data),
+    deleteWorkflowStep: (id, stepId)       => api.delete(`/org/admin/workflows/${id}/steps/${stepId}`),
+
+    // Standalone rules (org-scoped + inherited platform)
+    getRules:           (params)           => api.get('/org/admin/rules', { params }),
+    createRule:         (data)             => api.post('/org/admin/rules', data),
+    updateRule:         (id, data)         => api.patch(`/org/admin/rules/${id}`, data),
+    deleteRule:         (id)               => api.delete(`/org/admin/rules/${id}`),
+
+    // Execution history + violations
+    getExecutions:      (params)           => api.get('/org/admin/executions', { params }),
+    getViolations:      (params)           => api.get('/org/admin/violations', { params }),
+
   },
 
   products: {

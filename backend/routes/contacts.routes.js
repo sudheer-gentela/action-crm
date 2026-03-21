@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
+const { workflowRulesMiddleware } = require('../middleware/workflowRules.middleware');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -460,9 +461,10 @@ router.get('/:id', async (req, res) => {
 });
 
 // ── POST / — create contact ───────────────────────────────────
-router.post('/', async (req, res) => {
+router.post('/', workflowRulesMiddleware('contact', 'create'), async (req, res) => {
   try {
-    const { accountId, firstName, lastName, email, phone, title, roleType, location, linkedinUrl, notes } = req.body;
+    const p = req.mutatedPayload || req.body;
+    const { accountId, firstName, lastName, email, phone, title, roleType, location, linkedinUrl, notes } = p;
 
     // ── Duplicate prevention ────────────────────────────────────
     // Check 1: same email in this org
@@ -512,7 +514,9 @@ router.post('/', async (req, res) => {
       [req.orgId, accountId, firstName, lastName, email, phone, title, roleType, location, linkedinUrl, notes]
     );
 
-    res.status(201).json({ contact: result.rows[0] });
+    const response = { contact: result.rows[0] };
+    if (req.ruleWarnings?.length > 0) response.warnings = req.ruleWarnings;
+    res.status(201).json(response);
   } catch (error) {
     console.error('Create contact error:', error);
     res.status(500).json({ error: { message: 'Failed to create contact' } });
@@ -520,9 +524,10 @@ router.post('/', async (req, res) => {
 });
 
 // ── PUT /:id — update contact ─────────────────────────────────
-router.put('/:id', async (req, res) => {
+router.put('/:id', workflowRulesMiddleware('contact', 'update'), async (req, res) => {
   try {
-    const { firstName, lastName, email, phone, title, roleType, engagementLevel, location, linkedinUrl, notes, accountId } = req.body;
+    const p = req.mutatedPayload || req.body;
+    const { firstName, lastName, email, phone, title, roleType, engagementLevel, location, linkedinUrl, notes, accountId } = p;
 
     // Convert empty strings to null so COALESCE can fall back to the existing value.
     // To actually clear a field, the frontend should send null explicitly.
@@ -570,7 +575,9 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ error: { message: 'Contact not found' } });
     }
 
-    res.json({ contact: result.rows[0] });
+    const putResponse = { contact: result.rows[0] };
+    if (req.ruleWarnings?.length > 0) putResponse.warnings = req.ruleWarnings;
+    res.json(putResponse);
   } catch (error) {
     console.error('Update contact error:', error);
     res.status(500).json({ error: { message: 'Failed to update contact' } });

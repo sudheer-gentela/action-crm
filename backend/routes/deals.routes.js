@@ -9,6 +9,7 @@ const HandoverService         = require('../services/handover.service');
 const DealContextBuilder      = require('../services/DealContextBuilder');
 const PlaybookActionGenerator = require('../services/PlaybookActionGenerator');
 const ActionWriter            = require('../services/ActionWriter');
+const { workflowRulesMiddleware } = require('../middleware/workflowRules.middleware');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -307,9 +308,10 @@ router.get('/:id/playbook-guide', async (req, res) => {
 });
 
 // ── POST / ────────────────────────────────────────────────────
-router.post('/', async (req, res) => {
+router.post('/', workflowRulesMiddleware('deal', 'create'), async (req, res) => {
   try {
-    const { accountId, name, value, stage, health, expectedCloseDate, probability, notes, playbookId } = req.body;
+    const p = req.mutatedPayload || req.body;
+    const { accountId, name, value, stage, health, expectedCloseDate, probability, notes, playbookId } = p;
 
     let resolvedStage;
     if (stage) {
@@ -351,7 +353,9 @@ router.post('/', async (req, res) => {
       console.error('Error auto-generating actions for new deal:', err)
     );
 
-    res.status(201).json({ deal: newDeal });
+    const response = { deal: newDeal };
+    if (req.ruleWarnings?.length > 0) response.warnings = req.ruleWarnings;
+    res.status(201).json(response);
   } catch (error) {
     console.error('Create deal error:', error);
     if (error.message?.includes('Invalid stage') || error.message?.includes('inactive')) {
@@ -435,9 +439,10 @@ router.post('/bulk', async (req, res) => {
 });
 
 // ── PUT /:id ──────────────────────────────────────────────────
-router.put('/:id', async (req, res) => {
+router.put('/:id', workflowRulesMiddleware('deal', 'update'), async (req, res) => {
   try {
-    const { name, value, stage, health, expectedCloseDate, probability, notes, playbookId } = req.body;
+    const p = req.mutatedPayload || req.body;
+    const { name, value, stage, health, expectedCloseDate, probability, notes, playbookId } = p;
 
     if (stage) {
       await validateStage(req.orgId, stage);
@@ -565,7 +570,9 @@ router.put('/:id', async (req, res) => {
       console.error('Error auto-generating actions for updated deal:', err)
     );
 
-    res.json({ deal: result.rows[0] });
+    const putResponse = { deal: result.rows[0] };
+    if (req.ruleWarnings?.length > 0) putResponse.warnings = req.ruleWarnings;
+    res.json(putResponse);
   } catch (error) {
     console.error('Update deal error:', error);
     if (error.message?.includes('Invalid stage') || error.message?.includes('inactive')) {

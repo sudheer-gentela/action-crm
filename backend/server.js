@@ -228,6 +228,10 @@ app.use('/api/sequences', sequencesRoutes);
 app.use('/api/clients', clientsRoutes);
 app.use('/api/portal',  clientPortalRoutes);
 
+// ─── Workflow Module ───────────────────────────────────
+app.use('/api/super',     require('./routes/workflow.superAdmin.routes'));
+app.use('/api/org/admin', require('./routes/workflow.orgAdmin.routes'));
+
 // ─── Public org context ───────────────────────────────────────
 const authenticateToken   = require('./middleware/auth.middleware');
 const { orgContext }      = require('./middleware/orgContext.middleware');

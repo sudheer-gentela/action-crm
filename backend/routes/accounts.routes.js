@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
+const { workflowRulesMiddleware } = require('../middleware/workflowRules.middleware');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -125,9 +126,10 @@ router.get('/duplicates', async (req, res) => {
 });
 
 // ── POST / — create account (with duplicate prevention) ──────────────────────
-router.post('/', async (req, res) => {
+router.post('/', workflowRulesMiddleware('account', 'create'), async (req, res) => {
   try {
-    const { name, domain, industry, size, location, description } = req.body;
+    const p = req.mutatedPayload || req.body;
+    const { name, domain, industry, size, location, description } = p;
 
     // Prevention: same domain in this org
     if (domain) {
@@ -171,7 +173,9 @@ router.post('/', async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
       [req.orgId, name, domain, industry, size, location, description, req.user.userId]
     );
-    res.status(201).json({ account: result.rows[0] });
+    const response = { account: result.rows[0] };
+    if (req.ruleWarnings?.length > 0) response.warnings = req.ruleWarnings;
+    res.status(201).json(response);
   } catch (error) {
     console.error('Create account error:', error);
     res.status(500).json({ error: { message: 'Failed to create account' } });
@@ -368,9 +372,10 @@ router.post('/merge', async (req, res) => {
 });
 
 // ── PUT /:id — update account ────────────────────────────────────────────────
-router.put('/:id', async (req, res) => {
+router.put('/:id', workflowRulesMiddleware('account', 'update'), async (req, res) => {
   try {
-    const { name, domain, industry, size, location, description } = req.body;
+    const p = req.mutatedPayload || req.body;
+    const { name, domain, industry, size, location, description } = p;
 
     const result = await db.query(
       `UPDATE accounts
@@ -390,7 +395,9 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ error: { message: 'Account not found' } });
     }
 
-    res.json({ account: result.rows[0] });
+    const putResponse = { account: result.rows[0] };
+    if (req.ruleWarnings?.length > 0) putResponse.warnings = req.ruleWarnings;
+    res.json(putResponse);
   } catch (error) {
     console.error('Update account error:', error);
     res.status(500).json({ error: { message: 'Failed to update account' } });
