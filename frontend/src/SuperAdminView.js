@@ -691,21 +691,6 @@ function SAOrgDetail({ orgId, onClose }) {
                 </div>
               )}
             </section>
-          
-
-// ═════════════════════════════════════════════════════════════════════════════
-// CHANGE 2 — Inside SAOrgDetail, add a "Modules" section after "Integrations"
-//
-// FIND this block (the Integrations section near the bottom of SAOrgDetail's JSX):
-//
-//   {/* Integrations */}
-//   <section className="sa-drawer-section">
-//     <h3>Integrations</h3>
-//     {data.integrations.length === 0 ? ( ... ) : ( ... )}
-//   </section>
-//
-// ADD immediately after it (before the closing </div> of the drawer body):
-// ═════════════════════════════════════════════════════════════════════════════
 
             {/* Module Provisioning */}
             <section className="sa-drawer-section">
@@ -713,13 +698,7 @@ function SAOrgDetail({ orgId, onClose }) {
               <SAOrgModules orgId={orgId} />
             </section>
 
-// ─────────────────────────────────────────────────────────────────────────────
-// That's the full SuperAdminView patch.
-// SAOrgModules is a self-contained component — it loads and saves independently
-// and does not require any state changes in SAOrgDetail.
-// ─────────────────────────────────────────────────────────────────────────────
-
-	    </div>
+          </div>
         )}
       </div>
     </div>
