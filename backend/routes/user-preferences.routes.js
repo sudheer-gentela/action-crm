@@ -185,9 +185,9 @@ const PERSONAL_TRANSCRIPT_PROVIDERS = ['fireflies', 'fathom', 'zoom'];
  * Returns which personal transcript tools the rep has connected.
  * Does NOT return secrets — only confirms a secret is set.
  */
-router.get('/transcript-tools', authenticateToken, orgContext, async (req, res) => {
+router.get('/transcript-tools', async (req, res) => {
   try {
-    const result = await pool.query(
+    const result = await db.query(
       `SELECT
          provider,
          webhook_config->>'enabled'                          AS enabled,
@@ -226,7 +226,7 @@ router.get('/transcript-tools', authenticateToken, orgContext, async (req, res) 
  *   enabled         boolean  required
  *   webhook_secret  string   optional — omit to keep existing
  */
-router.patch('/transcript-tools', authenticateToken, orgContext, async (req, res) => {
+router.patch('/transcript-tools', async (req, res) => {
   try {
     const { provider, enabled, webhook_secret } = req.body;
 
@@ -241,7 +241,7 @@ router.patch('/transcript-tools', authenticateToken, orgContext, async (req, res
     }
 
     // Check for existing oauth_tokens row for this provider
-    const existing = await pool.query(
+    const existing = await db.query(
       `SELECT id, webhook_config FROM oauth_tokens
        WHERE user_id = $1 AND org_id = $2 AND provider = $3`,
       [req.user.userId, req.orgId, provider],
@@ -262,7 +262,7 @@ router.patch('/transcript-tools', authenticateToken, orgContext, async (req, res
       // UPDATE webhook_config on existing oauth_tokens row
       // NOTE: access_token, refresh_token, expires_at are intentionally untouched —
       // this route only manages the webhook_config field.
-      await pool.query(
+      await db.query(
         `UPDATE oauth_tokens
          SET webhook_config = $1::jsonb,
              updated_at     = NOW()
@@ -273,7 +273,7 @@ router.patch('/transcript-tools', authenticateToken, orgContext, async (req, res
       // INSERT a minimal row for this provider
       // access_token is set to a placeholder since it's NOT NULL —
       // these personal notetaker rows have no OAuth flow, only a webhook secret.
-      await pool.query(
+      await db.query(
         `INSERT INTO oauth_tokens
            (user_id, org_id, provider, access_token, webhook_config, created_at, updated_at)
          VALUES ($1, $2, $3, 'webhook_only', $4::jsonb, NOW(), NOW())
@@ -297,7 +297,7 @@ router.patch('/transcript-tools', authenticateToken, orgContext, async (req, res
 });
 
 
-module.exports = router;
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI Token Usage — Personal (My Preferences)
@@ -317,3 +317,5 @@ router.get('/me/ai-usage', async (req, res) => {
     res.status(500).json({ error: { message: 'Failed to load AI usage data' } });
   }
 });
+
+module.exports = router;
