@@ -669,10 +669,7 @@ function getColumnValue(action, colKey) {
 
 // ── Actions Table Component ─────────────────────────────────────────────────
 
-function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsnooze }) {
-  const [visibleCols, setVisibleCols] = useState(() =>
-    ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.key)
-  );
+function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsnooze, visibleCols, setVisibleCols }) {
   const [sortKey, setSortKey] = useState('due');
   const [sortDir, setSortDir] = useState('asc');
   const [colFilters, setColFilters] = useState({});
@@ -1878,6 +1875,9 @@ export default function ActionsView({ openActionId, onActionOpened }) {
   const [scope, setScope] = useState('mine');   // 'mine' | 'team' | 'org'
   const actionSource = 'all'; // simplified — column filters handle source filtering
   const [viewLayout, setViewLayout] = useState('table'); // 'table' | 'cards'
+  const [visibleCols, setVisibleCols] = useState(() =>
+    ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.key)
+  );
   const [hasTeam, setHasTeam] = useState(false);
 
   // ── STRAP state ────────────────────────────────────────────────
@@ -2611,6 +2611,8 @@ export default function ActionsView({ openActionId, onActionOpened }) {
               onStart={handleStart}
               onSnoozeClick={setSnoozeAction}
               onUnsnooze={handleUnsnooze}
+              visibleCols={visibleCols}
+              setVisibleCols={setVisibleCols}
             />
           ) : (
             <div className="av-grid">
