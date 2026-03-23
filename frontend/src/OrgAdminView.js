@@ -533,7 +533,7 @@ export default function OrgAdminView() {
             {tab === 'workflows'        && <OAWorkflows />}
             {tab === 'email-settings'   && <OAEmailSettings />}
             {tab === 'team-dimensions'  && <OATeamDimensions />}
-            {(tab === 'integrations' || tab === 'integrations-overview') && <OAIntegrations />}
+            {(tab === 'integrations' || tab === 'integrations-overview') && <OAIntegrations orgId={orgId} />}
             {tab === 'settings'         && <OASettings />}
           </div>
         </div>
@@ -4509,7 +4509,7 @@ function OADuplicateSettings() {
 
 // ── Integrations (org-level) ──────────────────────────────────────────────────
 
-function OAIntegrations() {
+function OAIntegrations({ orgId }) {
   const [subTab, setSubTab] = useState('email-calendar');
   const [integrations, setIntegrations] = useState([]);
   const [outreachLimits, setOutreachLimits] = useState(null);
