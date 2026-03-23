@@ -898,7 +898,7 @@ router.get('/unified', async (req, res) => {
         a.completion_evidence, a.context, a.suggested_action, a.metadata,
         a.snoozed_until, a.snooze_reason, a.snooze_duration,
         a.deal_id, a.contact_id, a.user_id, a.health_param,
-        a.contract_id,
+        a.contract_id, a.source_module,
         ct.title        AS contract_title,
         ct.contract_type AS contract_type,
         ct.status       AS contract_status,
@@ -1423,6 +1423,7 @@ function mapUnifiedAction(row, source) {
     snoozeDuration:          row.snooze_duration,
     createdAt:               row.created_at,
     updatedAt:               row.updated_at,
+    sourceModule:            deriveModule(row),
     deal: row.deal_id ? {
       id:        row.deal_id,
       name:      row.deal_name,
