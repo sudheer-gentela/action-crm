@@ -364,6 +364,48 @@ function applyOperator(op, actual, expected) {
   }
 }
 
+// ── extractKeywords ───────────────────────────────────────────────────────────
+// Derives a simple keyword array from a play title for action tagging.
+// Strips common stop words and short tokens, returns lowercase unique words.
+function extractKeywords(title) {
+  if (!title || typeof title !== 'string') return [];
+  const STOP_WORDS = new Set([
+    'a','an','the','and','or','but','in','on','at','to','for','of','with',
+    'by','from','up','about','into','through','this','that','these','those',
+    'is','are','was','were','be','been','being','have','has','had','do','does',
+    'did','will','would','could','should','may','might','shall','can','need',
+    'your','their','our','its','we','you','they','it','he','she','i','me',
+  ]);
+  return [...new Set(
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !STOP_WORDS.has(w))
+  )];
+}
+
+// ── requiresExternalEvidence ──────────────────────────────────────────────────
+// Returns true for action types / titles that involve external communication
+// (email, meeting, call) and therefore require evidence of completion.
+function requiresExternalEvidence(actionType, title) {
+  const EXTERNAL_TYPES = new Set([
+    'email_send', 'email', 'follow_up', 'meeting_schedule', 'meeting',
+  ]);
+  if (EXTERNAL_TYPES.has(actionType)) return true;
+  const t = (title || '').toLowerCase();
+  return (
+    t.includes('email')     ||
+    t.includes('send')      ||
+    t.includes('call')      ||
+    t.includes('meeting')   ||
+    t.includes('schedule')  ||
+    t.includes('reach out') ||
+    t.includes('follow up') ||
+    t.includes('linkedin')
+  );
+}
+
 // ── buildDueAt ───────────────────────────────────────────────────────────────
 function buildDueAt(dueOffsetDays) {
   const days = parseInt(dueOffsetDays) || 3;
@@ -514,4 +556,6 @@ module.exports = {
   firePlaybookPlays,
   fireForEntity,
   evaluateConditions,
+  extractKeywords,
+  requiresExternalEvidence,
 };
