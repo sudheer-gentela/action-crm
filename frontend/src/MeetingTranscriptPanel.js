@@ -128,25 +128,30 @@ export default function MeetingTranscriptPanel({ meeting, contacts, onRefresh })
   };
 
   // ── Inline attendance status update ──────────────────────────
-  const handleStatusChange = async (contactId, newStatus) => {
-    setSavingStatus(contactId);
+  const handleStatusChange = async (att, newStatus) => {
+    const personId   = att.contact_id || att.prospect_id;
+    const personType = att.person_type || (att.contact_id ? 'contact' : 'prospect');
+
+    setSavingStatus(personId);
 
     // Optimistic update
     setAttendees(prev =>
-      prev.map(a => a.contact_id === contactId
+      prev.map(a => (a.contact_id || a.prospect_id) === personId
         ? { ...a, attendance_status: newStatus, source: 'manual' }
         : a
       )
     );
 
     try {
-      await fetch(`${API}/meetings/${meeting.id}/attendees/${contactId}`, {
-        method:  'PATCH',
-        headers,
-        body:    JSON.stringify({ attendance_status: newStatus, source: 'manual' }),
-      });
+      await fetch(
+        `${API}/meetings/${meeting.id}/attendees/${personId}?type=${personType}`,
+        {
+          method:  'PATCH',
+          headers,
+          body:    JSON.stringify({ attendance_status: newStatus }),
+        }
+      );
     } catch (err) {
-      // Revert on failure
       load();
     } finally {
       setSavingStatus(null);
@@ -186,26 +191,28 @@ export default function MeetingTranscriptPanel({ meeting, contacts, onRefresh })
         <div style={S.subsection}>
           <div style={S.subsectionTitle}>Attendees</div>
           {attendees.map(att => {
-            const cfg     = STATUS_CONFIG[att.attendance_status] || STATUS_CONFIG.unknown;
-            const isSaving = savingStatus === att.contact_id;
+            const personId  = att.contact_id || att.prospect_id;
+            const cfg       = STATUS_CONFIG[att.attendance_status] || STATUS_CONFIG.unknown;
+            const isSaving  = savingStatus === personId;
             return (
-              <div key={att.contact_id} style={S.attendeeRow}>
+              <div key={personId} style={S.attendeeRow}>
                 <div style={S.attendeeInfo}>
-                  <span style={S.attendeeIcon}>👤</span>
+                  <span style={S.attendeeIcon}>{att.person_type === 'prospect' ? '🎯' : '👤'}</span>
                   <div>
                     <div style={S.attendeeName}>{att.name}</div>
-                    {att.title && <div style={S.attendeeMeta}>{att.title}</div>}
+                    {att.title && <div style={S.attendeeMeta}>
+                      {att.title}
+                      {att.person_type === 'prospect' && <span style={{ color: '#6366f1', marginLeft: 4, fontSize: 10, fontWeight: 600 }}>PROSPECT</span>}
+                    </div>}
                   </div>
                 </div>
                 <div style={S.attendeeRight}>
-                  {/* Source badge — show if manually set */}
                   {att.source === 'manual' && (
                     <span style={S.manualBadge} title="Manually set">✎</span>
                   )}
-                  {/* Inline status selector */}
                   <select
                     value={att.attendance_status || 'unknown'}
-                    onChange={e => handleStatusChange(att.contact_id, e.target.value)}
+                    onChange={e => handleStatusChange(att, e.target.value)}
                     disabled={isSaving}
                     style={{
                       ...S.statusSelect,

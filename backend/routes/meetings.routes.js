@@ -254,5 +254,94 @@ router.patch('/:id/attendees/:contactId', async (req, res) => {
   }
 });
 
+// ── GET /:id/attendees ─────────────────────────────────────────────────────────
+router.get('/:id/attendees', async (req, res) => {
+  try {
+    const meetingCheck = await db.query(
+      `SELECT id FROM meetings WHERE id=$1 AND org_id=$2 AND user_id=$3 AND deleted_at IS NULL`,
+      [req.params.id, req.orgId, req.user.userId],
+    );
+    if (meetingCheck.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Meeting not found' } });
+    }
+
+    // Return both contact-based and prospect-based attendees as a unified list
+    const result = await db.query(
+      `SELECT
+         ma.contact_id,
+         ma.prospect_id,
+         ma.attendance_status,
+         ma.source,
+         COALESCE(c.first_name || ' ' || c.last_name, p.first_name || ' ' || p.last_name) AS name,
+         COALESCE(c.email, p.email)   AS email,
+         COALESCE(c.title, p.title)   AS title,
+         CASE WHEN ma.contact_id IS NOT NULL THEN 'contact' ELSE 'prospect' END AS person_type
+       FROM meeting_attendees ma
+       LEFT JOIN contacts  c ON c.id = ma.contact_id
+       LEFT JOIN prospects p ON p.id = ma.prospect_id
+       WHERE ma.meeting_id = $1
+       ORDER BY
+         CASE ma.attendance_status
+           WHEN 'attended' THEN 1 WHEN 'invited' THEN 2
+           WHEN 'no_show'  THEN 3 ELSE 4 END,
+         name`,
+      [req.params.id],
+    );
+
+    res.json({ attendees: result.rows });
+  } catch (error) {
+    console.error('GET meeting attendees error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch attendees' } });
+  }
+});
+
+// ── PATCH /:id/attendees/:contactId ───────────────────────────────────────────
+// Works for both contacts (contactId param) and prospects (use prospect_id query param)
+router.patch('/:id/attendees/:personId', async (req, res) => {
+  try {
+    const { attendance_status } = req.body;
+    const personType = req.query.type === 'prospect' ? 'prospect' : 'contact';
+
+    const VALID_STATUSES = ['invited', 'attended', 'no_show', 'unknown'];
+    if (!attendance_status || !VALID_STATUSES.includes(attendance_status)) {
+      return res.status(400).json({
+        error: { message: `attendance_status must be one of: ${VALID_STATUSES.join(', ')}` },
+      });
+    }
+
+    const meetingCheck = await db.query(
+      `SELECT id FROM meetings WHERE id=$1 AND org_id=$2 AND user_id=$3 AND deleted_at IS NULL`,
+      [req.params.id, req.orgId, req.user.userId],
+    );
+    if (meetingCheck.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Meeting not found' } });
+    }
+
+    if (personType === 'contact') {
+      await db.query(
+        `INSERT INTO meeting_attendees (meeting_id, contact_id, org_id, attendance_status, source)
+         VALUES ($1,$2,$3,$4,'manual')
+         ON CONFLICT (meeting_id, contact_id) WHERE contact_id IS NOT NULL
+         DO UPDATE SET attendance_status=$4, source='manual'`,
+        [req.params.id, req.params.personId, req.orgId, attendance_status],
+      );
+    } else {
+      await db.query(
+        `INSERT INTO meeting_attendees (meeting_id, prospect_id, org_id, attendance_status, source)
+         VALUES ($1,$2,$3,$4,'manual')
+         ON CONFLICT (meeting_id, prospect_id) WHERE prospect_id IS NOT NULL
+         DO UPDATE SET attendance_status=$4, source='manual'`,
+        [req.params.id, req.params.personId, req.orgId, attendance_status],
+      );
+    }
+
+    console.log(`👤 Attendance override: meeting ${req.params.id} ${personType} ${req.params.personId} → ${attendance_status}`);
+    res.json({ success: true, attendance_status, source: 'manual' });
+  } catch (error) {
+    console.error('PATCH meeting attendee error:', error);
+    res.status(500).json({ error: { message: 'Failed to update attendance' } });
+  }
+});
+
 
 module.exports = router;
