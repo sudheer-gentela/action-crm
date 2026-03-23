@@ -796,4 +796,68 @@ router.get('/audit', async (req, res) => {
   }
 });
 
+
+
+```js
+// ── Platform Settings ─────────────────────────────────────────────────────────
+// Reads and writes platform_settings table rows.
+// Each row is a named config key (e.g. 'email_filter') with a JSONB value.
+
+/**
+ * GET /super/platform-settings/:key
+ * Read a platform setting by key.
+ */
+router.get('/platform-settings/:key', requireSuperAdmin, async (req, res) => {
+  try {
+    const { key } = req.params;
+    const result = await pool.query(
+      `SELECT key, value, updated_by, updated_at FROM platform_settings WHERE key = $1`,
+      [key]
+    );
+    if (result.rows.length === 0) {
+      // Return empty value rather than 404 — caller treats missing as blank
+      return res.json({ key, value: {}, updated_by: null, updated_at: null });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(`GET /super/platform-settings/${req.params.key} error:`, err);
+    res.status(500).json({ error: { message: 'Failed to load platform setting' } });
+  }
+});
+
+/**
+ * PATCH /super/platform-settings/:key
+ * Write (upsert) a platform setting by key.
+ * Body: { value: <any JSONB-serialisable object> }
+ */
+router.patch('/platform-settings/:key', requireSuperAdmin, async (req, res) => {
+  try {
+    const { key } = req.params;
+    const { value } = req.body;
+
+    if (value === undefined || value === null) {
+      return res.status(400).json({ error: { message: 'value is required' } });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO platform_settings (key, value, updated_by, updated_at)
+       VALUES ($1, $2::jsonb, $3, NOW())
+       ON CONFLICT (key) DO UPDATE
+         SET value      = $2::jsonb,
+             updated_by = $3,
+             updated_at = NOW()
+       RETURNING key, value, updated_by, updated_at`,
+      [key, JSON.stringify(value), req.user?.userId || null]
+    );
+
+    console.log(`🛠️ Platform setting '${key}' updated by user ${req.user?.userId}`);
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(`PATCH /super/platform-settings/${req.params.key} error:`, err);
+    res.status(500).json({ error: { message: 'Failed to save platform setting' } });
+  }
+});
+
+
+
 module.exports = router;

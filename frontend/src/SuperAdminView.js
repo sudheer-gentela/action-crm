@@ -10,11 +10,12 @@ import ExecutionLog from './ExecutionLog';
 // ═══════════════════════════════════════════════════════════════════
 
 const SA_TABS = [
-  { id: 'overview',   label: 'Overview',     icon: '📊' },
-  { id: 'orgs',       label: 'Organisations', icon: '🏢' },
-  { id: 'admins',     label: 'Super Admins',  icon: '🔐' },
-  { id: 'audit',      label: 'Audit Log',     icon: '📋' },
-  { id: 'workflows',  label: 'Workflows',     icon: '⚙️'  },
+  { id: 'overview',          label: 'Overview',          icon: '📊' },
+  { id: 'orgs',              label: 'Organisations',     icon: '🏢' },
+  { id: 'admins',            label: 'Super Admins',      icon: '🔐' },
+  { id: 'audit',             label: 'Audit Log',         icon: '📋' },
+  { id: 'workflows',         label: 'Workflows',         icon: '⚙️'  },
+  { id: 'platform-settings', label: 'Platform Settings', icon: '🛠️'  },
 ];
 
 export default function SuperAdminView() {
@@ -43,11 +44,12 @@ export default function SuperAdminView() {
       </div>
 
       <div className="sa-body">
-        {tab === 'overview'  && <SAOverview />}
-        {tab === 'orgs'      && <SAOrgs />}
-        {tab === 'admins'    && <SAAdmins />}
-        {tab === 'audit'     && <SAAuditLog />}
-        {tab === 'workflows' && <SAWorkflows />}
+        {tab === 'overview'          && <SAOverview />}
+        {tab === 'orgs'              && <SAOrgs />}
+        {tab === 'admins'            && <SAAdmins />}
+        {tab === 'audit'             && <SAAuditLog />}
+        {tab === 'workflows'         && <SAWorkflows />}
+        {tab === 'platform-settings' && <SAPlatformSettings />}
       </div>
     </div>
   );
@@ -1208,6 +1210,283 @@ function SAWorkflows() {
 
       {subTab === 'canvas' && <WorkflowCanvas scope="super" />}
       {subTab === 'log'    && <ExecutionLog   scope="super" />}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLATFORM SETTINGS TAB
+// Manages platform-wide configuration stored in the platform_settings table.
+// Super admins edit here; org admins see read-only platform defaults in their
+// own OrgAdmin → Data Quality → Email Settings page.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Tag list editor (reused from OAEmailSettings pattern) ─────────────────────
+
+function SATagListEditor({ items, onAdd, onRemove, placeholder, disabled }) {
+  const [input, setInput] = React.useState('');
+
+  const handleAdd = () => {
+    const val = input.trim().toLowerCase();
+    if (!val || items.includes(val)) { setInput(''); return; }
+    onAdd(val);
+    setInput('');
+  };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8, minHeight: 32 }}>
+        {items.length === 0 && (
+          <span style={{ fontSize: 12, color: '#9ca3af', fontStyle: 'italic', lineHeight: '28px' }}>
+            No entries — org admins must configure their own
+          </span>
+        )}
+        {items.map(item => (
+          <span key={item} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            fontSize: 12, padding: '3px 8px', borderRadius: 5,
+            background: '#f3f4f6', border: '1px solid #e5e7eb', color: '#374151',
+          }}>
+            {item}
+            {!disabled && (
+              <button
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', fontSize: 14, lineHeight: 1, padding: 0 }}
+                onClick={() => onRemove(item)}
+              >×</button>
+            )}
+          </span>
+        ))}
+      </div>
+      {!disabled && (
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input
+            style={{ flex: 1, padding: '6px 10px', borderRadius: 7, border: '1px solid #d1d5db', fontSize: 12 }}
+            placeholder={placeholder}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleAdd()}
+          />
+          <button
+            style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid #d1d5db', background: '#fff', fontSize: 12, cursor: 'pointer', color: '#374151' }}
+            onClick={handleAdd}
+          >
+            Add
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main SAPlatformSettings component ─────────────────────────────────────────
+
+function SAPlatformSettings() {
+  const [subTab, setSubTab]         = React.useState('email-filter');
+  return (
+    <div className="sa-panel">
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: '0 0 4px', fontSize: 17, fontWeight: 700, color: '#111827' }}>
+          🛠️ Platform Settings
+        </h2>
+        <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
+          Platform-wide configuration that cascades to all organisations.
+          Org admins can add their own settings on top but cannot remove platform defaults.
+        </p>
+      </div>
+
+      {/* Sub-tab bar */}
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 24 }}>
+        {[
+          { id: 'email-filter', label: '📧 Email Filter Defaults' },
+        ].map(t => (
+          <button
+            key={t.id}
+            onClick={() => setSubTab(t.id)}
+            style={{
+              padding: '7px 16px',
+              borderRadius: '7px 7px 0 0',
+              border: '1px solid transparent',
+              borderBottom: 'none',
+              background: subTab === t.id ? '#fff' : 'transparent',
+              borderColor: subTab === t.id ? '#e5e7eb' : 'transparent',
+              borderBottomColor: subTab === t.id ? '#fff' : 'transparent',
+              fontSize: 13,
+              fontWeight: subTab === t.id ? 600 : 500,
+              color: subTab === t.id ? '#111827' : '#6b7280',
+              cursor: 'pointer',
+              marginBottom: -1,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {subTab === 'email-filter' && <SAEmailFilterSettings />}
+    </div>
+  );
+}
+
+// ── SAEmailFilterSettings ─────────────────────────────────────────────────────
+
+function SAEmailFilterSettings() {
+  const [domains,   setDomains]   = React.useState([]);
+  const [patterns,  setPatterns]  = React.useState([]);
+  const [loading,   setLoading]   = React.useState(true);
+  const [saving,    setSaving]    = React.useState(false);
+  const [dirty,     setDirty]     = React.useState(false);
+  const [error,     setError]     = React.useState('');
+  const [success,   setSuccess]   = React.useState('');
+
+  React.useEffect(() => {
+    setLoading(true);
+    apiService.superAdmin.getPlatformSetting('email_filter')
+      .then(r => {
+        const val = r.data.value || {};
+        setDomains(val.blocked_domains        || []);
+        setPatterns(val.blocked_local_patterns || []);
+        setDirty(false);
+      })
+      .catch(e => setError(e.response?.data?.error?.message || 'Failed to load platform email filter'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true); setError(''); setSuccess('');
+    try {
+      await apiService.superAdmin.updatePlatformSetting('email_filter', {
+        blocked_domains:        domains,
+        blocked_local_patterns: patterns,
+      });
+      setSuccess('Platform email filter saved ✓ — will apply on next email sync for all orgs');
+      setTimeout(() => setSuccess(''), 5000);
+      setDirty(false);
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to save');
+    } finally { setSaving(false); }
+  };
+
+  const addDomain  = d => { setDomains(prev => [...prev, d]);   setDirty(true); };
+  const rmDomain   = d => { setDomains(prev => prev.filter(x => x !== d)); setDirty(true); };
+  const addPattern = p => { setPatterns(prev => [...prev, p]);  setDirty(true); };
+  const rmPattern  = p => { setPatterns(prev => prev.filter(x => x !== p)); setDirty(true); };
+
+  const clearAll = () => {
+    if (!window.confirm('Clear all platform defaults? Org admins will need to configure their own filters from scratch.')) return;
+    setDomains([]);
+    setPatterns([]);
+    setDirty(true);
+  };
+
+  if (loading) return <div className="sa-loading">Loading platform email filter…</div>;
+
+  return (
+    <div>
+      {/* Warning banner */}
+      <div className="sa-warning-box" style={{ marginBottom: 20 }}>
+        <strong>⚠️ Platform-wide effect</strong> — Changes here apply to all organisations on the next email sync.
+        Leaving both lists empty means org admins must configure their own filters from scratch.
+        Org-specific additions are always merged on top of these defaults.
+      </div>
+
+      {error   && <div className="sa-alert sa-alert--error">⚠️ {error}<button onClick={() => setError('')}>✕</button></div>}
+      {success && <div className="sa-alert sa-alert--success">✅ {success}</div>}
+
+      {/* Blocked domains */}
+      <div className="sa-card" style={{ marginBottom: 16 }}>
+        <h3 style={{ marginBottom: 4 }}>Blocked domains</h3>
+        <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 16 }}>
+          Emails from these domains are dropped before matching. Applies to the sender address
+          for received emails, and the recipient for sent emails.
+        </p>
+        <SATagListEditor
+          items={domains}
+          onAdd={addDomain}
+          onRemove={rmDomain}
+          placeholder="e.g. microsoft.com or mail.onedrive.com"
+        />
+      </div>
+
+      {/* Blocked sender patterns */}
+      <div className="sa-card" style={{ marginBottom: 20 }}>
+        <h3 style={{ marginBottom: 4 }}>Blocked sender patterns</h3>
+        <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 16 }}>
+          Emails where the local part (before @) contains any of these patterns are dropped.
+          E.g. adding <code style={{ background: '#f3f4f6', padding: '1px 5px', borderRadius: 4, fontSize: 12 }}>noreply</code> blocks
+          noreply@anycompany.com, no-reply@anycompany.com etc.
+        </p>
+        <SATagListEditor
+          items={patterns}
+          onAdd={addPattern}
+          onRemove={rmPattern}
+          placeholder="e.g. noreply or mailer-daemon"
+        />
+      </div>
+
+      {/* Actions */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <button
+          className="sa-btn-primary"
+          onClick={handleSave}
+          disabled={saving || !dirty}
+        >
+          {saving ? 'Saving…' : 'Save platform defaults'}
+        </button>
+        <button
+          className="sa-btn-secondary"
+          onClick={() => {
+            apiService.superAdmin.getPlatformSetting('email_filter').then(r => {
+              const val = r.data.value || {};
+              setDomains(val.blocked_domains        || []);
+              setPatterns(val.blocked_local_patterns || []);
+              setDirty(false);
+            });
+          }}
+          disabled={saving || !dirty}
+        >
+          Discard changes
+        </button>
+        <button
+          style={{ marginLeft: 'auto', padding: '7px 14px', borderRadius: 7, border: '1px solid #fca5a5', background: '#fff', fontSize: 13, color: '#dc2626', cursor: 'pointer' }}
+          onClick={clearAll}
+          disabled={saving}
+        >
+          Clear all defaults
+        </button>
+      </div>
+
+      {/* How it stacks */}
+      <div style={{ marginTop: 24, padding: '14px 16px', background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 9 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+          How filtering stacks
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 0, fontSize: 12, color: '#374151' }}>
+          {[
+            { label: 'Platform defaults', sub: 'set here', color: '#6366f1', bg: '#eef2ff' },
+            { label: '+', sub: '', color: '#9ca3af', bg: 'transparent' },
+            { label: 'Org additions', sub: 'set by org admin', color: '#059669', bg: '#f0fdf4' },
+            { label: '=', sub: '', color: '#9ca3af', bg: 'transparent' },
+            { label: 'Effective filter', sub: 'applied at sync time', color: '#374151', bg: '#f3f4f6' },
+          ].map((item, i) => (
+            <div key={i} style={{
+              padding: item.bg === 'transparent' ? '0 8px' : '8px 14px',
+              borderRadius: 7,
+              background: item.bg,
+              textAlign: 'center',
+            }}>
+              {item.bg !== 'transparent' && (
+                <>
+                  <div style={{ fontWeight: 600, color: item.color, fontSize: 12 }}>{item.label}</div>
+                  <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>{item.sub}</div>
+                </>
+              )}
+              {item.bg === 'transparent' && (
+                <span style={{ fontSize: 18, color: '#9ca3af', fontWeight: 300 }}>{item.label}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

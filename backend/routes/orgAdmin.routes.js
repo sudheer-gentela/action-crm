@@ -1070,7 +1070,7 @@ router.patch('/prospecting/ai-config', adminOnly, async (req, res) => {
  * Returns the org's email filter config merged with platform defaults.
  */
 router.get('/email-settings', adminOnly, async (req, res) => {
-  try {
+/**  try {
     const PLATFORM_DEFAULTS = {
       blocked_domains: [
         'accountprotection.microsoft.com',
@@ -1088,6 +1088,20 @@ router.get('/email-settings', adminOnly, async (req, res) => {
         'mailer-daemon', 'postmaster', 'bounce', 'notifications', 'unsubscribe',
       ],
     };
+*/
+    // Load platform defaults from DB instead of hardcoding them.
+    // Falls back to empty if platform_settings table not yet migrated.
+    let PLATFORM_DEFAULTS = { blocked_domains: [], blocked_local_patterns: [] };
+    try {
+      const psResult = await pool.query(
+        `SELECT value FROM platform_settings WHERE key = 'email_filter'`
+      );
+      if (psResult.rows.length > 0) {
+        PLATFORM_DEFAULTS = psResult.rows[0].value || PLATFORM_DEFAULTS;
+      }
+    } catch (e) {
+      console.warn('platform_settings unavailable in email-settings route:', e.message);
+    }
 
     const result = await pool.query(
       `SELECT settings->'email_filter' AS email_filter FROM organizations WHERE id = $1`,

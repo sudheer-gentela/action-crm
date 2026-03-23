@@ -39,10 +39,9 @@ const { runNightlyAudit } = require('../services/auditWorker.service');
 // Email filter — platform defaults + org-specific overrides
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Platform-level defaults. Every org starts with these.
-// Org admins can add their own entries on top via OrgAdmin → Data Quality →
-// Email Settings, stored in organizations.settings.email_filter.
-const PLATFORM_DEFAULTS = {
+// Hardcoded fallback — used only if the platform_settings table row is missing.
+// Super admins manage the live version via SuperAdminView → Platform Settings.
+const PLATFORM_DEFAULTS_FALLBACK = {
   blocked_domains: [
     'accountprotection.microsoft.com',
     'communication.microsoft.com',
@@ -51,31 +50,61 @@ const PLATFORM_DEFAULTS = {
     'engage.microsoft.com',
     'account.microsoft.com',
     'mail.onedrive.com',
-    'microsoft.com',      // covers azure-noreply@microsoft.com etc.
-    'googlemail.com',     // system bounce addresses
+    'microsoft.com',
+    'googlemail.com',
   ],
   blocked_local_patterns: [
-    'noreply',
-    'no-reply',
-    'donotreply',
-    'do-not-reply',
-    'mailer-daemon',
-    'postmaster',
-    'bounce',
-    'notifications',
-    'unsubscribe',
+    'noreply', 'no-reply', 'donotreply', 'do-not-reply',
+    'mailer-daemon', 'postmaster', 'bounce', 'notifications', 'unsubscribe',
   ],
 };
 
 /**
- * Load the org's email filter config (platform defaults merged with org overrides).
- * Reads organizations.settings.email_filter once per sync run.
+ * Load platform-level email filter defaults from the platform_settings table.
+ * Falls back to PLATFORM_DEFAULTS_FALLBACK if the row doesn't exist yet.
+ * Called once per triggerSync run — result cached in filterCache.
  *
- * @param {object} client   - pg client
- * @param {number} orgId
+ * @param {object} client  - pg client
  * @returns {{ blocked_domains: string[], blocked_local_patterns: string[] }}
  */
-async function getOrgEmailFilter(client, orgId) {
+async function getPlatformEmailFilter(client) {
+  try {
+    const result = await client.query(
+      `SELECT value FROM platform_settings WHERE key = 'email_filter'`
+    );
+    if (result.rows.length > 0) {
+      const val = result.rows[0].value || {};
+      return {
+        blocked_domains:        (val.blocked_domains        || []).map(d => d.toLowerCase()),
+        blocked_local_patterns: (val.blocked_local_patterns || []).map(p => p.toLowerCase()),
+      };
+    }
+  } catch (err) {
+    // platform_settings table may not exist yet (pre-migration) — use fallback
+    console.warn('[emailFilter] platform_settings unavailable, using fallback:', err.message);
+  }
+  return {
+    blocked_domains:        PLATFORM_DEFAULTS_FALLBACK.blocked_domains.map(d => d.toLowerCase()),
+    blocked_local_patterns: PLATFORM_DEFAULTS_FALLBACK.blocked_local_patterns.map(p => p.toLowerCase()),
+  };
+}
+
+/**
+ * Load the effective email filter for an org.
+ * Merges platform defaults (from platform_settings table) with
+ * org-specific additions (from organizations.settings.email_filter).
+ * Called once per triggerSync run — result cached in filterCache.
+ *
+ * If super admin leaves platform defaults empty, org admins configure everything.
+ * If org has no additions, only platform defaults apply.
+ *
+ * @param {object} client         - pg client
+ * @param {number} orgId
+ * @param {{ blocked_domains, blocked_local_patterns }} platformFilter
+ *   Pass in the already-loaded platform filter to avoid a second DB read.
+ * @returns {{ blocked_domains: string[], blocked_local_patterns: string[] }}
+ */
+async function getOrgEmailFilter(client, orgId, platformFilter) {
   const result = await client.query(
     `SELECT settings->'email_filter' AS email_filter FROM organizations WHERE id = $1`,
     [orgId]
@@ -84,13 +113,13 @@ async function getOrgEmailFilter(client, orgId) {
 
   return {
     blocked_domains: [
-      ...PLATFORM_DEFAULTS.blocked_domains,
-      ...(orgFilter.blocked_domains || []),
-    ].map(d => d.toLowerCase()),
+      ...(platformFilter.blocked_domains        || []),
+      ...(orgFilter.blocked_domains             || []).map(d => d.toLowerCase()),
+    ].filter((d, i, arr) => arr.indexOf(d) === i),  // dedupe
     blocked_local_patterns: [
-      ...PLATFORM_DEFAULTS.blocked_local_patterns,
-      ...(orgFilter.blocked_local_patterns || []),
-    ].map(p => p.toLowerCase()),
+      ...(platformFilter.blocked_local_patterns || []),
+      ...(orgFilter.blocked_local_patterns      || []).map(p => p.toLowerCase()),
+    ].filter((p, i, arr) => arr.indexOf(p) === i),
   };
 }
 
@@ -785,9 +814,12 @@ async function triggerSync(userId, orgId, type, provider) {
     const result = await UnifiedEmailProvider.fetchEmails(userId, provider, fetchOptions);
     console.log('Found ' + result.emails.length + ' ' + provider + ' emails for user ' + userId);
 
-    // Load org filter config + internal domains once per sync run (not per email)
+    // Load platform defaults + org overrides + internal domains once per sync run.
+    // platformFilter is loaded first so getOrgEmailFilter can merge without
+    // a second DB call to platform_settings.
+    const platformFilter = await getPlatformEmailFilter(client);
     const filterCache = {
-      filter:          await getOrgEmailFilter(client, orgId),
+      filter:          await getOrgEmailFilter(client, orgId, platformFilter),
       internalDomains: await getOrgInternalDomains(client, orgId),
     };
     if (config.system.debug) {

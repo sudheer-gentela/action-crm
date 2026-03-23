@@ -260,6 +260,11 @@ export const apiService = {
     deleteRule:          (id)               => api.delete(`/super/rules/${id}`),
 
     getExecutions:       (params)           => api.get('/super/executions', { params }),
+
+    // Platform settings (super admin only)
+    getPlatformSetting:    (key)        => api.get(`/super/platform-settings/${key}`),
+    updatePlatformSetting: (key, value) => api.patch(`/super/platform-settings/${key}`, { value }),
+
   },
 
   prospects: {
