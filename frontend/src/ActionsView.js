@@ -599,6 +599,7 @@ const ALL_COLUMNS = [
   { key: 'account',  label: 'Account',  width: 130, defaultVisible: false, sortable: true,  filterable: true  },
   { key: 'stage',    label: 'Stage',    width: 100, defaultVisible: false, sortable: true,  filterable: true  },
   { key: 'internal', label: 'Type',     width: 80,  defaultVisible: false, sortable: true,  filterable: true  },
+  { key: 'module',   label: 'Module',   width: 110, defaultVisible: false, sortable: true,  filterable: true  },
   { key: 'actions',  label: '',         width: 60,  defaultVisible: true,  sortable: false, filterable: false },
 ];
 
@@ -618,6 +619,16 @@ const SOURCE_META = {
   ai_generated:    { label: '🤖 AI',      bg: '#f0fdf4', color: '#15803d', border: '#bbf7d0' },
   playbook:        { label: '📘 Play',    bg: '#eff6ff', color: '#2563eb', border: '#bfdbfe' },
   auto_generated:  { label: '⚙️ Rules',   bg: '#fefce8', color: '#a16207', border: '#fde68a' },
+};
+
+const MODULE_META = {
+  deals:       { icon: '💼', label: 'Deals',       color: '#4f46e5', bg: '#eef2ff' },
+  prospecting: { icon: '🎯', label: 'Prospecting', color: '#0F9D8E', bg: '#f0fdfa' },
+  contracts:   { icon: '📄', label: 'Contracts',   color: '#7c3aed', bg: '#f5f3ff' },
+  handovers:   { icon: '🤝', label: 'Handover',    color: '#0369a1', bg: '#f0f9ff' },
+  service:     { icon: '🎧', label: 'Service',     color: '#065f46', bg: '#d1fae5' },
+  agency:      { icon: '🏢', label: 'Agency',      color: '#92400e', bg: '#fef3c7' },
+  general:     { icon: '⚡', label: 'General',     color: '#6b7280', bg: '#f3f4f6' },
 };
 
 const STATUS_META = {
@@ -651,6 +662,7 @@ function getColumnValue(action, colKey) {
     case 'account':  return action.deal?.account || action.prospect?.companyName || '';
     case 'stage':    return action.deal?.stage || action.prospect?.stage || '';
     case 'internal': return action.isInternal ? 'Internal' : 'External';
+    case 'module':   return MODULE_META[action.sourceModule]?.label || 'General';
     default:         return '';
   }
 }
@@ -873,13 +885,22 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
                       </span>
                     </div>
                   );
-                case 'title':
+                case 'title': {
+                  const mod = MODULE_META[action.sourceModule] || MODULE_META.general;
                   return (
                     <div key={col.key} className="av-table-cell av-table-cell--title av-table-cell--clickable" onClick={() => navToAction(action)} title="Start this action">
                       {action.isInternal && <span className="av-table-internal-icon">🏠</span>}
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 8,
+                        background: mod.bg, color: mod.color,
+                        marginRight: 6, flexShrink: 0, whiteSpace: 'nowrap',
+                      }}>
+                        {mod.icon} {mod.label}
+                      </span>
                       <span className={isComplete ? 'av-table-strikethrough' : ''}>{action.title}</span>
                     </div>
                   );
+                }
                 case 'deal':
                   return (
                     <div key={col.key} className={`av-table-cell av-table-cell--truncate ${action.deal ? 'av-table-cell--clickable' : ''}`} onClick={() => action.deal && navToDeal(action)} title={action.deal ? 'Open deal' : ''}>
@@ -951,6 +972,16 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
                       {action.isInternal ? '🏠 Internal' : '🌐 External'}
                     </div>
                   );
+                case 'module': {
+                  const m = MODULE_META[action.sourceModule] || MODULE_META.general;
+                  return (
+                    <div key={col.key} className="av-table-cell">
+                      <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 8, background: m.bg, color: m.color }}>
+                        {m.icon} {m.label}
+                      </span>
+                    </div>
+                  );
+                }
                 case 'actions':
                   return (
                     <div key={col.key} className="av-table-cell av-table-cell--actions">
@@ -1578,6 +1609,18 @@ function FilterBar({ filters, onChange, options, scope }) {
         <option value="1w">Generated: Last 1 week</option>
       </select>
 
+      {/* Module */}
+      <select
+        className="av-filter-select"
+        value={filters.sourceModule}
+        onChange={e => onChange('sourceModule', e.target.value)}
+      >
+        <option value="">All modules</option>
+        {Object.entries(MODULE_META).map(([key, cfg]) => (
+          <option key={key} value={key}>{cfg.icon} {cfg.label}</option>
+        ))}
+      </select>
+
       {/* Clear */}
       {hasFilters && (
         <button className="av-filter-clear" onClick={() => onChange('__reset__', null)}>
@@ -1603,6 +1646,7 @@ const DEFAULT_FILTERS = {
   status:          '',
   dealStage:       '',
   generatedWithin: '',   // '' = All Time | '12h' | '1d' | '1w'
+  sourceModule:    '',
 };
 
 // ── Main Component ────────────────────────────────────────────────────────────
@@ -1980,6 +2024,9 @@ export default function ActionsView({ openActionId, onActionOpened }) {
 
       const data = await apiFetch(`/actions/unified?${params.toString()}`);
       let rows = data.actions || [];
+
+      // Client-side module filter
+      if (activeFilters.sourceModule) rows = rows.filter(a => a.sourceModule === activeFilters.sourceModule);
 
       // Client-side source filter
       if (activeFilters.source === 'ai')       rows = rows.filter(a => a.source === 'ai_generated');

@@ -16,7 +16,26 @@ const StrapActionGenerator = require('../services/StrapActionGenerator');
 router.use(authenticateToken);
 router.use(orgContext);
 
-// ── Shared row mapper (unchanged) ────────────────────────────
+// ── Module derivation ─────────────────────────────────────────
+function deriveModule(row) {
+  if (row.source_module) return row.source_module;
+  if (row.contract_id)   return 'contracts';
+  if (row.prospect_id)   return 'prospecting';
+  if (row.source_rule && (
+    row.source_rule.includes('handoff') ||
+    row.source_rule.includes('kickoff') ||
+    row.source_rule.includes('stakeholder_gap') ||
+    row.source_rule.includes('milestone') ||
+    row.source_rule.includes('adoption') ||
+    row.source_rule.includes('escalation')
+  )) return 'handovers';
+  if (row.deal_id)    return 'deals';
+  if (row.case_id)    return 'service';
+  if (row.client_id)  return 'agency';
+  return 'general';
+}
+
+// ── Shared row mapper ─────────────────────────────────────────
 function mapActionRow(row) {
   return {
     id:                      row.id,
@@ -47,6 +66,7 @@ function mapActionRow(row) {
     snoozeDuration:          row.snooze_duration,
     createdAt:               row.created_at,
     updatedAt:               row.updated_at,
+    sourceModule:            deriveModule(row),
     deal: row.deal_id ? {
       id:        row.deal_id,
       name:      row.deal_name,
@@ -101,7 +121,9 @@ const BASE_QUERY = `
     ev.sent_at      AS evidence_sent_at,
     ct.title        AS contract_title,
     ct.contract_type AS contract_type,
-    ct.status       AS contract_status
+    ct.status       AS contract_status,
+    a.source_module,
+    a.prospect_id
   FROM actions a
   LEFT JOIN deals d      ON a.deal_id     = d.id    AND d.org_id   = a.org_id
   LEFT JOIN users u      ON d.owner_id    = u.id
@@ -1018,12 +1040,13 @@ router.get('/:id', async (req, res) => {
 // ── POST / — create manual action ────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const { dealId, contactId, contractId, type, priority, title, description, context, dueDate, isInternal } = req.body;
+    const { dealId, contactId, contractId, prospectId, type, priority, title, description, context, dueDate, isInternal } = req.body;
+    const manualModule = contractId ? 'contracts' : prospectId ? 'prospecting' : dealId ? 'deals' : 'general';
     const result = await db.query(
       `INSERT INTO actions
-         (org_id, user_id, deal_id, contact_id, contract_id, type, action_type, priority,
-          title, description, context, due_date, is_internal, status, source)
-       VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,'yet_to_start','manual')
+         (org_id, user_id, deal_id, contact_id, contract_id, prospect_id, type, action_type, priority,
+          title, description, context, due_date, is_internal, status, source, source_module)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11,$12,$13,'yet_to_start','manual',$14)
        RETURNING *`,
       [
         req.orgId,
@@ -1031,6 +1054,7 @@ router.post('/', async (req, res) => {
         dealId      || null,
         contactId   || null,
         contractId  || null,
+        prospectId  || null,
         type        || 'follow_up',
         priority    || 'medium',
         title,
@@ -1038,6 +1062,7 @@ router.post('/', async (req, res) => {
         context     || null,
         dueDate     || null,
         !!isInternal,
+        manualModule,
       ]
     );
     res.status(201).json({ action: result.rows[0] });

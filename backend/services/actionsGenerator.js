@@ -179,6 +179,22 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
 
 // ── DB insert helper ──────────────────────────────────────────────────────────
 
+function deriveModuleFromAction(action) {
+  if (action.source_module) return action.source_module;
+  if (action.contract_id)   return 'contracts';
+  if (action.prospect_id)   return 'prospecting';
+  if (action.source_rule && (
+    action.source_rule.includes('handoff') ||
+    action.source_rule.includes('kickoff') ||
+    action.source_rule.includes('stakeholder_gap') ||
+    action.source_rule.includes('milestone') ||
+    action.source_rule.includes('adoption') ||
+    action.source_rule.includes('escalation')
+  )) return 'handovers';
+  if (action.deal_id) return 'deals';
+  return 'general';
+}
+
 async function insertAction(action, userId, orgId) {
   const internal  = isInternalAction(action);
   const source    = action.source || 'auto_generated';
@@ -192,6 +208,7 @@ async function insertAction(action, userId, orgId) {
        keywords, deal_stage, requires_external_evidence,
        is_internal, next_step, playbook_play_id,
        playbook_id, playbook_name,
+       source_module,
        status, created_at
      ) VALUES (
        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
@@ -199,6 +216,7 @@ async function insertAction(action, userId, orgId) {
        $18,$19,$20,
        $21,$22,$23,
        $24,$25,
+       $26,
        'yet_to_start',NOW()
      ) RETURNING id`,
     [
@@ -227,6 +245,7 @@ async function insertAction(action, userId, orgId) {
       action.playbook_play_id           || null,
       action.playbook_id                || null,
       action.playbook_name              || null,
+      deriveModuleFromAction(action),
     ]
   );
   return result.rows[0]?.id || null;
