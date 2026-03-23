@@ -1070,25 +1070,7 @@ router.patch('/prospecting/ai-config', adminOnly, async (req, res) => {
  * Returns the org's email filter config merged with platform defaults.
  */
 router.get('/email-settings', adminOnly, async (req, res) => {
-/**  try {
-    const PLATFORM_DEFAULTS = {
-      blocked_domains: [
-        'accountprotection.microsoft.com',
-        'communication.microsoft.com',
-        'promomail.microsoft.com',
-        'infoemails.microsoft.com',
-        'engage.microsoft.com',
-        'account.microsoft.com',
-        'mail.onedrive.com',
-        'microsoft.com',
-        'googlemail.com',
-      ],
-      blocked_local_patterns: [
-        'noreply', 'no-reply', 'donotreply', 'do-not-reply',
-        'mailer-daemon', 'postmaster', 'bounce', 'notifications', 'unsubscribe',
-      ],
-    };
-*/
+  try {
     // Load platform defaults from DB instead of hardcoding them.
     // Falls back to empty if platform_settings table not yet migrated.
     let PLATFORM_DEFAULTS = { blocked_domains: [], blocked_local_patterns: [] };
