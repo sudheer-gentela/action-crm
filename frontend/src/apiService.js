@@ -418,6 +418,8 @@ export const apiService = {
     deriveAccountDomains:          ()           => api.post('/org/admin/email-settings/derive-account-domains'),
     applyAccountDomains:           (updates)    => api.patch('/org/admin/email-settings/apply-account-domains', { updates }),
 
+    getEmailFilterLog:   (params = {}) => api.get('/org/admin/email-filter-log', { params }),
+    purgeEmailFilterLog: ()             => api.delete('/org/admin/email-filter-log'),
   },
 
   products: {

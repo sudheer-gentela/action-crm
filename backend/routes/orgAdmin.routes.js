@@ -1258,6 +1258,73 @@ router.patch('/email-settings/apply-account-domains', adminOnly, async (req, res
   }
 });
 
+/**
+ * GET /org/admin/email-filter-log
+ * Paginated log of emails dropped by the sync filter.
+ * Query params: ?reason=&provider=&page=&limit=
+ */
+router.get('/email-filter-log', adminOnly, async (req, res) => {
+  try {
+    const page     = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit    = Math.min(100, parseInt(req.query.limit) || 25);
+    const offset   = (page - 1) * limit;
+    const reason   = req.query.reason   || null;
+    const provider = req.query.provider || null;
+
+    const conditions = ['org_id = $1'];
+    const params     = [req.orgId];
+    let   p          = 2;
+
+    if (reason)   { conditions.push(`reason = $${p++}`);   params.push(reason);   }
+    if (provider) { conditions.push(`provider = $${p++}`); params.push(provider); }
+
+    const where = conditions.join(' AND ');
+
+    const [rows, countRow] = await Promise.all([
+      pool.query(
+        `SELECT id, from_address, to_address, subject, reason, provider, sync_date, external_id
+         FROM email_filter_log
+         WHERE ${where}
+         ORDER BY sync_date DESC
+         LIMIT $${p} OFFSET $${p + 1}`,
+        [...params, limit, offset]
+      ),
+      pool.query(
+        `SELECT COUNT(*) AS total FROM email_filter_log WHERE ${where}`,
+        params
+      ),
+    ]);
+
+    res.json({
+      logs:  rows.rows,
+      total: parseInt(countRow.rows[0].total),
+      page,
+      limit,
+      pages: Math.ceil(parseInt(countRow.rows[0].total) / limit),
+    });
+  } catch (err) {
+    console.error('GET /org/admin/email-filter-log error:', err);
+    res.status(500).json({ error: { message: 'Failed to load filter log' } });
+  }
+});
+
+/**
+ * DELETE /org/admin/email-filter-log
+ * Purge all filter log entries for this org (admin only).
+ */
+router.delete('/email-filter-log', adminOnly, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `DELETE FROM email_filter_log WHERE org_id = $1`,
+      [req.orgId]
+    );
+    console.log(`🧹 Email filter log manually purged for org ${req.orgId}: ${result.rowCount} rows`);
+    res.json({ success: true, deleted: result.rowCount });
+  } catch (err) {
+    console.error('DELETE /org/admin/email-filter-log error:', err);
+    res.status(500).json({ error: { message: 'Failed to purge filter log' } });
+  }
+});
 
 module.exports = router;
 

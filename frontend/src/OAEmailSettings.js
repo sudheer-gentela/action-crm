@@ -102,9 +102,152 @@ function PlatformDefaultsPanel({ defaults }) {
 }
 
 
+// ─── Filter Log tab ───────────────────────────────────────────────────────────
+
+const REASON_META = {
+  automated_sender:          { label: 'Automated sender',        color: '#dc2626', bg: '#fef2f2' },
+  internal_no_crm_reference: { label: 'Internal — no CRM match', color: '#d97706', bg: '#fffbeb' },
+  no_crm_match:              { label: 'No CRM match',            color: '#6b7280', bg: '#f3f4f6' },
+};
+
+function FilterLogTab() {
+  const [logs,     setLogs]     = useState([]);
+  const [total,    setTotal]    = useState(0);
+  const [pages,    setPages]    = useState(1);
+  const [page,     setPage]     = useState(1);
+  const [reason,   setReason]   = useState('');
+  const [provider, setProvider] = useState('');
+  const [loading,  setLoading]  = useState(true);
+  const [purging,  setPurging]  = useState(false);
+  const [error,    setError]    = useState('');
+  const [success,  setSuccess]  = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const r = await apiService.orgAdmin.getEmailFilterLog({
+        page, limit: 25,
+        ...(reason   ? { reason }   : {}),
+        ...(provider ? { provider } : {}),
+      });
+      setLogs(r.data.logs   || []);
+      setTotal(r.data.total || 0);
+      setPages(r.data.pages || 1);
+    } catch { setError('Failed to load filter log'); }
+    finally { setLoading(false); }
+  }, [page, reason, provider]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleFilterChange = (setter) => (e) => { setter(e.target.value); setPage(1); };
+
+  const handlePurge = async () => {
+    if (!window.confirm('Purge all filter log entries for this organisation? This cannot be undone.')) return;
+    setPurging(true);
+    try {
+      const r = await apiService.orgAdmin.purgeEmailFilterLog();
+      setSuccess(`Purged ${r.data.deleted} log entries ✓`);
+      setTimeout(() => setSuccess(''), 3000);
+      load();
+    } catch { setError('Failed to purge log'); }
+    finally { setPurging(false); }
+  };
+
+  return (
+    <div>
+      {error   && <div style={styles.errLine}>⚠️ {error}</div>}
+      {success && <div style={styles.successLine}>✓ {success}</div>}
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+        <select style={styles.filterSelect} value={reason} onChange={handleFilterChange(setReason)}>
+          <option value="">All reasons</option>
+          <option value="automated_sender">Automated sender</option>
+          <option value="internal_no_crm_reference">Internal — no CRM match</option>
+          <option value="no_crm_match">No CRM match</option>
+        </select>
+        <select style={styles.filterSelect} value={provider} onChange={handleFilterChange(setProvider)}>
+          <option value="">All providers</option>
+          <option value="outlook">Outlook</option>
+          <option value="gmail">Gmail</option>
+        </select>
+        <span style={{ fontSize: 12, color: '#9ca3af', marginLeft: 4 }}>
+          {total.toLocaleString()} filtered email{total !== 1 ? 's' : ''} in last 30 days
+        </span>
+        <button
+          style={{ ...styles.cancelBtn, marginLeft: 'auto', color: '#dc2626', borderColor: '#fca5a5' }}
+          onClick={handlePurge}
+          disabled={purging || total === 0}
+        >
+          {purging ? 'Purging…' : 'Purge log'}
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading…</div>
+      ) : logs.length === 0 ? (
+        <div style={{ padding: '32px 16px', textAlign: 'center', color: '#9ca3af' }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>No filtered emails</div>
+          <div style={{ fontSize: 12, marginTop: 4 }}>
+            {reason || provider ? 'No entries match this filter.' : 'Filter log is empty — all synced emails passed through.'}
+          </div>
+        </div>
+      ) : (
+        <>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ borderBottom: '2px solid #e5e7eb' }}>
+                  {['Date', 'From', 'Subject', 'Reason', 'Provider'].map(h => (
+                    <th key={h} style={{ padding: '6px 10px', textAlign: 'left', color: '#6b7280', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {logs.map(log => {
+                  const meta = REASON_META[log.reason] || { label: log.reason, color: '#6b7280', bg: '#f3f4f6' };
+                  return (
+                    <tr key={log.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                      <td style={{ padding: '7px 10px', color: '#6b7280', whiteSpace: 'nowrap' }}>
+                        {new Date(log.sync_date).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
+                      </td>
+                      <td style={{ padding: '7px 10px', color: '#374151', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {log.from_address || '—'}
+                      </td>
+                      <td style={{ padding: '7px 10px', color: '#374151', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {log.subject || <span style={{ color: '#9ca3af', fontStyle: 'italic' }}>(no subject)</span>}
+                      </td>
+                      <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: meta.color, background: meta.bg, borderRadius: 5, padding: '2px 7px' }}>
+                          {meta.label}
+                        </span>
+                      </td>
+                      <td style={{ padding: '7px 10px', color: '#9ca3af', textTransform: 'capitalize' }}>
+                        {log.provider || '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginTop: 14 }}>
+            <button style={styles.pageBtn} disabled={page === 1} onClick={() => setPage(p => p - 1)}>← Prev</button>
+            <span style={{ fontSize: 12, color: '#6b7280' }}>Page {page} of {pages}</span>
+            <button style={styles.pageBtn} disabled={page >= pages} onClick={() => setPage(p => p + 1)}>Next →</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function OAEmailSettings() {
+  const [activeTab, setActiveTab] = useState('settings');
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
@@ -153,8 +296,44 @@ export default function OAEmailSettings() {
 
   if (loading) return <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading email settings…</div>;
 
+  const TABS = [
+    { id: 'settings', label: '⚙️ Filter Settings' },
+    { id: 'log',      label: '📋 Filter Log'      },
+  ];
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+      {/* Tab bar */}
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 20 }}>
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setActiveTab(t.id)}
+            style={{
+              padding: '7px 16px',
+              borderRadius: '7px 7px 0 0',
+              border: '1px solid transparent',
+              borderBottom: 'none',
+              background: activeTab === t.id ? '#fff' : 'transparent',
+              borderColor: activeTab === t.id ? '#e5e7eb' : 'transparent',
+              borderBottomColor: activeTab === t.id ? '#fff' : 'transparent',
+              fontSize: 13,
+              fontWeight: activeTab === t.id ? 600 : 500,
+              color: activeTab === t.id ? '#111827' : '#6b7280',
+              cursor: 'pointer',
+              marginBottom: -1,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Filter Log tab */}
+      {activeTab === 'log' && <FilterLogTab />}
+
+      {/* Settings tab */}
+      {activeTab === 'settings' && <>
       {error   && <div style={styles.errLine}>⚠️ {error}</div>}
       {success && <div style={styles.successLine}>✓ {success}</div>}
 
@@ -248,6 +427,7 @@ export default function OAEmailSettings() {
       {data?.account_domain_coverage && (
         <AccountDomainPanelWithCoverage coverage={data.account_domain_coverage} />
       )}
+      </>}
     </div>
   );
 }
@@ -511,5 +691,22 @@ const styles = {
     borderRadius: 7,
     cursor: 'pointer',
     fontSize: 12,
+  },
+  filterSelect: {
+    padding: '6px 10px',
+    borderRadius: 7,
+    border: '1px solid #d1d5db',
+    fontSize: 12,
+    background: '#fff',
+    color: '#374151',
+  },
+  pageBtn: {
+    padding: '5px 12px',
+    borderRadius: 6,
+    border: '1px solid #e5e7eb',
+    background: '#fff',
+    fontSize: 12,
+    color: '#374151',
+    cursor: 'pointer',
   },
 };

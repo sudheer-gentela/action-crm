@@ -267,6 +267,38 @@ async function findProspectAssociation(client, orgId, allAddresses) {
  * Store email to database with deduplication.
  * Accepts normalized email shape from UnifiedEmailProvider.
  */
+
+/**
+ * Log a filtered (dropped) email to email_filter_log for audit visibility.
+ * Non-fatal — a logging failure never blocks the sync.
+ *
+ * @param {object} client
+ * @param {number} orgId
+ * @param {number} userId
+ * @param {object} email     normalized email shape
+ * @param {string} reason    'automated_sender' | 'internal_no_crm_reference' | 'no_crm_match'
+ * @param {string} provider  'outlook' | 'gmail'
+ */
+async function logFilteredEmail(client, orgId, userId, email, reason, provider) {
+  try {
+    const fromAddress = email.from?.address || null;
+    const toAddress   = (email.toRecipients?.[0]?.address) || null;
+    const subject     = email.subject     || null;
+    const externalId  = email.id          || null;
+
+    await client.query(
+      `INSERT INTO email_filter_log
+         (org_id, user_id, sync_date, from_address, to_address, subject, reason, provider, external_id)
+       VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7, $8)
+       ON CONFLICT DO NOTHING`,
+      [orgId, userId, fromAddress, toAddress, subject, reason, provider, externalId]
+    );
+  } catch (err) {
+    // Non-fatal — log failure must never crash the sync
+    console.warn('[emailFilter] Failed to write filter log:', err.message);
+  }
+}
+
 async function storeEmailToDatabase(client, userId, orgId, email, userEmail, provider, filterCache) {
   // filterCache = { filter, internalDomains } — loaded once per triggerSync call
   // and passed in to avoid repeated DB reads per email.
@@ -282,6 +314,7 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail, pro
   // any DB work. Uses org-specific blocklist merged with platform defaults.
   if (!shouldStoreEmail(fromAddress, toAddresses, direction, filterCache.filter)) {
     if (config.system.debug) console.log('Gate1-drop (automated sender):', fromAddress, email.subject);
+    await logFilteredEmail(client, orgId, userId, email, 'automated_sender', provider);
     return { skipped: true, reason: 'automated_sender' };
   }
 
@@ -322,6 +355,7 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail, pro
     const match = await matchSubjectToCrmRecord(client, orgId, email.subject);
     if (!match.dealId && !match.accountId) {
       if (config.system.debug) console.log('Gate2-drop (internal, no CRM reference):', email.subject);
+      await logFilteredEmail(client, orgId, userId, email, 'internal_no_crm_reference', provider);
       return { skipped: true, reason: 'internal_no_crm_reference' };
     }
     // Store with the matched deal/account, no contact
@@ -343,12 +377,23 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail, pro
   );
 
   if (associations.contactId || associations.dealId) {
-    // Matched via contact/deal — store with full associations
+    // Find secondary matches — other deals that also involve these contacts
+    const secondaryMatches = await findSecondaryMatches(
+      client, userId, orgId,
+      // Re-derive all matched contactIds from the full address list
+      (await client.query(
+        `SELECT id FROM contacts WHERE org_id = $1 AND LOWER(email) = ANY($2::text[]) AND deleted_at IS NULL`,
+        [orgId, externalAddresses]
+      )).rows.map(r => r.id),
+      associations.dealId
+    );
+
     return storeEmailRow(client, {
       orgId, userId, provider, direction, email,
       fromAddress, toAddresses, ccAddresses,
       dealId: associations.dealId, contactId: associations.contactId,
       prospectId: null, accountId: null,
+      secondaryMatches,
       tagSource: associations.dealId ? 'auto' : null,
       taggedAt: associations.dealId ? new Date() : null,
       taggedBy: associations.dealId ? userId : null,
@@ -381,6 +426,7 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail, pro
 
   // No match found — drop
   if (config.system.debug) console.log('Gate3-drop (no CRM match):', fromAddress, email.subject);
+  await logFilteredEmail(client, orgId, userId, email, 'no_crm_match', provider);
   return { skipped: true, reason: 'no_crm_match' };
 }
 
@@ -392,6 +438,7 @@ async function storeEmailRow(client, {
   orgId, userId, provider, direction, email,
   fromAddress, toAddresses, ccAddresses,
   dealId, contactId, prospectId, accountId,
+  secondaryMatches = [],
   tagSource, taggedAt, taggedBy,
 }) {
   const insertResult = await client.query(
@@ -415,12 +462,15 @@ async function storeEmailRow(client, {
       email.receivedDateTime,
       email.id,
       JSON.stringify({
-        conversationId: email.conversationId,
-        importance:     email.importance,
-        hasAttachments: email.hasAttachments,
-        isRead:         email.isRead,
-        categories:     email.categories,
+        conversationId:    email.conversationId,
+        importance:        email.importance,
+        hasAttachments:    email.hasAttachments,
+        isRead:            email.isRead,
+        categories:        email.categories,
         matched_account_id: accountId || undefined,
+        // Secondary deals/contacts that also match this email.
+        // Used by DealEmailHistory to show this email on multiple deal timelines.
+        secondary_matches: secondaryMatches.length > 0 ? secondaryMatches : undefined,
       }),
       email.conversationId || null,
       provider,
@@ -562,7 +612,7 @@ async function findEmailAssociations(client, userId, orgId, fromAddress, toAddre
          )
        ORDER BY
          CASE WHEN d.owner_id = $3 THEN 0 ELSE 1 END,
-         d.created_at DESC
+         d.updated_at DESC
        LIMIT 1`,
       [contactIds, orgId, userId]
     );
@@ -601,7 +651,7 @@ async function findEmailAssociations(client, userId, orgId, fromAddress, toAddre
          )
        ORDER BY
          CASE WHEN d.owner_id = $3 THEN 0 ELSE 1 END,
-         d.created_at DESC
+         d.updated_at DESC
        LIMIT 1`,
       [orgId, accountIds, userId]
     );
@@ -613,6 +663,68 @@ async function findEmailAssociations(client, userId, orgId, fromAddress, toAddre
 
   return { contactId, dealId };
 }
+
+/**
+ * Find secondary deal/contact matches for an email.
+ * Called after the primary match is found to identify additional deals
+ * that should also see this email. Results stored in external_data.secondary_matches.
+ *
+ * Finds all active deals linked to any of the matched contacts, excluding
+ * the primary dealId already assigned.
+ *
+ * @param {object}   client
+ * @param {number}   userId
+ * @param {number}   orgId
+ * @param {number[]} contactIds   all matched contact ids (not just the primary)
+ * @param {number|null} primaryDealId  exclude this from secondary results
+ * @returns {Promise<Array<{ dealId, contactId, dealName }>>}
+ */
+async function findSecondaryMatches(client, userId, orgId, contactIds, primaryDealId) {
+  if (!contactIds.length) return [];
+
+  const result = await client.query(
+    `SELECT DISTINCT
+       d.id                                       AS deal_id,
+       d.name                                     AS deal_name,
+       dc.contact_id,
+       c.email                                    AS contact_email,
+       c.first_name || ' ' || c.last_name         AS contact_name
+     FROM deal_contacts dc
+     JOIN deals d   ON d.id  = dc.deal_id
+     JOIN contacts c ON c.id = dc.contact_id
+     LEFT JOIN pipeline_stages ps
+       ON ps.org_id = d.org_id AND ps.pipeline = 'sales' AND ps.key = d.stage
+     WHERE dc.contact_id = ANY($1::int[])
+       AND d.org_id      = $2
+       AND d.deleted_at  IS NULL
+       AND ($3::int IS NULL OR d.id != $3)
+       AND (
+         CASE
+           WHEN ps.id IS NOT NULL THEN ps.is_terminal = false
+           ELSE d.stage NOT IN ('closed_won', 'closed_lost')
+         END
+       )
+       AND (
+         d.owner_id = $4
+         OR d.id IN (
+           SELECT deal_id FROM deal_team_members
+           WHERE user_id = $4 AND org_id = $2
+         )
+       )
+     ORDER BY d.updated_at DESC
+     LIMIT 10`,
+    [contactIds, orgId, primaryDealId, userId]
+  );
+
+  return result.rows.map(r => ({
+    dealId:       r.deal_id,
+    dealName:     r.deal_name,
+    contactId:    r.contact_id,
+    contactEmail: r.contact_email,
+    contactName:  r.contact_name,
+  }));
+}
+
 
 /**
  * Trigger sync for a user.
@@ -869,8 +981,25 @@ function startScheduler() {
       .catch(err => console.error('❌ Workflow audit error:', err.message));
   }, { timezone: 'UTC' });
 
+  // ── Email filter log purge — nightly at 03:30 UTC ─────────────────────────
+  // Deletes email_filter_log rows older than 30 days to keep the table lean.
+  // Offset 30 min from the audit run to avoid DB contention.
+  cron.schedule('30 3 * * *', async () => {
+    try {
+      const result = await pool.query(
+        `DELETE FROM email_filter_log WHERE sync_date < NOW() - INTERVAL '30 days'`
+      );
+      if (result.rowCount > 0) {
+        console.log(`🧹 Email filter log purged: ${result.rowCount} rows older than 30 days`);
+      }
+    } catch (err) {
+      console.error('❌ Email filter log purge error:', err.message);
+    }
+  }, { timezone: 'UTC' });
+
   console.log('✅ CLM action scheduler started (nightly 02:00 UTC)');
   console.log('✅ Workflow audit scheduler started (nightly 03:00 UTC)');
+  console.log('✅ Email filter log purge started (nightly 03:30 UTC)');
 }
 
 module.exports = {
