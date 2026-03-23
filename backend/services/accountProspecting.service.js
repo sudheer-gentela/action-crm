@@ -54,7 +54,7 @@ class AccountProspectingService {
       `SELECT d.*, ds.name AS stage_name, ds.is_terminal,
               u.first_name AS owner_first_name, u.last_name AS owner_last_name
        FROM deals d
-       LEFT JOIN deal_stages ds ON ds.org_id = d.org_id AND ds.key = d.stage
+       LEFT JOIN pipeline_stages ds ON ds.org_id = d.org_id AND ds.pipeline = 'sales' AND ds.key = d.stage
        LEFT JOIN users u ON d.owner_id = u.id
        WHERE d.account_id = $1 AND d.org_id = $2
        ORDER BY d.created_at DESC`,

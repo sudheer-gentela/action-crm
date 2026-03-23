@@ -289,7 +289,7 @@ class ActionsGenerator {
         db.query(`
           SELECT d.*, ds.is_terminal, ds.stage_type AS stage_type_from_db
           FROM deals d
-          LEFT JOIN deal_stages ds ON ds.org_id = d.org_id AND ds.key = d.stage
+          LEFT JOIN pipeline_stages ds ON ds.org_id = d.org_id AND ds.pipeline = 'sales' AND ds.key = d.stage
           WHERE d.deleted_at IS NULL
         `),
         db.query('SELECT * FROM contacts  WHERE deleted_at IS NULL'),
@@ -390,7 +390,7 @@ class ActionsGenerator {
       const dealResult = await db.query(`
         SELECT d.*, ds.is_terminal
         FROM deals d
-        LEFT JOIN deal_stages ds ON ds.org_id = d.org_id AND ds.key = d.stage
+        LEFT JOIN pipeline_stages ds ON ds.org_id = d.org_id AND ds.pipeline = 'sales' AND ds.key = d.stage
         WHERE d.id = $1
       `, [dealId]);
 

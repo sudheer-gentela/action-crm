@@ -526,8 +526,8 @@ class PlaybookPlayService {
 
     // Get the deal's current stage
     const dealResult = await db.query(
-      `SELECT ds.key AS stage_key
-       FROM deals d JOIN deal_stages ds ON ds.id = d.stage_id AND ds.org_id = d.org_id
+      `SELECT d.stage AS stage_key
+       FROM deals d
        WHERE d.id = $1 AND d.org_id = $2`,
       [dealId, orgId]
     );
