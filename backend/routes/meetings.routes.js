@@ -161,4 +161,98 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// ── GET /:id/attendees ────────────────────────────────────────────────────────
+// Returns attendees for a meeting with attendance_status and source.
+// Used by MeetingTranscriptPanel to show the inline status selectors.
+router.get('/:id/attendees', async (req, res) => {
+  try {
+    // Verify meeting belongs to this user/org
+    const meetingCheck = await db.query(
+      `SELECT id FROM meetings
+       WHERE id = $1 AND org_id = $2 AND user_id = $3 AND deleted_at IS NULL`,
+      [req.params.id, req.orgId, req.user.userId]
+    );
+
+    if (meetingCheck.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Meeting not found' } });
+    }
+
+    const result = await db.query(
+      `SELECT
+         ma.contact_id,
+         ma.attendance_status,
+         ma.source,
+         c.first_name || ' ' || c.last_name AS name,
+         c.email,
+         c.title
+       FROM meeting_attendees ma
+       JOIN contacts c ON c.id = ma.contact_id
+       WHERE ma.meeting_id = $1
+       ORDER BY
+         -- Show attended first, then invited, then no_show, then unknown
+         CASE ma.attendance_status
+           WHEN 'attended' THEN 1
+           WHEN 'invited'  THEN 2
+           WHEN 'no_show'  THEN 3
+           ELSE 4
+         END,
+         c.first_name`,
+      [req.params.id]
+    );
+
+    res.json({ attendees: result.rows });
+  } catch (error) {
+    console.error('GET meeting attendees error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch attendees' } });
+  }
+});
+
+// ── PATCH /:id/attendees/:contactId ──────────────────────────────────────────
+// Update attendance status for a single attendee.
+// Always sets source = 'manual' — manual overrides are never auto-overwritten.
+router.patch('/:id/attendees/:contactId', async (req, res) => {
+  try {
+    const { attendance_status } = req.body;
+
+    const VALID_STATUSES = ['invited', 'attended', 'no_show', 'unknown'];
+    if (!attendance_status || !VALID_STATUSES.includes(attendance_status)) {
+      return res.status(400).json({
+        error: { message: `attendance_status must be one of: ${VALID_STATUSES.join(', ')}` }
+      });
+    }
+
+    // Verify meeting belongs to this user/org
+    const meetingCheck = await db.query(
+      `SELECT id FROM meetings
+       WHERE id = $1 AND org_id = $2 AND user_id = $3 AND deleted_at IS NULL`,
+      [req.params.id, req.orgId, req.user.userId]
+    );
+
+    if (meetingCheck.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Meeting not found' } });
+    }
+
+    // Upsert — attendee row may or may not exist yet
+    const result = await db.query(
+      `INSERT INTO meeting_attendees (meeting_id, contact_id, org_id, attendance_status, source)
+       VALUES ($1, $2, $3, $4, 'manual')
+       ON CONFLICT (meeting_id, contact_id) DO UPDATE
+         SET attendance_status = $4,
+             source            = 'manual'
+       RETURNING contact_id, attendance_status, source`,
+      [req.params.id, req.params.contactId, req.orgId, attendance_status]
+    );
+
+    console.log(
+      `👤 Attendance override: meeting ${req.params.id} contact ${req.params.contactId} → ${attendance_status} (manual)`
+    );
+
+    res.json({ attendee: result.rows[0] });
+  } catch (error) {
+    console.error('PATCH meeting attendee error:', error);
+    res.status(500).json({ error: { message: 'Failed to update attendance' } });
+  }
+});
+
+
 module.exports = router;

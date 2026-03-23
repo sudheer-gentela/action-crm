@@ -30,6 +30,8 @@ const { pool } = require('../config/database');
 const ZoomParser      = require('../services/parsers/ZoomParser');
 const TeamsParser     = require('../services/parsers/TeamsParser');
 const FirefliesParser = require('../services/parsers/FirefliesParser');
+const FathomParser    = require('../services/parsers/FathomParser');
+
 
 const { findMeeting }    = require('../services/MeetingMatcher');
 const { reconcile }      = require('../services/AttendeeReconciler');
@@ -42,6 +44,8 @@ const PARSERS = {
   teams:         TeamsParser,
   fireflies_org: FirefliesParser,
   fireflies:     FirefliesParser,   // personal — same parser, different scope
+  fathom:        FathomParser,     // ← ADD
+
 };
 
 // ── Signature verification ────────────────────────────────────────────────────
@@ -102,11 +106,35 @@ function verifyFirefliesSignature(req, secret) {
   );
 }
 
+/**
+ * Verify Fathom webhook signature.
+ * Fathom sends x-fathom-signature as HMAC-SHA256 of the raw body.
+ */
+function verifyFathomSignature(req, secret) {
+  const signature = req.headers['x-fathom-signature'];
+  if (!signature) return false;
+
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(req.rawBody || '')
+    .digest('hex');
+
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(expected),
+      Buffer.from(signature)
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
 const SIGNATURE_VERIFIERS = {
   zoom_org:      verifyZoomSignature,
   teams:         verifyTeamsSignature,
   fireflies_org: verifyFirefliesSignature,
   fireflies:     verifyFirefliesSignature,
+  fathom:        verifyFathomSignature,   // ← ADD
 };
 
 // ── Secret lookup ─────────────────────────────────────────────────────────────

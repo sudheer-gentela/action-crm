@@ -4,6 +4,7 @@ import { mockData, enrichData } from './mockData';
 import MeetingForm from './MeetingForm';
 import CalendarSyncStatus from './CalendarSyncStatus';
 import './CalendarView.css';
+import MeetingTranscriptPanel from './MeetingTranscriptPanel';
 
 // Distinct, accessible priority colours (critical ≠ high)
 const PRIORITY_COLORS = {
@@ -552,13 +553,26 @@ function CalendarView({ openMeetingId = null, onMeetingOpened = null }) {
           )}
         </div>
 
+
+
+
         {/* Meeting Detail Panel */}
         {selectedMeeting && (
           <div className="meeting-detail-panel">
-            <div className="panel-header">
-              <h2>{selectedMeeting.title}</h2>
-              <button className="close-panel" onClick={() => setSelectedMeeting(null)}>×</button>
-            </div>
+    	        <div className="panel-header">
+		<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+		      <h2>{selectedMeeting.title}</h2>
+		      {selectedMeeting.transcript_id && (
+     						   <span style={{
+    						      fontSize: 10, fontWeight: 700, padding: '2px 7px',
+		         borderRadius: 10, background: '#d1fae5', color: '#065f46',
+        						}}>
+  				        🎙️ Transcript
+       			 </span>
+      				)}
+    			   </div>
+   			        <button className="close-panel" onClick={() => setSelectedMeeting(null)}>×</button>
+  			   </div>
             <div className="panel-content">
               <div className="detail-section">
                 <h3>When</h3>
@@ -628,13 +642,22 @@ function CalendarView({ openMeetingId = null, onMeetingOpened = null }) {
                   </div>
                 )}
               </div>
-              <div className="detail-section">
-                <h3>Quick Actions</h3>
-                <div className="quick-actions">
-                  <button className="btn-action" onClick={() => setEditingMeeting(selectedMeeting)}>✏️ Edit Meeting</button>
-                  <button className="btn-action" onClick={() => handleDeleteMeeting(selectedMeeting.id)}>🗑️ Delete Meeting</button>
-                </div>
-              </div>
+              
+// ADD the MeetingTranscriptPanel BEFORE the Quick Actions section:
+
+		  <MeetingTranscriptPanel
+		    meeting={selectedMeeting}
+  					      contacts={contacts}
+		    onRefresh={loadData}
+		  />
+
+		  <div className="detail-section">
+		    <h3>Quick Actions</h3>
+		    <div className="quick-actions">
+		      <button className="btn-action" onClick={() => setEditingMeeting(selectedMeeting)}>✏️ Edit Meeting</button>
+	     	 <button className="btn-action" onClick={() => handleDeleteMeeting(selectedMeeting.id)}>🗑️ Delete Meeting</button>
+	   	 </div>
+	 	 </div>
             </div>
           </div>
         )}
