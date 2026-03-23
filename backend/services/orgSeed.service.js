@@ -210,6 +210,48 @@ async function seedOrg(orgId) {
     );
     console.log(`[orgSeed] Sales playbook seeded for org ${orgId}`);
 
+    // ── Seed platform-default email filter into org settings ─────────────────
+    // Uses jsonb_set with create_missing=true so it never overwrites an existing
+    // email_filter config (e.g. if seedOrg is called a second time on an org that
+    // already has custom filter settings).
+    await db.query(
+      `UPDATE organizations
+       SET settings = jsonb_set(
+         COALESCE(settings, '{}'::jsonb),
+         '{email_filter}',
+         COALESCE(
+           settings->'email_filter',
+           $1::jsonb
+         ),
+         true
+       )
+       WHERE id = $2
+         AND (settings->'email_filter' IS NULL
+              OR settings->>'email_filter' = 'null')`,
+      [
+        JSON.stringify({
+          blocked_domains: [
+            'accountprotection.microsoft.com',
+            'communication.microsoft.com',
+            'promomail.microsoft.com',
+            'infoemails.microsoft.com',
+            'engage.microsoft.com',
+            'account.microsoft.com',
+            'mail.onedrive.com',
+            'microsoft.com',
+            'googlemail.com',
+          ],
+          blocked_local_patterns: [
+            'noreply', 'no-reply', 'donotreply', 'do-not-reply',
+            'mailer-daemon', 'postmaster', 'bounce', 'notifications', 'unsubscribe',
+          ],
+        }),
+        orgId,
+      ]
+    );
+    console.log(`[orgSeed] Email filter defaults seeded for org ${orgId}`);
+
+
     console.log(`[orgSeed] ✓ Org ${orgId} seeded successfully`);
   } catch (err) {
     // Non-fatal — log and continue. The org exists, seeding can be retried.

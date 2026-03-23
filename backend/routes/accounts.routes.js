@@ -174,7 +174,17 @@ router.post('/', workflowRulesMiddleware('account', 'create'), async (req, res) 
       [req.orgId, name, domain, industry, size, location, description, req.user.userId]
     );
     const response = { account: result.rows[0] };
-    if (req.ruleWarnings?.length > 0) response.warnings = req.ruleWarnings;
+    // Collect all warnings — workflow engine warnings + domain warning
+    const warnings = [...(req.ruleWarnings || [])];
+    if (!domain || !domain.trim()) {
+      warnings.push({
+        field:    'domain',
+        message:  'Account domain is missing — emails and meetings from this account\'s contacts may not be auto-linked',
+        severity: 'warn',
+        code:     'MISSING_ACCOUNT_DOMAIN',
+      });
+    }
+    if (warnings.length > 0) response.warnings = warnings;
     res.status(201).json(response);
   } catch (error) {
     console.error('Create account error:', error);
@@ -395,8 +405,18 @@ router.put('/:id', workflowRulesMiddleware('account', 'update'), async (req, res
       return res.status(404).json({ error: { message: 'Account not found' } });
     }
 
-    const putResponse = { account: result.rows[0] };
-    if (req.ruleWarnings?.length > 0) putResponse.warnings = req.ruleWarnings;
+    const updatedAccount = result.rows[0];
+    const putResponse = { account: updatedAccount };
+    const putWarnings = [...(req.ruleWarnings || [])];
+    if (!updatedAccount.domain || !updatedAccount.domain.trim()) {
+      putWarnings.push({
+        field:    'domain',
+        message:  'Account domain is missing — emails and meetings from this account\'s contacts may not be auto-linked',
+        severity: 'warn',
+        code:     'MISSING_ACCOUNT_DOMAIN',
+      });
+    }
+    if (putWarnings.length > 0) putResponse.warnings = putWarnings;
     res.json(putResponse);
   } catch (error) {
     console.error('Update account error:', error);

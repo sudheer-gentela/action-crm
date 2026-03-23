@@ -1064,6 +1064,201 @@ router.patch('/prospecting/ai-config', adminOnly, async (req, res) => {
   }
 });
 
+
+/**
+ * GET /org/admin/email-settings
+ * Returns the org's email filter config merged with platform defaults.
+ */
+router.get('/email-settings', adminOnly, async (req, res) => {
+  try {
+    const PLATFORM_DEFAULTS = {
+      blocked_domains: [
+        'accountprotection.microsoft.com',
+        'communication.microsoft.com',
+        'promomail.microsoft.com',
+        'infoemails.microsoft.com',
+        'engage.microsoft.com',
+        'account.microsoft.com',
+        'mail.onedrive.com',
+        'microsoft.com',
+        'googlemail.com',
+      ],
+      blocked_local_patterns: [
+        'noreply', 'no-reply', 'donotreply', 'do-not-reply',
+        'mailer-daemon', 'postmaster', 'bounce', 'notifications', 'unsubscribe',
+      ],
+    };
+
+    const result = await pool.query(
+      `SELECT settings->'email_filter' AS email_filter FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const orgFilter = result.rows[0]?.email_filter || {};
+
+    // Derive internal domain(s) from user emails for display
+    const domainResult = await pool.query(
+      `SELECT DISTINCT LOWER(split_part(email, '@', 2)) AS domain
+       FROM users
+       WHERE org_id = $1
+         AND email IS NOT NULL
+         AND email NOT LIKE '%@gmail%'
+         AND email NOT LIKE '%@yahoo%'
+         AND email NOT LIKE '%@hotmail%'
+         AND email NOT LIKE '%@outlook%'`,
+      [req.orgId]
+    );
+    const internalDomains = domainResult.rows.map(r => r.domain).filter(d => d && d.includes('.'));
+
+    // Account domain coverage
+    const accountResult = await pool.query(
+      `SELECT
+         COUNT(*)                                                         AS total,
+         COUNT(*) FILTER (WHERE domain IS NOT NULL
+                            AND domain != ''
+                            AND domain LIKE '%.%')                       AS have_domain,
+         COUNT(*) FILTER (WHERE domain IS NULL OR domain = '')           AS missing_domain
+       FROM accounts
+       WHERE org_id = $1 AND deleted_at IS NULL`,
+      [req.orgId]
+    );
+    const accountCoverage = accountResult.rows[0];
+
+    res.json({
+      platform_defaults:       PLATFORM_DEFAULTS,
+      org_blocked_domains:     orgFilter.blocked_domains      || [],
+      org_blocked_patterns:    orgFilter.blocked_local_patterns || [],
+      internal_domains:        internalDomains,
+      account_domain_coverage: {
+        total:          parseInt(accountCoverage.total),
+        have_domain:    parseInt(accountCoverage.have_domain),
+        missing_domain: parseInt(accountCoverage.missing_domain),
+      },
+    });
+  } catch (err) {
+    console.error('GET /org/admin/email-settings error:', err);
+    res.status(500).json({ error: { message: 'Failed to load email settings' } });
+  }
+});
+
+/**
+ * PATCH /org/admin/email-settings
+ * Update org-specific blocked domains and/or patterns.
+ * Body: { blocked_domains: string[], blocked_local_patterns: string[] }
+ * Replaces the org-specific lists (does not affect platform defaults).
+ */
+router.patch('/email-settings', adminOnly, async (req, res) => {
+  try {
+    const { blocked_domains, blocked_local_patterns } = req.body;
+
+    const patch = {};
+    if (Array.isArray(blocked_domains)) {
+      patch.blocked_domains = blocked_domains
+        .map(d => d.trim().toLowerCase())
+        .filter(d => d.length > 0 && d.includes('.'));
+    }
+    if (Array.isArray(blocked_local_patterns)) {
+      patch.blocked_local_patterns = blocked_local_patterns
+        .map(p => p.trim().toLowerCase())
+        .filter(p => p.length > 0);
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ error: { message: 'blocked_domains or blocked_local_patterns array required' } });
+    }
+
+    await pool.query(
+      `UPDATE organizations
+       SET settings   = jsonb_set(
+                          COALESCE(settings, '{}'::jsonb),
+                          '{email_filter}',
+                          COALESCE(settings->'email_filter', '{}'::jsonb) || $1::jsonb,
+                          true
+                        ),
+           updated_at = NOW()
+       WHERE id = $2`,
+      [JSON.stringify(patch), req.orgId]
+    );
+
+    console.log(`📧 Email filter settings updated for org ${req.orgId}:`, patch);
+    res.json({ success: true, updated: patch });
+  } catch (err) {
+    console.error('PATCH /org/admin/email-settings error:', err);
+    res.status(500).json({ error: { message: 'Failed to update email settings' } });
+  }
+});
+
+/**
+ * POST /org/admin/email-settings/derive-account-domains
+ * Auto-derives domain from contacts for accounts that are missing a domain.
+ * Returns a preview — does NOT auto-update. Frontend confirms before applying.
+ */
+router.post('/email-settings/derive-account-domains', adminOnly, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT
+         a.id,
+         a.name,
+         a.domain                                                          AS current_domain,
+         MODE() WITHIN GROUP (ORDER BY split_part(c.email, '@', 2))       AS suggested_domain,
+         COUNT(c.id)                                                       AS contact_count
+       FROM accounts a
+       JOIN contacts c
+         ON c.account_id = a.id
+        AND c.email IS NOT NULL AND c.email != ''
+        AND c.deleted_at IS NULL
+        AND split_part(c.email, '@', 2) NOT LIKE '%gmail%'
+        AND split_part(c.email, '@', 2) NOT LIKE '%yahoo%'
+        AND split_part(c.email, '@', 2) NOT LIKE '%hotmail%'
+        AND split_part(c.email, '@', 2) NOT LIKE '%outlook%'
+       WHERE a.org_id = $1
+         AND a.deleted_at IS NULL
+         AND (a.domain IS NULL OR a.domain = '')
+       GROUP BY a.id, a.name, a.domain
+       HAVING COUNT(c.id) >= 1
+       ORDER BY contact_count DESC`,
+      [req.orgId]
+    );
+
+    res.json({ suggestions: result.rows });
+  } catch (err) {
+    console.error('POST /org/admin/email-settings/derive-account-domains error:', err);
+    res.status(500).json({ error: { message: 'Failed to derive account domains' } });
+  }
+});
+
+/**
+ * PATCH /org/admin/email-settings/apply-account-domains
+ * Applies suggested domain derivations from the derive endpoint.
+ * Body: { updates: [{ id: number, domain: string }] }
+ */
+router.patch('/email-settings/apply-account-domains', adminOnly, async (req, res) => {
+  try {
+    const { updates } = req.body;
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return res.status(400).json({ error: { message: 'updates array required' } });
+    }
+
+    let applied = 0;
+    for (const { id, domain } of updates) {
+      if (!id || !domain || !domain.includes('.')) continue;
+      await pool.query(
+        `UPDATE accounts
+         SET domain = $1, updated_at = NOW()
+         WHERE id = $2 AND org_id = $3 AND (domain IS NULL OR domain = '')`,
+        [domain.trim().toLowerCase(), id, req.orgId]
+      );
+      applied++;
+    }
+
+    console.log(`📧 Auto-applied ${applied} account domains for org ${req.orgId}`);
+    res.json({ success: true, applied });
+  } catch (err) {
+    console.error('PATCH /org/admin/email-settings/apply-account-domains error:', err);
+    res.status(500).json({ error: { message: 'Failed to apply account domains' } });
+  }
+});
+
+
 module.exports = router;
 
 // ─────────────────────────────────────────────────────────────────────────────

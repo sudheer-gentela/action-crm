@@ -5,17 +5,23 @@
  *
  * Key changes from previous version:
  *   - findEmailAssociations now scans ALL addresses (from, all tos, all ccs)
- *     rather than just the single primary lookup address — catches CC'd team
- *     members and multi-recipient threads
- *   - Deal matching now queries deal_contacts directly (contact → deal_contacts
- *     → deal_id) rather than contact → account → deal. This is more precise
- *     and avoids false matches when one account has multiple concurrent deals.
- *   - Falls back to account-level match only when no direct deal_contacts row
- *     exists (preserves backward compatibility)
- *   - Terminal-stage filter uses pipeline_stages.is_terminal instead of the
- *     hardcoded 'closed_won'/'closed_lost' strings
- *   - storeEmailToDatabase stamps tag_source = 'auto' when a deal is matched
- *     automatically, so DealEmailHistory can distinguish auto-linked vs manual
+ *   - Deal matching queries deal_contacts first, falls back to account-level
+ *   - Terminal-stage filter uses pipeline_stages.is_terminal
+ *   - storeEmailToDatabase stamps tag_source = 'auto' on auto-matched deals
+ *
+ * Changes in this version (smart email filter):
+ *   - getOrgInternalDomains() derives the org's own domain(s) at runtime from
+ *     the users table — no hardcoding, works for every customer
+ *   - getOrgEmailFilter() reads blocked_domains + blocked_local_patterns from
+ *     organizations.settings.email_filter, merged with PLATFORM_DEFAULTS
+ *   - shouldStoreEmail() — Gate 1: drops provably-automated senders
+ *   - storeEmailToDatabase — Gate 2: internal-only emails kept only if subject
+ *     mentions a known deal or account name
+ *   - storeEmailToDatabase — Gate 3: external emails matched against contacts,
+ *     prospects, and account domains; unmatched externals are dropped
+ *   - prospect_id written to emails.prospect_id when matched via prospect
+ *   - account_id written to emails when matched via account domain only
+ *   - prospecting_activities row created for prospect-matched emails
  */
 
 const cron      = require('node-cron');
@@ -28,71 +34,379 @@ const ContractActionsGenerator     = require('../services/ContractActionsGenerat
 const { runNightlyAudit } = require('../services/auditWorker.service');
 
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Email filter — platform defaults + org-specific overrides
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Platform-level defaults. Every org starts with these.
+// Org admins can add their own entries on top via OrgAdmin → Data Quality →
+// Email Settings, stored in organizations.settings.email_filter.
+const PLATFORM_DEFAULTS = {
+  blocked_domains: [
+    'accountprotection.microsoft.com',
+    'communication.microsoft.com',
+    'promomail.microsoft.com',
+    'infoemails.microsoft.com',
+    'engage.microsoft.com',
+    'account.microsoft.com',
+    'mail.onedrive.com',
+    'microsoft.com',      // covers azure-noreply@microsoft.com etc.
+    'googlemail.com',     // system bounce addresses
+  ],
+  blocked_local_patterns: [
+    'noreply',
+    'no-reply',
+    'donotreply',
+    'do-not-reply',
+    'mailer-daemon',
+    'postmaster',
+    'bounce',
+    'notifications',
+    'unsubscribe',
+  ],
+};
+
+/**
+ * Load the org's email filter config (platform defaults merged with org overrides).
+ * Reads organizations.settings.email_filter once per sync run.
+ *
+ * @param {object} client   - pg client
+ * @param {number} orgId
+ * @returns {{ blocked_domains: string[], blocked_local_patterns: string[] }}
+ */
+async function getOrgEmailFilter(client, orgId) {
+  const result = await client.query(
+    `SELECT settings->'email_filter' AS email_filter FROM organizations WHERE id = $1`,
+    [orgId]
+  );
+  const orgFilter = result.rows[0]?.email_filter || {};
+
+  return {
+    blocked_domains: [
+      ...PLATFORM_DEFAULTS.blocked_domains,
+      ...(orgFilter.blocked_domains || []),
+    ].map(d => d.toLowerCase()),
+    blocked_local_patterns: [
+      ...PLATFORM_DEFAULTS.blocked_local_patterns,
+      ...(orgFilter.blocked_local_patterns || []),
+    ].map(p => p.toLowerCase()),
+  };
+}
+
+/**
+ * Derive the org's internal email domain(s) at runtime from the users table.
+ * Excludes personal/public email providers.
+ * Called once per sync run and cached in the calling scope.
+ *
+ * @param {object} client
+ * @param {number} orgId
+ * @returns {string[]}  e.g. ['gowarm.ai'] or ['company.com', 'company.co.in']
+ */
+async function getOrgInternalDomains(client, orgId) {
+  const PERSONAL_PROVIDERS = [
+    'gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.co.uk',
+    'hotmail.com', 'hotmail.co.uk', 'outlook.com', 'live.com',
+    'icloud.com', 'me.com', 'aol.com', 'protonmail.com',
+  ];
+
+  const result = await client.query(
+    `SELECT DISTINCT LOWER(split_part(email, '@', 2)) AS domain
+     FROM users
+     WHERE org_id = $1
+       AND email IS NOT NULL
+       AND deleted_at IS NULL`,
+    [orgId]
+  );
+
+  return result.rows
+    .map(r => r.domain)
+    .filter(d => d && d.includes('.') && !PERSONAL_PROVIDERS.includes(d));
+}
+
+/**
+ * Gate 1 — Is this email from a provably-automated sender?
+ * Checks the effective sender address (from for received, to[0] for sent)
+ * against the org's merged blocklist.
+ *
+ * Returns true  = should store (not blocked)
+ * Returns false = drop immediately, no DB work needed
+ *
+ * @param {string}   fromAddress
+ * @param {string[]} toAddresses
+ * @param {string}   direction       'sent' | 'received'
+ * @param {{ blocked_domains, blocked_local_patterns }} filter
+ */
+function shouldStoreEmail(fromAddress, toAddresses, direction, filter) {
+  const checkAddress = direction === 'sent'
+    ? (toAddresses[0] || '')
+    : (fromAddress    || '');
+
+  if (!checkAddress) return false;
+
+  const lower  = checkAddress.toLowerCase();
+  const atIdx  = lower.indexOf('@');
+  const local  = atIdx >= 0 ? lower.slice(0, atIdx)  : lower;
+  const domain = atIdx >= 0 ? lower.slice(atIdx + 1) : '';
+
+  if (filter.blocked_domains.some(d => domain === d || domain.endsWith('.' + d))) return false;
+  if (filter.blocked_local_patterns.some(p => local.includes(p)))                  return false;
+
+  return true;
+}
+
+/**
+ * Gate 2 helper — Does the email subject mention a known deal or account name?
+ * Used to decide whether to keep internal-only emails.
+ *
+ * @param {object} client
+ * @param {number} orgId
+ * @param {string} subject
+ * @returns {Promise<{ dealId: number|null, accountId: number|null }>}
+ */
+async function matchSubjectToCrmRecord(client, orgId, subject) {
+  if (!subject) return { dealId: null, accountId: null };
+
+  const subjectLower = subject.toLowerCase();
+
+  // Check deals
+  const dealResult = await client.query(
+    `SELECT id FROM deals
+     WHERE org_id = $1
+       AND deleted_at IS NULL
+       AND $2 ILIKE '%' || name || '%'
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [orgId, subjectLower]
+  );
+  if (dealResult.rows.length > 0) {
+    return { dealId: dealResult.rows[0].id, accountId: null };
+  }
+
+  // Check accounts
+  const accountResult = await client.query(
+    `SELECT id FROM accounts
+     WHERE org_id = $1
+       AND deleted_at IS NULL
+       AND $2 ILIKE '%' || LOWER(name) || '%'
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [orgId, subjectLower]
+  );
+  if (accountResult.rows.length > 0) {
+    return { dealId: null, accountId: accountResult.rows[0].id };
+  }
+
+  return { dealId: null, accountId: null };
+}
+
+/**
+ * Gate 3 helper — Match external addresses against accounts by domain.
+ * Only matches accounts with a valid domain (not null, not empty, contains '.').
+ * Skips accounts whose domain is also an internal org domain to prevent
+ * self-referential accounts (e.g. Account "DeepConnect" with domain gowarm.ai)
+ * from matching internal emails.
+ *
+ * @param {object}   client
+ * @param {number}   orgId
+ * @param {string[]} externalAddresses  addresses already confirmed to be external
+ * @param {string[]} internalDomains    org's own domains to exclude
+ * @returns {Promise<number|null>}      account id or null
+ */
+async function matchAddressToAccount(client, orgId, externalAddresses, internalDomains) {
+  if (!externalAddresses.length) return null;
+
+  const domains = externalAddresses
+    .map(a => a.split('@')[1]?.toLowerCase())
+    .filter(d => d && d.includes('.') && !internalDomains.includes(d));
+
+  if (!domains.length) return null;
+
+  const result = await client.query(
+    `SELECT id FROM accounts
+     WHERE org_id = $1
+       AND deleted_at IS NULL
+       AND domain IS NOT NULL
+       AND domain != ''
+       AND domain LIKE '%.%'
+       AND LENGTH(TRIM(domain)) > 3
+       AND LOWER(domain) = ANY($2::text[])
+     ORDER BY id ASC
+     LIMIT 1`,
+    [orgId, domains]
+  );
+
+  return result.rows[0]?.id || null;
+}
+
+/**
+ * Find prospect association for an email.
+ *
+ * @param {object}   client
+ * @param {number}   orgId
+ * @param {string[]} allAddresses
+ * @returns {Promise<number|null>}
+ */
+async function findProspectAssociation(client, orgId, allAddresses) {
+  if (!allAddresses.length) return null;
+
+  const result = await client.query(
+    `SELECT id FROM prospects
+     WHERE org_id = $1
+       AND LOWER(email) = ANY($2::text[])
+       AND stage NOT IN ('converted', 'disqualified')
+     ORDER BY id ASC
+     LIMIT 1`,
+    [orgId, allAddresses]
+  );
+
+  return result.rows[0]?.id || null;
+}
+
 /**
  * Store email to database with deduplication.
  * Accepts normalized email shape from UnifiedEmailProvider.
  */
-async function storeEmailToDatabase(client, userId, orgId, email, userEmail, provider) {
-  // Dedup scoped to user + org
+async function storeEmailToDatabase(client, userId, orgId, email, userEmail, provider, filterCache) {
+  // filterCache = { filter, internalDomains } — loaded once per triggerSync call
+  // and passed in to avoid repeated DB reads per email.
+
+  // ── Derive direction + addresses ──────────────────────────────────────────
+  const fromAddress = email.from?.address || null;
+  const direction   = fromAddress?.toLowerCase() === userEmail?.toLowerCase() ? 'sent' : 'received';
+  const toAddresses = email.toRecipients?.map(r => r.address) || [];
+  const ccAddresses = email.ccRecipients?.map(r => r.address) || [];
+
+  // ── Gate 1: Automated sender check ───────────────────────────────────────
+  // Drop provably-automated senders (noreply, system domains, etc.) before
+  // any DB work. Uses org-specific blocklist merged with platform defaults.
+  if (!shouldStoreEmail(fromAddress, toAddresses, direction, filterCache.filter)) {
+    if (config.system.debug) console.log('Gate1-drop (automated sender):', fromAddress, email.subject);
+    return { skipped: true, reason: 'automated_sender' };
+  }
+
+  // ── Dedup ─────────────────────────────────────────────────────────────────
   if (config.emailSync.deduplication.useMessageId) {
     const existingCheck = await client.query(
       'SELECT id FROM emails WHERE user_id = $1 AND org_id = $2 AND external_id = $3',
       [userId, orgId, email.id]
     );
-
     if (existingCheck.rows.length > 0) {
-      if (config.system.debug) {
-        console.log('Skip duplicate email:', email.id);
-      }
+      if (config.system.debug) console.log('Skip duplicate email:', email.id);
       return { skipped: true, emailId: existingCheck.rows[0].id };
     }
   }
 
-  // Determine email direction using normalized shape
-  const fromAddress = email.from?.address || null;
-  const direction   = fromAddress?.toLowerCase() === userEmail?.toLowerCase() ? 'sent' : 'received';
+  // ── Build deduplicated address list (external addresses only) ─────────────
+  const allAddresses = [
+    ...(direction === 'received' ? [fromAddress] : []),
+    ...toAddresses,
+    ...ccAddresses,
+  ]
+    .filter(Boolean)
+    .map(a => a.toLowerCase().trim())
+    .filter((a, idx, arr) => arr.indexOf(a) === idx);
 
-  // Extract email addresses from normalized shape
-  const toAddresses = email.toRecipients?.map(r => r.address) || [];
-  const ccAddresses = email.ccRecipients?.map(r => r.address) || [];
+  // Separate internal vs external addresses using the org's known domains
+  const externalAddresses = allAddresses.filter(addr => {
+    const domain = addr.split('@')[1] || '';
+    return !filterCache.internalDomains.includes(domain);
+  });
 
-  // Find contact and deal associations
+  const isInternalOnly = externalAddresses.length === 0;
+
+  // ── Gate 2: Internal-only email ───────────────────────────────────────────
+  // All addresses are on the org's own domain(s). Keep only if the subject
+  // mentions a known deal or account name.
+  if (isInternalOnly) {
+    const match = await matchSubjectToCrmRecord(client, orgId, email.subject);
+    if (!match.dealId && !match.accountId) {
+      if (config.system.debug) console.log('Gate2-drop (internal, no CRM reference):', email.subject);
+      return { skipped: true, reason: 'internal_no_crm_reference' };
+    }
+    // Store with the matched deal/account, no contact
+    return storeEmailRow(client, {
+      orgId, userId, provider, direction, email,
+      fromAddress, toAddresses, ccAddresses,
+      dealId: match.dealId, contactId: null,
+      prospectId: null, accountId: match.accountId,
+      tagSource: match.dealId ? 'auto' : null,
+      taggedAt: match.dealId ? new Date() : null,
+      taggedBy: match.dealId ? userId : null,
+    });
+  }
+
+  // ── Gate 3: External address matching ────────────────────────────────────
+  // Priority: contact → prospect → account domain
   const associations = await findEmailAssociations(
     client, userId, orgId, fromAddress, toAddresses, ccAddresses, direction
   );
 
-  // Skip if dealRelatedOnly is enabled and no deal found
-  if (config.emailSync.scope.dealRelatedOnly && !associations.dealId) {
-    if (config.system.debug) {
-      console.log('Skip non-deal email:', email.subject);
-    }
-    return { skipped: true, reason: 'not_deal_related' };
+  if (associations.contactId || associations.dealId) {
+    // Matched via contact/deal — store with full associations
+    return storeEmailRow(client, {
+      orgId, userId, provider, direction, email,
+      fromAddress, toAddresses, ccAddresses,
+      dealId: associations.dealId, contactId: associations.contactId,
+      prospectId: null, accountId: null,
+      tagSource: associations.dealId ? 'auto' : null,
+      taggedAt: associations.dealId ? new Date() : null,
+      taggedBy: associations.dealId ? userId : null,
+    });
   }
 
-  // tag_source: 'auto' when the deal was resolved automatically during sync,
-  // null otherwise (manual tagging sets 'manual', team suggestions set 'team')
-  const tagSource  = associations.dealId ? 'auto' : null;
-  const taggedAt   = associations.dealId ? new Date() : null;
-  const taggedBy   = associations.dealId ? userId : null;
+  // Check prospects
+  const prospectId = await findProspectAssociation(client, orgId, externalAddresses);
+  if (prospectId) {
+    return storeEmailRow(client, {
+      orgId, userId, provider, direction, email,
+      fromAddress, toAddresses, ccAddresses,
+      dealId: null, contactId: null,
+      prospectId, accountId: null,
+      tagSource: null, taggedAt: null, taggedBy: null,
+    });
+  }
 
-  // Store email
+  // Check account domain match (last resort — no contact or prospect found)
+  const accountId = await matchAddressToAccount(client, orgId, externalAddresses, filterCache.internalDomains);
+  if (accountId) {
+    return storeEmailRow(client, {
+      orgId, userId, provider, direction, email,
+      fromAddress, toAddresses, ccAddresses,
+      dealId: null, contactId: null,
+      prospectId: null, accountId,
+      tagSource: null, taggedAt: null, taggedBy: null,
+    });
+  }
+
+  // No match found — drop
+  if (config.system.debug) console.log('Gate3-drop (no CRM match):', fromAddress, email.subject);
+  return { skipped: true, reason: 'no_crm_match' };
+}
+
+/**
+ * Insert a matched email row into the database.
+ * Extracted so the four Gate 3 branches share one INSERT.
+ */
+async function storeEmailRow(client, {
+  orgId, userId, provider, direction, email,
+  fromAddress, toAddresses, ccAddresses,
+  dealId, contactId, prospectId, accountId,
+  tagSource, taggedAt, taggedBy,
+}) {
   const insertResult = await client.query(
     `INSERT INTO emails (
-      org_id, user_id, deal_id, contact_id, direction,
+      org_id, user_id, deal_id, contact_id, prospect_id, direction,
       subject, body,
       to_address, from_address, cc_addresses,
       sent_at, external_id, external_data,
       conversation_id, provider,
       tag_source, tagged_at, tagged_by,
       created_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
     RETURNING id`,
     [
-      orgId,
-      userId,
-      associations.dealId,
-      associations.contactId,
-      direction,
+      orgId, userId, dealId, contactId, prospectId, direction,
       email.subject,
       email.body?.content || email.bodyPreview || '',
       toAddresses.join(', '),
@@ -106,31 +420,44 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail, pro
         hasAttachments: email.hasAttachments,
         isRead:         email.isRead,
         categories:     email.categories,
+        matched_account_id: accountId || undefined,
       }),
       email.conversationId || null,
       provider,
-      tagSource,
-      taggedAt,
-      taggedBy,
+      tagSource, taggedAt, taggedBy,
     ]
   );
 
   const newEmailId = insertResult.rows[0].id;
 
   if (config.system.debug) {
-    console.log('Stored ' + provider + ' email ' + newEmailId + ': ' + email.subject
-      + (associations.dealId ? ' [deal ' + associations.dealId + ']' : ''));
+    const tag = dealId      ? ' [deal '    + dealId    + ']'
+              : contactId   ? ' [contact ' + contactId + ']'
+              : prospectId  ? ' [prospect '+ prospectId+ ']'
+              : accountId   ? ' [account ' + accountId + ']'
+              : '';
+    console.log('Stored', provider, 'email', newEmailId + ':', email.subject + tag);
   }
 
-  // Add contact activity if associated
-  if (associations.contactId) {
+  // Contact activity
+  if (contactId) {
     await client.query(
-      "INSERT INTO contact_activities (contact_id, user_id, activity_type, description, created_at) VALUES ($1, $2, 'email_" + direction + "', $3, NOW())",
-      [associations.contactId, userId, email.subject]
+      `INSERT INTO contact_activities (contact_id, user_id, activity_type, description, created_at)
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [contactId, userId, 'email_' + direction, email.subject]
     );
   }
 
-  return { stored: true, emailId: newEmailId, dealId: associations.dealId };
+  // Prospect activity
+  if (prospectId) {
+    await client.query(
+      `INSERT INTO prospecting_activities (prospect_id, user_id, org_id, activity_type, description, created_at)
+       VALUES ($1, $2, $3, $4, $5, NOW())`,
+      [prospectId, userId, orgId, 'email_' + direction, email.subject]
+    ).catch(err => console.warn('Failed to log prospect email activity:', err.message));
+  }
+
+  return { stored: true, emailId: newEmailId, dealId, prospectId, accountId };
 }
 
 /**
@@ -346,6 +673,15 @@ async function triggerSync(userId, orgId, type, provider) {
     const result = await UnifiedEmailProvider.fetchEmails(userId, provider, fetchOptions);
     console.log('Found ' + result.emails.length + ' ' + provider + ' emails for user ' + userId);
 
+    // Load org filter config + internal domains once per sync run (not per email)
+    const filterCache = {
+      filter:          await getOrgEmailFilter(client, orgId),
+      internalDomains: await getOrgInternalDomains(client, orgId),
+    };
+    if (config.system.debug) {
+      console.log('Org', orgId, 'internal domains:', filterCache.internalDomains);
+    }
+
     let stored  = 0;
     let skipped = 0;
     let failed  = 0;
@@ -354,7 +690,7 @@ async function triggerSync(userId, orgId, type, provider) {
     for (const email of result.emails) {
       try {
         const storeResult = await storeEmailToDatabase(
-          client, userId, orgId, email, userEmail, provider
+          client, userId, orgId, email, userEmail, provider, filterCache
         );
 
         if (storeResult.skipped) {

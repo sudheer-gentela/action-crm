@@ -412,6 +412,12 @@ export const apiService = {
     getExecutions:      (params)           => api.get('/org/admin/executions', { params }),
     getViolations:      (params)           => api.get('/org/admin/violations', { params }),
 
+    // Email filter settings
+    getEmailSettings:              ()           => api.get('/org/admin/email-settings'),
+    updateEmailSettings:           (data)       => api.patch('/org/admin/email-settings', data),
+    deriveAccountDomains:          ()           => api.post('/org/admin/email-settings/derive-account-domains'),
+    applyAccountDomains:           (updates)    => api.patch('/org/admin/email-settings/apply-account-domains', { updates }),
+
   },
 
   products: {

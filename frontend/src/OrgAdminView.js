@@ -8,6 +8,7 @@ import OAProducts from './OAProducts';
 import OATeamDimensions from './OATeamDimensions';
 import WorkflowCanvas from './WorkflowCanvas';
 import ExecutionLog from './ExecutionLog';
+import OAEmailSettings from './OAEmailSettings';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -56,8 +57,9 @@ const STATIC_NAV_GROUPS = [
   {
     label: 'Data Quality',
     items: [
-      { id: 'duplicates', icon: '🔍', label: 'Duplicates' },
-      { id: 'workflows',  icon: '⚙️', label: 'Workflows'  },
+      { id: 'duplicates',     icon: '🔍', label: 'Duplicates'     },
+      { id: 'workflows',      icon: '⚙️', label: 'Workflows'      },
+      { id: 'email-settings', icon: '📧', label: 'Email Settings'  },
     ],
   },
   // 'Modules' group is injected here dynamically — see buildNavGroups()
@@ -115,7 +117,8 @@ const TAB_META = {
   health:        { title: 'Deal Health',   desc: 'Configure health scoring parameters' },
   'icp-scoring': { title: 'ICP Scoring',   desc: 'Define your Ideal Customer Profile and scoring criteria' },
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
-  'workflows':   { title: 'Workflows',     desc: 'Manage data-integrity workflows and standalone rules for deals, contacts, and accounts' },
+  'workflows':   { title: 'Workflows',       desc: 'Manage data-integrity workflows and standalone rules for deals, contacts, and accounts' },
+  'email-settings': { title: 'Email Settings', desc: 'Configure which emails are synced and matched to deals, prospects, and accounts' },
   'wf-log':      { title: 'Execution Log', desc: 'Workflow execution history and open violations' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
   modules:             { title: 'Modules',                           desc: 'Enable or disable product modules for your organisation' },
@@ -521,6 +524,7 @@ export default function OrgAdminView() {
             {tab === 'action-ai'        && <OAActionsAI />}
             {tab === 'duplicates'       && <OADuplicateSettings />}
             {tab === 'workflows'        && <OAWorkflows />}
+            {tab === 'email-settings'   && <OAEmailSettings />}
             {tab === 'team-dimensions'  && <OATeamDimensions />}
             {tab === 'integrations'     && <OAIntegrations />}
             {tab === 'settings'         && <OASettings />}
