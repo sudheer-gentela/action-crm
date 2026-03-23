@@ -798,7 +798,6 @@ router.get('/audit', async (req, res) => {
 
 
 
-```js
 // ── Platform Settings ─────────────────────────────────────────────────────────
 // Reads and writes platform_settings table rows.
 // Each row is a named config key (e.g. 'email_filter') with a JSONB value.
