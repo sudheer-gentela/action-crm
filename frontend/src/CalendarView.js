@@ -642,10 +642,8 @@ function CalendarView({ openMeetingId = null, onMeetingOpened = null }) {
                   </div>
                 )}
               </div>
-              
-// ADD the MeetingTranscriptPanel BEFORE the Quick Actions section:
 
-		  <MeetingTranscriptPanel
+              <MeetingTranscriptPanel
 		    meeting={selectedMeeting}
   					      contacts={contacts}
 		    onRefresh={loadData}
