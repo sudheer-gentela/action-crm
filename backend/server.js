@@ -257,7 +257,7 @@ app.use('/api/org/admin', require('./routes/workflow.orgAdmin.routes'));
 // ─────────────────────────────────────────────────────────────────────────────
 // CHANGE 3B — Register webhook route (in the API routes section)
 // ─────────────────────────────────────────────────────────────────────────────
-app.use(''/webhooks/transcript', webhookTranscriptRoutes);
+app.use('/webhooks/transcript', webhookTranscriptRoutes);
 app.use('/api/transcripts', require('./routes/transcripts.routes'));
 
 
