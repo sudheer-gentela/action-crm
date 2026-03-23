@@ -9,6 +9,7 @@ import OATeamDimensions from './OATeamDimensions';
 import WorkflowCanvas from './WorkflowCanvas';
 import ExecutionLog from './ExecutionLog';
 import OAEmailSettings from './OAEmailSettings';
+import OAMeetingSettings from './OAMeetingSettings';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -66,8 +67,14 @@ const STATIC_NAV_GROUPS = [
   {
     label: 'General',
     items: [
-      { id: 'integrations', icon: '🔌', label: 'Integrations' },
-      { id: 'settings',     icon: '⚙️', label: 'Org Settings' },
+      {
+        id: 'integrations', icon: '🔌', label: 'Integrations',
+        children: [
+          { id: 'integrations-overview',  label: 'Email & Calendar' },
+          { id: 'integrations-meeting',   label: 'Meeting & Transcripts' },
+        ],
+      },
+      { id: 'settings', icon: '⚙️', label: 'Org Settings' },
     ],
   },
 ];
@@ -128,7 +135,10 @@ const TAB_META = {
   'mod-service':       { title: 'Customer Support & Service',         desc: 'Service module settings — SLA tiers and general configuration' },
   'mod-agency':        { title: 'Agency Client Management',           desc: 'Agency module settings — client portal and team configuration' },
   integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },
+  'integrations-overview':{ title: 'Email & Calendar', desc: 'Manage Microsoft and Google connections for your team' },
+  'integrations-meeting': { title: 'Meeting & Transcript Integrations', desc: 'Configure transcript providers — Zoom, Teams, Fireflies, and more' },
   settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
+
 };
 
 
@@ -354,6 +364,7 @@ export default function OrgAdminView() {
   const [tab, setTab]               = useState('members');
   const [stats, setStats]           = useState(null);
   const [orgName, setOrgName]       = useState('');
+  const [orgId,   setOrgId]         = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // orgModules — controls which module nav items are visible.
   // Kept in sync via moduleToggle events fired by child components.
@@ -375,6 +386,8 @@ export default function OrgAdminView() {
        const org  = r.data?.org ?? r.data ?? {};
        const name = org.name || '';
        if (name) setOrgName(name);
+       if (org.id) setOrgId(org.id);
+
 
        // New profile shape: r.data.modules = { key: { allowed, enabled } }
        // Legacy shape:      r.data.org.settings.modules = { key: true/false }
@@ -526,7 +539,8 @@ export default function OrgAdminView() {
             {tab === 'workflows'        && <OAWorkflows />}
             {tab === 'email-settings'   && <OAEmailSettings />}
             {tab === 'team-dimensions'  && <OATeamDimensions />}
-            {tab === 'integrations'     && <OAIntegrations />}
+            {(tab === 'integrations' || tab === 'integrations-overview') && <OAIntegrations />}
+            {tab === 'integrations-meeting' && <OAMeetingSettings orgId={orgId} />}
             {tab === 'settings'         && <OASettings />}
           </div>
         </div>

@@ -1,166 +1,152 @@
 /**
- * Calendar Sync Scheduler (REPLACEMENT)
+ * Calendar Sync Scheduler
+ * backend/jobs/calendarSync.js
  *
- * DROP-IN LOCATION: backend/jobs/calendarSync.js
- *
- * Key changes from original:
- *   - triggerCalendarSync now accepts options.provider ('outlook' | 'google')
- *   - When provider === 'google', uses googleService.fetchCalendarEvents()
- *   - New parseGoogleEventToMeeting() maps Google Calendar shape to meetings table
- *   - Default provider = 'outlook' for backward compatibility
- *   - calendar_sync_history now records provider in sync_type column
- *
- * MULTI-ORG: All org scoping from the original is preserved.
+ * Phase 1 changes applied:
+ *   - storeMeetingToDatabase now inserts ALL matched attendee contacts
+ *     into meeting_attendees with attendance_status='invited', source='calendar'
+ *   - meetings INSERT now includes account_id
+ *   - triggerCalendarSync returns meetingIds[] for downstream use
  */
 
 const { pool } = require('../config/database');
-const { fetchCalendarEvents: fetchOutlookEvents, parseEventToMeeting: parseOutlookEvent } = require('../services/calendarService');
+const {
+  fetchCalendarEvents: fetchOutlookEvents,
+  parseEventToMeeting: parseOutlookEvent,
+} = require('../services/calendarService');
 const { fetchCalendarEvents: fetchGoogleEvents } = require('../services/googleService');
 
 // ── Google Calendar → meetings table mapper ──────────────────────────────────
-// googleService.fetchCalendarEvents returns:
-//   { id, title, description, start, end, location, attendees: [{email,name,status}], htmlLink, status }
-//
-// storeMeetingToDatabase expects:
-//   { external_id, source, title, description, start_time, end_time, location,
-//     meeting_type, status, attendees: [email_strings], organizer, external_data }
-
 function parseGoogleEventToMeeting(event) {
-  // Determine if all-day event (start is date-only string like '2025-06-15')
   const isAllDay = event.start && !event.start.includes('T');
 
   return {
-    external_id: event.id,
-    source: 'google',
-    title: event.title || '(No title)',
-    description: event.description || '',
-    start_time: isAllDay
-      ? new Date(event.start + 'T00:00:00')
-      : new Date(event.start),
-    end_time: isAllDay
-      ? new Date(event.end + 'T23:59:59')
-      : new Date(event.end),
-    location: event.location || null,
-    meeting_type: inferMeetingType(event),
-    status: event.status === 'cancelled' ? 'cancelled'
+    external_id:   event.id,
+    source:        'google',
+    title:         event.title || '(No title)',
+    description:   event.description || '',
+    start_time:    isAllDay ? new Date(event.start + 'T00:00:00') : new Date(event.start),
+    end_time:      isAllDay ? new Date(event.end   + 'T23:59:59') : new Date(event.end),
+    location:      event.location || null,
+    meeting_type:  inferMeetingType(event),
+    status:
+      event.status === 'cancelled' ? 'cancelled'
       : (event.attendees || []).some(a => a.status === 'accepted') ? 'confirmed'
       : 'scheduled',
-    attendees: (event.attendees || []).map(a => a.email).filter(Boolean),
-    organizer: (event.attendees || []).find(a => a.organizer)?.email || null,
+    attendees:  (event.attendees || []).map(a => a.email).filter(Boolean),
+    organizer:  (event.attendees || []).find(a => a.organizer)?.email || null,
     external_data: {
-      htmlLink: event.htmlLink,
+      htmlLink:        event.htmlLink,
       attendeeDetails: event.attendees,
       isAllDay,
     },
   };
 }
 
-/**
- * Infer meeting type from event content (best-effort heuristic).
- */
 function inferMeetingType(event) {
   const text = ((event.title || '') + ' ' + (event.description || '')).toLowerCase();
-  if (text.includes('demo'))                                      return 'demo';
-  if (text.includes('discovery') || text.includes('intro'))       return 'discovery';
-  if (text.includes('negotiat'))                                  return 'negotiation';
-  if (text.includes('follow up') || text.includes('follow-up'))   return 'follow_up';
-  if (text.includes('closing') || text.includes('sign'))          return 'closing';
+  if (text.includes('demo'))                                    return 'demo';
+  if (text.includes('discovery') || text.includes('intro'))    return 'discovery';
+  if (text.includes('negotiat'))                               return 'negotiation';
+  if (text.includes('follow up') || text.includes('follow-up')) return 'follow_up';
+  if (text.includes('closing') || text.includes('sign'))       return 'closing';
   return 'other';
 }
 
-/**
- * Find contact by email address.
- * contacts are org-scoped — no user_id column on that table.
- */
 async function findContactByEmail(client, orgId, email) {
   if (!email) return null;
 
   const result = await client.query(
-    `SELECT id, account_id FROM contacts
+    `SELECT id, account_id
+     FROM contacts
      WHERE org_id = $1
        AND LOWER(email) = LOWER($2)
        AND deleted_at IS NULL
      LIMIT 1`,
-    [orgId, email]
+    [orgId, email],
   );
 
   return result.rows[0] || null;
 }
 
-/**
- * Find active deal for contact/account — scoped by user_id AND org_id.
- */
 async function findActiveDeal(client, userId, orgId, accountId) {
   if (!accountId) return null;
 
   const result = await client.query(
     `SELECT id FROM deals
-     WHERE user_id = $1
-       AND org_id = $2
+     WHERE user_id    = $1
+       AND org_id     = $2
        AND account_id = $3
        AND stage NOT IN ('closed_won', 'closed_lost')
        AND deleted_at IS NULL
      ORDER BY created_at DESC
      LIMIT 1`,
-    [userId, orgId, accountId]
+    [userId, orgId, accountId],
   );
 
   return result.rows[0]?.id || null;
 }
 
-/**
- * Store meeting to database with deduplication.
- */
 async function storeMeetingToDatabase(client, userId, orgId, meeting) {
-  // Dedup scoped to user + org
+  // ── Deduplication ─────────────────────────────────────────────
   const existingCheck = await client.query(
     `SELECT id FROM meetings
      WHERE user_id = $1 AND org_id = $2 AND external_id = $3`,
-    [userId, orgId, meeting.external_id]
+    [userId, orgId, meeting.external_id],
   );
 
   if (existingCheck.rows.length > 0) {
-    console.log(`⭐️ Skipping duplicate meeting: ${meeting.title}`);
+    console.log(`⭐️  Skipping duplicate meeting: ${meeting.title}`);
     return { skipped: true, meetingId: existingCheck.rows[0].id };
   }
 
-  // Try to find contact and deal from attendees/organizer
-  let contactId = null;
+  // ── Resolve all attendee contacts ──────────────────────────────
+  const allEmails   = [...new Set([
+    ...(meeting.organizer ? [meeting.organizer] : []),
+    ...(meeting.attendees || []),
+  ].map(e => e.toLowerCase()))];
+
+  const contactMap = {};
+  for (const email of allEmails) {
+    const contact = await findContactByEmail(client, orgId, email);
+    if (contact) contactMap[email] = contact;
+  }
+
+  const matchedContacts = Object.values(contactMap);
+
+  // ── Resolve deal + account ─────────────────────────────────────
   let dealId    = null;
+  let accountId = null;
 
-  // Check organizer first
-  if (meeting.organizer) {
-    const contact = await findContactByEmail(client, orgId, meeting.organizer);
-    if (contact) {
-      contactId = contact.id;
+  for (const contact of matchedContacts) {
+    if (contact.account_id) {
+      accountId = contact.account_id;
       dealId    = await findActiveDeal(client, userId, orgId, contact.account_id);
+      if (dealId) break;
     }
   }
 
-  // If no contact found from organizer, check attendees
-  if (!contactId && meeting.attendees?.length > 0) {
-    for (const attendeeEmail of meeting.attendees) {
-      const contact = await findContactByEmail(client, orgId, attendeeEmail);
-      if (contact) {
-        contactId = contact.id;
-        dealId    = await findActiveDeal(client, userId, orgId, contact.account_id);
-        break;
-      }
-    }
-  }
-
-  // Insert meeting with org_id
+  // ── Insert meeting ─────────────────────────────────────────────
   const insertResult = await client.query(
     `INSERT INTO meetings (
-      org_id, user_id, deal_id, title, description, meeting_type,
-      start_time, end_time, location, status,
-      external_id, source, external_data, created_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
-    RETURNING id`,
+       org_id, user_id,
+       deal_id, account_id,
+       title, description, meeting_type,
+       start_time, end_time, location, status,
+       external_id, source, external_data,
+       created_at
+     ) VALUES (
+       $1,  $2,
+       $3,  $4,
+       $5,  $6,  $7,
+       $8,  $9,  $10, $11,
+       $12, $13, $14,
+       NOW()
+     )
+     RETURNING id`,
     [
-      orgId,
-      userId,
-      dealId,
+      orgId,        userId,
+      dealId,       accountId,
       meeting.title,
       meeting.description,
       meeting.meeting_type,
@@ -171,128 +157,132 @@ async function storeMeetingToDatabase(client, userId, orgId, meeting) {
       meeting.external_id,
       meeting.source,
       JSON.stringify(meeting.external_data),
-    ]
+    ],
   );
 
   const newMeetingId = insertResult.rows[0].id;
-  console.log(`✅ Stored meeting ${newMeetingId}: ${meeting.title} (${meeting.source})`);
+  console.log(`✅  Stored meeting ${newMeetingId}: "${meeting.title}" (${meeting.source})`);
 
-  return { stored: true, meetingId: newMeetingId, dealId };
+  // ── Populate meeting_attendees (Gap 1) ─────────────────────────
+  let attendeesLinked = 0;
+  for (const contact of matchedContacts) {
+    try {
+      await client.query(
+        `INSERT INTO meeting_attendees
+           (meeting_id, contact_id, org_id, attendance_status, source)
+         VALUES ($1, $2, $3, 'invited', 'calendar')
+         ON CONFLICT DO NOTHING`,
+        [newMeetingId, contact.id, orgId],
+      );
+      attendeesLinked++;
+    } catch (err) {
+      console.error(`   ⚠️  Could not link contact ${contact.id} to meeting ${newMeetingId}:`, err.message);
+    }
+  }
+
+  if (attendeesLinked > 0) {
+    console.log(`   👥  Linked ${attendeesLinked} attendee(s) to meeting ${newMeetingId}`);
+  }
+
+  return { stored: true, meetingId: newMeetingId, dealId, accountId, attendeesLinked };
 }
 
-/**
- * Trigger calendar sync for a user.
- * @param {number} userId
- * @param {{
- *   orgId: number,
- *   provider?: 'outlook' | 'google',
- *   startDate?: string,
- *   endDate?: string,
- *   top?: number
- * }} options
- */
 async function triggerCalendarSync(userId, options = {}) {
-  const { orgId } = options;
-  const provider = options.provider || 'outlook';
-  const client = await pool.connect();
+  const { orgId }  = options;
+  const provider   = options.provider || 'outlook';
+  const client     = await pool.connect();
 
   try {
     const providerLabel = provider === 'google' ? 'Google Calendar' : 'Outlook Calendar';
-    console.log(`📅 Triggering ${providerLabel} sync for user ${userId} org ${orgId}`);
+    console.log(`📅  Triggering ${providerLabel} sync for user ${userId} org ${orgId}`);
 
     await client.query('BEGIN');
 
-    // Create sync history record — includes org_id and provider
     const syncHistoryResult = await client.query(
       `INSERT INTO calendar_sync_history
-       (user_id, org_id, sync_type, status, created_at)
+         (user_id, org_id, sync_type, status, created_at)
        VALUES ($1, $2, $3, 'in_progress', NOW())
        RETURNING id`,
-      [userId, orgId, 'calendar_' + provider]
+      [userId, orgId, 'calendar_' + provider],
     );
     const syncHistoryId = syncHistoryResult.rows[0].id;
 
-    // Get date range for sync (default: next 30 days)
     const startDate = options.startDate || new Date().toISOString();
     const endDate   = options.endDate   || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
-    // ── Fetch events based on provider ──────────────────────────
     let rawEvents = [];
     let parseFn;
 
     if (provider === 'google') {
-      // googleService.fetchCalendarEvents returns pre-mapped objects
-      const googleEvents = await fetchGoogleEvents(userId, {
+      rawEvents = await fetchGoogleEvents(userId, {
         maxResults: options.top || 100,
-        timeMin: startDate,
-        timeMax: endDate,
+        timeMin:    startDate,
+        timeMax:    endDate,
       });
-      rawEvents = googleEvents;
       parseFn = parseGoogleEventToMeeting;
-
     } else {
-      // calendarService (Outlook) returns { events: [...raw graph objects] }
       const result = await fetchOutlookEvents(userId, {
         top:           options.top || 100,
         startDateTime: startDate,
         endDateTime:   endDate,
       });
       rawEvents = result.events || [];
-      parseFn = parseOutlookEvent;
+      parseFn   = parseOutlookEvent;
     }
 
-    console.log(`📅 Found ${rawEvents.length} ${providerLabel} events for user ${userId}`);
+    console.log(`📅  Found ${rawEvents.length} ${providerLabel} events for user ${userId}`);
 
-    let stored  = 0;
-    let skipped = 0;
-    let failed  = 0;
+    let stored    = 0;
+    let skipped   = 0;
+    let failed    = 0;
+    const meetingIds = [];
 
     for (const event of rawEvents) {
       try {
         const meeting     = parseFn(event);
         const storeResult = await storeMeetingToDatabase(client, userId, orgId, meeting);
 
-        if (storeResult.skipped) skipped++;
-        else if (storeResult.stored) stored++;
+        if (storeResult.skipped)       skipped++;
+        else if (storeResult.stored) { stored++; meetingIds.push(storeResult.meetingId); }
       } catch (error) {
         const eventTitle = event.subject || event.title || event.summary || '(unknown)';
-        console.error(`❌ Error processing event "${eventTitle}":`, error.message);
+        console.error(`❌  Error processing event "${eventTitle}":`, error.message);
         failed++;
       }
     }
 
-    // Update sync history
     await client.query(
       `UPDATE calendar_sync_history
-       SET status = 'completed',
+       SET status          = 'completed',
            items_processed = $2,
-           items_failed = $3,
-           last_sync_date = NOW()
+           items_failed    = $3,
+           last_sync_date  = NOW()
        WHERE id = $1`,
-      [syncHistoryId, stored, failed]
+      [syncHistoryId, stored, failed],
     );
 
     await client.query('COMMIT');
 
-    console.log(`✅ ${providerLabel} sync completed: ${stored} stored, ${skipped} skipped, ${failed} failed`);
+    console.log(`✅  ${providerLabel} sync done — ${stored} stored, ${skipped} skipped, ${failed} failed`);
 
-    return { success: true, provider, eventsFound: rawEvents.length, stored, skipped, failed };
+    return { success: true, provider, eventsFound: rawEvents.length, stored, skipped, failed, meetingIds };
 
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error(`❌ Calendar sync failed for user ${userId} (${provider}):`, error);
+    console.error(`❌  Calendar sync failed for user ${userId} (${provider}):`, error);
 
     try {
-      await client.query(
+      await pool.query(
         `UPDATE calendar_sync_history
-         SET status = 'failed', error_message = $2
+         SET status        = 'failed',
+             error_message = $2
          WHERE id = (
            SELECT id FROM calendar_sync_history
            WHERE user_id = $1
            ORDER BY created_at DESC
            LIMIT 1
          )`,
-        [userId, error.message]
+        [userId, error.message],
       );
     } catch (updateError) {
       console.error('Failed to update sync history:', updateError);
@@ -304,24 +294,16 @@ async function triggerCalendarSync(userId, options = {}) {
   }
 }
 
-/**
- * Get calendar sync status for user, scoped to their current org.
- * @param {number} userId
- * @param {number} orgId
- */
 async function getCalendarSyncStatus(userId, orgId) {
   const result = await pool.query(
     `SELECT * FROM calendar_sync_history
      WHERE user_id = $1 AND org_id = $2
      ORDER BY created_at DESC
      LIMIT 10`,
-    [userId, orgId]
+    [userId, orgId],
   );
 
   return result.rows;
 }
 
-module.exports = {
-  triggerCalendarSync,
-  getCalendarSyncStatus,
-};
+module.exports = { triggerCalendarSync, getCalendarSyncStatus };

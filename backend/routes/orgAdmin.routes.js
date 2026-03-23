@@ -1322,6 +1322,145 @@ router.delete('/email-filter-log', adminOnly, async (req, res) => {
   }
 });
 
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADD TO: backend/routes/orgAdmin.routes.js
+// (append before the final module.exports = router line)
+//
+// Two new routes for OAMeetingSettings.js frontend component:
+//   GET  /org/admin/meeting-settings  — list active transcript integrations
+//   PATCH /org/admin/meeting-settings — enable/update/disable a provider
+//
+// Storage: org_integrations table
+//   integration_type = provider id (e.g. 'zoom_org', 'teams', 'fireflies_org')
+//   credentials jsonb = { webhook_secret }   ← sensitive, never returned to client
+//   config jsonb      = { auto_analyze }
+//   status            = 'active' | 'inactive'
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TRANSCRIPT_PROVIDERS = ['zoom_org', 'teams', 'fireflies_org', 'gong', 'gmeet'];
+
+/**
+ * GET /org/admin/meeting-settings
+ * Returns all transcript integrations for this org.
+ * Does NOT return webhook_secret — only confirms whether one is set.
+ */
+router.get('/meeting-settings', adminOnly, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT
+         id,
+         integration_type,
+         status,
+         last_synced_at,
+         error_message,
+         created_at,
+         updated_at,
+         config,
+         -- Never expose the secret itself; just tell the client if one exists
+         CASE WHEN credentials->>'webhook_secret' IS NOT NULL
+                   AND credentials->>'webhook_secret' != ''
+              THEN true ELSE false END AS has_secret
+       FROM org_integrations
+       WHERE org_id = $1
+         AND integration_type = ANY($2)
+       ORDER BY integration_type`,
+      [req.orgId, TRANSCRIPT_PROVIDERS],
+    );
+
+    res.json({ integrations: result.rows });
+  } catch (err) {
+    console.error('GET /org/admin/meeting-settings error:', err);
+    res.status(500).json({ error: { message: 'Failed to load meeting integrations' } });
+  }
+});
+
+/**
+ * PATCH /org/admin/meeting-settings
+ * Upsert a transcript provider integration for this org.
+ *
+ * Body:
+ *   provider        string   required  — one of TRANSCRIPT_PROVIDERS
+ *   enabled         boolean  required  — true = active, false = inactive
+ *   webhook_secret  string   optional  — if omitted on update, existing secret kept
+ *   auto_analyze    boolean  optional  — default true
+ */
+router.patch('/meeting-settings', adminOnly, async (req, res) => {
+  try {
+    const { provider, enabled, webhook_secret, auto_analyze = true } = req.body;
+
+    if (!provider || !TRANSCRIPT_PROVIDERS.includes(provider)) {
+      return res.status(400).json({
+        error: { message: `provider must be one of: ${TRANSCRIPT_PROVIDERS.join(', ')}` },
+      });
+    }
+
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: { message: 'enabled (boolean) is required' } });
+    }
+
+    const newStatus = enabled ? 'active' : 'inactive';
+    const newConfig = JSON.stringify({ auto_analyze: !!auto_analyze });
+
+    // Check if a row already exists for this org + provider
+    const existing = await pool.query(
+      `SELECT id, credentials FROM org_integrations
+       WHERE org_id = $1 AND integration_type = $2`,
+      [req.orgId, provider],
+    );
+
+    if (existing.rows.length > 0) {
+      // UPDATE — preserve existing secret if no new one supplied
+      const currentSecret = existing.rows[0].credentials?.webhook_secret || '';
+      const secretToStore = (webhook_secret && webhook_secret.trim())
+        ? webhook_secret.trim()
+        : currentSecret;
+
+      await pool.query(
+        `UPDATE org_integrations
+         SET status      = $1,
+             config      = $2::jsonb,
+             credentials = jsonb_set(
+                             COALESCE(credentials, '{}'::jsonb),
+                             '{webhook_secret}',
+                             to_jsonb($3::text)
+                           ),
+             updated_at  = NOW()
+         WHERE org_id = $4 AND integration_type = $5`,
+        [newStatus, newConfig, secretToStore, req.orgId, provider],
+      );
+    } else {
+      // INSERT — webhook_secret required for new rows when enabling
+      if (enabled && (!webhook_secret || !webhook_secret.trim())) {
+        return res.status(400).json({
+          error: { message: 'webhook_secret is required when enabling a new integration' },
+        });
+      }
+
+      await pool.query(
+        `INSERT INTO org_integrations
+           (org_id, integration_type, credentials, config, status, created_at, updated_at)
+         VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, NOW(), NOW())`,
+        [
+          req.orgId,
+          provider,
+          JSON.stringify({ webhook_secret: webhook_secret?.trim() || '' }),
+          newConfig,
+          newStatus,
+        ],
+      );
+    }
+
+    console.log(`🔌 Meeting integration [${provider}] ${newStatus} for org ${req.orgId}`);
+    res.json({ success: true, provider, status: newStatus });
+  } catch (err) {
+    console.error('PATCH /org/admin/meeting-settings error:', err);
+    res.status(500).json({ error: { message: 'Failed to update meeting integration' } });
+  }
+});
+
+
 module.exports = router;
 
 // ─────────────────────────────────────────────────────────────────────────────

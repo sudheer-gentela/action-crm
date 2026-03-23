@@ -153,6 +153,150 @@ router.patch('/preferences/prospecting', async (req, res) => {
   }
 });
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADD TO: backend/routes/user-preferences.routes.js
+// (or create as a new file and register in server.js)
+//
+// Two new routes for UserTranscriptSettings.js frontend component:
+//   GET  /users/me/transcript-tools  — list rep's connected personal tools
+//   PATCH /users/me/transcript-tools — connect / update / disconnect a tool
+//
+// Storage: oauth_tokens.webhook_config jsonb (added in Phase 1 migration)
+//   Shape: { webhook_secret: string, enabled: boolean }
+//
+// Registration in server.js (already has):
+//   app.use('/api/users/me', userPreferencesRoutes);
+// So these become:
+//   GET  /api/users/me/transcript-tools
+//   PATCH /api/users/me/transcript-tools
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// NOTE: This is a standalone file. Add the two routes below to your existing
+// user-preferences.routes.js, following the same router/auth pattern already
+// in that file. The router, authenticateToken, orgContext, and pool imports
+// are already present there.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PERSONAL_TRANSCRIPT_PROVIDERS = ['fireflies', 'fathom', 'zoom'];
+
+/**
+ * GET /users/me/transcript-tools
+ * Returns which personal transcript tools the rep has connected.
+ * Does NOT return secrets — only confirms a secret is set.
+ */
+router.get('/transcript-tools', authenticateToken, orgContext, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT
+         provider,
+         webhook_config->>'enabled'                          AS enabled,
+         CASE WHEN webhook_config->>'webhook_secret' IS NOT NULL
+                   AND webhook_config->>'webhook_secret' != ''
+              THEN true ELSE false END                       AS has_secret
+       FROM oauth_tokens
+       WHERE user_id = $1
+         AND org_id  = $2
+         AND provider = ANY($3)`,
+      [req.user.userId, req.orgId, PERSONAL_TRANSCRIPT_PROVIDERS],
+    );
+
+    // Shape: { fireflies: { enabled: true, hasSecret: true }, ... }
+    const tools = {};
+    result.rows.forEach(row => {
+      tools[row.provider] = {
+        enabled:   row.enabled === 'true',
+        hasSecret: row.has_secret,
+      };
+    });
+
+    res.json({ tools, userId: req.user.userId });
+  } catch (err) {
+    console.error('GET /users/me/transcript-tools error:', err);
+    res.status(500).json({ error: { message: 'Failed to load transcript tools' } });
+  }
+});
+
+/**
+ * PATCH /users/me/transcript-tools
+ * Connect, update, or disconnect a personal transcript tool.
+ *
+ * Body:
+ *   provider        string   required
+ *   enabled         boolean  required
+ *   webhook_secret  string   optional — omit to keep existing
+ */
+router.patch('/transcript-tools', authenticateToken, orgContext, async (req, res) => {
+  try {
+    const { provider, enabled, webhook_secret } = req.body;
+
+    if (!provider || !PERSONAL_TRANSCRIPT_PROVIDERS.includes(provider)) {
+      return res.status(400).json({
+        error: { message: `provider must be one of: ${PERSONAL_TRANSCRIPT_PROVIDERS.join(', ')}` },
+      });
+    }
+
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: { message: 'enabled (boolean) is required' } });
+    }
+
+    // Check for existing oauth_tokens row for this provider
+    const existing = await pool.query(
+      `SELECT id, webhook_config FROM oauth_tokens
+       WHERE user_id = $1 AND org_id = $2 AND provider = $3`,
+      [req.user.userId, req.orgId, provider],
+    );
+
+    // Preserve existing secret if no new one supplied
+    const currentSecret = existing.rows[0]?.webhook_config?.webhook_secret || '';
+    const secretToStore = (webhook_secret && webhook_secret.trim())
+      ? webhook_secret.trim()
+      : currentSecret;
+
+    const newWebhookConfig = JSON.stringify({
+      webhook_secret: secretToStore,
+      enabled:        !!enabled,
+    });
+
+    if (existing.rows.length > 0) {
+      // UPDATE webhook_config on existing oauth_tokens row
+      // NOTE: access_token, refresh_token, expires_at are intentionally untouched —
+      // this route only manages the webhook_config field.
+      await pool.query(
+        `UPDATE oauth_tokens
+         SET webhook_config = $1::jsonb,
+             updated_at     = NOW()
+         WHERE user_id = $2 AND org_id = $3 AND provider = $4`,
+        [newWebhookConfig, req.user.userId, req.orgId, provider],
+      );
+    } else {
+      // INSERT a minimal row for this provider
+      // access_token is set to a placeholder since it's NOT NULL —
+      // these personal notetaker rows have no OAuth flow, only a webhook secret.
+      await pool.query(
+        `INSERT INTO oauth_tokens
+           (user_id, org_id, provider, access_token, webhook_config, created_at, updated_at)
+         VALUES ($1, $2, $3, 'webhook_only', $4::jsonb, NOW(), NOW())
+         ON CONFLICT (user_id, provider) DO UPDATE
+           SET webhook_config = $4::jsonb,
+               updated_at     = NOW()`,
+        [req.user.userId, req.orgId, provider, newWebhookConfig],
+      );
+    }
+
+    console.log(
+      `🔌 Personal transcript tool [${provider}] ${enabled ? 'connected' : 'disconnected'} ` +
+      `for user ${req.user.userId} org ${req.orgId}`,
+    );
+
+    res.json({ success: true, provider, enabled });
+  } catch (err) {
+    console.error('PATCH /users/me/transcript-tools error:', err);
+    res.status(500).json({ error: { message: 'Failed to update transcript tool' } });
+  }
+});
+
+
 module.exports = router;
 
 // ─────────────────────────────────────────────────────────────────────────────

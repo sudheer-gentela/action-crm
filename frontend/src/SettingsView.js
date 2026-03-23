@@ -6,6 +6,7 @@ import GoogleConnect from './GoogleConnect';
 import './SettingsView.css';
 import DealHealthSettings from './DealHealthSettings';
 import NotificationSettings from './NotificationSettings';
+import UserTranscriptSettings from './UserTranscriptSettings';
 
 // ── Sidebar nav structure ────────────────────────────────────────────────────
 // Each group has a label and items. Items with `children` expand inline.
@@ -17,10 +18,12 @@ const NAV_GROUPS = [
       { id: 'alerts',       label: 'Alerts',            icon: '🔔' },
       {
         id: 'connections', label: 'Connections', icon: '🔗',
-        children: [
-          { id: 'connections-my',  label: 'My Connections'  },
-          { id: 'connections-org', label: 'Org Connections', adminOnly: true },
-        ],
+
+      children: [
+        { id: 'connections-my',          label: 'My Connections'       },
+        { id: 'connections-transcript',  label: 'Transcript Tools'     },
+        { id: 'connections-org',         label: 'Org Connections', adminOnly: true },
+      ],
       },
       { id: 'usage',        label: 'Usage & Billing',   icon: '📊' },
       { id: 'preferences',  label: 'My Preferences',    icon: '🎛️' },
@@ -193,6 +196,7 @@ export default function SettingsView({ initialTab }) {
           {/* Personal */}
           {activeId === 'alerts'           && <NotificationSettings />}
           {activeId === 'connections-my'   && <MyConnectionsSettings />}
+          {activeId === 'connections-transcript'  && <UserTranscriptSettings />}
           {activeId === 'connections-org'  && <OrgConnectionsSettings />}
           {activeId === 'usage'            && <UserAIUsageSettings />}
           {activeId === 'preferences'      && <UserPreferencesSettings />}

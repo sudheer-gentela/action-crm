@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 3001;
 // ─────────────────────────────────────────────────────────────
 // Route imports
 // ─────────────────────────────────────────────────────────────
+const webhookTranscriptRoutes = require('./routes/webhooks.routes');
 const outlookRoutes    = require('./routes/outlook.routes');
 const googleRoutes     = require('./routes/google.routes');
 const syncRoutes       = require('./routes/sync.routes');
@@ -141,6 +142,27 @@ app.use('/api/auth/', authLimiter);
 // ─────────────────────────────────────────────────────────────
 // Body parsing & logging
 // ─────────────────────────────────────────────────────────────
+
+// Capture raw body for webhook signature verification (Zoom requires this)
+app.use((req, res, next) => {
+  if (req.path.startsWith('/webhooks/')) {
+    let data = '';
+    req.setEncoding('utf8');
+    req.on('data', chunk => { data += chunk; });
+    req.on('end', () => {
+      req.rawBody = data;
+      try {
+        req.body = JSON.parse(data);
+      } catch (e) {
+        req.body = {};
+      }
+      next();
+    });
+  } else {
+    next();
+  }
+});
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -231,6 +253,13 @@ app.use('/api/portal',  clientPortalRoutes);
 // ─── Workflow Module ───────────────────────────────────
 app.use('/api/super',     require('./routes/workflow.superAdmin.routes'));
 app.use('/api/org/admin', require('./routes/workflow.orgAdmin.routes'));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHANGE 3B — Register webhook route (in the API routes section)
+// ─────────────────────────────────────────────────────────────────────────────
+app.use(''/webhooks/transcript', webhookTranscriptRoutes);
+app.use('/api/transcripts', require('./routes/transcripts.routes'));
+
 
 // ─── Public org context ───────────────────────────────────────
 const authenticateToken   = require('./middleware/auth.middleware');

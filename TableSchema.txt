@@ -1,0 +1,50 @@
+                                           Table "public.org_integrations"
+      Column      |            Type             | Collation | Nullable |                   Default                    
+------------------+-----------------------------+-----------+----------+----------------------------------------------
+ id               | integer                     |           | not null | nextval('org_integrations_id_seq'::regclass)
+ org_id           | integer                     |           | not null | 
+ integration_type | character varying(50)       |           | not null | 
+ credentials      | jsonb                       |           | not null | '{}'::jsonb
+ config           | jsonb                       |           | not null | '{}'::jsonb
+ status           | character varying(50)       |           | not null | 'pending'::character varying
+ last_synced_at   | timestamp without time zone |           |          | 
+ error_message    | text                        |           |          | 
+ created_at       | timestamp without time zone |           | not null | CURRENT_TIMESTAMP
+ updated_at       | timestamp without time zone |           | not null | CURRENT_TIMESTAMP
+Indexes:
+    "org_integrations_pkey" PRIMARY KEY, btree (id)
+    "idx_org_integrations_org" btree (org_id)
+    "idx_org_integrations_status" btree (org_id, status)
+    "org_integrations_org_id_integration_type_key" UNIQUE CONSTRAINT, btree (org_id, integration_type)
+    "org_integrations_org_type_unique" UNIQUE, btree (org_id, integration_type)
+Foreign-key constraints:
+    "org_integrations_org_id_fkey" FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+Triggers:
+    trg_org_integrations_updated_at BEFORE UPDATE ON org_integrations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()
+
+                                          Table "public.oauth_tokens"
+    Column     |            Type             | Collation | Nullable |                 Default                  
+---------------+-----------------------------+-----------+----------+------------------------------------------
+ id            | integer                     |           | not null | nextval('oauth_tokens_id_seq'::regclass)
+ user_id       | integer                     |           | not null | 
+ provider      | character varying(50)       |           | not null | 
+ access_token  | text                        |           | not null | 
+ refresh_token | text                        |           |          | 
+ expires_at    | timestamp without time zone |           |          | 
+ account_data  | jsonb                       |           |          | 
+ created_at    | timestamp without time zone |           |          | now()
+ updated_at    | timestamp without time zone |           |          | now()
+ org_id        | integer                     |           | not null | 
+Indexes:
+    "oauth_tokens_pkey" PRIMARY KEY, btree (id)
+    "idx_oauth_tokens_org" btree (org_id)
+    "idx_oauth_tokens_org_user" btree (org_id, user_id)
+    "idx_oauth_tokens_user_provider" btree (user_id, provider)
+    "oauth_tokens_user_id_provider_key" UNIQUE CONSTRAINT, btree (user_id, provider)
+Foreign-key constraints:
+    "fk_oauth_tokens_org" FOREIGN KEY (org_id) REFERENCES organizations(id)
+    "oauth_tokens_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+Policies:
+    POLICY "org_isolation_oauth_tokens"
+      USING ((org_id = (NULLIF(current_setting('app.current_org_id'::text, true), ''::text))::integer))
+
