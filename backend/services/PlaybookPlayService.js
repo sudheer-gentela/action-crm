@@ -11,6 +11,7 @@
 
 const db = require('../config/database');
 const { resolveForPlay } = require('./PlayRouteResolver');
+const { evaluateConditions } = require('./playbook.service');
 
 class PlaybookPlayService {
 
@@ -32,7 +33,8 @@ class PlaybookPlayService {
 
     // 1. Find the deal's playbook
     const dealRow = await db.query(
-      `SELECT d.playbook_id, p.id AS pb_id
+      `SELECT d.playbook_id, d.stage_entered_at, d.close_date, d.updated_at,
+              p.id AS pb_id
        FROM deals d
        LEFT JOIN playbooks p ON p.id = d.playbook_id
        WHERE d.id = $1 AND d.org_id = $2`,
@@ -40,6 +42,7 @@ class PlaybookPlayService {
     );
 
     let playbookId = dealRow.rows[0]?.pb_id;
+    const dealMeta  = dealRow.rows[0] || {};
 
     // Fallback to org default playbook
     if (!playbookId) {
@@ -126,6 +129,20 @@ class PlaybookPlayService {
     for (const play of playsResult.rows) {
       // Skip if already instantiated
       if (existingPlayIds.has(play.id)) continue;
+
+      // Evaluate fire_conditions before instantiating
+      const conditions = Array.isArray(play.fire_conditions) ? play.fire_conditions : [];
+      if (conditions.length > 0) {
+        const dealContext = {
+          daysInStage: Math.floor(
+            (Date.now() - new Date(dealMeta.stage_entered_at || dealMeta.updated_at)) / 86400000
+          ),
+          daysUntilClose: dealMeta.close_date
+            ? Math.ceil((new Date(dealMeta.close_date) - Date.now()) / 86400000)
+            : 999,
+        };
+        if (!evaluateConditions(conditions, dealContext)) continue;
+      }
 
       const roles = typeof play.roles === 'string' ? JSON.parse(play.roles) : play.roles;
       const coOwnerRoles = roles.filter(r => r.ownership_type === 'co_owner');
@@ -281,9 +298,10 @@ class PlaybookPlayService {
     );
     const existingPlayIds = new Set(existingResult.rows.map(r => r.play_id));
 
-    // Get the deal for entity context (owner + other fields)
+    // Get the deal for entity context (owner + fire_conditions + other fields)
     const dealResult = await db.query(
-      `SELECT d.id, d.owner_id, d.account_id, d.org_id
+      `SELECT d.id, d.owner_id, d.account_id, d.org_id,
+              d.stage_entered_at, d.close_date, d.updated_at
        FROM deals d WHERE d.id = $1`,
       [dealId]
     );
@@ -293,6 +311,20 @@ class PlaybookPlayService {
 
     for (const play of playsResult.rows) {
       if (existingPlayIds.has(play.id)) continue;
+
+      // Evaluate fire_conditions before instantiating
+      const conditions = Array.isArray(play.fire_conditions) ? play.fire_conditions : [];
+      if (conditions.length > 0) {
+        const dealContext = {
+          daysInStage: Math.floor(
+            (Date.now() - new Date(deal?.stage_entered_at || deal?.updated_at)) / 86400000
+          ),
+          daysUntilClose: deal?.close_date
+            ? Math.ceil((new Date(deal.close_date) - Date.now()) / 86400000)
+            : 999,
+        };
+        if (!evaluateConditions(conditions, dealContext)) continue;
+      }
 
       // Handover plays use same dependency logic as regular plays
       let initialStatus = 'active';

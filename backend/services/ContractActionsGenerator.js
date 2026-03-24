@@ -20,7 +20,7 @@
  */
 
 const db             = require('../config/database');
-const { resolveChannel } = require('./playbook.service');
+const { resolveChannel, evaluateConditions } = require('./playbook.service');
 const { resolveForPlay } = require('./PlayRouteResolver');
 
 // ROLE_STRATEGY map has been removed — role resolution now delegated to PlayRouteResolver.
@@ -65,43 +65,24 @@ async function loadCLMPlaysWithRoles(orgId) {
   }
 }
 
-// ── Fire condition ────────────────────────────────────────────────────────────
+// ── Fire condition context builder ────────────────────────────────────────────
 
-function daysInStatus(contract) {
+function buildFireContext(contract, renewalContractIds) {
   const ref = contract.status_changed_at || contract.updated_at || contract.created_at;
-  return Math.floor((Date.now() - new Date(ref)) / 86400000);
-}
+  const daysInStage = Math.floor((Date.now() - new Date(ref)) / 86400000);
 
-function daysToExpiry(contract) {
-  const d = contract.expiry_date || contract.end_date;
-  if (!d) return null;
-  return Math.ceil((new Date(d) - Date.now()) / 86400000);
-}
+  const expiryDate = contract.expiry_date || contract.end_date;
+  const daysToExpiry = expiryDate
+    ? Math.ceil((new Date(expiryDate) - Date.now()) / 86400000)
+    : null;
 
-function shouldFire(play, contract, renewalContractIds) {
-  const { status, review_sub_status } = contract;
-  const threshold = play.due_offset_days || 0;
-  const elapsed   = daysInStatus(contract);
-  const expiry    = daysToExpiry(contract);
-
-  switch (play.stage_key) {
-    case 'clm_in_review_with_legal':
-      return status === 'in_review' && review_sub_status === 'with_legal'    && elapsed >= threshold;
-    case 'clm_in_review_with_sales':
-      return status === 'in_review' && review_sub_status === 'with_sales'    && elapsed >= threshold;
-    case 'clm_in_review_with_customer':
-      return status === 'in_review' && review_sub_status === 'with_customer' && elapsed >= threshold;
-    case 'clm_in_signatures':
-      return status === 'in_signatures' && elapsed >= threshold;
-    case 'clm_expiring_soon':
-      return status === 'active' && expiry !== null && expiry <= threshold && expiry > 30;
-    case 'clm_expiring_soon_urgent':
-      return status === 'active' && expiry !== null && expiry <= threshold;
-    case 'clm_expired_no_renewal':
-      return status === 'expired' && !renewalContractIds.has(contract.id);
-    default:
-      return false;
-  }
+  return {
+    contractStatus:   contract.status,
+    reviewSubStatus:  contract.review_sub_status || null,
+    daysInStage,
+    daysToExpiry,
+    hasRenewal:       renewalContractIds.has(contract.id),
+  };
 }
 
 // ── Template interpolation ────────────────────────────────────────────────────
@@ -112,10 +93,10 @@ function interpolate(template, vars) {
   );
 }
 
-function buildVars(play, contract) {
+function buildVars(play, contract, fireContext) {
   return {
-    days_in_status:    daysInStatus(contract),
-    days_to_expiry:    daysToExpiry(contract) ?? 'unknown',
+    days_in_status:    fireContext.daysInStage,
+    days_to_expiry:    fireContext.daysToExpiry ?? 'unknown',
     days_since_expiry: contract.status === 'expired'
       ? Math.floor((Date.now() - new Date(contract.expiry_date || contract.end_date || contract.updated_at)) / 86400000)
       : 0,
@@ -154,9 +135,11 @@ async function insertCLMAction(orgId, userId, contract, play, title, description
 // ── Process one play for one contract ─────────────────────────────────────────
 
 async function processPlayForContract(orgId, contract, play, renewalContractIds) {
-  if (!shouldFire(play, contract, renewalContractIds)) return 0;
+  const fireContext = buildFireContext(contract, renewalContractIds);
+  const conditions  = Array.isArray(play.fire_conditions) ? play.fire_conditions : [];
+  if (!evaluateConditions(conditions, fireContext)) return 0;
 
-  const vars        = buildVars(play, contract);
+  const vars        = buildVars(play, contract, fireContext);
   const title       = interpolate(play.title, vars);
   const description = interpolate(play.description, vars);
   let   inserted    = 0;

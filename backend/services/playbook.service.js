@@ -381,6 +381,17 @@ function evaluateConditions(conditions, context) {
           return (context.contractValue || 0) > (cond.value || 0);
         case 'arr_impact':
           return context.arrImpact === true;
+        case 'contract_status_is':
+          return context.contractStatus === cond.value;
+        case 'review_sub_status_is':
+          return context.reviewSubStatus === cond.value;
+        case 'days_to_expiry': {
+          const dte = context.daysToExpiry ?? null;
+          if (dte === null) return false;
+          return applyOperator(cond.operator, dte, cond.value);
+        }
+        case 'has_no_renewal':
+          return context.hasRenewal !== true;
 
         // ── Prospect conditions ───────────────────────────────────────────
         case 'icp_score_above':
