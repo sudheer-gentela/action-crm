@@ -23,6 +23,7 @@
 const db            = require('../config/database');
 const PlaybookService = require('./playbook.service');
 const { resolveProspectChannel } = PlaybookService;
+const { resolveForPlay } = require('./PlayRouteResolver');
 
 // ═════════════════════════════════════════════════════════════════════════════
 // generateForProspect — main entry point
@@ -102,6 +103,19 @@ async function _generateFromPlays(prospect, orgId, userId, plays, playbook, play
 
     const channel = resolveProspectChannel(play.channel);
 
+    // Resolve assignee — uses play roles if present, otherwise falls back to caller
+    const playRoles = Array.isArray(play.roles) ? play.roles : [];
+    const primaryRole = playRoles.find(r => r.ownership_type === 'primary') || playRoles[0] || null;
+    const assigneeIds = await resolveForPlay({
+      orgId,
+      roleKey:      primaryRole?.role_key  || null,
+      roleId:       primaryRole?.role_id   || null,
+      entity:       prospect,
+      entityType:   'prospect',
+      callerUserId: userId,
+    });
+    const assigneeUserId = assigneeIds[0] || userId;
+
     const result = await db.query(
       `INSERT INTO prospecting_actions (
          org_id, user_id, prospect_id,
@@ -125,7 +139,7 @@ async function _generateFromPlays(prospect, orgId, userId, plays, playbook, play
        ON CONFLICT DO NOTHING
        RETURNING *`,
       [
-        orgId, userId, prospect.id,
+        orgId, assigneeUserId, prospect.id,
         play.title, play.description || null,
         channel,
         play.priority || 'medium', dueDate,

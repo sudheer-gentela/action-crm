@@ -10,6 +10,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const db = require('../config/database');
+const { resolveForPlay } = require('./PlayRouteResolver');
 
 class PlaybookPlayService {
 
@@ -163,12 +164,39 @@ class PlaybookPlayService {
       const instance = instResult.rows[0];
       playIdToInstanceId[play.id] = instance.id;
 
-      // Assign co-owners from deal team
+      // Assign co-owners from deal team, with PlayRouteResolver as fallback
       const assignees = [];
       for (const role of coOwnerRoles) {
         const members = teamByRole[role.role_id] || [];
         if (members.length === 0) {
-          warnings.push(`No team member with role "${role.role_name}" for play "${play.title}"`);
+          // No deal-team member for this role — try team queue + owner fallback
+          const resolvedIds = await resolveForPlay({
+            orgId,
+            roleKey:      role.role_key || null,
+            roleId:       role.role_id  || null,
+            entity:       { id: dealId },
+            entityType:   'deal',
+            callerUserId: userId,
+          });
+          // Skip the deal-team-members lookup (already empty) — go straight to resolved
+          for (const resolvedId of resolvedIds) {
+            if (resolvedId === userId && resolvedIds.length > 1) continue; // prefer non-caller
+            try {
+              await db.query(
+                `INSERT INTO deal_play_assignees (instance_id, user_id, role_id, assigned_by)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (instance_id, user_id) DO NOTHING`,
+                [instance.id, resolvedId, role.role_id, userId]
+              );
+              assignees.push({ userId: resolvedId, name: '', roleKey: role.role_key });
+            } catch (err) {
+              console.error('Failed to assign play (resolver fallback):', err.message);
+            }
+            break; // only first resolved user for this role
+          }
+          if (assignees.length === 0) {
+            warnings.push(`No team member with role "${role.role_name}" for play "${play.title}" — used resolver fallback`);
+          }
           continue;
         }
         for (const member of members) {
@@ -253,14 +281,13 @@ class PlaybookPlayService {
     );
     const existingPlayIds = new Set(existingResult.rows.map(r => r.play_id));
 
-    // Get the deal owner to assign handover plays to
-    const ownerResult = await db.query(
-      `SELECT d.owner_id AS user_id, u.first_name || ' ' || u.last_name AS name
-       FROM deals d JOIN users u ON u.id = d.owner_id
-       WHERE d.id = $1`,
+    // Get the deal for entity context (owner + other fields)
+    const dealResult = await db.query(
+      `SELECT d.id, d.owner_id, d.account_id, d.org_id
+       FROM deals d WHERE d.id = $1`,
       [dealId]
     );
-    const owner = ownerResult.rows[0] || null;
+    const deal = dealResult.rows[0] || null;
 
     const instances = [];
 
@@ -295,10 +322,31 @@ class PlaybookPlayService {
 
       const instance = instResult.rows[0];
 
-      // Create action assigned to deal owner
+      // Resolve assignee via PlayRouteResolver — respects role routing + team queue
+      // Falls back to deal owner, then caller userId
+      const plays_roles = Array.isArray(play.roles)
+        ? play.roles
+        : (play.roles ? (typeof play.roles === 'string' ? JSON.parse(play.roles) : play.roles) : []);
+
+      const primaryRole = plays_roles.find(r => r.ownership_type === 'primary') || plays_roles[0] || null;
+
+      const assignedUserIds = await resolveForPlay({
+        orgId,
+        roleKey:      primaryRole?.role_key  || null,
+        roleId:       primaryRole?.role_id   || null,
+        entity:       deal,
+        entityType:   'handover',
+        callerUserId: userId,
+      });
+      const assignedUserId = assignedUserIds[0] || (deal?.owner_id) || userId;
+      const assignee = assignedUserId
+        ? { userId: assignedUserId, name: '' }
+        : null;
+
+      // Create action assigned to resolved user
       let actionId = null;
-      if (initialStatus === 'active' && owner) {
-        actionId = await this._createActionForPlay(instance, owner, orgId);
+      if (initialStatus === 'active' && assignee) {
+        actionId = await this._createActionForPlay(instance, assignee, orgId);
         if (actionId) {
           await db.query(
             'UPDATE deal_play_instances SET action_id = $1 WHERE id = $2',

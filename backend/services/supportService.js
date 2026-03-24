@@ -15,6 +15,8 @@
 
 const { pool, withOrgTransaction } = require('../config/database');
 const PlaybookService = require('./playbook.service');
+const { resolveChannel } = require('./playbook.service');
+const { resolveForPlay } = require('./PlayRouteResolver');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Status transition map
@@ -148,6 +150,13 @@ async function firePlaybookPlays(orgId, caseId, stageKey) {
     // Build case context for condition evaluation
     const context = await getCaseContext(caseId);
 
+    // Load the case row once for assignment resolution
+    const caseRow = await pool.query(
+      `SELECT id, assigned_to, org_id FROM cases WHERE id = $1`,
+      [caseId]
+    );
+    const caseEntity = caseRow.rows[0] || null;
+
     for (const play of plays) {
       // Evaluate fire_conditions — same evaluator used for deal plays
       const shouldFire = PlaybookService.evaluateConditions(play.fire_conditions, context);
@@ -163,7 +172,6 @@ async function firePlaybookPlays(orgId, caseId, stageKey) {
       const assignedRoleId = primaryRole?.role_id || null;
 
       // Insert case_play — ON CONFLICT DO NOTHING preserves idempotency
-      // (same play won't be duplicated if fired twice for same stage)
       await pool.query(
         `INSERT INTO case_plays
            (org_id, case_id, play_id, status, assigned_role_id, due_at)
@@ -171,6 +179,51 @@ async function firePlaybookPlays(orgId, caseId, stageKey) {
          ON CONFLICT (case_id, play_id) DO NOTHING`,
         [orgId, caseId, play.id, assignedRoleId, dueAt]
       );
+
+      // Resolve assignee user via PlayRouteResolver
+      const assigneeIds = await resolveForPlay({
+        orgId,
+        roleKey:      primaryRole?.role_key || null,
+        roleId:       primaryRole?.role_id  || null,
+        entity:       caseEntity,
+        entityType:   'case',
+        callerUserId: caseEntity?.assigned_to || null,
+      });
+
+      // Insert into actions table (Phase 2 — cases now write actions too)
+      for (const assigneeUserId of assigneeIds) {
+        if (!assigneeUserId) continue;
+        const { action_type, next_step, is_internal } = resolveChannel(play.channel);
+        try {
+          await pool.query(
+            `INSERT INTO actions (
+               org_id, user_id, case_id,
+               title, description,
+               type, action_type, priority,
+               next_step, is_internal,
+               source, source_rule,
+               due_date, status, created_at
+             ) VALUES (
+               $1, $2, $3,
+               $4, $5,
+               $6, $6, $7,
+               $8, $9,
+               'playbook', 'playbook_play',
+               $10, 'yet_to_start', NOW()
+             )
+             ON CONFLICT DO NOTHING`,
+            [
+              orgId, assigneeUserId, caseId,
+              play.title, play.description || null,
+              action_type, play.priority || 'medium',
+              next_step, is_internal,
+              dueAt,
+            ]
+          );
+        } catch (actErr) {
+          console.error(`supportService: actions INSERT failed for play ${play.id}:`, actErr.message);
+        }
+      }
     }
   } catch (err) {
     // Non-fatal — play firing failure should not block case operations

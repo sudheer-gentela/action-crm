@@ -21,69 +21,9 @@
 
 const db             = require('../config/database');
 const { resolveChannel } = require('./playbook.service');
+const { resolveForPlay } = require('./PlayRouteResolver');
 
-// ── Role key → resolution strategy ───────────────────────────────────────────
-
-const ROLE_STRATEGY = {
-  account_executive:  'owner',
-  legal:              'legal_assignee',
-  sales_manager:      'deal_sales_manager',
-  deal_manager:       'deal_role',
-  executive_sponsor:  'deal_role',
-  solutions_engineer: 'deal_role',
-};
-
-function resolveRoleToUserId(contract, roleKey, roleId, dealTeam) {
-  const strategy = ROLE_STRATEGY[roleKey] || 'owner';
-
-  switch (strategy) {
-    case 'owner':
-      return contract.owner_id || null;
-
-    case 'legal_assignee':
-      // Only create the action if a legal person is actually assigned
-      return contract.legal_assignee_id || null;
-
-    case 'deal_sales_manager':
-      if (dealTeam[roleId] && dealTeam[roleId].length > 0) {
-        return dealTeam[roleId][0];
-      }
-      // Fallback: AE gets the urgency alert if no sales manager on the deal
-      return contract.owner_id || null;
-
-    case 'deal_role':
-      if (dealTeam[roleId] && dealTeam[roleId].length > 0) {
-        return dealTeam[roleId][0];
-      }
-      return null; // skip — role not staffed
-
-    default:
-      return contract.owner_id || null;
-  }
-}
-
-// ── Load deal team for a contract ─────────────────────────────────────────────
-
-async function loadDealTeam(dealId, orgId) {
-  if (!dealId) return {};
-  try {
-    const result = await db.query(
-      `SELECT dtm.role_id, dtm.user_id
-       FROM deal_team_members dtm
-       WHERE dtm.deal_id = $1 AND dtm.org_id = $2`,
-      [dealId, orgId]
-    );
-    const byRole = {};
-    for (const row of result.rows) {
-      if (!byRole[row.role_id]) byRole[row.role_id] = [];
-      byRole[row.role_id].push(row.user_id);
-    }
-    return byRole;
-  } catch (err) {
-    console.error('loadDealTeam error:', err.message);
-    return {};
-  }
-}
+// ROLE_STRATEGY map has been removed — role resolution now delegated to PlayRouteResolver.
 
 // ── Load CLM plays WITH their role assignments ────────────────────────────────
 
@@ -213,7 +153,7 @@ async function insertCLMAction(orgId, userId, contract, play, title, description
 
 // ── Process one play for one contract ─────────────────────────────────────────
 
-async function processPlayForContract(orgId, contract, play, renewalContractIds, dealTeam) {
+async function processPlayForContract(orgId, contract, play, renewalContractIds) {
   if (!shouldFire(play, contract, renewalContractIds)) return 0;
 
   const vars        = buildVars(play, contract);
@@ -221,11 +161,22 @@ async function processPlayForContract(orgId, contract, play, renewalContractIds,
   const description = interpolate(play.description, vars);
   let   inserted    = 0;
 
-  // No roles defined → fall back to owner
-  if (!play.roles || play.roles.length === 0) {
-    if (!contract.owner_id) return 0;
+  const roles = Array.isArray(play.roles) ? play.roles : [];
+
+  // No roles defined → fall back to owner via resolver
+  if (roles.length === 0) {
+    const userIds = await resolveForPlay({
+      orgId,
+      roleKey:      null,
+      roleId:       null,
+      entity:       contract,
+      entityType:   'contract',
+      callerUserId: contract.owner_id,
+    });
+    const userId = userIds[0];
+    if (!userId) return 0;
     try {
-      await insertCLMAction(orgId, contract.owner_id, contract, play, title, description);
+      await insertCLMAction(orgId, userId, contract, play, title, description);
       return 1;
     } catch (err) {
       console.error(`  ❌ CLM insert (no-role) contract ${contract.id}:`, err.message);
@@ -236,16 +187,25 @@ async function processPlayForContract(orgId, contract, play, renewalContractIds,
   // One action per unique resolved user across all roles
   const seenUserIds = new Set();
 
-  for (const role of play.roles) {
-    const userId = resolveRoleToUserId(contract, role.role_key, role.role_id, dealTeam);
-    if (!userId || seenUserIds.has(userId)) continue;
-    seenUserIds.add(userId);
+  for (const role of roles) {
+    const userIds = await resolveForPlay({
+      orgId,
+      roleKey:      role.role_key || null,
+      roleId:       role.role_id  || null,
+      entity:       contract,
+      entityType:   'contract',
+      callerUserId: contract.owner_id,
+    });
 
-    try {
-      await insertCLMAction(orgId, userId, contract, play, title, description);
-      inserted++;
-    } catch (err) {
-      console.error(`  ❌ CLM insert (role=${role.role_key}) contract ${contract.id}:`, err.message);
+    for (const userId of userIds) {
+      if (seenUserIds.has(userId)) continue;
+      seenUserIds.add(userId);
+      try {
+        await insertCLMAction(orgId, userId, contract, play, title, description);
+        inserted++;
+      } catch (err) {
+        console.error(`  ❌ CLM insert (role=${role.role_key}) contract ${contract.id}:`, err.message);
+      }
     }
   }
 
@@ -303,10 +263,9 @@ class ContractActionsGenerator {
         }
 
         for (const contract of orgContracts) {
-          const dealTeam = await loadDealTeam(contract.deal_id, parseInt(orgId));
           for (const play of plays) {
             totalInserted += await processPlayForContract(
-              parseInt(orgId), contract, play, renewalContractIds, dealTeam
+              parseInt(orgId), contract, play, renewalContractIds
             );
           }
         }
@@ -346,12 +305,11 @@ class ContractActionsGenerator {
         [contractId]
       );
 
-      const plays    = await loadCLMPlaysWithRoles(orgId);
-      const dealTeam = await loadDealTeam(contract.deal_id, orgId);
+      const plays = await loadCLMPlaysWithRoles(orgId);
 
       let inserted = 0;
       for (const play of plays) {
-        inserted += await processPlayForContract(orgId, contract, play, renewalContractIds, dealTeam);
+        inserted += await processPlayForContract(orgId, contract, play, renewalContractIds);
       }
 
       // ── AI Enhancement (optional, module-gated) ──────────────────────────

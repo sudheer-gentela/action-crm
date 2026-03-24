@@ -20,6 +20,7 @@
  */
 
 const db = require('../config/database');
+const { resolveForPlay } = require('./PlayRouteResolver');
 
 // ── Channel / next_step inference from action text ───────────────────────────
 
@@ -147,6 +148,31 @@ class StrapActionGenerator {
     const sourceRule = `strap_${strap.hurdle_type}`;
     const createdActions = [];
 
+    // Resolve entity for routing context (best-effort, non-blocking)
+    let entityForRouting = null;
+    try {
+      if (isProspect) {
+        const r = await db.query('SELECT id, assigned_to FROM prospects WHERE id = $1', [strap.entity_id]);
+        entityForRouting = r.rows[0] || null;
+      } else if (strap.entity_type === 'deal' || strap.entity_type === 'implementation') {
+        const r = await db.query('SELECT id, owner_id FROM deals WHERE id = $1', [strap.entity_id]);
+        entityForRouting = r.rows[0] || null;
+      }
+    } catch (_) { /* non-blocking */ }
+
+    // Resolve assignee via PlayRouteResolver — no play roles on STRAPs yet,
+    // so this goes: entity owner → caller fallback.
+    // Hook is in place for when STRAP plays gain role assignments.
+    const assigneeIds = await resolveForPlay({
+      orgId,
+      roleKey:      null,
+      roleId:       null,
+      entity:       entityForRouting,
+      entityType:   isProspect ? 'prospect' : 'deal',
+      callerUserId: userId,
+    });
+    const assigneeUserId = assigneeIds[0] || userId;
+
     for (const step of steps) {
       try {
         const channel = inferChannel(step.text);
@@ -168,7 +194,7 @@ class StrapActionGenerator {
              ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'strap',$10,'pending',NOW())
              RETURNING id`,
             [
-              orgId, userId, strap.entity_id, strap.id,
+              orgId, assigneeUserId, strap.entity_id, strap.id,
               step.text,
               `STRAP action step ${step.stepNumber}: ${strap.hurdle_title}`,
               channel,
@@ -196,7 +222,7 @@ class StrapActionGenerator {
              ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'strap',$11,$12,'yet_to_start',NOW())
              RETURNING id`,
             [
-              orgId, userId, dealId, strap.id,
+              orgId, assigneeUserId, dealId, strap.id,
               step.text,
               `STRAP action step ${step.stepNumber}: ${strap.hurdle_title}`,
               isInternal ? 'document_prep' : 'follow_up',
@@ -249,7 +275,7 @@ class StrapActionGenerator {
              ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'strap','scheduled',NOW())`,
             [
               orgId,
-              userId,
+              assigneeUserId,
               dealIdForCal,
               `[STRAP ${channelLabel}] ${step.text}`,
               `Auto-created from STRAP action plan. Step ${step.stepNumber}: ${strap.hurdle_title}. Priority: ${priority}.`,

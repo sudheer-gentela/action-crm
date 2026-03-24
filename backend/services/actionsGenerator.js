@@ -18,6 +18,7 @@ const ActionsAIEnhancer   = require('./ActionsAIEnhancer');
 const PlaybookService     = require('./playbook.service');
 const ActionConfigService = require('./actionConfig.service');
 const AgentObserver       = require('./AgentObserver');
+const { resolveForPlays } = require('./PlayRouteResolver');
 
 // ── Internal classification ───────────────────────────────────────────────────
 
@@ -141,6 +142,7 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
   let playbookStageGuidance = null;
   let playbookPlays         = [];
   let playbookId            = null;
+  let playbookPlayAssignees = new Map(); // playId → userId[]
 
   try {
     // getStageActions resolves the org default playbook internally
@@ -154,6 +156,17 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
     if (pb) {
       playbookId   = pb.id;
       playbookPlays = playbookStageActions; // same data, two names for compat
+    }
+
+    // Resolve role-based assignees for each play via PlayRouteResolver
+    if (playbookPlays.length > 0) {
+      playbookPlayAssignees = await resolveForPlays({
+        orgId,
+        plays:        playbookPlays,
+        entity:       deal,
+        entityType:   'deal',
+        callerUserId: userId,
+      });
     }
   } catch (err) {
     console.error('buildContext: PlaybookService error:', err.message);
@@ -174,6 +187,7 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
     playbookStageActions,
     playbookStageGuidance,  // NOW POPULATED — ActionsAIEnhancer.enhance() uses this
     playbookPlays,
+    playbookPlayAssignees,  // Map<playId, userId[]> — for role-routed action insertion
   };
 }
 
@@ -195,10 +209,12 @@ function deriveModuleFromAction(action) {
   return 'general';
 }
 
-async function insertAction(action, userId, orgId) {
+async function insertAction(action, userId, orgId, assigneeUserId = null) {
   const internal  = isInternalAction(action);
   const source    = action.source || 'auto_generated';
   const next_step = action.next_step || 'email';
+  // Use resolved role-based assignee when provided, otherwise fall back to deal owner
+  const effectiveUserId = assigneeUserId || userId;
 
   const result = await db.query(
     `INSERT INTO actions (
@@ -221,7 +237,7 @@ async function insertAction(action, userId, orgId) {
      ) RETURNING id`,
     [
       orgId,
-      userId,
+      effectiveUserId,
       action.type || action.action_type,
       action.title,
       action.description,
@@ -364,7 +380,11 @@ class ActionsGenerator {
 
           for (const action of allActions) {
             try {
-              const insertedId = await insertAction(action, userId, orgId);
+              // For playbook-sourced actions, use the role-resolved assignee
+              const assigneeUserId = (action.playbook_play_id && context.playbookPlayAssignees)
+                ? (context.playbookPlayAssignees.get(action.playbook_play_id)?.[0] || null)
+                : null;
+              const insertedId = await insertAction(action, userId, orgId, assigneeUserId);
               totalInserted++;
               if (insertedId) {
                 await createCalendarEntryForAction(action, insertedId, userId, orgId);
@@ -443,7 +463,10 @@ class ActionsGenerator {
       let inserted = 0;
       for (const action of allActions) {
         try {
-          const insertedId = await insertAction(action, userId, orgId);
+          const assigneeUserId = (action.playbook_play_id && context.playbookPlayAssignees)
+            ? (context.playbookPlayAssignees.get(action.playbook_play_id)?.[0] || null)
+            : null;
+          const insertedId = await insertAction(action, userId, orgId, assigneeUserId);
           inserted++;
           if (insertedId) {
             await createCalendarEntryForAction(action, insertedId, userId, orgId);
