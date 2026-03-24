@@ -10,9 +10,14 @@ const router  = express.Router();
 const db      = require('../config/database');
 const authenticateToken           = require('../middleware/auth.middleware');
 const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
+const { CHANNEL_MAP }             = require('../services/playbook.service');
 
 router.use(authenticateToken, orgContext);
 const adminOnly = requireRole('owner', 'admin');
+
+// ── Validation constants ─────────────────────────────────────────────────────
+const VALID_CHANNELS  = new Set(Object.keys(CHANNEL_MAP));
+const VALID_PRIORITIES = new Set(['high', 'medium', 'low']);
 
 // ── GET /playbook/:playbookId/stages/:stageKey ──────────────────────────────
 // List all plays for a stage
@@ -113,6 +118,53 @@ router.post('/', adminOnly, async (req, res) => {
       return res.status(400).json({ error: { message: 'playbookId, stageKey, and title are required' } });
     }
 
+    // Validate channel (must be a known canonical channel or absent)
+    if (channel !== undefined && channel !== null && !VALID_CHANNELS.has(channel)) {
+      return res.status(400).json({
+        error: { message: `Invalid channel "${channel}". Must be one of: ${[...VALID_CHANNELS].join(', ')}` },
+      });
+    }
+
+    // Validate priority
+    const resolvedPriority = priority || 'medium';
+    if (!VALID_PRIORITIES.has(resolvedPriority)) {
+      return res.status(400).json({
+        error: { message: `Invalid priority "${resolvedPriority}". Must be one of: high, medium, low` },
+      });
+    }
+
+    // Validate stageKey exists in pipeline_stages for this org + playbook type
+    {
+      const pbTypeRow = await db.query(
+        `SELECT pb.type FROM playbooks pb WHERE pb.id = $1 AND pb.org_id = $2`,
+        [playbookId, req.orgId]
+      );
+      if (pbTypeRow.rows.length > 0) {
+        const pbType   = pbTypeRow.rows[0].type;
+        const SALES_LEGACY = ['sales', 'custom', 'market', 'product'];
+        const pipeline = SALES_LEGACY.includes(pbType) ? 'sales'
+          : pbType === 'prospecting'   ? 'prospecting'
+          : pbType; // clm, service, handover_s2i, or any custom type
+
+        // Only validate if stages have been seeded for this pipeline
+        const stageCountRow = await db.query(
+          `SELECT COUNT(*) AS cnt FROM pipeline_stages WHERE org_id = $1 AND pipeline = $2`,
+          [req.orgId, pipeline]
+        );
+        if (parseInt(stageCountRow.rows[0].cnt) > 0) {
+          const stageRow = await db.query(
+            `SELECT key FROM pipeline_stages WHERE org_id = $1 AND pipeline = $2 AND key = $3 LIMIT 1`,
+            [req.orgId, pipeline, stageKey]
+          );
+          if (stageRow.rows.length === 0) {
+            return res.status(400).json({
+              error: { message: `Stage key "${stageKey}" does not exist in the "${pipeline}" pipeline for your organisation` },
+            });
+          }
+        }
+      }
+    }
+
     // Verify playbook belongs to org
     const pbCheck = await db.query(
       `SELECT id FROM playbooks WHERE id = $1 AND org_id = $2`, [playbookId, req.orgId]
@@ -145,7 +197,7 @@ router.post('/', adminOnly, async (req, res) => {
         playbookId, req.orgId, stageKey,
         title, description || null, channel || null,
         order, executionType || 'parallel', dependsOn || null, isGate || false,
-        dueOffsetDays || 3, priority || 'medium',
+        dueOffsetDays || 3, resolvedPriority,
         JSON.stringify(Array.isArray(fireConditions) ? fireConditions : []),
         suggestedAction || null,
         unlocksPlayId || null,

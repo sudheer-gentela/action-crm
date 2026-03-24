@@ -141,7 +141,8 @@ async function firePlaybookPlays(orgId, caseId, stageKey) {
     );
     if (!pbResult.rows.length) return; // no service playbook configured — silent exit
 
-    const plays = await PlaybookService.getPlaysForStage(orgId, stageKey);
+    const playbookId = pbResult.rows[0].id;
+    const plays = await PlaybookService.getPlaysForStage(orgId, playbookId, stageKey);
     if (!plays.length) return;
 
     // Build case context for condition evaluation

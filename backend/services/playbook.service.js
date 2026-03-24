@@ -32,6 +32,49 @@ const ENTITY_CONFIG = {
 // Sales-legacy types that map to the 'sales' pipeline in pipeline_stages
 const SALES_LEGACY_TYPES = ['sales', 'custom', 'market', 'product'];
 
+// ═════════════════════════════════════════════════════════════════════════════
+// CANONICAL CHANNEL MAP — single source of truth for all modules.
+// Imported by ActionsRulesEngine, PlaybookActionGenerator,
+// ContractActionsGenerator, and prospectingActions.service.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const CHANNEL_MAP = {
+  email:         { action_type: 'email_send',      next_step: 'email',         prospect_channel: 'email',    is_internal: false },
+  call:          { action_type: 'meeting_schedule', next_step: 'call',          prospect_channel: 'phone',    is_internal: false },
+  meeting:       { action_type: 'meeting_schedule', next_step: 'call',          prospect_channel: 'phone',    is_internal: false },
+  linkedin:      { action_type: 'follow_up',        next_step: 'linkedin',      prospect_channel: 'linkedin', is_internal: false },
+  whatsapp:      { action_type: 'follow_up',        next_step: 'whatsapp',      prospect_channel: 'whatsapp', is_internal: false },
+  document:      { action_type: 'document_prep',    next_step: 'document',      prospect_channel: null,       is_internal: true  },
+  internal_task: { action_type: 'task_complete',    next_step: 'internal_task', prospect_channel: null,       is_internal: true  },
+  slack:         { action_type: 'task_complete',    next_step: 'slack',         prospect_channel: null,       is_internal: true  },
+  // sms: no sms in actions.next_step CHECK constraint — maps to 'email' there
+  sms:           { action_type: 'follow_up',        next_step: 'email',         prospect_channel: 'sms',      is_internal: false },
+  phone:         { action_type: 'meeting_schedule', next_step: 'call',          prospect_channel: 'phone',    is_internal: false },
+};
+
+const DEFAULT_CHANNEL = { action_type: 'task_complete', next_step: 'email', prospect_channel: null, is_internal: false };
+
+/**
+ * Resolve a play channel to its action_type / next_step / is_internal triple.
+ * Used by ActionsRulesEngine and PlaybookActionGenerator for the actions table.
+ * @param {string|null} channel
+ * @returns {{ action_type: string, next_step: string, is_internal: boolean }}
+ */
+function resolveChannel(channel) {
+  return CHANNEL_MAP[channel] || DEFAULT_CHANNEL;
+}
+
+/**
+ * Resolve a play channel to the prospect_channel value stored in prospecting_actions.
+ * The prospecting_actions.channel CHECK is: email | linkedin | phone | sms | whatsapp.
+ * @param {string|null} channel
+ * @returns {string|null}
+ */
+function resolveProspectChannel(channel) {
+  const entry = CHANNEL_MAP[channel];
+  return entry !== undefined ? entry.prospect_channel : null;
+}
+
 // ── parsePlaybookRow ─────────────────────────────────────────────────────────
 // Safely parse JSONB fields on a playbook row.
 function parsePlaybookRow(row) {
@@ -544,7 +587,11 @@ async function fireForEntity({ orgId, playbookType, playbookId, stageKey, entity
 }
 
 module.exports = {
-  resolvePlaybook,
+  // Channel map — single source of truth
+  CHANNEL_MAP,
+  resolveChannel,
+  resolveProspectChannel,
+  // Playbook resolution
   getPlaybook,
   getPlaybookById,
   getDefaultPlaybookForEntity,

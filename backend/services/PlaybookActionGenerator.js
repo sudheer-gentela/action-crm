@@ -29,38 +29,16 @@
 const PlaybookService = require('./playbook.service');
 const db              = require('../config/database');
 
-// ── Channel → action_type mapping ────────────────────────────────────────────
-// Maps playbook_plays.channel to actions.action_type / actions.next_step
-const CHANNEL_MAP = {
-  email:         { action_type: 'email_send',       next_step: 'email'         },
-  call:          { action_type: 'meeting_schedule',  next_step: 'call'          },
-  meeting:       { action_type: 'meeting_schedule',  next_step: 'call'          },
-  document:      { action_type: 'document_prep',     next_step: 'document'      },
-  internal_task: { action_type: 'task_complete',     next_step: 'internal_task' },
-  linkedin:      { action_type: 'follow_up',         next_step: 'linkedin'      },
-  whatsapp:      { action_type: 'follow_up',         next_step: 'whatsapp'      },
-  slack:         { action_type: 'task_complete',     next_step: 'slack'         },
-  phone:         { action_type: 'meeting_schedule',  next_step: 'call'          },
-  sms:           { action_type: 'follow_up',         next_step: 'email'         }, // sms not in actions CHECK — map to email
-};
+// Import canonical channel map — single source of truth
+const { CHANNEL_MAP, resolveChannel, resolveProspectChannel } = PlaybookService;
 
 const DEFAULT_CHANNEL = { action_type: 'task_complete', next_step: 'email' };
-
-function resolveChannel(channel) {
-  return CHANNEL_MAP[channel] || DEFAULT_CHANNEL;
-}
 
 // ── Valid next_step values for actions table ──────────────────────────────────
 const VALID_NEXT_STEPS = new Set(['email', 'call', 'whatsapp', 'linkedin', 'slack', 'document', 'internal_task']);
 
 // ── Valid channel values for prospecting_actions ──────────────────────────────
 const VALID_PROSPECT_CHANNELS = new Set(['email', 'linkedin', 'phone', 'sms', 'whatsapp']);
-
-function resolveProspectChannel(channel) {
-  if (VALID_PROSPECT_CHANNELS.has(channel)) return channel;
-  if (channel === 'call' || channel === 'meeting') return 'phone';
-  return null; // nullable in prospecting_actions
-}
 
 // ── AI model config ───────────────────────────────────────────────────────────
 const AI_MODEL = 'claude-haiku-4-5-20251001';

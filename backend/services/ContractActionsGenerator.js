@@ -20,6 +20,7 @@
  */
 
 const db             = require('../config/database');
+const { resolveChannel } = require('./playbook.service');
 
 // ── Role key → resolution strategy ───────────────────────────────────────────
 
@@ -183,16 +184,10 @@ function buildVars(play, contract) {
   };
 }
 
-const CHANNEL_TO_ACTION_TYPE = {
-  email: 'email_send',
-  task:  'task_complete',
-  call:  'meeting_schedule',
-};
-
 // ── Insert one action row ─────────────────────────────────────────────────────
 
 async function insertCLMAction(orgId, userId, contract, play, title, description) {
-  const actionType = CHANNEL_TO_ACTION_TYPE[play.channel] || 'task_complete';
+  const actionType = resolveChannel(play.channel).action_type;
   const dueDate    = new Date(Date.now() + 2 * 86400000);
 
   await db.query(

@@ -28,6 +28,7 @@
  */
 
 const PlaybookService = require('./playbook.service');
+const { resolveChannel } = PlaybookService;
 
 // ── next_step per source_rule ─────────────────────────────────────────────────
 const RULE_NEXT_STEP = {
@@ -645,7 +646,7 @@ class ActionsRulesEngine {
                               || (playbookStageGuidance?.goal
                                   ? `Playbook action — stage goal: ${playbookStageGuidance.goal}`
                                   : `Playbook action for ${deal.stage_type || deal.stage} stage`),
-          action_type:      play.channel ? this._channelToActionType(play.channel) : 'follow_up',
+          action_type:      play.channel ? resolveChannel(play.channel).action_type : 'follow_up',
           priority:         play.priority || 'medium',
           due_days,
           deal_id:          deal.id,
@@ -653,14 +654,14 @@ class ActionsRulesEngine {
           suggested_action: play.suggested_action || null,
           keywords:         PlaybookService.extractKeywords(play.title),
           requires_external_evidence: PlaybookService.requiresExternalEvidence(
-                              play.channel ? this._channelToActionType(play.channel) : 'follow_up',
+                              play.channel ? resolveChannel(play.channel).action_type : 'follow_up',
                               play.title
                             ),
           deal_stage:       deal.stage_type || deal.stage,
           source_rule:      'playbook',
           source:           'playbook',
           playbook_play_id: play.id,
-          _next_step_override: play.channel || null,
+          _next_step_override: play.channel ? resolveChannel(play.channel).next_step : null,
         }));
       });
       return; // plays found and processed — skip legacy fallback
@@ -692,21 +693,6 @@ class ActionsRulesEngine {
         source:           'playbook',
       }));
     });
-  }
-
-  // Maps play channel to an action_type compatible with the rest of the system
-  static _channelToActionType(channel) {
-    const map = {
-      email:         'email_send',
-      call:          'meeting_schedule',
-      meeting:       'meeting_schedule',
-      document:      'document_prep',
-      internal_task: 'task_complete',
-      linkedin:      'email_send',
-      whatsapp:      'email_send',
-      slack:         'task_complete',
-    };
-    return map[channel] || 'follow_up';
   }
 
   // ─────────────────────────────────────────────────────────────────────────
