@@ -13,12 +13,13 @@
  */
 
 const db = require('../config/database');
-const ActionsRulesEngine  = require('./ActionsRulesEngine');
-const ActionsAIEnhancer   = require('./ActionsAIEnhancer');
-const PlaybookService     = require('./playbook.service');
-const ActionConfigService = require('./actionConfig.service');
-const AgentObserver       = require('./AgentObserver');
-const { resolveForPlays } = require('./PlayRouteResolver');
+const ActionsRulesEngine      = require('./ActionsRulesEngine');
+const ActionsAIEnhancer       = require('./ActionsAIEnhancer');
+const PlaybookService         = require('./playbook.service');
+const ActionConfigService     = require('./actionConfig.service');
+const AgentObserver           = require('./AgentObserver');
+const { resolveForPlays }     = require('./PlayRouteResolver');
+const PlaybookActionGenerator = require('./PlaybookActionGenerator');
 
 // ── Internal classification ───────────────────────────────────────────────────
 
@@ -392,16 +393,33 @@ class ActionsGenerator {
         try {
           const actionConfig = await ActionConfigService.getConfig(userId, orgId);
           const context      = await buildContext(deal, contacts, emails, meetings, files, userId, orgId);
-          const rulesActions = ActionsRulesEngine.generate(context);
 
+          // Non-playbook rules (health, timing, contacts, meetings, emails, files)
+          const rulesActions = ActionsRulesEngine.generate(context);
           console.log(`  📏 Rules: ${rulesActions.length} actions for deal ${deal.id} (${deal.name})`);
 
-          const aiActions  = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
+          // Playbook-sourced actions via PlaybookActionGenerator (replaces _playbookRules)
+          const pbMode = actionConfig.ai_enabled ? 'ai' : 'template';
+          const pbResult = await PlaybookActionGenerator.generate({
+            entityType: 'deal',
+            context,
+            playbookId: context.playbookId,
+            stageKey:   deal.stage,
+            mode:       pbMode,
+            orgId,
+            userId,
+          });
+          const pbActions = pbResult.actions;
+          if (pbActions.length) {
+            console.log(`  📖 Playbook (${pbMode}): ${pbActions.length} actions for deal ${deal.id}`);
+          }
+
+          const aiActions = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
           if (aiActions.length) {
             console.log(`  🤖 AI: ${aiActions.length} additional actions for deal ${deal.id}`);
           }
 
-          const allActions = [...rulesActions, ...aiActions];
+          const allActions = [...rulesActions, ...pbActions, ...aiActions];
           totalGenerated  += allActions.length;
 
           for (const action of allActions) {
@@ -477,9 +495,27 @@ class ActionsGenerator {
 
       const actionConfig = await ActionConfigService.getConfig(userId, orgId);
       const context      = await buildContext(deal, contactsRes.rows, emailsRes.rows, meetingsRes.rows, filesRes.rows, userId, orgId);
+
+      // Non-playbook rules
       const rulesActions = ActionsRulesEngine.generate(context);
-      const aiActions    = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
-      const allActions   = [...rulesActions, ...aiActions];
+
+      // Playbook-sourced actions via PlaybookActionGenerator (replaces _playbookRules)
+      const pbMode = actionConfig.ai_enabled ? 'ai' : 'template';
+      const pbResult = await PlaybookActionGenerator.generate({
+        entityType: 'deal',
+        context,
+        playbookId: context.playbookId,
+        stageKey:   deal.stage,
+        mode:       pbMode,
+        orgId,
+        userId,
+      });
+      if (pbResult.actions.length) {
+        console.log(`  📖 Playbook (${pbMode}): ${pbResult.actions.length} actions for deal ${dealId}`);
+      }
+
+      const aiActions  = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
+      const allActions = [...rulesActions, ...pbResult.actions, ...aiActions];
 
       await db.query(
         "DELETE FROM actions WHERE deal_id = $1 AND org_id = $2 AND source IN ('auto_generated', 'ai_generated') AND status IN ('yet_to_start', 'in_progress')",
