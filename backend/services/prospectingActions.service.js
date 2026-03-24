@@ -67,8 +67,8 @@ async function generateForProspect(prospectId, orgId, userId) {
   const existingPlayIds = new Set(existingRes.rows.filter(a => a.play_id).map(a => a.play_id));
   const existingKeys    = new Set(existingRes.rows.map(a => a.title.toLowerCase()));
 
-  // 4. Try playbook_plays rows first (FIXED PATH)
-  const playsResult = await PlaybookService.getPlaysForStage(orgId, prospect.playbook_id, prospect.stage);
+  // 4. Try playbook_plays rows first — on_demand plays only
+  const playsResult = await PlaybookService.getPlaysForStage(orgId, prospect.playbook_id, prospect.stage, 'on_demand');
 
   if (playsResult.length === 0) {
     return {

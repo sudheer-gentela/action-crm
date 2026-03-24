@@ -51,6 +51,7 @@ async function loadCLMPlaysWithRoles(orgId) {
          AND pb.type        = 'clm'
          AND pp.is_active   = TRUE
          AND pp.execution_type = 'auto'
+         AND (pp.trigger_mode IS NULL OR pp.trigger_mode = 'scheduled')
        GROUP BY pp.id
        ORDER BY pp.sort_order ASC`,
       [orgId]
@@ -63,6 +64,20 @@ async function loadCLMPlaysWithRoles(orgId) {
     console.error('loadCLMPlaysWithRoles error:', err.message);
     return [];
   }
+}
+
+// ── Schedule frequency check ──────────────────────────────────────────────────
+
+function shouldFireScheduled(play) {
+  const cfg = play.schedule_config || {};
+  const frequency = cfg.frequency || 'daily';
+  if (frequency === 'daily' || frequency === 'hourly') return true;
+  if (frequency === 'weekly') {
+    const days = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+    const configuredDay = (cfg.day || '').toLowerCase();
+    return configuredDay === days[new Date().getDay()];
+  }
+  return true;
 }
 
 // ── Fire condition context builder ────────────────────────────────────────────
@@ -135,6 +150,8 @@ async function insertCLMAction(orgId, userId, contract, play, title, description
 // ── Process one play for one contract ─────────────────────────────────────────
 
 async function processPlayForContract(orgId, contract, play, renewalContractIds) {
+  if (!shouldFireScheduled(play)) return 0;
+
   const fireContext = buildFireContext(contract, renewalContractIds);
   const conditions  = Array.isArray(play.fire_conditions) ? play.fire_conditions : [];
   if (!evaluateConditions(conditions, fireContext)) return 0;

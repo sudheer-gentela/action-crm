@@ -154,8 +154,9 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
     // Also resolve playbookId for ActionWriter stamping downstream
     const pb = await PlaybookService.getPlaybook(userId, orgId);
     if (pb) {
-      playbookId   = pb.id;
-      playbookPlays = playbookStageActions; // same data, two names for compat
+      playbookId    = pb.id;
+      // Filter to plays whose schedule_config matches the current run time
+      playbookPlays = playbookStageActions.filter(shouldFireScheduled);
     }
 
     // Resolve role-based assignees for each play via PlayRouteResolver
@@ -310,7 +311,32 @@ function isTerminalDeal(deal) {
   return deal.is_terminal === true;
 }
 
-// ── Main class ────────────────────────────────────────────────────────────────
+// ── shouldFireScheduled ───────────────────────────────────────────────────────
+// Returns true if a scheduled play's schedule_config matches the current time.
+// Called during the nightly sweep for plays with trigger_mode = 'scheduled'.
+//
+// schedule_config shape: { frequency: 'daily'|'weekly'|'hourly', day?: 'monday'... }
+// Missing or empty schedule_config = fire every time (treated as 'daily').
+//
+function shouldFireScheduled(play) {
+  if (play.trigger_mode !== 'scheduled') return true; // non-scheduled plays always pass
+
+  const cfg = play.schedule_config || {};
+  const frequency = cfg.frequency || 'daily';
+
+  if (frequency === 'daily' || frequency === 'hourly') return true;
+
+  if (frequency === 'weekly') {
+    const days = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+    const configuredDay = (cfg.day || '').toLowerCase();
+    const todayName     = days[new Date().getDay()];
+    return configuredDay === todayName;
+  }
+
+  return true; // unknown frequency — don't block
+}
+
+
 
 class ActionsGenerator {
 

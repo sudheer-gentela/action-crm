@@ -224,22 +224,31 @@ async function getStagesForPlaybook(orgId, playbookId, playbookType) {
 //   orgId      {number}
 //   playbookId {number|null}  — if null, returns []
 //   stageKey   {string}       — the stage key to fetch plays for
+//   triggerMode {string|null} — optional: 'stage_change' | 'on_demand' | 'scheduled'
+//                               if null/omitted, returns plays of all modes
 //
 // returns: Array<{ id, title, description, channel, suggested_action,
-//                  execution_type, due_offset_days, is_gate, priority, sort_order }>
-async function getPlaysForStage(orgId, playbookId, stageKey) {
+//                  execution_type, due_offset_days, is_gate, priority, sort_order,
+//                  trigger_mode, schedule_config }>
+async function getPlaysForStage(orgId, playbookId, stageKey, triggerMode = null) {
   if (!playbookId || !stageKey) return [];
+
+  const params = [playbookId, stageKey];
+  const modeClause = triggerMode
+    ? `AND (pp.trigger_mode IS NULL OR pp.trigger_mode = $${params.push(triggerMode)})`
+    : '';
 
   const result = await db.query(
     `SELECT id, title, description, channel, suggested_action,
             execution_type, due_offset_days, is_gate, priority, sort_order,
-            fire_conditions
-     FROM playbook_plays
+            fire_conditions, trigger_mode, schedule_config
+     FROM playbook_plays pp
      WHERE playbook_id = $1
        AND stage_key   = $2
        AND is_active   = true
+       ${modeClause}
      ORDER BY sort_order ASC`,
-    [playbookId, stageKey]
+    params
   );
   return result.rows;
 }
@@ -247,9 +256,8 @@ async function getPlaysForStage(orgId, playbookId, stageKey) {
 // ── getStageActions ──────────────────────────────────────────────────────────
 // Called by actionsGenerator.buildContext() to load plays for the deal's
 // current stage using the org's default sales playbook.
-//
-// This is the FIXED version — the old code called this with (orgId, stageKey)
-// but the function didn't exist. Now it resolves the default playbook first.
+// Only returns plays with trigger_mode = 'scheduled' — this is the nightly
+// cron path. Stage-change and on-demand plays are excluded here.
 //
 // params:
 //   orgId    {number}
@@ -270,7 +278,7 @@ async function getStageActions(orgId, stageKey) {
     );
     const playbookId = pbResult.rows[0]?.id;
     if (!playbookId) return [];
-    return await getPlaysForStage(orgId, playbookId, stageKey);
+    return await getPlaysForStage(orgId, playbookId, stageKey, 'scheduled');
   } catch (err) {
     console.error('[playbookService] getStageActions error:', err.message);
     return [];

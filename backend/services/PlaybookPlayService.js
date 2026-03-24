@@ -73,6 +73,7 @@ class PlaybookPlayService {
        LEFT JOIN playbook_play_roles ppr ON ppr.play_id = pp.id
        LEFT JOIN org_roles dr ON dr.id = ppr.role_id
        WHERE pp.playbook_id = $1 AND pp.stage_key = $2 AND pp.is_active = TRUE
+         AND (pp.trigger_mode IS NULL OR pp.trigger_mode = 'stage_change')
        GROUP BY pp.id
        ORDER BY pp.sort_order ASC`,
       [playbookId, stageKey]
@@ -281,6 +282,7 @@ class PlaybookPlayService {
       `SELECT pp.*
        FROM playbook_plays pp
        WHERE pp.playbook_id = $1 AND pp.stage_key = $2 AND pp.is_active = TRUE
+         AND (pp.trigger_mode IS NULL OR pp.trigger_mode = 'stage_change')
        ORDER BY pp.sort_order ASC`,
       [playbookId, stageKey]
     );
