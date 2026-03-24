@@ -633,3 +633,75 @@
     align-self: flex-start;
   }
 }
+
+/* ── Role chip queue indicator (Phase 5B) ────────────────────── */
+
+.ppe-role-chip__queue-indicator {
+  font-size: 10px;
+  font-weight: 700;
+  margin-left: 2px;
+  line-height: 1;
+}
+
+.ppe-role-chip__queue-indicator--matched {
+  color: #059669;
+}
+
+.ppe-role-chip__queue-indicator--missing {
+  color: #d1d5db;
+}
+
+/* ── Simulate result banner (Phase 5B) ───────────────────────── */
+
+.ppe-sim-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.ppe-sim-result--hit {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #6ee7b7;
+}
+
+.ppe-sim-result--miss {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+}
+
+.ppe-sim-result__close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  opacity: 0.6;
+  line-height: 1;
+}
+
+.ppe-sim-result__close:hover {
+  opacity: 1;
+}
+
+/* ── Condition type module badge ─────────────────────────────── */
+
+.ppe-condition-module {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-left: 4px;
+}
+
+.ppe-condition-module--clm      { background: #dbeafe; color: #1d4ed8; }
+.ppe-condition-module--service  { background: #fef3c7; color: #92400e; }
+.ppe-condition-module--prospect { background: #dcfce7; color: #166534; }

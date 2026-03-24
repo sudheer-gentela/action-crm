@@ -25,6 +25,11 @@ const CHANNELS = [
   { value: 'email',         label: '✉️ Email' },
   { value: 'call',          label: '📞 Call' },
   { value: 'meeting',       label: '🤝 Meeting' },
+  { value: 'linkedin',      label: '💼 LinkedIn' },
+  { value: 'whatsapp',      label: '💬 WhatsApp' },
+  { value: 'sms',           label: '📱 SMS' },
+  { value: 'phone',         label: '☎️ Phone' },
+  { value: 'slack',         label: '🟣 Slack' },
   { value: 'document',      label: '📄 Document' },
   { value: 'internal_task', label: '🏠 Internal Task' },
 ];
@@ -42,6 +47,14 @@ function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
   const [isGate, setIsGate]           = useState(play?.is_gate || false);
   const [unlocksPlayId, setUnlocksPlayId] = useState(play?.unlocks_play_id || null);
   const [dueOffsetDays, setDueOffsetDays] = useState(play?.due_offset_days ?? 3);
+  const [suggestedAction, setSuggestedAction] = useState(play?.suggested_action || '');
+  const [triggerMode, setTriggerMode] = useState(play?.trigger_mode || 'stage_change');
+  const [scheduleFrequency, setScheduleFrequency] = useState(play?.schedule_config?.frequency || 'daily');
+  const [scheduleDay, setScheduleDay] = useState(play?.schedule_config?.day || 'monday');
+  const [generationMode, setGenerationMode] = useState(play?.generation_mode || 'template');
+  const [aiTone, setAiTone]           = useState(play?.ai_config?.tone || '');
+  const [aiSourcePlaybookId, setAiSourcePlaybookId] = useState(play?.ai_config?.source_playbook_id || '');
+  const [aiCustomPrompt, setAiCustomPrompt] = useState(play?.ai_config?.custom_system_prompt || '');
   const [selectedRoles, setSelectedRoles] = useState(
     (play?.roles || []).filter(r => r.ownership_type === 'co_owner').map(r => r.role_id)
   );
@@ -64,6 +77,16 @@ function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
 
   function handleSubmit() {
     if (!title.trim()) return;
+    const scheduleConfig = triggerMode === 'scheduled'
+      ? { frequency: scheduleFrequency, ...(scheduleFrequency === 'weekly' ? { day: scheduleDay } : {}) }
+      : null;
+    const aiConfig = generationMode !== 'template'
+      ? {
+          ...(aiTone               ? { tone: aiTone }                                     : {}),
+          ...(aiSourcePlaybookId   ? { source_playbook_id: parseInt(aiSourcePlaybookId) } : {}),
+          ...(aiCustomPrompt.trim() ? { custom_system_prompt: aiCustomPrompt.trim() }     : {}),
+        }
+      : null;
     onSave({
       title: title.trim(),
       description: description.trim() || null,
@@ -73,6 +96,11 @@ function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
       isGate,
       unlocksPlayId: isGate ? (unlocksPlayId || null) : null,
       dueOffsetDays: parseInt(dueOffsetDays) || 3,
+      suggestedAction: suggestedAction.trim() || null,
+      triggerMode,
+      scheduleConfig,
+      generationMode,
+      aiConfig: Object.keys(aiConfig || {}).length > 0 ? aiConfig : null,
       roleIds: selectedRoles,
       dependsOn: executionType === 'sequential' ? dependsOn : null,
       fireConditions,
@@ -104,6 +132,18 @@ function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
           placeholder="Detailed guidance for this play…"
           rows={2}
         />
+      </div>
+
+      <div className="ppe-form__group">
+        <label>Suggested Action</label>
+        <textarea
+          className="ppe-textarea"
+          value={suggestedAction}
+          onChange={e => setSuggestedAction(e.target.value)}
+          placeholder="How-to guidance shown to the rep when completing this action…"
+          rows={2}
+        />
+        <div className="ppe-form__hint">Shown as a coaching tip when the rep opens this action.</div>
       </div>
 
       <div className="ppe-form__row">
@@ -187,6 +227,91 @@ function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
         </div>
       )}
 
+      {/* Trigger Mode */}
+      <div className="ppe-form__group">
+        <label>Trigger Mode</label>
+        <select className="ppe-select" value={triggerMode} onChange={e => setTriggerMode(e.target.value)}>
+          <option value="stage_change">🔀 Stage Change — fires when deal enters this stage</option>
+          <option value="on_demand">🖱️ On Demand — fires when Generate Actions is clicked</option>
+          <option value="scheduled">⏰ Scheduled — fires on a recurring schedule (nightly sweep)</option>
+        </select>
+      </div>
+
+      {triggerMode === 'scheduled' && (
+        <div className="ppe-form__row">
+          <div className="ppe-form__group ppe-form__group--sm">
+            <label>Frequency</label>
+            <select className="ppe-select" value={scheduleFrequency} onChange={e => setScheduleFrequency(e.target.value)}>
+              <option value="daily">Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="hourly">Hourly</option>
+            </select>
+          </div>
+          {scheduleFrequency === 'weekly' && (
+            <div className="ppe-form__group ppe-form__group--sm">
+              <label>Day of Week</label>
+              <select className="ppe-select" value={scheduleDay} onChange={e => setScheduleDay(e.target.value)}>
+                {['monday','tuesday','wednesday','thursday','friday','saturday','sunday'].map(d => (
+                  <option key={d} value={d}>{d.charAt(0).toUpperCase() + d.slice(1)}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Generation Mode */}
+      <div className="ppe-form__group">
+        <label>Generation Mode</label>
+        <select className="ppe-select" value={generationMode} onChange={e => setGenerationMode(e.target.value)}>
+          <option value="template">📋 Template — use play title/description as-is</option>
+          <option value="ai">🤖 AI — Claude enriches action with entity context</option>
+          <option value="hybrid">⚡ Hybrid — template shape, AI-enriched description</option>
+        </select>
+        <div className="ppe-form__hint">
+          {generationMode === 'template' && 'Always uses template regardless of playbook AI setting.'}
+          {generationMode === 'ai'       && 'Always calls Claude regardless of playbook AI toggle.'}
+          {generationMode === 'hybrid'   && 'Uses template structure, AI fills in the description.'}
+        </div>
+      </div>
+
+      {generationMode !== 'template' && (
+        <div className="ppe-form" style={{ background: '#fdf4ff', borderColor: '#e9d5ff', marginTop: 0, marginBottom: 14 }}>
+          <div className="ppe-form__group">
+            <label>Tone</label>
+            <select className="ppe-select" value={aiTone} onChange={e => setAiTone(e.target.value)}>
+              <option value="">— Default (no tone preamble) —</option>
+              <option value="formal">🎩 Formal — precise, no contractions, senior-stakeholder appropriate</option>
+              <option value="consultative">🤝 Consultative — advisory, trusted-partner positioning</option>
+              <option value="direct">⚡ Direct — concise, lead with the action, skip preamble</option>
+              <option value="friendly">😊 Friendly — warm, personable, supportive</option>
+            </select>
+          </div>
+          <div className="ppe-form__group">
+            <label>Cross-Playbook Context (source_playbook_id)</label>
+            <input
+              className="ppe-input"
+              type="number"
+              placeholder="Playbook ID — pulls that playbook's plays as extra context"
+              value={aiSourcePlaybookId}
+              onChange={e => setAiSourcePlaybookId(e.target.value)}
+            />
+            <div className="ppe-form__hint">Optional. Useful for CLM plays that need sales playbook context.</div>
+          </div>
+          <div className="ppe-form__group">
+            <label>Custom System Prompt</label>
+            <textarea
+              className="ppe-textarea"
+              rows={4}
+              placeholder={"Full prompt override. Supports: {{entity_summary}}, {{plays_summary}}, {{stage_key}}, {{guidance_summary}}"}
+              value={aiCustomPrompt}
+              onChange={e => setAiCustomPrompt(e.target.value)}
+            />
+            <div className="ppe-form__hint">When set, overrides all module-level prompt logic. Leave blank to use default.</div>
+          </div>
+        </div>
+      )}
+
       <div className="ppe-form__group">
         <label>Role Co-Owners</label>
         <div className="ppe-role-grid">
@@ -194,15 +319,25 @@ function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
             <label
               key={role.id}
               className={`ppe-role-chip ${selectedRoles.includes(role.id) ? 'ppe-role-chip--selected' : ''}`}
+              title={role.org_role_key
+                ? `Team queue: org_role_key="${role.org_role_key}" — matched team exists`
+                : 'No team queue configured for this role — will fall back to entity owner'}
             >
               <input type="checkbox" checked={selectedRoles.includes(role.id)} onChange={() => toggleRole(role.id)} />
               {role.name}
+              {role.org_role_key
+                ? <span className="ppe-role-chip__queue-indicator ppe-role-chip__queue-indicator--matched" title={`Team queue: ${role.org_role_key}`}>✓</span>
+                : <span className="ppe-role-chip__queue-indicator ppe-role-chip__queue-indicator--missing" title="No team queue">–</span>
+              }
             </label>
           ))}
         </div>
         {selectedRoles.length === 0 && (
           <div className="ppe-form__hint">Select at least one role to own this play</div>
         )}
+        <div className="ppe-form__hint">
+          ✓ = team queue configured (org_role_key set on a team) &nbsp;·&nbsp; – = falls back to entity owner
+        </div>
       </div>
 
       {/* Fire Conditions — controls when this play generates an action */}
@@ -228,14 +363,28 @@ function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
 // Empty conditions = fire unconditionally (safe default).
 
 const CONDITION_TYPES = [
-  { value: 'no_meeting_this_stage',  label: '📅 No meeting yet this stage',        params: [] },
-  { value: 'meeting_not_scheduled',  label: '📅 No meeting currently scheduled',   params: [] },
-  { value: 'no_email_since_meeting', label: '✉️ No follow-up email after meeting', params: [] },
-  { value: 'no_contact_role',        label: '👤 Missing contact role',             params: ['role'] },
-  { value: 'no_file_matching',       label: '📄 No file matching pattern',         params: ['pattern'] },
-  { value: 'days_in_stage',          label: '⏱ Days in stage',                    params: ['operator', 'value'] },
-  { value: 'days_until_close',       label: '📆 Days until close date',            params: ['operator', 'value'] },
-  { value: 'health_param_state',     label: '❤️ Health parameter state',           params: ['param', 'state'] },
+  // ── Deal / Sales ───────────────────────────────────────────────────────────
+  { value: 'no_meeting_this_stage',  label: '📅 No meeting yet this stage',        module: 'deal',     params: [] },
+  { value: 'meeting_not_scheduled',  label: '📅 No meeting currently scheduled',   module: 'deal',     params: [] },
+  { value: 'no_email_since_meeting', label: '✉️ No follow-up email after meeting', module: 'deal',     params: [] },
+  { value: 'no_contact_role',        label: '👤 Missing contact role',             module: 'deal',     params: ['role'] },
+  { value: 'no_file_matching',       label: '📄 No file matching pattern',         module: 'deal',     params: ['pattern'] },
+  { value: 'days_in_stage',          label: '⏱ Days in stage',                    module: 'deal',     params: ['operator', 'value'] },
+  { value: 'days_until_close',       label: '📆 Days until close date',            module: 'deal',     params: ['operator', 'value'] },
+  { value: 'health_param_state',     label: '❤️ Health parameter state',           module: 'deal',     params: ['param', 'state'] },
+  // ── CLM / Contract ─────────────────────────────────────────────────────────
+  { value: 'contract_status_is',     label: '📃 Contract status is',               module: 'clm',      params: ['contract_status'] },
+  { value: 'review_sub_status_is',   label: '🔍 Review sub-status is',             module: 'clm',      params: ['review_sub_status'] },
+  { value: 'days_to_expiry',         label: '⏳ Days to expiry',                   module: 'clm',      params: ['operator', 'value'] },
+  { value: 'has_no_renewal',         label: '🔄 Has no renewal contract',          module: 'clm',      params: [] },
+  // ── Service / Cases ────────────────────────────────────────────────────────
+  { value: 'priority_is',            label: '🚨 Case priority is',                 module: 'service',  params: ['case_priority'] },
+  { value: 'sla_tier_is',            label: '🏷️ SLA tier is',                      module: 'service',  params: ['string_value'] },
+  { value: 'response_breached',      label: '⚠️ Response SLA breached',            module: 'service',  params: [] },
+  { value: 'resolution_breached',    label: '🔴 Resolution SLA breached',          module: 'service',  params: [] },
+  // ── Prospect ───────────────────────────────────────────────────────────────
+  { value: 'icp_score_above',        label: '🎯 ICP score above',                  module: 'prospect', params: ['value'] },
+  { value: 'outreach_count_above',   label: '📤 Outreach count above',             module: 'prospect', params: ['value'] },
 ];
 
 const CONTACT_ROLES = [
@@ -274,6 +423,27 @@ const HEALTH_STATES = [
   { value: 'absent',    label: 'Absent' },
   { value: 'unknown',   label: 'Unknown' },
   { value: 'confirmed', label: 'Confirmed' },
+];
+
+const CONTRACT_STATUSES = [
+  { value: 'draft',         label: 'Draft' },
+  { value: 'in_review',     label: 'In Review' },
+  { value: 'in_signatures', label: 'In Signatures' },
+  { value: 'active',        label: 'Active' },
+  { value: 'expired',       label: 'Expired' },
+];
+
+const REVIEW_SUB_STATUSES = [
+  { value: 'with_legal',    label: 'With Legal' },
+  { value: 'with_sales',    label: 'With Sales' },
+  { value: 'with_customer', label: 'With Customer' },
+];
+
+const CASE_PRIORITIES = [
+  { value: 'critical', label: 'Critical' },
+  { value: 'high',     label: 'High' },
+  { value: 'medium',   label: 'Medium' },
+  { value: 'low',      label: 'Low' },
 ];
 
 function FireConditionsBuilder({ conditions, onChange }) {
@@ -405,6 +575,67 @@ function FireConditionsBuilder({ conditions, onChange }) {
               </>
             )}
 
+            {/* contract_status param */}
+            {meta.params.includes('contract_status') && (
+              <select
+                className="ppe-select ppe-select--sm"
+                value={cond.value || 'in_review'}
+                onChange={e => updateCondition(idx, { value: e.target.value })}
+              >
+                {CONTRACT_STATUSES.map(s => (
+                  <option key={s.value} value={s.value}>{s.label}</option>
+                ))}
+              </select>
+            )}
+
+            {/* review_sub_status param */}
+            {meta.params.includes('review_sub_status') && (
+              <select
+                className="ppe-select ppe-select--sm"
+                value={cond.value || 'with_legal'}
+                onChange={e => updateCondition(idx, { value: e.target.value })}
+              >
+                {REVIEW_SUB_STATUSES.map(s => (
+                  <option key={s.value} value={s.value}>{s.label}</option>
+                ))}
+              </select>
+            )}
+
+            {/* case_priority param */}
+            {meta.params.includes('case_priority') && (
+              <select
+                className="ppe-select ppe-select--sm"
+                value={cond.value || 'high'}
+                onChange={e => updateCondition(idx, { value: e.target.value })}
+              >
+                {CASE_PRIORITIES.map(p => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+              </select>
+            )}
+
+            {/* plain string_value param (e.g. SLA tier id) */}
+            {meta.params.includes('string_value') && (
+              <input
+                className="ppe-input ppe-input--sm"
+                placeholder="value"
+                value={cond.value || ''}
+                onChange={e => updateCondition(idx, { value: e.target.value })}
+              />
+            )}
+
+            {/* plain numeric value param (no operator — e.g. icp_score_above) */}
+            {meta.params.includes('value') && !meta.params.includes('operator') && (
+              <input
+                className="ppe-input ppe-input--xs"
+                type="number"
+                min="0"
+                placeholder="value"
+                value={cond.value ?? ''}
+                onChange={e => updateCondition(idx, { value: parseInt(e.target.value) || 0 })}
+              />
+            )}
+
             <button
               type="button"
               className="ppe-condition-remove"
@@ -422,8 +653,10 @@ function FireConditionsBuilder({ conditions, onChange }) {
 
 // ── Play Card (read-only view) ──────────────────────────────────────────────
 
-function PlayCard({ play, index, canEdit, onEdit, onDelete, allPlays = [] }) {
+function PlayCard({ play, index, canEdit, onEdit, onDelete, allPlays = [], entityId = null }) {
   const [deleting, setDeleting] = useState(false);
+  const [simulating, setSimulating] = useState(false);
+  const [simResult, setSimResult] = useState(null);
   const roles = (play.roles || []).filter(r => r.ownership_type === 'co_owner');
 
   async function handleDelete() {
@@ -433,6 +666,26 @@ function PlayCard({ play, index, canEdit, onEdit, onDelete, allPlays = [] }) {
       await onDelete(play.id);
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function handleSimulate() {
+    if (!entityId) { setSimResult({ error: 'No entity selected for simulation.' }); return; }
+    setSimulating(true);
+    setSimResult(null);
+    try {
+      const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+      const API = process.env.REACT_APP_API_URL || '';
+      const res = await fetch(
+        `${API}/api/playbook-plays/${play.id}/simulate?entityId=${entityId}&entityType=deal`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await res.json();
+      setSimResult(data);
+    } catch (err) {
+      setSimResult({ error: err.message });
+    } finally {
+      setSimulating(false);
     }
   }
 
@@ -484,9 +737,29 @@ function PlayCard({ play, index, canEdit, onEdit, onDelete, allPlays = [] }) {
       {canEdit && (
         <div className="ppe-card__actions">
           <button className="ppe-btn ppe-btn--icon" onClick={() => onEdit(play)} title="Edit">✏️</button>
+          <button
+            className="ppe-btn ppe-btn--icon"
+            onClick={handleSimulate}
+            disabled={simulating}
+            title="Simulate — test if this play would fire for an entity"
+          >
+            {simulating ? '⏳' : '▶️'}
+          </button>
           <button className="ppe-btn ppe-btn--icon ppe-btn--danger" onClick={handleDelete} disabled={deleting} title="Delete">
             {deleting ? '…' : '🗑️'}
           </button>
+        </div>
+      )}
+
+      {simResult && (
+        <div className={`ppe-sim-result ${simResult.error || simResult.would_fire === false ? 'ppe-sim-result--miss' : 'ppe-sim-result--hit'}`}>
+          {simResult.error
+            ? `⚠️ ${simResult.error}`
+            : simResult.would_fire
+              ? `✅ Would fire — ${simResult.reason || 'all conditions passed'}`
+              : `⛔ Would not fire — ${simResult.reason || 'condition not met'}`
+          }
+          <button className="ppe-sim-result__close" onClick={() => setSimResult(null)}>×</button>
         </div>
       )}
     </div>
