@@ -31,6 +31,8 @@ const ZoomParser      = require('../services/parsers/ZoomParser');
 const TeamsParser     = require('../services/parsers/TeamsParser');
 const FirefliesParser = require('../services/parsers/FirefliesParser');
 const FathomParser    = require('../services/parsers/FathomParser');
+const GongParser      = require('../services/parsers/GongParser');
+const OtterParser     = require('../services/parsers/OtterParser');
 
 
 const { findMeeting }    = require('../services/MeetingMatcher');
@@ -44,8 +46,10 @@ const PARSERS = {
   teams:         TeamsParser,
   fireflies_org: FirefliesParser,
   fireflies:     FirefliesParser,   // personal — same parser, different scope
-  fathom:        FathomParser,     // ← ADD
-
+  fathom:        FathomParser,
+  gong:          GongParser,        // org-level only (ISV/partner registration required)
+  otter_org:     OtterParser,       // org-level Otter for Business / Teams plan
+  otter:         OtterParser,       // personal — same parser, different scope
 };
 
 // ── Signature verification ────────────────────────────────────────────────────
@@ -129,12 +133,64 @@ function verifyFathomSignature(req, secret) {
   }
 }
 
+/**
+ * Verify Gong webhook signature.
+ * Gong signs the raw body with HMAC-SHA256 using the org's signing key.
+ * Header: x-gong-signature = "<hex>"
+ * Docs: https://developers.gong.io/docs/webhooks#validate-webhook-signature
+ */
+function verifyGongSignature(req, secret) {
+  const signature = req.headers['x-gong-signature'];
+  if (!signature) return false;
+
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(req.rawBody || '')
+    .digest('hex');
+
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(expected),
+      Buffer.from(signature)
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Verify Otter webhook signature.
+ * Otter signs the raw body with HMAC-SHA256 using the webhook secret.
+ * Header: x-otter-signature = "<hex>"
+ */
+function verifyOtterSignature(req, secret) {
+  const signature = req.headers['x-otter-signature'];
+  if (!signature) return false;
+
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(req.rawBody || '')
+    .digest('hex');
+
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(expected),
+      Buffer.from(signature)
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
 const SIGNATURE_VERIFIERS = {
   zoom_org:      verifyZoomSignature,
   teams:         verifyTeamsSignature,
   fireflies_org: verifyFirefliesSignature,
   fireflies:     verifyFirefliesSignature,
-  fathom:        verifyFathomSignature,   // ← ADD
+  fathom:        verifyFathomSignature,
+  gong:          verifyGongSignature,
+  otter_org:     verifyOtterSignature,
+  otter:         verifyOtterSignature,
 };
 
 // ── Secret lookup ─────────────────────────────────────────────────────────────

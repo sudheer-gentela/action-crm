@@ -61,6 +61,15 @@ const PROVIDERS = [
     secretLabel: 'Gong webhook signing key',
     comingSoon:  true,
   },
+  {
+    id:          'otter_org',
+    label:       'Otter.ai (Org)',
+    icon:        '🦦',
+    description: 'Org-wide Otter for Business integration. All reps\' calls are transcribed under one org webhook.',
+    docsUrl:     'https://otter.ai/developer',
+    secretLabel: 'Otter webhook secret',
+    comingSoon:  false,
+  },
 ];
 
 // ── Styles (inline, matching OrgAdminView aesthetic) ─────────────────────────

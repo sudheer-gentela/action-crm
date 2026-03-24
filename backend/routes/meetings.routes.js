@@ -344,4 +344,197 @@ router.patch('/:id/attendees/:personId', async (req, res) => {
 });
 
 
+// ── GET /:id/gmeet-transcript ─────────────────────────────────────────────────
+// Fetch a Google Meet transcript from the organiser's Google Drive.
+//
+// Google Meet saves transcripts as Google Docs in the organiser's Drive with
+// the title pattern: "Transcript of [Meeting Title] [Date]"
+// Requires: Google Workspace Admin to have enabled transcription for the domain,
+//           and the user to have connected Google via /auth/google.
+//
+// Flow:
+//   1. Load the meeting record to get title + start_time
+//   2. Use GoogleDriveProvider to search Drive for a matching transcript doc
+//   3. Extract the full text from the doc
+//   4. Store as a meeting_transcripts row (source = 'google_meet')
+//   5. Fire analyzeTranscript async (fire-and-forget)
+//   6. Return { transcriptId, found: true } or { found: false }
+router.get('/:id/gmeet-transcript', async (req, res) => {
+  const { id: meetingId } = req.params;
+  const { orgId, user: { userId } } = req;
+
+  try {
+    // ── 1. Load meeting ──────────────────────────────────────────
+    const meetingResult = await db.query(
+      `SELECT id, title, start_time, deal_id
+       FROM meetings
+       WHERE id = $1 AND org_id = $2 AND user_id = $3 AND deleted_at IS NULL`,
+      [meetingId, orgId, userId]
+    );
+
+    if (meetingResult.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Meeting not found' } });
+    }
+
+    const meeting = meetingResult.rows[0];
+
+    // ── 2. Verify Google is connected (GoogleDriveProvider handles token
+    //       refresh internally via tokenService / oauth_tokens table) ──────
+    const GoogleDriveProvider = require('../services/GoogleDriveProvider');
+    const driveProvider = new GoogleDriveProvider();
+
+    const connCheck = await driveProvider.checkConnection(userId);
+    if (!connCheck.connected) {
+      return res.status(400).json({
+        error: { message: 'Google account not connected. Please connect Google in Settings → Connections.' }
+      });
+    }
+
+    // ── 3. Search Drive for a matching transcript doc ─────────────
+    // GoogleDriveProvider.searchFiles() does a Drive fullText search.
+    // G-Meet saves transcript docs with titles like:
+    //   "Transcript of <Meeting Title> <Date>"
+    // We search on "Transcript of" + the meeting title keywords so the
+    // fullText index can narrow the result set.
+    const titleKeyword = (meeting.title || '').replace(/[^\w\s]/g, '').trim();
+    // Always anchor on "Transcript of" — present in every G-Meet doc title.
+    // If the meeting has a title, include it to reduce false positives.
+    const searchQuery = titleKeyword
+      ? `Transcript of ${titleKeyword}`
+      : 'Transcript of';
+
+    let transcriptDoc = null;
+    try {
+      const files = await driveProvider.searchFiles(userId, searchQuery);
+
+      // Filter to Google Docs only (G-Meet always saves as a Google Doc)
+      const docs = (files || []).filter(
+        f => f.mimeType === 'application/vnd.google-apps.document' ||
+             f.isGoogleNative
+      );
+
+      if (docs.length > 0) {
+        if (docs.length === 1) {
+          transcriptDoc = docs[0];
+        } else {
+          // Multiple hits — prefer the doc whose name best matches the meeting.
+          // Priority: date string match → title keyword match → most recent (first)
+          const dateStr = meeting.start_time
+            ? new Date(meeting.start_time).toISOString().slice(0, 10)  // "YYYY-MM-DD"
+            : null;
+          const lowerTitle = titleKeyword.toLowerCase();
+
+          transcriptDoc =
+            (dateStr   && docs.find(f => f.name && f.name.includes(dateStr)))         ||
+            (lowerTitle && docs.find(f => f.name && f.name.toLowerCase().includes(lowerTitle))) ||
+            docs[0];  // fallback: most recently modified (Drive returns modifiedTime desc)
+        }
+      }
+    } catch (driveErr) {
+      console.error('Drive search error:', driveErr.message);
+      return res.status(502).json({
+        error: { message: 'Failed to search Google Drive. Check your Google connection and try again.' }
+      });
+    }
+
+    if (!transcriptDoc) {
+      return res.json({
+        found:   false,
+        message: 'No Google Meet transcript found in Drive for this meeting. ' +
+                 'Ensure transcription is enabled in Google Workspace Admin and that the meeting has ended.',
+      });
+    }
+
+    // ── 4. Extract text via extractFileContent ────────────────────
+    // extractFileContent exports the Google Doc as .docx, then extracts
+    // plain text via contentExtractor — returns { rawText, fileName, ... }
+    let transcriptText = '';
+    try {
+      const extracted = await driveProvider.extractFileContent(userId, transcriptDoc.id);
+      transcriptText  = extracted.rawText || '';
+    } catch (exportErr) {
+      console.error('Drive export error:', exportErr.message);
+      return res.status(502).json({
+        error: { message: 'Found transcript doc but failed to read its contents. Please try again.' }
+      });
+    }
+
+    if (!transcriptText || transcriptText.trim().length < 50) {
+      return res.json({
+        found:   false,
+        message: 'Transcript doc was found but appears to be empty or too short to process.',
+      });
+    }
+
+    // ── 5. Check for duplicate (same doc already imported) ───────
+    const existing = await db.query(
+      `SELECT id FROM meeting_transcripts
+       WHERE meeting_id = $1 AND source = 'google_meet' AND org_id = $2
+       ORDER BY created_at DESC LIMIT 1`,
+      [meetingId, orgId]
+    );
+
+    let transcriptId;
+
+    if (existing.rows.length > 0) {
+      // Overwrite transcript text (re-fetch = fresher version of same doc)
+      transcriptId = existing.rows[0].id;
+      await db.query(
+        `UPDATE meeting_transcripts
+         SET transcript_text = $1,
+             analysis_status = 'pending',
+             analysis_result = NULL,
+             updated_at      = NOW()
+         WHERE id = $2`,
+        [transcriptText.trim(), transcriptId]
+      );
+      console.log(`🔄 G-Meet transcript re-fetched for meeting ${meetingId} (transcript ${transcriptId})`);
+    } else {
+      // Insert new transcript row
+      const insertResult = await db.query(
+        `INSERT INTO meeting_transcripts
+           (org_id, user_id, meeting_id, transcript_text, source, meeting_date, created_at)
+         VALUES ($1, $2, $3, $4, 'google_meet', $5, NOW())
+         RETURNING id`,
+        [
+          orgId,
+          userId,
+          meetingId,
+          transcriptText.trim(),
+          meeting.start_time ? new Date(meeting.start_time) : null,
+        ]
+      );
+
+      transcriptId = insertResult.rows[0].id;
+
+      // Back-link to meeting
+      await db.query(
+        `UPDATE meetings
+         SET transcript_id = $1, updated_at = NOW()
+         WHERE id = $2 AND org_id = $3`,
+        [transcriptId, meetingId, orgId]
+      );
+
+      console.log(`✅ G-Meet transcript stored for meeting ${meetingId} (transcript ${transcriptId})`);
+    }
+
+    // ── 6. Fire AI analysis (async, fire-and-forget) ─────────────
+    const { analyzeTranscript } = require('../services/transcriptAnalyzer');
+    analyzeTranscript(transcriptId, userId)
+      .then(() => console.log(`✅ G-Meet transcript ${transcriptId} analysis complete`))
+      .catch(err  => console.error(`❌ G-Meet transcript ${transcriptId} analysis failed:`, err.message));
+
+    return res.json({
+      found:        true,
+      transcriptId,
+      docTitle:     transcriptDoc.name,
+      message:      'Transcript fetched and analysis started.',
+    });
+
+  } catch (error) {
+    console.error('GET gmeet-transcript error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch Google Meet transcript' } });
+  }
+});
+
 module.exports = router;

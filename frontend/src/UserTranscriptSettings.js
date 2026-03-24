@@ -45,6 +45,14 @@ const PERSONAL_TOOLS = [
     docsUrl:     'https://developers.zoom.us/docs/api/rest/webhook-only-app/',
     secretLabel: 'Zoom webhook secret token',
   },
+  {
+    id:          'otter',
+    label:       'Otter.ai',
+    icon:        '🦦',
+    description: 'Otter joins your calls and sends transcripts to your personal webhook when ready.',
+    docsUrl:     'https://otter.ai/developer',
+    secretLabel: 'Otter webhook secret',
+  },
 ];
 
 const S = {

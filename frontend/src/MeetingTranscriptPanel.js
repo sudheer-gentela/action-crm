@@ -44,6 +44,8 @@ export default function MeetingTranscriptPanel({ meeting, contacts, onRefresh })
   const [uploadError,   setUploadError]   = useState('');
   const [savingStatus,  setSavingStatus]  = useState(null); // contactId being saved
   const [analysisOpen,  setAnalysisOpen]  = useState(false);
+  const [gmeetFetching, setGmeetFetching] = useState(false);
+  const [gmeetError,    setGmeetError]    = useState('');
 
   const token   = localStorage.getItem('token') || localStorage.getItem('authToken');
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
@@ -171,6 +173,33 @@ export default function MeetingTranscriptPanel({ meeting, contacts, onRefresh })
     }
   };
 
+  // ── Fetch Google Meet transcript from Drive ───────────────────
+  const handleGmeetFetch = async () => {
+    setGmeetFetching(true);
+    setGmeetError('');
+
+    try {
+      const res  = await fetch(`${API}/meetings/${meeting.id}/gmeet-transcript`, { headers });
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error?.message || 'Failed to fetch transcript');
+      }
+
+      if (!data.found) {
+        setGmeetError(data.message || 'No transcript found in Drive for this meeting.');
+        return;
+      }
+
+      // Transcript stored + analysis triggered — reload after brief delay
+      setTimeout(() => load(), 1500);
+    } catch (err) {
+      setGmeetError(err.message);
+    } finally {
+      setGmeetFetching(false);
+    }
+  };
+
   if (loading) {
     return (
       <div style={S.section}>
@@ -244,9 +273,42 @@ export default function MeetingTranscriptPanel({ meeting, contacts, onRefresh })
               You can also paste one manually.
             </div>
             {!uploadMode ? (
-              <button style={S.btnOutline} onClick={() => setUploadMode(true)}>
-                + Paste transcript
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+                <button style={S.btnOutline} onClick={() => setUploadMode(true)}>
+                  + Paste transcript
+                </button>
+                <button
+                  style={{
+                    ...S.btnOutline,
+                    display:     'flex',
+                    alignItems:  'center',
+                    gap:         6,
+                    opacity:     gmeetFetching ? 0.6 : 1,
+                    borderColor: '#4285f4',
+                    color:       '#4285f4',
+                  }}
+                  onClick={handleGmeetFetch}
+                  disabled={gmeetFetching}
+                  title="Search your Google Drive for a transcript doc saved by Google Meet"
+                >
+                  {gmeetFetching ? (
+                    <>⏳ Fetching from Drive…</>
+                  ) : (
+                    <>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
+                        <path d="M6 2h9l5 5v15a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2z" stroke="#4285f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                        <polyline points="14,2 14,8 20,8" stroke="#4285f4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                      Fetch from Google Drive
+                    </>
+                  )}
+                </button>
+                {gmeetError && (
+                  <div style={{ fontSize: 12, color: '#dc2626', maxWidth: 320, lineHeight: 1.4 }}>
+                    ⚠️ {gmeetError}
+                  </div>
+                )}
+              </div>
             ) : (
               <div style={S.uploadBox}>
                 <textarea
