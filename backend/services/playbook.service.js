@@ -229,7 +229,7 @@ async function getStagesForPlaybook(orgId, playbookId, playbookType) {
 //
 // returns: Array<{ id, title, description, channel, suggested_action,
 //                  execution_type, due_offset_days, is_gate, priority, sort_order,
-//                  trigger_mode, schedule_config }>
+//                  trigger_mode, schedule_config, generation_mode, ai_config }>
 async function getPlaysForStage(orgId, playbookId, stageKey, triggerMode = null) {
   if (!playbookId || !stageKey) return [];
 
@@ -241,7 +241,8 @@ async function getPlaysForStage(orgId, playbookId, stageKey, triggerMode = null)
   const result = await db.query(
     `SELECT id, title, description, channel, suggested_action,
             execution_type, due_offset_days, is_gate, priority, sort_order,
-            fire_conditions, trigger_mode, schedule_config
+            fire_conditions, trigger_mode, schedule_config,
+            generation_mode, ai_config
      FROM playbook_plays pp
      WHERE playbook_id = $1
        AND stage_key   = $2

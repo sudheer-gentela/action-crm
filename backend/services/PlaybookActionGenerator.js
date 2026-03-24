@@ -202,21 +202,44 @@ class PlaybookActionGenerator {
       return { actions: [], playbookId: resolvedPlaybookId, playbookName, mode, playCount: 0 };
     }
 
-    // Check AI toggle on playbook
-    const effectiveMode = (mode === 'ai' && playbook.enable_ai_actions === false) ? 'template' : mode;
+    // Check AI toggle on playbook — base effective mode
+    const playbookEffectiveMode = (mode === 'ai' && playbook.enable_ai_actions === false) ? 'template' : mode;
 
-    // ── 3. Generate actions ───────────────────────────────────────────────────
+    // ── 3. Generate actions — respecting per-play generation_mode ─────────────
+    // generation_mode on the play overrides the caller's mode:
+    //   'template' → always template, never AI
+    //   'ai'       → always AI, regardless of playbook.enable_ai_actions
+    //   'hybrid'   → template shape, AI-enriched description
+    //   null/omitted → use playbookEffectiveMode (caller's intent)
+    const templatePlays = plays.filter(p => {
+      const gm = p.generation_mode || null;
+      return gm === 'template' || (!gm && playbookEffectiveMode === 'template');
+    });
+    const aiPlays = plays.filter(p => {
+      const gm = p.generation_mode || null;
+      return gm === 'ai' || gm === 'hybrid' || (!gm && playbookEffectiveMode === 'ai');
+    });
+
     let actions = [];
-    if (effectiveMode === 'ai') {
-      actions = await this._generateWithAI(entityType, context, plays, playbook, stageKey, orgId, userId);
-      // Fallback to template if AI returns nothing
-      if (actions.length === 0) {
-        console.warn(`[PlaybookActionGenerator] AI returned no actions — falling back to template`);
-        actions = this._generateFromTemplate(entityType, context, plays, playbook, stageKey, userId);
-      }
-    } else {
-      actions = this._generateFromTemplate(entityType, context, plays, playbook, stageKey, userId);
+
+    // Template plays
+    if (templatePlays.length > 0) {
+      actions.push(...this._generateFromTemplate(entityType, context, templatePlays, playbook, stageKey, userId));
     }
+
+    // AI plays
+    if (aiPlays.length > 0) {
+      const aiGenerated = await this._generateWithAI(entityType, context, aiPlays, playbook, stageKey, orgId, userId);
+      if (aiGenerated.length > 0) {
+        actions.push(...aiGenerated);
+      } else {
+        // Fallback to template if AI returns nothing
+        console.warn(`[PlaybookActionGenerator] AI returned no actions — falling back to template for ${aiPlays.length} plays`);
+        actions.push(...this._generateFromTemplate(entityType, context, aiPlays, playbook, stageKey, userId));
+      }
+    }
+
+    const effectiveMode = aiPlays.length > 0 ? 'ai' : 'template';
 
     // Stamp playbook metadata on every action
     actions = actions.map(a => ({ ...a, playbook_id: resolvedPlaybookId, playbook_name: playbookName }));
@@ -287,7 +310,27 @@ class PlaybookActionGenerator {
   }
 
   static async _buildPrompt(entityType, context, plays, playbook, stageKey, orgId) {
-    // Check for org-level prompt override in prompts table
+    // ── Per-play ai_config: use first AI play's config as the prompt config ───
+    // custom_system_prompt on any play overrides everything else.
+    const firstAiConfig      = plays.find(p => p.ai_config)?.ai_config || null;
+    const tone               = firstAiConfig?.tone                || null;
+    const sourcePlaybookId   = firstAiConfig?.source_playbook_id  || null;
+    const customSystemPrompt = firstAiConfig?.custom_system_prompt || null;
+
+    const entitySummary   = buildEntitySummary(entityType, context);
+    const guidanceSummary = buildStageGuidanceSummary(context);
+    const playsSummary    = buildPlaysSummary(plays);
+
+    // ── custom_system_prompt: full escape hatch — overrides all module logic ──
+    if (customSystemPrompt) {
+      return customSystemPrompt
+        .replace('{{entity_summary}}',   entitySummary)
+        .replace('{{plays_summary}}',    playsSummary)
+        .replace('{{stage_key}}',        stageKey)
+        .replace('{{guidance_summary}}', guidanceSummary);
+    }
+
+    // ── Check for org-level prompt override in prompts table ──────────────────
     let systemPromptOverride = null;
     try {
       const promptResult = await db.query(
@@ -299,9 +342,31 @@ class PlaybookActionGenerator {
       systemPromptOverride = promptResult.rows[0]?.prompt_text || null;
     } catch (_) { /* prompts table may not have entity_type column yet — non-blocking */ }
 
-    const entitySummary   = buildEntitySummary(entityType, context);
-    const guidanceSummary = buildStageGuidanceSummary(context);
-    const playsSummary    = buildPlaysSummary(plays);
+    // ── Tone preambles ────────────────────────────────────────────────────────
+    const TONE_PREAMBLES = {
+      formal:       'You communicate in a formal, professional tone. Use precise language, avoid contractions, and maintain a structured approach appropriate for senior stakeholders.',
+      consultative: 'You communicate in a consultative, advisory tone. Focus on understanding needs, offering insights, and positioning as a trusted partner rather than a trusted vendor.',
+      direct:       'You communicate in a direct, concise tone. Lead with the action, skip preamble, and be specific about what needs to happen and why.',
+      friendly:     'You communicate in a warm, friendly tone. Be personable and approachable, use natural language, and make the rep feel supported rather than directed.',
+    };
+    const tonePreamble = tone && TONE_PREAMBLES[tone] ? `${TONE_PREAMBLES[tone]}\n\n` : '';
+
+    // ── source_playbook_id: pull cross-playbook context ───────────────────────
+    let crossPlaybookContext = '';
+    if (sourcePlaybookId && sourcePlaybookId !== playbook.id) {
+      try {
+        const [sourcePb, sourcePlays] = await Promise.all([
+          PlaybookService.getPlaybookById(sourcePlaybookId, orgId),
+          PlaybookService.getPlaysForStage(orgId, sourcePlaybookId, stageKey),
+        ]);
+        if (sourcePb) {
+          crossPlaybookContext = `\n## CONTEXT FROM LINKED PLAYBOOK: ${sourcePb.name}\n` +
+            (sourcePlays.length > 0 ? `Related plays:\n${buildPlaysSummary(sourcePlays)}\n` : '');
+        }
+      } catch (err) {
+        console.warn(`[PlaybookActionGenerator] source_playbook_id ${sourcePlaybookId} fetch failed (non-blocking):`, err.message);
+      }
+    }
 
     const moduleInstructions = {
       deal:     'You are a B2B sales coach. Generate specific, actionable next steps for this deal.',
@@ -312,28 +377,16 @@ class PlaybookActionGenerator {
     };
 
     const channelInstructions = entityType === 'prospect'
-      ? `For each action, choose the most effective channel:
-- "email"    — send an email
-- "phone"    — make a phone call  
-- "linkedin" — LinkedIn message
-- "whatsapp" — WhatsApp message
-- "sms"      — text message`
-      : `For each action, choose the most effective next_step:
-- "email"         — send an email
-- "call"          — make a phone call
-- "linkedin"      — LinkedIn message
-- "whatsapp"      — WhatsApp message
-- "document"      — create or prepare a document
-- "internal_task" — internal task with no customer contact
-- "slack"         — internal Slack message`;
+      ? `For each action, choose the most effective channel:\n- "email"    — send an email\n- "phone"    — make a phone call  \n- "linkedin" — LinkedIn message\n- "whatsapp" — WhatsApp message\n- "sms"      — text message`
+      : `For each action, choose the most effective next_step:\n- "email"         — send an email\n- "call"          — make a phone call\n- "linkedin"      — LinkedIn message\n- "whatsapp"      — WhatsApp message\n- "document"      — create or prepare a document\n- "internal_task" — internal task with no customer contact\n- "slack"         — internal Slack message`;
 
-    return systemPromptOverride || `${moduleInstructions[entityType] || moduleInstructions.deal}
+    return systemPromptOverride || `${tonePreamble}${moduleInstructions[entityType] || moduleInstructions.deal}
 
 ${channelInstructions}
 
 ## ENTITY
 ${entitySummary}
-
+${crossPlaybookContext}
 ## STAGE: ${stageKey}
 ${guidanceSummary}
 
@@ -357,7 +410,6 @@ Return ONLY a JSON array. No markdown. No preamble. Each item:
   "play_index":        0-based index of the play this action corresponds to (-1 if additional)
 }`;
   }
-
   static async _callClaude(prompt, orgId, userId, entityType) {
     const { Anthropic } = require('@anthropic-ai/sdk');
     const TokenTrackingService = require('./TokenTrackingService');
