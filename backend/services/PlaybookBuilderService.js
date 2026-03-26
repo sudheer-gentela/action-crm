@@ -82,7 +82,7 @@ async function listPlaybooks({ org_id, user_id, role, dept, status, search }) {
   if (role === 'owner' || role === 'admin') {
     const result = await pool.query(
       `SELECT p.*, pv.version_number AS live_version_number, pv.status AS version_status,
-              u.name AS created_by_name
+              u.first_name || ' ' || u.last_name AS created_by_name
        FROM playbooks p
        LEFT JOIN playbook_versions pv ON pv.id = p.current_version_id
        LEFT JOIN users u ON u.id = p.created_by
@@ -99,7 +99,7 @@ async function listPlaybooks({ org_id, user_id, role, dept, status, search }) {
   // Non-admins: filter by explicit team/user grants only
   const result = await pool.query(
     `SELECT p.*, pv.version_number AS live_version_number,
-            u.name AS created_by_name,
+            u.first_name || ' ' || u.last_name AS created_by_name,
             COALESCE(pua.access_level, pt_owner.access_level) AS user_access
      FROM playbooks p
      LEFT JOIN playbook_versions pv ON pv.id = p.current_version_id
@@ -132,7 +132,7 @@ async function listPlaybooks({ org_id, user_id, role, dept, status, search }) {
   const existingIds = new Set(result.rows.map(r => r.id));
   const allResult = await pool.query(
     `SELECT p.*, pv.version_number AS live_version_number,
-            u.name AS created_by_name, 'reader' AS user_access
+            u.first_name || ' ' || u.last_name AS created_by_name, 'reader' AS user_access
      FROM playbooks p
      LEFT JOIN playbook_versions pv ON pv.id = p.current_version_id
      LEFT JOIN users u ON u.id = p.created_by
@@ -155,8 +155,8 @@ async function getPlaybook(id) {
             pv.status AS version_status,
             pv.change_summary,
             pv.published_at,
-            u_created.name AS created_by_name,
-            u_approved.name AS approved_by_name,
+            u_created.first_name || ' ' || u_created.last_name AS created_by_name,
+            u_approved.first_name || ' ' || u_approved.last_name AS approved_by_name,
             pb_rep.name AS replacement_playbook_name
      FROM playbooks p
      LEFT JOIN playbook_versions pv ON pv.id = p.current_version_id
@@ -306,8 +306,8 @@ async function archivePlaybook({ playbook_id, archived_by, reason, replacement_p
 async function getVersionHistory(playbook_id) {
   const result = await pool.query(
     `SELECT pv.*,
-            u_created.name AS created_by_name,
-            u_approved.name AS approved_by_name
+            u_created.first_name || ' ' || u_created.last_name AS created_by_name,
+            u_approved.first_name || ' ' || u_approved.last_name AS approved_by_name
      FROM playbook_versions pv
      LEFT JOIN users u_created ON u_created.id = pv.created_by
      LEFT JOIN users u_approved ON u_approved.id = pv.approved_by
@@ -512,7 +512,7 @@ async function deletePlay(play_id) {
 async function listRegistrations({ org_id, user_id, role, status }) {
   if (role === 'owner' || role === 'admin') {
     const result = await pool.query(
-      `SELECT pr.*, u.name AS submitter_name, rv.name AS reviewer_name
+      `SELECT pr.*, u.first_name || ' ' || u.last_name AS submitter_name, rv.first_name || ' ' || rv.last_name AS reviewer_name
        FROM playbook_registrations pr
        JOIN users u ON u.id = pr.submitter_id
        LEFT JOIN users rv ON rv.id = pr.reviewer_id
@@ -524,7 +524,7 @@ async function listRegistrations({ org_id, user_id, role, status }) {
   }
 
   const result = await pool.query(
-    `SELECT pr.*, u.name AS submitter_name
+    `SELECT pr.*, u.first_name || ' ' || u.last_name AS submitter_name
      FROM playbook_registrations pr
      JOIN users u ON u.id = pr.submitter_id
      WHERE pr.org_id = $1 AND pr.submitter_id = $2
@@ -537,7 +537,7 @@ async function listRegistrations({ org_id, user_id, role, status }) {
 
 async function getRegistration(id) {
   const result = await pool.query(
-    `SELECT pr.*, u.name AS submitter_name, rv.name AS reviewer_name
+    `SELECT pr.*, u.first_name || ' ' || u.last_name AS submitter_name, rv.first_name || ' ' || rv.last_name AS reviewer_name
      FROM playbook_registrations pr
      JOIN users u ON u.id = pr.submitter_id
      LEFT JOIN users rv ON rv.id = pr.reviewer_id
@@ -719,13 +719,13 @@ async function removeTeamGrant(playbook_id, team_id) {
 
 async function getUserOverrides(playbook_id) {
   const result = await pool.query(
-    `SELECT pua.*, u.name AS user_name, u.email AS user_email,
-            sb.name AS set_by_name
+    `SELECT pua.*, u.first_name || ' ' || u.last_name AS user_name, u.email AS user_email,
+            sb.first_name || ' ' || sb.last_name AS set_by_name
      FROM playbook_user_access pua
      JOIN users u ON u.id = pua.user_id
      LEFT JOIN users sb ON sb.id = pua.set_by
      WHERE pua.playbook_id = $1
-     ORDER BY u.name`,
+     ORDER BY u.first_name, u.last_name`,
     [playbook_id]
   );
   return result.rows;
