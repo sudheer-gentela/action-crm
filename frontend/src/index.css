@@ -8,6 +8,33 @@ body {
   overflow-x: hidden;
 }
 
+/* ─────────────────────────────────────────────────────────────
+   CSS Design Tokens — used by Playbook Builder and all
+   newer components. Matches the existing app's visual style.
+   ───────────────────────────────────────────────────────────── */
+:root {
+  /* Backgrounds */
+  --color-background-primary:   #ffffff;
+  --color-background-secondary: #f7fafc;
+  --color-background-tertiary:  #edf2f7;
+
+  /* Borders */
+  --color-border-primary:   #718096;
+  --color-border-secondary: #e2e8f0;
+  --color-border-tertiary:  #edf2f7;
+
+  /* Text */
+  --color-text-primary:   #1a202c;
+  --color-text-secondary: #4a5568;
+  --color-text-tertiary:  #718096;
+  --color-text-info:      #3182ce;
+
+  /* Border radius */
+  --border-radius-sm: 4px;
+  --border-radius-md: 8px;
+  --border-radius-lg: 12px;
+}
+
 code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
