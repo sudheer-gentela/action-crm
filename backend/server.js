@@ -205,7 +205,9 @@ app.use('/api/storage',   storageRoutes);
 app.use('/api/super',      superAdminRoutes);
 app.use('/api/org/admin',  orgAdminRoutes);
 app.use('/api/org/admin',  teamsRoutes);
-app.use('/api/playbooks',  playbooksRoutes);
+app.use('/api/playbooks',              playbookBuilderRoutes);
+app.use('/api/playbook-registrations', playbookRegistrationsRoutes);
+app.use('/api/playbooks',              playbooksRoutes);
 app.use('/api/ai',         aiContextRoutes);
 app.use('/api/org-roles',  orgRolesRoutes);
 app.use('/api/deal-roles', orgRolesRoutes);
@@ -264,8 +266,7 @@ app.use('/api/org/admin', require('./routes/workflow.orgAdmin.routes'));
 app.use('/webhooks/transcript', webhookTranscriptRoutes);
 app.use('/api/transcripts', require('./routes/transcripts.routes'));
 
-app.use('/api/playbooks',               playbookBuilderRoutes);
-app.use('/api/playbook-registrations',  playbookRegistrationsRoutes);
+
 
 
 // ─── Public org context ───────────────────────────────────────
