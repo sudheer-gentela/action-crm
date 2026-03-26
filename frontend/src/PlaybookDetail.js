@@ -72,14 +72,17 @@ export default function PlaybookDetail({ playbookId, onBack, currentUser }) {
         apiService.playbookBuilder.getById(id),
         apiService.playbookBuilder.getVersions(id),
       ]);
+      // axios wraps responses in { data: {...} } — unwrap first
+      const pbData  = pbRes?.data  ?? pbRes;
+      const vData   = vRes?.data   ?? vRes;
       // Handle both route shapes:
       // builder route: { playbook, access }
       // old route:     { playbook } (no access field)
-      const pb = pbRes?.playbook ?? pbRes;
-      const resolvedAccess = pbRes?.access ?? 'reader';
+      const pb = pbData?.playbook ?? pbData;
+      const resolvedAccess = pbData?.access ?? 'reader';
       setPlaybook(pb || null);
       setAccess(resolvedAccess);
-      setVersions(vRes?.versions || []);
+      setVersions(vData?.versions || []);
       if (pb?.stages?.length) {
         setActiveStage(pb.stages[0]);
       }
@@ -95,7 +98,7 @@ export default function PlaybookDetail({ playbookId, onBack, currentUser }) {
       if (!stage_key) return;
       try {
         const res = await apiService.playbookBuilder.getPlays(id, { stage_key });
-        setPlays(res.plays || []);
+        setPlays(res?.data?.plays || res?.plays || []);
       } catch (err) {
         console.error('Failed to load plays', err);
       }
