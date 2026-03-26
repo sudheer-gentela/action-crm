@@ -1,3 +1,5 @@
+/* ============================================================
+   ArchiveModal.css
    ============================================================ */
 
 .archive-modal { width: 520px; }
@@ -13,6 +15,3 @@
 .sunset-chip--active { border-color: var(--color-text-primary); color: var(--color-text-primary); background: var(--color-background-secondary); font-weight: 500; }
 .archive-confirm-check { font-size: 13px; color: var(--color-text-secondary); margin-bottom: 18px; display: flex; align-items: flex-start; gap: 8px; }
 .archive-confirm-check input { margin-top: 2px; flex-shrink: 0; }
-
-
-/* ============================================================

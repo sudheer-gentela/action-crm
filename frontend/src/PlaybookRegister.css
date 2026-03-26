@@ -1,3 +1,5 @@
+/* ============================================================
+   PlaybookRegister.css
    ============================================================ */
 
 .playbook-register { max-width: 640px; margin: 0 auto; padding: 24px; }
@@ -37,6 +39,3 @@
 .reg-success h2 { font-size: 20px; font-weight: 500; margin: 0 0 10px; }
 .reg-success p { color: var(--color-text-secondary); font-size: 14px; margin: 0 0 24px; }
 .reg-success-actions { display: flex; justify-content: center; }
-
-
-/* ============================================================

@@ -1,9 +1,12 @@
+/* ============================================================
    PlaybookApprovals.css
    ============================================================ */
 
 .pb-approvals { padding: 24px; max-width: 1100px; margin: 0 auto; }
 .pb-approvals-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
 .pb-approvals-header h2 { margin: 0; font-size: 20px; font-weight: 500; display: flex; align-items: center; gap: 10px; }
+
+.pb-filter-select { padding: 7px 12px; border: 1px solid var(--color-border-secondary); border-radius: var(--border-radius-md); font-size: 13px; background: var(--color-background-primary); color: var(--color-text-primary); }
 
 .pb-approvals-layout { display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
 
@@ -31,6 +34,3 @@
 .approval-reason-box strong { display: block; margin-bottom: 4px; }
 .approval-reason-box p { margin: 0; }
 .approval-actions { display: flex; gap: 10px; flex-wrap: wrap; padding-top: 14px; border-top: 1px solid var(--color-border-tertiary); }
-
-
-/* ============================================================
