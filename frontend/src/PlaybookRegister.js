@@ -78,7 +78,7 @@ export default function PlaybookRegister({ onSuccess, onCancel }) {
           conflict_rule:      form.conflict_rule,
           eligibility_filter: form.eligibility_filter || undefined,
         });
-        setSavedRegId(res.registration.id);
+        setSavedRegId(res.data?.registration?.id);
         setStep(2);
       } catch (err) {
         setError(err.message);

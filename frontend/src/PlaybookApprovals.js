@@ -31,7 +31,7 @@ export default function PlaybookApprovals() {
       const res = await apiService.playbookBuilder.getRegistrations({
         status: filterStatus || undefined,
       });
-      setRegistrations(res.registrations || []);
+      setRegistrations(res.data?.registrations || []);
     } catch (err) {
       console.error('Failed to load registrations', err);
     } finally {
