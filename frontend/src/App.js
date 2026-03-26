@@ -13,6 +13,9 @@ import OrgAdminView from './OrgAdminView';
 import ActionContextPanel from './ActionContextPanel';
 import AgentInboxView from './AgentInboxView';
 import PlaybooksView from './PlaybooksView';
+import PlaybookDetail from './PlaybookDetail';
+import PlaybookRegister from './PlaybookRegister';
+import PlaybookApprovals from './PlaybookApprovals';
 import ProspectingView from './ProspectingView';
 import ContractsView from './ContractsView';
 import HandoverView from './HandoverView';
@@ -279,6 +282,7 @@ function Dashboard({ user, onLogout }) {
   const [pendingMeetingId, setPendingMeetingId]         = useState(null);
   const [pendingAccountId, setPendingAccountId]         = useState(null);
   const [pendingPlaybookFilter, setPendingPlaybookFilter] = useState(null);
+  const [pendingPlaybookId, setPendingPlaybookId]         = useState(null);
   const [pendingContractId, setPendingContractId]       = useState(null);
   const [pendingHandoverId, setPendingHandoverId]       = useState(null);
   const [pendingActionId, setPendingActionId]           = useState(null); // Phase 4: deep-link from calendar
@@ -380,6 +384,7 @@ function Dashboard({ user, onLogout }) {
       if (detail?.meetingId)  setPendingMeetingId(detail.meetingId);
       if (detail?.accountId)  setPendingAccountId(detail.accountId);
       if (detail?.playbookFilter) setPendingPlaybookFilter(detail.playbookFilter);
+      if (detail?.playbookId)     setPendingPlaybookId(detail.playbookId);
       if (detail?.actionId)   setPendingActionId(detail.actionId);
 
       handleNavClick(detail?.tab || detail);
@@ -576,6 +581,23 @@ function Dashboard({ user, onLogout }) {
             <PlaybooksView
               initialTypeFilter={pendingPlaybookFilter}
               key={pendingPlaybookFilter || 'default'}
+            />
+          )}
+          {currentTab === 'playbook-detail' && (
+            <PlaybookDetail
+              playbookId={pendingPlaybookId}
+              onBack={() => handleNavClick('playbooks')}
+            />
+          )}
+          {currentTab === 'playbook-register' && (
+            <PlaybookRegister
+              onSuccess={() => handleNavClick('playbooks')}
+              onCancel={() => handleNavClick('playbooks')}
+            />
+          )}
+          {currentTab === 'playbook-approvals' && (
+            <PlaybookApprovals
+              onBack={() => handleNavClick('playbooks')}
             />
           )}
           {currentTab === 'org-admin'   && activeRole === 'org-admin'   && <OrgAdminView />}
