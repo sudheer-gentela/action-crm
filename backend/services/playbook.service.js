@@ -233,7 +233,27 @@ async function getStagesForPlaybook(orgId, playbookId, playbookType) {
 async function getPlaysForStage(orgId, playbookId, stageKey, triggerMode = null) {
   if (!playbookId || !stageKey) return [];
 
+  // Resolve the live version number for this playbook.
+  // If no live version exists yet (brand new playbook still in draft),
+  // fall back to version_number = 1 so the Builder UI still shows plays.
+  const versionRow = await db.query(
+    `SELECT pv.version_number
+     FROM playbooks pb
+     JOIN playbook_versions pv ON pv.id = pb.current_version_id
+     WHERE pb.id = $1 AND pv.status = 'live'`,
+    [playbookId]
+  );
+  const liveVersion = versionRow.rows[0]?.version_number ?? null;
+
   const params = [playbookId, stageKey];
+
+  // If there is a live version, only return plays for that version.
+  // If no live version exists (all drafts), return all active plays so
+  // the Builder preview still works — but action engine gets nothing (correct).
+  const versionClause = liveVersion !== null
+    ? `AND pp.version_number = $${params.push(liveVersion)}`
+    : '';
+
   const modeClause = triggerMode
     ? `AND (pp.trigger_mode IS NULL OR pp.trigger_mode = $${params.push(triggerMode)})`
     : '';
@@ -247,6 +267,7 @@ async function getPlaysForStage(orgId, playbookId, stageKey, triggerMode = null)
      WHERE playbook_id = $1
        AND stage_key   = $2
        AND is_active   = true
+       ${versionClause}
        ${modeClause}
      ORDER BY sort_order ASC`,
     params
@@ -496,17 +517,33 @@ async function firePlaybookPlays({ orgId, playbookId, stageKey, entityType, enti
   const cfg = ENTITY_CONFIG[entityType];
   if (!cfg) throw new Error(`Unknown entityType: ${entityType}`);
 
+  // Resolve live version — only fire plays that have been approved
+  const versionRow = await db.query(
+    `SELECT pv.version_number
+     FROM playbooks pb
+     JOIN playbook_versions pv ON pv.id = pb.current_version_id
+     WHERE pb.id = $1 AND pv.status = 'live'`,
+    [playbookId]
+  );
+  const liveVersion = versionRow.rows[0]?.version_number ?? null;
+  // If no live version exists, nothing fires — plays must be approved first
+  if (liveVersion === null) {
+    console.warn(`[firePlaybookPlays] Playbook ${playbookId} has no live version — skipping`);
+    return { fired: 0, skipped: 0 };
+  }
+
   const playsResult = await db.query(
     `SELECT pp.id, pp.title, pp.description, pp.channel,
             pp.fire_conditions, pp.due_offset_days,
             pp.execution_type, pp.is_gate, pp.is_active,
             pp.priority, pp.sort_order, pp.suggested_action
      FROM playbook_plays pp
-     WHERE pp.playbook_id = $1
-       AND pp.stage_key   = $2
-       AND pp.is_active   = true
+     WHERE pp.playbook_id    = $1
+       AND pp.stage_key      = $2
+       AND pp.is_active      = true
+       AND pp.version_number = $3
      ORDER BY pp.sort_order ASC`,
-    [playbookId, stageKey]
+    [playbookId, stageKey, liveVersion]
   );
 
   const plays = playsResult.rows;

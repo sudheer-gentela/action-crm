@@ -169,26 +169,29 @@ async function getPlaybook(id) {
   if (!result.rows.length) throw new Error('Playbook not found');
   const playbook = result.rows[0];
 
-  // FIX: playbook_stages uses 'key' (not 'stage_key') and 'sort_order' (not 'position')
-  // FIX: no goal/entry_criteria/exit_criteria columns — select safely with COALESCE
+  // Derive the pipeline name from playbook type — same mapping used by
+  // playbook.service.js and playbook-plays.routes.js throughout the app.
+  // This makes pipeline_stages the single source of truth for stage structure.
+  const SALES_LEGACY = ['sales', 'custom', 'market', 'product'];
+  const pipeline = SALES_LEGACY.includes(playbook.type) ? 'sales'
+    : playbook.type === 'prospecting' ? 'prospecting'
+    : playbook.type; // clm, service, handover_s2i, or any custom type
+
   const stagesResult = await pool.query(
-    `SELECT ps.id, ps.key AS stage_key, ps.name, ps.sort_order AS position,
+    `SELECT ps.key AS stage_key, ps.name, ps.sort_order AS position,
             ps.is_active, ps.is_terminal,
-            NULL::text AS goal,
-            NULL::text AS entry_criteria,
-            NULL::text AS exit_criteria,
             COUNT(pp.id)::int AS play_count
-     FROM playbook_stages ps
+     FROM pipeline_stages ps
      LEFT JOIN playbook_plays pp
        ON pp.playbook_id = $1
        AND pp.stage_key = ps.key
-       AND pp.version_number = $2
        AND pp.is_active = true
-     WHERE ps.playbook_id = $1
+     WHERE ps.org_id  = $2
+       AND ps.pipeline = $3
        AND ps.is_active = true
-     GROUP BY ps.id, ps.key, ps.name, ps.sort_order, ps.is_active, ps.is_terminal
+     GROUP BY ps.key, ps.name, ps.sort_order, ps.is_active, ps.is_terminal
      ORDER BY ps.sort_order`,
-    [id, playbook.live_version_number || 1]
+    [id, playbook.org_id, pipeline]
   );
   playbook.stages = stagesResult.rows;
   return playbook;
