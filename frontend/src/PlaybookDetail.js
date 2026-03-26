@@ -65,17 +65,23 @@ export default function PlaybookDetail({ playbookId, onBack, currentUser }) {
   const canEdit = access === 'owner';
 
   const load = useCallback(async () => {
+    if (!id) return; // guard: don't fetch if id is null/undefined
     setLoading(true);
     try {
       const [pbRes, vRes] = await Promise.all([
         apiService.playbookBuilder.getById(id),
         apiService.playbookBuilder.getVersions(id),
       ]);
-      setPlaybook(pbRes.playbook);
-      setAccess(pbRes.access);
-      setVersions(vRes.versions || []);
-      if (pbRes.playbook?.stages?.length) {
-        setActiveStage(pbRes.playbook.stages[0]);
+      // Handle both route shapes:
+      // builder route: { playbook, access }
+      // old route:     { playbook } (no access field)
+      const pb = pbRes?.playbook ?? pbRes;
+      const resolvedAccess = pbRes?.access ?? 'reader';
+      setPlaybook(pb || null);
+      setAccess(resolvedAccess);
+      setVersions(vRes?.versions || []);
+      if (pb?.stages?.length) {
+        setActiveStage(pb.stages[0]);
       }
     } catch (err) {
       console.error('Failed to load playbook', err);
@@ -163,7 +169,8 @@ export default function PlaybookDetail({ playbookId, onBack, currentUser }) {
   }, [activeStage, loadPlays, load]);
 
   if (loading) return <div className="pb-detail-loading">Loading playbook…</div>;
-  if (!playbook) return <div className="pb-detail-error">Playbook not found.</div>;
+  if (!id) return <div className="pb-detail-error">No playbook selected. <button onClick={() => navigate('/playbooks')} style={{background:'none',border:'none',color:'#0F9D8E',cursor:'pointer',textDecoration:'underline'}}>Go back</button></div>;
+  if (!playbook) return <div className="pb-detail-error">Playbook not found. <button onClick={() => navigate('/playbooks')} style={{background:'none',border:'none',color:'#0F9D8E',cursor:'pointer',textDecoration:'underline'}}>Go back</button></div>;
 
   const liveVersion = versions.find((v) => v.status === 'live');
   const draftVersion = versions.find((v) => v.status === 'draft');
@@ -456,7 +463,7 @@ function PlaysList({ plays, canEdit, onEdit, playbook_id, onRefresh }) {
   const handleDelete = async (play) => {
     if (!window.confirm(`Delete play "${play.title}"?`)) return;
     try {
-      await apiService.playbookBuilder.deletePlay(playbook_id, play.id);
+      await apiDeletePlay(playbook_id, play.id);
       onRefresh();
     } catch (err) {
       alert(err.message);

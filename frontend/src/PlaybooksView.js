@@ -49,8 +49,6 @@ export default function PlaybooksView({ initialTypeFilter }) {
       window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'playbook-approvals' } }));
     } else if (path === '/playbooks/register') {
       window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'playbook-register' } }));
-    } else if (path === '/playbooks') {
-      window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'playbook-builder' } }));
     } else if (path.startsWith('/playbooks/')) {
       const id = path.split('/playbooks/')[1];
       window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'playbook-detail', playbookId: id } }));
@@ -412,15 +410,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
 
       {isAdmin && (
         <div className="pb-builder-banner">
-          <span>🏗 <strong>Playbook Builder</strong> — create and manage structured action playbooks</span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              className="sv-btn sv-btn-secondary"
-              onClick={() => navTo('/playbooks')}
-            >
-              Open Builder
-            </button>
-          </div>
+          <span>🏗 <strong>Playbook Builder</strong> — select a playbook below and click <strong>🏗 Builder</strong> to open it in the builder.</span>
         </div>
       )}
 
