@@ -104,28 +104,7 @@ function buildDefaultProspectingGuidance() {
 
 // ── GET / — list all playbooks for org ───────────────────────────────────────
 // Supports ?type=prospecting to filter by type
-router.get('/', async (req, res) => {
-  try {
-    const { type } = req.query;
-    let query = `SELECT id, name, type, description, is_default, created_at, updated_at
-       FROM playbooks
-       WHERE org_id = $1`;
-    const params = [req.orgId];
-
-    if (type) {
-      query += ` AND type = $2`;
-      params.push(type);
-    }
-
-    query += ` ORDER BY is_default DESC, name ASC`;
-
-    const result = await db.query(query, params);
-    res.json({ playbooks: result.rows });
-  } catch (err) {
-    console.error('List playbooks error:', err);
-    res.status(500).json({ error: { message: err.message } });
-  }
-});
+// GET / — handled by playbookBuilderRoutes
 
 // ── GET /default — get the org default playbook ───────────────────────────────
 router.get('/default', async (req, res) => {
@@ -144,140 +123,9 @@ router.get('/default', async (req, res) => {
   }
 });
 
-// ── GET /:id — get one playbook with full content + stage_guidance ─────────────
-router.get('/:id', async (req, res) => {
-  try {
-    const result = await db.query(
-      `SELECT * FROM playbooks WHERE id = $1 AND org_id = $2`,
-      [req.params.id, req.orgId]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'Playbook not found' } });
-    }
-    res.json({ playbook: parsePlaybook(result.rows[0]) });
-  } catch (err) {
-    console.error('Get playbook error:', err);
-    res.status(500).json({ error: { message: err.message } });
-  }
-});
+// GET /:id — handled by playbookBuilderRoutes
 
-// ── POST / — create new playbook (admin only) ─────────────────────────────────
-router.post('/', adminOnly, async (req, res) => {
-  try {
-    const {
-      name, type = 'custom', description = '',
-      content = {}, stage_guidance = {}, is_default = false,
-    } = req.body;
-
-    if (!name?.trim()) {
-      return res.status(400).json({ error: { message: 'Playbook name is required' } });
-    }
-
-    // Validate type against org's configured playbook types
-    const orgTypesResult = await db.query(
-      `SELECT settings->'playbook_types' AS types FROM organizations WHERE id = $1`,
-      [req.orgId]
-    );
-    const orgTypes = orgTypesResult.rows[0]?.types;
-    // System types are always valid regardless of org settings
-    const SYSTEM_TYPE_KEYS = ['sales', 'market', 'product', 'custom', 'prospecting', 'clm', 'handover_s2i', 'service'];
-    if (!SYSTEM_TYPE_KEYS.includes(type)) {
-      const customKeys = Array.isArray(orgTypes) ? orgTypes.map(t => t.key) : [];
-      if (!customKeys.includes(type)) {
-        return res.status(400).json({ error: { message: `type must be one of: ${[...SYSTEM_TYPE_KEYS, ...customKeys].join(', ')}` } });
-      }
-    }
-
-    if (is_default) {
-      // Clear defaults only within the same type — each type has its own default
-      await db.query(
-        `UPDATE playbooks SET is_default = FALSE WHERE org_id = $1 AND type = $2 AND is_default = TRUE`,
-        [req.orgId, type]
-      );
-    }
-
-    // Auto-populate stage_guidance from defaults when none provided.
-    // Only sales-type playbooks get deal stage defaults — everything else starts empty.
-    let resolvedGuidance;
-    if (Object.keys(stage_guidance).length > 0) {
-      resolvedGuidance = stage_guidance;
-    } else if (type === 'prospecting') {
-      resolvedGuidance = buildDefaultProspectingGuidance();
-    } else if (type === 'sales' || type === 'custom' || type === 'market' || type === 'product') {
-      resolvedGuidance = await buildDefaultGuidance(req.orgId);
-    } else {
-      resolvedGuidance = {}; // all other types start with empty guidance, admin fills via UI
-    }
-
-    const result = await db.query(
-      `INSERT INTO playbooks (org_id, name, type, description, content, stage_guidance, is_default)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING *`,
-      [req.orgId, name.trim(), type, description,
-       JSON.stringify(content), JSON.stringify(resolvedGuidance), is_default]
-    );
-
-    res.status(201).json({ playbook: parsePlaybook(result.rows[0]) });
-  } catch (err) {
-    console.error('Create playbook error:', err);
-    res.status(500).json({ error: { message: err.message } });
-  }
-});
-
-// ── PUT /:id — update playbook metadata + content (admin only) ────────────────
-router.put('/:id', adminOnly, async (req, res) => {
-  try {
-    const { name, type, description, content, stage_guidance } = req.body;
-
-    const existing = await db.query(
-      'SELECT id FROM playbooks WHERE id = $1 AND org_id = $2',
-      [req.params.id, req.orgId]
-    );
-    if (existing.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'Playbook not found' } });
-    }
-
-    if (type) {
-      const orgTypesResult = await db.query(
-        `SELECT settings->'playbook_types' AS types FROM organizations WHERE id = $1`,
-        [req.orgId]
-      );
-      const orgTypes = orgTypesResult.rows[0]?.types;
-      const validKeys = Array.isArray(orgTypes) && orgTypes.length > 0
-        ? orgTypes.map(t => t.key)
-        : ['sales', 'market', 'product', 'custom', 'prospecting', 'clm', 'handover_s2i'];
-      if (!validKeys.includes(type) && type !== 'custom' && type !== 'clm' && type !== 'handover_s2i') {
-        return res.status(400).json({ error: { message: `type must be one of: ${validKeys.join(', ')}` } });
-      }
-    }
-
-    const result = await db.query(
-      `UPDATE playbooks
-       SET name           = COALESCE($1, name),
-           type           = COALESCE($2, type),
-           description    = COALESCE($3, description),
-           content        = COALESCE($4, content),
-           stage_guidance = COALESCE($5, stage_guidance),
-           updated_at     = NOW()
-       WHERE id = $6 AND org_id = $7
-       RETURNING *`,
-      [
-        name?.trim()   || null,
-        type           || null,
-        description    ?? null,
-        content        ? JSON.stringify(content)        : null,
-        stage_guidance ? JSON.stringify(stage_guidance) : null,
-        req.params.id,
-        req.orgId,
-      ]
-    );
-
-    res.json({ playbook: parsePlaybook(result.rows[0]) });
-  } catch (err) {
-    console.error('Update playbook error:', err);
-    res.status(500).json({ error: { message: err.message } });
-  }
-});
+// POST / and PUT /:id — handled by playbookBuilderRoutes
 
 // ── GET /:id/stages — get all stage guidance for a playbook ───────────────────
 router.get('/:id/stages', async (req, res) => {
@@ -470,28 +318,7 @@ router.post('/:id/set-default', adminOnly, async (req, res) => {
 });
 
 // ── DELETE /:id — delete playbook (admin only, blocks on default) ─────────────
-router.delete('/:id', adminOnly, async (req, res) => {
-  try {
-    const existing = await db.query(
-      'SELECT id, is_default FROM playbooks WHERE id = $1 AND org_id = $2',
-      [req.params.id, req.orgId]
-    );
-    if (existing.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'Playbook not found' } });
-    }
-    if (existing.rows[0].is_default) {
-      return res.status(400).json({
-        error: { message: 'Cannot delete the default playbook. Set another playbook as default first.' },
-      });
-    }
-
-    await db.query('DELETE FROM playbooks WHERE id = $1 AND org_id = $2', [req.params.id, req.orgId]);
-    res.json({ message: 'Playbook deleted' });
-  } catch (err) {
-    console.error('Delete playbook error:', err);
-    res.status(500).json({ error: { message: err.message } });
-  }
-});
+// DELETE /:id — handled by playbookBuilderRoutes (use archive instead)
 
 // ── Helper: parse JSONB fields ────────────────────────────────────────────────
 function parsePlaybook(row) {

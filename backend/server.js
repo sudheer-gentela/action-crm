@@ -207,6 +207,7 @@ app.use('/api/org/admin',  orgAdminRoutes);
 app.use('/api/org/admin',  teamsRoutes);
 app.use('/api/playbooks',              playbookBuilderRoutes);
 app.use('/api/playbook-registrations', playbookRegistrationsRoutes);
+// Legacy stage-guidance routes only — builder handles all other /api/playbooks/* routes
 app.use('/api/playbooks',              playbooksRoutes);
 app.use('/api/ai',         aiContextRoutes);
 app.use('/api/org-roles',  orgRolesRoutes);
