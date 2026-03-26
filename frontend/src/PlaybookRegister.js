@@ -6,7 +6,6 @@ import { apiService } from './apiService';
 // ============================================================
 
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import './PlaybookRegister.css';
 
 const STEPS = [
@@ -35,8 +34,15 @@ const EMPTY_FORM = {
   access_note:        '',  // UI-only, not sent to API
 };
 
-export default function PlaybookRegister() {
-  const navigate = useNavigate();
+export default function PlaybookRegister({ onSuccess, onCancel }) {
+  const goBack = () => {
+    if (onCancel) onCancel();
+    else window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'playbooks' } }));
+  };
+  const goSuccess = () => {
+    if (onSuccess) onSuccess();
+    else window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'playbooks' } }));
+  };
   const [step, setStep] = useState(1);
   const [form, setForm] = useState({ ...EMPTY_FORM });
   const [savedRegId, setSavedRegId] = useState(null);
@@ -115,7 +121,7 @@ export default function PlaybookRegister() {
           notified when it's approved or if changes are requested.
         </p>
         <div className="reg-success-actions">
-          <button className="btn-primary" onClick={() => navigate('/playbooks')}>
+          <button className="btn-primary" onClick={goSuccess}>
             Back to Playbooks
           </button>
         </div>
@@ -126,7 +132,7 @@ export default function PlaybookRegister() {
   return (
     <div className="playbook-register">
       <div className="reg-header">
-        <button className="btn-link" onClick={() => navigate('/playbooks')}>
+        <button className="btn-link" onClick={goBack}>
           ← Back
         </button>
         <h1>Register a Playbook</h1>

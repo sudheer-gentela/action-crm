@@ -5,7 +5,7 @@ import { apiService } from './apiService';
 // ============================================================
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+
 import PlayEditor from './PlayEditor';
 import AccessManagement from './AccessManagement';
 import ArchiveModal from './ArchiveModal';
@@ -43,9 +43,12 @@ const TABS = [
 ];
 
 // ─── Main component ───────────────────────────────────────────
-export default function PlaybookDetail({ currentUser }) {
-  const { id } = useParams();
-  const navigate = useNavigate();
+export default function PlaybookDetail({ playbookId, onBack, currentUser }) {
+  const id = playbookId;
+  const navigate = (path) => {
+    if (onBack) onBack();
+    else window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'playbooks' } }));
+  };
 
   const [playbook, setPlaybook] = useState(null);
   const [access, setAccess] = useState(null); // 'owner' | 'reader' | null
@@ -170,7 +173,7 @@ export default function PlaybookDetail({ currentUser }) {
     <div className="pb-detail">
       {/* Breadcrumb */}
       <nav className="pb-breadcrumb">
-        <Link to="/playbooks">Playbooks</Link>
+        <button onClick={() => navigate('/playbooks')} style={{ background:'none', border:'none', color:'#0F9D8E', cursor:'pointer', padding:0, fontSize:'inherit' }}>Playbooks</button>
         <span className="pb-breadcrumb-sep">›</span>
         <span>{playbook.name}</span>
       </nav>
