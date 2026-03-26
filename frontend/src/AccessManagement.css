@@ -1,3 +1,5 @@
+/* ============================================================
+   AccessManagement.css
    ============================================================ */
 
 .access-management { padding-top: 20px; }
@@ -18,6 +20,3 @@
 .access-add-row input[type=number] { width: 100px; }
 .access-add-row input[type=text]   { flex: 1; min-width: 120px; }
 .access-add-row input[type=date]   { width: 140px; }
-
-
-/* ============================================================
