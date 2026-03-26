@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { apiService } from './apiService';
 import PlaybookPlaysEditor from './PlaybookPlaysEditor';
 import './SettingsView.css';
@@ -42,7 +41,21 @@ const TYPE_COLORS = {
 export default function PlaybooksView({ initialTypeFilter }) {
   const token    = localStorage.getItem('token') || localStorage.getItem('authToken');
   const API_BASE = process.env.REACT_APP_API_URL || '';
-  const navigate = useNavigate();
+
+  // App uses a custom tab-switching event system (no React Router).
+  // navTo() maps former route paths to the correct tab + optional payload.
+  const navTo = (path) => {
+    if (path === '/admin/playbooks') {
+      window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'playbook-approvals' } }));
+    } else if (path === '/playbooks/register') {
+      window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'playbook-register' } }));
+    } else if (path === '/playbooks') {
+      window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'playbook-builder' } }));
+    } else if (path.startsWith('/playbooks/')) {
+      const id = path.split('/playbooks/')[1];
+      window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'playbook-detail', playbookId: id } }));
+    }
+  };
 
   // ── Core state (unchanged) ───────────────────────────────
   const [playbooks, setPlaybooks]       = useState([]);
@@ -390,7 +403,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
           </span>
           <button
             className="sv-btn sv-btn-primary"
-            onClick={() => navigate('/admin/playbooks')}
+            onClick={() => navTo('/admin/playbooks')}
           >
             Review →
           </button>
@@ -403,7 +416,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               className="sv-btn sv-btn-secondary"
-              onClick={() => navigate('/playbooks')}
+              onClick={() => navTo('/playbooks')}
             >
               Open Builder
             </button>
@@ -416,7 +429,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
           <span>📋 Want to create a structured playbook with automated actions?</span>
           <button
             className="sv-btn sv-btn-secondary"
-            onClick={() => navigate('/playbooks/register')}
+            onClick={() => navTo('/playbooks/register')}
           >
             Register a Playbook
           </button>
@@ -456,7 +469,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
               <button
                 className="sv-btn sv-btn-secondary"
                 title="Open in Playbook Builder"
-                onClick={() => navigate(`/playbooks/${playbook.id}`)}
+                onClick={() => navTo(`/playbooks/${playbook.id}`)}
               >
                 🏗 Builder
               </button>
