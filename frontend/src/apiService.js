@@ -693,6 +693,57 @@ export const apiService = {
     // Report token
     regenerateToken:  (clientId)              => api.post(`/clients/${clientId}/report-token`),
   },
+
+  // ══════════════════════════════════════════════════════════
+  // Playbook Builder — versioning, registrations, access mgmt
+  // New routes added by the Playbook Builder module.
+  // Separate from apiService.playbooks.* which handles the
+  // legacy stage-guidance / content editing surface.
+  // ══════════════════════════════════════════════════════════
+  playbookBuilder: {
+    // ── Playbooks ─────────────────────────────────────────
+    list:    (params = {}) => api.get('/playbooks', { params }),
+    getById: (id)          => api.get(`/playbooks/${id}`),
+    create:  (data)        => api.post('/playbooks', data),
+    update:  (id, data)    => api.patch(`/playbooks/${id}`, data),
+    archive: (id, data)    => api.post(`/playbooks/${id}/archive`, data),
+
+    // ── Versions ──────────────────────────────────────────
+    getVersions:    (id)               => api.get(`/playbooks/${id}/versions`),
+    createVersion:  (id, data)         => api.post(`/playbooks/${id}/versions`, data),
+    submitVersion:  (id, v)            => api.post(`/playbooks/${id}/versions/${v}/submit`),
+    approveVersion: (id, v)            => api.post(`/playbooks/${id}/versions/${v}/approve`),
+    rejectVersion:  (id, v, reason)    => api.post(`/playbooks/${id}/versions/${v}/reject`, { reason }),
+
+    // ── Plays ─────────────────────────────────────────────
+    getPlays:   (id, params = {}) => api.get(`/playbooks/${id}/plays`, { params }),
+    createPlay: (id, data)        => api.post(`/playbooks/${id}/plays`, data),
+    updatePlay: (id, playId, data)=> api.patch(`/playbooks/${id}/plays/${playId}`, data),
+    deletePlay: (id, playId)      => api.delete(`/playbooks/${id}/plays/${playId}`),
+
+    // ── Registrations ─────────────────────────────────────
+    getRegistrations:   (params = {}) => api.get('/playbook-registrations', { params }),
+    getRegistration:    (id)          => api.get(`/playbook-registrations/${id}`),
+    createRegistration: (data)        => api.post('/playbook-registrations', data),
+    updateRegistration: (id, data)    => api.patch(`/playbook-registrations/${id}`, data),
+    submitRegistration: (id)          => api.post(`/playbook-registrations/${id}/submit`),
+    approveRegistration:(id)          => api.post(`/playbook-registrations/${id}/approve`),
+    rejectRegistration: (id, reason)  => api.post(`/playbook-registrations/${id}/reject`, { reason }),
+    requestChanges:     (id, notes)   => api.post(`/playbook-registrations/${id}/request-changes`, { notes }),
+
+    // ── Access management ─────────────────────────────────
+    resolveAccess:     (id, userId) => api.get(`/playbooks/${id}/access`, { params: { user_id: userId } }),
+    getTeamGrants:     (id)         => api.get(`/playbooks/${id}/teams`),
+    addTeamGrant:      (id, data)   => api.post(`/playbooks/${id}/teams`, data),
+    removeTeamGrant:   (id, teamId) => api.delete(`/playbooks/${id}/teams/${teamId}`),
+    getUserOverrides:  (id)         => api.get(`/playbooks/${id}/user-access`),
+    setUserOverride:   (id, data)   => api.post(`/playbooks/${id}/user-access`, data),
+    removeUserOverride:(id, userId) => api.delete(`/playbooks/${id}/user-access/${userId}`),
+
+    // ── Stats ─────────────────────────────────────────────
+    getStats:         ()   => api.get('/playbooks/stats/summary'),
+    getPlaybookStats: (id) => api.get(`/playbooks/${id}/stats`),
+  },
 };
 
 // ============================================================

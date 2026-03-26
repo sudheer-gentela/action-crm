@@ -1,0 +1,23 @@
+   ============================================================ */
+
+.access-management { padding-top: 20px; }
+.access-management h4 { margin: 0 0 6px; font-size: 15px; font-weight: 500; }
+.access-hint { font-size: 13px; color: var(--color-text-secondary); margin: 0 0 20px; }
+
+.access-section { margin-bottom: 28px; }
+.access-section h5 { font-size: 13px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-tertiary); margin: 0 0 10px; }
+
+.access-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 12px; }
+.access-table th { text-align: left; padding: 6px 10px; font-weight: 500; color: var(--color-text-tertiary); border-bottom: 1px solid var(--color-border-tertiary); font-size: 12px; }
+.access-table td { padding: 8px 10px; border-bottom: 1px solid var(--color-border-tertiary); color: var(--color-text-secondary); vertical-align: middle; }
+.table-empty { text-align: center; color: var(--color-text-tertiary); font-style: italic; }
+.user-email { color: var(--color-text-tertiary); font-size: 12px; }
+
+.access-add-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 8px; }
+.access-add-row input, .access-add-row select { padding: 6px 10px; border: 1px solid var(--color-border-secondary); border-radius: var(--border-radius-md); font-size: 13px; color: var(--color-text-primary); background: var(--color-background-primary); }
+.access-add-row input[type=number] { width: 100px; }
+.access-add-row input[type=text]   { flex: 1; min-width: 120px; }
+.access-add-row input[type=date]   { width: 140px; }
+
+
+/* ============================================================

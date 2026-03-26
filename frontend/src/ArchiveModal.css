@@ -1,0 +1,18 @@
+   ============================================================ */
+
+.archive-modal { width: 520px; }
+.archive-warning { background: #fef3c7; border-radius: var(--border-radius-md); padding: 12px 14px; font-size: 13px; color: #92400e; margin-bottom: 18px; }
+.archive-warning strong { font-weight: 600; }
+.archive-modal .form-section { margin-bottom: 16px; }
+.archive-modal .form-label { font-size: 13px; font-weight: 500; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 8px; }
+.archive-modal .form-hint { font-size: 12px; color: var(--color-text-tertiary); margin: 0; }
+.archive-modal textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--color-border-secondary); border-radius: var(--border-radius-md); font-size: 14px; color: var(--color-text-primary); background: var(--color-background-primary); resize: vertical; }
+.archive-modal input[type=number] { padding: 7px 10px; border: 1px solid var(--color-border-secondary); border-radius: var(--border-radius-md); font-size: 14px; width: 180px; color: var(--color-text-primary); background: var(--color-background-primary); }
+.sunset-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.sunset-chip { padding: 6px 14px; border: 1px solid var(--color-border-secondary); border-radius: 20px; font-size: 13px; cursor: pointer; background: var(--color-background-primary); color: var(--color-text-secondary); transition: border-color 0.12s; }
+.sunset-chip--active { border-color: var(--color-text-primary); color: var(--color-text-primary); background: var(--color-background-secondary); font-weight: 500; }
+.archive-confirm-check { font-size: 13px; color: var(--color-text-secondary); margin-bottom: 18px; display: flex; align-items: flex-start; gap: 8px; }
+.archive-confirm-check input { margin-top: 2px; flex-shrink: 0; }
+
+
+/* ============================================================

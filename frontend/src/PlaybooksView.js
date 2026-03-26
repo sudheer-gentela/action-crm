@@ -1,21 +1,28 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { apiService } from './apiService';
 import PlaybookPlaysEditor from './PlaybookPlaysEditor';
 import './SettingsView.css';
+import './PlaybooksView.css';
 
 // ════════════════════════════════════════════════════════════
-// PLAYBOOKS VIEW — standalone member-facing view
-// Reuses sv-* and pb-* CSS from SettingsView.css
-// Read-only for members, editable for org-admin / super-admin.
-// All stage lists (sales, prospecting, CLM) are fetched live —
-// no stale playbook.content.deal_stages used as the stage list.
+// PLAYBOOKS VIEW — merged view
+//
+// Preserves ALL existing behaviour:
+//   - Type tabs (sales / prospecting / CLM / handover / custom)
+//   - Stage guidance editing per type
+//   - Plays by Role sub-tab (PlaybookPlaysEditor)
+//   - Create / Delete / Set Default
+//   - Role-reactive (roleSwitch events)
+//   - Read-only mode for members
+//
+// Adds new Playbook Builder sections (admin / owner only):
+//   - Pending Approvals banner (org-admin) → links to /admin/playbooks
+//   - "Open in Playbook Builder" button on each playbook → /playbooks/:id
+//   - "Register a Playbook" link (non-admin) → /playbooks/register
 // ════════════════════════════════════════════════════════════
 
 const TEAL = '#0F9D8E';
-
-// "sales" tab absorbs legacy type values stored in older playbooks.
-// Declared at module level so it is stable and never triggers ESLint
-// react-hooks/exhaustive-deps warnings when referenced inside effects.
 const SALES_LEGACY_TYPES = ['sales', 'custom', 'market', 'product'];
 
 const STAGE_TYPE_ICONS = {
@@ -35,8 +42,9 @@ const TYPE_COLORS = {
 export default function PlaybooksView({ initialTypeFilter }) {
   const token    = localStorage.getItem('token') || localStorage.getItem('authToken');
   const API_BASE = process.env.REACT_APP_API_URL || '';
+  const navigate = useNavigate();
 
-  // ── Core state ───────────────────────────────────────────
+  // ── Core state (unchanged) ───────────────────────────────
   const [playbooks, setPlaybooks]       = useState([]);
   const [selectedId, setSelectedId]     = useState(null);
   const [playbook, setPlaybook]         = useState(null);
@@ -52,14 +60,14 @@ export default function PlaybooksView({ initialTypeFilter }) {
   const [showCompany, setShowCompany]   = useState(false);
   const [showPlaysTab, setShowPlaysTab] = useState(false);
 
-  // ── Playbook types (dynamic from org settings) ───────────
+  // ── Playbook types (unchanged) ───────────────────────────
   const [playbookTypes, setPlaybookTypes] = useState([
-    { key: 'sales',         label: 'Sales',         icon: '📘', color: '#3b82f6', is_system: true },
-    { key: 'prospecting',   label: 'Prospecting',   icon: '🎯', color: '#0F9D8E', is_system: true },
-    { key: 'handover_s2i',  label: 'Handover',      icon: '🤝', color: '#0369a1', is_system: true },
+    { key: 'sales',        label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
+    { key: 'prospecting',  label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
+    { key: 'handover_s2i', label: 'Handover',    icon: '🤝', color: '#0369a1', is_system: true },
   ]);
 
-  // ── Type filter ──────────────────────────────────────────
+  // ── Type filter (unchanged) ──────────────────────────────
   const [typeFilter, setTypeFilter] = useState(initialTypeFilter || 'sales');
   const isProspecting = typeFilter === 'prospecting';
   const isCLM         = typeFilter === 'clm';
@@ -68,19 +76,21 @@ export default function PlaybooksView({ initialTypeFilter }) {
     typeFilter === 'sales' || ['custom', 'market', 'product'].includes(typeFilter)
   );
 
-  // ── Live stage lists — fetched dynamically per playbook type ─────────────
-  // stagesMap: { [typeKey]: Stage[] } — built from playbookTypes after they load.
-  // All types use /pipeline-stages/:key uniformly — no special cases.
+  // ── Live stage lists (unchanged) ─────────────────────────
   const [stagesMap,     setStagesMap]     = useState({});
   const [stagesLoading, setStagesLoading] = useState(false);
 
-  // ── Role — reactive to role-switch events ────────────────
+  // ── Role — reactive (unchanged) ─────────────────────────
   const [activeRole, setActiveRole] = useState(
     () => sessionStorage.getItem('activeRole') || 'member'
   );
   const canEdit = activeRole === 'org-admin' || activeRole === 'super-admin';
+  const isAdmin = activeRole === 'org-admin' || activeRole === 'super-admin';
 
-  // ── Listen for role switches while mounted ───────────────
+  // ── NEW: pending registrations count (admin only) ────────
+  const [pendingCount, setPendingCount] = useState(0);
+
+  // ── Role switch listener (unchanged) ────────────────────
   useEffect(() => {
     const onSwitch = () => setActiveRole(sessionStorage.getItem('activeRole') || 'member');
     window.addEventListener('roleSwitch', onSwitch);
@@ -91,7 +101,15 @@ export default function PlaybooksView({ initialTypeFilter }) {
     };
   }, []);
 
-  // ── Fetch org playbook types ─────────────────────────────
+  // ── NEW: fetch pending registration count (admin only) ───
+  useEffect(() => {
+    if (!isAdmin) return;
+    apiService.playbookBuilder.getRegistrations({ status: 'submitted' })
+      .then(r => setPendingCount(r.registrations?.length ?? 0))
+      .catch(() => {});
+  }, [isAdmin]);
+
+  // ── Fetch org playbook types (unchanged) ─────────────────
   useEffect(() => {
     fetch(`${API_BASE}/org/admin/playbook-types`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -99,22 +117,15 @@ export default function PlaybooksView({ initialTypeFilter }) {
       .then(r => r.ok ? r.json() : Promise.reject())
       .then(data => {
         if (data.playbook_types?.length) {
-          // Always ensure system types are present — merge API response with defaults
-          // The org/admin/playbook-types endpoint may not include system types like
-          // handover_s2i that were added after the org was created
           const SYSTEM_TYPES = [
-            { key: 'sales',        label: 'Sales',        icon: '📘', color: '#3b82f6', is_system: true },
-            { key: 'prospecting',  label: 'Prospecting',  icon: '🎯', color: '#0F9D8E', is_system: true },
-            { key: 'handover_s2i', label: 'Handover',     icon: '🤝', color: '#0369a1', is_system: true },
+            { key: 'sales',        label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
+            { key: 'prospecting',  label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
+            { key: 'handover_s2i', label: 'Handover',    icon: '🤝', color: '#0369a1', is_system: true },
           ];
-          // Strip legacy 'handovers' key — correct key is 'handover_s2i'
           const cleaned  = data.playbook_types.filter(t => t.key !== 'handovers');
           const apiKeys  = new Set(cleaned.map(t => t.key));
           const missing  = SYSTEM_TYPES.filter(t => !apiKeys.has(t.key));
           const merged   = [...cleaned, ...missing];
-          console.log('[PB types] from API:', cleaned.map(t=>t.key), 'merged missing:', missing.map(t=>t.key));
-          // Only update state if the type keys actually changed — prevents
-          // the stages effect from re-running on every mount unnecessarily.
           setPlaybookTypes(prev => {
             const prevKeys = prev.map(t => t.key).sort().join(',');
             const nextKeys = merged.map(t => t.key).sort().join(',');
@@ -122,15 +133,13 @@ export default function PlaybooksView({ initialTypeFilter }) {
           });
         }
       })
-      .catch(() => { /* keep defaults — sales + prospecting */ });
+      .catch(() => {});
   }, [API_BASE, token]);
 
-  // ── Fetch stage list for the ACTIVE tab only — lazy, cached in stagesMap ──
-  // Only fetches when the user switches to a tab whose stages haven't been
-  // loaded yet. This avoids firing N requests for all pipeline types on mount.
+  // ── Fetch stages for active tab (unchanged) ──────────────
   useEffect(() => {
     if (!typeFilter) return;
-    if (stagesMap[typeFilter]) return; // already cached — skip
+    if (stagesMap[typeFilter]) return;
     setStagesLoading(true);
     const h = { Authorization: `Bearer ${token}` };
     const active = d => (d.stages || [])
@@ -143,30 +152,24 @@ export default function PlaybooksView({ initialTypeFilter }) {
       .finally(() => setStagesLoading(false));
   }, [typeFilter, API_BASE, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Active stage list for current tab ────────────────────
-  const activeLiveStages = stagesMap[typeFilter] || [];
-
-  // ── Filtered playbook list for current tab ───────────────
+  const activeLiveStages  = stagesMap[typeFilter] || [];
   const filteredPlaybooks = typeFilter === 'sales'
     ? playbooks.filter(p => SALES_LEGACY_TYPES.includes(p.type))
     : playbooks.filter(p => p.type === typeFilter);
 
-  // ── Load playbook list ───────────────────────────────────
+  // ── Load playbook list (unchanged) ───────────────────────
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
         const r = await apiService.playbooks.getAll();
-        console.log('[PB list] all playbooks:', (r.data.playbooks || []).map(p => ({ id: p.id, name: p.name, type: p.type })));
         setPlaybooks(r.data.playbooks || []);
       } catch { setError('Failed to load playbooks'); }
       finally  { setLoading(false); }
     })();
   }, []);
 
-  // ── Re-select default when tab or list changes ───────────
-  // SALES_LEGACY_TYPES is a module-level constant (never changes),
-  // so it is safe to omit from the dependency array.
+  // ── Re-select default when tab changes (unchanged) ───────
   useEffect(() => {
     const filtered = typeFilter === 'sales'
       ? playbooks.filter(p => SALES_LEGACY_TYPES.includes(p.type))
@@ -178,7 +181,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
     setShowPlaysTab(false);
   }, [typeFilter, playbooks]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Load selected playbook ───────────────────────────────
+  // ── Load selected playbook detail (unchanged) ────────────
   useEffect(() => {
     if (!selectedId) { setPlaybook(null); return; }
     setPlaybook(null);
@@ -187,24 +190,23 @@ export default function PlaybooksView({ initialTypeFilter }) {
       try {
         const r   = await apiService.playbooks.getById(selectedId);
         const raw = r.data.playbook;
-        // Normalise legacy content shape
         if (raw?.content?.stages && !raw.content.deal_stages) {
           raw.content.deal_stages = raw.content.stages;
           delete raw.content.stages;
         }
         setPlaybook(raw);
-      } catch (e) { console.error('[PB] playbook load failed:', e); setError('Failed to load playbook content'); }
+      } catch (e) { setError('Failed to load playbook content'); }
     })();
   }, [selectedId, API_BASE, token]);
 
-  // ── Flash helper ─────────────────────────────────────────
+  // ── Flash helper (unchanged) ─────────────────────────────
   const flash = useCallback((type, msg) => {
     if (type === 'success') { setSuccess(msg); setError(''); }
     else                    { setError(msg);   setSuccess(''); }
     setTimeout(() => { setSuccess(''); setError(''); }, 3000);
   }, []);
 
-  // ── CRUD ─────────────────────────────────────────────────
+  // ── CRUD (unchanged) ─────────────────────────────────────
   const handleSave = async () => {
     if (!playbook || !canEdit) return;
     setSaving(true);
@@ -276,8 +278,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
     finally     { setDeleting(false); }
   };
 
-  // ── Guidance field updaters ──────────────────────────────
-  // Used by sales tab — updates playbook.content.deal_stages by stage key
+  // ── Guidance updaters (unchanged) ────────────────────────
   const updateStageContentField = (stageKey, field, value) => {
     setPlaybook(prev => {
       const ds = prev.content?.deal_stages;
@@ -289,7 +290,6 @@ export default function PlaybooksView({ initialTypeFilter }) {
     });
   };
 
-  // Used by prospecting + CLM tabs — updates playbook.stage_guidance by stage key
   const updateGuidanceField = (stageKey, field, value) => {
     setPlaybook(prev => ({
       ...prev,
@@ -305,7 +305,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
 
   const activeType = playbookTypes.find(t => t.key === typeFilter) || playbookTypes[0];
 
-  // ── Stage guidance panel — shared by prospecting + CLM ──
+  // ── Stage guidance panel (unchanged) ────────────────────
   const renderGuidanceStages = (stages, accentColor) => {
     if (stagesLoading) return <div className="sv-loading">Loading stages…</div>;
     if (stages.length === 0) return (
@@ -340,8 +340,8 @@ export default function PlaybooksView({ initialTypeFilter }) {
               {isOpen && (
                 <div className="sv-stage-detail">
                   {[
-                    { key: 'goal',             label: 'Goal',             placeholder: 'What should happen in this stage?' },
-                    { key: 'timeline',         label: 'Timeline',         placeholder: 'e.g. 2–5 business days' },
+                    { key: 'goal',     label: 'Goal',     placeholder: 'What should happen in this stage?' },
+                    { key: 'timeline', label: 'Timeline', placeholder: 'e.g. 2–5 business days' },
                   ].map(f => (
                     <div key={f.key} className="sv-field" style={{ marginBottom: 10 }}>
                       <label>{f.label}</label>
@@ -377,6 +377,55 @@ export default function PlaybooksView({ initialTypeFilter }) {
 
   return (
     <div style={{ maxWidth: 960 }}>
+
+      {/* ═══════════════════════════════════════════════════
+          NEW: Playbook Builder banner — admin / owner only
+          Sits above the existing panel so it doesn't
+          interfere with the existing layout at all.
+      ══════════════════════════════════════════════════ */}
+      {isAdmin && pendingCount > 0 && (
+        <div className="pb-builder-banner pb-builder-banner--alert">
+          <span>
+            📋 <strong>{pendingCount} playbook registration{pendingCount !== 1 ? 's' : ''}</strong> awaiting your approval
+          </span>
+          <button
+            className="sv-btn sv-btn-primary"
+            onClick={() => navigate('/admin/playbooks')}
+          >
+            Review →
+          </button>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div className="pb-builder-banner">
+          <span>🏗 <strong>Playbook Builder</strong> — create and manage structured action playbooks</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="sv-btn sv-btn-secondary"
+              onClick={() => navigate('/playbooks')}
+            >
+              Open Builder
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!isAdmin && activeRole !== 'member' && (
+        <div className="pb-builder-banner">
+          <span>📋 Want to create a structured playbook with automated actions?</span>
+          <button
+            className="sv-btn sv-btn-secondary"
+            onClick={() => navigate('/playbooks/register')}
+          >
+            Register a Playbook
+          </button>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════
+          EXISTING: everything below here is UNCHANGED
+      ══════════════════════════════════════════════════ */}
       <div className="sv-panel">
 
         {/* ── Header ────────────────────────────────────── */}
@@ -401,11 +450,23 @@ export default function PlaybooksView({ initialTypeFilter }) {
                       : 'View your org\'s sales playbooks — stage guidance, key actions, and success criteria for every deal stage.'}
             </p>
           </div>
-          {canEdit && !isCLM && !isHandover && (
-            <button className="sv-btn sv-btn-primary" onClick={() => setShowNewForm(true)}>
-              + New {activeType?.label || 'Sales'} Playbook
-            </button>
-          )}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {/* NEW: Open in Builder button — shown when a playbook is selected */}
+            {playbook && (
+              <button
+                className="sv-btn sv-btn-secondary"
+                title="Open in Playbook Builder"
+                onClick={() => navigate(`/playbooks/${playbook.id}`)}
+              >
+                🏗 Builder
+              </button>
+            )}
+            {canEdit && !isCLM && !isHandover && (
+              <button className="sv-btn sv-btn-primary" onClick={() => setShowNewForm(true)}>
+                + New {activeType?.label || 'Sales'} Playbook
+              </button>
+            )}
+          </div>
         </div>
 
         {/* ── Type tabs ─────────────────────────────────── */}
@@ -568,12 +629,12 @@ export default function PlaybooksView({ initialTypeFilter }) {
                   })}
                 </div>
 
-                {/* Plays sub-tab */}
+                {/* Plays sub-tab — unchanged, still uses PlaybookPlaysEditor */}
                 {showPlaysTab && (
                   <PlaybookPlaysEditor playbookId={playbook.id} readOnly={!canEdit} />
                 )}
 
-                {/* Stage Guidance sub-tab */}
+                {/* Stage Guidance sub-tab — unchanged */}
                 {!showPlaysTab && (
                   <>
                     {/* ── PROSPECTING ── */}
@@ -657,7 +718,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
                       </div>
                     )}
 
-                    {/* ── GENERIC MODULE (service, custom, future modules) ── */}
+                    {/* ── GENERIC MODULE ── */}
                     {!isProspecting && !isCLM && !isHandover && !isSales && (
                       <div className="sv-card">
                         <h4 style={{ marginTop: 0, marginBottom: 16, fontSize: 15 }}>
@@ -702,10 +763,9 @@ export default function PlaybooksView({ initialTypeFilter }) {
                       </div>
                     )}
 
-                    {/* ── SALES (and legacy sales types) ── */}
+                    {/* ── SALES ── */}
                     {isSales && (
                       <>
-                        {/* Company context */}
                         {playbook.content && (
                           <div className="sv-card" style={{ marginBottom: 20 }}>
                             <div className="pb-company-header" onClick={() => setShowCompany(v => !v)}>
@@ -743,7 +803,6 @@ export default function PlaybooksView({ initialTypeFilter }) {
                           </div>
                         )}
 
-                        {/* Deal stages — live from /deal-stages */}
                         <div className="sv-card">
                           <h4 style={{ marginTop: 0, marginBottom: 16, fontSize: 15 }}>📋 Deal Stages</h4>
                           {stagesLoading ? (
@@ -753,7 +812,6 @@ export default function PlaybooksView({ initialTypeFilter }) {
                           ) : (
                             <div className="sv-stages-list">
                               {activeLiveStages.map((stage, i) => {
-                                // Guidance stored in playbook.content.deal_stages — look up by key or name
                                 const ds = playbook.content?.deal_stages;
                                 const stageData = ds
                                   ? Array.isArray(ds)

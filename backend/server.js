@@ -76,6 +76,10 @@ const sequencesRoutes = require('./routes/sequences.routes');
 const clientsRoutes      = require('./routes/clients.routes');
 const clientPortalRoutes = require('./routes/client-portal.routes');
 
+const playbookBuilderRoutes       = require('./routes/playbookBuilder.routes');
+const playbookRegistrationsRoutes = require('./routes/playbookRegistrations.routes');
+
+
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
 // ─────────────────────────────────────────────────────────────
@@ -259,6 +263,9 @@ app.use('/api/org/admin', require('./routes/workflow.orgAdmin.routes'));
 // ─────────────────────────────────────────────────────────────────────────────
 app.use('/webhooks/transcript', webhookTranscriptRoutes);
 app.use('/api/transcripts', require('./routes/transcripts.routes'));
+
+app.use('/api/playbooks',               playbookBuilderRoutes);
+app.use('/api/playbook-registrations',  playbookRegistrationsRoutes);
 
 
 // ─── Public org context ───────────────────────────────────────

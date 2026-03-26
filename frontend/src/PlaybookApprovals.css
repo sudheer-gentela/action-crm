@@ -1,0 +1,36 @@
+   PlaybookApprovals.css
+   ============================================================ */
+
+.pb-approvals { padding: 24px; max-width: 1100px; margin: 0 auto; }
+.pb-approvals-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.pb-approvals-header h2 { margin: 0; font-size: 20px; font-weight: 500; display: flex; align-items: center; gap: 10px; }
+
+.pb-approvals-layout { display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
+
+.pb-approvals-list { display: flex; flex-direction: column; gap: 8px; }
+
+.approval-card { background: var(--color-background-primary); border: 1px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 14px; cursor: pointer; transition: border-color 0.12s; }
+.approval-card:hover { border-color: var(--color-border-secondary); }
+.approval-card--selected { border-color: var(--color-text-primary); background: var(--color-background-secondary); }
+.approval-card-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.approval-name { font-size: 14px; font-weight: 500; color: var(--color-text-primary); }
+.approval-card-meta { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 4px; }
+.approval-card-date { font-size: 11px; color: var(--color-text-tertiary); }
+
+.pb-approval-detail { background: var(--color-background-primary); border: 1px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 20px; }
+.approval-detail-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.approval-detail-header h3 { margin: 0; font-size: 17px; font-weight: 500; }
+.approval-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+.approval-detail-row { font-size: 13px; color: var(--color-text-secondary); }
+.approval-detail-row strong { color: var(--color-text-primary); }
+.approval-detail-row code { font-size: 12px; background: var(--color-background-secondary); padding: 1px 5px; border-radius: 3px; }
+.approval-purpose { margin-bottom: 14px; }
+.approval-purpose strong { display: block; font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-tertiary); margin-bottom: 5px; }
+.approval-purpose p { font-size: 14px; color: var(--color-text-secondary); margin: 0; line-height: 1.6; }
+.approval-reason-box { background: #fef3c7; border-radius: var(--border-radius-md); padding: 12px; margin-bottom: 14px; font-size: 13px; }
+.approval-reason-box strong { display: block; margin-bottom: 4px; }
+.approval-reason-box p { margin: 0; }
+.approval-actions { display: flex; gap: 10px; flex-wrap: wrap; padding-top: 14px; border-top: 1px solid var(--color-border-tertiary); }
+
+
+/* ============================================================

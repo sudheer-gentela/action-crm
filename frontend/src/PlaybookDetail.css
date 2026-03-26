@@ -1,0 +1,105 @@
+/* ============================================================
+   PlaybookDetail.css
+   ============================================================ */
+
+.pb-detail { padding: 24px; max-width: 1280px; margin: 0 auto; }
+.pb-detail-loading, .pb-detail-error { padding: 64px; text-align: center; color: var(--color-text-secondary); }
+
+/* breadcrumb */
+.pb-breadcrumb { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--color-text-secondary); margin-bottom: 20px; }
+.pb-breadcrumb a { color: var(--color-text-info); text-decoration: none; }
+.pb-breadcrumb a:hover { text-decoration: underline; }
+.pb-breadcrumb-sep { color: var(--color-text-tertiary); }
+
+/* header */
+.pb-detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
+.pb-detail-title-block h1 { margin: 0 0 8px; font-size: 22px; font-weight: 500; }
+.pb-detail-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pb-type-chip { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; background: var(--color-background-secondary); color: var(--color-text-secondary); padding: 3px 10px; border-radius: 10px; }
+.pb-dept-chip { font-size: 12px; color: var(--color-text-secondary); background: var(--color-background-secondary); padding: 3px 10px; border-radius: 10px; }
+.pb-detail-header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pb-header-btns { display: flex; gap: 8px; }
+
+/* version bar */
+.version-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.version-chip { font-size: 12px; font-weight: 500; padding: 3px 10px; border-radius: 10px; }
+.version-chip--live   { background: #d1fae5; color: #065f46; }
+.version-chip--draft  { background: #fef3c7; color: #92400e; }
+.version-chip--review { background: #dbeafe; color: #1e40af; }
+.version-chip--action { background: #ede9fe; color: #5b21b6; font-style: italic; }
+
+/* tabs */
+.pb-tabs { display: flex; border-bottom: 1px solid var(--color-border-tertiary); margin-bottom: 24px; gap: 2px; }
+.pb-tab { background: none; border: none; border-bottom: 2px solid transparent; padding: 10px 16px; font-size: 14px; color: var(--color-text-secondary); cursor: pointer; transition: color 0.15s, border-color 0.15s; white-space: nowrap; }
+.pb-tab:hover { color: var(--color-text-primary); }
+.pb-tab--active { color: var(--color-text-primary); border-bottom-color: var(--color-text-primary); font-weight: 500; }
+
+/* stages & plays layout */
+.pb-stages-layout { display: grid; grid-template-columns: 220px 1fr; grid-template-rows: auto 1fr; gap: 0 20px; }
+.pb-pipeline-area { grid-column: 1 / -1; overflow-x: auto; padding-bottom: 16px; }
+.pb-stage-sidebar { grid-column: 1; grid-row: 2; }
+.pb-plays-area { grid-column: 2; grid-row: 2; }
+.pb-plays-empty { padding: 48px; text-align: center; color: var(--color-text-tertiary); font-size: 14px; }
+
+/* stage pipeline */
+.stage-pipeline { display: flex; align-items: center; gap: 0; padding: 4px 0; min-width: max-content; }
+.stage-node { background: var(--color-background-primary); border: 1px solid var(--color-border-secondary); border-radius: var(--border-radius-md); padding: 10px 16px; cursor: pointer; transition: border-color 0.15s, background 0.15s; min-width: 120px; text-align: center; }
+.stage-node:hover { border-color: var(--color-border-primary); }
+.stage-node--active { border-color: var(--color-text-primary); background: var(--color-background-secondary); }
+.stage-node-name { font-size: 13px; font-weight: 500; color: var(--color-text-primary); }
+.stage-node-count { font-size: 11px; color: var(--color-text-tertiary); margin-top: 2px; }
+.stage-connector { color: var(--color-text-tertiary); padding: 0 4px; font-size: 16px; flex-shrink: 0; }
+
+/* stage info sidebar */
+.stage-info-sidebar { padding: 16px; background: var(--color-background-secondary); border-radius: var(--border-radius-md); font-size: 13px; }
+.stage-info-sidebar h4 { margin: 0 0 14px; font-size: 14px; font-weight: 500; }
+.stage-info-section { margin-bottom: 12px; }
+.stage-info-section label { display: block; font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-tertiary); margin-bottom: 4px; }
+.stage-info-section p { margin: 0; color: var(--color-text-secondary); line-height: 1.5; }
+
+/* plays header */
+.pb-plays-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.pb-plays-header h3 { margin: 0; font-size: 15px; font-weight: 500; }
+
+/* play cards */
+.plays-list { display: flex; flex-direction: column; gap: 10px; }
+.plays-empty { padding: 32px; text-align: center; color: var(--color-text-tertiary); font-size: 14px; }
+.play-card { display: flex; align-items: stretch; background: var(--color-background-primary); border: 1px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); overflow: hidden; }
+.play-card-channel-bar { width: 4px; flex-shrink: 0; }
+.play-card-body { flex: 1; padding: 12px 14px; min-width: 0; }
+.play-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.play-channel-icon { font-size: 14px; }
+.play-title { font-size: 14px; font-weight: 500; color: var(--color-text-primary); }
+.play-badges { display: flex; gap: 5px; flex-wrap: wrap; }
+.play-badge { font-size: 11px; background: var(--color-background-secondary); color: var(--color-text-secondary); padding: 2px 7px; border-radius: 8px; }
+.badge-condition { background: #ede9fe; color: #5b21b6; }
+.play-description { font-size: 13px; color: var(--color-text-secondary); margin: 0 0 6px; }
+.play-suggested { font-size: 13px; color: var(--color-text-secondary); margin: 0 0 6px; }
+.play-meta { font-size: 12px; color: var(--color-text-tertiary); display: flex; gap: 12px; }
+.play-card-actions { display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 8px; border-left: 1px solid var(--color-border-tertiary); }
+
+/* routing tab */
+.pb-routing-tab h3 { margin: 0 0 18px; font-size: 16px; font-weight: 500; }
+.pb-info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 28px; }
+.pb-info-row { display: flex; flex-direction: column; gap: 3px; }
+.pb-info-label { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-tertiary); }
+.pb-info-value { font-size: 14px; color: var(--color-text-primary); }
+.pb-info-value code { font-size: 12px; background: var(--color-background-secondary); padding: 2px 6px; border-radius: 4px; }
+
+/* settings tab */
+.pb-settings-tab h3 { margin: 0 0 18px; font-size: 16px; font-weight: 500; }
+.pb-settings-form { display: flex; flex-direction: column; gap: 16px; max-width: 480px; }
+.pb-settings-form label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; font-weight: 500; color: var(--color-text-primary); }
+.pb-settings-form input, .pb-settings-form textarea { padding: 8px 10px; border: 1px solid var(--color-border-secondary); border-radius: var(--border-radius-md); font-size: 14px; color: var(--color-text-primary); background: var(--color-background-primary); }
+.pb-settings-form input:disabled, .pb-settings-form textarea:disabled { background: var(--color-background-secondary); color: var(--color-text-tertiary); cursor: not-allowed; }
+
+/* activity log */
+.pb-activity-tab h3 { margin: 0 0 18px; font-size: 16px; font-weight: 500; }
+.activity-empty { color: var(--color-text-tertiary); font-size: 14px; }
+.activity-timeline { display: flex; flex-direction: column; gap: 0; }
+.activity-event { display: flex; gap: 14px; padding-bottom: 20px; position: relative; }
+.activity-event:not(:last-child)::before { content: ''; position: absolute; left: 5px; top: 14px; bottom: 0; width: 1px; background: var(--color-border-tertiary); }
+.activity-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--color-border-secondary); flex-shrink: 0; margin-top: 3px; }
+.activity-content { flex: 1; }
+.activity-label { margin: 0 0 2px; font-size: 14px; color: var(--color-text-primary); }
+.activity-meta { margin: 0; font-size: 12px; color: var(--color-text-tertiary); }
