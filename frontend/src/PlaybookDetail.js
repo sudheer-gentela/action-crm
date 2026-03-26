@@ -463,7 +463,7 @@ function PlaysList({ plays, canEdit, onEdit, playbook_id, onRefresh }) {
   const handleDelete = async (play) => {
     if (!window.confirm(`Delete play "${play.title}"?`)) return;
     try {
-      await apiDeletePlay(playbook_id, play.id);
+      await apiService.playbookBuilder.deletePlay(playbook_id, play.id);
       onRefresh();
     } catch (err) {
       alert(err.message);
