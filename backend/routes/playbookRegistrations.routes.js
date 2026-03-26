@@ -1,43 +1,56 @@
 // ============================================================
-// ActionCRM Playbook Builder — B4: Registrations API
+// ActionCRM Playbook Builder — B4: Registrations Routes
 // File: backend/routes/playbookRegistrations.routes.js
+//
+// Middleware pattern matches orgAdmin.routes.js exactly:
+//   authenticateToken           — default export, auth.middleware
+//   orgContext, requireRole     — named exports, orgContext.middleware
+//   req.orgId                   — set by orgContext
+//   req.user.userId             — set by authenticateToken
+//   req.user.role               — set by authenticateToken ('owner'|'admin'|'member')
 // ============================================================
 
 const express = require('express');
-const router = express.Router();
-const { requireAuth } = require('../middleware/auth.middleware');
-const { requireOrgContext } = require('../middleware/orgContext.middleware');
-const playbookBuilderService = require('../services/PlaybookBuilderService');
+const router  = express.Router();
 
-router.use(requireAuth);
-router.use(requireOrgContext);
+const authenticateToken           = require('../middleware/auth.middleware');
+const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
+const svc                         = require('../services/PlaybookBuilderService');
 
-// GET /api/playbook-registrations — list registrations
-// Org admin: all. Playbook owners: their own submissions.
+router.use(authenticateToken, orgContext);
+
+const adminOnly = requireRole('owner', 'admin');
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/playbook-registrations
+// Admin: all registrations for org. Others: own submissions only.
+// ─────────────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    const { org_id, user_id, role } = req.user;
     const { status } = req.query;
-    const registrations = await playbookBuilderService.listRegistrations({
-      org_id,
-      user_id,
-      role,
-      status
+    const registrations = await svc.listRegistrations({
+      org_id:  req.orgId,
+      user_id: req.user.userId,
+      role:    req.user.role || 'member',
+      status,
     });
     res.json({ registrations });
   } catch (err) {
+    console.error('GET /api/playbook-registrations', err);
     res.status(500).json({ error: err.message });
   }
 });
 
+// ─────────────────────────────────────────────────────────────
 // GET /api/playbook-registrations/:id
+// ─────────────────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {
-    const { user_id, org_id, role } = req.user;
-    const reg = await playbookBuilderService.getRegistration(req.params.id);
+    const reg = await svc.getRegistration(req.params.id);
     if (!reg) return res.status(404).json({ error: 'Not found' });
-    // Access: org_admin or the submitter
-    if (role !== 'org_admin' && reg.submitter_id !== user_id) {
+    const role = req.user?.role || '';
+    const isAdmin = role === 'owner' || role === 'admin';
+    if (!isAdmin && reg.submitter_id !== req.user.userId) {
       return res.status(403).json({ error: 'Access denied' });
     }
     res.json({ registration: reg });
@@ -46,47 +59,55 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// POST /api/playbook-registrations — submit a new registration
+// ─────────────────────────────────────────────────────────────
+// POST /api/playbook-registrations — create draft
+// Any authenticated org member can register a playbook request.
+// ─────────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const { user_id, org_id } = req.user;
-    const reg = await playbookBuilderService.createRegistration({
+    const reg = await svc.createRegistration({
       ...req.body,
-      org_id,
-      submitter_id: user_id
+      org_id:       req.orgId,
+      submitter_id: req.user.userId,
     });
     res.status(201).json({ registration: reg });
   } catch (err) {
+    console.error('POST /api/playbook-registrations', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// PATCH /api/playbook-registrations/:id — update (allowed in draft / changes_requested)
+// ─────────────────────────────────────────────────────────────
+// PATCH /api/playbook-registrations/:id
+// Only submitter (or admin) can edit, and only in draft/changes_requested.
+// ─────────────────────────────────────────────────────────────
 router.patch('/:id', async (req, res) => {
   try {
-    const { user_id, role } = req.user;
-    const reg = await playbookBuilderService.getRegistration(req.params.id);
+    const reg = await svc.getRegistration(req.params.id);
     if (!reg) return res.status(404).json({ error: 'Not found' });
-    if (role !== 'org_admin' && reg.submitter_id !== user_id) {
+    const role = req.user?.role || '';
+    const isAdmin = role === 'owner' || role === 'admin';
+    if (!isAdmin && reg.submitter_id !== req.user.userId) {
       return res.status(403).json({ error: 'Access denied' });
     }
     if (!['draft', 'changes_requested'].includes(reg.status)) {
       return res.status(422).json({ error: `Cannot edit registration in status: ${reg.status}` });
     }
-    const updated = await playbookBuilderService.updateRegistration(req.params.id, req.body);
+    const updated = await svc.updateRegistration(req.params.id, req.body);
     res.json({ registration: updated });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/playbook-registrations/:id/submit — move from draft → submitted
+// ─────────────────────────────────────────────────────────────
+// POST /api/playbook-registrations/:id/submit
+// ─────────────────────────────────────────────────────────────
 router.post('/:id/submit', async (req, res) => {
   try {
-    const { user_id } = req.user;
-    const result = await playbookBuilderService.submitRegistration({
-      id: req.params.id,
-      submitted_by: user_id
+    const result = await svc.submitRegistration({
+      id:           req.params.id,
+      submitted_by: req.user.userId,
     });
     res.json(result);
   } catch (err) {
@@ -94,14 +115,14 @@ router.post('/:id/submit', async (req, res) => {
   }
 });
 
-// POST /api/playbook-registrations/:id/approve — org_admin approves
-router.post('/:id/approve', async (req, res) => {
+// ─────────────────────────────────────────────────────────────
+// POST /api/playbook-registrations/:id/approve  — admin only
+// ─────────────────────────────────────────────────────────────
+router.post('/:id/approve', adminOnly, async (req, res) => {
   try {
-    const { user_id, role } = req.user;
-    if (role !== 'org_admin') return res.status(403).json({ error: 'Org admin required' });
-    const result = await playbookBuilderService.approveRegistration({
-      id: req.params.id,
-      approved_by: user_id
+    const result = await svc.approveRegistration({
+      id:          req.params.id,
+      approved_by: req.user.userId,
     });
     res.json(result);
   } catch (err) {
@@ -109,15 +130,15 @@ router.post('/:id/approve', async (req, res) => {
   }
 });
 
-// POST /api/playbook-registrations/:id/reject — org_admin rejects with reason
-router.post('/:id/reject', async (req, res) => {
+// ─────────────────────────────────────────────────────────────
+// POST /api/playbook-registrations/:id/reject  — admin only
+// ─────────────────────────────────────────────────────────────
+router.post('/:id/reject', adminOnly, async (req, res) => {
   try {
-    const { user_id, role } = req.user;
-    if (role !== 'org_admin') return res.status(403).json({ error: 'Org admin required' });
-    const result = await playbookBuilderService.rejectRegistration({
-      id: req.params.id,
-      rejected_by: user_id,
-      reason: req.body.reason
+    const result = await svc.rejectRegistration({
+      id:          req.params.id,
+      rejected_by: req.user.userId,
+      reason:      req.body.reason,
     });
     res.json(result);
   } catch (err) {
@@ -125,15 +146,15 @@ router.post('/:id/reject', async (req, res) => {
   }
 });
 
-// POST /api/playbook-registrations/:id/request-changes — org_admin requests changes
-router.post('/:id/request-changes', async (req, res) => {
+// ─────────────────────────────────────────────────────────────
+// POST /api/playbook-registrations/:id/request-changes — admin only
+// ─────────────────────────────────────────────────────────────
+router.post('/:id/request-changes', adminOnly, async (req, res) => {
   try {
-    const { user_id, role } = req.user;
-    if (role !== 'org_admin') return res.status(403).json({ error: 'Org admin required' });
-    const result = await playbookBuilderService.requestChanges({
-      id: req.params.id,
-      reviewer_id: user_id,
-      notes: req.body.notes
+    const result = await svc.requestChanges({
+      id:          req.params.id,
+      reviewer_id: req.user.userId,
+      notes:       req.body.notes,
     });
     res.json(result);
   } catch (err) {

@@ -1,33 +1,47 @@
 // ============================================================
 // ActionCRM Playbook Builder — Module B: Routes
 // File: backend/routes/playbookBuilder.routes.js
+//
+// Middleware pattern matches orgAdmin.routes.js exactly:
+//   authenticateToken           — default export, auth.middleware
+//   orgContext, requireRole     — named exports, orgContext.middleware
+//   req.orgId                   — set by orgContext
+//   req.user.userId             — set by authenticateToken
+//   adminOnly = requireRole('owner', 'admin')
 // ============================================================
 
 const express = require('express');
-const router = express.Router();
-const { requireAuth } = require('../middleware/auth.middleware');
-const { requireOrgContext } = require('../middleware/orgContext.middleware');
-const svc = require('../services/PlaybookBuilderService');
-const accessResolver = require('../services/PlaybookAccessResolver');
+const router  = express.Router();
 
-router.use(requireAuth);
-router.use(requireOrgContext);
+const authenticateToken           = require('../middleware/auth.middleware');
+const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
+const svc                         = require('../services/PlaybookBuilderService');
+const accessResolver              = require('../services/PlaybookAccessResolver');
 
-// Helper — short-circuits for org_admin, otherwise resolves normally.
-// Returns null only when access is genuinely denied.
+router.use(authenticateToken, orgContext);
+
+// Role middleware — matches orgAdmin.routes.js pattern exactly
+const adminOnly = requireRole('owner', 'admin');
+
+// ─────────────────────────────────────────────────────────────
+// Helper — resolves access for the calling user.
+// Admins (owner/admin role) always get 'owner' access —
+// no DB lookup needed.
+// ─────────────────────────────────────────────────────────────
 async function getAccess(playbook_id, req) {
-  if (req.user.role === 'org_admin') return 'owner'; // admins have full access to everything
-  return accessResolver.resolve(playbook_id, req.user.user_id, req.user.org_id);
+  const role = req.user?.role || '';
+  if (role === 'owner' || role === 'admin') return 'owner';
+  return accessResolver.resolve(playbook_id, req.user.userId, req.orgId);
 }
 
 // ─────────────────────────────────────────────────────────────
 // IMPORTANT: fixed-path routes MUST come before /:id wildcards
 // ─────────────────────────────────────────────────────────────
 
-// B6 — Stats summary (must be before /:id to avoid matching 'stats' as an id)
+// B6 — Stats summary (before /:id to prevent 'stats' matching as id)
 router.get('/stats/summary', async (req, res) => {
   try {
-    const stats = await svc.getStats({ org_id: req.user.org_id });
+    const stats = await svc.getStats({ org_id: req.orgId });
     res.json({ stats });
   } catch (err) {
     console.error('GET /api/playbooks/stats/summary', err);
@@ -41,9 +55,13 @@ router.get('/stats/summary', async (req, res) => {
 
 router.get('/', async (req, res) => {
   try {
-    const { org_id, user_id, role } = req.user;
     const { dept, status, search } = req.query;
-    const playbooks = await svc.listPlaybooks({ org_id, user_id, role, dept, status, search });
+    const playbooks = await svc.listPlaybooks({
+      org_id:  req.orgId,
+      user_id: req.user.userId,
+      role:    req.user.role || 'member',
+      dept, status, search,
+    });
     res.json({ playbooks });
   } catch (err) {
     console.error('GET /api/playbooks', err);
@@ -63,17 +81,14 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// POST /api/playbooks — direct creation (used post-approval or by admin)
-router.post('/', async (req, res) => {
+// Direct creation — admin only (normal path is via registration approval)
+router.post('/', adminOnly, async (req, res) => {
   try {
-    const { user_id, org_id, role } = req.user;
-    // Only org_admin can create directly; all others must go through the registration flow
-    if (role !== 'org_admin') {
-      return res.status(403).json({
-        error: 'Direct playbook creation requires org admin access. Please use the registration flow.'
-      });
-    }
-    const playbook = await svc.createPlaybook({ ...req.body, org_id, created_by: user_id });
+    const playbook = await svc.createPlaybook({
+      ...req.body,
+      org_id:     req.orgId,
+      created_by: req.user.userId,
+    });
     res.status(201).json({ playbook });
   } catch (err) {
     console.error('POST /api/playbooks', err);
@@ -93,16 +108,14 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
-router.post('/:id/archive', async (req, res) => {
+router.post('/:id/archive', adminOnly, async (req, res) => {
   try {
-    const { user_id, role } = req.user;
-    if (role !== 'org_admin') return res.status(403).json({ error: 'Org admin required' });
     const result = await svc.archivePlaybook({
-      playbook_id: req.params.id,   // use route param — never trust req.body for this
-      archived_by: user_id,
-      reason: req.body.reason,
+      playbook_id:       req.params.id,
+      archived_by:       req.user.userId,
+      reason:            req.body.reason,
       replacement_pb_id: req.body.replacement_pb_id || null,
-      sunset_days: req.body.sunset_days ?? 7,
+      sunset_days:       req.body.sunset_days ?? 7,
     });
     res.json(result);
   } catch (err) {
@@ -112,7 +125,7 @@ router.post('/:id/archive', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// B2 — Versions (fixed sub-paths before /:id/... wildcards)
+// B2 — Versions
 // ─────────────────────────────────────────────────────────────
 
 router.get('/:id/versions', async (req, res) => {
@@ -131,8 +144,8 @@ router.post('/:id/versions', async (req, res) => {
     const access = await getAccess(req.params.id, req);
     if (access !== 'owner') return res.status(403).json({ error: 'Owner access required' });
     const version = await svc.createDraftVersion({
-      playbook_id: req.params.id,
-      created_by: req.user.user_id,
+      playbook_id:    req.params.id,
+      created_by:     req.user.userId,
       change_summary: req.body.change_summary || null,
     });
     res.status(201).json({ version });
@@ -146,7 +159,7 @@ router.post('/:id/versions/:v/submit', async (req, res) => {
     const access = await getAccess(req.params.id, req);
     if (access !== 'owner') return res.status(403).json({ error: 'Owner access required' });
     const result = await svc.submitVersionForApproval({
-      playbook_id: req.params.id,
+      playbook_id:    req.params.id,
       version_number: parseInt(req.params.v, 10),
     });
     res.json(result);
@@ -155,14 +168,12 @@ router.post('/:id/versions/:v/submit', async (req, res) => {
   }
 });
 
-router.post('/:id/versions/:v/approve', async (req, res) => {
+router.post('/:id/versions/:v/approve', adminOnly, async (req, res) => {
   try {
-    const { user_id, role } = req.user;
-    if (role !== 'org_admin') return res.status(403).json({ error: 'Org admin required' });
     const result = await svc.approveVersion({
-      playbook_id: req.params.id,
+      playbook_id:    req.params.id,
       version_number: parseInt(req.params.v, 10),
-      approved_by: user_id,
+      approved_by:    req.user.userId,
     });
     res.json(result);
   } catch (err) {
@@ -170,15 +181,13 @@ router.post('/:id/versions/:v/approve', async (req, res) => {
   }
 });
 
-router.post('/:id/versions/:v/reject', async (req, res) => {
+router.post('/:id/versions/:v/reject', adminOnly, async (req, res) => {
   try {
-    const { user_id, role } = req.user;
-    if (role !== 'org_admin') return res.status(403).json({ error: 'Org admin required' });
     const result = await svc.rejectVersion({
-      playbook_id: req.params.id,
+      playbook_id:    req.params.id,
       version_number: parseInt(req.params.v, 10),
-      rejected_by: user_id,
-      reason: req.body.reason || '',
+      rejected_by:    req.user.userId,
+      reason:         req.body.reason || '',
     });
     res.json(result);
   } catch (err) {
@@ -196,8 +205,8 @@ router.get('/:id/plays', async (req, res) => {
     if (!access) return res.status(403).json({ error: 'Access denied' });
     const { stage_key, version_number } = req.query;
     const plays = await svc.getPlays({
-      playbook_id: req.params.id,
-      stage_key: stage_key || null,
+      playbook_id:    req.params.id,
+      stage_key:      stage_key || null,
       version_number: version_number ? parseInt(version_number, 10) : null,
     });
     res.json({ plays });
@@ -212,9 +221,9 @@ router.post('/:id/plays', async (req, res) => {
     if (access !== 'owner') return res.status(403).json({ error: 'Owner access required' });
     const play = await svc.createPlay({
       ...req.body,
-      playbook_id: req.params.id,    // always from route param
-      org_id: req.user.org_id,       // always from server-side auth — never trust client
-      created_by: req.user.user_id,
+      playbook_id: req.params.id,
+      org_id:      req.orgId,       // always from server — never trust client body
+      created_by:  req.user.userId,
     });
     res.status(201).json({ play });
   } catch (err) {
@@ -252,8 +261,8 @@ router.get('/:id/access', async (req, res) => {
   try {
     const target_user_id = req.query.user_id
       ? parseInt(req.query.user_id, 10)
-      : req.user.user_id;
-    const level = await accessResolver.resolve(req.params.id, target_user_id, req.user.org_id);
+      : req.user.userId;
+    const level = await accessResolver.resolve(req.params.id, target_user_id, req.orgId);
     res.json({ user_id: target_user_id, playbook_id: req.params.id, access_level: level });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -271,12 +280,11 @@ router.get('/:id/teams', async (req, res) => {
   }
 });
 
-router.post('/:id/teams', async (req, res) => {
+router.post('/:id/teams', adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'org_admin') return res.status(403).json({ error: 'Org admin required' });
     const result = await svc.addTeamGrant({
-      playbook_id: req.params.id,
-      team_id: req.body.team_id,
+      playbook_id:  req.params.id,
+      team_id:      req.body.team_id,
       access_level: req.body.access_level,
     });
     res.status(201).json(result);
@@ -285,9 +293,8 @@ router.post('/:id/teams', async (req, res) => {
   }
 });
 
-router.delete('/:id/teams/:team_id', async (req, res) => {
+router.delete('/:id/teams/:team_id', adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'org_admin') return res.status(403).json({ error: 'Org admin required' });
     await svc.removeTeamGrant(req.params.id, req.params.team_id);
     res.json({ success: true });
   } catch (err) {
@@ -295,9 +302,8 @@ router.delete('/:id/teams/:team_id', async (req, res) => {
   }
 });
 
-router.get('/:id/user-access', async (req, res) => {
+router.get('/:id/user-access', adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'org_admin') return res.status(403).json({ error: 'Org admin required' });
     const overrides = await svc.getUserOverrides(req.params.id);
     res.json({ overrides });
   } catch (err) {
@@ -305,16 +311,15 @@ router.get('/:id/user-access', async (req, res) => {
   }
 });
 
-router.post('/:id/user-access', async (req, res) => {
+router.post('/:id/user-access', adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'org_admin') return res.status(403).json({ error: 'Org admin required' });
     const result = await svc.setUserOverride({
-      playbook_id: req.params.id,
-      set_by: req.user.user_id,
-      user_id: req.body.user_id,
+      playbook_id:  req.params.id,
+      set_by:       req.user.userId,
+      user_id:      req.body.user_id,
       access_level: req.body.access_level,
-      reason: req.body.reason || null,
-      expires_at: req.body.expires_at || null,
+      reason:       req.body.reason || null,
+      expires_at:   req.body.expires_at || null,
     });
     res.status(201).json(result);
   } catch (err) {
@@ -322,9 +327,8 @@ router.post('/:id/user-access', async (req, res) => {
   }
 });
 
-router.delete('/:id/user-access/:target_user_id', async (req, res) => {
+router.delete('/:id/user-access/:target_user_id', adminOnly, async (req, res) => {
   try {
-    if (req.user.role !== 'org_admin') return res.status(403).json({ error: 'Org admin required' });
     await svc.removeUserOverride(req.params.id, req.params.target_user_id);
     res.json({ success: true });
   } catch (err) {
@@ -332,7 +336,7 @@ router.delete('/:id/user-access/:target_user_id', async (req, res) => {
   }
 });
 
-// B6 — Per-playbook stats (after fixed routes)
+// B6 — Per-playbook stats (after all fixed routes)
 router.get('/:id/stats', async (req, res) => {
   try {
     const access = await getAccess(req.params.id, req);

@@ -79,7 +79,7 @@ async function resolveAccess(playbook_id, user_id, org_id) {
 // ─────────────────────────────────────────────────────────────
 
 async function listPlaybooks({ org_id, user_id, role, dept, status, search }) {
-  if (role === 'org_admin') {
+  if (role === 'owner' || role === 'admin') {
     const result = await pool.query(
       `SELECT p.*, pv.version_number AS live_version_number, pv.status AS version_status,
               u.name AS created_by_name
@@ -510,7 +510,7 @@ async function deletePlay(play_id) {
 // ─────────────────────────────────────────────────────────────
 
 async function listRegistrations({ org_id, user_id, role, status }) {
-  if (role === 'org_admin') {
+  if (role === 'owner' || role === 'admin') {
     const result = await pool.query(
       `SELECT pr.*, u.name AS submitter_name, rv.name AS reviewer_name
        FROM playbook_registrations pr
