@@ -71,8 +71,10 @@ router.get('/', async (req, res) => {
 
 router.get('/:id', async (req, res) => {
   try {
-    const access = await getAccess(req.params.id, req);
-    if (!access) return res.status(403).json({ error: 'Access denied' });
+    let access = await getAccess(req.params.id, req);
+    // null means no explicit grant — fall back to 'reader' so org members
+    // can always view playbooks. Write operations still require 'owner'.
+    if (access === null) access = 'reader';
     const playbook = await svc.getPlaybook(req.params.id);
     res.json({ playbook, access });
   } catch (err) {
@@ -130,8 +132,8 @@ router.post('/:id/archive', adminOnly, async (req, res) => {
 
 router.get('/:id/versions', async (req, res) => {
   try {
-    const access = await getAccess(req.params.id, req);
-    if (!access) return res.status(403).json({ error: 'Access denied' });
+    let access = await getAccess(req.params.id, req);
+    if (access === null) access = 'reader';
     const versions = await svc.getVersionHistory(req.params.id);
     res.json({ versions });
   } catch (err) {
@@ -201,8 +203,8 @@ router.post('/:id/versions/:v/reject', adminOnly, async (req, res) => {
 
 router.get('/:id/plays', async (req, res) => {
   try {
-    const access = await getAccess(req.params.id, req);
-    if (!access) return res.status(403).json({ error: 'Access denied' });
+    let access = await getAccess(req.params.id, req);
+    if (access === null) access = 'reader';
     const { stage_key, version_number } = req.query;
     const plays = await svc.getPlays({
       playbook_id:    req.params.id,
@@ -271,8 +273,8 @@ router.get('/:id/access', async (req, res) => {
 
 router.get('/:id/teams', async (req, res) => {
   try {
-    const access = await getAccess(req.params.id, req);
-    if (!access) return res.status(403).json({ error: 'Access denied' });
+    let access = await getAccess(req.params.id, req);
+    if (access === null) access = 'reader';
     const teams = await svc.getTeamGrants(req.params.id);
     res.json({ teams });
   } catch (err) {
@@ -339,8 +341,8 @@ router.delete('/:id/user-access/:target_user_id', adminOnly, async (req, res) =>
 // B6 — Per-playbook stats (after all fixed routes)
 router.get('/:id/stats', async (req, res) => {
   try {
-    const access = await getAccess(req.params.id, req);
-    if (!access) return res.status(403).json({ error: 'Access denied' });
+    let access = await getAccess(req.params.id, req);
+    if (access === null) access = 'reader';
     const stats = await svc.getPlaybookStats(req.params.id);
     res.json({ stats });
   } catch (err) {
