@@ -387,7 +387,9 @@ function Dashboard({ user, onLogout }) {
       if (detail?.playbookId)     setPendingPlaybookId(detail.playbookId);
       if (detail?.actionId)   setPendingActionId(detail.actionId);
 
-      handleNavClick(detail?.tab || detail);
+      // Use setTimeout to ensure pending state (e.g. playbookId) is committed
+      // before the tab switch triggers a render of the new component
+      setTimeout(() => handleNavClick(detail?.tab || detail), 0);
     };
     window.addEventListener('navigate', handleNavigate);
     return () => window.removeEventListener('navigate', handleNavigate);
@@ -583,11 +585,14 @@ function Dashboard({ user, onLogout }) {
               key={pendingPlaybookFilter || 'default'}
             />
           )}
-          {currentTab === 'playbook-detail' && (
+          {currentTab === 'playbook-detail' && pendingPlaybookId && (
             <PlaybookDetail
               playbookId={pendingPlaybookId}
               onBack={() => handleNavClick('playbooks')}
             />
+          )}
+          {currentTab === 'playbook-detail' && !pendingPlaybookId && (
+            <div style={{ padding: 48, textAlign: 'center', color: '#9ca3af' }}>Loading…</div>
           )}
           {currentTab === 'playbook-register' && (
             <PlaybookRegister
