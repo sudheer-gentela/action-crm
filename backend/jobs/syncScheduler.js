@@ -28,6 +28,13 @@
  *   - Added cron at 02:45 UTC — ProspectDiagnosticsEngine sweep for all active
  *     prospects across all active orgs. Upserts Type A diagnostic alerts and
  *     resolves alerts whose conditions have cleared.
+ *
+ * Changes in Phase 5 (STRAP nightly sweep):
+ *   - Added require for StrapNightlySweep
+ *   - Added cron at 03:00 UTC — validates active STRAPs (auto-resolves if hurdle
+ *     cleared/shifted) and generates new STRAPs for eligible entities with none.
+ *   - Workflow audit shifted 03:00 → 03:15 UTC to preserve 15-min gap.
+ *   - Email filter log purge shifted 03:30 → 03:45 UTC accordingly.
  */
 
 const cron      = require('node-cron');
@@ -41,6 +48,7 @@ const { runNightlyAudit } = require('../services/auditWorker.service');
 const SupportService  = require('../services/supportService');
 const HandoverService = require('../services/handover.service');
 const { runNightlySweep: runProspectingNightlySweep } = require('../services/prospectingActions.service');  // Phase 4
+const StrapNightlySweep = require('../services/StrapNightlySweep');                                         // Phase 5
 
 
 
@@ -1102,11 +1110,51 @@ function startScheduler() {
     }
   }, { timezone: 'UTC' });
 
+  // ── STRAP nightly sweep — 03:00 UTC ──────────────────────────────────────  // Phase 5
+  // Part A: Re-validates every active STRAP (age > 12h) against fresh context.
+  //   If the hurdle has cleared → auto-resolve. If it has shifted → resolve and
+  //   regenerate. If unchanged → leave untouched (preserve rep's work-in-progress).
+  // Part B: Generates STRAPs for eligible entities with no active STRAP.
+  //   Covers deals (non-terminal), accounts (with active deals), non-terminal
+  //   prospects, and closed_won deals (implementation STRAPs).
+  // NOTE: Uses supersede/regenerate — NOT the upsert/resolve pattern used by
+  //   Type A diagnostic alerts. See StrapNightlySweep.js for full rationale.
+  // Staggered 15 min after Prospecting sweep (02:45) to avoid DB contention.
+  cron.schedule('0 3 * * *', async () => {
+    console.log('🌙 Running nightly STRAP sweep...');
+    try {
+      const orgs = await pool.query(
+        `SELECT DISTINCT org_id FROM straps WHERE status = 'active'
+         UNION
+         SELECT DISTINCT org_id FROM deals   WHERE stage NOT IN ('closed_won','closed_lost')
+         UNION
+         SELECT DISTINCT org_id FROM prospects WHERE deleted_at IS NULL AND stage NOT IN ('converted','disqualified','archived')`
+      );
+      let totalValidated = 0, totalResolved = 0, totalRegenerated = 0,
+          totalGenerated = 0, totalErrors = 0;
+      for (const { org_id } of orgs.rows) {
+        const r = await StrapNightlySweep.runForOrg(org_id);
+        totalValidated   += r.validated;
+        totalResolved    += r.resolved;
+        totalRegenerated += r.regenerated;
+        totalGenerated   += r.generated;
+        totalErrors      += r.errors;
+      }
+      console.log(
+        `✅ STRAP sweep done — orgs: ${orgs.rows.length}, ` +
+        `validated: ${totalValidated}, resolved: ${totalResolved}, ` +
+        `regenerated: ${totalRegenerated}, generated: ${totalGenerated}, errors: ${totalErrors}`
+      );
+    } catch (err) {
+      console.error('❌ STRAP sweep error:', err.message);
+    }
+  }, { timezone: 'UTC' });
+
   // ── Workflow audit — nightly sweep ────────────────────────────────────────
-  // Runs at 03:00 UTC every day. Scans all entity records for all active orgs
-  // against audit-trigger workflow rules, writing new violations and resolving
-  // cleared ones in rule_violations.
-  cron.schedule('0 3 * * *', () => {
+  // Shifted to 03:15 UTC (was 03:00) to make room for STRAP sweep at 03:00.
+  // Scans all entity records for all active orgs against audit-trigger workflow
+  // rules, writing new violations and resolving cleared ones in rule_violations.
+  cron.schedule('15 3 * * *', () => {
     console.log('🔍 Running nightly workflow audit...');
     runNightlyAudit()
       .then(r => console.log(
@@ -1116,10 +1164,10 @@ function startScheduler() {
       .catch(err => console.error('❌ Workflow audit error:', err.message));
   }, { timezone: 'UTC' });
 
-  // ── Email filter log purge — nightly at 03:30 UTC ─────────────────────────
+  // ── Email filter log purge — nightly at 03:45 UTC ─────────────────────────
+  // Shifted to 03:45 UTC (was 03:30) to maintain 30-min gap after workflow audit.
   // Deletes email_filter_log rows older than 30 days to keep the table lean.
-  // Offset 30 min from the audit run to avoid DB contention.
-  cron.schedule('30 3 * * *', async () => {
+  cron.schedule('45 3 * * *', async () => {
     try {
       const result = await pool.query(
         `DELETE FROM email_filter_log WHERE sync_date < NOW() - INTERVAL '30 days'`
@@ -1136,9 +1184,10 @@ function startScheduler() {
   console.log('✅ CLM action scheduler started (nightly 02:00 UTC)');
   console.log('✅ Cases diagnostic scheduler started (nightly 02:15 UTC)');
   console.log('✅ Handovers diagnostic scheduler started (nightly 02:30 UTC)');
-  console.log('✅ Prospecting diagnostic scheduler started (nightly 02:45 UTC)');  // Phase 4
-  console.log('✅ Workflow audit scheduler started (nightly 03:00 UTC)');
-  console.log('✅ Email filter log purge started (nightly 03:30 UTC)');
+  console.log('✅ Prospecting diagnostic scheduler started (nightly 02:45 UTC)');
+  console.log('✅ STRAP nightly sweep started (nightly 03:00 UTC)');             // Phase 5
+  console.log('✅ Workflow audit scheduler started (nightly 03:15 UTC)');        // shifted Phase 5
+  console.log('✅ Email filter log purge started (nightly 03:45 UTC)');          // shifted Phase 5
 }
 
 module.exports = {
