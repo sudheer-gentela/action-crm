@@ -22,6 +22,7 @@
 const db             = require('../config/database');
 const { resolveChannel, evaluateConditions } = require('./playbook.service');
 const { resolveForPlay } = require('./PlayRouteResolver');
+const ActionPersister    = require('./ActionPersister');
 
 // ROLE_STRATEGY map has been removed — role resolution now delegated to PlayRouteResolver.
 
@@ -120,45 +121,48 @@ function buildVars(play, contract, fireContext) {
   };
 }
 
-// ── Insert one action row ─────────────────────────────────────────────────────
+// ── Upsert one CLM diagnostic alert ──────────────────────────────────────────
+// Replaces insertCLMAction — uses ActionPersister so created_at/status are
+// preserved across nightly runs (no delete-then-insert).
 
-async function insertCLMAction(orgId, userId, contract, play, title, description) {
-  const actionType = resolveChannel(play.channel).action_type;
-  const dueDate    = new Date(Date.now() + 2 * 86400000);
+async function upsertCLMAction(orgId, userId, contract, play, title, description) {
+  const { action_type, next_step } = resolveChannel(play.channel);
+  const dueDate = new Date(Date.now() + 2 * 86400000);
+  const sourceRule = `clm_${play.stage_key}`;
 
-  await db.query(
-    `INSERT INTO actions (
-       org_id, user_id, type, title, description, action_type,
-       priority, due_date, contract_id, deal_id, account_id,
-       source, source_rule, is_internal, next_step, deal_stage,
-       status, created_at
-     ) VALUES (
-       $1, $2, $3, $4, $5, $3,
-       $6, $7, $8, $9, $10,
-       'auto_generated', $11, FALSE, $12, 'clm',
-       'yet_to_start', NOW()
-     )`,
-    [
-      orgId, userId, actionType, title, description,
-      play.priority || 'medium', dueDate,
-      contract.id, contract.deal_id || null, contract.account_id || null,
-      `clm_${play.stage_key}`, play.channel || 'email',
-    ]
-  );
+  return ActionPersister.upsertDiagnosticAlert({
+    entityType:      'contract',
+    entityId:        contract.id,
+    sourceRule,
+    title,
+    description,
+    actionType:      action_type,
+    priority:        play.priority || 'medium',
+    dueDate,
+    nextStep:        next_step || 'email',
+    isInternal:      false,
+    dealStage:       'clm',
+    dealId:          contract.deal_id    || null,
+    accountId:       contract.account_id || null,
+    orgId,
+    userId,
+  });
 }
 
 // ── Process one play for one contract ─────────────────────────────────────────
+// Returns { inserted, sourceRule } so caller can track which rules fired.
 
 async function processPlayForContract(orgId, contract, play, renewalContractIds) {
-  if (!shouldFireScheduled(play)) return 0;
+  if (!shouldFireScheduled(play)) return { inserted: 0, sourceRule: null };
 
   const fireContext = buildFireContext(contract, renewalContractIds);
   const conditions  = Array.isArray(play.fire_conditions) ? play.fire_conditions : [];
-  if (!evaluateConditions(conditions, fireContext)) return 0;
+  if (!evaluateConditions(conditions, fireContext)) return { inserted: 0, sourceRule: null };
 
   const vars        = buildVars(play, contract, fireContext);
   const title       = interpolate(play.title, vars);
   const description = interpolate(play.description, vars);
+  const sourceRule  = `clm_${play.stage_key}`;
   let   inserted    = 0;
 
   const roles = Array.isArray(play.roles) ? play.roles : [];
@@ -174,13 +178,13 @@ async function processPlayForContract(orgId, contract, play, renewalContractIds)
       callerUserId: contract.owner_id,
     });
     const userId = userIds[0];
-    if (!userId) return 0;
+    if (!userId) return { inserted: 0, sourceRule };
     try {
-      await insertCLMAction(orgId, userId, contract, play, title, description);
-      return 1;
+      await upsertCLMAction(orgId, userId, contract, play, title, description);
+      return { inserted: 1, sourceRule };
     } catch (err) {
-      console.error(`  ❌ CLM insert (no-role) contract ${contract.id}:`, err.message);
-      return 0;
+      console.error(`  ❌ CLM upsert (no-role) contract ${contract.id}:`, err.message);
+      return { inserted: 0, sourceRule };
     }
   }
 
@@ -201,15 +205,15 @@ async function processPlayForContract(orgId, contract, play, renewalContractIds)
       if (seenUserIds.has(userId)) continue;
       seenUserIds.add(userId);
       try {
-        await insertCLMAction(orgId, userId, contract, play, title, description);
+        await upsertCLMAction(orgId, userId, contract, play, title, description);
         inserted++;
       } catch (err) {
-        console.error(`  ❌ CLM insert (role=${role.role_key}) contract ${contract.id}:`, err.message);
+        console.error(`  ❌ CLM upsert (role=${role.role_key}) contract ${contract.id}:`, err.message);
       }
     }
   }
 
-  return inserted;
+  return { inserted, sourceRule: inserted > 0 ? sourceRule : null };
 }
 
 // ── Main class ────────────────────────────────────────────────────────────────
@@ -229,7 +233,7 @@ class ContractActionsGenerator {
       const contracts = contractsRes.rows;
       if (contracts.length === 0) {
         console.log('📄 No active contracts — skipping.');
-        return { success: true, generated: 0, inserted: 0 };
+        return { success: true, upserted: 0, resolved: 0 };
       }
 
       const childRes = await db.query(
@@ -245,15 +249,12 @@ class ContractActionsGenerator {
         (byOrg[c.org_id] = byOrg[c.org_id] || []).push(c);
       }
 
-      // Wipe all pending auto CLM actions — regenerate fresh
-      await db.query(
-        `DELETE FROM actions
-         WHERE contract_id IS NOT NULL
-           AND source = 'auto_generated'
-           AND status IN ('yet_to_start', 'in_progress')`
-      );
+      // ── NO DELETE — replaced with per-contract upsert + resolve ──────────
+      // Diagnostic alerts are upserted in place (title/description updated,
+      // created_at and status preserved). Stale alerts are auto-completed.
 
-      let totalInserted = 0;
+      let totalUpserted = 0;
+      let totalResolved = 0;
 
       for (const [orgId, orgContracts] of Object.entries(byOrg)) {
         const plays = await loadCLMPlaysWithRoles(parseInt(orgId));
@@ -263,16 +264,31 @@ class ContractActionsGenerator {
         }
 
         for (const contract of orgContracts) {
+          const firedRules = [];
+
           for (const play of plays) {
-            totalInserted += await processPlayForContract(
+            const { inserted, sourceRule } = await processPlayForContract(
               parseInt(orgId), contract, play, renewalContractIds
             );
+            if (inserted > 0 && sourceRule) {
+              firedRules.push(sourceRule);
+              totalUpserted += inserted;
+            }
           }
+
+          // Resolve CLM alerts whose conditions are no longer true
+          const resolved = await ActionPersister.resolveStaleDiagnostics({
+            entityType: 'contract',
+            entityId:   contract.id,
+            firedRules,
+            orgId:      parseInt(orgId),
+          });
+          if (resolved > 0) totalResolved += resolved;
         }
       }
 
-      console.log(`✅ CLM sweep complete — inserted ${totalInserted} actions`);
-      return { success: true, inserted: totalInserted };
+      console.log(`✅ CLM sweep complete — upserted: ${totalUpserted}, stale resolved: ${totalResolved}`);
+      return { success: true, upserted: totalUpserted, resolved: totalResolved };
 
     } catch (error) {
       console.error('❌ ContractActionsGenerator.generateAll:', error);
@@ -297,20 +313,25 @@ class ContractActionsGenerator {
       );
       const renewalContractIds = new Set(childRes.rows.map(r => r.parent_contract_id));
 
-      await db.query(
-        `DELETE FROM actions
-         WHERE contract_id = $1
-           AND source = 'auto_generated'
-           AND status IN ('yet_to_start', 'in_progress')`,
-        [contractId]
-      );
-
+      // ── No DELETE — upsert diagnostics, resolve stale ─────────────────────
       const plays = await loadCLMPlaysWithRoles(orgId);
-
+      const firedRules = [];
       let inserted = 0;
+
       for (const play of plays) {
-        inserted += await processPlayForContract(orgId, contract, play, renewalContractIds);
+        const playResult = await processPlayForContract(orgId, contract, play, renewalContractIds);
+        if (playResult.inserted > 0 && playResult.sourceRule) {
+          firedRules.push(playResult.sourceRule);
+          inserted += playResult.inserted;
+        }
       }
+
+      const resolved = await ActionPersister.resolveStaleDiagnostics({
+        entityType: 'contract',
+        entityId:   contractId,
+        firedRules,
+        orgId,
+      });
 
       // ── AI Enhancement (optional, module-gated) ──────────────────────────
       try {

@@ -20,6 +20,7 @@ const ActionConfigService     = require('./actionConfig.service');
 const AgentObserver           = require('./AgentObserver');
 const { resolveForPlays }     = require('./PlayRouteResolver');
 const PlaybookActionGenerator = require('./PlaybookActionGenerator');
+const ActionPersister         = require('./ActionPersister');
 
 // ── Internal classification ───────────────────────────────────────────────────
 
@@ -368,12 +369,14 @@ class ActionsGenerator {
 
       console.log(`📊 Loaded: ${deals.length} deals, ${contacts.length} contacts, ${emails.length} emails, ${meetings.length} meetings, ${files.length} files`);
 
-      await db.query(
-        "DELETE FROM actions WHERE source IN ('auto_generated', 'ai_generated') AND status IN ('yet_to_start', 'in_progress') AND contract_id IS NULL AND case_id IS NULL"
-      );
+      // ── NO GLOBAL DELETE — replaced with per-deal upsert + resolve ──────────
+      // Diagnostic alerts (Type A): upserted in place — created_at/status preserved
+      // Playbook tasks (Type B):    ON CONFLICT DO NOTHING via ActionWriter
+      // Stale diagnostics:          auto-completed when condition no longer true
 
       let totalGenerated = 0;
-      let totalInserted  = 0;
+      let totalUpserted  = 0;
+      let totalResolved  = 0;
 
       for (const deal of deals) {
         if (isTerminalDeal(deal)) continue;
@@ -394,11 +397,81 @@ class ActionsGenerator {
           const actionConfig = await ActionConfigService.getConfig(userId, orgId);
           const context      = await buildContext(deal, contacts, emails, meetings, files, userId, orgId);
 
-          // Non-playbook rules (health, timing, contacts, meetings, emails, files)
+          // ── Type A: Rules-engine diagnostic alerts ─────────────────────────
           const rulesActions = ActionsRulesEngine.generate(context);
           console.log(`  📏 Rules: ${rulesActions.length} actions for deal ${deal.id} (${deal.name})`);
 
-          // Playbook-sourced actions via PlaybookActionGenerator (replaces _playbookRules)
+          const firedSourceRules = [];
+          for (const action of rulesActions) {
+            const id = await ActionPersister.upsertDiagnosticAlert({
+              entityType:      'deal',
+              entityId:        deal.id,
+              sourceRule:      action.source_rule,
+              title:           action.title,
+              description:     action.description,
+              actionType:      action.action_type,
+              priority:        action.priority,
+              dueDate:         action.due_date,
+              nextStep:        action.next_step,
+              isInternal:      action.is_internal || false,
+              suggestedAction: action.suggested_action,
+              healthParam:     action.health_param,
+              dealStage:       action.deal_stage,
+              accountId:       action.account_id || deal.account_id,
+              contactId:       action.contact_id || null,
+              orgId,
+              userId,
+            });
+            if (id) {
+              totalUpserted++;
+              firedSourceRules.push(action.source_rule);
+              await createCalendarEntryForAction(action, id, userId, orgId);
+            }
+          }
+
+          // ── Type A: AI-enhanced diagnostic alerts ──────────────────────────
+          const aiActions = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
+          if (aiActions.length) {
+            console.log(`  🤖 AI: ${aiActions.length} additional actions for deal ${deal.id}`);
+          }
+          for (const action of aiActions) {
+            if (!action.source_rule) continue; // AI actions without source_rule skip upsert
+            const id = await ActionPersister.upsertDiagnosticAlert({
+              entityType:      'deal',
+              entityId:        deal.id,
+              sourceRule:      action.source_rule,
+              title:           action.title,
+              description:     action.description,
+              actionType:      action.action_type,
+              priority:        action.priority,
+              dueDate:         action.due_date,
+              nextStep:        action.next_step,
+              isInternal:      action.is_internal || false,
+              suggestedAction: action.suggested_action,
+              accountId:       action.account_id || deal.account_id,
+              orgId,
+              userId,
+            });
+            if (id) {
+              totalUpserted++;
+              firedSourceRules.push(action.source_rule);
+              await createCalendarEntryForAction(action, id, userId, orgId);
+            }
+          }
+
+          // ── Resolve stale diagnostics: conditions that are no longer true ──
+          const resolved = await ActionPersister.resolveStaleDiagnostics({
+            entityType: 'deal',
+            entityId:   deal.id,
+            firedRules: firedSourceRules,
+            orgId,
+          });
+          if (resolved > 0) {
+            console.log(`  ✅ Resolved ${resolved} stale diagnostic(s) for deal ${deal.id}`);
+            totalResolved += resolved;
+          }
+
+          // ── Type B: Playbook tasks — ON CONFLICT DO NOTHING via ActionWriter
           const pbMode = actionConfig.ai_enabled ? 'ai' : 'template';
           const pbResult = await PlaybookActionGenerator.generate({
             entityType: 'deal',
@@ -409,43 +482,29 @@ class ActionsGenerator {
             orgId,
             userId,
           });
-          const pbActions = pbResult.actions;
-          if (pbActions.length) {
-            console.log(`  📖 Playbook (${pbMode}): ${pbActions.length} actions for deal ${deal.id}`);
+          if (pbResult.actions.length) {
+            console.log(`  📖 Playbook (${pbMode}): ${pbResult.actions.length} play task(s) for deal ${deal.id}`);
+            await ActionPersister.writePlaybookTask({
+              entityType:   'deal',
+              entityId:     deal.id,
+              actions:      pbResult.actions,
+              playbookId:   context.playbookId,
+              playbookName: pbResult.playbookName || null,
+              orgId,
+              userId,
+            });
           }
 
-          const aiActions = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
-          if (aiActions.length) {
-            console.log(`  🤖 AI: ${aiActions.length} additional actions for deal ${deal.id}`);
-          }
+          totalGenerated += rulesActions.length + aiActions.length + pbResult.actions.length;
 
-          const allActions = [...rulesActions, ...pbActions, ...aiActions];
-          totalGenerated  += allActions.length;
-
-          for (const action of allActions) {
-            try {
-              // For playbook-sourced actions, use the role-resolved assignee
-              const assigneeUserId = (action.playbook_play_id && context.playbookPlayAssignees)
-                ? (context.playbookPlayAssignees.get(action.playbook_play_id)?.[0] || null)
-                : null;
-              const insertedId = await insertAction(action, userId, orgId, assigneeUserId);
-              totalInserted++;
-              if (insertedId) {
-                await createCalendarEntryForAction(action, insertedId, userId, orgId);
-              }
-            } catch (err) {
-              console.error(`  ❌ Insert failed for "${action.title}":`, err.message);
-            }
-          }
-
-          AgentObserver.onActionsGenerated(deal.id, allActions, context, orgId, userId)
+          AgentObserver.onActionsGenerated(deal.id, rulesActions, context, orgId, userId)
             .catch(err => console.error(`  🤖 AgentObserver hook error:`, err.message));
         } catch (err) {
           console.error(`  ❌ Error processing deal ${deal.id} (${deal.name}):`, err.message);
         }
       }
 
-      console.log(`✅ generateAll complete — generated: ${totalGenerated} inserted: ${totalInserted}`);
+      console.log(`✅ generateAll complete — generated: ${totalGenerated}, upserted: ${totalUpserted}, stale resolved: ${totalResolved}`);
 
       try {
         await db.query(
@@ -456,7 +515,7 @@ class ActionsGenerator {
         );
       } catch (_) { /* non-blocking */ }
 
-      return { success: true, generated: totalGenerated, inserted: totalInserted };
+      return { success: true, generated: totalGenerated, upserted: totalUpserted, resolved: totalResolved };
 
     } catch (error) {
       console.error('❌ Error in generateAll:', error);
@@ -496,10 +555,74 @@ class ActionsGenerator {
       const actionConfig = await ActionConfigService.getConfig(userId, orgId);
       const context      = await buildContext(deal, contactsRes.rows, emailsRes.rows, meetingsRes.rows, filesRes.rows, userId, orgId);
 
-      // Non-playbook rules
-      const rulesActions = ActionsRulesEngine.generate(context);
+      // ── Type A: Rules-engine diagnostic alerts — upsert, never delete ─────
+      const rulesActions   = ActionsRulesEngine.generate(context);
+      const firedSourceRules = [];
 
-      // Playbook-sourced actions via PlaybookActionGenerator (replaces _playbookRules)
+      for (const action of rulesActions) {
+        const id = await ActionPersister.upsertDiagnosticAlert({
+          entityType:      'deal',
+          entityId:        dealId,
+          sourceRule:      action.source_rule,
+          title:           action.title,
+          description:     action.description,
+          actionType:      action.action_type,
+          priority:        action.priority,
+          dueDate:         action.due_date,
+          nextStep:        action.next_step,
+          isInternal:      action.is_internal || false,
+          suggestedAction: action.suggested_action,
+          healthParam:     action.health_param,
+          dealStage:       action.deal_stage,
+          accountId:       action.account_id || deal.account_id,
+          contactId:       action.contact_id || null,
+          orgId,
+          userId,
+        });
+        if (id) {
+          firedSourceRules.push(action.source_rule);
+          await createCalendarEntryForAction(action, id, userId, orgId);
+        }
+      }
+
+      // ── Type A: AI-enhanced diagnostic alerts ─────────────────────────────
+      const aiActions = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
+      for (const action of aiActions) {
+        if (!action.source_rule) continue;
+        const id = await ActionPersister.upsertDiagnosticAlert({
+          entityType:      'deal',
+          entityId:        dealId,
+          sourceRule:      action.source_rule,
+          title:           action.title,
+          description:     action.description,
+          actionType:      action.action_type,
+          priority:        action.priority,
+          dueDate:         action.due_date,
+          nextStep:        action.next_step,
+          isInternal:      action.is_internal || false,
+          suggestedAction: action.suggested_action,
+          accountId:       action.account_id || deal.account_id,
+          orgId,
+          userId,
+        });
+        if (id) {
+          firedSourceRules.push(action.source_rule);
+          await createCalendarEntryForAction(action, id, userId, orgId);
+        }
+      }
+
+      // ── Resolve stale diagnostics whose conditions cleared ────────────────
+      const resolved = await ActionPersister.resolveStaleDiagnostics({
+        entityType: 'deal',
+        entityId:   dealId,
+        firedRules: firedSourceRules,
+        orgId,
+      });
+      if (resolved > 0) {
+        console.log(`  ✅ Resolved ${resolved} stale diagnostic(s) for deal ${dealId}`);
+      }
+
+      // ── Type B: Playbook tasks — ON CONFLICT (deal_id, playbook_play_id) DO NOTHING
       const pbMode = actionConfig.ai_enabled ? 'ai' : 'template';
       const pbResult = await PlaybookActionGenerator.generate({
         entityType: 'deal',
@@ -511,39 +634,25 @@ class ActionsGenerator {
         userId,
       });
       if (pbResult.actions.length) {
-        console.log(`  📖 Playbook (${pbMode}): ${pbResult.actions.length} actions for deal ${dealId}`);
+        console.log(`  📖 Playbook (${pbMode}): ${pbResult.actions.length} play task(s) for deal ${dealId}`);
+        await ActionPersister.writePlaybookTask({
+          entityType:   'deal',
+          entityId:     dealId,
+          actions:      pbResult.actions,
+          playbookId:   context.playbookId,
+          playbookName: pbResult.playbookName || null,
+          orgId,
+          userId,
+        });
       }
 
-      const aiActions  = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
-      const allActions = [...rulesActions, ...pbResult.actions, ...aiActions];
+      const totalCount = rulesActions.length + aiActions.length + pbResult.actions.length;
+      console.log(`✅ Processed ${totalCount} action(s) for deal ${dealId} (rules: ${rulesActions.length}, ai: ${aiActions.length}, playbook: ${pbResult.actions.length}, resolved: ${resolved})`);
 
-      await db.query(
-        "DELETE FROM actions WHERE deal_id = $1 AND org_id = $2 AND source IN ('auto_generated', 'ai_generated') AND status IN ('yet_to_start', 'in_progress')",
-        [dealId, orgId]
-      );
-
-      let inserted = 0;
-      for (const action of allActions) {
-        try {
-          const assigneeUserId = (action.playbook_play_id && context.playbookPlayAssignees)
-            ? (context.playbookPlayAssignees.get(action.playbook_play_id)?.[0] || null)
-            : null;
-          const insertedId = await insertAction(action, userId, orgId, assigneeUserId);
-          inserted++;
-          if (insertedId) {
-            await createCalendarEntryForAction(action, insertedId, userId, orgId);
-          }
-        } catch (err) {
-          console.error(`  ❌ Insert failed for "${action.title}":`, err.message);
-        }
-      }
-
-      console.log(`✅ Generated ${inserted} actions for deal ${dealId}`);
-
-      AgentObserver.onActionsGenerated(dealId, allActions, context, orgId, userId)
+      AgentObserver.onActionsGenerated(dealId, rulesActions, context, orgId, userId)
         .catch(err => console.error(`  🤖 AgentObserver hook error:`, err.message));
 
-      return inserted;
+      return totalCount;
 
     } catch (error) {
       console.error('Error generating actions for deal:', error);
