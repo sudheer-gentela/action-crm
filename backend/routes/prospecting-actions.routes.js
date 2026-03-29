@@ -9,6 +9,7 @@ const requireModule = require('../middleware/requireModule.middleware');
 const { sendEmail: sendGmailEmail }    = require('../services/googleService');
 const { sendEmail: sendOutlookEmail }  = require('../services/outlookService');
 const StrapActionGenerator             = require('../services/StrapActionGenerator');
+const PlayCompletionService            = require('../services/PlayCompletionService');  // Phase 6
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -279,6 +280,13 @@ router.patch('/:id/status', async (req, res) => {
         .catch(err => console.error('STRAP auto-resolve check error (prospecting):', err.message));
     }
 
+    // Phase 6 — fire next sequential play when a playbook play action is completed
+    if (isCompleting && action.play_id) {
+      PlayCompletionService.fireNextPlay(
+        'prospect', action.prospect_id, action.play_id, req.orgId, req.user.userId
+      ).catch(err => console.error('Next-play hook error (prospecting status):', err.message));
+    }
+
     // If completing an outreach action, update prospect's engagement tracking
     if (isCompleting && action.channel) {
       await db.query(
@@ -463,6 +471,13 @@ router.post('/:id/execute', async (req, res) => {
         a.id,
       ]
     );
+
+    // Phase 6 — fire next sequential play when a playbook play is executed
+    if (a.play_id) {
+      PlayCompletionService.fireNextPlay(
+        'prospect', a.prospect_id, a.play_id, req.orgId, req.user.userId
+      ).catch(err => console.error('Next-play hook error (prospecting execute):', err.message));
+    }
 
     // Update prospect outreach tracking
     if (a.channel) {

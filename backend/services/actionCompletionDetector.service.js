@@ -8,6 +8,7 @@
 
 const db = require('../config/database');
 const ActionConfigService = require('./actionConfig.service');
+const PlayCompletionService = require('./PlayCompletionService');  // Phase 6
 
 let anthropic = null;
 function getAnthropic() {
@@ -184,6 +185,9 @@ Scoring guide:
       ]
     );
     console.log(`✅ Action ${actionId} marked complete (email sent, AI detection off)`);
+
+    // Phase 6 — fire next sequential play
+    this._fireNextPlayForAction(actionId, orgId).catch(() => {});
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -323,6 +327,53 @@ Scoring guide:
       ]
     );
     console.log(`✅ Auto-completed action ${actionId} (${analysis.confidence}%)`);
+
+    // Phase 6 — fire next sequential play if this action was a playbook play
+    this._fireNextPlayForAction(actionId, orgId).catch(() => {});
+  }
+
+  // ── Phase 6: next-play hook ───────────────────────────────────────────────
+  // Loads the completed action row to extract its module and playbook_play_id,
+  // then delegates to PlayCompletionService. Non-blocking.
+
+  static async _fireNextPlayForAction(actionId, orgId) {
+    try {
+      const result = await db.query(
+        `SELECT playbook_play_id, deal_id, contract_id, case_id,
+                source_module, user_id
+         FROM actions
+         WHERE id = $1 AND org_id = $2`,
+        [actionId, orgId]
+      );
+      const action = result.rows[0];
+      if (!action?.playbook_play_id) return; // not a playbook play — skip
+
+      // Determine module from the action's FK columns
+      let module;
+      let entityId;
+      if (action.case_id) {
+        module   = 'case';
+        entityId = action.case_id;
+      } else if (action.contract_id) {
+        module   = 'contract';
+        entityId = action.contract_id;
+      } else if (action.deal_id) {
+        // Handover actions also use deal_id — distinguish by source_module
+        module   = action.source_module === 'handovers' ? 'handover' : 'deal';
+        entityId = action.deal_id;
+      } else {
+        return; // no FK — cannot determine module
+      }
+
+      await PlayCompletionService.fireNextPlay(
+        module, entityId, action.playbook_play_id, orgId, action.user_id
+      );
+    } catch (err) {
+      console.error(
+        `[ActionCompletionDetector] next-play hook failed for action ${actionId}:`,
+        err.message
+      );
+    }
   }
 
   static async createSuggestion(actionId, evidenceId, evidenceType, analysis, userId, orgId) {

@@ -20,6 +20,7 @@ const { pool, withOrgTransaction } = require('../config/database');
 const PlaybookPlayService          = require('./PlaybookPlayService');
 const ActionPersister              = require('./ActionPersister');
 const HandoverRulesEngine          = require('./HandoverRulesEngine');
+const PlayCompletionService        = require('./PlayCompletionService');  // Phase 6
 
 // ── Status machine ────────────────────────────────────────────────────────────
 
@@ -562,6 +563,24 @@ async function completePlay(handoverId, playInstanceId, userId, orgId) {
      WHERE handover_id = $2 AND play_instance_id = $3`,
     [instance.completed_at, handoverId, playInstanceId]
   );
+
+  // Phase 6 — fire next sequential play.
+  // Handover actions use deal_id as the entity FK (architectural decision #7).
+  // Load the deal_id from the handover row and pass module='handover'.
+  // Non-blocking: next-play failure must not disrupt the completion response.
+  if (instance.play_id) {
+    pool.query(
+      'SELECT deal_id FROM sales_handovers WHERE id = $1',
+      [handoverId]
+    ).then(r => {
+      const dealId = r.rows[0]?.deal_id;
+      if (!dealId) return;
+      return PlayCompletionService.fireNextPlay('handover', dealId, instance.play_id, orgId, userId);
+    }).catch(err => console.error(
+      `[handover.service] next-play hook failed for handover ${handoverId} play ${instance.play_id}:`,
+      err.message
+    ));
+  }
 
   return { instance };
 }

@@ -36,6 +36,7 @@ const PlaybookService         = require('./playbook.service');
 const { resolveProspectChannel } = PlaybookService;
 const { resolveForPlay }      = require('./PlayRouteResolver');
 const ProspectDiagnosticsEngine = require('./ProspectDiagnosticsEngine');
+const PlayCompletionService   = require('./PlayCompletionService');  // Phase 6
 
 // Terminal stages — skip diagnostic sweep for these
 const TERMINAL_STAGES = new Set(['converted', 'disqualified', 'archived']);
@@ -294,4 +295,59 @@ async function _resolveSystemUser(orgId) {
   }
 }
 
-module.exports = { generateForProspect, runNightlySweep };
+// ═════════════════════════════════════════════════════════════════════════════
+// completeProspectingAction — Phase 6 addition
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Mark a prospecting action as completed and fire the next sequential play.
+ *
+ * This is the canonical completion writer for prospecting_actions rows.
+ * Routes should call this instead of writing status = 'completed' directly,
+ * so that next-play chaining always fires.
+ *
+ * For rows that are NOT playbook plays (source = 'auto_generated' or
+ * source = 'strap'), next-play logic is skipped automatically because
+ * play_id will be null.
+ *
+ * @param {number} actionId
+ * @param {number} prospectId
+ * @param {number} orgId
+ * @param {number} userId      — user completing the action
+ * @param {object} [opts]
+ * @param {string} [opts.outcome]   — optional outcome note
+ * @returns {Promise<object>}  updated prospecting_action row
+ */
+async function completeProspectingAction(actionId, prospectId, orgId, userId, { outcome } = {}) {
+  const result = await db.query(
+    `UPDATE prospecting_actions
+     SET status       = 'completed',
+         completed_at = NOW(),
+         completed_by = $1,
+         outcome      = COALESCE($2, outcome),
+         updated_at   = NOW()
+     WHERE id = $3 AND prospect_id = $4 AND org_id = $5
+     RETURNING *`,
+    [userId, outcome || null, actionId, prospectId, orgId]
+  );
+
+  if (!result.rows.length) {
+    throw Object.assign(new Error('Prospecting action not found'), { status: 404 });
+  }
+
+  const action = result.rows[0];
+
+  // Phase 6 — fire next sequential play if this action was a playbook play.
+  // Non-blocking: next-play failure must not disrupt the completion response.
+  if (action.play_id) {
+    PlayCompletionService.fireNextPlay('prospect', prospectId, action.play_id, orgId, userId)
+      .catch(err => console.error(
+        `[prospectingActions] next-play hook failed for prospect ${prospectId} play ${action.play_id}:`,
+        err.message
+      ));
+  }
+
+  return action;
+}
+
+module.exports = { generateForProspect, runNightlySweep, completeProspectingAction };

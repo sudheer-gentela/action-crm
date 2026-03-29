@@ -22,6 +22,7 @@ const { resolveChannel } = require('./playbook.service');
 const { resolveForPlay } = require('./PlayRouteResolver');
 const ActionPersister  = require('./ActionPersister');
 const CasesRulesEngine = require('./CasesRulesEngine');
+const PlayCompletionService = require('./PlayCompletionService');  // Phase 6
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Status transition map
@@ -850,7 +851,20 @@ async function updateCasePlay(orgId, caseId, playId, userId, { status }) {
     [status, playId, caseId, orgId]
   );
   if (!r.rows.length) throw Object.assign(new Error('Play not found'), { status: 404 });
-  return r.rows[0];
+  const updatedPlay = r.rows[0];
+
+  // Phase 6 — fire next sequential play when a case play is completed.
+  // case_plays.play_id is the playbook_plays.id — pass it as completedPlayId.
+  // Non-blocking: next-play failure must not disrupt the completion response.
+  if (status === 'completed' && updatedPlay.play_id) {
+    PlayCompletionService.fireNextPlay('case', caseId, updatedPlay.play_id, orgId, userId)
+      .catch(err => console.error(
+        `[supportService] next-play hook failed for case ${caseId} play ${updatedPlay.play_id}:`,
+        err.message
+      ));
+  }
+
+  return updatedPlay;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
