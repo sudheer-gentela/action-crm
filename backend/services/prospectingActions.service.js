@@ -4,6 +4,12 @@
  * Generates prospecting actions from a playbook's plays for a prospect.
  * Called manually ("Generate Actions" button) or after stage changes.
  *
+ * PHASE 4 ADDITION:
+ *   - Added `runNightlySweep(orgId)` — iterates all active prospects for an
+ *     org, runs ProspectDiagnosticsEngine for each, writes Type A diagnostic
+ *     alerts to prospecting_actions with upsert + resolve semantics.
+ *   - Resolves diagnostics for prospects that move to terminal stages.
+ *
  * FIXED IN THIS VERSION:
  *   - Now uses playbook_plays rows (the structured plays defined in the
  *     playbook editor) instead of stage_guidance.key_actions text labels.
@@ -12,21 +18,30 @@
  *   - Stamps playbook_id, play_id, and playbook_name on each inserted row.
  *   - source_rule column now populated (added by migration).
  *
- * Flow:
+ * Flow (generateForProspect):
  *   1. Load prospect → get current stage + playbook_id
  *   2. Try playbook_plays for this stage first
  *   3. Fallback: load stage_guidance[currentStage].key_actions
  *   4. Load existing actions → deduplicate
  *   5. Insert pending actions for anything not already present
+ *
+ * Flow (runNightlySweep):
+ *   1. Load all active prospects for org
+ *   2. For each: run ProspectDiagnosticsEngine.runForProspect()
+ *   3. Log summary
  */
 
-const db            = require('../config/database');
-const PlaybookService = require('./playbook.service');
+const db                      = require('../config/database');
+const PlaybookService         = require('./playbook.service');
 const { resolveProspectChannel } = PlaybookService;
-const { resolveForPlay } = require('./PlayRouteResolver');
+const { resolveForPlay }      = require('./PlayRouteResolver');
+const ProspectDiagnosticsEngine = require('./ProspectDiagnosticsEngine');
+
+// Terminal stages — skip diagnostic sweep for these
+const TERMINAL_STAGES = new Set(['converted', 'disqualified', 'archived']);
 
 // ═════════════════════════════════════════════════════════════════════════════
-// generateForProspect — main entry point
+// generateForProspect — main entry point (unchanged from pre-Phase 4)
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -172,4 +187,111 @@ async function _generateFromPlays(prospect, orgId, userId, plays, playbook, play
   return { created: created.length, skipped, actions: created, source: 'playbook_plays' };
 }
 
-module.exports = { generateForProspect };
+// ═════════════════════════════════════════════════════════════════════════════
+// runNightlySweep — Phase 4 addition
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Nightly diagnostic sweep for all active prospects in an org.
+ *
+ * For each prospect:
+ *   - Runs ProspectDiagnosticsEngine (builds context + identifies hurdles)
+ *   - Upserts matching diagnostic alerts (Type A) to prospecting_actions
+ *   - Resolves alerts whose condition has cleared
+ *
+ * Terminal-stage prospects (converted/disqualified/archived) are skipped
+ * by ProspectDiagnosticsEngine — this query also pre-filters them for
+ * efficiency so we don't build context unnecessarily.
+ *
+ * The system user id is resolved by looking up the org owner / first admin.
+ * Diagnostic rows are written under this user. If no admin is found,
+ * falls back to userId = null (prospecting_actions.user_id is nullable).
+ *
+ * Cron: 02:15 UTC daily (registered in syncScheduler.js)
+ *
+ * @param {number} orgId
+ * @returns {{ processed: number, upserted: number, resolved: number, errors: number }}
+ */
+async function runNightlySweep(orgId) {
+  const startTime = Date.now();
+  console.log(`[ProspectingNightlySweep] Starting for org ${orgId}`);
+
+  // Resolve a system user id for this org (used as user_id on written rows)
+  const systemUserId = await _resolveSystemUser(orgId);
+
+  // Load all active prospects for this org — skip terminal stages at query level
+  const prospectsRes = await db.query(
+    `SELECT id, stage
+     FROM prospects
+     WHERE org_id = $1
+       AND deleted_at IS NULL
+       AND stage NOT IN ('converted', 'disqualified', 'archived')
+     ORDER BY id ASC`,
+    [orgId]
+  );
+
+  const prospects = prospectsRes.rows;
+  console.log(`[ProspectingNightlySweep] org=${orgId} prospects_to_scan=${prospects.length}`);
+
+  let totalUpserted = 0;
+  let totalResolved = 0;
+  let totalErrors   = 0;
+
+  for (const { id: prospectId } of prospects) {
+    try {
+      const result = await ProspectDiagnosticsEngine.runForProspect(
+        prospectId, orgId, systemUserId
+      );
+
+      if (!result.skipped) {
+        totalUpserted += result.upserted;
+        totalResolved += result.resolved;
+      }
+    } catch (err) {
+      totalErrors++;
+      console.error(
+        `[ProspectingNightlySweep] org=${orgId} prospect=${prospectId} error:`,
+        err.message
+      );
+    }
+  }
+
+  const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(
+    `[ProspectingNightlySweep] org=${orgId} done in ${duration}s — ` +
+    `processed=${prospects.length} upserted=${totalUpserted} resolved=${totalResolved} errors=${totalErrors}`
+  );
+
+  return {
+    processed: prospects.length,
+    upserted:  totalUpserted,
+    resolved:  totalResolved,
+    errors:    totalErrors,
+  };
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve a system/admin user id for this org.
+ * Used as the `user_id` on auto-generated diagnostic action rows.
+ * Falls back to null if no user found (column is nullable).
+ */
+async function _resolveSystemUser(orgId) {
+  try {
+    const r = await db.query(
+      `SELECT user_id FROM org_users
+       WHERE org_id = $1 AND role IN ('owner', 'admin')
+       ORDER BY
+         CASE role WHEN 'owner' THEN 0 ELSE 1 END,
+         created_at ASC
+       LIMIT 1`,
+      [orgId]
+    );
+    return r.rows[0]?.user_id || null;
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { generateForProspect, runNightlySweep };

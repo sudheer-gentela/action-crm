@@ -22,6 +22,12 @@
  *   - prospect_id written to emails.prospect_id when matched via prospect
  *   - account_id written to emails when matched via account domain only
  *   - prospecting_activities row created for prospect-matched emails
+ *
+ * Changes in Phase 4 (prospecting nightly sweep):
+ *   - Added require for prospectingActions.service
+ *   - Added cron at 02:45 UTC — ProspectDiagnosticsEngine sweep for all active
+ *     prospects across all active orgs. Upserts Type A diagnostic alerts and
+ *     resolves alerts whose conditions have cleared.
  */
 
 const cron      = require('node-cron');
@@ -34,6 +40,7 @@ const ContractActionsGenerator     = require('../services/ContractActionsGenerat
 const { runNightlyAudit } = require('../services/auditWorker.service');
 const SupportService  = require('../services/supportService');
 const HandoverService = require('../services/handover.service');
+const { runNightlySweep: runProspectingNightlySweep } = require('../services/prospectingActions.service');  // Phase 4
 
 
 
@@ -1066,6 +1073,35 @@ function startScheduler() {
     }
   }, { timezone: 'UTC' });
 
+  // ── Prospecting diagnostic sweep — nightly at 02:45 UTC ──────────────────  // Phase 4
+  // Runs ProspectDiagnosticsEngine for every non-terminal prospect in every
+  // active org. Identifies the 8 hurdle types (ghosting, stale_outreach,
+  // no_meeting, no_research, wrong_channel, multi_thread_needed, low_icp,
+  // conversion_ready) and upserts them as Type A diagnostic alerts in
+  // prospecting_actions. Resolves alerts whose conditions have cleared.
+  // Staggered 15 min after Handovers sweep to avoid DB contention.
+  cron.schedule('45 2 * * *', async () => {
+    console.log('🌙 Running nightly Prospecting diagnostic sweep...');
+    try {
+      const orgs = await pool.query(
+        `SELECT DISTINCT org_id FROM prospects
+         WHERE deleted_at IS NULL
+           AND stage NOT IN ('converted', 'disqualified', 'archived')`
+      );
+      let totalProcessed = 0, totalUpserted = 0, totalResolved = 0, totalErrors = 0;
+      for (const { org_id } of orgs.rows) {
+        const r = await runProspectingNightlySweep(org_id);
+        totalProcessed += r.processed;
+        totalUpserted  += r.upserted;
+        totalResolved  += r.resolved;
+        totalErrors    += r.errors;
+      }
+      console.log(`✅ Prospecting sweep done — orgs: ${orgs.rows.length}, processed: ${totalProcessed}, upserted: ${totalUpserted}, resolved: ${totalResolved}, errors: ${totalErrors}`);
+    } catch (err) {
+      console.error('❌ Prospecting sweep error:', err.message);
+    }
+  }, { timezone: 'UTC' });
+
   // ── Workflow audit — nightly sweep ────────────────────────────────────────
   // Runs at 03:00 UTC every day. Scans all entity records for all active orgs
   // against audit-trigger workflow rules, writing new violations and resolving
@@ -1100,6 +1136,7 @@ function startScheduler() {
   console.log('✅ CLM action scheduler started (nightly 02:00 UTC)');
   console.log('✅ Cases diagnostic scheduler started (nightly 02:15 UTC)');
   console.log('✅ Handovers diagnostic scheduler started (nightly 02:30 UTC)');
+  console.log('✅ Prospecting diagnostic scheduler started (nightly 02:45 UTC)');  // Phase 4
   console.log('✅ Workflow audit scheduler started (nightly 03:00 UTC)');
   console.log('✅ Email filter log purge started (nightly 03:30 UTC)');
 }

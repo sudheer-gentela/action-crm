@@ -1,20 +1,39 @@
 /**
  * ProspectHurdleIdentifier.js
  *
- * Identifies the highest-priority hurdle blocking prospect progression.
- * Hurdle types from the handoff spec — ordered by priority.
+ * Identifies hurdles blocking prospect progression.
+ * Hurdle types ordered by priority.
  *
- * Returns: { hurdleType, title, priority, evidence } or null.
+ * PHASE 4 ADDITION:
+ *   - Added `identifyAll()` — returns ALL matching hurdles (not just top one).
+ *     Used by ProspectDiagnosticsEngine to write all active diagnostic alerts.
+ *   - `identify()` unchanged — still returns only the top hurdle. STRAP
+ *     continues to call this (one active hurdle per STRAP).
+ *
+ * Returns from identify():  { hurdleType, title, priority, evidence } | null
+ * Returns from identifyAll(): Array<{ hurdleType, title, priority, evidence }>
  */
 
 class ProspectHurdleIdentifier {
 
   /**
+   * Returns the single highest-priority hurdle (STRAP path — unchanged).
    * @param {object} context - from ProspectContextBuilder
-   * @returns {{ hurdleType: string, title: string, priority: string, evidence: string } | null}
+   * @returns {{ hurdleType, title, priority, evidence } | null}
    */
   static identify(context) {
-    const { prospect, derived, icpBreakdown, stageGuidance } = context;
+    const all = this.identifyAll(context);
+    return all.length > 0 ? all[0] : null;
+  }
+
+  /**
+   * Returns ALL matching hurdles ordered by priority.
+   * Used by ProspectDiagnosticsEngine to write multiple diagnostic alerts.
+   * @param {object} context - from ProspectContextBuilder
+   * @returns {Array<{ hurdleType, title, priority, evidence }>}
+   */
+  static identifyAll(context) {
+    const { prospect, derived, icpBreakdown } = context;
 
     const checks = [
       this._checkGhosting(prospect, derived),
@@ -27,11 +46,7 @@ class ProspectHurdleIdentifier {
       this._checkLowIcp(prospect, icpBreakdown),
     ];
 
-    for (const result of checks) {
-      if (result) return result;
-    }
-
-    return null;
+    return checks.filter(Boolean);
   }
 
   // ── ghosting: 3+ outreach attempts with zero response ─────────────────────
@@ -80,8 +95,6 @@ class ProspectHurdleIdentifier {
 
   static _checkNoMeeting(prospect, derived) {
     if (derived.hasReplied && prospect.response_count >= 1) {
-      // Check if prospect is in an engagement-ready stage
-      const meetingStages = ['engaged', 'qualified', 'meeting_scheduled'];
       if (['engaged', 'qualified'].includes(prospect.stage)) {
         return {
           hurdleType: 'no_meeting',
