@@ -17,6 +17,13 @@
  *   clm_expiring_soon_urgent  → 2 actions: AE + sales_manager
  *   clm_in_review_with_legal  → 2 actions: legal person + AE
  *   all others                → 1 action:  AE only
+ *
+ * PHASE 7 ADDITION:
+ *   - Added `generateForContractEvent(contractId, eventType)` — ad-hoc
+ *     diagnostic re-run for a single contract triggered by a discrete event
+ *     (counter-party view, external comment, signature request sent, etc.).
+ *   - Follows the same upsert + resolve pattern as the nightly sweep but
+ *     scoped to one contract. Non-blocking; callers should not await.
  */
 
 const db             = require('../config/database');
@@ -355,6 +362,106 @@ class ContractActionsGenerator {
     } catch (error) {
       console.error('ContractActionsGenerator.generateForContract error:', error);
       return 0;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Phase 7 — Event trigger
+  //
+  // generateForContractEvent(contractId, eventType)
+  //
+  //   Ad-hoc diagnostic re-run for a single contract, triggered by a discrete
+  //   real-time event rather than the nightly cron. Shares the exact same
+  //   upsert + resolve logic as generateForContract(), so results are always
+  //   consistent with what the nightly sweep would produce.
+  //
+  //   Supported eventType values (informational — logged only, not branched on):
+  //     'counterparty_viewed'     — counter-party opened the shared contract link
+  //     'external_comment_added'  — external stakeholder left a comment
+  //     'signature_request_sent'  — DocuSign / equivalent envelope dispatched
+  //     'signature_received'      — one signer has signed (may not be final)
+  //     'status_changed'          — fallthrough for any status change not
+  //                                  handled by generateForContractStatusChange
+  //
+  //   Callers (AgentObserver, route hooks) should fire this non-blocking:
+  //     ContractActionsGenerator.generateForContractEvent(contractId, 'counterparty_viewed')
+  //       .catch(err => console.error('CLM event trigger error:', err.message));
+  //
+  //   Does NOT run the AI enhancer — event-triggered re-runs are diagnostic
+  //   only. AI enhancement is reserved for the full generateForContract() call
+  //   on initial generation and explicit manual refresh.
+  //
+  //   Skips terminal contracts (void / terminated / cancelled) silently.
+  //
+  // @param {number} contractId
+  // @param {string} eventType
+  // @returns {Promise<{ upserted: number, resolved: number }>}
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static async generateForContractEvent(contractId, eventType) {
+    try {
+      const contractRes = await db.query(
+        `SELECT * FROM contracts
+         WHERE id = $1
+           AND deleted_at IS NULL
+           AND status NOT IN ('void', 'terminated', 'cancelled')`,
+        [contractId]
+      );
+
+      if (contractRes.rows.length === 0) {
+        // Silently skip — terminal or deleted contract
+        return { upserted: 0, resolved: 0 };
+      }
+
+      const contract = contractRes.rows[0];
+      const orgId    = contract.org_id;
+
+      console.log(
+        `[CLMEventTrigger] contract=${contractId} event=${eventType} org=${orgId}`
+      );
+
+      // Load renewal set (needed by buildFireContext)
+      const childRes = await db.query(
+        `SELECT DISTINCT parent_contract_id FROM contracts
+         WHERE parent_contract_id IS NOT NULL AND deleted_at IS NULL`
+      );
+      const renewalContractIds = new Set(childRes.rows.map(r => r.parent_contract_id));
+
+      const plays = await loadCLMPlaysWithRoles(orgId);
+      const firedRules = [];
+      let totalUpserted = 0;
+
+      for (const play of plays) {
+        const { inserted, sourceRule } = await processPlayForContract(
+          orgId, contract, play, renewalContractIds
+        );
+        if (inserted > 0 && sourceRule) {
+          firedRules.push(sourceRule);
+          totalUpserted += inserted;
+        }
+      }
+
+      const totalResolved = await ActionPersister.resolveStaleDiagnostics({
+        entityType: 'contract',
+        entityId:   contractId,
+        firedRules,
+        orgId,
+      });
+
+      console.log(
+        `[CLMEventTrigger] contract=${contractId} event=${eventType} ` +
+        `upserted=${totalUpserted} resolved=${totalResolved}`
+      );
+
+      return { upserted: totalUpserted, resolved: totalResolved };
+
+    } catch (err) {
+      console.error(
+        `ContractActionsGenerator.generateForContractEvent error ` +
+        `(contract=${contractId} event=${eventType}):`,
+        err.message
+      );
+      return { upserted: 0, resolved: 0 };
     }
   }
 }

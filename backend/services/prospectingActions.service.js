@@ -10,6 +10,16 @@
  *     alerts to prospecting_actions with upsert + resolve semantics.
  *   - Resolves diagnostics for prospects that move to terminal stages.
  *
+ * PHASE 6 ADDITION:
+ *   - Added `completeProspectingAction(actionId, prospectId, orgId, userId, opts)`
+ *     — canonical completion writer that hooks PlayCompletionService for
+ *     next-play chaining on playbook_play rows.
+ *
+ * PHASE 7 ADDITION:
+ *   - Added `generateForProspectEvent(prospectId, orgId, userId, eventType)`
+ *     — ad-hoc diagnostic re-run for a single prospect triggered by a discrete
+ *     real-time event (email reply received, meeting booked, etc.).
+ *
  * FIXED IN THIS VERSION:
  *   - Now uses playbook_plays rows (the structured plays defined in the
  *     playbook editor) instead of stage_guidance.key_actions text labels.
@@ -29,6 +39,11 @@
  *   1. Load all active prospects for org
  *   2. For each: run ProspectDiagnosticsEngine.runForProspect()
  *   3. Log summary
+ *
+ * Flow (generateForProspectEvent):
+ *   1. Load prospect — skip terminal stages
+ *   2. Run ProspectDiagnosticsEngine.runForProspect() for this one prospect
+ *   3. Log result
  */
 
 const db                      = require('../config/database');
@@ -350,4 +365,95 @@ async function completeProspectingAction(actionId, prospectId, orgId, userId, { 
   return action;
 }
 
-module.exports = { generateForProspect, runNightlySweep, completeProspectingAction };
+// ═════════════════════════════════════════════════════════════════════════════
+// generateForProspectEvent — Phase 7 addition
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Ad-hoc diagnostic re-run for a single prospect triggered by a discrete
+ * real-time event. Delegates to ProspectDiagnosticsEngine.runForProspect()
+ * — the same engine used by the nightly sweep — so results are always
+ * consistent.
+ *
+ * Unlike the nightly sweep this function accepts a userId parameter.
+ * It is used as the fallback writer user when the engine needs to attribute
+ * newly created diagnostic rows. Typically this is the user who caused the
+ * event (replied to an email, booked a meeting). Falls back to the org system
+ * user if null is passed.
+ *
+ * Supported eventType values (informational — logged only, not branched on):
+ *   'email_reply_received'  — inbound email reply from prospect synced
+ *   'meeting_booked'        — meeting created and linked to this prospect
+ *   'meeting_completed'     — meeting marked as happened
+ *   'stage_changed'         — fallthrough for stage changes not handled by
+ *                              generateForProspect (e.g. manual stage edits)
+ *   'outreach_executed'     — outreach action completed (POST /:id/execute)
+ *
+ * Callers fire this non-blocking:
+ *   generateForProspectEvent(prospectId, orgId, userId, 'email_reply_received')
+ *     .catch(err => console.error('Prospect event trigger error:', err.message));
+ *
+ * Skips terminal prospects (converted / disqualified / archived) silently.
+ * ProspectDiagnosticsEngine.runForProspect() also guards this, but we check
+ * at query level to avoid an unnecessary engine call.
+ *
+ * @param {number} prospectId
+ * @param {number} orgId
+ * @param {number|null} userId   — user who triggered the event (may be null)
+ * @param {string} eventType
+ * @returns {Promise<{ upserted: number, resolved: number, skipped: boolean }>}
+ */
+async function generateForProspectEvent(prospectId, orgId, userId, eventType) {
+  try {
+    // Pre-check: skip terminal prospects without spinning up the engine
+    const stageRes = await db.query(
+      `SELECT stage FROM prospects
+       WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+      [prospectId, orgId]
+    );
+
+    if (stageRes.rows.length === 0) {
+      // Not found or deleted — silent skip
+      return { upserted: 0, resolved: 0, skipped: true };
+    }
+
+    const { stage } = stageRes.rows[0];
+    if (TERMINAL_STAGES.has(stage)) {
+      return { upserted: 0, resolved: 0, skipped: true };
+    }
+
+    // Resolve effective userId — fall back to system user if caller passes null
+    const effectiveUserId = userId ?? await _resolveSystemUser(orgId);
+
+    console.log(
+      `[ProspectEventTrigger] prospect=${prospectId} event=${eventType} ` +
+      `org=${orgId} user=${effectiveUserId ?? 'system'}`
+    );
+
+    const result = await ProspectDiagnosticsEngine.runForProspect(
+      prospectId, orgId, effectiveUserId
+    );
+
+    console.log(
+      `[ProspectEventTrigger] prospect=${prospectId} event=${eventType} ` +
+      `upserted=${result.upserted} resolved=${result.resolved} skipped=${result.skipped}`
+    );
+
+    return result;
+
+  } catch (err) {
+    console.error(
+      `prospectingActions.generateForProspectEvent error ` +
+      `(prospect=${prospectId} event=${eventType}):`,
+      err.message
+    );
+    return { upserted: 0, resolved: 0, skipped: false };
+  }
+}
+
+module.exports = {
+  generateForProspect,
+  runNightlySweep,
+  completeProspectingAction,
+  generateForProspectEvent,   // Phase 7
+};

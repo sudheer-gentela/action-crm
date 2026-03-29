@@ -1,16 +1,53 @@
 /**
  * AgentObserver.js — DROP-IN REPLACEMENT
  *
- * CHANGES:
- *   - StrapResolutionDetector hooks now pass entity_type for proper routing
- *   - Added onProspectActionsGenerated() hook for prospect STRAP resolution
- *   - Everything else is IDENTICAL to the original.
+ * PHASE 7 CHANGES:
+ *   - Added event trigger hooks for CLM, Cases, Handovers, and Prospecting.
+ *   - onContractEvent()     — CLM: counter-party view, external comment, signature
+ *   - onCaseEvent()         — Cases: inbound email reply, escalation flag set
+ *   - onHandoverEvent()     — Handovers: kickoff meeting, commitment added, brief updated
+ *   - onProspectEvent()     — Prospecting: email reply received, meeting booked
+ *   - All new hooks are non-blocking (fire-and-forget with error logging).
+ *   - All new hooks skip if the module's generator returns early (terminal/not-found).
+ *
+ * UNCHANGED FROM PREVIOUS VERSION:
+ *   - onActionsGenerated()         — deal STRAP resolution hook
+ *   - onEmailReceived()            — deal email analysis: contact creation, draft email, STRAP
+ *   - onHealthScoreChanged()       — deal health decline / recovery proposals, STRAP
+ *   - onProspectActionsGenerated() — prospect STRAP resolution hook (Phase 5)
+ *   - onProspectStageChanged()     — prospect STRAP stage resolution hook (Phase 5)
+ *   - _analyzeActionForProposals() — private deal proposal analysis
+ *
+ * Pattern for all new hooks:
+ *   1. Guard against missing required IDs — return silently.
+ *   2. Call the module's generateFor{Module}Event() non-blocking.
+ *   3. Optionally call STRAP resolution detector for the entity.
+ *   4. Never throw — errors are swallowed to protect the caller's request.
  */
 
 const AgentProposalService = require('./AgentProposalService');
 const StrapResolutionDetector = require('./StrapResolutionDetector');
 
+// Lazy-required to avoid circular dependency issues at module load time.
+// Each getter is called only when the hook fires.
+function getContractActionsGenerator() {
+  return require('./ContractActionsGenerator');
+}
+function getSupportService() {
+  return require('./supportService');
+}
+function getHandoverService() {
+  return require('./handover.service');
+}
+function getProspectingActionsService() {
+  return require('./prospectingActions.service');
+}
+
 class AgentObserver {
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // DEAL hooks (unchanged)
+  // ══════════════════════════════════════════════════════════════════════════
 
   static async onActionsGenerated(dealId, actions, context, orgId, userId) {
     try {
@@ -135,9 +172,9 @@ class AgentObserver {
     }
   }
 
-  // ══════════════════════════════════════════════════════════
-  // NEW: Prospect STRAP hooks
-  // ══════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════════════
+  // PROSPECT hooks (unchanged from Phase 5)
+  // ══════════════════════════════════════════════════════════════════════════
 
   /**
    * Called after prospecting actions are generated for a prospect.
@@ -164,6 +201,165 @@ class AgentObserver {
         .catch(err => console.error('🎯 STRAP prospect stage resolution check error:', err.message));
     } catch (err) {
       console.error('AgentObserver.onProspectStageChanged error:', err.message);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CLM hooks — Phase 7
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Called when a contract-level event occurs that may affect its diagnostic
+   * alerts. Triggers an immediate re-run of CLM diagnostic rules for the
+   * contract, identical to what the nightly sweep would produce.
+   *
+   * Typical callers:
+   *   - Signature request webhook handler → 'signature_request_sent'
+   *   - Document view webhook            → 'counterparty_viewed'
+   *   - Comment webhook / API handler    → 'external_comment_added'
+   *
+   * @param {number} contractId
+   * @param {string} eventType  — informational; logged by the generator
+   * @param {object} [context]  — optional metadata (unused today, reserved)
+   */
+  static async onContractEvent(contractId, eventType, context = {}) {
+    try {
+      if (!contractId || !eventType) return;
+
+      getContractActionsGenerator()
+        .generateForContractEvent(contractId, eventType)
+        .catch(err => console.error(
+          `AgentObserver.onContractEvent CLM trigger error (contract=${contractId} event=${eventType}):`,
+          err.message
+        ));
+
+    } catch (err) {
+      console.error('AgentObserver.onContractEvent error:', err.message);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Case hooks — Phase 7
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Called when a case-level event occurs that may affect its diagnostic
+   * alerts. Triggers an immediate re-run of CasesRulesEngine for the case.
+   *
+   * Typical callers:
+   *   - Email sync worker (after an inbound reply is processed)
+   *     → orgId comes from the synced email's org context
+   *   - Route handler for escalation flag toggle → 'escalation_set'
+   *   - addNote() post-hook (optional) → 'note_added'
+   *
+   * @param {number} caseId
+   * @param {number} orgId
+   * @param {string} eventType
+   * @param {object} [context]
+   */
+  static async onCaseEvent(caseId, orgId, eventType, context = {}) {
+    try {
+      if (!caseId || !orgId || !eventType) return;
+
+      getSupportService()
+        .generateForCaseEvent(caseId, orgId, eventType)
+        .catch(err => console.error(
+          `AgentObserver.onCaseEvent trigger error (case=${caseId} event=${eventType}):`,
+          err.message
+        ));
+
+    } catch (err) {
+      console.error('AgentObserver.onCaseEvent error:', err.message);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Handover hooks — Phase 7
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Called when a handover-level event occurs that may affect its diagnostic
+   * alerts. Triggers an immediate re-run of HandoverRulesEngine for the
+   * handover.
+   *
+   * Typical callers:
+   *   - Meeting creation route (when meeting.handover_id is set)
+   *     → 'kickoff_meeting_created'
+   *   - addCommitment() → 'commitment_added'
+   *   - update() when go_live_date or commercial_terms_summary changed
+   *     → 'brief_updated'
+   *   - advanceStatus() → 'status_changed'
+   *
+   * @param {number} handoverId
+   * @param {number} orgId
+   * @param {string} eventType
+   * @param {object} [context]
+   */
+  static async onHandoverEvent(handoverId, orgId, eventType, context = {}) {
+    try {
+      if (!handoverId || !orgId || !eventType) return;
+
+      getHandoverService()
+        .generateForHandoverEvent(handoverId, orgId, eventType)
+        .catch(err => console.error(
+          `AgentObserver.onHandoverEvent trigger error (handover=${handoverId} event=${eventType}):`,
+          err.message
+        ));
+
+    } catch (err) {
+      console.error('AgentObserver.onHandoverEvent error:', err.message);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Prospecting event hooks — Phase 7
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Called when a prospect-level event occurs that may affect its diagnostic
+   * alerts. Triggers an immediate re-run of ProspectDiagnosticsEngine for
+   * the prospect.
+   *
+   * Typical callers:
+   *   - Email sync worker (after an inbound reply from a prospect is synced)
+   *     → 'email_reply_received'
+   *   - Meeting creation route (prospect linked to meeting) → 'meeting_booked'
+   *   - POST /:id/execute route (after outreach action executed)
+   *     → 'outreach_executed'
+   *
+   * Also fires the STRAP resolution check for the prospect — an email reply
+   * or a meeting booking may resolve an active prospect STRAP.
+   *
+   * @param {number} prospectId
+   * @param {number} orgId
+   * @param {number|null} userId
+   * @param {string} eventType
+   */
+  static async onProspectEvent(prospectId, orgId, userId, eventType) {
+    try {
+      if (!prospectId || !orgId || !eventType) return;
+
+      // Diagnostic re-run
+      getProspectingActionsService()
+        .generateForProspectEvent(prospectId, orgId, userId, eventType)
+        .catch(err => console.error(
+          `AgentObserver.onProspectEvent diagnostic trigger error ` +
+          `(prospect=${prospectId} event=${eventType}):`,
+          err.message
+        ));
+
+      // STRAP resolution check — email replies and meeting bookings can
+      // resolve an active ghosting or no_meeting STRAP.
+      if (userId) {
+        StrapResolutionDetector.checkFromProspectEvent(prospectId, orgId, userId, eventType)
+          .catch(err => console.error(
+            `🎯 STRAP prospect event resolution check error (prospect=${prospectId}):`,
+            err.message
+          ));
+      }
+
+    } catch (err) {
+      console.error('AgentObserver.onProspectEvent error:', err.message);
     }
   }
 

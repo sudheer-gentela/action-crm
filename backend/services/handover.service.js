@@ -14,6 +14,9 @@
 //   - completePlay()  — delegate to PlaybookPlayService + sync handover_plays
 //   - canSubmit()     — gate check: all is_gate plays completed
 //   - runNightlySweep() — Phase 2: HandoverRulesEngine diagnostic sweep
+//   - generateForHandoverEvent() — Phase 7: ad-hoc diagnostic re-run for one
+//       handover triggered by a discrete event (kickoff meeting created,
+//       new commitment added, etc.)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { pool, withOrgTransaction } = require('../config/database');
@@ -838,6 +841,119 @@ async function runNightlySweep(orgId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Event trigger — Phase 7
+//
+// generateForHandoverEvent(handoverId, orgId, eventType)
+//
+//   Ad-hoc diagnostic re-run for a single handover triggered by a discrete
+//   real-time event. Runs HandoverRulesEngine + upsert + resolve for just
+//   this handover, producing the same result the nightly sweep would produce
+//   the following morning.
+//
+//   IMPORTANT: entityId passed to ActionPersister is the DEAL_ID (not the
+//   handover id) — consistent with the architectural decision confirmed in
+//   handover doc Section 13 point 7. This function resolves the deal_id
+//   from the handover row before calling ActionPersister.
+//
+//   Supported eventType values (informational — logged only, not branched on):
+//     'kickoff_meeting_created'   — a meeting with handover_id set was created
+//     'kickoff_meeting_completed' — kickoff meeting marked completed
+//     'commitment_added'          — new commitment row created
+//     'commitment_updated'        — commitment due_date changed or status updated
+//     'stakeholder_added'         — new stakeholder attached
+//     'brief_updated'             — go_live_date or commercial_terms_summary changed
+//
+//   Callers fire this non-blocking:
+//     generateForHandoverEvent(handoverId, orgId, 'commitment_added')
+//       .catch(err => console.error('Handover event trigger error:', err.message));
+//
+//   Skips draft handovers silently (consistent with nightly sweep filter).
+//   Skips if handover not found (org_id mismatch).
+//
+// @param {number} handoverId
+// @param {number} orgId
+// @param {string} eventType
+// @returns {Promise<{ alerts: number, resolved: number }>}
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function generateForHandoverEvent(handoverId, orgId, eventType) {
+  try {
+    // Load handover — skip drafts (consistent with nightly sweep)
+    const result = await pool.query(
+      `SELECT h.id, h.org_id, h.deal_id, h.account_id,
+              h.assigned_service_owner_id,
+              h.status, h.go_live_date,
+              h.commercial_terms_summary,
+              h.submitted_at, h.acknowledged_at,
+              h.created_at, h.updated_at
+       FROM sales_handovers h
+       WHERE h.id = $1
+         AND h.org_id = $2
+         AND h.status != 'draft'`,
+      [handoverId, orgId]
+    );
+
+    if (result.rows.length === 0) {
+      // Silently skip — draft or not found
+      return { alerts: 0, resolved: 0 };
+    }
+
+    const handoverRow = result.rows[0];
+
+    console.log(
+      `[HandoverEventTrigger] handover=${handoverId} event=${eventType} ` +
+      `deal=${handoverRow.deal_id} org=${orgId}`
+    );
+
+    const ctx   = await buildHandoverContext(handoverRow);
+    const fired = HandoverRulesEngine.evaluate(ctx);
+
+    const firedSourceRules = [];
+    let totalAlerts = 0;
+
+    for (const alert of fired) {
+      const id = await ActionPersister.upsertDiagnosticAlert({
+        entityType:  'handover',
+        entityId:    handoverRow.deal_id,   // deal_id, not handover.id — architectural decision #7
+        sourceRule:  alert.sourceRule,
+        title:       alert.title,
+        description: alert.description,
+        priority:    alert.priority,
+        nextStep:    alert.nextStep,
+        orgId,
+        userId:      handoverRow.assigned_service_owner_id || null,
+      });
+      if (id != null) {
+        firedSourceRules.push(alert.sourceRule);
+        totalAlerts++;
+      }
+    }
+
+    const totalResolved = await ActionPersister.resolveStaleDiagnostics({
+      entityType: 'handover',
+      entityId:   handoverRow.deal_id,   // deal_id, not handover.id
+      firedRules: firedSourceRules,
+      orgId,
+    });
+
+    console.log(
+      `[HandoverEventTrigger] handover=${handoverId} event=${eventType} ` +
+      `alerts=${totalAlerts} resolved=${totalResolved}`
+    );
+
+    return { alerts: totalAlerts, resolved: totalResolved };
+
+  } catch (err) {
+    console.error(
+      `handover.service.generateForHandoverEvent error ` +
+      `(handover=${handoverId} event=${eventType}):`,
+      err.message
+    );
+    return { alerts: 0, resolved: 0 };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
   initiate,
@@ -854,4 +970,6 @@ module.exports = {
   // Nightly sweep — Phase 2
   runNightlySweep,
   buildHandoverContext,   // exported for testing / ad-hoc event triggers
+  // Event trigger — Phase 7
+  generateForHandoverEvent,
 };

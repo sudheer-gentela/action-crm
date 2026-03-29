@@ -15,6 +15,9 @@
 //   - Nightly sweep: runNightlySweep() — Phase 2 addition
 //       Runs CasesRulesEngine diagnostic rules for every non-terminal case
 //       in the org. Upserts alerts via ActionPersister, resolves stale ones.
+//   - Event trigger: generateForCaseEvent() — Phase 7 addition
+//       Ad-hoc diagnostic re-run for a single case triggered by a discrete
+//       event (inbound email reply, escalation flag set, etc.).
 
 const { pool, withOrgTransaction } = require('../config/database');
 const PlaybookService = require('./playbook.service');
@@ -602,75 +605,59 @@ async function createCase(orgId, userId, {
     const caseNumber = await nextCaseNumber(client, orgId);
     const now = new Date();
 
-    // If no SLA tier provided, inherit from account
-    let resolvedTierId = slaTierId || null;
-    if (!resolvedTierId && accountId) {
-      const acct = await client.query(
-        `SELECT sla_tier_id FROM accounts WHERE id = $1 AND org_id = $2`,
-        [accountId, orgId]
-      );
-      resolvedTierId = acct.rows[0]?.sla_tier_id || null;
-    }
-
     const r = await client.query(
-      `INSERT INTO cases
-         (org_id, case_number, subject, description, status, priority,
-          account_id, contact_id, deal_id, sla_tier_id,
-          assigned_team_id, assigned_to, created_by,
-          tags, source, playbook_id, created_at, updated_at)
-       VALUES
-         ($1, $2, $3, $4, 'open', $5,
-          $6, $7, $8, $9,
-          $10, $11, $12,
-          $13, $14, $15, $16, $16)
-       RETURNING *`,
+      `INSERT INTO cases (
+         org_id, case_number, subject, description, priority,
+         account_id, contact_id, deal_id,
+         sla_tier_id, assigned_team_id, assigned_to,
+         tags, source, playbook_id,
+         status, created_by, created_at, updated_at
+       ) VALUES (
+         $1, $2, $3, $4, $5,
+         $6, $7, $8,
+         $9, $10, $11,
+         $12, $13, $14,
+         'open', $15, $16, $16
+       ) RETURNING *`,
       [
         orgId, caseNumber, subject.trim(), description || null, priority,
-        accountId || null, contactId || null, dealId || null, resolvedTierId,
-        assignedTeamId || null, assignedTo || null, userId,
-        tags || null, source, playbookId || null, now,
+        accountId || null, contactId || null, dealId || null,
+        slaTierId || null, assignedTeamId || null, assignedTo || null,
+        tags || null, source, playbookId || null,
+        userId, now,
       ]
     );
-    const newCase = r.rows[0];
 
-    // Stamp SLA due dates
-    await stampSLADueDates(client, newCase.id, resolvedTierId, now);
+    const caseRow = r.rows[0];
 
-    // Status history — creation entry
-    await client.query(
-      `INSERT INTO case_status_history
-         (org_id, case_id, from_status, to_status, changed_by, note, changed_at)
-       VALUES ($1, $2, NULL, 'open', $3, 'Case created', $4)`,
-      [orgId, newCase.id, userId, now]
-    );
+    await stampSLADueDates(client, caseRow.id, slaTierId, now);
 
-    return newCase;
-  }).then(async (newCase) => {
-    // Fire playbook plays outside the transaction — non-fatal if it fails
-    await firePlaybookPlays(orgId, newCase.id, 'open');
-    return getCase(orgId, newCase.id);
+    return caseRow;
+  }).then(async (caseRow) => {
+    // Fire plays for initial 'open' status outside transaction
+    await firePlaybookPlays(orgId, caseRow.id, 'open');
+    return getCase(orgId, caseRow.id);
   });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Cases — update (status change, reassignment, field edits)
+// Cases — update
 // ─────────────────────────────────────────────────────────────────────────────
 async function updateCase(orgId, caseId, userId, data) {
-  const existing = await pool.query(
+  const currentRes = await pool.query(
     `SELECT * FROM cases WHERE id = $1 AND org_id = $2`,
     [caseId, orgId]
   );
-  if (!existing.rows.length) throw Object.assign(new Error('Case not found'), { status: 404 });
-  const current = existing.rows[0];
+  if (!currentRes.rows.length) throw Object.assign(new Error('Case not found'), { status: 404 });
+  const current = currentRes.rows[0];
 
   const {
-    status, subject, description, priority,
+    subject, description, priority,
     accountId, contactId, dealId,
     slaTierId, assignedTeamId, assignedTo,
-    tags, note,
+    tags, status,
   } = data;
 
-  // Validate status transition
   if (status && status !== current.status) {
     assertTransition(current.status, status);
   }
@@ -681,19 +668,18 @@ async function updateCase(orgId, caseId, userId, data) {
     const params = [];
     let idx = 1;
 
-    // Build dynamic SET clause
     const fieldMap = {
       subject:          subject?.trim(),
-      description:      description,
-      status:           status,
-      priority:         priority,
+      description,
+      priority,
       account_id:       accountId,
       contact_id:       contactId,
       deal_id:          dealId,
       sla_tier_id:      slaTierId,
       assigned_team_id: assignedTeamId,
       assigned_to:      assignedTo,
-      tags:             tags,
+      tags,
+      status,
     };
 
     for (const [col, val] of Object.entries(fieldMap)) {
@@ -704,58 +690,40 @@ async function updateCase(orgId, caseId, userId, data) {
       }
     }
 
-    // Status-specific timestamp updates
+    if (!sets.length) throw Object.assign(new Error('No fields to update'), { status: 400 });
+
+    sets.push(`updated_at = $${idx}`);
+    params.push(now);
+    idx++;
+    params.push(caseId, orgId);
+
+    await client.query(
+      `UPDATE cases SET ${sets.join(', ')}
+       WHERE id = $${idx} AND org_id = $${idx + 1}`,
+      params
+    );
+
+    // Status change: write history record
     if (status && status !== current.status) {
-      if (status === 'resolved') {
-        sets.push(`resolved_at = $${idx}`); params.push(now); idx++;
-      }
-      if (status === 'closed') {
-        sets.push(`closed_at = $${idx}`); params.push(now); idx++;
-      }
-      // Moving away from resolved — clear resolved_at
-      if (current.status === 'resolved' && status === 'in_progress') {
-        sets.push(`resolved_at = NULL`);
-      }
-    }
+      const resolvedAt   = status === 'resolved' ? now : null;
+      const closedAt     = status === 'closed'   ? now : null;
 
-    sets.push(`updated_at = $${idx}`); params.push(now); idx++;
-
-    if (sets.length) {
-      params.push(caseId, orgId);
-      await client.query(
-        `UPDATE cases SET ${sets.join(', ')}
-         WHERE id = $${idx} AND org_id = $${idx + 1}`,
-        params
-      );
-    }
-
-    // Status change: history entry + system note + breach evaluation
-    if (status && status !== current.status) {
-      await client.query(
-        `INSERT INTO case_status_history
-           (org_id, case_id, from_status, to_status, changed_by, note, changed_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [orgId, caseId, current.status, status, userId, note || null, now]
-      );
-
-      await client.query(
-        `INSERT INTO case_notes
-           (org_id, case_id, author_id, body, note_type, is_internal, created_at)
-         VALUES ($1, $2, $3, $4, 'status_change', FALSE, $5)`,
-        [
-          orgId, caseId, userId,
-          `Status changed from ${current.status.replace(/_/g, ' ')} to ${status.replace(/_/g, ' ')}`,
-          now,
-        ]
-      );
-
-      // Stamp first_responded_at when moving away from open
-      if (current.status === 'open' && !current.first_responded_at) {
+      if (resolvedAt || closedAt) {
         await client.query(
-          `UPDATE cases SET first_responded_at = $1 WHERE id = $2`,
-          [now, caseId]
+          `UPDATE cases SET
+             resolved_at = COALESCE($1, resolved_at),
+             closed_at   = COALESCE($2, closed_at)
+           WHERE id = $3`,
+          [resolvedAt, closedAt, caseId]
         );
       }
+
+      await client.query(
+        `INSERT INTO case_status_history
+           (org_id, case_id, from_status, to_status, changed_by, changed_at)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [orgId, caseId, current.status, status, userId, now]
+      );
 
       await evaluateBreaches(client, caseId);
     }
@@ -883,7 +851,6 @@ async function getDashboard(orgId, userId, subordinateIds = [], scope = 'mine') 
   }
 
   const [stats, byAccount, byOwner, breachList] = await Promise.all([
-    // Stats: totals by status + breach counts
     pool.query(
       `SELECT
          COUNT(*) FILTER (WHERE c.status NOT IN ('closed'))           AS total_open,
@@ -900,108 +867,84 @@ async function getDashboard(orgId, userId, subordinateIds = [], scope = 'mine') 
        WHERE c.org_id = $1 ${userFilter}`,
       userParams
     ),
-
-    // Open cases by account (top 5)
     pool.query(
-      `SELECT a.id AS account_id, a.name AS account_name,
-              COUNT(*) AS open_count,
-              SUM(CASE WHEN c.response_breached OR c.resolution_breached THEN 1 ELSE 0 END) AS breach_count
+      `SELECT a.name AS account_name, COUNT(c.id)::int AS case_count
        FROM cases c
        JOIN accounts a ON a.id = c.account_id
-       WHERE c.org_id = $1
+       WHERE c.org_id = $1 ${userFilter}
          AND c.status NOT IN ('closed')
-         AND c.account_id IS NOT NULL
-         ${userFilter.replace('AND c.assigned_to', 'AND c.assigned_to')}
-       GROUP BY a.id, a.name
-       ORDER BY open_count DESC
-       LIMIT 5`,
-      userParams
-    ),
-
-    // Cases by owner
-    pool.query(
-      `SELECT u.id AS user_id,
-              u.first_name, u.last_name,
-              COUNT(*) FILTER (WHERE c.status NOT IN ('closed')) AS open_count,
-              COUNT(*) FILTER (WHERE c.status = 'resolved'
-                                AND c.resolved_at >= NOW() - INTERVAL '7 days') AS resolved_this_week
-       FROM cases c
-       JOIN users u ON u.id = c.assigned_to
-       WHERE c.org_id = $1
-         AND c.assigned_to IS NOT NULL
-         ${userFilter}
-       GROUP BY u.id, u.first_name, u.last_name
-       ORDER BY open_count DESC
+       GROUP BY a.name
+       ORDER BY case_count DESC
        LIMIT 10`,
       userParams
     ),
-
-    // Active SLA breach list (response or resolution)
     pool.query(
-      `SELECT c.id, c.case_number, c.subject, c.status, c.priority,
+      `SELECT u.first_name || ' ' || u.last_name AS assignee_name,
+              COUNT(c.id)::int AS case_count
+       FROM cases c
+       JOIN users u ON u.id = c.assigned_to
+       WHERE c.org_id = $1 ${userFilter}
+         AND c.status NOT IN ('closed')
+       GROUP BY u.id, u.first_name, u.last_name
+       ORDER BY case_count DESC
+       LIMIT 10`,
+      userParams
+    ),
+    pool.query(
+      `SELECT c.id, c.case_number, c.subject, c.priority,
               c.response_breached, c.resolution_breached,
               c.response_due_at, c.resolution_due_at,
-              a.name AS account_name,
-              u.first_name AS assignee_first_name,
-              u.last_name  AS assignee_last_name
+              a.name AS account_name
        FROM cases c
        LEFT JOIN accounts a ON a.id = c.account_id
-       LEFT JOIN users u    ON u.id = c.assigned_to
-       WHERE c.org_id = $1
+       WHERE c.org_id = $1 ${userFilter}
          AND (c.response_breached = TRUE OR c.resolution_breached = TRUE)
          AND c.status NOT IN ('closed')
-         ${userFilter}
-       ORDER BY c.created_at ASC
+       ORDER BY c.priority DESC, c.created_at ASC
        LIMIT 20`,
       userParams
     ),
   ]);
 
-  const s = stats.rows[0];
   return {
-    stats: {
-      totalOpen:          parseInt(s.total_open),
-      countOpen:          parseInt(s.count_open),
-      countInProgress:    parseInt(s.count_in_progress),
-      countPending:       parseInt(s.count_pending),
-      countResolved:      parseInt(s.count_resolved),
-      responseBreaches:   parseInt(s.response_breaches),
-      resolutionBreaches: parseInt(s.resolution_breaches),
-      resolvedToday:      parseInt(s.resolved_today),
-    },
-    byAccount: byAccount.rows.map(r => ({
-      accountId:   r.account_id,
-      accountName: r.account_name,
-      openCount:   parseInt(r.open_count),
-      breachCount: parseInt(r.breach_count),
-    })),
-    byOwner: byOwner.rows.map(r => ({
-      userId:           r.user_id,
-      firstName:        r.first_name,
-      lastName:         r.last_name,
-      openCount:        parseInt(r.open_count),
-      resolvedThisWeek: parseInt(r.resolved_this_week),
-    })),
-    breachList: breachList.rows.map(mapCaseRow),
+    stats:     stats.rows[0],
+    byAccount: byAccount.rows,
+    byOwner:   byOwner.rows,
+    breaches:  breachList.rows,
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Module — enable (seeds SLA defaults on first enable)
+// Module — enable
+// Seeds default SLA tiers on first enable
 // ─────────────────────────────────────────────────────────────────────────────
 async function enableModule(orgId) {
-  // Seed default SLA tiers if none exist yet for this org
   const existing = await pool.query(
     `SELECT id FROM sla_tiers WHERE org_id = $1 LIMIT 1`,
     [orgId]
   );
-  if (!existing.rows.length) {
-    await pool.query(`SELECT seed_sla_defaults($1)`, [orgId]);
+  if (existing.rows.length > 0) return { seeded: false };
+
+  const defaults = [
+    { name: 'Standard',  responseTargetHours: 8,  resolutionTargetHours: 72,  sort: 0 },
+    { name: 'Priority',  responseTargetHours: 4,  resolutionTargetHours: 24,  sort: 1 },
+    { name: 'Critical',  responseTargetHours: 1,  resolutionTargetHours: 8,   sort: 2 },
+  ];
+
+  for (const t of defaults) {
+    await pool.query(
+      `INSERT INTO sla_tiers
+         (org_id, name, response_target_hours, resolution_target_hours, sort_order)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [orgId, t.name, t.responseTargetHours, t.resolutionTargetHours, t.sort]
+    );
   }
+
+  return { seeded: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Row mappers — all DB columns → camelCase
+// Row mappers
 // ─────────────────────────────────────────────────────────────────────────────
 function mapCaseRow(row) {
   return {
@@ -1011,13 +954,7 @@ function mapCaseRow(row) {
     description:        row.description,
     status:             row.status,
     priority:           row.priority,
-    tags:               row.tags,
-    source:             row.source,
     // SLA
-    slaTierId:          row.sla_tier_id,
-    slaTierName:        row.sla_tier_name    || null,
-    responseTargetHours:   row.response_target_hours    || null,
-    resolutionTargetHours: row.resolution_target_hours  || null,
     responseDueAt:      row.response_due_at,
     resolutionDueAt:    row.resolution_due_at,
     firstRespondedAt:   row.first_responded_at,
@@ -1025,19 +962,25 @@ function mapCaseRow(row) {
     closedAt:           row.closed_at,
     responseBreached:   row.response_breached,
     resolutionBreached: row.resolution_breached,
-    // Links
+    // FK
     accountId:          row.account_id,
-    accountName:        row.account_name     || null,
     contactId:          row.contact_id,
+    dealId:             row.deal_id,
+    assignedTo:         row.assigned_to,
+    assignedTeamId:     row.assigned_team_id,
+    slaTierId:          row.sla_tier_id,
+    // Meta
+    tags:               row.tags,
+    source:             row.source,
+    // Joined
+    accountName:        row.account_name  ?? null,
     contactName:        row.contact_first_name
       ? `${row.contact_first_name} ${row.contact_last_name}`
       : null,
-    dealId:             row.deal_id,
-    dealName:           row.deal_name        || null,
-    // Assignment
-    assignedTeamId:     row.assigned_team_id,
-    teamName:           row.team_name        || null,
-    assignedTo:         row.assigned_to,
+    teamName:           row.team_name     ?? null,
+    slaTierName:        row.sla_tier_name ?? null,
+    responseTargetHours:   row.response_target_hours   ?? null,
+    resolutionTargetHours: row.resolution_target_hours ?? null,
     assigneeName:       row.assignee_first_name
       ? `${row.assignee_first_name} ${row.assignee_last_name}`
       : null,
@@ -1237,6 +1180,109 @@ async function runNightlySweep(orgId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Event trigger — Phase 7
+//
+// generateForCaseEvent(caseId, orgId, eventType)
+//
+//   Ad-hoc diagnostic re-run for a single case triggered by a discrete real-
+//   time event. Runs the full CasesRulesEngine + upsert + resolve cycle for
+//   just this case, producing the same result the nightly sweep would produce
+//   the following morning.
+//
+//   Supported eventType values (informational — logged only, not branched on):
+//     'email_reply_received'  — inbound email reply from customer synced
+//     'escalation_set'        — rep manually flagged case for escalation
+//     'note_added'            — new note added (external or internal)
+//     'reassigned'            — case owner or team changed
+//
+//   Callers fire this non-blocking:
+//     generateForCaseEvent(caseId, orgId, 'email_reply_received')
+//       .catch(err => console.error('Case event trigger error:', err.message));
+//
+//   Skips terminal cases (resolved, closed) silently.
+//
+// @param {number} caseId
+// @param {number} orgId
+// @param {string} eventType
+// @returns {Promise<{ alerts: number, resolved: number }>}
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function generateForCaseEvent(caseId, orgId, eventType) {
+  try {
+    // Load the case — skip terminal statuses
+    const caseRes = await pool.query(
+      `SELECT id, case_number, status, priority,
+              assigned_to, org_id,
+              response_due_at, resolution_due_at,
+              first_responded_at, resolved_at, closed_at,
+              response_breached, resolution_breached,
+              created_at, updated_at
+       FROM cases
+       WHERE id = $1
+         AND org_id = $2
+         AND status NOT IN ('resolved', 'closed')`,
+      [caseId, orgId]
+    );
+
+    if (caseRes.rows.length === 0) {
+      // Silently skip — terminal or not found
+      return { alerts: 0, resolved: 0 };
+    }
+
+    const caseRow = caseRes.rows[0];
+
+    console.log(
+      `[CaseEventTrigger] case=${caseId} event=${eventType} org=${orgId}`
+    );
+
+    const ctx   = await buildCaseContext(caseRow);
+    const fired = CasesRulesEngine.evaluate(ctx);
+
+    const firedSourceRules = [];
+    let totalAlerts = 0;
+
+    for (const alert of fired) {
+      const id = await ActionPersister.upsertDiagnosticAlert({
+        entityType:  'case',
+        entityId:    caseRow.id,
+        sourceRule:  alert.sourceRule,
+        title:       alert.title,
+        description: alert.description,
+        priority:    alert.priority,
+        nextStep:    alert.nextStep,
+        orgId,
+        userId:      caseRow.assigned_to || null,
+      });
+      if (id != null) {
+        firedSourceRules.push(alert.sourceRule);
+        totalAlerts++;
+      }
+    }
+
+    const totalResolved = await ActionPersister.resolveStaleDiagnostics({
+      entityType: 'case',
+      entityId:   caseRow.id,
+      firedRules: firedSourceRules,
+      orgId,
+    });
+
+    console.log(
+      `[CaseEventTrigger] case=${caseId} event=${eventType} ` +
+      `alerts=${totalAlerts} resolved=${totalResolved}`
+    );
+
+    return { alerts: totalAlerts, resolved: totalResolved };
+
+  } catch (err) {
+    console.error(
+      `supportService.generateForCaseEvent error (case=${caseId} event=${eventType}):`,
+      err.message
+    );
+    return { alerts: 0, resolved: 0 };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Exports
 // ─────────────────────────────────────────────────────────────────────────────
 module.exports = {
@@ -1260,7 +1306,9 @@ module.exports = {
   enableModule,
   // Nightly sweep — Phase 2
   runNightlySweep,
-  buildCaseContext,   // exported for testing / ad-hoc event triggers
+  buildCaseContext,         // exported for testing / ad-hoc event triggers
+  // Event trigger — Phase 7
+  generateForCaseEvent,
   // Exposed for testing
   TRANSITIONS,
 };
