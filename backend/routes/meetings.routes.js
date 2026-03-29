@@ -5,10 +5,15 @@ const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
 const ActionsGenerator = require('../services/actionsGenerator');
 
+// Phase 8 — event trigger services (lazy-required to avoid startup circular deps)
+// Both calls are fire-and-forget; failures never affect the meeting response.
+function getHandoverService()          { return require('../services/handover.service'); }
+function getProspectingActionsService(){ return require('../services/prospectingActions.service'); }
+
 router.use(authenticateToken);
 router.use(orgContext);
 
-// ── GET / ─────────────────────────────────────────────────────
+// ── GET / ─────────────────────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
@@ -28,16 +33,28 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ── POST / ────────────────────────────────────────────────────
+// ── POST / ────────────────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    const { dealId, title, description, meetingType, startTime, endTime, location, attendees } = req.body;
+    const {
+      dealId, title, description, meetingType,
+      startTime, endTime, location, attendees,
+      // Phase 8: optional FKs for handover/prospect linking
+      handoverId, prospectId,
+    } = req.body;
 
     const result = await db.query(
       `INSERT INTO meetings
-         (org_id, deal_id, user_id, title, description, meeting_type, start_time, end_time, location)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [req.orgId, dealId, req.user.userId, title, description, meetingType, startTime, endTime, location]
+         (org_id, deal_id, user_id, title, description, meeting_type,
+          start_time, end_time, location, handover_id, prospect_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING *`,
+      [
+        req.orgId, dealId || null, req.user.userId,
+        title, description, meetingType,
+        startTime, endTime, location,
+        handoverId || null, prospectId || null,
+      ]
     );
 
     const newMeeting = result.rows[0];
@@ -51,22 +68,52 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // Deal-level action generation (existing)
     ActionsGenerator.generateForMeeting(newMeeting.id).catch(err =>
       console.error('Error auto-generating actions for meeting:', err)
     );
 
+    // Phase 8 — handover kickoff meeting created
+    // Fires if this meeting is linked to a handover via handover_id column.
+    // Re-evaluates handover diagnostic rules immediately so handover_no_kickoff
+    // can resolve before the nightly sweep.
+    if (newMeeting.handover_id) {
+      // Resolve the org_id from the handover row — already have it from req.orgId
+      getHandoverService()
+        .generateForHandoverEvent(newMeeting.handover_id, req.orgId, 'kickoff_meeting_created')
+        .catch(err => console.error(
+          `[meetings POST] handover event trigger error (handover=${newMeeting.handover_id}):`,
+          err.message
+        ));
+    }
+
+    // Phase 8 — prospect meeting booked
+    // Fires if this meeting is linked to a prospect via prospect_id column on meeting,
+    // OR if a prospect attendee is present in the attendees list.
+    // Resolves prospect_no_meeting diagnostic alert immediately.
+    const effectiveProspectId = newMeeting.prospect_id;
+    if (effectiveProspectId) {
+      getProspectingActionsService()
+        .generateForProspectEvent(effectiveProspectId, req.orgId, req.user.userId, 'meeting_booked')
+        .catch(err => console.error(
+          `[meetings POST] prospect event trigger error (prospect=${effectiveProspectId}):`,
+          err.message
+        ));
+    }
+
     res.status(201).json({ meeting: newMeeting });
   } catch (error) {
+    console.error('Create meeting error:', error);
     res.status(500).json({ error: { message: 'Failed to create meeting' } });
   }
 });
 
-// ── PUT /:id ──────────────────────────────────────────────────
+// ── PUT /:id ──────────────────────────────────────────────────────────────────
 router.put('/:id', async (req, res) => {
   try {
     const {
       title, description, meetingType, startTime, endTime,
-      location, status, notes, dealId, attendees
+      location, status, notes, dealId, attendees,
     } = req.body;
 
     const updates = [];
@@ -116,10 +163,35 @@ router.put('/:id', async (req, res) => {
       }
     }
 
+    // Existing deal-level action generation on completion
     if (status === 'completed') {
       ActionsGenerator.generateForMeeting(req.params.id).catch(err =>
         console.error('Error auto-generating actions for completed meeting:', err)
       );
+    }
+
+    // Phase 8 — meeting completed → fire event triggers for linked entities
+    if (status === 'completed') {
+      // Handover: kickoff meeting completed → re-run diagnostic rules
+      if (updatedMeeting.handover_id) {
+        getHandoverService()
+          .generateForHandoverEvent(updatedMeeting.handover_id, req.orgId, 'kickoff_meeting_completed')
+          .catch(err => console.error(
+            `[meetings PUT] handover event trigger error (handover=${updatedMeeting.handover_id}):`,
+            err.message
+          ));
+      }
+
+      // Prospect: meeting completed → re-run diagnostic rules.
+      // Resolves prospect_no_meeting, may also shift prospect_stale_outreach or prospect_ghosting.
+      if (updatedMeeting.prospect_id) {
+        getProspectingActionsService()
+          .generateForProspectEvent(updatedMeeting.prospect_id, req.orgId, req.user.userId, 'meeting_completed')
+          .catch(err => console.error(
+            `[meetings PUT] prospect event trigger error (prospect=${updatedMeeting.prospect_id}):`,
+            err.message
+          ));
+      }
     }
 
     res.json({ meeting: updatedMeeting });
@@ -129,7 +201,7 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// ── DELETE /:id ───────────────────────────────────────────────
+// ── DELETE /:id ───────────────────────────────────────────────────────────────
 router.delete('/:id', async (req, res) => {
   try {
     const check = await db.query(
@@ -162,105 +234,13 @@ router.delete('/:id', async (req, res) => {
 });
 
 // ── GET /:id/attendees ────────────────────────────────────────────────────────
-// Returns attendees for a meeting with attendance_status and source.
-// Used by MeetingTranscriptPanel to show the inline status selectors.
-router.get('/:id/attendees', async (req, res) => {
-  try {
-    // Verify meeting belongs to this user/org
-    const meetingCheck = await db.query(
-      `SELECT id FROM meetings
-       WHERE id = $1 AND org_id = $2 AND user_id = $3 AND deleted_at IS NULL`,
-      [req.params.id, req.orgId, req.user.userId]
-    );
-
-    if (meetingCheck.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'Meeting not found' } });
-    }
-
-    const result = await db.query(
-      `SELECT
-         ma.contact_id,
-         ma.attendance_status,
-         ma.source,
-         c.first_name || ' ' || c.last_name AS name,
-         c.email,
-         c.title
-       FROM meeting_attendees ma
-       JOIN contacts c ON c.id = ma.contact_id
-       WHERE ma.meeting_id = $1
-       ORDER BY
-         -- Show attended first, then invited, then no_show, then unknown
-         CASE ma.attendance_status
-           WHEN 'attended' THEN 1
-           WHEN 'invited'  THEN 2
-           WHEN 'no_show'  THEN 3
-           ELSE 4
-         END,
-         c.first_name`,
-      [req.params.id]
-    );
-
-    res.json({ attendees: result.rows });
-  } catch (error) {
-    console.error('GET meeting attendees error:', error);
-    res.status(500).json({ error: { message: 'Failed to fetch attendees' } });
-  }
-});
-
-// ── PATCH /:id/attendees/:contactId ──────────────────────────────────────────
-// Update attendance status for a single attendee.
-// Always sets source = 'manual' — manual overrides are never auto-overwritten.
-router.patch('/:id/attendees/:contactId', async (req, res) => {
-  try {
-    const { attendance_status } = req.body;
-
-    const VALID_STATUSES = ['invited', 'attended', 'no_show', 'unknown'];
-    if (!attendance_status || !VALID_STATUSES.includes(attendance_status)) {
-      return res.status(400).json({
-        error: { message: `attendance_status must be one of: ${VALID_STATUSES.join(', ')}` }
-      });
-    }
-
-    // Verify meeting belongs to this user/org
-    const meetingCheck = await db.query(
-      `SELECT id FROM meetings
-       WHERE id = $1 AND org_id = $2 AND user_id = $3 AND deleted_at IS NULL`,
-      [req.params.id, req.orgId, req.user.userId]
-    );
-
-    if (meetingCheck.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'Meeting not found' } });
-    }
-
-    // Upsert — attendee row may or may not exist yet
-    const result = await db.query(
-      `INSERT INTO meeting_attendees (meeting_id, contact_id, org_id, attendance_status, source)
-       VALUES ($1, $2, $3, $4, 'manual')
-       ON CONFLICT (meeting_id, contact_id) DO UPDATE
-         SET attendance_status = $4,
-             source            = 'manual'
-       RETURNING contact_id, attendance_status, source`,
-      [req.params.id, req.params.contactId, req.orgId, attendance_status]
-    );
-
-    console.log(
-      `👤 Attendance override: meeting ${req.params.id} contact ${req.params.contactId} → ${attendance_status} (manual)`
-    );
-
-    res.json({ attendee: result.rows[0] });
-  } catch (error) {
-    console.error('PATCH meeting attendee error:', error);
-    res.status(500).json({ error: { message: 'Failed to update attendance' } });
-  }
-});
-
-// ── GET /:id/attendees ─────────────────────────────────────────────────────────
 router.get('/:id/attendees', async (req, res) => {
   try {
     const meetingCheck = await db.query(
-      `SELECT id FROM meetings WHERE id=$1 AND org_id=$2 AND user_id=$3 AND deleted_at IS NULL`,
-      [req.params.id, req.orgId, req.user.userId],
+      `SELECT id FROM meetings WHERE id = $1 AND org_id = $2 AND user_id = $3 AND deleted_at IS NULL`,
+      [req.params.id, req.orgId, req.user.userId]
     );
+
     if (meetingCheck.rows.length === 0) {
       return res.status(404).json({ error: { message: 'Meeting not found' } });
     }
@@ -285,7 +265,7 @@ router.get('/:id/attendees', async (req, res) => {
            WHEN 'attended' THEN 1 WHEN 'invited' THEN 2
            WHEN 'no_show'  THEN 3 ELSE 4 END,
          name`,
-      [req.params.id],
+      [req.params.id]
     );
 
     res.json({ attendees: result.rows });
@@ -295,8 +275,8 @@ router.get('/:id/attendees', async (req, res) => {
   }
 });
 
-// ── PATCH /:id/attendees/:contactId ───────────────────────────────────────────
-// Works for both contacts (contactId param) and prospects (use prospect_id query param)
+// ── PATCH /:id/attendees/:personId ────────────────────────────────────────────
+// Works for both contacts (default) and prospects (?type=prospect)
 router.patch('/:id/attendees/:personId', async (req, res) => {
   try {
     const { attendance_status } = req.body;
@@ -343,28 +323,12 @@ router.patch('/:id/attendees/:personId', async (req, res) => {
   }
 });
 
-
 // ── GET /:id/gmeet-transcript ─────────────────────────────────────────────────
-// Fetch a Google Meet transcript from the organiser's Google Drive.
-//
-// Google Meet saves transcripts as Google Docs in the organiser's Drive with
-// the title pattern: "Transcript of [Meeting Title] [Date]"
-// Requires: Google Workspace Admin to have enabled transcription for the domain,
-//           and the user to have connected Google via /auth/google.
-//
-// Flow:
-//   1. Load the meeting record to get title + start_time
-//   2. Use GoogleDriveProvider to search Drive for a matching transcript doc
-//   3. Extract the full text from the doc
-//   4. Store as a meeting_transcripts row (source = 'google_meet')
-//   5. Fire analyzeTranscript async (fire-and-forget)
-//   6. Return { transcriptId, found: true } or { found: false }
 router.get('/:id/gmeet-transcript', async (req, res) => {
   const { id: meetingId } = req.params;
   const { orgId, user: { userId } } = req;
 
   try {
-    // ── 1. Load meeting ──────────────────────────────────────────
     const meetingResult = await db.query(
       `SELECT id, title, start_time, deal_id
        FROM meetings
@@ -377,9 +341,6 @@ router.get('/:id/gmeet-transcript', async (req, res) => {
     }
 
     const meeting = meetingResult.rows[0];
-
-    // ── 2. Verify Google is connected (GoogleDriveProvider handles token
-    //       refresh internally via tokenService / oauth_tokens table) ──────
     const GoogleDriveProvider = require('../services/GoogleDriveProvider');
     const driveProvider = new GoogleDriveProvider();
 
@@ -390,44 +351,26 @@ router.get('/:id/gmeet-transcript', async (req, res) => {
       });
     }
 
-    // ── 3. Search Drive for a matching transcript doc ─────────────
-    // GoogleDriveProvider.searchFiles() does a Drive fullText search.
-    // G-Meet saves transcript docs with titles like:
-    //   "Transcript of <Meeting Title> <Date>"
-    // We search on "Transcript of" + the meeting title keywords so the
-    // fullText index can narrow the result set.
     const titleKeyword = (meeting.title || '').replace(/[^\w\s]/g, '').trim();
-    // Always anchor on "Transcript of" — present in every G-Meet doc title.
-    // If the meeting has a title, include it to reduce false positives.
-    const searchQuery = titleKeyword
-      ? `Transcript of ${titleKeyword}`
-      : 'Transcript of';
+    const searchQuery = titleKeyword ? `Transcript of ${titleKeyword}` : 'Transcript of';
 
     let transcriptDoc = null;
     try {
       const files = await driveProvider.searchFiles(userId, searchQuery);
-
-      // Filter to Google Docs only (G-Meet always saves as a Google Doc)
       const docs = (files || []).filter(
-        f => f.mimeType === 'application/vnd.google-apps.document' ||
-             f.isGoogleNative
+        f => f.mimeType === 'application/vnd.google-apps.document' || f.isGoogleNative
       );
 
       if (docs.length > 0) {
         if (docs.length === 1) {
           transcriptDoc = docs[0];
         } else {
-          // Multiple hits — prefer the doc whose name best matches the meeting.
-          // Priority: date string match → title keyword match → most recent (first)
-          const dateStr = meeting.start_time
-            ? new Date(meeting.start_time).toISOString().slice(0, 10)  // "YYYY-MM-DD"
-            : null;
+          const dateStr   = meeting.start_time ? new Date(meeting.start_time).toISOString().slice(0, 10) : null;
           const lowerTitle = titleKeyword.toLowerCase();
-
           transcriptDoc =
-            (dateStr   && docs.find(f => f.name && f.name.includes(dateStr)))         ||
+            (dateStr    && docs.find(f => f.name && f.name.includes(dateStr)))          ||
             (lowerTitle && docs.find(f => f.name && f.name.toLowerCase().includes(lowerTitle))) ||
-            docs[0];  // fallback: most recently modified (Drive returns modifiedTime desc)
+            docs[0];
         }
       }
     } catch (driveErr) {
@@ -440,14 +383,10 @@ router.get('/:id/gmeet-transcript', async (req, res) => {
     if (!transcriptDoc) {
       return res.json({
         found:   false,
-        message: 'No Google Meet transcript found in Drive for this meeting. ' +
-                 'Ensure transcription is enabled in Google Workspace Admin and that the meeting has ended.',
+        message: 'No Google Meet transcript found in Drive for this meeting.',
       });
     }
 
-    // ── 4. Extract text via extractFileContent ────────────────────
-    // extractFileContent exports the Google Doc as .docx, then extracts
-    // plain text via contentExtractor — returns { rawText, fileName, ... }
     let transcriptText = '';
     try {
       const extracted = await driveProvider.extractFileContent(userId, transcriptDoc.id);
@@ -466,7 +405,6 @@ router.get('/:id/gmeet-transcript', async (req, res) => {
       });
     }
 
-    // ── 5. Check for duplicate (same doc already imported) ───────
     const existing = await db.query(
       `SELECT id FROM meeting_transcripts
        WHERE meeting_id = $1 AND source = 'google_meet' AND org_id = $2
@@ -477,48 +415,30 @@ router.get('/:id/gmeet-transcript', async (req, res) => {
     let transcriptId;
 
     if (existing.rows.length > 0) {
-      // Overwrite transcript text (re-fetch = fresher version of same doc)
       transcriptId = existing.rows[0].id;
       await db.query(
         `UPDATE meeting_transcripts
-         SET transcript_text = $1,
-             analysis_status = 'pending',
-             analysis_result = NULL,
-             updated_at      = NOW()
+         SET transcript_text = $1, analysis_status = 'pending', analysis_result = NULL, updated_at = NOW()
          WHERE id = $2`,
         [transcriptText.trim(), transcriptId]
       );
-      console.log(`🔄 G-Meet transcript re-fetched for meeting ${meetingId} (transcript ${transcriptId})`);
     } else {
-      // Insert new transcript row
       const insertResult = await db.query(
         `INSERT INTO meeting_transcripts
            (org_id, user_id, meeting_id, transcript_text, source, meeting_date, created_at)
          VALUES ($1, $2, $3, $4, 'google_meet', $5, NOW())
          RETURNING id`,
-        [
-          orgId,
-          userId,
-          meetingId,
-          transcriptText.trim(),
-          meeting.start_time ? new Date(meeting.start_time) : null,
-        ]
+        [orgId, userId, meetingId, transcriptText.trim(), meeting.start_time ? new Date(meeting.start_time) : null]
       );
 
       transcriptId = insertResult.rows[0].id;
 
-      // Back-link to meeting
       await db.query(
-        `UPDATE meetings
-         SET transcript_id = $1, updated_at = NOW()
-         WHERE id = $2 AND org_id = $3`,
+        `UPDATE meetings SET transcript_id = $1, updated_at = NOW() WHERE id = $2 AND org_id = $3`,
         [transcriptId, meetingId, orgId]
       );
-
-      console.log(`✅ G-Meet transcript stored for meeting ${meetingId} (transcript ${transcriptId})`);
     }
 
-    // ── 6. Fire AI analysis (async, fire-and-forget) ─────────────
     const { analyzeTranscript } = require('../services/transcriptAnalyzer');
     analyzeTranscript(transcriptId, userId)
       .then(() => console.log(`✅ G-Meet transcript ${transcriptId} analysis complete`))

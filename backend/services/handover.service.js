@@ -17,6 +17,8 @@
 //   - generateForHandoverEvent() — Phase 7: ad-hoc diagnostic re-run for one
 //       handover triggered by a discrete event (kickoff meeting created,
 //       new commitment added, etc.)
+//   - addCommitment() — Phase 8 addition: fires generateForHandoverEvent
+//       non-blocking after insert so handover_stalled resolves immediately
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { pool, withOrgTransaction } = require('../config/database');
@@ -519,6 +521,16 @@ async function addCommitment(handoverId, orgId, userId, data) {
      RETURNING *`,
     [handoverId, orgId, description.trim(), commitmentType, userId]
   );
+
+  // Phase 8 — re-run diagnostic rules after a commitment is added.
+  // Resolves handover_stalled (activity occurred) and may set
+  // handover_commitment_overdue if the commitment already has a past due_date.
+  // Non-blocking: commitment creation is never delayed by this.
+  generateForHandoverEvent(handoverId, orgId, 'commitment_added')
+    .catch(err => console.error(
+      `[handover.service] addCommitment event trigger error (handover=${handoverId}):`,
+      err.message
+    ));
 
   return fmtCommitment(rows[0]);
 }
