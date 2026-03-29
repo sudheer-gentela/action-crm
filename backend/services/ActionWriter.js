@@ -113,6 +113,18 @@ class ActionWriter {
     // Ensure next_step passes the CHECK constraint
     const nextStep = VALID_NEXT_STEPS.has(action.next_step) ? action.next_step : 'email';
 
+    // Resolve the correct ON CONFLICT target for this entity type.
+    // Must match the partial unique indexes from migration_upsert_constraints.sql.
+    // Using a named conflict target rather than bare ON CONFLICT DO NOTHING so that
+    // real insert errors (FK violations, NOT NULL violations) are not silently swallowed.
+    // When playbook_play_id is null (Type A diagnostic alerts written via ActionWriter
+    // directly), fall back to the bare form — the named index requires both columns.
+    const conflictClause = action.playbook_play_id
+      ? `ON CONFLICT (${fkCol}, playbook_play_id)
+           WHERE ${fkCol} IS NOT NULL AND playbook_play_id IS NOT NULL
+         DO NOTHING`
+      : `ON CONFLICT DO NOTHING`;
+
     const result = await db.query(
       `INSERT INTO actions (
          org_id, user_id,
@@ -133,7 +145,7 @@ class ActionWriter {
          $17,
          'yet_to_start', NOW()
        )
-       ON CONFLICT DO NOTHING
+       ${conflictClause}
        RETURNING id`,
       [
         orgId,

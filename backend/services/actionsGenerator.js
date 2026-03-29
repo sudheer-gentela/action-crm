@@ -472,7 +472,9 @@ class ActionsGenerator {
           }
 
           // ── Type B: Playbook tasks — ON CONFLICT DO NOTHING via ActionWriter
-          const pbMode = actionConfig.ai_enabled ? 'ai' : 'template';
+          // Fixed: use ActionConfigService.isAiEnabledForModule() — actionConfig.ai_enabled
+          // is not a top-level field; AI settings live inside the ai_settings JSONB column.
+          const pbMode = ActionConfigService.isAiEnabledForModule(actionConfig, 'deals') ? 'ai' : 'template';
           const pbResult = await PlaybookActionGenerator.generate({
             entityType: 'deal',
             context,
@@ -623,7 +625,9 @@ class ActionsGenerator {
       }
 
       // ── Type B: Playbook tasks — ON CONFLICT (deal_id, playbook_play_id) DO NOTHING
-      const pbMode = actionConfig.ai_enabled ? 'ai' : 'template';
+      // Fixed: use ActionConfigService.isAiEnabledForModule() — actionConfig.ai_enabled
+      // is not a top-level field; AI settings live inside the ai_settings JSONB column.
+      const pbMode = ActionConfigService.isAiEnabledForModule(actionConfig, 'deals') ? 'ai' : 'template';
       const pbResult = await PlaybookActionGenerator.generate({
         entityType: 'deal',
         context,
