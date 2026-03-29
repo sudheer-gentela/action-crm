@@ -13,10 +13,13 @@
 //   - commitment CRUD
 //   - completePlay()  — delegate to PlaybookPlayService + sync handover_plays
 //   - canSubmit()     — gate check: all is_gate plays completed
+//   - runNightlySweep() — Phase 2: HandoverRulesEngine diagnostic sweep
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { pool, withOrgTransaction } = require('../config/database');
 const PlaybookPlayService          = require('./PlaybookPlayService');
+const ActionPersister              = require('./ActionPersister');
+const HandoverRulesEngine          = require('./HandoverRulesEngine');
 
 // ── Status machine ────────────────────────────────────────────────────────────
 
@@ -636,6 +639,186 @@ function _mapDealContactRole(dealRole) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Nightly sweep — Phase 2
+//
+// runNightlySweep(orgId)
+//   Called by syncScheduler at 01:45 UTC.
+//   Processes every non-draft handover for the org:
+//     1. buildHandoverContext(handover) — assemble derived fields
+//     2. HandoverRulesEngine.evaluate() — pure rules, returns fired alerts
+//     3. ActionPersister.upsertDiagnosticAlert() per fired rule
+//        entityType='handover' → writes to actions table using deal_id FK
+//     4. ActionPersister.resolveStaleDiagnostics() for cleared conditions
+//
+// Architectural note:
+//   entityId passed to ActionPersister is the DEAL_ID, not the handover id.
+//   This is the confirmed pattern from Section 13 point 7 of the handover doc.
+//   ActionPersister's FK_COLUMN map routes entityType='handover' → deal_id.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the context object expected by HandoverRulesEngine.evaluate().
+ *
+ * @param {object} handoverRow  — raw row from sales_handovers
+ * @returns {Promise<object>}   context shaped for HandoverRulesEngine
+ */
+async function buildHandoverContext(handoverRow) {
+  const now = new Date();
+
+  const daysSinceCreated = Math.floor(
+    (now - new Date(handoverRow.created_at)) / (1000 * 60 * 60 * 24)
+  );
+
+  const daysSinceLastActivity = Math.floor(
+    (now - new Date(handoverRow.updated_at)) / (1000 * 60 * 60 * 24)
+  );
+
+  // Check for any kickoff meeting linked to this handover
+  const meetingResult = await pool.query(
+    `SELECT id FROM meetings
+     WHERE handover_id = $1
+     LIMIT 1`,
+    [handoverRow.id]
+  );
+  const hasKickoffMeeting = meetingResult.rows.length > 0;
+
+  // Find commitments with a due_date that has passed
+  // Requires the due_date column added by migration_phase2.sql
+  const overdueResult = await pool.query(
+    `SELECT id, description, commitment_type, due_date
+     FROM sales_handover_commitments
+     WHERE handover_id = $1
+       AND due_date IS NOT NULL
+       AND due_date < CURRENT_DATE`,
+    [handoverRow.id]
+  );
+  const overdueCommitments = overdueResult.rows;
+
+  // Find which required stakeholder roles are present
+  const stakeholderResult = await pool.query(
+    `SELECT DISTINCT handover_role
+     FROM sales_handover_stakeholders
+     WHERE handover_id = $1`,
+    [handoverRow.id]
+  );
+  const presentRoles = new Set(stakeholderResult.rows.map(r => r.handover_role));
+  const missingRequiredRoles = HandoverRulesEngine.REQUIRED_ROLES.filter(
+    role => !presentRoles.has(role)
+  );
+
+  // Brief completeness: go_live_date set + commercial_terms_summary populated
+  // Add more required fields here as the brief spec grows
+  const briefIsComplete =
+    handoverRow.go_live_date            != null &&
+    handoverRow.commercial_terms_summary != null &&
+    handoverRow.commercial_terms_summary.trim().length > 0;
+
+  return {
+    handover: handoverRow,
+    derived: {
+      daysSinceCreated,
+      daysSinceLastActivity,
+      hasKickoffMeeting,
+      overdueCommitments,
+      missingRequiredRoles,
+      briefIsComplete,
+    },
+  };
+}
+
+/**
+ * Run the full nightly diagnostic sweep for all active handovers in an org.
+ *
+ * "Active" means any status that is not 'draft' — submitted, acknowledged,
+ * and in_progress handovers all require monitoring.
+ *
+ * @param {number} orgId
+ * @returns {Promise<{ processed: number, alerts: number, resolved: number, errors: number }>}
+ */
+async function runNightlySweep(orgId) {
+  const stats = { processed: 0, alerts: 0, resolved: 0, errors: 0 };
+
+  let handovers;
+  try {
+    const result = await pool.query(
+      `SELECT h.id, h.org_id, h.deal_id, h.account_id,
+              h.assigned_service_owner_id,
+              h.status, h.go_live_date,
+              h.commercial_terms_summary,
+              h.submitted_at, h.acknowledged_at,
+              h.created_at, h.updated_at
+       FROM sales_handovers h
+       WHERE h.org_id = $1
+         AND h.status != 'draft'
+       ORDER BY h.id ASC`,
+      [orgId]
+    );
+    handovers = result.rows;
+  } catch (err) {
+    console.error(`[HandoverNightlySweep] Failed to fetch handovers for org ${orgId}:`, err.message);
+    return stats;
+  }
+
+  for (const handoverRow of handovers) {
+    try {
+      // Build derived context fields
+      const ctx = await buildHandoverContext(handoverRow);
+
+      // Run all diagnostic rules — pure, no DB
+      const fired = HandoverRulesEngine.evaluate(ctx);
+
+      // Upsert each fired alert.
+      // entityType='handover', entityId=deal_id — ActionPersister routes this
+      // to the deal_id FK column in the actions table.
+      const firedSourceRules = [];
+      for (const alert of fired) {
+        const id = await ActionPersister.upsertDiagnosticAlert({
+          entityType: 'handover',
+          entityId:   handoverRow.deal_id,   // deal_id, not handover.id
+          sourceRule: alert.sourceRule,
+          title:      alert.title,
+          description: alert.description,
+          priority:   alert.priority,
+          nextStep:   alert.nextStep,
+          orgId:      orgId,
+          userId:     handoverRow.assigned_service_owner_id || null,
+        });
+        if (id != null) {
+          firedSourceRules.push(alert.sourceRule);
+          stats.alerts++;
+        }
+      }
+
+      // Resolve stale diagnostics.
+      // Pass deal_id as entityId — matches how ActionPersister queries the FK.
+      const resolvedCount = await ActionPersister.resolveStaleDiagnostics({
+        entityType: 'handover',
+        entityId:   handoverRow.deal_id,
+        firedRules: firedSourceRules,
+        orgId:      orgId,
+      });
+      stats.resolved  += resolvedCount;
+      stats.processed += 1;
+
+    } catch (err) {
+      console.error(
+        `[HandoverNightlySweep] Error processing handover ${handoverRow.id} ` +
+        `(deal ${handoverRow.deal_id}, org ${orgId}):`,
+        err.message
+      );
+      stats.errors++;
+    }
+  }
+
+  console.log(
+    `[HandoverNightlySweep] org=${orgId} processed=${stats.processed} ` +
+    `alerts=${stats.alerts} resolved=${stats.resolved} errors=${stats.errors}`
+  );
+
+  return stats;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
   initiate,
@@ -649,4 +832,7 @@ module.exports = {
   addCommitment,
   removeCommitment,
   completePlay,
+  // Nightly sweep — Phase 2
+  runNightlySweep,
+  buildHandoverContext,   // exported for testing / ad-hoc event triggers
 };

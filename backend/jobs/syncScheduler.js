@@ -32,6 +32,8 @@ const config               = require('../config/config');
 const ActionsGenerator             = require('../services/actionsGenerator');
 const ContractActionsGenerator     = require('../services/ContractActionsGenerator');
 const { runNightlyAudit } = require('../services/auditWorker.service');
+const SupportService  = require('../services/supportService');
+const HandoverService = require('../services/handover.service');
 
 
 
@@ -1011,6 +1013,59 @@ function startScheduler() {
       .catch(err => console.error('❌ CLM sweep error:', err.message));
   }, { timezone: 'UTC' });
 
+  // ── Cases diagnostic sweep — nightly at 02:15 UTC ────────────────────────
+  // Runs CasesRulesEngine for every non-terminal case in every active org.
+  // Upserts Type A diagnostic alerts (unassigned, SLA breach, stale, etc.)
+  // and resolves alerts whose conditions have cleared.
+  // Staggered 15 min after CLM sweep to avoid DB contention.
+  cron.schedule('15 2 * * *', async () => {
+    console.log('🌙 Running nightly Cases diagnostic sweep...');
+    try {
+      const orgs = await pool.query(
+        `SELECT DISTINCT org_id FROM cases
+         WHERE status NOT IN ('resolved', 'closed')`
+      );
+      let totalProcessed = 0, totalAlerts = 0, totalResolved = 0, totalErrors = 0;
+      for (const { org_id } of orgs.rows) {
+        const r = await SupportService.runNightlySweep(org_id);
+        totalProcessed += r.processed;
+        totalAlerts    += r.alerts;
+        totalResolved  += r.resolved;
+        totalErrors    += r.errors;
+      }
+      console.log(`✅ Cases sweep done — orgs: ${orgs.rows.length}, processed: ${totalProcessed}, alerts: ${totalAlerts}, resolved: ${totalResolved}, errors: ${totalErrors}`);
+    } catch (err) {
+      console.error('❌ Cases sweep error:', err.message);
+    }
+  }, { timezone: 'UTC' });
+
+  // ── Handovers diagnostic sweep — nightly at 02:30 UTC ────────────────────
+  // Runs HandoverRulesEngine for every non-draft handover in every active org.
+  // Upserts Type A diagnostic alerts (no kickoff, overdue commitments, stalled,
+  // stakeholder gaps, incomplete brief) and resolves cleared alerts.
+  // Actions written to `actions` table using deal_id FK (see architectural
+  // decision #7 in handover doc — no handover_id FK exists on actions).
+  cron.schedule('30 2 * * *', async () => {
+    console.log('🌙 Running nightly Handovers diagnostic sweep...');
+    try {
+      const orgs = await pool.query(
+        `SELECT DISTINCT org_id FROM sales_handovers
+         WHERE status != 'draft'`
+      );
+      let totalProcessed = 0, totalAlerts = 0, totalResolved = 0, totalErrors = 0;
+      for (const { org_id } of orgs.rows) {
+        const r = await HandoverService.runNightlySweep(org_id);
+        totalProcessed += r.processed;
+        totalAlerts    += r.alerts;
+        totalResolved  += r.resolved;
+        totalErrors    += r.errors;
+      }
+      console.log(`✅ Handovers sweep done — orgs: ${orgs.rows.length}, processed: ${totalProcessed}, alerts: ${totalAlerts}, resolved: ${totalResolved}, errors: ${totalErrors}`);
+    } catch (err) {
+      console.error('❌ Handovers sweep error:', err.message);
+    }
+  }, { timezone: 'UTC' });
+
   // ── Workflow audit — nightly sweep ────────────────────────────────────────
   // Runs at 03:00 UTC every day. Scans all entity records for all active orgs
   // against audit-trigger workflow rules, writing new violations and resolving
@@ -1043,6 +1098,8 @@ function startScheduler() {
 
   console.log('✅ Deal action scheduler started (nightly 01:00 UTC)');
   console.log('✅ CLM action scheduler started (nightly 02:00 UTC)');
+  console.log('✅ Cases diagnostic scheduler started (nightly 02:15 UTC)');
+  console.log('✅ Handovers diagnostic scheduler started (nightly 02:30 UTC)');
   console.log('✅ Workflow audit scheduler started (nightly 03:00 UTC)');
   console.log('✅ Email filter log purge started (nightly 03:30 UTC)');
 }

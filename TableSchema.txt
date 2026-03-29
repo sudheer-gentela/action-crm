@@ -1,0 +1,151 @@
+                                              Table "public.sales_handovers"
+          Column           |           Type           | Collation | Nullable |                   Default                   
+---------------------------+--------------------------+-----------+----------+---------------------------------------------
+ id                        | integer                  |           | not null | nextval('sales_handovers_id_seq'::regclass)
+ org_id                    | integer                  |           | not null | 
+ deal_id                   | integer                  |           | not null | 
+ account_id                | integer                  |           | not null | 
+ assigned_service_owner_id | integer                  |           |          | 
+ status                    | character varying(30)    |           | not null | 'draft'::character varying
+ go_live_date              | date                     |           |          | 
+ contract_value            | numeric(15,2)            |           |          | 
+ commercial_terms_summary  | text                     |           |          | 
+ playbook_id               | integer                  |           |          | 
+ created_by                | integer                  |           | not null | 
+ submitted_at              | timestamp with time zone |           |          | 
+ acknowledged_at           | timestamp with time zone |           |          | 
+ updated_at                | timestamp with time zone |           | not null | now()
+ created_at                | timestamp with time zone |           | not null | now()
+Indexes:
+    "sales_handovers_pkey" PRIMARY KEY, btree (id)
+    "idx_sales_handovers_account" btree (account_id, org_id)
+    "idx_sales_handovers_org_status" btree (org_id, status)
+    "idx_sales_handovers_service_owner" btree (assigned_service_owner_id, status)
+    "sales_handovers_deal_unique" UNIQUE CONSTRAINT, btree (deal_id)
+Check constraints:
+    "sales_handovers_status_check" CHECK (status::text = ANY (ARRAY['draft'::character varying, 'submitted'::character varying, 'acknowledged'::character varying, 'in_progress'::character varying]::text[]))
+Foreign-key constraints:
+    "sales_handovers_account_id_fkey" FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE RESTRICT
+    "sales_handovers_assigned_service_owner_id_fkey" FOREIGN KEY (assigned_service_owner_id) REFERENCES users(id) ON DELETE SET NULL
+    "sales_handovers_created_by_fkey" FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT
+    "sales_handovers_deal_id_fkey" FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE CASCADE
+    "sales_handovers_org_id_fkey" FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+    "sales_handovers_playbook_id_fkey" FOREIGN KEY (playbook_id) REFERENCES playbooks(id) ON DELETE SET NULL
+Referenced by:
+    TABLE "meetings" CONSTRAINT "fk_meetings_handover_id" FOREIGN KEY (handover_id) REFERENCES sales_handovers(id) ON DELETE SET NULL
+    TABLE "sales_handover_commitments" CONSTRAINT "sales_handover_commitments_handover_id_fkey" FOREIGN KEY (handover_id) REFERENCES sales_handovers(id) ON DELETE CASCADE
+    TABLE "sales_handover_plays" CONSTRAINT "sales_handover_plays_handover_id_fkey" FOREIGN KEY (handover_id) REFERENCES sales_handovers(id) ON DELETE CASCADE
+    TABLE "sales_handover_stakeholders" CONSTRAINT "sales_handover_stakeholders_handover_id_fkey" FOREIGN KEY (handover_id) REFERENCES sales_handovers(id) ON DELETE CASCADE
+
+                                         Table "public.sales_handover_commitments"
+     Column      |           Type           | Collation | Nullable |                        Default                         
+-----------------+--------------------------+-----------+----------+--------------------------------------------------------
+ id              | integer                  |           | not null | nextval('sales_handover_commitments_id_seq'::regclass)
+ handover_id     | integer                  |           | not null | 
+ org_id          | integer                  |           | not null | 
+ description     | text                     |           | not null | 
+ commitment_type | character varying(20)    |           | not null | 'promise'::character varying
+ created_by      | integer                  |           |          | 
+ created_at      | timestamp with time zone |           | not null | now()
+Indexes:
+    "sales_handover_commitments_pkey" PRIMARY KEY, btree (id)
+    "idx_handover_commitments_handover" btree (handover_id, commitment_type)
+Check constraints:
+    "sales_handover_commitments_commitment_type_check" CHECK (commitment_type::text = ANY (ARRAY['promise'::character varying, 'risk'::character varying, 'red_flag'::character varying]::text[]))
+Foreign-key constraints:
+    "sales_handover_commitments_created_by_fkey" FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    "sales_handover_commitments_handover_id_fkey" FOREIGN KEY (handover_id) REFERENCES sales_handovers(id) ON DELETE CASCADE
+    "sales_handover_commitments_org_id_fkey" FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+
+                                           Table "public.sales_handover_stakeholders"
+       Column       |           Type           | Collation | Nullable |                         Default                         
+--------------------+--------------------------+-----------+----------+---------------------------------------------------------
+ id                 | integer                  |           | not null | nextval('sales_handover_stakeholders_id_seq'::regclass)
+ handover_id        | integer                  |           | not null | 
+ org_id             | integer                  |           | not null | 
+ contact_id         | integer                  |           |          | 
+ account_team_id    | integer                  |           |          | 
+ name               | character varying(150)   |           | not null | 
+ handover_role      | character varying(50)    |           | not null | 'other'::character varying
+ relationship_notes | text                     |           |          | 
+ is_primary_contact | boolean                  |           | not null | false
+ created_at         | timestamp with time zone |           | not null | now()
+Indexes:
+    "sales_handover_stakeholders_pkey" PRIMARY KEY, btree (id)
+    "idx_handover_stakeholders_contact" btree (contact_id) WHERE contact_id IS NOT NULL
+    "idx_handover_stakeholders_handover" btree (handover_id)
+Check constraints:
+    "sales_handover_stakeholders_handover_role_check" CHECK (handover_role::text = ANY (ARRAY['implementation_lead'::character varying, 'day_to_day_admin'::character varying, 'go_live_approver'::character varying, 'exec_sponsor'::character varying, 'technical_lead'::character varying, 'other'::character varying]::text[]))
+Foreign-key constraints:
+    "sales_handover_stakeholders_account_team_id_fkey" FOREIGN KEY (account_team_id) REFERENCES account_teams(id) ON DELETE SET NULL
+    "sales_handover_stakeholders_contact_id_fkey" FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL
+    "sales_handover_stakeholders_handover_id_fkey" FOREIGN KEY (handover_id) REFERENCES sales_handovers(id) ON DELETE CASCADE
+    "sales_handover_stakeholders_org_id_fkey" FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+
+                                           Table "public.cases"
+       Column        |           Type           | Collation | Nullable |              Default              
+---------------------+--------------------------+-----------+----------+-----------------------------------
+ id                  | integer                  |           | not null | nextval('cases_id_seq'::regclass)
+ org_id              | integer                  |           | not null | 
+ case_number         | character varying(30)    |           |          | 
+ subject             | character varying(500)   |           | not null | 
+ description         | text                     |           |          | 
+ status              | character varying(50)    |           | not null | 'open'::character varying
+ priority            | character varying(20)    |           | not null | 'medium'::character varying
+ account_id          | integer                  |           |          | 
+ contact_id          | integer                  |           |          | 
+ deal_id             | integer                  |           |          | 
+ sla_tier_id         | integer                  |           |          | 
+ assigned_team_id    | integer                  |           |          | 
+ assigned_to         | integer                  |           |          | 
+ created_by          | integer                  |           |          | 
+ playbook_id         | integer                  |           |          | 
+ response_due_at     | timestamp with time zone |           |          | 
+ resolution_due_at   | timestamp with time zone |           |          | 
+ first_responded_at  | timestamp with time zone |           |          | 
+ resolved_at         | timestamp with time zone |           |          | 
+ closed_at           | timestamp with time zone |           |          | 
+ response_breached   | boolean                  |           | not null | false
+ resolution_breached | boolean                  |           | not null | false
+ tags                | text[]                   |           |          | 
+ source              | character varying(50)    |           | not null | 'manual'::character varying
+ created_at          | timestamp with time zone |           | not null | now()
+ updated_at          | timestamp with time zone |           | not null | now()
+ client_id           | integer                  |           |          | 
+Indexes:
+    "cases_pkey" PRIMARY KEY, btree (id)
+    "cases_org_case_number_uq" UNIQUE CONSTRAINT, btree (org_id, case_number)
+    "idx_cases_account" btree (account_id)
+    "idx_cases_assigned_to" btree (assigned_to)
+    "idx_cases_client_id" btree (client_id) WHERE client_id IS NOT NULL
+    "idx_cases_contact" btree (contact_id)
+    "idx_cases_created_by" btree (created_by)
+    "idx_cases_deal" btree (deal_id)
+    "idx_cases_org" btree (org_id)
+    "idx_cases_sla" btree (org_id, response_due_at, resolution_due_at)
+    "idx_cases_status" btree (org_id, status)
+    "idx_cases_team" btree (assigned_team_id)
+Check constraints:
+    "cases_priority_check" CHECK (priority::text = ANY (ARRAY['low'::character varying, 'medium'::character varying, 'high'::character varying, 'critical'::character varying]::text[]))
+    "cases_source_check" CHECK (source::text = ANY (ARRAY['manual'::character varying, 'email'::character varying, 'portal'::character varying]::text[]))
+    "cases_status_check" CHECK (status::text = ANY (ARRAY['open'::character varying, 'in_progress'::character varying, 'pending_customer'::character varying, 'resolved'::character varying, 'closed'::character varying]::text[]))
+Foreign-key constraints:
+    "cases_account_id_fkey" FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL
+    "cases_assigned_team_id_fkey" FOREIGN KEY (assigned_team_id) REFERENCES teams(id) ON DELETE SET NULL
+    "cases_assigned_to_fkey" FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL
+    "cases_client_id_fkey" FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL
+    "cases_contact_id_fkey" FOREIGN KEY (contact_id) REFERENCES contacts(id) ON DELETE SET NULL
+    "cases_created_by_fkey" FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    "cases_deal_id_fkey" FOREIGN KEY (deal_id) REFERENCES deals(id) ON DELETE SET NULL
+    "cases_org_id_fkey" FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+    "cases_playbook_id_fkey" FOREIGN KEY (playbook_id) REFERENCES playbooks(id) ON DELETE SET NULL
+    "cases_sla_tier_id_fkey" FOREIGN KEY (sla_tier_id) REFERENCES sla_tiers(id) ON DELETE SET NULL
+Referenced by:
+    TABLE "actions" CONSTRAINT "actions_case_id_fkey" FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE CASCADE
+    TABLE "case_notes" CONSTRAINT "case_notes_case_id_fkey" FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE CASCADE
+    TABLE "case_plays" CONSTRAINT "case_plays_case_id_fkey" FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE CASCADE
+    TABLE "case_status_history" CONSTRAINT "case_status_history_case_id_fkey" FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE CASCADE
+Policies:
+    POLICY "cases_org_isolation"
+      USING ((org_id = (NULLIF(current_setting('app.current_org_id'::text, true), ''::text))::integer))
+

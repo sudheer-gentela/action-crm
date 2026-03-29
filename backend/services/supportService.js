@@ -12,11 +12,16 @@
 //   - Module: enableModule() — seeds SLA defaults on first enable
 //   - SLA tier CRUD: listSlaTiers, createSlaTier, updateSlaTier
 //   - Teams helpers: getSupportTeams(), getTeamMembers()
+//   - Nightly sweep: runNightlySweep() — Phase 2 addition
+//       Runs CasesRulesEngine diagnostic rules for every non-terminal case
+//       in the org. Upserts alerts via ActionPersister, resolves stale ones.
 
 const { pool, withOrgTransaction } = require('../config/database');
 const PlaybookService = require('./playbook.service');
 const { resolveChannel } = require('./playbook.service');
 const { resolveForPlay } = require('./PlayRouteResolver');
+const ActionPersister  = require('./ActionPersister');
+const CasesRulesEngine = require('./CasesRulesEngine');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Status transition map
@@ -1049,6 +1054,175 @@ function mapTier(row) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Nightly sweep — Phase 2
+//
+// runNightlySweep(orgId)
+//   Called by syncScheduler at 01:30 UTC (after the deal sweep at 01:00).
+//   Processes every non-terminal case for the org:
+//     1. buildCaseContext(case)       — assemble derived fields
+//     2. CasesRulesEngine.evaluate()  — pure rules, returns fired alerts
+//     3. ActionPersister.upsertDiagnosticAlert() per fired rule
+//     4. ActionPersister.resolveStaleDiagnostics() for conditions no longer true
+//
+// buildCaseContext(caseRow)
+//   Exported separately so it can be called in tests or ad-hoc event triggers
+//   without running the full sweep.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the context object expected by CasesRulesEngine.evaluate().
+ *
+ * Requires one extra query beyond the base case row to get:
+ *   - daysSinceLastActivity (latest of updated_at and last note created_at)
+ *   - daysSincePendingCustomer (when the case entered pending_customer)
+ *
+ * @param {object} caseRow  — raw row from the cases table
+ * @returns {Promise<object>} context shaped for CasesRulesEngine
+ */
+async function buildCaseContext(caseRow) {
+  const now = new Date();
+
+  // Last note timestamp — activity that doesn't change updated_at on the case
+  const noteResult = await pool.query(
+    `SELECT MAX(created_at) AS last_note_at
+     FROM case_notes
+     WHERE case_id = $1`,
+    [caseRow.id]
+  );
+  const lastNoteAt = noteResult.rows[0]?.last_note_at
+    ? new Date(noteResult.rows[0].last_note_at)
+    : null;
+
+  // Most recent activity: latest of updated_at and last note
+  const lastActivityAt = lastNoteAt && lastNoteAt > new Date(caseRow.updated_at)
+    ? lastNoteAt
+    : new Date(caseRow.updated_at);
+
+  const daysSinceLastActivity = Math.floor(
+    (now - lastActivityAt) / (1000 * 60 * 60 * 24)
+  );
+
+  // When did this case most recently enter pending_customer?
+  // Used by case_pending_too_long rule. Null if not currently pending_customer.
+  let daysSincePendingCustomer = null;
+  if (caseRow.status === 'pending_customer') {
+    const histResult = await pool.query(
+      `SELECT changed_at
+       FROM case_status_history
+       WHERE case_id   = $1
+         AND new_status = 'pending_customer'
+       ORDER BY changed_at DESC
+       LIMIT 1`,
+      [caseRow.id]
+    );
+    if (histResult.rows.length > 0) {
+      daysSincePendingCustomer = Math.floor(
+        (now - new Date(histResult.rows[0].changed_at)) / (1000 * 60 * 60 * 24)
+      );
+    } else {
+      // Fallback: no status history row — use updated_at as a conservative proxy
+      daysSincePendingCustomer = daysSinceLastActivity;
+    }
+  }
+
+  return {
+    case:    caseRow,
+    derived: {
+      daysSinceLastActivity,
+      daysSincePendingCustomer,
+    },
+  };
+}
+
+/**
+ * Run the full nightly diagnostic sweep for all non-terminal cases in an org.
+ *
+ * @param {number} orgId
+ * @returns {Promise<{ processed: number, alerts: number, resolved: number, errors: number }>}
+ */
+async function runNightlySweep(orgId) {
+  const stats = { processed: 0, alerts: 0, resolved: 0, errors: 0 };
+
+  // Fetch all non-terminal cases for the org.
+  // We need the assigned_to for the userId param on upsertDiagnosticAlert.
+  // When a case is unassigned, fall back to null — ActionPersister accepts null userId.
+  let cases;
+  try {
+    const result = await pool.query(
+      `SELECT id, case_number, status, priority,
+              assigned_to, org_id,
+              response_due_at, resolution_due_at,
+              first_responded_at, resolved_at, closed_at,
+              response_breached, resolution_breached,
+              created_at, updated_at
+       FROM cases
+       WHERE org_id = $1
+         AND status NOT IN ('resolved', 'closed')
+       ORDER BY id ASC`,
+      [orgId]
+    );
+    cases = result.rows;
+  } catch (err) {
+    console.error(`[CasesNightlySweep] Failed to fetch cases for org ${orgId}:`, err.message);
+    return stats;
+  }
+
+  for (const caseRow of cases) {
+    try {
+      // Build derived context fields
+      const ctx = await buildCaseContext(caseRow);
+
+      // Run all diagnostic rules — pure, no DB
+      const fired = CasesRulesEngine.evaluate(ctx);
+
+      // Upsert each fired alert
+      const firedSourceRules = [];
+      for (const alert of fired) {
+        const id = await ActionPersister.upsertDiagnosticAlert({
+          entityType: 'case',
+          entityId:   caseRow.id,
+          sourceRule: alert.sourceRule,
+          title:      alert.title,
+          description: alert.description,
+          priority:   alert.priority,
+          nextStep:   alert.nextStep,
+          orgId:      orgId,
+          userId:     caseRow.assigned_to || null,
+        });
+        if (id != null) {
+          firedSourceRules.push(alert.sourceRule);
+          stats.alerts++;
+        }
+      }
+
+      // Resolve any diagnostic alerts whose conditions are no longer true
+      const resolvedCount = await ActionPersister.resolveStaleDiagnostics({
+        entityType: 'case',
+        entityId:   caseRow.id,
+        firedRules: firedSourceRules,
+        orgId:      orgId,
+      });
+      stats.resolved  += resolvedCount;
+      stats.processed += 1;
+
+    } catch (err) {
+      console.error(
+        `[CasesNightlySweep] Error processing case ${caseRow.id} (org ${orgId}):`,
+        err.message
+      );
+      stats.errors++;
+    }
+  }
+
+  console.log(
+    `[CasesNightlySweep] org=${orgId} processed=${stats.processed} ` +
+    `alerts=${stats.alerts} resolved=${stats.resolved} errors=${stats.errors}`
+  );
+
+  return stats;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Exports
 // ─────────────────────────────────────────────────────────────────────────────
 module.exports = {
@@ -1070,6 +1244,9 @@ module.exports = {
   getTeamMembers,
   // Module
   enableModule,
+  // Nightly sweep — Phase 2
+  runNightlySweep,
+  buildCaseContext,   // exported for testing / ad-hoc event triggers
   // Exposed for testing
   TRANSITIONS,
 };
