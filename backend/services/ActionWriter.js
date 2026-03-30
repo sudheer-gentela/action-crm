@@ -158,7 +158,10 @@ class ActionWriter {
         nextStep,
         action.is_internal || false,
         action.source || 'playbook',
-        action.source_rule || 'playbook_play',
+        action.source_rule ?? null,   // null is correct for Type B playbook tasks —
+                                      // their dedup is (entity_fk, playbook_play_id).
+                                      // Falling back to 'playbook_play' collides with
+                                      // the (deal_id, source_rule) Type A index.
         action.suggested_action || null,
         action.deal_stage || null,
         action.playbook_play_id || null,
@@ -209,7 +212,7 @@ class ActionWriter {
         action.priority || 'medium',
         action.due_date || null,
         action.source || 'playbook',
-        action.source_rule || 'playbook_play',
+        action.source_rule ?? null,   // null for Type B — deduped by (prospect_id, play_id)
         action.suggested_action || null,
         playbookId   || action.playbook_id   || null,
         action.playbook_play_id              || null,

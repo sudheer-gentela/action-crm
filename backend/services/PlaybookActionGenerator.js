@@ -268,7 +268,7 @@ class PlaybookActionGenerator {
           priority:        play.priority || 'medium',
           due_date:        dueDate,
           source:          'playbook',
-          source_rule:     'playbook_play',
+          source_rule:     null,   // Type B: deduped by (prospect_id, play_id) index
           suggested_action: play.suggested_action || null,
           playbook_play_id: play.id,
           user_id:         userId,
@@ -287,7 +287,10 @@ class PlaybookActionGenerator {
           due_date:         dueDate,
           deal_stage:       entityType === 'deal' ? stageKey : null,
           source:           'playbook',
-          source_rule:      'playbook_play',
+          source_rule:      null,   // Type B tasks: deduped by (entity_fk, playbook_play_id) index,
+                                    // NOT by source_rule. Setting 'playbook_play' here causes all
+                                    // playbook tasks to collide on the (deal_id, source_rule) unique
+                                    // index which is reserved for Type A diagnostic alerts.
           suggested_action: play.suggested_action || null,
           playbook_play_id: play.id,
           is_internal:      next_step === 'internal_task' || next_step === 'document' || next_step === 'slack',
@@ -473,7 +476,7 @@ Return ONLY a JSON array. No markdown. No preamble. Each item:
               priority:         ['high', 'medium', 'low'].includes(a.priority) ? a.priority : 'medium',
               due_date:         dueDate,
               source:           'ai_generated',
-              source_rule:      'playbook_ai',
+              source_rule:      null,   // Type B: deduped by (prospect_id, play_id) index
               suggested_action: a.suggested_action || null,
               playbook_play_id: play?.id || null,
               user_id:          userId,
@@ -493,7 +496,8 @@ Return ONLY a JSON array. No markdown. No preamble. Each item:
               due_date:         dueDate,
               deal_stage:       entityType === 'deal' ? stageKey : null,
               source:           'ai_generated',
-              source_rule:      'playbook_ai',
+              source_rule:      null,   // Type B: deduped by (entity_fk, playbook_play_id) index.
+                                        // 'playbook_ai' would collide on (deal_id, source_rule).
               suggested_action: a.suggested_action || null,
               playbook_play_id: play?.id || null,
               is_internal:      safeNextStep === 'internal_task' || safeNextStep === 'document' || safeNextStep === 'slack',
