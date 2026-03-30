@@ -1104,7 +1104,7 @@ router.put('/:id', async (req, res) => {
 // ── PATCH /:id/status ─────────────────────────────────────────
 router.patch('/:id/status', async (req, res) => {
   try {
-    const { status, notes } = req.body;
+    const { status } = req.body;
     const VALID = ['yet_to_start', 'in_progress', 'completed'];
     if (!VALID.includes(status)) {
       return res.status(400).json({ error: { message: `status must be one of: ${VALID.join(', ')}` } });
@@ -1118,11 +1118,10 @@ router.patch('/:id/status', async (req, res) => {
            completed    = $2,
            completed_at = CASE WHEN $2 = true THEN CURRENT_TIMESTAMP ELSE completed_at END,
            completed_by = CASE WHEN $2 = true THEN $3 ELSE completed_by END,
-           notes        = COALESCE($6, notes),
            updated_at   = CURRENT_TIMESTAMP
        WHERE id = $4 AND org_id = $5 AND user_id = $3
        RETURNING *`,
-      [status, isCompleting, req.user.userId, req.params.id, req.orgId, notes || null]
+      [status, isCompleting, req.user.userId, req.params.id, req.orgId]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: { message: 'Action not found' } });
 
