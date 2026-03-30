@@ -853,40 +853,42 @@ async function getDashboard(orgId, userId, subordinateIds = [], scope = 'mine') 
   const [stats, byAccount, byOwner, breachList] = await Promise.all([
     pool.query(
       `SELECT
-         COUNT(*) FILTER (WHERE c.status NOT IN ('closed'))           AS total_open,
-         COUNT(*) FILTER (WHERE c.status = 'open')                    AS count_open,
-         COUNT(*) FILTER (WHERE c.status = 'in_progress')             AS count_in_progress,
-         COUNT(*) FILTER (WHERE c.status = 'pending_customer')        AS count_pending,
-         COUNT(*) FILTER (WHERE c.status = 'resolved')                AS count_resolved,
+         COUNT(*) FILTER (WHERE c.status NOT IN ('closed'))           AS "totalOpen",
+         COUNT(*) FILTER (WHERE c.status = 'open')                    AS "countOpen",
+         COUNT(*) FILTER (WHERE c.status = 'in_progress')             AS "countInProgress",
+         COUNT(*) FILTER (WHERE c.status = 'pending_customer')        AS "countPending",
+         COUNT(*) FILTER (WHERE c.status = 'resolved')                AS "countResolved",
          COUNT(*) FILTER (WHERE c.response_breached = TRUE
-                           AND c.status NOT IN ('closed'))             AS response_breaches,
+                           AND c.status NOT IN ('closed'))             AS "responseBreaches",
          COUNT(*) FILTER (WHERE c.resolution_breached = TRUE
-                           AND c.status NOT IN ('closed'))             AS resolution_breaches,
-         COUNT(*) FILTER (WHERE c.resolved_at >= NOW() - INTERVAL '1 day') AS resolved_today
+                           AND c.status NOT IN ('closed'))             AS "resolutionBreaches",
+         COUNT(*) FILTER (WHERE c.resolved_at >= NOW() - INTERVAL '1 day') AS "resolvedToday"
        FROM cases c
        WHERE c.org_id = $1 ${userFilter}`,
       userParams
     ),
     pool.query(
-      `SELECT a.name AS account_name, COUNT(c.id)::int AS case_count
+      `SELECT a.name AS "accountName", COUNT(c.id)::int AS "openCount"
        FROM cases c
        JOIN accounts a ON a.id = c.account_id
        WHERE c.org_id = $1 ${userFilter}
          AND c.status NOT IN ('closed')
        GROUP BY a.name
-       ORDER BY case_count DESC
+       ORDER BY "openCount" DESC
        LIMIT 10`,
       userParams
     ),
     pool.query(
-      `SELECT u.first_name || ' ' || u.last_name AS assignee_name,
-              COUNT(c.id)::int AS case_count
+      `SELECT u.first_name AS "firstName",
+              u.last_name  AS "lastName",
+              COUNT(c.id) FILTER (WHERE c.status NOT IN ('closed','resolved'))::int AS "openCount",
+              COUNT(c.id) FILTER (WHERE c.resolved_at >= NOW() - INTERVAL '7 days')::int AS "resolvedThisWeek"
        FROM cases c
        JOIN users u ON u.id = c.assigned_to
        WHERE c.org_id = $1 ${userFilter}
          AND c.status NOT IN ('closed')
        GROUP BY u.id, u.first_name, u.last_name
-       ORDER BY case_count DESC
+       ORDER BY "openCount" DESC
        LIMIT 10`,
       userParams
     ),
@@ -907,10 +909,21 @@ async function getDashboard(orgId, userId, subordinateIds = [], scope = 'mine') 
   ]);
 
   return {
-    stats:     stats.rows[0],
-    byAccount: byAccount.rows,
-    byOwner:   byOwner.rows,
-    breaches:  breachList.rows,
+    stats:      stats.rows[0],
+    byAccount:  byAccount.rows,
+    byOwner:    byOwner.rows,
+    breachList: breachList.rows.map(r => ({
+      id:                r.id,
+      caseNumber:        r.case_number,
+      subject:           r.subject,
+      priority:          r.priority,
+      status:            r.status,
+      accountName:       r.account_name,
+      responseBreached:  r.response_breached,
+      resolutionBreached: r.resolution_breached,
+      responseDueAt:     r.response_due_at,
+      resolutionDueAt:   r.resolution_due_at,
+    })),
   };
 }
 
