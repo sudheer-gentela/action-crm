@@ -10,7 +10,7 @@ router.use(orgContext);
 // ── Helper: verify deal belongs to this org ───────────────────────────────────
 async function resolveDeal(req, res) {
   const result = await db.query(
-    `SELECT id, user_id, org_id FROM deals WHERE id = $1 AND org_id = $2`,
+    `SELECT id, owner_id, org_id FROM deals WHERE id = $1 AND org_id = $2`,
     [req.params.dealId, req.orgId]
   );
   if (result.rows.length === 0) {

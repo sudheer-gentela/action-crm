@@ -17,7 +17,7 @@ router.use(authenticateToken, orgContext);
 // ── Helper: verify deal belongs to org ───────────────────────────────────────
 async function resolveDeal(req, res) {
   const result = await db.query(
-    `SELECT id, user_id, org_id FROM deals WHERE id = $1 AND org_id = $2`,
+    `SELECT id, owner_id, org_id FROM deals WHERE id = $1 AND org_id = $2`,
     [req.params.dealId, req.orgId]
   );
   if (result.rows.length === 0) {
@@ -29,9 +29,12 @@ async function resolveDeal(req, res) {
 
 // ── Helper: check if caller can manage plays ─────────────────────────────────
 async function canManage(req, deal) {
-  if (deal.user_id === req.user.userId) return true;
+  // Deal ownership check — column is owner_id not user_id
+  if (deal.owner_id === req.user.userId) return true;
+  // Org admin check — role is stored in org_users, not users
   const r = await db.query(
-    `SELECT role FROM users WHERE id = $1 AND org_id = $2`, [req.user.userId, req.orgId]
+    `SELECT role FROM org_users WHERE user_id = $1 AND org_id = $2`,
+    [req.user.userId, req.orgId]
   );
   const role = r.rows[0]?.role;
   return role === 'admin' || role === 'owner';
