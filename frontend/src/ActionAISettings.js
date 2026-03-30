@@ -380,21 +380,31 @@ export default function ActionAISettings() {
               <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 12 }}>
                 Which sources generate actions for your deals. Uncheck all = manual mode.
               </div>
-              {SOURCES.map((src, i) => (
-                <div key={src.key} style={i === SOURCES.length - 1 ? lastRowStyle : rowStyle}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, color: '#111827' }}>{src.label}</div>
-                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1 }}>{src.hint}</div>
+              {SOURCES.map((src, i) => {
+                // Playbook and Rules engine are independent of the AI master toggle.
+                // Only AI enhancement requires master AI to be on.
+                const isDisabled = src.key === 'ai' && !masterOn;
+                return (
+                  <div key={src.key} style={i === SOURCES.length - 1 ? lastRowStyle : rowStyle}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, color: isDisabled ? '#9ca3af' : '#111827' }}>{src.label}</div>
+                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1 }}>{src.hint}</div>
+                      {isDisabled && (
+                        <div style={{ fontSize: 10, color: '#d97706', marginTop: 2 }}>
+                          Enable master AI toggle above to use this source
+                        </div>
+                      )}
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={genSources.includes(src.key)}
+                      onChange={e => patchSource(src.key, e.target.checked)}
+                      disabled={isDisabled}
+                      style={{ width: 15, height: 15, accentColor: '#534AB7', cursor: isDisabled ? 'not-allowed' : 'pointer', flexShrink: 0, opacity: isDisabled ? 0.4 : 1 }}
+                    />
                   </div>
-                  <input
-                    type="checkbox"
-                    checked={genSources.includes(src.key)}
-                    onChange={e => patchSource(src.key, e.target.checked)}
-                    disabled={!masterOn}
-                    style={{ width: 15, height: 15, accentColor: '#534AB7', cursor: masterOn ? 'pointer' : 'not-allowed', flexShrink: 0 }}
-                  />
-                </div>
-              ))}
+                );
+              })}
               {genSources.length === 0 && (
                 <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 8, padding: '6px 10px', background: '#fef3c7', borderRadius: 6 }}>
                   All sources off — actions will not be generated automatically (manual mode).
