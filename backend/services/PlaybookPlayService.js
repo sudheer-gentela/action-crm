@@ -33,7 +33,7 @@ class PlaybookPlayService {
 
     // 1. Find the deal's playbook
     const dealRow = await db.query(
-      `SELECT d.playbook_id, d.stage_entered_at, d.close_date, d.updated_at,
+      `SELECT d.playbook_id, d.stage_changed_at, d.close_date, d.updated_at,
               p.id AS pb_id
        FROM deals d
        LEFT JOIN playbooks p ON p.id = d.playbook_id
@@ -136,7 +136,7 @@ class PlaybookPlayService {
       if (conditions.length > 0) {
         const dealContext = {
           daysInStage: Math.floor(
-            (Date.now() - new Date(dealMeta.stage_entered_at || dealMeta.updated_at)) / 86400000
+            (Date.now() - new Date(dealMeta.stage_changed_at || dealMeta.updated_at)) / 86400000
           ),
           daysUntilClose: dealMeta.close_date
             ? Math.ceil((new Date(dealMeta.close_date) - Date.now()) / 86400000)
@@ -303,7 +303,7 @@ class PlaybookPlayService {
     // Get the deal for entity context (owner + fire_conditions + other fields)
     const dealResult = await db.query(
       `SELECT d.id, d.owner_id, d.account_id, d.org_id,
-              d.stage_entered_at, d.close_date, d.updated_at
+              d.stage_changed_at, d.close_date, d.updated_at
        FROM deals d WHERE d.id = $1`,
       [dealId]
     );
@@ -319,7 +319,7 @@ class PlaybookPlayService {
       if (conditions.length > 0) {
         const dealContext = {
           daysInStage: Math.floor(
-            (Date.now() - new Date(deal?.stage_entered_at || deal?.updated_at)) / 86400000
+            (Date.now() - new Date(deal?.stage_changed_at || deal?.updated_at)) / 86400000
           ),
           daysUntilClose: deal?.close_date
             ? Math.ceil((new Date(deal.close_date) - Date.now()) / 86400000)
