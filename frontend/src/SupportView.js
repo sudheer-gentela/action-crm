@@ -40,7 +40,7 @@ function DashboardView({ scope, onViewCase }) {
   if (error)   return <div style={{ padding: 24, color: '#ef4444' }}>⚠️ {error}</div>;
   if (!data)   return null;
 
-  const { stats, byAccount, byOwner, breachList } = data;
+  const { stats, byAccount = [], byOwner = [], breachList = [] } = data;
 
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
