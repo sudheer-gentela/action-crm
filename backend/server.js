@@ -79,6 +79,8 @@ const clientPortalRoutes = require('./routes/client-portal.routes');
 const playbookBuilderRoutes       = require('./routes/playbookBuilder.routes');
 const playbookRegistrationsRoutes = require('./routes/playbookRegistrations.routes');
 
+const actionConfigRoutes 	  = require('./routes/action-config.routes');
+
 
 // ─────────────────────────────────────────────────────────────
 // Middleware imports
@@ -266,6 +268,9 @@ app.use('/api/org/admin', require('./routes/workflow.orgAdmin.routes'));
 // ─────────────────────────────────────────────────────────────────────────────
 app.use('/webhooks/transcript', webhookTranscriptRoutes);
 app.use('/api/transcripts', require('./routes/transcripts.routes'));
+
+
+app.use('/api/action-config', actionConfigRoutes);
 
 
 

@@ -7,6 +7,7 @@ import './SettingsView.css';
 import DealHealthSettings from './DealHealthSettings';
 import NotificationSettings from './NotificationSettings';
 import UserTranscriptSettings from './UserTranscriptSettings';
+import ActionAISettings from './ActionAISettings';
 
 // ── Sidebar nav structure ────────────────────────────────────────────────────
 // Each group has a label and items. Items with `children` expand inline.
@@ -218,12 +219,17 @@ export default function SettingsView({ initialTab }) {
 // ── AIPreferencesPanel — provider + model + product context ──────────────────
 // Extracts the Prospecting AI section from UserPreferencesSettings
 // so it lives under AI > Preferences
-function AIPreferencesPanel() {
+//function AIPreferencesPanel() {
   // The full AI prefs UI already lives inside UserPreferencesSettings.
   // Until we extract it, we render UserPreferencesSettings scoped to AI prefs only.
   // Pass a prop to let UserPreferencesSettings know to show only the AI section.
-  return <UserPreferencesSettings showAIOnly={true} />;
-}
+//  return <UserPreferencesSettings showAIOnly={true} />;
+//}
+
+     function AIPreferencesPanel() {
+       return <ActionAISettings />;
+     }
+
 
 // ════════════════════════════════════════════════════════════
 // PROMPTS SETTINGS

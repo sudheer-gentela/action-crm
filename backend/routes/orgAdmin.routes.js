@@ -8,6 +8,8 @@ const { pool } = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
 
+const ActionConfigService = require('../services/actionConfig.service');
+
 router.use(authenticateToken, orgContext);
 
 const adminOnly = requireRole('owner', 'admin');
@@ -256,6 +258,87 @@ router.delete('/invitations/:id', adminOnly, async (req, res) => {
     res.status(500).json({ error: { message: err.message } });
   }
 });
+
+
+// ── GET /api/org/admin/action-ai/config ──────────────────────────────────────
+// Returns org-level AI defaults for the action system.
+// Non-admins can read (so user settings panel can display "Org default: X").
+// Admin role is required only for PATCH.
+
+router.get('/action-ai/config', async (req, res) => {
+  try {
+    const orgDefaults = await ActionConfigService.getOrgDefaults(req.orgId);
+
+    // If no org row exists yet return system defaults so UI always has something to show
+    const ActionConfigServiceMod = require('../services/actionConfig.service');
+    const settings = orgDefaults?.ai_settings || {
+      master_enabled:    true,
+      modules:           { deals: true, straps: true, clm: false, prospecting: false },
+      generation_mode:   ['playbook', 'rules', 'ai'],
+      ai_provider:       'anthropic',
+      default_model:     'claude-haiku-4-5-20251001',
+      strap_generation_mode: 'both',
+      strap_ai_provider:     'anthropic',
+    };
+
+    res.json({ ai_settings: settings });
+  } catch (err) {
+    console.error('GET /org/admin/action-ai/config error:', err);
+    res.status(500).json({ error: { message: 'Failed to load org action AI config' } });
+  }
+});
+
+// ── PATCH /api/org/admin/action-ai/config ─────────────────────────────────────
+// Updates org-level AI defaults. Admin only.
+// Body: { ai_settings: { master_enabled, modules, generation_mode, ai_provider, ... } }
+
+router.patch('/action-ai/config', adminOnly, async (req, res) => {
+  try {
+    const { ai_settings } = req.body;
+
+    if (!ai_settings || typeof ai_settings !== 'object') {
+      return res.status(400).json({ error: { message: 'ai_settings object required' } });
+    }
+
+    const row = await ActionConfigService.setOrgDefaults(
+      req.orgId,
+      ai_settings,
+      req.user.userId
+    );
+
+    console.log(`🔧 Org action AI config updated for org ${req.orgId} by user ${req.user.userId}`);
+    res.json({ ai_settings: row.ai_settings });
+  } catch (err) {
+    console.error('PATCH /org/admin/action-ai/config error:', err);
+    if (err.message === 'No valid fields to update') {
+      return res.status(400).json({ error: { message: err.message } });
+    }
+    res.status(500).json({ error: { message: 'Failed to update org action AI config' } });
+  }
+});
+
+// ── GET /api/org/admin/action-ai/prompt-overrides ────────────────────────────
+// Returns count of user prompt overrides per prompt key — shown in admin prompts tab.
+
+router.get('/action-ai/prompt-overrides', adminOnly, async (req, res) => {
+  try {
+    const result = await require('../config/database').query(
+      `SELECT template_type, COUNT(*) AS override_count
+       FROM user_prompts
+       WHERE org_id = $1 AND user_id IS NOT NULL
+       GROUP BY template_type`,
+      [req.orgId]
+    );
+
+    const counts = {};
+    result.rows.forEach(r => { counts[r.template_type] = parseInt(r.override_count); });
+    res.json({ counts });
+  } catch (err) {
+    console.error('GET /org/admin/action-ai/prompt-overrides error:', err);
+    res.status(500).json({ error: { message: 'Failed to load override counts' } });
+  }
+});
+
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 

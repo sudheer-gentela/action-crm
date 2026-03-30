@@ -3,13 +3,19 @@
  *
  * Builds deal context, runs ActionsRulesEngine, optionally runs ActionsAIEnhancer.
  *
- * FIXES IN THIS VERSION:
- *   - PlaybookService.getStageActions(orgId, stageKey) now EXISTS — fixed call
- *   - PlaybookService.getStageGuidance(orgId, stageKey) now EXISTS — fixed call
- *   - PlaybookService.getPlaysForStage now receives correct (orgId, playbookId, stageKey)
- *     by resolving playbookId from DealContextBuilder's playbook field first
- *   - playbookStageGuidance now correctly flows into ActionsAIEnhancer context
- *   - context now includes playbookId for downstream use
+ * CHANGES FROM PREVIOUS VERSION:
+ *   - ActionConfigService.getConfig → getConfigWithOrgDefaults in all three
+ *     entry points (generateAll, generateForDeal, generateForStageChange).
+ *     This merges org-level AI defaults with per-user overrides before any
+ *     gate check runs.
+ *   - generation_mode is now an array: ["playbook","rules","ai"].
+ *     Empty array = manual (nothing auto-generates).
+ *     Old string values are normalised by ActionConfigService transparently.
+ *   - Three boolean gates replace the old string comparison:
+ *       runRules    — whether ActionsRulesEngine fires
+ *       runAI       — whether ActionsAIEnhancer fires
+ *       runPlaybook — whether PlaybookActionGenerator fires
+ *   - All other logic (upsert loops, calendar entries, AgentObserver) unchanged.
  */
 
 const db = require('../config/database');
@@ -116,8 +122,6 @@ function buildDerived(deal, contacts, emails, meetings, files) {
 }
 
 // ── Context builder ───────────────────────────────────────────────────────────
-// Used by generateAll() / generateForDeal() which pass pre-loaded bulk arrays.
-// For per-deal calls use DealContextBuilder.build() instead — it's more complete.
 
 async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles, userId, orgId) {
   const contacts = allContacts.filter(c => c.account_id === deal.account_id);
@@ -137,31 +141,24 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
     } catch (_) {}
   }
 
-  // FIXED: getStageActions and getStageGuidance now exist in playbook.service.js
-  // FIXED: getPlaysForStage signature is (orgId, playbookId, stageKey) but
-  //        here we use getStageActions which internally resolves the default playbook
   let playbookStageActions  = [];
   let playbookStageGuidance = null;
   let playbookPlays         = [];
   let playbookId            = null;
-  let playbookPlayAssignees = new Map(); // playId → userId[]
+  let playbookPlayAssignees = new Map();
 
   try {
-    // getStageActions resolves the org default playbook internally
     [playbookStageActions, playbookStageGuidance] = await Promise.all([
       PlaybookService.getStageActions(orgId, deal.stage),
       PlaybookService.getStageGuidance(orgId, deal.stage),
     ]);
 
-    // Also resolve playbookId for ActionWriter stamping downstream
     const pb = await PlaybookService.getPlaybook(userId, orgId);
     if (pb) {
       playbookId    = pb.id;
-      // Filter to plays whose schedule_config matches the current run time
       playbookPlays = playbookStageActions.filter(shouldFireScheduled);
     }
 
-    // Resolve role-based assignees for each play via PlayRouteResolver
     if (playbookPlays.length > 0) {
       playbookPlayAssignees = await resolveForPlays({
         orgId,
@@ -188,9 +185,9 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
     derived,
     playbookId,
     playbookStageActions,
-    playbookStageGuidance,  // NOW POPULATED — ActionsAIEnhancer.enhance() uses this
+    playbookStageGuidance,
     playbookPlays,
-    playbookPlayAssignees,  // Map<playId, userId[]> — for role-routed action insertion
+    playbookPlayAssignees,
   };
 }
 
@@ -216,7 +213,6 @@ async function insertAction(action, userId, orgId, assigneeUserId = null) {
   const internal  = isInternalAction(action);
   const source    = action.source || 'auto_generated';
   const next_step = action.next_step || 'email';
-  // Use resolved role-based assignee when provided, otherwise fall back to deal owner
   const effectiveUserId = assigneeUserId || userId;
 
   const result = await db.query(
@@ -314,31 +310,26 @@ function isTerminalDeal(deal) {
 }
 
 // ── shouldFireScheduled ───────────────────────────────────────────────────────
-// Returns true if a scheduled play's schedule_config matches the current time.
-// Called during the nightly sweep for plays with trigger_mode = 'scheduled'.
-//
-// schedule_config shape: { frequency: 'daily'|'weekly'|'hourly', day?: 'monday'... }
-// Missing or empty schedule_config = fire every time (treated as 'daily').
-//
-function shouldFireScheduled(play) {
-  if (play.trigger_mode !== 'scheduled') return true; // non-scheduled plays always pass
 
-  const cfg = play.schedule_config || {};
+function shouldFireScheduled(play) {
+  if (play.trigger_mode !== 'scheduled') return true;
+
+  const cfg       = play.schedule_config || {};
   const frequency = cfg.frequency || 'daily';
 
   if (frequency === 'daily' || frequency === 'hourly') return true;
 
   if (frequency === 'weekly') {
-    const days = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+    const days         = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
     const configuredDay = (cfg.day || '').toLowerCase();
     const todayName     = days[new Date().getDay()];
     return configuredDay === todayName;
   }
 
-  return true; // unknown frequency — don't block
+  return true;
 }
 
-
+// ─────────────────────────────────────────────────────────────────────────────
 
 class ActionsGenerator {
 
@@ -369,11 +360,6 @@ class ActionsGenerator {
 
       console.log(`📊 Loaded: ${deals.length} deals, ${contacts.length} contacts, ${emails.length} emails, ${meetings.length} meetings, ${files.length} files`);
 
-      // ── NO GLOBAL DELETE — replaced with per-deal upsert + resolve ──────────
-      // Diagnostic alerts (Type A): upserted in place — created_at/status preserved
-      // Playbook tasks (Type B):    ON CONFLICT DO NOTHING via ActionWriter
-      // Stale diagnostics:          auto-completed when condition no longer true
-
       let totalGenerated = 0;
       let totalUpserted  = 0;
       let totalResolved  = 0;
@@ -394,12 +380,26 @@ class ActionsGenerator {
         }
 
         try {
-          const actionConfig = await ActionConfigService.getConfig(userId, orgId);
+          // Use getConfigWithOrgDefaults so org-level AI settings are merged in
+          const actionConfig = await ActionConfigService.getConfigWithOrgDefaults(userId, orgId);
           const context      = await buildContext(deal, contacts, emails, meetings, files, userId, orgId);
 
+          // ── Resolve which generation sources are active for this user ────────
+          const runRules    = ActionConfigService.isSourceEnabled(actionConfig, 'rules');
+          const runAI       = ActionConfigService.isSourceEnabled(actionConfig, 'ai');
+          const runPlaybook = ActionConfigService.isSourceEnabled(actionConfig, 'playbook');
+
+          // All sources off = manual mode — skip this deal entirely
+          if (!runRules && !runAI && !runPlaybook) {
+            console.log(`  ⏭️  Manual mode — skipping deal ${deal.id} (${deal.name})`);
+            continue;
+          }
+
           // ── Type A: Rules-engine diagnostic alerts ─────────────────────────
-          const rulesActions = ActionsRulesEngine.generate(context);
-          console.log(`  📏 Rules: ${rulesActions.length} actions for deal ${deal.id} (${deal.name})`);
+          const rulesActions = runRules ? ActionsRulesEngine.generate(context) : [];
+          if (rulesActions.length) {
+            console.log(`  📏 Rules: ${rulesActions.length} actions for deal ${deal.id} (${deal.name})`);
+          }
 
           const firedSourceRules = [];
           for (const action of rulesActions) {
@@ -430,12 +430,14 @@ class ActionsGenerator {
           }
 
           // ── Type A: AI-enhanced diagnostic alerts ──────────────────────────
-          const aiActions = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
+          const aiActions = runAI
+            ? await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig)
+            : [];
           if (aiActions.length) {
             console.log(`  🤖 AI: ${aiActions.length} additional actions for deal ${deal.id}`);
           }
           for (const action of aiActions) {
-            if (!action.source_rule) continue; // AI actions without source_rule skip upsert
+            if (!action.source_rule) continue;
             const id = await ActionPersister.upsertDiagnosticAlert({
               entityType:      'deal',
               entityId:        deal.id,
@@ -459,7 +461,7 @@ class ActionsGenerator {
             }
           }
 
-          // ── Resolve stale diagnostics: conditions that are no longer true ──
+          // ── Resolve stale diagnostics ──────────────────────────────────────
           const resolved = await ActionPersister.resolveStaleDiagnostics({
             entityType: 'deal',
             entityId:   deal.id,
@@ -471,36 +473,39 @@ class ActionsGenerator {
             totalResolved += resolved;
           }
 
-          // ── Type B: Playbook tasks — ON CONFLICT DO NOTHING via ActionWriter
-          // Fixed: use ActionConfigService.isAiEnabledForModule() — actionConfig.ai_enabled
-          // is not a top-level field; AI settings live inside the ai_settings JSONB column.
-          const pbMode = ActionConfigService.isAiEnabledForModule(actionConfig, 'deals') ? 'ai' : 'template';
-          const pbResult = await PlaybookActionGenerator.generate({
-            entityType: 'deal',
-            context,
-            playbookId: context.playbookId,
-            stageKey:   deal.stage,
-            mode:       pbMode,
-            orgId,
-            userId,
-          });
-          if (pbResult.actions.length) {
-            console.log(`  📖 Playbook (${pbMode}): ${pbResult.actions.length} play task(s) for deal ${deal.id}`);
-            await ActionPersister.writePlaybookTask({
-              entityType:   'deal',
-              entityId:     deal.id,
-              actions:      pbResult.actions,
-              playbookId:   context.playbookId,
-              playbookName: pbResult.playbookName || null,
+          // ── Type B: Playbook tasks ─────────────────────────────────────────
+          let pbCount = 0;
+          if (runPlaybook) {
+            const pbMode   = ActionConfigService.isAiEnabledForModule(actionConfig, 'deals') ? 'ai' : 'template';
+            const pbResult = await PlaybookActionGenerator.generate({
+              entityType: 'deal',
+              context,
+              playbookId: context.playbookId,
+              stageKey:   deal.stage,
+              mode:       pbMode,
               orgId,
               userId,
             });
+            if (pbResult.actions.length) {
+              console.log(`  📖 Playbook (${pbMode}): ${pbResult.actions.length} play task(s) for deal ${deal.id}`);
+              await ActionPersister.writePlaybookTask({
+                entityType:   'deal',
+                entityId:     deal.id,
+                actions:      pbResult.actions,
+                playbookId:   context.playbookId,
+                playbookName: pbResult.playbookName || null,
+                orgId,
+                userId,
+              });
+              pbCount = pbResult.actions.length;
+            }
           }
 
-          totalGenerated += rulesActions.length + aiActions.length + pbResult.actions.length;
+          totalGenerated += rulesActions.length + aiActions.length + pbCount;
 
           AgentObserver.onActionsGenerated(deal.id, rulesActions, context, orgId, userId)
             .catch(err => console.error(`  🤖 AgentObserver hook error:`, err.message));
+
         } catch (err) {
           console.error(`  ❌ Error processing deal ${deal.id} (${deal.name}):`, err.message);
         }
@@ -554,11 +559,20 @@ class ActionsGenerator {
         db.query("SELECT * FROM storage_files WHERE deal_id = $1    AND org_id = $2 AND processing_status = 'completed'", [dealId, orgId]),
       ]);
 
-      const actionConfig = await ActionConfigService.getConfig(userId, orgId);
+      // Use getConfigWithOrgDefaults so org-level AI settings are merged in
+      const actionConfig = await ActionConfigService.getConfigWithOrgDefaults(userId, orgId);
       const context      = await buildContext(deal, contactsRes.rows, emailsRes.rows, meetingsRes.rows, filesRes.rows, userId, orgId);
 
+      // ── Resolve which generation sources are active ──────────────────────
+      const runRules    = ActionConfigService.isSourceEnabled(actionConfig, 'rules');
+      const runAI       = ActionConfigService.isSourceEnabled(actionConfig, 'ai');
+      const runPlaybook = ActionConfigService.isSourceEnabled(actionConfig, 'playbook');
+
+      // All sources off = manual mode
+      if (!runRules && !runAI && !runPlaybook) return 0;
+
       // ── Type A: Rules-engine diagnostic alerts — upsert, never delete ─────
-      const rulesActions   = ActionsRulesEngine.generate(context);
+      const rulesActions     = runRules ? ActionsRulesEngine.generate(context) : [];
       const firedSourceRules = [];
 
       for (const action of rulesActions) {
@@ -588,7 +602,9 @@ class ActionsGenerator {
       }
 
       // ── Type A: AI-enhanced diagnostic alerts ─────────────────────────────
-      const aiActions = await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig);
+      const aiActions = runAI
+        ? await ActionsAIEnhancer.enhance(context, rulesActions, actionConfig)
+        : [];
       for (const action of aiActions) {
         if (!action.source_rule) continue;
         const id = await ActionPersister.upsertDiagnosticAlert({
@@ -624,34 +640,36 @@ class ActionsGenerator {
         console.log(`  ✅ Resolved ${resolved} stale diagnostic(s) for deal ${dealId}`);
       }
 
-      // ── Type B: Playbook tasks — ON CONFLICT (deal_id, playbook_play_id) DO NOTHING
-      // Fixed: use ActionConfigService.isAiEnabledForModule() — actionConfig.ai_enabled
-      // is not a top-level field; AI settings live inside the ai_settings JSONB column.
-      const pbMode = ActionConfigService.isAiEnabledForModule(actionConfig, 'deals') ? 'ai' : 'template';
-      const pbResult = await PlaybookActionGenerator.generate({
-        entityType: 'deal',
-        context,
-        playbookId: context.playbookId,
-        stageKey:   deal.stage,
-        mode:       pbMode,
-        orgId,
-        userId,
-      });
-      if (pbResult.actions.length) {
-        console.log(`  📖 Playbook (${pbMode}): ${pbResult.actions.length} play task(s) for deal ${dealId}`);
-        await ActionPersister.writePlaybookTask({
-          entityType:   'deal',
-          entityId:     dealId,
-          actions:      pbResult.actions,
-          playbookId:   context.playbookId,
-          playbookName: pbResult.playbookName || null,
+      // ── Type B: Playbook tasks ────────────────────────────────────────────
+      let pbCount = 0;
+      if (runPlaybook) {
+        const pbMode   = ActionConfigService.isAiEnabledForModule(actionConfig, 'deals') ? 'ai' : 'template';
+        const pbResult = await PlaybookActionGenerator.generate({
+          entityType: 'deal',
+          context,
+          playbookId: context.playbookId,
+          stageKey:   deal.stage,
+          mode:       pbMode,
           orgId,
           userId,
         });
+        if (pbResult.actions.length) {
+          console.log(`  📖 Playbook (${pbMode}): ${pbResult.actions.length} play task(s) for deal ${dealId}`);
+          await ActionPersister.writePlaybookTask({
+            entityType:   'deal',
+            entityId:     dealId,
+            actions:      pbResult.actions,
+            playbookId:   context.playbookId,
+            playbookName: pbResult.playbookName || null,
+            orgId,
+            userId,
+          });
+          pbCount = pbResult.actions.length;
+        }
       }
 
-      const totalCount = rulesActions.length + aiActions.length + pbResult.actions.length;
-      console.log(`✅ Processed ${totalCount} action(s) for deal ${dealId} (rules: ${rulesActions.length}, ai: ${aiActions.length}, playbook: ${pbResult.actions.length}, resolved: ${resolved})`);
+      const totalCount = rulesActions.length + aiActions.length + pbCount;
+      console.log(`✅ Processed ${totalCount} action(s) for deal ${dealId} (rules: ${rulesActions.length}, ai: ${aiActions.length}, playbook: ${pbCount}, resolved: ${resolved})`);
 
       AgentObserver.onActionsGenerated(dealId, rulesActions, context, orgId, userId)
         .catch(err => console.error(`  🤖 AgentObserver hook error:`, err.message));
@@ -692,15 +710,22 @@ class ActionsGenerator {
     try {
       const dealRes = await db.query('SELECT org_id FROM deals WHERE id = $1', [dealId]);
       if (dealRes.rows.length === 0) return [];
-      const orgId = dealRes.rows[0].org_id;
-      const config = await ActionConfigService.getConfig(userId, orgId);
-      if (config.generation_mode === 'manual') return [];
+      const orgId  = dealRes.rows[0].org_id;
+
+      // Use getConfigWithOrgDefaults so org-level AI settings are merged in
+      const config  = await ActionConfigService.getConfigWithOrgDefaults(userId, orgId);
+      const sources = ActionConfigService.getGenerationSources(config);
+
+      // Empty sources array = manual mode — nothing auto-generates
+      if (sources.length === 0) return [];
+
       return this.generateForDeal(dealId);
     } catch (error) { return []; }
   }
 
   // ── buildContextPublic ──────────────────────────────────────────────────────
   // Called from actions_routes for gate condition eval
+
   static async buildContextPublic(deal, contacts, emails, meetings, files, userId, orgId) {
     return buildContext(deal, contacts, emails, meetings, files, userId, orgId);
   }
