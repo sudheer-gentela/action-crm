@@ -122,8 +122,7 @@ const BASE_QUERY = `
     ct.title        AS contract_title,
     ct.contract_type AS contract_type,
     ct.status       AS contract_status,
-    a.source_module,
-    a.prospect_id
+    a.source_module
   FROM actions a
   LEFT JOIN deals d      ON a.deal_id     = d.id    AND d.org_id   = a.org_id
   LEFT JOIN users u      ON d.owner_id    = u.id
