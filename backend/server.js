@@ -100,18 +100,25 @@ app.use(helmet({
 }));
 
 // CORS configuration
-app.use(cors({
+const corsOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map(s => s.trim())
+  : [];
+
+const corsOptions = {
   origin: [
     'http://localhost:3000',
     'https://action-crm.vercel.app',
-    process.env.CORS_ORIGIN
+    ...corsOrigins,
   ].filter(Boolean),
   credentials:     true,
   methods:         ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders:  ['Content-Type', 'Authorization'],
   exposedHeaders:  ['Content-Range', 'X-Content-Range'],
   maxAge: 600
-}));
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));  // handle preflight for all routes
 
 // ─────────────────────────────────────────────────────────────
 // Rate limiting
