@@ -95,7 +95,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
 
   useEffect(() => {
     const token = localStorage.getItem('token') || localStorage.getItem('authToken');
-    fetch(`${API_BASE}/api/deal-stages/active`, { headers: { Authorization: `Bearer ${token}` } })
+    fetch(`${API_BASE}/deal-stages/active`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       .then(data => { if (data.stages?.length) setOrgStages(data.stages.map(s => ({ key: s.key, name: s.name, is_terminal: s.is_terminal, sort_order: s.sort_order }))); })
       .catch(() => console.warn('DealsView: could not load org stages, using defaults'));
