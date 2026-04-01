@@ -202,8 +202,15 @@ function AuthScreen({ onLogin, onRegister }) {
   return (
     <div className="login-container">
       <div className="login-box">
-        <div className="login-logo">⚡</div>
-        <h1>Action CRM</h1>
+        <div className="login-logo">
+          <svg width="56" height="56" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
+            <rect width="72" height="72" rx="16" fill="#E8630A"/>
+            <path d="M36 10 C28 20 16 28 18 44 C20 56 28 65 36 70 C44 65 52 56 54 44 C56 28 44 20 36 10Z" fill="#F5A623"/>
+            <path d="M36 26 C32 32 28 38 30 46 C32 52 34 57 36 60 C38 57 40 52 42 46 C44 38 40 32 36 26Z" fill="#FDE68A"/>
+            <path d="M24 46 L28 58 L33 49 L36 56 L39 49 L44 58 L48 46" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" fill="none" opacity="0.95"/>
+          </svg>
+        </div>
+        <h1 className="login-brand">Go<span className="brand-warm">Warm</span> <span className="brand-crm">CRM</span></h1>
         <p className="login-subtitle">
           {isRegistering ? 'Create Your Account' : 'AI-Powered Sales Pipeline'}
         </p>
@@ -256,7 +263,7 @@ function AuthScreen({ onLogin, onRegister }) {
 
         {!isRegistering && (
           <div className="demo-info">
-            <p><strong>New to Action CRM?</strong></p>
+            <p><strong>New to GoWarm CRM?</strong></p>
             <p>Click "Create One" above to get started!</p>
           </div>
         )}
