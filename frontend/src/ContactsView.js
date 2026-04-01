@@ -104,25 +104,24 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
     try {
       setLoading(true);
       setError('');
-      const [contactsRes, accountsRes, dealsRes, emailsRes, meetingsRes] = await Promise.all([
+      const [contactsRes, accountsRes, dealsRes, meetingsRes] = await Promise.all([
         apiService.contacts.getAll(scope).catch(() => ({ data: { contacts: mockData.contacts } })),
         apiService.accounts.getAll(scope).catch(() => ({ data: { accounts: mockData.accounts } })),
         apiService.deals.getAll(scope).catch(() => ({ data: { deals: mockData.deals } })),
-        apiService.emails.getAll().catch(() => ({ data: { emails: mockData.emails } })),
         apiService.meetings.getAll().catch(() => ({ data: { meetings: mockData.meetings } }))
       ]);
       const enrichedData = enrichData({
         accounts: accountsRes.data.accounts || accountsRes.data || [],
         contacts: contactsRes.data.contacts || contactsRes.data || [],
         deals:    dealsRes.data.deals       || dealsRes.data || [],
-        emails:   emailsRes.data.emails     || emailsRes.data || [],
+        emails:   [],
         meetings: meetingsRes.data.meetings || meetingsRes.data || [],
         actions: []
       });
       setContacts(enrichedData.contacts);
       setAccounts(enrichedData.accounts);
       setDeals(enrichedData.deals);
-      setEmails(enrichedData.emails);
+
       setMeetings(enrichedData.meetings);
     } catch (err) {
       console.error('Error loading contacts:', err);
@@ -131,7 +130,7 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
       setContacts(enrichedData.contacts);
       setAccounts(enrichedData.accounts);
       setDeals(enrichedData.deals);
-      setEmails(enrichedData.emails);
+
       setMeetings(enrichedData.meetings);
     } finally {
       setLoading(false);
@@ -300,10 +299,7 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
   const handleSendEmail = async (emailData) => {
     try {
       const response = await apiService.emails.send(emailData);
-      try {
-        const r = await apiService.emails.getAll();
-        setEmails(r.data.emails || r.data || []);
-      } catch {}
+
       return response.data;
     } catch (err) {
       console.error('Send email error:', err);
