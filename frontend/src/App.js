@@ -160,31 +160,79 @@ const useAuth = () => {
 };
 
 // ─────────────────────────────────────────────────────────────
-// AuthScreen
+// AuthScreen  (login · register · forgot-password · reset-password)
 // ─────────────────────────────────────────────────────────────
-function AuthScreen({ onLogin, onRegister }) {
-  const [isRegistering, setIsRegistering] = useState(false);
-  const [formData, setFormData] = useState({ email: '', password: '', firstName: '', lastName: '' });
-  const [error, setError]   = useState('');
-  const [loading, setLoading] = useState(false);
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+
+function AuthScreen({ onLogin, onRegister, initialMode }) {
+  // mode: 'login' | 'register' | 'forgot' | 'reset' | 'reset_done'
+  const [mode,     setMode]     = useState(initialMode || 'login');
+  const [formData, setFormData] = useState({ email: '', password: '', confirmPassword: '', firstName: '', lastName: '' });
+  const [error,    setError]    = useState('');
+  const [info,     setInfo]     = useState('');
+  const [loading,  setLoading]  = useState(false);
+
+  // Read reset token from URL on mount
+  const [resetToken, setResetToken] = useState('');
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const t = params.get('token');
+    if (t) {
+      setResetToken(t);
+      setMode('reset');
+    }
+  }, []);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
+  const go = (newMode) => {
+    setMode(newMode);
+    setError('');
+    setInfo('');
+    setFormData({ email: '', password: '', confirmPassword: '', firstName: '', lastName: '' });
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setInfo('');
     setLoading(true);
     try {
-      if (isRegistering) {
+      if (mode === 'register') {
         if (!formData.firstName.trim()) throw new Error('First name is required');
         if (!formData.lastName.trim())  throw new Error('Last name is required');
         if (formData.password.length < 8) throw new Error('Password must be at least 8 characters');
         await onRegister(formData.email, formData.password, formData.firstName, formData.lastName);
-      } else {
+
+      } else if (mode === 'login') {
         await onLogin(formData.email, formData.password);
+
+      } else if (mode === 'forgot') {
+        const res  = await fetch(`${API_URL}/auth/forgot-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: formData.email }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error?.message || 'Request failed');
+        setInfo(data.message);
+
+      } else if (mode === 'reset') {
+        if (formData.password.length < 8) throw new Error('Password must be at least 8 characters');
+        if (formData.password !== formData.confirmPassword) throw new Error('Passwords do not match');
+        const res  = await fetch(`${API_URL}/auth/reset-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: resetToken, password: formData.password }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error?.message || 'Reset failed');
+        // Clear token from URL and go to success state
+        window.history.replaceState({}, '', window.location.pathname);
+        setMode('reset_done');
       }
     } catch (err) {
       setError(err.message || 'An error occurred');
@@ -193,30 +241,132 @@ function AuthScreen({ onLogin, onRegister }) {
     }
   };
 
-  const toggleMode = () => {
-    setIsRegistering(!isRegistering);
-    setError('');
-    setFormData({ email: '', password: '', firstName: '', lastName: '' });
-  };
+  const logo = (
+    <div className="login-logo">
+      <svg width="56" height="56" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
+        <rect width="72" height="72" rx="16" fill="#E8630A"/>
+        <path d="M36 10 C28 20 16 28 18 44 C20 56 28 65 36 70 C44 65 52 56 54 44 C56 28 44 20 36 10Z" fill="#F5A623"/>
+        <path d="M36 26 C32 32 28 38 30 46 C32 52 34 57 36 60 C38 57 40 52 42 46 C44 38 40 32 36 26Z" fill="#FDE68A"/>
+        <path d="M24 46 L28 58 L33 49 L36 56 L39 49 L44 58 L48 46" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" fill="none" opacity="0.95"/>
+      </svg>
+    </div>
+  );
 
+  // ── Reset done ────────────────────────────────────────────────────────────
+  if (mode === 'reset_done') {
+    return (
+      <div className="login-container">
+        <div className="login-box">
+          {logo}
+          <h1 className="login-brand">Go<span className="brand-warm">Warm</span> <span className="brand-crm">CRM</span></h1>
+          <p className="login-subtitle">Password Updated</p>
+          <div className="success-message" style={{ marginTop: 16 }}>
+            ✅ Your password has been reset successfully.
+          </div>
+          <div className="auth-toggle" style={{ marginTop: 20 }}>
+            <button type="button" className="btn-toggle" onClick={() => go('login')}>
+              Sign In with your new password →
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Forgot password ───────────────────────────────────────────────────────
+  if (mode === 'forgot') {
+    return (
+      <div className="login-container">
+        <div className="login-box">
+          {logo}
+          <h1 className="login-brand">Go<span className="brand-warm">Warm</span> <span className="brand-crm">CRM</span></h1>
+          <p className="login-subtitle">Reset your password</p>
+
+          {info ? (
+            <>
+              <div className="success-message" style={{ marginTop: 16, textAlign: 'left' }}>
+                📧 {info}
+              </div>
+              <div className="auth-toggle" style={{ marginTop: 20 }}>
+                <button type="button" className="btn-toggle" onClick={() => go('login')}>
+                  ← Back to Sign In
+                </button>
+              </div>
+            </>
+          ) : (
+            <form onSubmit={handleSubmit} className="login-form" style={{ marginTop: 24 }}>
+              <div className="form-group">
+                <label>Email address</label>
+                <input
+                  type="email" name="email" value={formData.email} onChange={handleChange}
+                  placeholder="you@company.com" required disabled={loading}
+                  autoFocus
+                />
+              </div>
+              {error && <div className="error-message">{error}</div>}
+              <button type="submit" className="btn-primary" disabled={loading}>
+                {loading ? <><span className="spinner"></span>Sending...</> : 'Send Reset Link'}
+              </button>
+              <div className="auth-toggle">
+                <button type="button" className="btn-toggle" onClick={() => go('login')} disabled={loading}>
+                  ← Back to Sign In
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Reset password (from email link) ─────────────────────────────────────
+  if (mode === 'reset') {
+    return (
+      <div className="login-container">
+        <div className="login-box">
+          {logo}
+          <h1 className="login-brand">Go<span className="brand-warm">Warm</span> <span className="brand-crm">CRM</span></h1>
+          <p className="login-subtitle">Choose a new password</p>
+
+          <form onSubmit={handleSubmit} className="login-form" style={{ marginTop: 24 }}>
+            <div className="form-group">
+              <label>New Password</label>
+              <input
+                type="password" name="password" value={formData.password} onChange={handleChange}
+                placeholder="At least 8 characters" required disabled={loading} minLength={8}
+                autoFocus
+              />
+              <small className="form-hint">Minimum 8 characters</small>
+            </div>
+            <div className="form-group">
+              <label>Confirm New Password</label>
+              <input
+                type="password" name="confirmPassword" value={formData.confirmPassword} onChange={handleChange}
+                placeholder="Repeat your new password" required disabled={loading}
+              />
+            </div>
+            {error && <div className="error-message">{error}</div>}
+            <button type="submit" className="btn-primary" disabled={loading}>
+              {loading ? <><span className="spinner"></span>Resetting...</> : 'Set New Password'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Login / Register ──────────────────────────────────────────────────────
   return (
     <div className="login-container">
       <div className="login-box">
-        <div className="login-logo">
-          <svg width="56" height="56" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
-            <rect width="72" height="72" rx="16" fill="#E8630A"/>
-            <path d="M36 10 C28 20 16 28 18 44 C20 56 28 65 36 70 C44 65 52 56 54 44 C56 28 44 20 36 10Z" fill="#F5A623"/>
-            <path d="M36 26 C32 32 28 38 30 46 C32 52 34 57 36 60 C38 57 40 52 42 46 C44 38 40 32 36 26Z" fill="#FDE68A"/>
-            <path d="M24 46 L28 58 L33 49 L36 56 L39 49 L44 58 L48 46" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" fill="none" opacity="0.95"/>
-          </svg>
-        </div>
+        {logo}
         <h1 className="login-brand">Go<span className="brand-warm">Warm</span> <span className="brand-crm">CRM</span></h1>
         <p className="login-subtitle">
-          {isRegistering ? 'Create Your Account' : 'AI-Powered Sales Pipeline'}
+          {mode === 'register' ? 'Create Your Account' : 'AI-Powered Sales Pipeline'}
         </p>
 
         <form onSubmit={handleSubmit} className="login-form">
-          {isRegistering && (
+          {mode === 'register' && (
             <div className="form-row">
               <div className="form-group">
                 <label>First Name</label>
@@ -238,40 +388,48 @@ function AuthScreen({ onLogin, onRegister }) {
             <label>Password</label>
             <input
               type="password" name="password" value={formData.password} onChange={handleChange}
-              placeholder={isRegistering ? 'At least 8 characters' : '••••••••'}
-              required disabled={loading} minLength={isRegistering ? 8 : undefined}
+              placeholder={mode === 'register' ? 'At least 8 characters' : '••••••••'}
+              required disabled={loading} minLength={mode === 'register' ? 8 : undefined}
             />
-            {isRegistering && <small className="form-hint">Minimum 8 characters</small>}
+            {mode === 'register' && <small className="form-hint">Minimum 8 characters</small>}
           </div>
 
           {error && <div className="error-message">{error}</div>}
 
           <button type="submit" className="btn-primary" disabled={loading}>
             {loading ? (
-              <><span className="spinner"></span>{isRegistering ? 'Creating Account...' : 'Signing In...'}</>
+              <><span className="spinner"></span>{mode === 'register' ? 'Creating Account...' : 'Signing In...'}</>
             ) : (
-              isRegistering ? 'Create Account' : 'Sign In'
+              mode === 'register' ? 'Create Account' : 'Sign In'
             )}
           </button>
         </form>
 
+        {mode === 'login' && (
+          <div style={{ textAlign: 'right', marginTop: 8 }}>
+            <button
+              type="button"
+              onClick={() => go('forgot')}
+              style={{ background: 'none', border: 'none', color: '#E8630A', fontSize: 13,
+                       fontWeight: 600, cursor: 'pointer', padding: 0 }}
+            >
+              Forgot password?
+            </button>
+          </div>
+        )}
+
         <div className="auth-toggle">
-          <button type="button" className="btn-toggle" onClick={toggleMode} disabled={loading}>
-            {isRegistering ? 'Already have an account? Sign In' : 'Need an account? Create One'}
+          <button type="button" className="btn-toggle" onClick={() => go(mode === 'register' ? 'login' : 'register')} disabled={loading}>
+            {mode === 'register' ? 'Already have an account? Sign In' : 'Need an account? Create One'}
           </button>
         </div>
 
-        {!isRegistering && (
+        {mode === 'login' && (
           <div className="demo-info">
             <p><strong>New to GoWarm CRM?</strong></p>
             <p>Click "Create One" above to get started!</p>
           </div>
         )}
-
-        <div className="deployment-info">
-          <p><strong>Backend API:</strong></p>
-          <code>{process.env.REACT_APP_API_URL || 'http://localhost:3001/api'}</code>
-        </div>
       </div>
     </div>
   );
@@ -640,7 +798,11 @@ function App() {
   return (
     <div className="App">
       {!user ? (
-        <AuthScreen onLogin={login} onRegister={register} />
+        <AuthScreen
+          onLogin={login}
+          onRegister={register}
+          initialMode={new URLSearchParams(window.location.search).get('token') ? 'reset' : 'login'}
+        />
       ) : (
         <Dashboard user={user} onLogout={logout} />
       )}
