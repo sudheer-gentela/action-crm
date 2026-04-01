@@ -123,7 +123,7 @@ router.get('/callback', async (req, res) => {
            (org_id, user_id, provider, email, label, access_token, refresh_token,
             expires_at, account_data, is_active, updated_at)
          VALUES ($1, $2, 'gmail', $3, $4, $5, $6, $7, $8, true, CURRENT_TIMESTAMP)
-         ON CONFLICT (user_id, email) DO UPDATE
+         ON CONFLICT (user_id, email) WHERE user_id IS NOT NULL DO UPDATE
            SET access_token  = EXCLUDED.access_token,
                refresh_token = COALESCE(EXCLUDED.refresh_token, prospecting_sender_accounts.refresh_token),
                expires_at    = EXCLUDED.expires_at,
