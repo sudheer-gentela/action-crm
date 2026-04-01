@@ -306,7 +306,7 @@ router.patch('/transcript-tools', async (req, res) => {
 /**
  * GET /users/me/ai-usage?days=30
  */
-router.get('/me/ai-usage', async (req, res) => {
+router.get('/ai-usage', async (req, res) => {
   try {
     const TokenTrackingService = require('../services/TokenTrackingService');
     const days = Math.min(parseInt(req.query.days) || 30, 90);

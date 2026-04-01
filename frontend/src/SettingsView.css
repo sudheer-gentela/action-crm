@@ -315,8 +315,13 @@
 
 .sv2-layout {
   display: flex;
-  height: 100%;
+  /* Fill the viewport height minus the content-area padding (24px top + 24px bottom)
+     so both the sidebar and the main content panel scroll independently within
+     the viewport rather than growing the page and scrolling together.        */
+  height: calc(100vh - 48px);
+  max-height: calc(100vh - 48px);
   min-height: 0;
+  overflow: hidden;
   background: #f3f4f6;
 }
 
