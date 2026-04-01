@@ -331,3 +331,18 @@
     border-left-width: 4px;
   }
 }
+
+/* ── Provider-specific left-border accents ─────────────────────────────── */
+.email-item.source--outlook,
+.email-item.unread.source--outlook {
+  border-left: 3px solid #0078D4;
+}
+
+.email-item.source--gmail,
+.email-item.unread.source--gmail {
+  border-left: 3px solid #EA4335;
+}
+
+/* Avatar background by provider */
+.email-avatar.provider--outlook { background: #0078D4; }
+.email-avatar.provider--gmail   { background: #EA4335; }

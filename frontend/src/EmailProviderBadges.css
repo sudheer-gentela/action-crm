@@ -1,25 +1,64 @@
+/* EmailProviderBadges.css */
+
+/* ── Provider badge (inline chip beside sender name) ───────────────────── */
 .email-provider-badge {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   font-size: 10px;
-  font-weight: 600;
-  padding: 2px 8px;
+  font-weight: 700;
+  padding: 2px 7px;
   border-radius: 4px;
-  margin-left: 8px;
+  margin-left: 6px;
   letter-spacing: 0.02em;
+  vertical-align: middle;
 }
 
+/* Microsoft Outlook — brand blue */
 .provider-outlook {
-  background: #e8f0fe;
-  color: #1a56db;
+  background: #e3f2fd;
+  color: #0078D4;
+  border: 1px solid #90caf9;
 }
 
+.provider-outlook::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: #0078D4;
+  flex-shrink: 0;
+}
+
+/* Gmail — Google red */
 .provider-gmail {
-  background: #fef3c7;
-  color: #92400e;
+  background: #fce8e6;
+  color: #EA4335;
+  border: 1px solid #f5c6c2;
 }
 
-/* Provider filter buttons */
+.provider-gmail::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #EA4335;
+  flex-shrink: 0;
+}
+
+/* ── Email row / card left-border accent by source ─────────────────────── */
+/* Apply .email-source--outlook or .email-source--gmail to the row/card */
+.email-source--outlook {
+  border-left: 3px solid #0078D4 !important;
+}
+
+.email-source--gmail {
+  border-left: 3px solid #EA4335 !important;
+}
+
+/* ── Provider filter buttons ────────────────────────────────────────────── */
 .email-provider-filter {
   display: flex;
   gap: 4px;
@@ -29,11 +68,12 @@
 }
 
 .provider-filter-btn {
-  padding: 4px 10px;
+  padding: 4px 12px;
   border: none;
   background: transparent;
   border-radius: 6px;
   font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
   color: #6b7280;
   transition: all 0.15s;
@@ -41,11 +81,31 @@
 
 .provider-filter-btn.active {
   background: white;
-  color: #111827;
   box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .provider-filter-btn:hover:not(.active) {
   color: #374151;
+  background: #e5e7eb;
 }
+
+/* Active state colored by provider */
+.provider-filter-btn.active[data-provider="outlook"] { color: #0078D4; }
+.provider-filter-btn.active[data-provider="gmail"]   { color: #EA4335; }
+.provider-filter-btn.active[data-provider="all"]     { color: #111827; }
+
+/* ── Sync button per-provider variant ──────────────────────────────────── */
+.sync-btn--outlook {
+  background: #0078D4;
+  color: #fff;
+  border: none;
+}
+.sync-btn--outlook:hover { background: #006cbd; }
+
+.sync-btn--gmail {
+  background: #EA4335;
+  color: #fff;
+  border: none;
+}
+.sync-btn--gmail:hover { background: #d33426; }

@@ -144,15 +144,18 @@ function EmailList({ userId, dealId, connectedProviders = [] }) {
           {connectedProviders.length > 1 && (
             <div className="email-provider-filter">
               <button
+                data-provider="all"
                 className={'provider-filter-btn' + (providerFilter === 'all' ? ' active' : '')}
                 onClick={() => setProviderFilter('all')}>All</button>
               {connectedProviders.includes('outlook') && (
                 <button
+                  data-provider="outlook"
                   className={'provider-filter-btn' + (providerFilter === 'outlook' ? ' active' : '')}
                   onClick={() => setProviderFilter('outlook')}>Outlook</button>
               )}
               {connectedProviders.includes('gmail') && (
                 <button
+                  data-provider="gmail"
                   className={'provider-filter-btn' + (providerFilter === 'gmail' ? ' active' : '')}
                   onClick={() => setProviderFilter('gmail')}>Gmail</button>
               )}
@@ -199,11 +202,11 @@ function EmailList({ userId, dealId, connectedProviders = [] }) {
 
             return (
               <div key={(email.provider || 'e') + '-' + email.id}
-                   className={'email-item ' + (isRead ? 'read' : 'unread')}>
+                   className={'email-item ' + (isRead ? 'read' : 'unread') + ' source--' + (email.provider || 'outlook')}>
                 <div className="email-main">
                   <div className="email-header-row">
                     <div className="email-sender">
-                      <span className="sender-avatar">{senderName.charAt(0).toUpperCase()}</span>
+                      <span className={'sender-avatar email-avatar provider--' + (email.provider || 'outlook')}>{senderName.charAt(0).toUpperCase()}</span>
                       <span className="sender-name">{senderName}</span>
                       <span className={'email-provider-badge ' + badge.className} title={badge.label}>
                         {email.provider === 'gmail' ? 'Gmail' : 'Outlook'}
