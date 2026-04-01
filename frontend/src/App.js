@@ -362,7 +362,7 @@ function AuthScreen({ onLogin, onRegister, initialMode }) {
         {logo}
         <h1 className="login-brand">Go<span className="brand-warm">Warm</span> <span className="brand-crm">CRM</span></h1>
         <p className="login-subtitle">
-          {mode === 'register' ? 'Create Your Account' : 'AI-Powered Sales Pipeline'}
+          {mode === 'register' ? 'Create Your Account' : 'The Execution Application for your GTM Team'}
         </p>
 
         <form onSubmit={handleSubmit} className="login-form">
