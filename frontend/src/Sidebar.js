@@ -277,8 +277,14 @@ export default function Sidebar({
       <aside className={`sb-sidebar ${collapsed ? 'sb-collapsed' : ''} ${mobileOpen ? 'sb-open' : ''}`}>
         {/* Brand */}
         <div className="sb-brand">
-          <div className="sb-brand-mark">A</div>
-          {!collapsed && <span className="sb-brand-name">Action CRM</span>}
+          <div className="sb-brand-mark">
+            <svg width="18" height="18" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
+              <path d="M36 6 C26 18 12 26 14 44 C16 58 26 68 36 72 C46 68 56 58 58 44 C60 26 46 18 36 6Z" fill="#F5A623"/>
+              <path d="M36 22 C31 30 26 36 28 46 C30 53 33 58 36 62 C39 58 42 53 44 46 C46 36 41 30 36 22Z" fill="#FDE68A"/>
+              <path d="M22 46 L27 60 L33 50 L36 58 L39 50 L45 60 L50 46" stroke="white" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" fill="none" opacity="0.95"/>
+            </svg>
+          </div>
+          {!collapsed && <span className="sb-brand-name">Go<span className="sb-brand-warm">Warm</span> <span className="sb-brand-crm">CRM</span></span>}
           <button
             className="sb-toggle-btn"
             onClick={isMobile ? onClose : onToggleCollapse}

@@ -9,8 +9,8 @@
   top: 0;
   height: 100vh;
   width: 236px;
-  background: #fafbfc;
-  border-right: 1px solid #e5e7eb;
+  background: #fdfcfb;
+  border-right: 1px solid #f0e8df;
   display: flex;
   flex-direction: column;
   padding: 14px 10px 10px;
@@ -44,7 +44,7 @@
 .sb-brand-mark {
   width: 30px;
   height: 30px;
-  background: #6366f1;
+  background: #E8630A;
   border-radius: 8px;
   display: flex;
   align-items: center;
@@ -159,8 +159,8 @@
   color: #0f172a;
 }
 .sb-nav-item.active {
-  background: #eef2ff;
-  color: #6366f1;
+  background: #fff4ed;
+  color: #E8630A;
   font-weight: 600;
 }
 
@@ -188,8 +188,8 @@
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
 }
 .sb-nav-item.active .sb-nav-badge {
-  background: rgba(99, 102, 241, 0.15);
-  color: #6366f1;
+  background: rgba(232, 99, 10, 0.12);
+  color: #E8630A;
 }
 
 /* ── Collapsed sidebar — nav items ───────────────────────────── */
@@ -249,7 +249,7 @@
   font-size: 12px;
   flex-shrink: 0;
   color: #fff;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: linear-gradient(135deg, #E8630A, #F5A623);
   position: relative;
 }
 
@@ -527,10 +527,10 @@
   background: #f0f1f3;
 }
 .sb-launcher-tile--active {
-  background: #eef2ff;
+  background: #fff4ed;
 }
 .sb-launcher-tile--active .sb-launcher-label {
-  color: #6366f1;
+  color: #E8630A;
   font-weight: 600;
 }
 
@@ -549,4 +549,17 @@
   color: #64748b;
   line-height: 1;
   display: block;
+}
+
+/* ── GoWarm brand name spans ─────────────────────────────────── */
+.sb-brand-warm {
+  color: #E8630A;
+}
+
+.sb-brand-crm {
+  color: #b0b8c8;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  margin-left: 1px;
 }
