@@ -62,7 +62,6 @@ async function findActionsForImmediateNotification(orgId) {
       AND a.due_date IS NOT NULL
       AND a.due_date < NOW()
       AND a.notification_sent_at IS NULL
-      AND a.deleted_at IS NULL
       AND COALESCE((up.preferences->'notifications'->>'immediate_alert')::boolean, true) = true
       AND a.due_date < NOW() - (
         COALESCE((up.preferences->'notifications'->>'immediate_hours')::int, 24)
@@ -101,7 +100,6 @@ async function findActionsForDailyDigest(orgId) {
       AND a.status  = 'pending'
       AND a.due_date IS NOT NULL
       AND a.due_date < NOW()
-      AND a.deleted_at IS NULL
       AND COALESCE((up.preferences->'notifications'->>'daily_digest')::boolean, true) = true
     ORDER BY a.user_id, a.due_date ASC
   `, [orgId]);
