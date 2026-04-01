@@ -113,7 +113,7 @@ export default function ProspectingView() {
 
   // Fetch org-customised prospect stages
   useEffect(() => {
-    apiFetch('/prospect-stages')
+    apiFetch('/pipeline-stages/prospecting')
       .then(data => {
         const stages = (data.stages || []).sort((a, b) => a.sort_order - b.sort_order);
         if (stages.length > 0) {
