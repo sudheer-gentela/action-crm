@@ -243,7 +243,74 @@ module.exports = router;
 // Password Reset — dependencies
 // ─────────────────────────────────────────────────────────────
 const crypto      = require('crypto');
-const nodemailer  = require('nodemailer');
+// ─── Gmail REST API sender (no SMTP — works on Railway) ──────────────────────
+// Uses Google's token endpoint + Gmail API over HTTPS port 443.
+// Required env vars: MAIL_USER, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN
+// ─────────────────────────────────────────────────────────────────────────────
+async function getAccessToken() {
+  const params = new URLSearchParams({
+    client_id:     process.env.GMAIL_CLIENT_ID,
+    client_secret: process.env.GMAIL_CLIENT_SECRET,
+    refresh_token: process.env.GMAIL_REFRESH_TOKEN,
+    grant_type:    'refresh_token',
+  });
+
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body:    params.toString(),
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    console.error('[Mailer] Token exchange failed:', JSON.stringify(data));
+    throw new Error(`Token exchange failed: ${data.error} — ${data.error_description}`);
+  }
+  console.log('[Mailer] Access token obtained successfully');
+  return data.access_token;
+}
+
+async function sendGmailApi({ to, subject, html }) {
+  console.log('[Mailer] MAIL_USER:', process.env.MAIL_USER || 'NOT SET');
+  console.log('[Mailer] GMAIL_CLIENT_ID set:', !!process.env.GMAIL_CLIENT_ID);
+  console.log('[Mailer] GMAIL_CLIENT_SECRET set:', !!process.env.GMAIL_CLIENT_SECRET);
+  console.log('[Mailer] GMAIL_REFRESH_TOKEN set:', !!process.env.GMAIL_REFRESH_TOKEN);
+
+  const accessToken = await getAccessToken();
+
+  const from    = `"GoWarm CRM" <${process.env.MAIL_USER}>`;
+  const mime    = [
+    `From: ${from}`,
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=UTF-8',
+    '',
+    html,
+  ].join('\r\n');
+
+  const encoded = Buffer.from(mime).toString('base64url');
+
+  const res = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(process.env.MAIL_USER)}/messages/send`,
+    {
+      method:  'POST',
+      headers: {
+        Authorization:  `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ raw: encoded }),
+    }
+  );
+
+  const data = await res.json();
+  if (!res.ok) {
+    console.error('[Mailer] Gmail API send failed:', JSON.stringify(data));
+    throw new Error(`Gmail API error: ${data.error?.message || JSON.stringify(data)}`);
+  }
+  console.log('[Mailer] Gmail API send success — message id:', data.id);
+  return data;
+}
 
 // ─── Gmail OAuth2 Transporter ─────────────────────────────────────────────────
 // Uses OAuth2 over HTTPS (port 443) instead of SMTP — required on Railway
@@ -255,26 +322,7 @@ const nodemailer  = require('nodemailer');
 //   GMAIL_CLIENT_SECRET   — from Google Cloud Console OAuth2 credential
 //   GMAIL_REFRESH_TOKEN   — from OAuth Playground (https://developers.google.com/oauthplayground)
 // ─────────────────────────────────────────────────────────────────────────────
-let _transporter = null;
-function getTransporter(force = false) {
-  if (!_transporter || force) {
-    console.log('[Mailer] Initialising OAuth2 transporter — MAIL_USER:', process.env.MAIL_USER || 'NOT SET');
-    console.log('[Mailer] GMAIL_CLIENT_ID set:', !!process.env.GMAIL_CLIENT_ID);
-    console.log('[Mailer] GMAIL_CLIENT_SECRET set:', !!process.env.GMAIL_CLIENT_SECRET);
-    console.log('[Mailer] GMAIL_REFRESH_TOKEN set:', !!process.env.GMAIL_REFRESH_TOKEN);
-    _transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        type:         'OAuth2',
-        user:         process.env.MAIL_USER,
-        clientId:     process.env.GMAIL_CLIENT_ID,
-        clientSecret: process.env.GMAIL_CLIENT_SECRET,
-        refreshToken: process.env.GMAIL_REFRESH_TOKEN,
-      },
-    });
-  }
-  return _transporter;
-}
+
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/auth/forgot-password
@@ -323,8 +371,7 @@ router.post('/forgot-password', async (req, res) => {
       // Send email
       console.log(`[ForgotPassword] Attempting to send reset email to ${user.email}`);
       try {
-        await getTransporter().sendMail({
-          from:    `"GoWarm CRM" <${process.env.MAIL_USER}>`,
+        await sendGmailApi({
           to:      user.email,
           subject: 'Reset your GoWarm CRM password',
           html: `
@@ -352,8 +399,8 @@ router.post('/forgot-password', async (req, res) => {
         });
         console.log(`[ForgotPassword] ✅ Reset email sent to ${user.email}`);
       } catch (mailErr) {
-        // Log but don't expose mail errors to the client
-        console.error('Password reset mail error:', mailErr.message);
+        console.error('[ForgotPassword] ❌ Mail error:', mailErr.message);
+        console.error('[ForgotPassword] Mail error code:', mailErr.code || 'n/a');
       }
     }
 
