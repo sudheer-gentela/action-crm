@@ -245,24 +245,32 @@ module.exports = router;
 const crypto      = require('crypto');
 const nodemailer  = require('nodemailer');
 
-// Lazy-init transporter so it doesn't crash on startup if env
-// vars aren't set yet.
+// ─── Gmail OAuth2 Transporter ─────────────────────────────────────────────────
+// Uses OAuth2 over HTTPS (port 443) instead of SMTP — required on Railway
+// which blocks outbound SMTP ports (465/587).
+//
+// Required env vars:
+//   MAIL_USER             — e.g. demo@gowarmcrm.com
+//   GMAIL_CLIENT_ID       — from Google Cloud Console OAuth2 credential
+//   GMAIL_CLIENT_SECRET   — from Google Cloud Console OAuth2 credential
+//   GMAIL_REFRESH_TOKEN   — from OAuth Playground (https://developers.google.com/oauthplayground)
+// ─────────────────────────────────────────────────────────────────────────────
 let _transporter = null;
 function getTransporter(force = false) {
   if (!_transporter || force) {
-    console.log('[Mailer] Initialising transporter — MAIL_USER:', process.env.MAIL_USER || 'NOT SET');
-    console.log('[Mailer] MAIL_PASS set:', !!process.env.MAIL_PASS);
+    console.log('[Mailer] Initialising OAuth2 transporter — MAIL_USER:', process.env.MAIL_USER || 'NOT SET');
+    console.log('[Mailer] GMAIL_CLIENT_ID set:', !!process.env.GMAIL_CLIENT_ID);
+    console.log('[Mailer] GMAIL_CLIENT_SECRET set:', !!process.env.GMAIL_CLIENT_SECRET);
+    console.log('[Mailer] GMAIL_REFRESH_TOKEN set:', !!process.env.GMAIL_REFRESH_TOKEN);
     _transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false,
+      service: 'gmail',
       auth: {
-        user: process.env.MAIL_USER,
-        pass: process.env.MAIL_PASS,
+        type:         'OAuth2',
+        user:         process.env.MAIL_USER,
+        clientId:     process.env.GMAIL_CLIENT_ID,
+        clientSecret: process.env.GMAIL_CLIENT_SECRET,
+        refreshToken: process.env.GMAIL_REFRESH_TOKEN,
       },
-      connectionTimeout: 10000,
-      greetingTimeout:   10000,
-      socketTimeout:     15000,
     });
   }
   return _transporter;
