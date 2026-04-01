@@ -49,7 +49,7 @@
   font-weight:   500;
   background:    #eff6ff;
   color:         #1d4ed8;
-  border:        1px solid #bfdbfe;
+  border:        1px solid #C5D9EC;
 }
 
 /* Terminal tag variant */
@@ -112,8 +112,8 @@
 
 .oa-select:focus {
   outline:      none;
-  border-color: #3b82f6;
-  box-shadow:   0 0 0 3px rgba(59,130,246,0.1);
+  border-color: #1A3A5C;
+  box-shadow:   0 0 0 3px rgba(26,58,92,0.1);
 }
 
 /* Stage type reference grid */

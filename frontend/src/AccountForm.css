@@ -39,8 +39,8 @@
 .account-form select:focus,
 .account-form textarea:focus {
   outline: none;
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  border-color: #1A3A5C;
+  box-shadow: 0 0 0 3px rgba(26, 58, 92, 0.1);
 }
 
 .account-form input.error,

@@ -108,12 +108,12 @@
 
 .ppe-btn--roles {
   background: #f3f0ff;
-  color: #6d28d9;
+  color: #1A3A5C;
   border: 1px solid #ddd6fe;
 }
 
 .ppe-btn--roles:hover {
-  background: #ede9fe;
+  background: #EEF4FA;
 }
 
 .ppe-btn--tiny-text {
@@ -158,13 +158,13 @@
 }
 
 .ppe-stage-tab:hover {
-  color: #3b82f6;
+  color: #1A3A5C;
   background: #f8fafc;
 }
 
 .ppe-stage-tab--active {
-  color: #2563eb;
-  border-bottom-color: #2563eb;
+  color: #134E7A;
+  border-bottom-color: #134E7A;
   font-weight: 700;
 }
 
@@ -177,8 +177,8 @@
 }
 
 .ppe-stage-tab--active .ppe-stage-tab__count {
-  background: #dbeafe;
-  color: #2563eb;
+  background: #E8F0F8;
+  color: #134E7A;
 }
 
 /* ── Stage content ───────────────────────────────────────────── */
@@ -223,8 +223,8 @@
 }
 
 .ppe-card:hover {
-  border-color: #c7d2fe;
-  box-shadow: 0 1px 4px rgba(99,102,241,0.06);
+  border-color: #B0C8E0;
+  box-shadow: 0 1px 4px rgba(26,58,92,0.06);
 }
 
 .ppe-card--gate {
@@ -298,7 +298,7 @@
 
 .ppe-card__exec-badge--sequential {
   background: #eff6ff;
-  color: #2563eb;
+  color: #134E7A;
 }
 
 .ppe-card__desc {
@@ -358,8 +358,8 @@
 .ppe-card__role-pill {
   font-size: 11px;
   padding: 2px 8px;
-  background: #ede9fe;
-  color: #6d28d9;
+  background: #EEF4FA;
+  color: #1A3A5C;
   border-radius: 10px;
   font-weight: 500;
 }
@@ -435,8 +435,8 @@
 
 .ppe-input:focus {
   outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 2px rgba(59,130,246,0.1);
+  border-color: #1A3A5C;
+  box-shadow: 0 0 0 2px rgba(26,58,92,0.1);
 }
 
 .ppe-textarea {
@@ -452,8 +452,8 @@
 
 .ppe-textarea:focus {
   outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 2px rgba(59,130,246,0.1);
+  border-color: #1A3A5C;
+  box-shadow: 0 0 0 2px rgba(26,58,92,0.1);
 }
 
 .ppe-select {
@@ -469,7 +469,7 @@
 
 .ppe-select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #1A3A5C;
 }
 
 .ppe-checkbox-label {
@@ -508,9 +508,9 @@
 }
 
 .ppe-role-chip--selected {
-  background: #ede9fe;
+  background: #EEF4FA;
   border-color: #a78bfa;
-  color: #6d28d9;
+  color: #1A3A5C;
   font-weight: 600;
 }
 
@@ -540,7 +540,7 @@
 }
 
 .ppe-dep-chip:hover {
-  border-color: #93c5fd;
+  border-color: #7AAAC8;
 }
 
 .ppe-dep-chip--selected {
@@ -566,12 +566,12 @@
 }
 
 .ppe-btn--primary {
-  background: #3b82f6;
+  background: #1A3A5C;
   color: #fff;
 }
 
 .ppe-btn--primary:hover {
-  background: #2563eb;
+  background: #134E7A;
 }
 
 .ppe-btn--primary:disabled {
@@ -702,6 +702,6 @@
   margin-left: 4px;
 }
 
-.ppe-condition-module--clm      { background: #dbeafe; color: #1d4ed8; }
+.ppe-condition-module--clm      { background: #E8F0F8; color: #1d4ed8; }
 .ppe-condition-module--service  { background: #fef3c7; color: #92400e; }
 .ppe-condition-module--prospect { background: #dcfce7; color: #166534; }

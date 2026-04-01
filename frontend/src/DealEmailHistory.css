@@ -54,9 +54,9 @@
 .deh-btn--tag-open {
   background: #eff6ff;
   color: #1d4ed8;
-  border: 1px solid #bfdbfe;
+  border: 1px solid #C5D9EC;
 }
-.deh-btn--tag-open:hover { background: #dbeafe; }
+.deh-btn--tag-open:hover { background: #E8F0F8; }
 
 .deh-btn--refresh {
   background: #f9fafb;
@@ -124,7 +124,7 @@
   transition: border-color 0.15s;
 }
 .deh-thread:hover { border-color: #d1d5db; }
-.deh-thread--expanded { border-color: #c7d2fe; }
+.deh-thread--expanded { border-color: #B0C8E0; }
 
 .deh-thread__summary {
   display: flex;
@@ -165,8 +165,8 @@
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
-  background: #e0e7ff;
-  color: #4338ca;
+  background: #D8EAF5;
+  color: #134E7A;
   border-radius: 9px;
   font-size: 10px;
   font-weight: 700;
@@ -462,7 +462,7 @@
 /* ── Direction demarcation ───────────────────────────────────── */
 
 /* Thread-level left border color */
-.deh-thread--inbound  { border-left: 3px solid #3b82f6; }
+.deh-thread--inbound  { border-left: 3px solid #1A3A5C; }
 .deh-thread--outbound { border-left: 3px solid #10b981; }
 
 /* Direction pill in thread summary */
@@ -481,9 +481,9 @@
 }
 
 .deh-thread__dir-pill--inbound {
-  background: #dbeafe;
+  background: #E8F0F8;
   color: #1d4ed8;
-  border: 1px solid #93c5fd;
+  border: 1px solid #7AAAC8;
 }
 
 .deh-thread__dir-pill--outbound {
@@ -508,7 +508,7 @@
 }
 
 .deh-email__dir-label--inbound {
-  background: #dbeafe;
+  background: #E8F0F8;
   color: #1d4ed8;
 }
 

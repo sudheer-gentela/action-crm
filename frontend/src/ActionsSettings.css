@@ -346,19 +346,19 @@
 }
 
 .setting-radio-option:hover {
-  border-color: #a5b4fc;
+  border-color: #B0C8E0;
   background: #fafafa;
 }
 
 .setting-radio-option--selected {
-  border-color: #6366f1;
-  background: #eef2ff;
+  border-color: #1A3A5C;
+  background: #EEF4FA;
 }
 
 .setting-radio-option input[type="radio"] {
   margin-top: 3px;
   flex-shrink: 0;
-  accent-color: #6366f1;
+  accent-color: #1A3A5C;
   width: 16px;
   height: 16px;
   cursor: pointer;

@@ -104,7 +104,7 @@
 }
 
 .filter-select:hover { border-color: #cbd5e0; }
-.filter-select:focus  { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,0.12); }
+.filter-select:focus  { outline: none; border-color: #1A3A5C; box-shadow: 0 0 0 3px rgba(26,58,92,0.12); }
 
 .filter-select.select-overdue {
   border-color: #fca5a5;
@@ -137,7 +137,7 @@
 .priority-trigger:hover { border-color: #cbd5e0; }
 
 .priority-trigger.has-selection {
-  border-color: #667eea;
+  border-color: #1A3A5C;
   background: #f5f7ff;
   color: #4c51bf;
 }
@@ -202,7 +202,7 @@
   height: 15px;
   border-radius: 4px;
   cursor: pointer;
-  accent-color: #667eea;
+  accent-color: #1A3A5C;
   flex-shrink: 0;
 }
 
@@ -281,7 +281,7 @@
 .today-badge {
   display: inline-flex;
   align-items: center;
-  background: #667eea;
+  background: #1A3A5C;
   color: white;
   font-size: 10px;
   font-weight: 800;
@@ -445,9 +445,9 @@
 }
 
 .meeting-card.selected {
-  border-color: #667eea;
-  border-left-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  border-color: #1A3A5C;
+  border-left-color: #1A3A5C;
+  box-shadow: 0 0 0 3px rgba(26, 58, 92, 0.1);
   background: #f7fafc;
 }
 
@@ -513,7 +513,7 @@
 }
 
 .meeting-type { text-transform: capitalize; background: #e2e8f0; color: #4a5568; }
-.meeting-type.discovery   { background: #bee3f8; color: #2c5282; }
+.meeting-type.discovery   { background: #B0C8E0; color: #1A3A5C; }
 .meeting-type.demo        { background: #c6f6d5; color: #22543d; }
 .meeting-type.negotiation { background: #feebc8; color: #7c2d12; }
 .meeting-type.follow_up   { background: #e9d8fd; color: #553c9a; }
@@ -637,12 +637,12 @@
   text-transform: capitalize;
 }
 
-.detail-badge.meeting-type-discovery   { background: #bee3f8; color: #2c5282; }
+.detail-badge.meeting-type-discovery   { background: #B0C8E0; color: #1A3A5C; }
 .detail-badge.meeting-type-demo        { background: #c6f6d5; color: #22543d; }
 .detail-badge.meeting-type-negotiation { background: #feebc8; color: #7c2d12; }
 .detail-badge.meeting-type-follow_up   { background: #e9d8fd; color: #553c9a; }
 .detail-badge.meeting-type-closing     { background: #fed7d7; color: #742a2a; }
-.detail-badge.status-scheduled  { background: #bee3f8; color: #2c5282; }
+.detail-badge.status-scheduled  { background: #B0C8E0; color: #1A3A5C; }
 .detail-badge.status-completed  { background: #c6f6d5; color: #22543d; }
 .detail-badge.status-cancelled  { background: #fed7d7; color: #742a2a; }
 
@@ -704,7 +704,7 @@
   width: 48px;
   height: 48px;
   border: 4px solid #e2e8f0;
-  border-top-color: #667eea;
+  border-top-color: #1A3A5C;
   border-radius: 50%;
   margin: 0 auto 20px;
   animation: spin 1s linear infinite;
@@ -713,9 +713,9 @@
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .info-banner {
-  background: #bee3f8;
+  background: #B0C8E0;
   border: 1px solid #90cdf4;
-  color: #2c5282;
+  color: #1A3A5C;
   padding: 12px 16px;
   border-radius: 8px;
   margin-bottom: 20px;
@@ -745,7 +745,7 @@
   gap: 8px;
   padding: 14px 16px;
   border-bottom: 1px solid #e2e8f0;
-  border-left: 4px solid #667eea;
+  border-left: 4px solid #1A3A5C;
   background: #f8fafc;
 }
 
@@ -839,11 +839,11 @@
   white-space: nowrap;
 }
 
-.popover-btn-start  { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
-.popover-btn-start:hover  { background: #dbeafe; }
+.popover-btn-start  { background: #eff6ff; color: #1d4ed8; border: 1px solid #C5D9EC; }
+.popover-btn-start:hover  { background: #E8F0F8; }
 
-.popover-btn-snooze { background: #faf5ff; color: #6d28d9; border: 1px solid #ddd6fe; }
-.popover-btn-snooze:hover { background: #ede9fe; }
+.popover-btn-snooze { background: #faf5ff; color: #1A3A5C; border: 1px solid #ddd6fe; }
+.popover-btn-snooze:hover { background: #EEF4FA; }
 
 .popover-btn-done   { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
 .popover-btn-done:hover   { background: #bbf7d0; }
@@ -874,7 +874,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 18px 20px;
-  border-left: 4px solid #6d28d9;
+  border-left: 4px solid #1A3A5C;
   background: #faf5ff;
   border-bottom: 1px solid #e2e8f0;
 }

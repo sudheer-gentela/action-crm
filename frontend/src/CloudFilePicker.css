@@ -449,8 +449,8 @@
 
 .cfp-deal-select:focus {
   outline: none;
-  border-color: #6366f1;
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+  border-color: #1A3A5C;
+  box-shadow: 0 0 0 2px rgba(26, 58, 92, 0.15);
 }
 
 .cfp-deal-linked {

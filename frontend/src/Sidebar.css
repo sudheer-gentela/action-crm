@@ -296,9 +296,9 @@
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   letter-spacing: 0.02em;
 }
-.sb-user-role.member      { background: #dbeafe; color: #1e40af; }
+.sb-user-role.member      { background: #E8F0F8; color: #1A3A5C; }
 .sb-user-role.org-admin   { background: #fef3c7; color: #92400e; }
-.sb-user-role.super-user  { background: #ede9fe; color: #6d28d9; }
+.sb-user-role.super-user  { background: #EEF4FA; color: #1A3A5C; }
 
 .sb-user-chevron {
   font-size: 14px;
@@ -400,9 +400,9 @@
   height: 8px;
   border-radius: 50%;
 }
-.sb-role-indicator.member      { background: #3b82f6; }
+.sb-role-indicator.member      { background: #1A3A5C; }
 .sb-role-indicator.org-admin   { background: #f59e0b; }
-.sb-role-indicator.super-user  { background: #8b5cf6; }
+.sb-role-indicator.super-user  { background: #1A3A5C; }
 
 .sb-popover-role.active {
   color: #0f172a;

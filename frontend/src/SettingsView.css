@@ -439,7 +439,7 @@
   margin-left: auto;
   flex-shrink: 0;
 }
-.sv2-badge-admin { background: #ede9fe; color: #5b21b6; }
+.sv2-badge-admin { background: #EEF4FA; color: #1A3A5C; }
 
 /* ── Child items ── */
 .sv2-nav-children {
@@ -654,8 +654,8 @@
 }
 .sv-badge.pos     { background: #d1fae5; color: #065f46; }
 .sv-badge.neg     { background: #fee2e2; color: #dc2626; }
-.sv-badge.auto    { background: #dbeafe; color: #1d4ed8; }
-.sv-badge.ai      { background: #ede9fe; color: #5b21b6; }
+.sv-badge.auto    { background: #E8F0F8; color: #1d4ed8; }
+.sv-badge.ai      { background: #EEF4FA; color: #1A3A5C; }
 .sv-badge.ai-off  { background: #f3f4f6; color: #9ca3af; }
 .sv-badge.manual  { background: #f3f4f6; color: #6b7280; }
 .sv-badge.warning { background: #fef9c3; color: #713f12; }

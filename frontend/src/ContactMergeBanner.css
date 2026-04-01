@@ -119,7 +119,7 @@
   padding: 10px 24px;
   font-size: 14px;
 }
-.cmb-btn--merge:hover:not(:disabled) { background: #1e40af; }
+.cmb-btn--merge:hover:not(:disabled) { background: #1A3A5C; }
 .cmb-btn--merge:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .cmb-btn--cancel {
@@ -230,7 +230,7 @@
 
 .cmb-compare-cell--selected {
   background: #eff6ff;
-  border-color: #bfdbfe;
+  border-color: #C5D9EC;
 }
 
 .cmb-compare-cell--selected .cmb-cell-value {

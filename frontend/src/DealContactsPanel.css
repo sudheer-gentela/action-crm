@@ -20,7 +20,7 @@
   width: 14px;
   height: 14px;
   border: 2px solid #e5e7eb;
-  border-top-color: #6366f1;
+  border-top-color: #1A3A5C;
   border-radius: 50%;
   animation: dcp-spin 0.7s linear infinite;
   display: inline-block;
@@ -71,15 +71,15 @@
 .dcp-btn--add {
   background: #eff6ff;
   color: #1d4ed8;
-  border: 1px solid #bfdbfe;
+  border: 1px solid #C5D9EC;
 }
-.dcp-btn--add:hover { background: #dbeafe; }
+.dcp-btn--add:hover { background: #E8F0F8; }
 
 .dcp-btn--save {
   background: #1d4ed8;
   color: white;
 }
-.dcp-btn--save:hover:not(:disabled) { background: #1e40af; }
+.dcp-btn--save:hover:not(:disabled) { background: #1A3A5C; }
 .dcp-btn--save:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .dcp-btn--remove {
@@ -106,9 +106,9 @@
   white-space: nowrap;
 }
 .dcp-btn--set-role:hover {
-  color: #6366f1;
-  border-color: #6366f1;
-  background: #f5f3ff;
+  color: #1A3A5C;
+  border-color: #1A3A5C;
+  background: #EEF4FA;
 }
 
 /* ── Add form ────────────────────────────────────────────────── */
@@ -142,7 +142,7 @@
   transition: border-color 0.15s;
 }
 .dcp-select:focus,
-.dcp-input:focus { border-color: #6366f1; box-shadow: 0 0 0 2px rgba(99,102,241,0.1); }
+.dcp-input:focus { border-color: #1A3A5C; box-shadow: 0 0 0 2px rgba(26,58,92,0.1); }
 
 .dcp-add-form__error {
   font-size: 12px;
@@ -181,7 +181,7 @@
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #0ea5e9, #6366f1);
+  background: linear-gradient(135deg, #0ea5e9, #1A3A5C);
   color: white;
   font-size: 12px;
   font-weight: 700;
@@ -214,7 +214,7 @@
 }
 
 .dcp-contact__info--clickable .dcp-contact__name:hover {
-  color: #6366f1;
+  color: #1A3A5C;
 }
 
 .dcp-contact__arrow {
@@ -258,11 +258,11 @@
 .dcp-role-input {
   width: 130px;
   padding: 3px 8px;
-  border: 1px solid #6366f1;
+  border: 1px solid #1A3A5C;
   border-radius: 6px;
   font-size: 11px;
   color: #111827;
   background: white;
   outline: none;
-  box-shadow: 0 0 0 2px rgba(99,102,241,0.15);
+  box-shadow: 0 0 0 2px rgba(26,58,92,0.15);
 }

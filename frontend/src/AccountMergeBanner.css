@@ -38,7 +38,7 @@
 .amb-btn--dismiss { background: transparent; color: #a16207; border: 1px solid #fcd34d; }
 .amb-btn--dismiss:hover { background: #fef3c7; }
 .amb-btn--merge { background: #1d4ed8; color: white; padding: 10px 24px; font-size: 14px; }
-.amb-btn--merge:hover:not(:disabled) { background: #1e40af; }
+.amb-btn--merge:hover:not(:disabled) { background: #1A3A5C; }
 .amb-btn--merge:disabled { opacity: 0.5; cursor: not-allowed; }
 .amb-btn--cancel { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
 .amb-btn--cancel:hover { background: #e2e8f0; }
@@ -77,7 +77,7 @@
 .amb-compare-cell:last-child { border-right: none; }
 .amb-compare-cell--clickable { cursor: pointer; }
 .amb-compare-cell--clickable:hover { background: #fef3c7; }
-.amb-compare-cell--selected { background: #eff6ff; border-color: #bfdbfe; }
+.amb-compare-cell--selected { background: #eff6ff; border-color: #C5D9EC; }
 .amb-compare-cell--selected .amb-cell-value { font-weight: 600; color: #1d4ed8; }
 
 .amb-compare-cell--header {

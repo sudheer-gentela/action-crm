@@ -112,13 +112,13 @@
 }
 
 .transcript-upload-modal .tu-method-btn:hover {
-  border-color: #3b82f6;
+  border-color: #1A3A5C;
   background: #eff6ff;
 }
 
 .transcript-upload-modal .tu-method-btn.active {
-  border-color: #3b82f6;
-  background: #3b82f6;
+  border-color: #1A3A5C;
+  background: #1A3A5C;
   color: white;
 }
 
@@ -152,7 +152,7 @@
 
 .transcript-upload-modal .tu-textarea:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #1A3A5C;
 }
 
 .transcript-upload-modal .tu-char-count {
@@ -176,7 +176,7 @@
 }
 
 .transcript-upload-modal .tu-file-area:hover {
-  border-color: #3b82f6;
+  border-color: #1A3A5C;
   background: #eff6ff;
 }
 
@@ -228,7 +228,7 @@
 
 .transcript-upload-modal .tu-date-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: #1A3A5C;
 }
 
 /* Info Box */
@@ -237,7 +237,7 @@
   gap: 1rem;
   padding: 1rem;
   background: #eff6ff;
-  border: 1px solid #bfdbfe;
+  border: 1px solid #C5D9EC;
   border-radius: 8px;
   margin-top: 1.25rem;
 }
@@ -250,14 +250,14 @@
 .transcript-upload-modal .tu-info-content strong {
   display: block;
   margin-bottom: 0.5rem;
-  color: #1e40af;
+  color: #1A3A5C;
   font-size: 0.9375rem;
 }
 
 .transcript-upload-modal .tu-info-content ul {
   margin: 0;
   padding-left: 1.25rem;
-  color: #1e3a8a;
+  color: #1A3A5C;
 }
 
 .transcript-upload-modal .tu-info-content li {
@@ -288,12 +288,12 @@
   gap: 0.5rem;
   border: none;
   font-size: 1rem;
-  background: #3b82f6;
+  background: #1A3A5C;
   color: white;
 }
 
 .transcript-upload-modal .tu-btn-primary:hover:not(:disabled) {
-  background: #2563eb;
+  background: #134E7A;
 }
 
 .transcript-upload-modal .tu-btn-primary:disabled {

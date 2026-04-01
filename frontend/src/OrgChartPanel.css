@@ -1,10 +1,10 @@
-/* OrgChartPanel.css — matches Action CRM's #6366f1 / #f4f5f7 aesthetic */
+/* OrgChartPanel.css — matches Action CRM's #1A3A5C / #f4f5f7 aesthetic */
 
 /* ── Shared utilities ───────────────────────────────────────────────────────── */
 .och-spinner {
   width: 28px; height: 28px;
   border: 2.5px solid #e5e7eb;
-  border-top-color: #6366f1;
+  border-top-color: #1A3A5C;
   border-radius: 50%;
   animation: och-spin 0.65s linear infinite;
 }
@@ -45,10 +45,10 @@
   margin-bottom: -1px;
 }
 .och-subtab:hover { color: #0f172a; }
-.och-subtab--active { color: #6366f1; border-bottom-color: #6366f1; font-weight: 600; }
+.och-subtab--active { color: #1A3A5C; border-bottom-color: #1A3A5C; font-weight: 600; }
 .och-subtab-count {
   display: inline-flex; align-items: center; justify-content: center;
-  background: #e0e7ff; color: #4338ca;
+  background: #D8EAF5; color: #134E7A;
   font-size: 10px; font-weight: 700;
   min-width: 18px; height: 18px; border-radius: 9px; padding: 0 4px;
 }
@@ -78,8 +78,8 @@
   position: relative;
 }
 .och-card:hover {
-  border-color: #c7d2fe;
-  box-shadow: 0 2px 8px rgba(99,102,241,.08);
+  border-color: #B0C8E0;
+  box-shadow: 0 2px 8px rgba(26,58,92,.08);
 }
 
 .och-avatar {
@@ -95,9 +95,9 @@
   font-size: 13px; font-weight: 600; color: #0f172a;
   cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
 }
-.och-name:hover { color: #6366f1; }
+.och-name:hover { color: #1A3A5C; }
 .och-nav-arrow {
-  font-size: 11px; color: #6366f1; opacity: 0;
+  font-size: 11px; color: #1A3A5C; opacity: 0;
   transition: opacity .12s;
 }
 .och-name:hover .och-nav-arrow { opacity: 1; }
@@ -119,28 +119,28 @@
   font-size: 10px; color: #94a3b8; cursor: pointer;
   font-family: inherit; transition: color .12s;
 }
-.och-reports-to-btn:hover { color: #6366f1; }
+.och-reports-to-btn:hover { color: #1A3A5C; }
 
 .och-reports-edit { margin-top: 6px; display: flex; align-items: center; gap: 6px; }
 .och-select {
   padding: 5px 8px;
-  border: 1.5px solid #6366f1; border-radius: 6px;
+  border: 1.5px solid #1A3A5C; border-radius: 6px;
   font-size: 12px; font-family: inherit; outline: none;
   background: #fff; color: #0f172a;
-  box-shadow: 0 0 0 2px rgba(99,102,241,.1);
+  box-shadow: 0 0 0 2px rgba(26,58,92,.1);
 }
-.och-saving { font-size: 11px; color: #6366f1; }
+.och-saving { font-size: 11px; color: #1A3A5C; }
 
 .och-toggle {
   width: 22px; height: 22px; border-radius: 50%;
-  background: #eef2ff; border: 1px solid #c7d2fe;
-  color: #6366f1; font-size: 10px; font-weight: 700;
+  background: #EEF4FA; border: 1px solid #B0C8E0;
+  color: #1A3A5C; font-size: 10px; font-weight: 700;
   cursor: pointer; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   transition: all .15s; margin-top: 2px;
 }
-.och-toggle:hover { background: #6366f1; color: #fff; border-color: #6366f1; }
-.och-toggle--open { background: #6366f1; color: #fff; border-color: #6366f1; }
+.och-toggle:hover { background: #1A3A5C; color: #fff; border-color: #1A3A5C; }
+.och-toggle--open { background: #1A3A5C; color: #fff; border-color: #1A3A5C; }
 
 /* ── Children connector ──────────────────────────────────────────────────────── */
 .och-children {
@@ -187,11 +187,11 @@
 .och-acct-toolbar { display: flex; justify-content: flex-end; margin-bottom: 12px; }
 .och-add-btn {
   padding: 7px 14px; border-radius: 7px;
-  border: 1.5px solid #6366f1; background: #eef2ff;
-  color: #6366f1; font-size: 12px; font-weight: 600;
+  border: 1.5px solid #1A3A5C; background: #EEF4FA;
+  color: #1A3A5C; font-size: 12px; font-weight: 600;
   cursor: pointer; transition: all .15s;
 }
-.och-add-btn:hover { background: #6366f1; color: #fff; }
+.och-add-btn:hover { background: #1A3A5C; color: #fff; }
 
 .och-add-form {
   background: #f8fafc; border: 1px solid #e5e7eb;
@@ -204,11 +204,11 @@
 
 .och-save-btn {
   padding: 7px 14px; border-radius: 6px;
-  border: none; background: #6366f1; color: #fff;
+  border: none; background: #1A3A5C; color: #fff;
   font-size: 12px; font-weight: 600; cursor: pointer;
   transition: background .12s;
 }
-.och-save-btn:hover:not(:disabled) { background: #4f46e5; }
+.och-save-btn:hover:not(:disabled) { background: #134E7A; }
 .och-save-btn:disabled { opacity: .5; cursor: not-allowed; }
 .och-cancel-btn {
   padding: 7px 12px; border-radius: 6px;
@@ -237,12 +237,12 @@
   margin-left: calc(var(--depth, 0) * 24px);
   transition: box-shadow .15s;
 }
-.och-acct-card:hover { border-color: #c7d2fe; box-shadow: 0 2px 6px rgba(99,102,241,.07); }
-.och-acct-card--current { border-color: #6366f1; background: #eef2ff; }
+.och-acct-card:hover { border-color: #B0C8E0; box-shadow: 0 2px 6px rgba(26,58,92,.07); }
+.och-acct-card--current { border-color: #1A3A5C; background: #EEF4FA; }
 
 .och-acct-logo {
   width: 34px; height: 34px; border-radius: 8px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: linear-gradient(135deg, #1A3A5C, #1A3A5C);
   display: flex; align-items: center; justify-content: center;
   font-size: 12px; font-weight: 700; color: #fff; flex-shrink: 0;
 }
@@ -250,7 +250,7 @@
 .och-acct-name { font-size: 13px; font-weight: 600; color: #0f172a; }
 .och-acct-industry { font-size: 11px; color: #64748b; }
 .och-acct-stats { display: flex; gap: 8px; margin-top: 2px; }
-.och-acct-stats span { font-size: 11px; color: #6366f1; font-weight: 500; }
+.och-acct-stats span { font-size: 11px; color: #1A3A5C; font-weight: 500; }
 
 .och-rel-badge {
   font-size: 10px; font-weight: 600;
@@ -296,7 +296,7 @@
 .och-mini-title { font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .05em; }
 .och-mini-view-all {
   background: none; border: none; cursor: pointer;
-  font-size: 12px; color: #6366f1; font-weight: 500;
+  font-size: 12px; color: #1A3A5C; font-weight: 500;
   padding: 0; transition: opacity .12s;
 }
 .och-mini-view-all:hover { opacity: .7; }
@@ -329,10 +329,10 @@
   transition: background .12s;
 }
 .och-mini-node--manager { background: #f8fafc; border: 1px solid #f1f5f9; }
-.och-mini-node--self    { background: #eef2ff; border: 1.5px solid #c7d2fe; }
+.och-mini-node--self    { background: #EEF4FA; border: 1.5px solid #B0C8E0; }
 .och-mini-node--report  { background: #fff;    border: 1px solid #f1f5f9; }
 .och-mini-node--clickable { cursor: pointer; }
-.och-mini-node--clickable:hover { background: #f0f4ff; border-color: #c7d2fe; }
+.och-mini-node--clickable:hover { background: #f0f4ff; border-color: #B0C8E0; }
 
 .och-mini-avatar {
   width: 28px; height: 28px; border-radius: 50%;
@@ -344,7 +344,7 @@
 .och-mini-node-name { font-size: 12px; font-weight: 600; color: #0f172a; display: flex; align-items: center; gap: 5px; }
 .och-mini-you {
   font-size: 9px; font-weight: 700;
-  background: #6366f1; color: #fff;
+  background: #1A3A5C; color: #fff;
   padding: 1px 5px; border-radius: 3px;
   text-transform: uppercase; letter-spacing: .04em;
 }
@@ -356,7 +356,7 @@
   white-space: nowrap; flex-shrink: 0;
 }
 .och-mini-more {
-  font-size: 11px; color: #6366f1; font-weight: 500;
+  font-size: 11px; color: #1A3A5C; font-weight: 500;
   padding: 4px 10px;
 }
 
@@ -424,7 +424,7 @@
   display: flex; align-items: center; gap: 3px;
   transition: color .12s;
 }
-.och-dotted-toggle:hover { color: #6366f1; }
+.och-dotted-toggle:hover { color: #1A3A5C; }
 .och-dotted-line-icon { font-size: 12px; }
 
 .och-dotted-list {
@@ -448,7 +448,7 @@
 .och-dotted-info { flex: 1; min-width: 0; }
 .och-dotted-name { font-size: 11px; font-weight: 600; color: #0f172a; }
 .och-dotted-meta { display: flex; align-items: center; gap: 4px; font-size: 10px; color: #64748b; margin-top: 1px; }
-.och-dotted-account { color: #6366f1; }
+.och-dotted-account { color: #1A3A5C; }
 .och-dotted-notes { font-size: 10px; color: #94a3b8; font-style: italic; margin-top: 2px; }
 .och-dotted-remove {
   background: none; border: none; cursor: pointer;
@@ -459,20 +459,20 @@
 
 .och-dotted-add-form {
   display: flex; flex-direction: column; gap: 5px;
-  padding: 8px; background: #f0f4ff; border: 1px solid #c7d2fe; border-radius: 7px;
+  padding: 8px; background: #f0f4ff; border: 1px solid #B0C8E0; border-radius: 7px;
 }
 .och-dotted-notes-input {
   padding: 5px 8px; border: 1.5px solid #e5e7eb; border-radius: 6px;
   font-size: 12px; font-family: inherit; outline: none; background: #fff;
 }
-.och-dotted-notes-input:focus { border-color: #6366f1; }
+.och-dotted-notes-input:focus { border-color: #1A3A5C; }
 .och-dotted-form-actions { display: flex; gap: 5px; }
 .och-dotted-add-btn {
-  background: none; border: 1px dashed #c7d2fe; border-radius: 6px;
-  padding: 5px 10px; font-size: 11px; color: #6366f1; cursor: pointer;
+  background: none; border: 1px dashed #B0C8E0; border-radius: 6px;
+  padding: 5px 10px; font-size: 11px; color: #1A3A5C; cursor: pointer;
   font-family: inherit; width: 100%; transition: all .12s;
 }
-.och-dotted-add-btn:hover { background: #eef2ff; border-style: solid; }
+.och-dotted-add-btn:hover { background: #EEF4FA; border-style: solid; }
 
 /* ── Legend ────────────────────────────────────────────────────────────────── */
 .och-legend {
@@ -546,5 +546,5 @@
   border: 1px dashed #e2e8f0 !important;
 }
 .och-mini-node-account {
-  color: #6366f1; font-size: 10px;
+  color: #1A3A5C; font-size: 10px;
 }

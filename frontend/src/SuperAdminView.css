@@ -55,8 +55,8 @@
 
 .sa-panel-info {
   padding: 12px 16px; background: #f0f9ff;
-  border: 1px solid #bfdbfe; border-radius: 8px;
-  font-size: 13px; color: #1e40af;
+  border: 1px solid #C5D9EC; border-radius: 8px;
+  font-size: 13px; color: #1A3A5C;
 }
 
 /* ── Overview stats ───────────────────────────────────────────── */
@@ -69,12 +69,12 @@
   padding: 20px 16px; border-radius: 12px; border: 1px solid;
   display: flex; flex-direction: column; gap: 4px;
 }
-.sa-stat-card--blue   { background: #eff6ff; border-color: #bfdbfe; }
+.sa-stat-card--blue   { background: #eff6ff; border-color: #C5D9EC; }
 .sa-stat-card--green  { background: #f0fdf4; border-color: #bbf7d0; }
 .sa-stat-card--amber  { background: #fffbeb; border-color: #fde68a; }
-.sa-stat-card--purple { background: #f5f3ff; border-color: #ddd6fe; }
+.sa-stat-card--purple { background: #EEF4FA; border-color: #ddd6fe; }
 .sa-stat-card--teal   { background: #f0fdfa; border-color: #99f6e4; }
-.sa-stat-card--indigo { background: #eef2ff; border-color: #c7d2fe; }
+.sa-stat-card--indigo { background: #EEF4FA; border-color: #B0C8E0; }
 
 .sa-stat-icon  { font-size: 22px; margin-bottom: 4px; }
 .sa-stat-value { font-size: 28px; font-weight: 700; color: #1a202c; line-height: 1; }
@@ -99,12 +99,12 @@
   font-size: 14px; background: white; color: #1a202c;
   transition: border-color 0.15s;
 }
-.sa-search:focus { outline: none; border-color: #667eea; }
+.sa-search:focus { outline: none; border-color: #1A3A5C; }
 .sa-select {
   padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px;
   font-size: 14px; background: white; color: #1a202c; cursor: pointer;
 }
-.sa-select:focus { outline: none; border-color: #667eea; }
+.sa-select:focus { outline: none; border-color: #1A3A5C; }
 
 /* ── Buttons ──────────────────────────────────────────────────── */
 .sa-btn-primary {
@@ -133,8 +133,8 @@
 .sa-btn-sm--red:hover   { background: #fff5f5; }
 .sa-btn-sm--green { border-color: #c6f6d5; color: #276749; }
 .sa-btn-sm--green:hover { background: #f0fff4; }
-.sa-btn-sm--blue  { border-color: #bee3f8; color: #2b6cb0; }
-.sa-btn-sm--blue:hover  { background: #ebf8ff; }
+.sa-btn-sm--blue  { border-color: #B0C8E0; color: #1A3A5C; }
+.sa-btn-sm--blue:hover  { background: #E8F0F8; }
 
 /* ── Table ────────────────────────────────────────────────────── */
 .sa-table-wrap { overflow-x: auto; border: 1px solid #e2e8f0; border-radius: 10px; }
@@ -160,11 +160,11 @@
 }
 
 .sa-link {
-  background: none; border: none; color: #667eea; font-weight: 600;
+  background: none; border: none; color: #1A3A5C; font-weight: 600;
   cursor: pointer; font-size: 14px; padding: 0; text-decoration: underline;
   text-decoration-color: transparent; transition: text-decoration-color 0.15s;
 }
-.sa-link:hover { text-decoration-color: #667eea; }
+.sa-link:hover { text-decoration-color: #1A3A5C; }
 
 .sa-sub-text { font-size: 12px; color: #a0aec0; line-height: 1.5; }
 
@@ -183,7 +183,7 @@
 
 .sa-plan-pill {
   display: inline-block; padding: 2px 8px;
-  background: #eef2ff; color: #4338ca;
+  background: #EEF4FA; color: #134E7A;
   border-radius: 6px; font-size: 12px; font-weight: 600;
   text-transform: capitalize;
 }
@@ -257,7 +257,7 @@
 .sa-form-field input:focus,
 .sa-form-field select:focus,
 .sa-form-field textarea:focus {
-  outline: none; border-color: #667eea;
+  outline: none; border-color: #1A3A5C;
 }
 
 /* ── Add user row (in drawer) ─────────────────────────────────── */
@@ -270,7 +270,7 @@
   flex: 1; padding: 8px 12px; border: 1px solid #e2e8f0; border-radius: 6px;
   font-size: 14px; background: white;
 }
-.sa-input-inline:focus { outline: none; border-color: #667eea; }
+.sa-input-inline:focus { outline: none; border-color: #1A3A5C; }
 .sa-select-inline {
   padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 6px;
   font-size: 13px; background: white; cursor: pointer;
@@ -290,7 +290,7 @@
   display: flex; align-items: center; gap: 6px;
 }
 .sa-you-badge {
-  font-size: 11px; background: #667eea; color: white;
+  font-size: 11px; background: #1A3A5C; color: white;
   padding: 1px 6px; border-radius: 999px; font-weight: 600;
 }
 
@@ -350,7 +350,7 @@
   padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 8px;
   font-size: 14px; background: white;
 }
-.sa-input:focus { outline: none; border-color: #667eea; }
+.sa-input:focus { outline: none; border-color: #1A3A5C; }
 
 /* ── Audit action label ───────────────────────────────────────── */
 .sa-audit-action { font-size: 13px; text-transform: capitalize; }

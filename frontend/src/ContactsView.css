@@ -42,14 +42,14 @@
   border-radius: 8px;
   border: none;
   cursor: pointer;
-  background: #6366f1;
+  background: #1A3A5C;
   color: #fff;
   font-size: 13px;
   font-weight: 600;
   transition: background 0.15s;
   font-family: inherit;
 }
-.contacts-header .btn-primary:hover:not(:disabled) { background: #4f46e5; }
+.contacts-header .btn-primary:hover:not(:disabled) { background: #134E7A; }
 
 /* ── Search Bar ──────────────────────────────────────────────── */
 .search-bar {
@@ -73,9 +73,9 @@
 }
 .search-input:focus {
   outline: none;
-  border-color: #6366f1;
+  border-color: #1A3A5C;
   background: #fff;
-  box-shadow: 0 0 0 3px rgba(99,102,241,.1);
+  box-shadow: 0 0 0 3px rgba(26,58,92,.1);
 }
 .search-input::placeholder { color: #94a3b8; }
 
@@ -179,8 +179,8 @@
   transform: none;
 }
 .contact-card.selected {
-  border-color: #6366f1;
-  box-shadow: 0 0 0 3px rgba(99,102,241,.1);
+  border-color: #1A3A5C;
+  box-shadow: 0 0 0 3px rgba(26,58,92,.1);
 }
 
 .contact-card-header {
@@ -194,7 +194,7 @@
   width: 44px;
   height: 44px;
   border-radius: 10px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: linear-gradient(135deg, #1A3A5C, #1A3A5C);
   color: #fff;
   font-size: 16px;
   font-weight: 700;
@@ -227,7 +227,7 @@
 
 .contact-email {
   font-size: 12px;
-  color: #6366f1;
+  color: #1A3A5C;
   margin: 0 0 8px 0;
   text-decoration: none;
 }
@@ -246,8 +246,8 @@
   font-weight: 600;
 }
 .contact-tag.role {
-  background: #dbeafe;
-  color: #1e40af;
+  background: #E8F0F8;
+  color: #1A3A5C;
 }
 .contact-tag.engagement-high {
   background: #dcfce7;
@@ -392,7 +392,7 @@
   font-size: 14px;
   color: #0f172a;
 }
-.detail-item a { color: #6366f1; text-decoration: none; }
+.detail-item a { color: #1A3A5C; text-decoration: none; }
 .detail-item a:hover { text-decoration: underline; }
 
 /* ── Inline editing ──────────────────────────────────────────── */
@@ -414,19 +414,19 @@
 .inline-edit-input {
   flex: 1;
   padding: 6px 10px;
-  border: 1.5px solid #6366f1;
+  border: 1.5px solid #1A3A5C;
   border-radius: 6px;
   font-size: 14px;
   font-family: inherit;
   outline: none;
   background: #fff;
   min-width: 0;
-  box-shadow: 0 0 0 2px rgba(99,102,241,.12);
+  box-shadow: 0 0 0 2px rgba(26,58,92,.12);
 }
 
 .inline-edit-textarea {
   padding: 8px 10px;
-  border: 1.5px solid #6366f1;
+  border: 1.5px solid #1A3A5C;
   border-radius: 6px;
   font-size: 14px;
   font-family: inherit;
@@ -435,12 +435,12 @@
   resize: vertical;
   min-height: 60px;
   line-height: 1.5;
-  box-shadow: 0 0 0 2px rgba(99,102,241,.12);
+  box-shadow: 0 0 0 2px rgba(26,58,92,.12);
 }
 
 .inline-save-btn {
   padding: 4px 10px;
-  background: #6366f1;
+  background: #1A3A5C;
   color: #fff;
   border: none;
   border-radius: 6px;
@@ -450,7 +450,7 @@
   white-space: nowrap;
   transition: background 0.12s;
 }
-.inline-save-btn:hover { background: #4f46e5; }
+.inline-save-btn:hover { background: #134E7A; }
 .inline-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .inline-cancel-btn {
@@ -494,8 +494,8 @@
 .linked-item:hover { background: #f1f5f9; }
 .linked-item--clickable { cursor: pointer; }
 .linked-item--clickable:hover {
-  background: #eef2ff;
-  border-color: #c7d2fe;
+  background: #EEF4FA;
+  border-color: #B0C8E0;
 }
 
 .item-icon { font-size: 18px; flex-shrink: 0; }
@@ -506,7 +506,7 @@
   font-size: 13px; color: #94a3b8; margin-left: auto; flex-shrink: 0;
   transition: color 0.15s, transform 0.15s;
 }
-.linked-item--clickable:hover .item-arrow { color: #6366f1; transform: translateX(2px); }
+.linked-item--clickable:hover .item-arrow { color: #1A3A5C; transform: translateX(2px); }
 
 .empty-message { font-size: 13px; color: #94a3b8; font-style: italic; }
 
@@ -547,14 +547,14 @@
 .loading-state { text-align: center; padding: 80px 20px; }
 .loading-state .loading-spinner {
   width: 36px; height: 36px; border: 3px solid #e5e7eb;
-  border-top-color: #6366f1; border-radius: 50%;
+  border-top-color: #1A3A5C; border-radius: 50%;
   margin: 0 auto 16px; animation: spin 0.7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading-state p { color: #64748b; font-size: 14px; }
 
 .info-banner {
-  background: #eef2ff; border: 1px solid #c7d2fe; color: #3730a3;
+  background: #EEF4FA; border: 1px solid #B0C8E0; color: #1A3A5C;
   padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px;
 }
 

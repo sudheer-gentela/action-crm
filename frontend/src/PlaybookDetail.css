@@ -25,8 +25,8 @@
 .version-chip { font-size: 12px; font-weight: 500; padding: 3px 10px; border-radius: 10px; }
 .version-chip--live   { background: #d1fae5; color: #065f46; }
 .version-chip--draft  { background: #fef3c7; color: #92400e; }
-.version-chip--review { background: #dbeafe; color: #1e40af; }
-.version-chip--action { background: #ede9fe; color: #5b21b6; font-style: italic; }
+.version-chip--review { background: #E8F0F8; color: #1A3A5C; }
+.version-chip--action { background: #EEF4FA; color: #1A3A5C; font-style: italic; }
 
 /* tabs */
 .pb-tabs { display: flex; border-bottom: 1px solid var(--color-border-tertiary); margin-bottom: 24px; gap: 2px; }
@@ -72,7 +72,7 @@
 .play-title { font-size: 14px; font-weight: 500; color: var(--color-text-primary); }
 .play-badges { display: flex; gap: 5px; flex-wrap: wrap; }
 .play-badge { font-size: 11px; background: var(--color-background-secondary); color: var(--color-text-secondary); padding: 2px 7px; border-radius: 8px; }
-.badge-condition { background: #ede9fe; color: #5b21b6; }
+.badge-condition { background: #EEF4FA; color: #1A3A5C; }
 .play-description { font-size: 13px; color: var(--color-text-secondary); margin: 0 0 6px; }
 .play-suggested { font-size: 13px; color: var(--color-text-secondary); margin: 0 0 6px; }
 .play-meta { font-size: 12px; color: var(--color-text-tertiary); display: flex; gap: 12px; }

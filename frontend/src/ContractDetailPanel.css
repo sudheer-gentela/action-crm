@@ -16,10 +16,10 @@
 .cdp-stepper { display:flex; align-items:center; padding:10px 20px; background:#fafbff; border-bottom:1px solid #f1f5f9; overflow-x:auto; flex-shrink:0; }
 .cdp-step { display:flex; flex-direction:column; align-items:center; gap:3px; min-width:56px; flex-shrink:0; }
 .cdp-dot { width:22px; height:22px; border-radius:50%; background:#e2e8f0; color:#94a3b8; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; }
-.cdp-step--cur .cdp-dot { background:#6366f1; color:#fff; box-shadow:0 0 0 3px #c7d2fe; }
+.cdp-step--cur .cdp-dot { background:#1A3A5C; color:#fff; box-shadow:0 0 0 3px #B0C8E0; }
 .cdp-step--done .cdp-dot { background:#10b981; color:#fff; }
 .cdp-step-lbl { font-size:9px; font-weight:600; color:#94a3b8; white-space:nowrap; }
-.cdp-step--cur .cdp-step-lbl { color:#6366f1; }
+.cdp-step--cur .cdp-step-lbl { color:#1A3A5C; }
 .cdp-step--done .cdp-step-lbl { color:#10b981; }
 .cdp-line { flex:1; height:2px; background:#e2e8f0; min-width:10px; }
 .cdp-line--on { background:#10b981; }
@@ -29,16 +29,16 @@
 .cdp-appr-bar { display:flex; align-items:center; gap:8px; padding:7px 20px; background:#f8fafc; border-bottom:1px solid #f1f5f9; font-size:12px; flex-shrink:0; }
 .cdp-appr-lbl { font-weight:600; color:#475569; }
 .cdp-appr-pill { font-size:11px; font-weight:600; padding:2px 8px; border-radius:8px; }
-.cdp-appr-start { background:none; border:1px solid #6366f1; color:#6366f1; font-size:11px; padding:2px 8px; border-radius:6px; cursor:pointer; }
-.cdp-appr-start:hover { background:#eef2ff; }
+.cdp-appr-start { background:none; border:1px solid #1A3A5C; color:#1A3A5C; font-size:11px; padding:2px 8px; border-radius:6px; cursor:pointer; }
+.cdp-appr-start:hover { background:#EEF4FA; }
 
 /* Actions */
 .cdp-actions { display:flex; flex-wrap:wrap; gap:6px; padding:10px 20px; border-bottom:1px solid #f1f5f9; flex-shrink:0; }
 .cdp-err { width:100%; font-size:12px; color:#991b1b; background:#fef2f2; padding:6px 10px; border-radius:6px; }
 .cdp-btn { padding:7px 13px; border-radius:8px; border:none; cursor:pointer; font-size:12px; font-weight:600; font-family:inherit; transition:opacity .1s; }
 .cdp-btn:disabled { opacity:.45; cursor:not-allowed; }
-.cdp-btn--primary  { background:#6366f1; color:#fff; }
-.cdp-btn--primary:hover:not(:disabled)   { background:#4f46e5; }
+.cdp-btn--primary  { background:#1A3A5C; color:#fff; }
+.cdp-btn--primary:hover:not(:disabled)   { background:#134E7A; }
 .cdp-btn--secondary { background:#f1f5f9; color:#374151; }
 .cdp-btn--secondary:hover:not(:disabled) { background:#e2e8f0; }
 .cdp-btn--warning  { background:#fef3c7; color:#92400e; }
@@ -48,9 +48,9 @@
 
 .cdp-inline-confirm { width:100%; display:flex; flex-direction:column; gap:6px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; }
 .cdp-inline-input { padding:7px 10px; border:1.5px solid #e2e8f0; border-radius:7px; font-size:13px; font-family:inherit; outline:none; }
-.cdp-inline-input:focus { border-color:#6366f1; }
+.cdp-inline-input:focus { border-color:#1A3A5C; }
 .cdp-inline-btns { display:flex; gap:6px; }
-.cdp-inline-ok { padding:6px 14px; border-radius:7px; border:none; background:#6366f1; color:#fff; font-size:12px; font-weight:600; cursor:pointer; }
+.cdp-inline-ok { padding:6px 14px; border-radius:7px; border:none; background:#1A3A5C; color:#fff; font-size:12px; font-weight:600; cursor:pointer; }
 .cdp-inline-ok--danger { background:#ef4444; }
 .cdp-inline-cancel { padding:6px 12px; border-radius:7px; border:1px solid #e2e8f0; background:#fff; color:#64748b; font-size:12px; cursor:pointer; }
 
@@ -58,31 +58,31 @@
 .cdp-tabs { display:flex; border-bottom:1px solid #e2e8f0; overflow-x:auto; padding:0 20px; flex-shrink:0; }
 .cdp-tab { padding:8px 12px; border:none; background:none; cursor:pointer; font-size:12px; font-weight:500; color:#64748b; border-bottom:2px solid transparent; white-space:nowrap; font-family:inherit; }
 .cdp-tab:hover { color:#0f172a; }
-.cdp-tab--on { color:#6366f1; border-bottom-color:#6366f1; font-weight:700; }
+.cdp-tab--on { color:#1A3A5C; border-bottom-color:#1A3A5C; font-weight:700; }
 
 .cdp-body { flex:1; overflow-y:auto; padding:14px 20px; }
 
 /* Details tab */
 .cdp-section-hd { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
 .cdp-section-ttl { font-size:13px; font-weight:700; color:#0f172a; }
-.cdp-edit-btn { background:none; border:1px solid #e2e8f0; color:#6366f1; font-size:12px; padding:4px 10px; border-radius:6px; cursor:pointer; }
+.cdp-edit-btn { background:none; border:1px solid #e2e8f0; color:#1A3A5C; font-size:12px; padding:4px 10px; border-radius:6px; cursor:pointer; }
 .cdp-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
 .cdp-field { display:flex; flex-direction:column; gap:2px; }
 .cdp-fk { font-size:10px; font-weight:600; color:#94a3b8; text-transform:uppercase; letter-spacing:.05em; }
 .cdp-fv { font-size:13px; color:#0f172a; }
 .cdp-hierarchy { margin-top:14px; padding-top:12px; border-top:1px solid #f1f5f9; }
-.cdp-hier-up { font-size:12px; color:#6366f1; margin:4px 0; }
+.cdp-hier-up { font-size:12px; color:#1A3A5C; margin:4px 0; }
 .cdp-hier-dn { font-size:12px; color:#64748b; margin:3px 0; padding-left:12px; }
 
 /* Edit form */
 .cdp-edit { display:flex; flex-direction:column; gap:10px; }
 .cdp-lbl { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:600; color:#475569; }
 .cdp-inp { padding:7px 10px; border:1.5px solid #e2e8f0; border-radius:7px; font-size:13px; font-family:inherit; outline:none; background:#fff; }
-.cdp-inp:focus { border-color:#6366f1; }
+.cdp-inp:focus { border-color:#1A3A5C; }
 .cdp-row2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .cdp-check { display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; }
 .cdp-edit-btns { display:flex; gap:8px; }
-.cdp-save { padding:8px 18px; border-radius:8px; border:none; background:#6366f1; color:#fff; font-size:13px; font-weight:600; cursor:pointer; }
+.cdp-save { padding:8px 18px; border-radius:8px; border:none; background:#1A3A5C; color:#fff; font-size:13px; font-weight:600; cursor:pointer; }
 .cdp-save:disabled { opacity:.5; }
 .cdp-cancel { padding:8px 14px; border-radius:8px; border:1px solid #e2e8f0; background:#fff; color:#64748b; font-size:13px; cursor:pointer; }
 
@@ -91,7 +91,7 @@
 .cdp-appr-row { display:flex; align-items:flex-start; gap:10px; padding:11px 13px; border-radius:9px; border:1.5px solid #e2e8f0; flex-wrap:wrap; }
 .cdp-appr-row--approved { border-color:#a7f3d0; background:#f0fdf4; }
 .cdp-appr-row--rejected { border-color:#fecaca; background:#fef2f2; }
-.cdp-appr-step { font-size:11px; font-weight:700; color:#6366f1; background:#eef2ff; padding:2px 8px; border-radius:6px; flex-shrink:0; margin-top:2px; }
+.cdp-appr-step { font-size:11px; font-weight:700; color:#1A3A5C; background:#EEF4FA; padding:2px 8px; border-radius:6px; flex-shrink:0; margin-top:2px; }
 .cdp-appr-info { flex:1; }
 .cdp-appr-name { font-size:13px; font-weight:600; color:#0f172a; }
 .cdp-appr-role { font-size:11px; color:#94a3b8; }
@@ -103,7 +103,7 @@
 .cdp-appr-status--rejected  { background:#fee2e2; color:#991b1b; }
 .cdp-appr-status--cancelled { background:#f3f4f6; color:#9ca3af; }
 .cdp-appr-date { font-size:10px; color:#94a3b8; }
-.cdp-decide-btn { padding:5px 10px; border-radius:6px; border:1.5px solid #6366f1; color:#6366f1; background:#fff; font-size:11px; cursor:pointer; flex-shrink:0; }
+.cdp-decide-btn { padding:5px 10px; border-radius:6px; border:1.5px solid #1A3A5C; color:#1A3A5C; background:#fff; font-size:11px; cursor:pointer; flex-shrink:0; }
 .cdp-decide-form { width:100%; display:flex; flex-direction:column; gap:6px; }
 
 /* Signatories */
@@ -117,7 +117,7 @@
 .cdp-rm-btn { background:none; border:none; color:#94a3b8; cursor:pointer; font-size:14px; padding:2px 4px; flex-shrink:0; }
 .cdp-rm-btn:hover { color:#ef4444; }
 .cdp-add-sig { display:flex; flex-direction:column; gap:8px; padding:12px; border:1.5px solid #e2e8f0; border-radius:9px; background:#f8fafc; }
-.cdp-add-sig-btn { padding:8px; border:1.5px dashed #e2e8f0; border-radius:8px; background:none; color:#6366f1; font-size:12px; font-weight:600; cursor:pointer; text-align:center; }
+.cdp-add-sig-btn { padding:8px; border:1.5px dashed #e2e8f0; border-radius:8px; background:none; color:#1A3A5C; font-size:12px; font-weight:600; cursor:pointer; text-align:center; }
 .cdp-add-sig-btn:hover { background:#f8fafc; }
 
 /* Timeline */
@@ -132,7 +132,7 @@
 
 /* Empty */
 .cdp-empty-tab { padding:24px; text-align:center; color:#94a3b8; font-size:13px; display:flex; flex-direction:column; align-items:center; gap:10px; }
-.cdp-tab-btn { padding:8px 16px; border-radius:8px; border:none; background:#6366f1; color:#fff; font-size:13px; font-weight:600; cursor:pointer; }
+.cdp-tab-btn { padding:8px 16px; border-radius:8px; border:none; background:#1A3A5C; color:#fff; font-size:13px; font-weight:600; cursor:pointer; }
 
 /* ── v2 additions (Chunks 3 + 4) ─────────────────────────────── */
 
@@ -145,8 +145,8 @@
 /* Customer-signing flag inline with action buttons */
 .cdp-flag-badge {
   display: inline-flex; align-items: center;
-  font-size: 12px; font-weight: 600; color: #5b21b6;
-  background: #ede9fe; padding: 5px 10px; border-radius: 8px;
+  font-size: 12px; font-weight: 600; color: #1A3A5C;
+  background: #EEF4FA; padding: 5px 10px; border-radius: 8px;
 }
 
 /* Inline form enhancements */
@@ -175,11 +175,11 @@
 
 /* Hierarchy type + status labels */
 .cdp-hier-type { color: #94a3b8; font-size: 11px; }
-.cdp-hier-status { font-size: 11px; color: #6366f1; font-weight: 600; }
+.cdp-hier-status { font-size: 11px; color: #1A3A5C; font-weight: 600; }
 
 /* Signatories — customer-initiated signing notice */
 .cdp-sig-notice {
-  font-size: 12px; background: #ede9fe; color: #5b21b6;
+  font-size: 12px; background: #EEF4FA; color: #1A3A5C;
   padding: 8px 12px; border-radius: 8px; font-weight: 600;
 }
 

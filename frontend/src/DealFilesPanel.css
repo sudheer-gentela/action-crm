@@ -20,7 +20,7 @@
   width: 14px;
   height: 14px;
   border: 2px solid #e5e7eb;
-  border-top-color: #2563eb;
+  border-top-color: #134E7A;
   border-radius: 50%;
   animation: dfp-spin 0.7s linear infinite;
   display: inline-block;
@@ -52,16 +52,16 @@
 .dfp-btn--manage {
   font-size: 12px;
   font-weight: 600;
-  color: #2563eb;
+  color: #134E7A;
   background: #eff6ff;
-  border: 1px solid #bfdbfe;
+  border: 1px solid #C5D9EC;
   border-radius: 6px;
   padding: 4px 11px;
   cursor: pointer;
   text-decoration: none;
   transition: background 0.15s;
 }
-.dfp-btn--manage:hover { background: #dbeafe; }
+.dfp-btn--manage:hover { background: #E8F0F8; }
 
 /* ── Empty state ─────────────────────────────────────────────── */
 .dfp-empty {
@@ -73,7 +73,7 @@
 }
 
 .dfp-link {
-  color: #2563eb;
+  color: #134E7A;
   cursor: pointer;
   font-weight: 500;
   text-decoration: underline;

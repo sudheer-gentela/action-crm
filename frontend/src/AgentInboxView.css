@@ -54,8 +54,8 @@
 }
 .ai-inbox-filter-select:focus {
   outline: none;
-  border-color: #6366f1;
-  box-shadow: 0 0 0 2px rgba(99,102,241,0.15);
+  border-color: #1A3A5C;
+  box-shadow: 0 0 0 2px rgba(26,58,92,0.15);
 }
 
 .ai-inbox-bulk-actions {
@@ -137,12 +137,12 @@
   box-shadow: 0 1px 4px rgba(0,0,0,0.06);
 }
 .ai-inbox-card--selected {
-  border-color: #6366f1;
+  border-color: #1A3A5C;
   background: #faf5ff;
 }
 .ai-inbox-card--active {
-  border-color: #6366f1;
-  box-shadow: 0 0 0 2px rgba(99,102,241,0.15);
+  border-color: #1A3A5C;
+  box-shadow: 0 0 0 2px rgba(26,58,92,0.15);
 }
 
 .ai-inbox-card-main {
@@ -160,7 +160,7 @@
   width: 16px;
   height: 16px;
   cursor: pointer;
-  accent-color: #6366f1;
+  accent-color: #1A3A5C;
 }
 
 .ai-inbox-card-type {
@@ -251,11 +251,11 @@
   background: #fee2e2;
 }
 .ai-inbox-detail-btn {
-  color: #6366f1;
-  border-color: #c7d2fe;
+  color: #1A3A5C;
+  border-color: #B0C8E0;
 }
 .ai-inbox-detail-btn:hover {
-  background: #eef2ff;
+  background: #EEF4FA;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -368,8 +368,8 @@
 }
 .ai-payload-input:focus {
   outline: none;
-  border-color: #6366f1;
-  box-shadow: 0 0 0 2px rgba(99,102,241,0.15);
+  border-color: #1A3A5C;
+  box-shadow: 0 0 0 2px rgba(26,58,92,0.15);
 }
 .ai-payload-input[readonly] {
   background: #f9fafb;

@@ -123,12 +123,12 @@
   background: #f5f5f7;
 }
 .oa-nav-item--active {
-  color: #4338ca;
-  background: #eef2ff;
+  color: #134E7A;
+  background: #EEF4FA;
   font-weight: 600;
 }
 .oa-nav-item--active:hover {
-  background: #e0e7ff;
+  background: #D8EAF5;
 }
 
 .oa-nav-icon {
@@ -268,8 +268,8 @@
   padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
   white-space: nowrap;
 }
-.oa-role-badge--purple { background: #f5f3ff; color: #6d28d9; border: 1px solid #ddd6fe; }
-.oa-role-badge--blue   { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.oa-role-badge--purple { background: #EEF4FA; color: #1A3A5C; border: 1px solid #ddd6fe; }
+.oa-role-badge--blue   { background: #eff6ff; color: #1d4ed8; border: 1px solid #C5D9EC; }
 .oa-role-badge--green  { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
 .oa-role-badge--grey   { background: #f7fafc; color: #718096; border: 1px solid #e2e8f0; }
 
@@ -280,7 +280,7 @@
   font-size: 14px; background: white; color: #1a202c;
   transition: border-color 0.15s;
 }
-.oa-search:focus { outline: none; border-color: #667eea; }
+.oa-search:focus { outline: none; border-color: #1A3A5C; }
 
 /* ── Member table ─────────────────────────────────────────────── */
 .oa-member-table { display: flex; flex-direction: column; gap: 8px; }
@@ -296,7 +296,7 @@
 
 .oa-member-avatar {
   width: 40px; height: 40px; border-radius: 50%;
-  background: linear-gradient(135deg, #667eea, #764ba2);
+  background: linear-gradient(135deg, #1A3A5C, #E8630A);
   color: white; font-size: 16px; font-weight: 700;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
@@ -310,7 +310,7 @@
 .oa-member-meta  { font-size: 12px; color: #a0aec0; margin-top: 2px; }
 
 .oa-you-tag {
-  font-size: 11px; background: #667eea; color: white;
+  font-size: 11px; background: #1A3A5C; color: white;
   padding: 1px 7px; border-radius: 999px; font-weight: 600;
 }
 
@@ -320,7 +320,7 @@
   padding: 7px 10px; border: 1px solid #e2e8f0; border-radius: 6px;
   font-size: 13px; background: white; cursor: pointer; color: #1a202c;
 }
-.oa-role-select:focus { outline: none; border-color: #667eea; }
+.oa-role-select:focus { outline: none; border-color: #1A3A5C; }
 
 .oa-member-actions { flex-shrink: 0; }
 
@@ -334,7 +334,7 @@
 /* ── Invite form ──────────────────────────────────────────────── */
 .oa-invite-form {
   background: #f0f9ff !important;
-  border-color: #bfdbfe !important;
+  border-color: #C5D9EC !important;
 }
 .oa-invite-actions {
   display: flex; justify-content: space-between; align-items: flex-end;
@@ -356,7 +356,7 @@
 }
 .sa-form-field input:focus,
 .sa-form-field select:focus,
-.sa-form-field textarea:focus { outline: none; border-color: #667eea; }
+.sa-form-field textarea:focus { outline: none; border-color: #1A3A5C; }
 
 /* ── Invitation list ──────────────────────────────────────────── */
 .oa-invite-list { display: flex; flex-direction: column; gap: 8px; }
@@ -393,7 +393,7 @@
   font-size: 15px; color: #1a202c; background: white;
   transition: border-color 0.15s;
 }
-.oa-input:focus { outline: none; border-color: #667eea; }
+.oa-input:focus { outline: none; border-color: #1A3A5C; }
 
 .oa-plan-grid {
   display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
@@ -408,7 +408,7 @@
 
 .sa-plan-pill {
   display: inline-block; padding: 2px 8px;
-  background: #eef2ff; color: #4338ca;
+  background: #EEF4FA; color: #134E7A;
   border-radius: 6px; font-size: 12px; font-weight: 600; text-transform: capitalize;
 }
 
@@ -420,11 +420,11 @@
 
 /* ── Shared button styles (mirror SettingsView) ───────────────── */
 .sv-btn-primary {
-  padding: 10px 18px; background: #667eea; color: white;
+  padding: 10px 18px; background: #1A3A5C; color: white;
   border: none; border-radius: 8px; font-size: 14px; font-weight: 600;
   cursor: pointer; transition: background 0.15s; white-space: nowrap;
 }
-.sv-btn-primary:hover    { background: #5a67d8; }
+.sv-btn-primary:hover    { background: #134E7A; }
 .sv-btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -455,7 +455,7 @@
 }
 .oa-pb-list-item:last-child { border-bottom: none; }
 .oa-pb-list-item:hover      { background: #f7fafc; }
-.oa-pb-list-item.active     { background: #ebf4ff; border-left: 3px solid #667eea; }
+.oa-pb-list-item.active     { background: #E8F0F8; border-left: 3px solid #1A3A5C; }
 
 .oa-pb-list-main {
   display: flex; align-items: center; gap: 6px; margin-bottom: 3px;
@@ -467,7 +467,7 @@
   background: none; border: none; padding: 0;
   font-size: 12px; color: #3182ce; cursor: pointer; text-decoration: underline;
 }
-.oa-pb-link:hover           { color: #2c5282; }
+.oa-pb-link:hover           { color: #1A3A5C; }
 .oa-pb-link--danger         { color: #e53e3e; }
 .oa-pb-link--danger:hover   { color: #c53030; }
 
@@ -488,14 +488,14 @@
   border: none; border-bottom: 2px solid transparent;
   padding: 2px 0; background: transparent; transition: border-color 0.15s;
 }
-.oa-pb-name-input:focus    { outline: none; border-bottom-color: #667eea; }
+.oa-pb-name-input:focus    { outline: none; border-bottom-color: #1A3A5C; }
 .oa-pb-name-input::placeholder { color: #cbd5e0; }
 .oa-pb-desc-input {
   width: 100%; font-size: 13px; color: #718096;
   border: none; border-bottom: 1px dashed #e2e8f0;
   padding: 2px 0; background: transparent; transition: border-color 0.15s;
 }
-.oa-pb-desc-input:focus    { outline: none; border-bottom-color: #667eea; }
+.oa-pb-desc-input:focus    { outline: none; border-bottom-color: #1A3A5C; }
 .oa-pb-desc-input::placeholder { color: #cbd5e0; }
 
 .oa-pb-default-badge {
@@ -540,9 +540,9 @@
 .oa-pb-add-action {
   margin-top: 6px; background: none; border: 1px dashed #cbd5e0;
   border-radius: 6px; padding: 6px 12px; font-size: 13px;
-  color: #667eea; cursor: pointer; width: 100%; transition: all 0.15s;
+  color: #1A3A5C; cursor: pointer; width: 100%; transition: all 0.15s;
 }
-.oa-pb-add-action:hover { background: #f0f4ff; border-color: #667eea; }
+.oa-pb-add-action:hover { background: #f0f4ff; border-color: #1A3A5C; }
 
 /* ═══════════════════════════════════════════════════════════════
    sv-* shared classes — copied from SettingsView.css
@@ -572,7 +572,7 @@
   font-size: 14px; color: #1a202c; background: white; font-family: inherit;
   transition: border-color 0.15s; box-sizing: border-box;
 }
-.sv-input:focus   { outline: none; border-color: #667eea; }
+.sv-input:focus   { outline: none; border-color: #1A3A5C; }
 .sv-input:disabled { background: #f7fafc; color: #a0aec0; cursor: not-allowed; }
 
 .sv-alert {
@@ -596,7 +596,7 @@
 .sv-stage-row    { border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; }
 .sv-stage-header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; background: white; transition: background 0.15s; }
 .sv-stage-header:hover { background: #f7fafc; }
-.sv-stage-num    { width: 24px; height: 24px; background: #667eea; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+.sv-stage-num    { width: 24px; height: 24px; background: #1A3A5C; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
 .sv-stage-name   { font-weight: 600; color: #1a202c; font-size: 14px; min-width: 100px; }
 .sv-stage-goal   { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sv-stage-detail { padding: 16px; background: #fafafa; border-top: 1px solid #e2e8f0; }
@@ -621,8 +621,8 @@
   cursor: pointer; transition: all 0.15s; white-space: nowrap;
 }
 .sv-btn-sm:hover { background: #f7fafc; border-color: #cbd5e0; }
-.sv-btn-sm--primary { background: #eef2ff; color: #4338ca; border-color: #c7d2fe; }
-.sv-btn-sm--primary:hover { background: #e0e7ff; }
+.sv-btn-sm--primary { background: #EEF4FA; color: #134E7A; border-color: #B0C8E0; }
+.sv-btn-sm--primary:hover { background: #D8EAF5; }
 .sv-btn-sm--danger  { color: #c53030; border-color: #fed7d7; }
 .sv-btn-sm--danger:hover  { background: #fff5f5; }
 
@@ -647,7 +647,7 @@
   font-weight: 600; font-size: 14px; color: #1a202c;
 }
 .oa-role-row__name--editable { cursor: pointer; }
-.oa-role-row__name--editable:hover { color: #4338ca; }
+.oa-role-row__name--editable:hover { color: #134E7A; }
 
 .oa-role-row__tag {
   display: inline-block; padding: 2px 8px; font-size: 11px; font-weight: 600;
@@ -655,7 +655,7 @@
   letter-spacing: 0.3px;
 }
 .oa-role-row__tag--terminal { background: #fef2f2; color: #991b1b; }
-.oa-role-row__tag--system   { background: #eef2ff; color: #4338ca; }
+.oa-role-row__tag--system   { background: #EEF4FA; color: #134E7A; }
 
 /* ── Reorder arrows ──────────────────────────────────────────── */
 .oa-stage-row__order {
@@ -678,14 +678,14 @@
 /* ── Stage type badge ────────────────────────────────────────── */
 .oa-stage-type-badge {
   display: inline-block; padding: 2px 8px; font-size: 11px; font-weight: 600;
-  border-radius: 4px; background: #f0f4ff; color: #4338ca;
+  border-radius: 4px; background: #f0f4ff; color: #134E7A;
   text-transform: capitalize;
 }
 
 /* ── Inline edit input ───────────────────────────────────────── */
 .oa-input--inline {
   padding: 4px 8px; font-size: 14px; font-weight: 600; width: 200px;
-  border: 1px solid #667eea; border-radius: 6px; outline: none;
+  border: 1px solid #1A3A5C; border-radius: 6px; outline: none;
 }
 
 /* ── Select dropdown ─────────────────────────────────────────── */
@@ -694,7 +694,7 @@
   font-size: 14px; color: #1a202c; background: white; font-family: inherit;
   cursor: pointer; transition: border-color 0.15s;
 }
-.oa-select:focus { outline: none; border-color: #667eea; }
+.oa-select:focus { outline: none; border-color: #1A3A5C; }
 
 /* ── Add stage form ──────────────────────────────────────────── */
 .oa-stage-add-form {

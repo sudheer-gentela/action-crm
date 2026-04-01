@@ -121,8 +121,8 @@
 .form-group select:focus,
 .form-group textarea:focus {
   outline: none;
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  border-color: #1A3A5C;
+  box-shadow: 0 0 0 3px rgba(26, 58, 92, 0.1);
 }
 
 .form-group input.error,
@@ -216,14 +216,14 @@
 }
 
 .btn-primary {
-  background: #667eea;
+  background: #1A3A5C;
   color: white;
 }
 
 .btn-primary:hover:not(:disabled) {
   background: #5568d3;
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  box-shadow: 0 4px 12px rgba(26, 58, 92, 0.4);
 }
 
 .btn-primary:disabled {
@@ -329,7 +329,7 @@ input[type="number"] {
 .form-group input:focus-visible,
 .form-group select:focus-visible,
 .form-group textarea:focus-visible {
-  outline: 2px solid #667eea;
+  outline: 2px solid #1A3A5C;
   outline-offset: 2px;
 }
 

@@ -135,7 +135,7 @@
 }
 .oa-input:focus {
   outline: none;
-  border-color: #667eea;
+  border-color: #1A3A5C;
 }
 .oa-input--sm {
   padding: 6px 9px;
@@ -260,7 +260,7 @@
 .oa-dim-item__scope--internal {
   background: #eff6ff;
   color: #1d4ed8;
-  border-color: #bfdbfe;
+  border-color: #C5D9EC;
 }
 .oa-dim-item__scope--customer {
   background: #f0fdf4;
@@ -269,7 +269,7 @@
 }
 .oa-dim-item__scope--both {
   background: #faf5ff;
-  color: #6d28d9;
+  color: #1A3A5C;
   border-color: #ddd6fe;
 }
 
@@ -341,13 +341,13 @@
 
 /* Variants */
 .oa-btn--primary {
-  background: #667eea;
+  background: #1A3A5C;
   color: #fff;
-  border-color: #667eea;
+  border-color: #1A3A5C;
 }
 .oa-btn--primary:hover:not(:disabled) {
-  background: #5a67d8;
-  border-color: #5a67d8;
+  background: #134E7A;
+  border-color: #134E7A;
 }
 
 .oa-btn--ghost {
