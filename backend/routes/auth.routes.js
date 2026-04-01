@@ -248,16 +248,21 @@ const nodemailer  = require('nodemailer');
 // Lazy-init transporter so it doesn't crash on startup if env
 // vars aren't set yet.
 let _transporter = null;
-function getTransporter() {
-  if (!_transporter) {
+function getTransporter(force = false) {
+  if (!_transporter || force) {
     console.log('[Mailer] Initialising transporter — MAIL_USER:', process.env.MAIL_USER || 'NOT SET');
     console.log('[Mailer] MAIL_PASS set:', !!process.env.MAIL_PASS);
     _transporter = nodemailer.createTransport({
-      service: 'gmail',
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
       auth: {
         user: process.env.MAIL_USER,
         pass: process.env.MAIL_PASS,
       },
+      connectionTimeout: 10000,
+      greetingTimeout:   10000,
+      socketTimeout:     15000,
     });
   }
   return _transporter;
@@ -309,7 +314,6 @@ router.post('/forgot-password', async (req, res) => {
 
       // Send email
       console.log(`[ForgotPassword] Attempting to send reset email to ${user.email}`);
-      console.log(`[ForgotPassword] Reset link: ${resetLink}`);
       try {
         await getTransporter().sendMail({
           from:    `"GoWarm CRM" <${process.env.MAIL_USER}>`,
@@ -340,12 +344,8 @@ router.post('/forgot-password', async (req, res) => {
         });
         console.log(`[ForgotPassword] ✅ Reset email sent to ${user.email}`);
       } catch (mailErr) {
-        // Log full error detail — not just message
-        console.error('[ForgotPassword] ❌ Mail error:', mailErr.message);
-        console.error('[ForgotPassword] Mail error code:', mailErr.code);
-        console.error('[ForgotPassword] Mail error command:', mailErr.command);
-        console.error('[ForgotPassword] MAIL_USER in use:', process.env.MAIL_USER);
-        console.error('[ForgotPassword] Full error:', JSON.stringify(mailErr, null, 2));
+        // Log but don't expose mail errors to the client
+        console.error('Password reset mail error:', mailErr.message);
       }
     }
 
