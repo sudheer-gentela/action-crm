@@ -41,7 +41,7 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
   const [contacts, setContacts] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [deals, setDeals] = useState([]);
-  const [emails, setEmails] = useState([]);
+  const [emails] = useState([]);
   const [meetings, setMeetings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
