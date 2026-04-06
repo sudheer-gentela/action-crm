@@ -327,7 +327,7 @@ router.delete('/orgs/:orgId', async (req, res) => {
       // contact activities
       await client.query(`UPDATE contact_activities SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
       // deal activities
-      await client.query(`UPDATE deal_activity SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
+      await client.query(`UPDATE deal_activities SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
       // deal team members
       await client.query(`UPDATE deal_team_members SET added_by = NULL WHERE added_by = ANY($1)`, [ids]);
       // deal play assignees
