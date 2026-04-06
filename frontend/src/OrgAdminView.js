@@ -4816,6 +4816,79 @@ function OAIntegrations({ orgId }) {
 // ── Module toggle helpers ─────────────────────────────────────────────────────
 // All four use apiService.X.toggleModule — see apiService.js for endpoints.
 
+// ─────────────────────────────────────────────────────────────────
+// OAModuleSeedPanel — reusable GoWarm sample playbook seed panel
+// Used in the Playbook sub-tab of each module settings page.
+// Props:
+//   seedDone    bool    — whether seed has already been run
+//   seeding     bool    — in-flight
+//   seedMsg     string  — success/error message
+//   onSeed      fn      — fires the seed request
+//   color       string  — accent colour matching the module
+//   playbookName string — display name
+//   playbookDesc string — short description of what's seeded
+// ─────────────────────────────────────────────────────────────────
+function OAModuleSeedPanel({ seedDone, seeding, seedMsg, onSeed, color, playbookName, playbookDesc }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Info card */}
+      <div style={{
+        background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10,
+        padding: '20px 22px',
+      }}>
+        <div style={{ fontWeight: 700, fontSize: 15, color: '#111827', marginBottom: 6 }}>
+          🌱 GoWarm Sample Playbook
+        </div>
+        <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 16px', lineHeight: 1.6 }}>
+          Seed the <strong>{playbookName}</strong> — a pre-built set of plays built by the GoWarm team
+          to give your org a running start. {playbookDesc}
+        </p>
+        <p style={{ fontSize: 12, color: '#9ca3af', margin: '0 0 18px', lineHeight: 1.5 }}>
+          This is a <strong>one-time action</strong>. The playbook will appear in your Playbooks list where
+          you can edit, rename, or clone it. Existing playbooks are not affected.
+        </p>
+
+        {seedDone ? (
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            padding: '8px 16px', borderRadius: 8,
+            background: color + '15', border: `1px solid ${color}40`,
+            color, fontSize: 13, fontWeight: 600,
+          }}>
+            ✓ Sample playbook already seeded — find it in Playbooks
+          </div>
+        ) : (
+          <button
+            disabled={seeding}
+            onClick={onSeed}
+            style={{
+              padding: '9px 22px', borderRadius: 8, border: 'none',
+              background: color, color: '#fff',
+              fontSize: 13, fontWeight: 600,
+              cursor: seeding ? 'not-allowed' : 'pointer',
+              opacity: seeding ? 0.7 : 1,
+              transition: 'opacity 0.15s',
+            }}
+          >
+            {seeding ? '⏳ Seeding…' : '🌱 Seed GoWarm Sample Playbook'}
+          </button>
+        )}
+
+        {seedMsg && (
+          <div style={{
+            marginTop: 12, padding: '8px 14px', borderRadius: 7, fontSize: 13,
+            background: seedMsg.startsWith('Error') ? '#fef2f2' : '#f0fdf4',
+            color:      seedMsg.startsWith('Error') ? '#991b1b'  : '#166534',
+            border:     `1px solid ${seedMsg.startsWith('Error') ? '#fecaca' : '#bbf7d0'}`,
+          }}>
+            {seedMsg}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ModuleSubTabs({ tabs, active, onChange }) {
   return (
     <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #e5e7eb', marginBottom: 24 }}>
@@ -4944,6 +5017,11 @@ function OAProspectingModule() {
   const token  = localStorage.getItem('token') || localStorage.getItem('authToken');
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
+  const [subTab, setSubTab]       = useState('general');
+  const [seedDone, setSeedDone]   = useState(false);
+  const [seeding, setSeeding]     = useState(false);
+  const [seedMsg, setSeedMsg]     = useState('');
+
   const [cfg, setCfg]         = useState({
     ai_provider:     'anthropic',
     ai_model:        'claude-haiku-4-5-20251001',
@@ -4964,7 +5042,8 @@ function OAProspectingModule() {
     Promise.all([
       fetch(`${API}/org/admin/prospecting/ai-config`, { headers }).then(r => r.json()),
       fetch(`${API}/prompts/org/prospecting`, { headers }).then(r => r.json()),
-    ]).then(([cfgRes, promptRes]) => {
+      fetch(`${API}/org/admin/seed-status`, { headers }).then(r => r.json()),
+    ]).then(([cfgRes, promptRes, seedRes]) => {
       const c = cfgRes || {};
       setCfg({
         ai_provider:     c.ai_provider     || 'anthropic',
@@ -4973,8 +5052,28 @@ function OAProspectingModule() {
       });
       setOrgResearchPrompt(promptRes?.prompts?.prospecting_research || '');
       setOrgDraftPrompt(promptRes?.prompts?.prospecting_draft       || '');
+      setSeedDone(!!seedRes?.status?.prospecting);
     }).catch(() => {}).finally(() => setLoading(false));
   }, []); // eslint-disable-line
+
+  const handleSeedProspecting = async () => {
+    setSeeding(true); setSeedMsg('');
+    try {
+      const r = await fetch(`${API}/org/admin/seed-module`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ module: 'prospecting' }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data?.error?.message || 'Seed failed');
+      setSeedDone(true);
+      setSeedMsg(data.seeded ? 'GoWarm sample playbook seeded ✓' : data.message);
+      setTimeout(() => setSeedMsg(''), 4000);
+    } catch (e) {
+      setSeedMsg('Error: ' + (e.message || 'Failed to seed'));
+    } finally {
+      setSeeding(false);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -5010,16 +5109,39 @@ function OAProspectingModule() {
         </div>
       </div>
 
-      <OAModuleGeneral
-        moduleKey="prospecting"
-        icon="🎯"
-        label="Prospecting"
-        desc="Enables the prospect pipeline, ICP scoring, outreach sequencing, and prospecting playbooks for your whole organisation."
-        toggleFn={(enabled) => apiService.prospects.toggleModule(enabled)}
+      <ModuleSubTabs
+        tabs={[['general', 'General'], ['ai', 'AI Settings'], ['playbook', 'Playbook']]}
+        active={subTab}
+        onChange={setSubTab}
       />
 
-      {/* ── AI Settings ─────────────────────────────────────────────────── */}
-      <div style={{ marginTop: 32, borderTop: '1px solid #e5e7eb', paddingTop: 28 }}>
+      {/* ── General sub-tab ── */}
+      {subTab === 'general' && (
+        <OAModuleGeneral
+          moduleKey="prospecting"
+          icon="🎯"
+          label="Prospecting"
+          desc="Enables the prospect pipeline, ICP scoring, outreach sequencing, and prospecting playbooks for your whole organisation."
+          toggleFn={(enabled) => apiService.prospects.toggleModule(enabled)}
+        />
+      )}
+
+      {/* ── Playbook seed sub-tab ── */}
+      {subTab === 'playbook' && (
+        <OAModuleSeedPanel
+          seedDone={seedDone}
+          seeding={seeding}
+          seedMsg={seedMsg}
+          onSeed={handleSeedProspecting}
+          color="#0F9D8E"
+          playbookName="GoWarm Prospecting Playbook"
+          playbookDesc="42 plays across 9 stages: Target → Research → Outreach → Engaged → RAL → Sales Discovery Call → SAL → Disqualified / Nurture."
+        />
+      )}
+
+      {/* ── AI Settings sub-tab ── */}
+      {subTab === 'ai' && (
+      <div style={{ marginTop: 8 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
           <div>
             <h3 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 600, color: '#111827' }}>🤖 Org AI Defaults</h3>
@@ -5124,12 +5246,10 @@ function OAProspectingModule() {
           </>
         )}
       </div>
+      )}
     </div>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────
-// CLM MODULE — General | eSign Configuration | CLM Templates
 // ─────────────────────────────────────────────────────────────────
 
 function OACLMESignConfig() {
@@ -5273,13 +5393,26 @@ function OACLMESignConfig() {
 }
 
 function OACLMModule() {
+  const API    = process.env.REACT_APP_API_URL;
+  const token  = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
   const [enabled, setEnabled]   = useState(false);
   const [loading, setLoading]   = useState(true);
   const [subTab, setSubTab]     = useState('general');
+  const [seedDone, setSeedDone] = useState(false);
+  const [seeding, setSeeding]   = useState(false);
+  const [seedMsg, setSeedMsg]   = useState('');
 
   useEffect(() => {
-    apiService.orgAdmin.getProfile()
-      .then(r => setEnabled(r.data.org?.settings?.modules?.contracts || false))
+    Promise.all([
+      apiService.orgAdmin.getProfile(),
+      fetch(`${API}/org/admin/seed-status`, { headers }).then(r => r.json()),
+    ])
+      .then(([profileRes, seedRes]) => {
+        setEnabled(profileRes.data.org?.settings?.modules?.contracts || false);
+        setSeedDone(!!seedRes?.status?.clm);
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
 
@@ -5291,11 +5424,30 @@ function OACLMModule() {
     };
     window.addEventListener('moduleToggle', handler);
     return () => window.removeEventListener('moduleToggle', handler);
-  }, []);
+  }, []); // eslint-disable-line
+
+  const handleSeedCLM = async () => {
+    setSeeding(true); setSeedMsg('');
+    try {
+      const r = await fetch(`${API}/org/admin/seed-module`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ module: 'clm' }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data?.error?.message || 'Seed failed');
+      setSeedDone(true);
+      setSeedMsg(data.seeded ? 'GoWarm CLM sample playbook seeded ✓' : data.message);
+      setTimeout(() => setSeedMsg(''), 4000);
+    } catch (e) {
+      setSeedMsg('Error: ' + (e.message || 'Failed to seed'));
+    } finally {
+      setSeeding(false);
+    }
+  };
 
   const tabs = [
     ['general', 'General'],
-    ...(enabled ? [['esign', 'eSign Configuration'], ['templates', 'CLM Templates']] : []),
+    ...(enabled ? [['esign', 'eSign Configuration'], ['templates', 'CLM Templates'], ['playbook', 'Playbook']] : []),
   ];
 
   if (loading) return <div className="sv-loading">Loading…</div>;
@@ -5320,14 +5472,60 @@ function OACLMModule() {
       )}
       {subTab === 'esign'     && enabled && <OACLMESignConfig />}
       {subTab === 'templates' && enabled && <OACLMTemplates />}
+      {subTab === 'playbook'  && enabled && (
+        <OAModuleSeedPanel
+          seedDone={seedDone}
+          seeding={seeding}
+          seedMsg={seedMsg}
+          onSeed={handleSeedCLM}
+          color="#6366f1"
+          playbookName="GoWarm CLM Playbook"
+          playbookDesc="40 plays across 9 stages: Draft → In Review (Legal/Sales/Customer) → In Signatures → Active → Voided / Terminated / Expired."
+        />
+      )}
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────
-// HANDOVER MODULE — General only
+// HANDOVER MODULE — General | Playbook
 // ─────────────────────────────────────────────────────────────────
 function OAHandoverModule() {
+  const API    = process.env.REACT_APP_API_URL;
+  const token  = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+  const [subTab, setSubTab]     = useState('general');
+  const [seedDone, setSeedDone] = useState(false);
+  const [seeding, setSeeding]   = useState(false);
+  const [seedMsg, setSeedMsg]   = useState('');
+
+  useEffect(() => {
+    fetch(`${API}/org/admin/seed-status`, { headers })
+      .then(r => r.json())
+      .then(data => setSeedDone(!!data?.status?.handovers))
+      .catch(() => {});
+  }, []); // eslint-disable-line
+
+  const handleSeedHandovers = async () => {
+    setSeeding(true); setSeedMsg('');
+    try {
+      const r = await fetch(`${API}/org/admin/seed-module`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ module: 'handovers' }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data?.error?.message || 'Seed failed');
+      setSeedDone(true);
+      setSeedMsg(data.seeded ? 'GoWarm Handover sample playbook seeded ✓' : data.message);
+      setTimeout(() => setSeedMsg(''), 4000);
+    } catch (e) {
+      setSeedMsg('Error: ' + (e.message || 'Failed to seed'));
+    } finally {
+      setSeeding(false);
+    }
+  };
+
   return (
     <div className="sv-panel">
       <div className="sv-panel-header">
@@ -5336,29 +5534,60 @@ function OAHandoverModule() {
           <p className="sv-panel-desc">Structured handover workflow when a deal closes — ensures sales captures everything the implementation team needs.</p>
         </div>
       </div>
-      <OAModuleGeneral
-        moduleKey="handovers"
-        icon="🤝"
-        label="Sales → Implementation Handover"
-        desc="Automatically creates a handover checklist when a deal closes. Ensures the implementation team receives everything they need before the handoff."
-        toggleFn={(enabled) => apiService.handovers.toggleModule(enabled)}
+      <ModuleSubTabs
+        tabs={[['general', 'General'], ['playbook', 'Playbook']]}
+        active={subTab}
+        onChange={setSubTab}
       />
+      {subTab === 'general' && (
+        <OAModuleGeneral
+          moduleKey="handovers"
+          icon="🤝"
+          label="Sales → Implementation Handover"
+          desc="Automatically creates a handover checklist when a deal closes. Ensures the implementation team receives everything they need before the handoff."
+          toggleFn={(enabled) => apiService.handovers.toggleModule(enabled)}
+        />
+      )}
+      {subTab === 'playbook' && (
+        <OAModuleSeedPanel
+          seedDone={seedDone}
+          seeding={seeding}
+          seedMsg={seedMsg}
+          onSeed={handleSeedHandovers}
+          color="#0369a1"
+          playbookName="GoWarm Handover Playbook"
+          playbookDesc="15 plays across 5 stages: Assign Service Owner → Document Stakeholders → Record Commitments & Risks → Confirm Go-Live & Commercial → Attach Docs & Sign-off."
+        />
+      )}
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────
-// SERVICE MODULE — General | SLA Settings
+// SERVICE MODULE — General | SLA Settings | Playbook
 // Wraps the existing OAServiceGeneral + OAServiceSLATiers.
 // ─────────────────────────────────────────────────────────────────
 function OAServiceModule() {
+  const API    = process.env.REACT_APP_API_URL;
+  const token  = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
   const [enabled, setEnabled]   = useState(false);
   const [loading, setLoading]   = useState(true);
   const [subTab, setSubTab]     = useState('general');
+  const [seedDone, setSeedDone] = useState(false);
+  const [seeding, setSeeding]   = useState(false);
+  const [seedMsg, setSeedMsg]   = useState('');
 
   useEffect(() => {
-    apiService.orgAdmin.getProfile()
-      .then(r => setEnabled(r.data.org?.settings?.modules?.service || false))
+    Promise.all([
+      apiService.orgAdmin.getProfile(),
+      fetch(`${API}/org/admin/seed-status`, { headers }).then(r => r.json()),
+    ])
+      .then(([profileRes, seedRes]) => {
+        setEnabled(profileRes.data.org?.settings?.modules?.service || false);
+        setSeedDone(!!seedRes?.status?.service);
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
 
@@ -5370,11 +5599,30 @@ function OAServiceModule() {
     };
     window.addEventListener('moduleToggle', handler);
     return () => window.removeEventListener('moduleToggle', handler);
-  }, []);
+  }, []); // eslint-disable-line
+
+  const handleSeedService = async () => {
+    setSeeding(true); setSeedMsg('');
+    try {
+      const r = await fetch(`${API}/org/admin/seed-module`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ module: 'service' }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data?.error?.message || 'Seed failed');
+      setSeedDone(true);
+      setSeedMsg(data.seeded ? 'GoWarm Service sample playbook seeded ✓' : data.message);
+      setTimeout(() => setSeedMsg(''), 4000);
+    } catch (e) {
+      setSeedMsg('Error: ' + (e.message || 'Failed to seed'));
+    } finally {
+      setSeeding(false);
+    }
+  };
 
   const tabs = [
     ['general', 'General'],
-    ...(enabled ? [['sla', 'SLA Settings']] : []),
+    ...(enabled ? [['sla', 'SLA Settings'], ['playbook', 'Playbook']] : []),
   ];
 
   if (loading) return <div className="sv-loading">Loading…</div>;
@@ -5388,8 +5636,19 @@ function OAServiceModule() {
         </div>
       </div>
       <ModuleSubTabs tabs={tabs} active={subTab} onChange={setSubTab} />
-      {subTab === 'general' && <OAServiceGeneral />}
-      {subTab === 'sla'     && enabled && <OAServiceSLATiers />}
+      {subTab === 'general'  && <OAServiceGeneral />}
+      {subTab === 'sla'      && enabled && <OAServiceSLATiers />}
+      {subTab === 'playbook' && enabled && (
+        <OAModuleSeedPanel
+          seedDone={seedDone}
+          seeding={seeding}
+          seedMsg={seedMsg}
+          onSeed={handleSeedService}
+          color="#0891b2"
+          playbookName="GoWarm Service Playbook"
+          playbookDesc="16 plays across 5 stages: Open → In Progress → Pending Customer → Resolved → Closed."
+        />
+      )}
     </div>
   );
 }
@@ -5468,17 +5727,12 @@ function OAAgencyModule() {
 // ─────────────────────────────────────────────────────────────────
 
 // ═════════════════════════════════════════════════════════════════════════════
-// CHANGE 1 — Replace the entire OAModules function with this version.
-//
-// Key differences from the original:
-//   - Loads `allowed` flag per module from the profile response
-//   - Shows locked modules with a greyed-out toggle and "Not included in plan" message
-//   - Org admins can only toggle modules where allowed=true
-//   - handleToggle now writes the new { allowed, enabled } shape via the API
-// ═════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+// OAModules — enable/disable product modules + GoWarm sample playbook seeding
+// ─────────────────────────────────────────────────────────────────────────────
 
 function OAModules() {
-  // modules state now holds { allowed: bool, enabled: bool } per key
+  // modules state holds { allowed: bool, enabled: bool } per key
   const [modules, setModules] = useState({
     contracts:   { allowed: false, enabled: false },
     prospecting: { allowed: false, enabled: false },
@@ -5486,20 +5740,25 @@ function OAModules() {
     service:     { allowed: false, enabled: false },
     agency:      { allowed: false, enabled: false },
   });
-  const [loading, setLoading]  = useState(true);
-  const [saving, setSaving]    = useState(null); // key of module being toggled
-  const [error, setError]      = useState('');
-  const [success, setSuccess]  = useState('');
+  // seedStatus holds { prospecting, sales, clm, service, handovers } booleans
+  const [seedStatus, setSeedStatus] = useState({});
+  const [loading, setLoading]       = useState(true);
+  const [saving, setSaving]         = useState(null);   // module key being toggled
+  const [seeding, setSeeding]       = useState(null);   // module key being seeded
+  const [error, setError]           = useState('');
+  const [success, setSuccess]       = useState('');
+
+  const API    = process.env.REACT_APP_API_URL || '';
+  const token  = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
   useEffect(() => {
-    // The updated GET /profile now returns { org, modules } at the top level.
-    // modules is already normalised to { key: { allowed, enabled } } by the backend.
-    apiService.orgAdmin.getProfile()
-      .then(r => {
-        // Handle both response shapes gracefully:
-        //   New: r.data.modules = { prospecting: { allowed, enabled }, ... }
-        //   Old: r.data.org.settings.modules = { prospecting: true, ... }
-        const normalised = r.data.modules;
+    Promise.all([
+      apiService.orgAdmin.getProfile(),
+      fetch(`${API}/org/admin/seed-status`, { headers }).then(r => r.json()),
+    ])
+      .then(([profileRes, seedRes]) => {
+        const normalised = profileRes.data.modules;
         if (normalised) {
           setModules({
             contracts:   normalised.contracts   || { allowed: false, enabled: false },
@@ -5509,13 +5768,8 @@ function OAModules() {
             agency:      normalised.agency      || { allowed: false, enabled: false },
           });
         } else {
-          // Fallback to legacy shape
-          const settings = r.data.org?.settings || {};
-          const mods = settings.modules || {};
-          const toLegacy = (v) => {
-            const b = v === true || v === 'true';
-            return { allowed: b, enabled: b };
-          };
+          const mods = profileRes.data.org?.settings?.modules || {};
+          const toLegacy = (v) => { const b = v === true || v === 'true'; return { allowed: b, enabled: b }; };
           setModules({
             contracts:   toLegacy(mods.contracts),
             prospecting: toLegacy(mods.prospecting),
@@ -5524,10 +5778,11 @@ function OAModules() {
             agency:      toLegacy(mods.agency),
           });
         }
+        setSeedStatus(seedRes.status || {});
       })
       .catch(() => setError('Failed to load module settings'))
       .finally(() => setLoading(false));
-  }, []);
+  }, []); // eslint-disable-line
 
   const MODULE_TOGGLE_API = {
     contracts:   (enabled) => apiService.contracts.toggleModule(enabled),
@@ -5535,6 +5790,15 @@ function OAModules() {
     handovers:   (enabled) => apiService.handovers.toggleModule(enabled),
     service:     (enabled) => apiService.support.toggleModule(enabled),
     agency:      (enabled) => apiService.agency.toggleModule(enabled),
+  };
+
+  // Maps module key → the playbook seed key used by the backend
+  const MODULE_SEED_KEY = {
+    prospecting: 'prospecting',
+    contracts:   'clm',
+    handovers:   'handovers',
+    service:     'service',
+    agency:      null, // no sample playbook for agency
   };
 
   const handleToggle = async (moduleName, newEnabled) => {
@@ -5549,18 +5813,40 @@ function OAModules() {
       const label = MODULE_DEFS.find(m => m.key === moduleName)?.label || moduleName;
       setSuccess(`${label} module ${newEnabled ? 'enabled' : 'disabled'} ✓`);
       setTimeout(() => setSuccess(''), 3000);
-      // Notify App.js / OrgAdminView to update nav instantly
       window.dispatchEvent(new CustomEvent('moduleToggle', { detail: { module: moduleName, enabled: newEnabled } }));
     } catch (e) {
       const msg = e.response?.data?.error?.message || e.message || 'Failed to update module';
-      // Surface the specific "not provisioned" error clearly
-      if (e.response?.data?.error?.code === 'MODULE_NOT_ALLOWED') {
-        setError(msg); // backend already has a clear message
-      } else {
-        setError(msg);
-      }
+      setError(msg);
     } finally {
       setSaving(null);
+    }
+  };
+
+  const handleSeed = async (moduleName) => {
+    const seedKey = MODULE_SEED_KEY[moduleName];
+    if (!seedKey) return;
+    setSeeding(moduleName);
+    setError('');
+    try {
+      const r = await fetch(`${API}/org/admin/seed-module`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ module: seedKey }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data?.error?.message || 'Seed failed');
+      if (data.seeded) {
+        setSeedStatus(prev => ({ ...prev, [seedKey]: true }));
+        setSuccess(`GoWarm sample playbook seeded for ${MODULE_DEFS.find(m => m.key === moduleName)?.label || moduleName} ✓`);
+        setTimeout(() => setSuccess(''), 4000);
+      } else {
+        setSuccess(data.message || 'Already seeded.');
+        setTimeout(() => setSuccess(''), 3000);
+      }
+    } catch (e) {
+      setError(e.message || 'Failed to seed playbook');
+    } finally {
+      setSeeding(null);
     }
   };
 
@@ -5741,6 +6027,41 @@ function OAModules() {
                         ))}
                       </div>
                     )}
+
+                    {/* GoWarm sample playbook seed button — only when enabled and seed key exists */}
+                    {!isLocked && isEnabled && MODULE_SEED_KEY[mod.key] && (() => {
+                      const sk      = MODULE_SEED_KEY[mod.key];
+                      const seeded  = !!seedStatus[sk];
+                      const isBusy  = seeding === mod.key;
+                      return (
+                        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f3f4f6', display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <button
+                            disabled={seeded || isBusy}
+                            onClick={() => !seeded && !isBusy && handleSeed(mod.key)}
+                            title={seeded ? 'Sample playbook already seeded' : 'Seed the GoWarm sample playbook for this module'}
+                            style={{
+                              padding: '6px 14px',
+                              borderRadius: 7,
+                              border: `1px solid ${seeded ? '#d1d5db' : mod.color}`,
+                              background: seeded ? '#f9fafb' : mod.color + '15',
+                              color: seeded ? '#9ca3af' : mod.color,
+                              fontSize: 12,
+                              fontWeight: 600,
+                              cursor: seeded || isBusy ? 'not-allowed' : 'pointer',
+                              opacity: isBusy ? 0.7 : 1,
+                              transition: 'all 0.15s',
+                            }}
+                          >
+                            {isBusy ? '⏳ Seeding…' : seeded ? '✓ Sample Playbook Seeded' : '🌱 Seed GoWarm Sample Playbook'}
+                          </button>
+                          {!seeded && (
+                            <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                              One-time — loads all v2 plays and stages for this module
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Toggle — disabled for locked modules */}

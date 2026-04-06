@@ -9,6 +9,7 @@ const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
 
 const ActionConfigService = require('../services/actionConfig.service');
+const { seedModulePlaybook, getSeedStatus } = require('../services/orgSeed.service');
 
 router.use(authenticateToken, orgContext);
 
@@ -1540,6 +1541,45 @@ router.patch('/meeting-settings', adminOnly, async (req, res) => {
   } catch (err) {
     console.error('PATCH /org/admin/meeting-settings error:', err);
     res.status(500).json({ error: { message: 'Failed to update meeting integration' } });
+  }
+});
+
+
+// ── Playbook Seeding ──────────────────────────────────────────────────────────
+
+/**
+ * GET /org/admin/seed-status
+ * Returns which modules have already had their GoWarm sample playbook seeded.
+ * Response: { prospecting, sales, clm, service, handovers } — all booleans.
+ */
+router.get('/seed-status', adminOnly, async (req, res) => {
+  try {
+    const status = await getSeedStatus(req.orgId);
+    res.json({ status });
+  } catch (err) {
+    console.error('GET /org/admin/seed-status error:', err);
+    res.status(500).json({ error: { message: 'Failed to load seed status' } });
+  }
+});
+
+/**
+ * POST /org/admin/seed-module
+ * Seeds the GoWarm sample playbook for a given module (one-time per module).
+ * Body: { module: 'prospecting' | 'sales' | 'clm' | 'service' | 'handovers' }
+ * Returns: { seeded: true, message } on success, or { seeded: false, message } if already done.
+ */
+router.post('/seed-module', adminOnly, async (req, res) => {
+  try {
+    const { module } = req.body;
+    const VALID_MODULES = ['prospecting', 'sales', 'clm', 'service', 'handovers'];
+    if (!module || !VALID_MODULES.includes(module)) {
+      return res.status(400).json({ error: { message: `module must be one of: ${VALID_MODULES.join(', ')}` } });
+    }
+    const result = await seedModulePlaybook(req.orgId, module);
+    res.json(result);
+  } catch (err) {
+    console.error('POST /org/admin/seed-module error:', err);
+    res.status(500).json({ error: { message: 'Failed to seed module playbook' } });
   }
 });
 
