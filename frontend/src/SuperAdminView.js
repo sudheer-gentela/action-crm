@@ -119,6 +119,8 @@ function SAOrgs() {
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError]         = useState('');
   const [success, setSuccess]     = useState('');
+  const [deleteTarget, setDeleteTarget] = useState(null); // org being deleted
+  const [deleteInput, setDeleteInput]   = useState('');   // typed confirmation
 
   const LIMIT = 20;
 
@@ -150,30 +152,26 @@ function SAOrgs() {
     }
   };
 
-  const handleDelete = async (org) => {
-    const confirmed = window.confirm(
-      `⚠️ PERMANENTLY DELETE "${org.name}"?\n\nThis will delete ALL data for this organisation — members, deals, playbooks, stages, contacts, and everything else. This cannot be undone.\n\nType the org name to confirm.`
-    );
-    if (!confirmed) return;
-    const typed = window.prompt(`Type "${org.name}" to confirm permanent deletion:`);
-    if (typed !== org.name) {
-      setError('Org name did not match — deletion cancelled.');
-      return;
-    }
+  const handleDelete = async () => {
+    if (!deleteTarget || deleteInput !== deleteTarget.name) return;
     try {
       const API   = process.env.REACT_APP_API_URL || '';
       const token = localStorage.getItem('token') || localStorage.getItem('authToken');
-      const r = await fetch(`${API}/super/orgs/${org.id}`, {
+      const r = await fetch(`${API}/super/orgs/${deleteTarget.id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data?.error?.message || 'Delete failed');
+      setDeleteTarget(null);
+      setDeleteInput('');
       setSuccess(data.message);
       setTimeout(() => setSuccess(''), 4000);
       load();
     } catch (e) {
       setError(e.message || 'Failed to delete organisation');
+      setDeleteTarget(null);
+      setDeleteInput('');
     }
   };
 
@@ -284,7 +282,7 @@ function SAOrgs() {
                         )}
                         <button
                           className="sa-btn-sm sa-btn-sm--red"
-                          onClick={() => handleDelete(org)}
+                          onClick={() => { setDeleteTarget(org); setDeleteInput(''); }}
                           title="Permanently delete org"
                           style={{ opacity: 0.7 }}
                         >
@@ -324,6 +322,70 @@ function SAOrgs() {
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); load(); setSuccess('Organisation created'); setTimeout(() => setSuccess(''), 3000); }}
         />
+      )}
+
+      {/* Delete Org Confirmation Modal */}
+      {deleteTarget && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+        }}>
+          <div style={{
+            background: '#fff', borderRadius: 12, padding: '28px 32px',
+            width: 420, maxWidth: '90vw', boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+          }}>
+            <div style={{ fontSize: 22, marginBottom: 8 }}>🗑️ Delete Organisation</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#111827', marginBottom: 6 }}>
+              {deleteTarget.name}
+            </div>
+            <p style={{ fontSize: 13, color: '#6b7280', lineHeight: 1.6, margin: '0 0 20px' }}>
+              This will <strong>permanently delete all data</strong> for this organisation —
+              members, deals, playbooks, stages, contacts, emails, and everything else.
+              This cannot be undone.
+            </p>
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6 }}>
+                Type <strong>{deleteTarget.name}</strong> to confirm:
+              </label>
+              <input
+                autoFocus
+                value={deleteInput}
+                onChange={e => setDeleteInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && deleteInput === deleteTarget.name && handleDelete()}
+                placeholder={deleteTarget.name}
+                style={{
+                  width: '100%', padding: '8px 12px', borderRadius: 7, boxSizing: 'border-box',
+                  border: `1.5px solid ${deleteInput === deleteTarget.name ? '#ef4444' : '#d1d5db'}`,
+                  fontSize: 14, outline: 'none',
+                }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { setDeleteTarget(null); setDeleteInput(''); }}
+                style={{
+                  padding: '8px 20px', borderRadius: 7, border: '1px solid #d1d5db',
+                  background: '#fff', fontSize: 13, cursor: 'pointer', color: '#374151',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                disabled={deleteInput !== deleteTarget.name}
+                onClick={handleDelete}
+                style={{
+                  padding: '8px 20px', borderRadius: 7, border: 'none',
+                  background: deleteInput === deleteTarget.name ? '#ef4444' : '#fca5a5',
+                  color: '#fff', fontSize: 13, fontWeight: 600,
+                  cursor: deleteInput === deleteTarget.name ? 'pointer' : 'not-allowed',
+                  transition: 'background 0.15s',
+                }}
+              >
+                Permanently Delete
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

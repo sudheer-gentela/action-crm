@@ -225,10 +225,11 @@ router.patch('/orgs/:orgId', async (req, res) => {
 
 // Delete org (hard delete — cascades to all org data)
 router.delete('/orgs/:orgId', async (req, res) => {
+  const client = await pool.connect();
   try {
     const { orgId } = req.params;
 
-    const existing = await pool.query(
+    const existing = await client.query(
       `SELECT id, name FROM organizations WHERE id = $1`,
       [orgId]
     );
@@ -238,16 +239,40 @@ router.delete('/orgs/:orgId', async (req, res) => {
 
     const orgName = existing.rows[0].name;
 
-    // Hard delete — all child records cascade via FK ON DELETE CASCADE
-    await pool.query(`DELETE FROM organizations WHERE id = $1`, [orgId]);
+    await client.query('BEGIN');
+
+    // users.org_id → organizations(id) has no ON DELETE CASCADE.
+    // Users are global accounts shared across the platform — we null out their
+    // org_id rather than deleting them, so their user record stays intact but
+    // they are detached from the deleted org.
+    // org_users rows (the join table) will cascade-delete automatically.
+    await client.query(
+      `UPDATE users SET org_id = NULL WHERE org_id = $1`,
+      [orgId]
+    );
+
+    // organizations_suspended_by_fkey: organizations.suspended_by → users(id)
+    // null this out so the org row itself can be deleted cleanly
+    await client.query(
+      `UPDATE organizations SET suspended_by = NULL WHERE id = $1`,
+      [orgId]
+    );
+
+    // Hard delete — all remaining child records cascade via ON DELETE CASCADE
+    await client.query(`DELETE FROM organizations WHERE id = $1`, [orgId]);
+
+    await client.query('COMMIT');
 
     await auditLog(req, 'delete_org', 'org', parseInt(orgId), { name: orgName });
     console.log(`🗑️  Org ${orgId} (${orgName}) permanently deleted by super admin`);
 
     res.json({ message: `Organisation "${orgName}" permanently deleted.` });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error(`DELETE /super/orgs/${req.params.orgId} error:`, err);
     res.status(500).json({ error: { message: err.message } });
+  } finally {
+    client.release();
   }
 });
 
