@@ -1281,7 +1281,7 @@ async function createPlaybook(client, orgId, module) {
   const result = await client.query(
     `INSERT INTO playbooks
        (org_id, name, type, description, is_default, content, enable_ai_actions, track_instances)
-     VALUES ($1, $2, $3, $4, $5, '', false, false)
+     VALUES ($1, $2, $3, $4, $5, '{}', false, false)
      RETURNING id`,
     [orgId, meta.name, meta.type, meta.description, meta.is_default]
   );
