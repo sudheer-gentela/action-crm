@@ -10,7 +10,7 @@
  * Module keys: 'prospecting' | 'sales' | 'clm' | 'service' | 'handovers'
  */
 
-const pool = require('../db');
+const { pool } = require('../config/database');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STAGE DEFINITIONS
