@@ -223,6 +223,34 @@ router.patch('/orgs/:orgId', async (req, res) => {
   }
 });
 
+// Delete org (hard delete — cascades to all org data)
+router.delete('/orgs/:orgId', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+
+    const existing = await pool.query(
+      `SELECT id, name FROM organizations WHERE id = $1`,
+      [orgId]
+    );
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Organisation not found' } });
+    }
+
+    const orgName = existing.rows[0].name;
+
+    // Hard delete — all child records cascade via FK ON DELETE CASCADE
+    await pool.query(`DELETE FROM organizations WHERE id = $1`, [orgId]);
+
+    await auditLog(req, 'delete_org', 'org', parseInt(orgId), { name: orgName });
+    console.log(`🗑️  Org ${orgId} (${orgName}) permanently deleted by super admin`);
+
+    res.json({ message: `Organisation "${orgName}" permanently deleted.` });
+  } catch (err) {
+    console.error(`DELETE /super/orgs/${req.params.orgId} error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
 // Suspend / unsuspend org
 router.post('/orgs/:orgId/suspend', async (req, res) => {
   try {

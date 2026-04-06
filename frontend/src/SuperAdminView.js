@@ -150,6 +150,33 @@ function SAOrgs() {
     }
   };
 
+  const handleDelete = async (org) => {
+    const confirmed = window.confirm(
+      `⚠️ PERMANENTLY DELETE "${org.name}"?\n\nThis will delete ALL data for this organisation — members, deals, playbooks, stages, contacts, and everything else. This cannot be undone.\n\nType the org name to confirm.`
+    );
+    if (!confirmed) return;
+    const typed = window.prompt(`Type "${org.name}" to confirm permanent deletion:`);
+    if (typed !== org.name) {
+      setError('Org name did not match — deletion cancelled.');
+      return;
+    }
+    try {
+      const API   = process.env.REACT_APP_API_URL || '';
+      const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+      const r = await fetch(`${API}/super/orgs/${org.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data?.error?.message || 'Delete failed');
+      setSuccess(data.message);
+      setTimeout(() => setSuccess(''), 4000);
+      load();
+    } catch (e) {
+      setError(e.message || 'Failed to delete organisation');
+    }
+  };
+
   const handleImpersonate = async (org) => {
     if (!window.confirm(`You are about to enter support mode for "${org.name}". This will be logged. Continue?`)) return;
     try {
@@ -255,6 +282,14 @@ function SAOrgs() {
                             ⏸
                           </button>
                         )}
+                        <button
+                          className="sa-btn-sm sa-btn-sm--red"
+                          onClick={() => handleDelete(org)}
+                          title="Permanently delete org"
+                          style={{ opacity: 0.7 }}
+                        >
+                          🗑
+                        </button>
                       </div>
                     </td>
                   </tr>
