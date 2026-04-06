@@ -362,7 +362,7 @@ class PlaybookPlayService {
         ? play.roles
         : (play.roles ? (typeof play.roles === 'string' ? JSON.parse(play.roles) : play.roles) : []);
 
-      const primaryRole = plays_roles.find(r => r.ownership_type === 'primary') || plays_roles[0] || null;
+      const primaryRole = plays_roles.find(r => r.ownership_type === 'owner') || plays_roles[0] || null;
 
       const assignedUserIds = await resolveForPlay({
         orgId,

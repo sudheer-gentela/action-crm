@@ -22,15 +22,15 @@ const STAGES = {
     { key: 'research',             name: 'Research',             stage_type: 'active',   sort_order: 2,  is_terminal: false, is_system: false, color: '#60A5FA' },
     { key: 'outreach',             name: 'Outreach',             stage_type: 'active',   sort_order: 3,  is_terminal: false, is_system: false, color: '#34D399' },
     { key: 'engaged',              name: 'Engaged',              stage_type: 'active',   sort_order: 4,  is_terminal: false, is_system: false, color: '#FBBF24' },
-    { key: 'ral',                  name: 'RAL',                  stage_type: 'active',   sort_order: 5,  is_terminal: false, is_system: false, color: '#F97316' },
+    { key: 'ral',                  name: 'Rep Accepted Lead (RAL)',  stage_type: 'active',   sort_order: 5,  is_terminal: false, is_system: false, color: '#F97316' },
     { key: 'sales_discovery_call', name: 'Sales Discovery Call', stage_type: 'active',   sort_order: 6,  is_terminal: false, is_system: false, color: '#A78BFA' },
-    { key: 'sal',                  name: 'SAL',                  stage_type: 'active',   sort_order: 7,  is_terminal: false, is_system: false, color: '#2DD4BF' },
+    { key: 'sal',                  name: 'Sales Accepted Lead (SAL)', stage_type: 'active',   sort_order: 7,  is_terminal: false, is_system: false, color: '#2DD4BF' },
     { key: 'disqualified',         name: 'Disqualified',         stage_type: 'lost',     sort_order: 8,  is_terminal: true,  is_system: false, color: '#EF4444' },
     { key: 'nurture',              name: 'Nurture',              stage_type: 'nurture',  sort_order: 9,  is_terminal: false, is_system: false, color: '#6B7280' },
   ],
 
   sales: [
-    { key: 'sal',                    name: 'SAL',                        stage_type: 'active', sort_order: 1, is_terminal: false, is_system: false, color: '#2DD4BF' },
+    { key: 'sal',                    name: 'Sales Accepted Lead (SAL)',       stage_type: 'active', sort_order: 1, is_terminal: false, is_system: false, color: '#2DD4BF' },
     { key: 'sales_qualified',        name: 'Sales Qualified',            stage_type: 'active', sort_order: 2, is_terminal: false, is_system: false, color: '#60A5FA' },
     { key: 'demo',                   name: 'Demo',                       stage_type: 'active', sort_order: 3, is_terminal: false, is_system: false, color: '#FBBF24' },
     { key: 'commercial_negotiation', name: 'Commercial & Negotiation',   stage_type: 'active', sort_order: 4, is_terminal: false, is_system: false, color: '#F97316' },
@@ -1214,6 +1214,240 @@ const PLAYS = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ROLES
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ROLES = [
+  { key: 'executive_sponsor',  name: 'Executive Sponsor',     sort_order: 1  },
+  { key: 'deal_manager',       name: 'Deal Manager',          sort_order: 2  },
+  { key: 'sales_engineer',     name: 'Sales Engineer',        sort_order: 3  },
+  { key: 'implementation',     name: 'Implementation',        sort_order: 4  },
+  { key: 'partner',            name: 'Partner',               sort_order: 5  },
+  { key: 'custom',             name: 'Custom',                sort_order: 6  },
+  { key: 'account_executive',  name: 'Account Executive',     sort_order: 7  },
+  { key: 'solutions_engineer', name: 'Solutions Engineer',    sort_order: 8  },
+  { key: 'customer_success',   name: 'Customer Success',      sort_order: 9  },
+  { key: 'sales_manager',      name: 'Sales Manager',         sort_order: 10 },
+  { key: 'legal',              name: 'Legal',                 sort_order: 11 },
+  { key: 'sdr',                name: 'SDR',                   sort_order: 20 },
+  { key: 'bdr',                name: 'BDR',                   sort_order: 21 },
+  { key: 'outbound_manager',   name: 'Outbound Manager',      sort_order: 22 },
+  { key: 'marketing',          name: 'Marketing',             sort_order: 23 },
+  { key: 'rev_ops',            name: 'Revenue Operations',    sort_order: 24 },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLAY_ROLE_MAP
+//
+// Keyed by module → array of { stage_key, sort_order, owner, co_owner }
+// owner and co_owner are role keys from ROLES.
+// Prospecting plays: owner only (co_owner: null) — uses prospectingActions path.
+// Sales/CLM/Service/Handovers: both owner + co_owner — uses PlaybookPlayService.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PLAY_ROLE_MAP = {
+
+  prospecting: [
+    // Target
+    { stage_key: 'target', sort_order: 1, owner: 'sdr',               co_owner: null },
+    { stage_key: 'target', sort_order: 2, owner: 'sdr',               co_owner: null },
+    { stage_key: 'target', sort_order: 3, owner: 'sdr',               co_owner: null },
+    { stage_key: 'target', sort_order: 4, owner: 'sdr',               co_owner: null },
+    // Research
+    { stage_key: 'research', sort_order: 1, owner: 'sdr',             co_owner: null },
+    { stage_key: 'research', sort_order: 2, owner: 'sdr',             co_owner: null },
+    { stage_key: 'research', sort_order: 3, owner: 'sdr',             co_owner: null },
+    { stage_key: 'research', sort_order: 4, owner: 'sdr',             co_owner: null },
+    // Outreach
+    { stage_key: 'outreach', sort_order: 1, owner: 'sdr',             co_owner: null },
+    { stage_key: 'outreach', sort_order: 2, owner: 'sdr',             co_owner: null },
+    { stage_key: 'outreach', sort_order: 3, owner: 'sdr',             co_owner: null },
+    { stage_key: 'outreach', sort_order: 4, owner: 'sdr',             co_owner: null },
+    { stage_key: 'outreach', sort_order: 5, owner: 'sdr',             co_owner: null },
+    // Engaged
+    { stage_key: 'engaged', sort_order: 1, owner: 'sdr',              co_owner: null },
+    { stage_key: 'engaged', sort_order: 2, owner: 'sdr',              co_owner: null },
+    { stage_key: 'engaged', sort_order: 3, owner: 'sdr',              co_owner: null },
+    { stage_key: 'engaged', sort_order: 4, owner: 'sdr',              co_owner: null },
+    // RAL
+    { stage_key: 'ral', sort_order: 1, owner: 'sdr',                  co_owner: null },
+    { stage_key: 'ral', sort_order: 2, owner: 'sdr',                  co_owner: null },
+    { stage_key: 'ral', sort_order: 3, owner: 'sdr',                  co_owner: null },
+    { stage_key: 'ral', sort_order: 4, owner: 'sdr',                  co_owner: null },
+    { stage_key: 'ral', sort_order: 5, owner: 'sdr',                  co_owner: null },
+    // Sales Discovery Call
+    { stage_key: 'sales_discovery_call', sort_order: 1, owner: 'sdr',              co_owner: null },
+    { stage_key: 'sales_discovery_call', sort_order: 2, owner: 'sdr',              co_owner: null },
+    { stage_key: 'sales_discovery_call', sort_order: 3, owner: 'sdr',              co_owner: null },
+    { stage_key: 'sales_discovery_call', sort_order: 4, owner: 'account_executive', co_owner: null },
+    { stage_key: 'sales_discovery_call', sort_order: 5, owner: 'account_executive', co_owner: null },
+    { stage_key: 'sales_discovery_call', sort_order: 6, owner: 'account_executive', co_owner: null },
+    // SAL
+    { stage_key: 'sal', sort_order: 1, owner: 'sdr',                  co_owner: null },
+    { stage_key: 'sal', sort_order: 2, owner: 'account_executive',    co_owner: null },
+    { stage_key: 'sal', sort_order: 3, owner: 'sdr',                  co_owner: null },
+    { stage_key: 'sal', sort_order: 4, owner: 'account_executive',    co_owner: null },
+    // Disqualified
+    { stage_key: 'disqualified', sort_order: 1, owner: 'sdr',         co_owner: null },
+    { stage_key: 'disqualified', sort_order: 2, owner: 'sdr',         co_owner: null },
+    { stage_key: 'disqualified', sort_order: 3, owner: 'sdr',         co_owner: null },
+    { stage_key: 'disqualified', sort_order: 4, owner: 'sdr',         co_owner: null },
+    // Nurture
+    { stage_key: 'nurture', sort_order: 1, owner: 'sdr',              co_owner: null },
+    { stage_key: 'nurture', sort_order: 2, owner: 'sdr',              co_owner: null },
+    { stage_key: 'nurture', sort_order: 3, owner: 'sdr',              co_owner: null },
+    { stage_key: 'nurture', sort_order: 4, owner: 'sdr',              co_owner: null },
+  ],
+
+  sales: [
+    // SAL
+    { stage_key: 'sal', sort_order: 1, owner: 'account_executive',    co_owner: 'account_executive' },
+    { stage_key: 'sal', sort_order: 2, owner: 'account_executive',    co_owner: 'account_executive' },
+    { stage_key: 'sal', sort_order: 3, owner: 'account_executive',    co_owner: 'account_executive' },
+    { stage_key: 'sal', sort_order: 4, owner: 'account_executive',    co_owner: 'account_executive' },
+    // Sales Qualified
+    { stage_key: 'sales_qualified', sort_order: 1, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'sales_qualified', sort_order: 2, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'sales_qualified', sort_order: 3, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'sales_qualified', sort_order: 4, owner: 'account_executive', co_owner: 'sales_engineer'     },
+    { stage_key: 'sales_qualified', sort_order: 5, owner: 'account_executive', co_owner: 'account_executive' },
+    // Demo
+    { stage_key: 'demo', sort_order: 1, owner: 'sales_engineer',      co_owner: 'account_executive' },
+    { stage_key: 'demo', sort_order: 2, owner: 'account_executive',   co_owner: 'account_executive' },
+    { stage_key: 'demo', sort_order: 3, owner: 'sales_engineer',      co_owner: 'account_executive' },
+    { stage_key: 'demo', sort_order: 4, owner: 'account_executive',   co_owner: 'account_executive' },
+    { stage_key: 'demo', sort_order: 5, owner: 'sales_engineer',      co_owner: 'account_executive' },
+    // Commercial & Negotiation
+    { stage_key: 'commercial_negotiation', sort_order: 1, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'commercial_negotiation', sort_order: 2, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'commercial_negotiation', sort_order: 3, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'commercial_negotiation', sort_order: 4, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'commercial_negotiation', sort_order: 5, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'commercial_negotiation', sort_order: 6, owner: 'account_executive', co_owner: 'account_executive' },
+    // Contracts
+    { stage_key: 'contracts', sort_order: 1, owner: 'account_executive', co_owner: 'legal'             },
+    { stage_key: 'contracts', sort_order: 2, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'contracts', sort_order: 3, owner: 'legal',             co_owner: 'account_executive' },
+    { stage_key: 'contracts', sort_order: 4, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'contracts', sort_order: 5, owner: 'account_executive', co_owner: 'account_executive' },
+    // Closed Won
+    { stage_key: 'closed_won', sort_order: 1, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'closed_won', sort_order: 2, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'closed_won', sort_order: 3, owner: 'account_executive', co_owner: 'customer_success'  },
+    // Closed Lost
+    { stage_key: 'closed_lost', sort_order: 1, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'closed_lost', sort_order: 2, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'closed_lost', sort_order: 3, owner: 'account_executive', co_owner: 'account_executive' },
+  ],
+
+  clm: [
+    // Draft
+    { stage_key: 'draft', sort_order: 1, owner: 'legal',              co_owner: 'account_executive' },
+    { stage_key: 'draft', sort_order: 2, owner: 'legal',              co_owner: 'account_executive' },
+    { stage_key: 'draft', sort_order: 3, owner: 'legal',              co_owner: 'account_executive' },
+    // In Review — Legal
+    { stage_key: 'in_review_legal', sort_order: 1, owner: 'legal',    co_owner: 'legal'             },
+    { stage_key: 'in_review_legal', sort_order: 2, owner: 'account_executive', co_owner: 'legal'    },
+    { stage_key: 'in_review_legal', sort_order: 3, owner: 'account_executive', co_owner: 'legal'    },
+    // In Review — Sales
+    { stage_key: 'in_review_sales', sort_order: 1, owner: 'account_executive', co_owner: 'legal'             },
+    { stage_key: 'in_review_sales', sort_order: 2, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'in_review_sales', sort_order: 3, owner: 'account_executive', co_owner: 'account_executive' },
+    // In Review — Customer
+    { stage_key: 'in_review_customer', sort_order: 1, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'in_review_customer', sort_order: 2, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'in_review_customer', sort_order: 3, owner: 'legal',             co_owner: 'account_executive' },
+    // In Signatures
+    { stage_key: 'in_signatures', sort_order: 1, owner: 'account_executive', co_owner: 'legal'             },
+    { stage_key: 'in_signatures', sort_order: 2, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'in_signatures', sort_order: 3, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'in_signatures', sort_order: 4, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'in_signatures', sort_order: 5, owner: 'account_executive', co_owner: 'account_executive' },
+    { stage_key: 'in_signatures', sort_order: 6, owner: 'account_executive', co_owner: 'customer_success'  },
+    { stage_key: 'in_signatures', sort_order: 7, owner: 'legal',             co_owner: 'account_executive' },
+    { stage_key: 'in_signatures', sort_order: 8, owner: 'legal',             co_owner: 'account_executive' },
+    // Active
+    { stage_key: 'active', sort_order: 1,  owner: 'legal',              co_owner: 'account_executive' },
+    { stage_key: 'active', sort_order: 2,  owner: 'account_executive',  co_owner: 'account_executive' },
+    { stage_key: 'active', sort_order: 3,  owner: 'account_executive',  co_owner: 'customer_success'  },
+    { stage_key: 'active', sort_order: 4,  owner: 'customer_success',   co_owner: 'account_executive' },
+    { stage_key: 'active', sort_order: 5,  owner: 'customer_success',   co_owner: 'account_executive' },
+    { stage_key: 'active', sort_order: 6,  owner: 'customer_success',   co_owner: 'account_executive' },
+    { stage_key: 'active', sort_order: 7,  owner: 'account_executive',  co_owner: 'customer_success'  },
+    { stage_key: 'active', sort_order: 8,  owner: 'account_executive',  co_owner: 'customer_success'  },
+    { stage_key: 'active', sort_order: 9,  owner: 'account_executive',  co_owner: 'customer_success'  },
+    { stage_key: 'active', sort_order: 10, owner: 'sales_manager',      co_owner: 'account_executive' },
+    { stage_key: 'active', sort_order: 11, owner: 'account_executive',  co_owner: 'account_executive' },
+    { stage_key: 'active', sort_order: 12, owner: 'account_executive',  co_owner: 'legal'             },
+    { stage_key: 'active', sort_order: 13, owner: 'executive_sponsor',  co_owner: 'account_executive' },
+    // Voided / Cancelled
+    { stage_key: 'voided_cancelled', sort_order: 1, owner: 'legal',    co_owner: 'account_executive' },
+    { stage_key: 'voided_cancelled', sort_order: 2, owner: 'legal',    co_owner: 'account_executive' },
+    { stage_key: 'voided_cancelled', sort_order: 3, owner: 'account_executive', co_owner: 'legal'    },
+    { stage_key: 'voided_cancelled', sort_order: 4, owner: 'legal',    co_owner: 'account_executive' },
+    // Terminated
+    { stage_key: 'terminated', sort_order: 1, owner: 'legal',          co_owner: 'account_executive' },
+    { stage_key: 'terminated', sort_order: 2, owner: 'legal',          co_owner: 'account_executive' },
+    { stage_key: 'terminated', sort_order: 3, owner: 'customer_success', co_owner: 'account_executive' },
+    // Expired — No Renewal
+    { stage_key: 'expired_no_renewal', sort_order: 1, owner: 'customer_success', co_owner: 'account_executive' },
+    { stage_key: 'expired_no_renewal', sort_order: 2, owner: 'customer_success', co_owner: 'account_executive' },
+    { stage_key: 'expired_no_renewal', sort_order: 3, owner: 'account_executive', co_owner: 'customer_success' },
+  ],
+
+  service: [
+    // Open
+    { stage_key: 'open', sort_order: 1, owner: 'customer_success',    co_owner: 'customer_success' },
+    { stage_key: 'open', sort_order: 2, owner: 'customer_success',    co_owner: 'customer_success' },
+    { stage_key: 'open', sort_order: 3, owner: 'customer_success',    co_owner: 'customer_success' },
+    { stage_key: 'open', sort_order: 4, owner: 'customer_success',    co_owner: 'customer_success' },
+    // In Progress
+    { stage_key: 'in_progress', sort_order: 1, owner: 'customer_success', co_owner: 'customer_success' },
+    { stage_key: 'in_progress', sort_order: 2, owner: 'customer_success', co_owner: 'customer_success' },
+    { stage_key: 'in_progress', sort_order: 3, owner: 'customer_success', co_owner: 'customer_success' },
+    { stage_key: 'in_progress', sort_order: 4, owner: 'customer_success', co_owner: 'customer_success' },
+    // Pending Customer
+    { stage_key: 'pending_customer', sort_order: 1, owner: 'customer_success', co_owner: 'customer_success' },
+    { stage_key: 'pending_customer', sort_order: 2, owner: 'customer_success', co_owner: 'customer_success' },
+    { stage_key: 'pending_customer', sort_order: 3, owner: 'customer_success', co_owner: 'customer_success' },
+    // Resolved
+    { stage_key: 'resolved', sort_order: 1, owner: 'customer_success', co_owner: 'customer_success' },
+    { stage_key: 'resolved', sort_order: 2, owner: 'customer_success', co_owner: 'customer_success' },
+    { stage_key: 'resolved', sort_order: 3, owner: 'customer_success', co_owner: 'customer_success' },
+    // Closed
+    { stage_key: 'closed', sort_order: 1, owner: 'customer_success',  co_owner: 'customer_success' },
+    { stage_key: 'closed', sort_order: 2, owner: 'customer_success',  co_owner: 'customer_success' },
+  ],
+
+  handovers: [
+    // Assign Service Owner
+    { stage_key: 'assign_service_owner', sort_order: 1, owner: 'customer_success',   co_owner: 'account_executive' },
+    { stage_key: 'assign_service_owner', sort_order: 2, owner: 'customer_success',   co_owner: 'customer_success'  },
+    { stage_key: 'assign_service_owner', sort_order: 3, owner: 'customer_success',   co_owner: 'customer_success'  },
+    { stage_key: 'assign_service_owner', sort_order: 4, owner: 'account_executive',  co_owner: 'customer_success'  },
+    // Document Stakeholders
+    { stage_key: 'document_stakeholders', sort_order: 1, owner: 'customer_success',  co_owner: 'account_executive' },
+    { stage_key: 'document_stakeholders', sort_order: 2, owner: 'customer_success',  co_owner: 'account_executive' },
+    { stage_key: 'document_stakeholders', sort_order: 3, owner: 'account_executive', co_owner: 'customer_success'  },
+    { stage_key: 'document_stakeholders', sort_order: 4, owner: 'customer_success',  co_owner: 'customer_success'  },
+    // Record Commitments & Risks
+    { stage_key: 'record_commitments_risks', sort_order: 1, owner: 'account_executive', co_owner: 'customer_success'  },
+    { stage_key: 'record_commitments_risks', sort_order: 2, owner: 'customer_success',  co_owner: 'account_executive' },
+    { stage_key: 'record_commitments_risks', sort_order: 3, owner: 'account_executive', co_owner: 'customer_success'  },
+    { stage_key: 'record_commitments_risks', sort_order: 4, owner: 'customer_success',  co_owner: 'account_executive' },
+    // Confirm Go-Live & Commercial
+    { stage_key: 'confirm_golive_commercial', sort_order: 1, owner: 'customer_success',  co_owner: 'account_executive' },
+    { stage_key: 'confirm_golive_commercial', sort_order: 2, owner: 'account_executive', co_owner: 'customer_success'  },
+    { stage_key: 'confirm_golive_commercial', sort_order: 3, owner: 'customer_success',  co_owner: 'account_executive' },
+    // Attach Docs & Sign-off
+    { stage_key: 'attach_docs_signoff', sort_order: 1, owner: 'customer_success',   co_owner: 'account_executive' },
+    { stage_key: 'attach_docs_signoff', sort_order: 2, owner: 'account_executive',  co_owner: 'customer_success'  },
+    { stage_key: 'attach_docs_signoff', sort_order: 3, owner: 'customer_success',   co_owner: 'customer_success'  },
+    { stage_key: 'attach_docs_signoff', sort_order: 4, owner: 'customer_success',   co_owner: 'account_executive' },
+  ],
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PLAYBOOK METADATA
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1254,6 +1488,101 @@ const PLAYBOOK_META = {
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Upsert all 16 org roles for an org.
+ * Returns a Map<roleKey, roleId> for use in role-linking helpers.
+ */
+async function upsertRoles(client, orgId) {
+  const roleMap = new Map();
+  for (const r of ROLES) {
+    const result = await client.query(
+      `INSERT INTO org_roles (org_id, key, name, is_system, is_active, sort_order)
+       VALUES ($1, $2, $3, false, true, $4)
+       ON CONFLICT (org_id, key) DO UPDATE
+         SET name       = EXCLUDED.name,
+             is_active  = true,
+             sort_order = EXCLUDED.sort_order
+       RETURNING id`,
+      [orgId, r.key, r.name, r.sort_order]
+    );
+    roleMap.set(r.key, result.rows[0].id);
+  }
+  return roleMap;
+}
+
+/**
+ * Insert playbook_roles rows for all roles used by a module's plays.
+ * Derives the distinct role set from PLAY_ROLE_MAP for the given module.
+ */
+async function insertPlaybookRoles(client, playbookId, moduleKey, roleMap) {
+  const entries = PLAY_ROLE_MAP[moduleKey] || [];
+  const roleKeys = new Set();
+  for (const e of entries) {
+    if (e.owner)    roleKeys.add(e.owner);
+    if (e.co_owner) roleKeys.add(e.co_owner);
+  }
+  let sortOrder = 0;
+  for (const roleKey of roleKeys) {
+    const roleId = roleMap.get(roleKey);
+    if (!roleId) continue;
+    sortOrder++;
+    await client.query(
+      `INSERT INTO playbook_roles (playbook_id, role_id, sort_order)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (playbook_id, role_id) DO NOTHING`,
+      [playbookId, roleId, sortOrder]
+    );
+  }
+}
+
+/**
+ * Insert playbook_play_roles rows for all inserted plays in a module.
+ * @param {object} client
+ * @param {Array<{ id, stage_key, sort_order }>} insertedPlays
+ * @param {string} moduleKey
+ * @param {Map<string, number>} roleMap
+ */
+async function insertPlayRoles(client, insertedPlays, moduleKey, roleMap) {
+  const entries = PLAY_ROLE_MAP[moduleKey] || [];
+
+  // Build lookup: "stage_key:sort_order" → { owner, co_owner }
+  const entryMap = new Map();
+  for (const e of entries) {
+    entryMap.set(`${e.stage_key}:${e.sort_order}`, e);
+  }
+
+  for (const play of insertedPlays) {
+    const entry = entryMap.get(`${play.stage_key}:${play.sort_order}`);
+    if (!entry) continue;
+
+    const ownerRoleId    = entry.owner    ? roleMap.get(entry.owner)    : null;
+    const coOwnerRoleId  = entry.co_owner ? roleMap.get(entry.co_owner) : null;
+
+    if (ownerRoleId) {
+      // For same-role plays (owner === co_owner), insert as co_owner so stage-change
+      // (which reads co_owner) works. The owner path falls back to plays_roles[0] anyway.
+      // For different-role plays, insert owner row for on-demand, co_owner row for stage-change.
+      const ownerType = (coOwnerRoleId && coOwnerRoleId === ownerRoleId) ? 'co_owner' : 'owner';
+      await client.query(
+        `INSERT INTO playbook_play_roles (play_id, role_id, ownership_type)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (play_id, role_id) DO NOTHING`,
+        [play.id, ownerRoleId, ownerType]
+      );
+    }
+
+    // Insert co_owner row only when it's a different role from owner
+    if (coOwnerRoleId && coOwnerRoleId !== ownerRoleId) {
+      await client.query(
+        `INSERT INTO playbook_play_roles (play_id, role_id, ownership_type)
+         VALUES ($1, $2, 'co_owner')
+         ON CONFLICT (play_id, role_id) DO NOTHING`,
+        [play.id, coOwnerRoleId]
+      );
+    }
+  }
+}
+
 async function upsertStages(client, orgId, pipeline) {
   const stages = STAGES[pipeline];
   if (!stages) return;
@@ -1290,22 +1619,26 @@ async function createPlaybook(client, orgId, module) {
 
 async function insertPlays(client, orgId, playbookId, module) {
   const plays = PLAYS[module];
-  if (!plays) return;
+  if (!plays) return [];
 
+  const inserted = [];
   for (const p of plays) {
-    await client.query(
+    const result = await client.query(
       `INSERT INTO playbook_plays
          (playbook_id, org_id, stage_key, title, description, suggested_action,
           channel, due_offset_days, priority, is_gate, sort_order,
           trigger_mode, generation_mode, execution_type, is_active)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, true)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, true)
+       RETURNING id, stage_key, sort_order`,
       [
         playbookId, orgId, p.stage_key, p.title, p.description, p.suggested_action,
         p.channel, p.due_offset_days, p.priority, p.is_gate, p.sort_order,
         p.trigger_mode, p.generation_mode, p.execution_type,
       ]
     );
+    inserted.push(result.rows[0]);
   }
+  return inserted;
 }
 
 async function hasBeenSeeded(client, orgId, module) {
@@ -1330,14 +1663,19 @@ async function seedOrg(orgId) {
   try {
     await client.query('BEGIN');
 
+    // Seed roles for this org (all modules share the same role set)
+    const roleMap = await upsertRoles(client, orgId);
+
     // Seed Sales pipeline stages
     await upsertStages(client, orgId, 'sales');
 
     // Seed Sales playbook
     const alreadySeeded = await hasBeenSeeded(client, orgId, 'sales');
     if (!alreadySeeded) {
-      const playbookId = await createPlaybook(client, orgId, 'sales');
-      await insertPlays(client, orgId, playbookId, 'sales');
+      const playbookId   = await createPlaybook(client, orgId, 'sales');
+      const insertedPlays = await insertPlays(client, orgId, playbookId, 'sales');
+      await insertPlaybookRoles(client, playbookId, 'sales', roleMap);
+      await insertPlayRoles(client, insertedPlays, 'sales', roleMap);
     }
 
     await client.query('COMMIT');
@@ -1373,9 +1711,14 @@ async function seedModulePlaybook(orgId, module) {
       return { seeded: false, message: `${module} playbook has already been seeded for this organisation.` };
     }
 
+    // Upsert roles (idempotent — safe to call per module)
+    const roleMap = await upsertRoles(client, orgId);
+
     await upsertStages(client, orgId, module);
-    const playbookId = await createPlaybook(client, orgId, module);
-    await insertPlays(client, orgId, playbookId, module);
+    const playbookId    = await createPlaybook(client, orgId, module);
+    const insertedPlays = await insertPlays(client, orgId, playbookId, module);
+    await insertPlaybookRoles(client, playbookId, module, roleMap);
+    await insertPlayRoles(client, insertedPlays, module, roleMap);
 
     await client.query('COMMIT');
     return { seeded: true, message: `${module} playbook seeded successfully.` };

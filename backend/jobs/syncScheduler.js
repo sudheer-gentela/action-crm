@@ -43,7 +43,6 @@ const UnifiedEmailProvider = require('../services/UnifiedEmailProvider');
 const { emailQueue }       = require('./emailProcessor');
 const config               = require('../config/config');
 const ActionsGenerator             = require('../services/actionsGenerator');
-const ContractActionsGenerator     = require('../services/ContractActionsGenerator');
 const { runNightlyAudit } = require('../services/auditWorker.service');
 const SupportService  = require('../services/supportService');
 const HandoverService = require('../services/handover.service');
@@ -1017,17 +1016,6 @@ function startScheduler() {
       .catch(err => console.error('❌ Deal sweep error:', err.message));
   }, { timezone: 'UTC' });
 
-  // ── CLM contract actions — nightly sweep ──────────────────────────────────
-  // Runs at 02:00 UTC every day. Catches stagnation rules (contracts sitting in
-  // a status for N days) and time-based rules (expiry warnings, expired with no
-  // renewal) that are never triggered by status-change events.
-  cron.schedule('0 2 * * *', () => {
-    console.log('🌙 Running nightly CLM action sweep...');
-    ContractActionsGenerator.generateAll()
-      .then(r => console.log(`✅ CLM sweep done — upserted: ${r.upserted}, resolved: ${r.resolved}`))
-      .catch(err => console.error('❌ CLM sweep error:', err.message));
-  }, { timezone: 'UTC' });
-
   // ── Cases diagnostic sweep — nightly at 02:15 UTC ────────────────────────
   // Runs CasesRulesEngine for every non-terminal case in every active org.
   // Upserts Type A diagnostic alerts (unassigned, SLA breach, stale, etc.)
@@ -1181,7 +1169,6 @@ function startScheduler() {
   }, { timezone: 'UTC' });
 
   console.log('✅ Deal action scheduler started (nightly 01:00 UTC)');
-  console.log('✅ CLM action scheduler started (nightly 02:00 UTC)');
   console.log('✅ Cases diagnostic scheduler started (nightly 02:15 UTC)');
   console.log('✅ Handovers diagnostic scheduler started (nightly 02:30 UTC)');
   console.log('✅ Prospecting diagnostic scheduler started (nightly 02:45 UTC)');

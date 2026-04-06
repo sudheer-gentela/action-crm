@@ -136,7 +136,7 @@ async function _generateFromPlays(prospect, orgId, userId, plays, playbook, play
 
     // Resolve assignee — uses play roles if present, otherwise falls back to caller
     const playRoles = Array.isArray(play.roles) ? play.roles : [];
-    const primaryRole = playRoles.find(r => r.ownership_type === 'primary') || playRoles[0] || null;
+    const primaryRole = playRoles.find(r => r.ownership_type === 'owner') || playRoles[0] || null;
     const assigneeIds = await resolveForPlay({
       orgId,
       roleKey:      primaryRole?.role_key  || null,
