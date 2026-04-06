@@ -278,6 +278,8 @@ router.delete('/orgs/:orgId', async (req, res) => {
       await client.query(`UPDATE prospecting_actions SET completed_by = NULL WHERE completed_by = ANY($1)`, [ids]);
       await client.query(`UPDATE prospecting_actions SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
       await client.query(`UPDATE prospecting_activities SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
+      // prospecting_sender_accounts has a check constraint preventing user_id = NULL — delete the rows instead
+      await client.query(`DELETE FROM prospecting_sender_accounts WHERE user_id = ANY($1)`, [ids]);
       // straps
       await client.query(`UPDATE straps SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
       await client.query(`UPDATE straps SET override_by = NULL WHERE override_by = ANY($1)`, [ids]);
