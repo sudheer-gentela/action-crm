@@ -241,25 +241,132 @@ router.delete('/orgs/:orgId', async (req, res) => {
 
     await client.query('BEGIN');
 
-    // users.org_id → organizations(id) has no ON DELETE CASCADE.
-    // Users are global accounts shared across the platform — we null out their
-    // org_id rather than deleting them, so their user record stays intact but
-    // they are detached from the deleted org.
-    // org_users rows (the join table) will cascade-delete automatically.
-    await client.query(
-      `UPDATE users SET org_id = NULL WHERE org_id = $1`,
+    // ── Step 1: collect user IDs that belong ONLY to this org ──────────────
+    // Users who are in multiple orgs must NOT be deleted.
+    const userRows = await client.query(
+      `SELECT id FROM users
+       WHERE org_id = $1
+         AND id NOT IN (
+           SELECT DISTINCT user_id FROM org_users WHERE org_id != $1
+         )`,
       [orgId]
     );
+    const userIds = userRows.rows.map(r => r.id);
 
-    // organizations_suspended_by_fkey: organizations.suspended_by → users(id)
-    // null this out so the org row itself can be deleted cleanly
-    await client.query(
-      `UPDATE organizations SET suspended_by = NULL WHERE id = $1`,
-      [orgId]
-    );
+    // ── Step 2: clear plain FK references on users that block deletion ──────
+    // These are non-cascade FKs pointing at users(id) that we must null out
+    // before we can delete the user rows.
+    if (userIds.length > 0) {
+      const ids = userIds;
+      // organizations.suspended_by
+      await client.query(`UPDATE organizations SET suspended_by = NULL WHERE suspended_by = ANY($1) AND id = $2`, [ids, orgId]);
+      // accounts
+      await client.query(`UPDATE accounts SET owner_id = NULL WHERE owner_id = ANY($1) AND org_id = $2`, [ids, orgId]);
+      // deals
+      await client.query(`UPDATE deals SET owner_id = NULL WHERE owner_id = ANY($1) AND org_id = $2`, [ids, orgId]);
+      await client.query(`UPDATE deals SET user_id = NULL WHERE user_id = ANY($1) AND org_id = $2`, [ids, orgId]);
+      // contacts
+      await client.query(`UPDATE contacts SET user_id = NULL WHERE user_id = ANY($1) AND org_id = $2`, [ids, orgId]);
+      await client.query(`UPDATE contacts SET email_snoozed_by = NULL WHERE email_snoozed_by = ANY($1)`, [ids]);
+      // contracts
+      await client.query(`UPDATE contracts SET owner_id = NULL WHERE owner_id = ANY($1) AND org_id = $2`, [ids, orgId]);
+      await client.query(`UPDATE contracts SET created_by = NULL WHERE created_by = ANY($1) AND org_id = $2`, [ids, orgId]);
+      // actions
+      await client.query(`UPDATE actions SET completed_by = NULL WHERE completed_by = ANY($1) AND org_id = $2`, [ids, orgId]);
+      // prospecting
+      await client.query(`UPDATE prospects SET owner_id = NULL WHERE owner_id = ANY($1) AND org_id = $2`, [ids, orgId]);
+      await client.query(`UPDATE prospecting_actions SET completed_by = NULL WHERE completed_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE prospecting_actions SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
+      await client.query(`UPDATE prospecting_activities SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
+      // straps
+      await client.query(`UPDATE straps SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE straps SET override_by = NULL WHERE override_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE straps SET resolved_by = NULL WHERE resolved_by = ANY($1)`, [ids]);
+      // playbooks
+      await client.query(`UPDATE playbooks SET created_by = NULL WHERE created_by = ANY($1) AND org_id = $2`, [ids, orgId]);
+      await client.query(`UPDATE playbooks SET archived_by = NULL WHERE archived_by = ANY($1) AND org_id = $2`, [ids, orgId]);
+      await client.query(`UPDATE playbook_plays SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE playbook_versions SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE playbook_versions SET approved_by = NULL WHERE approved_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE playbook_registrations SET submitter_id = NULL WHERE submitter_id = ANY($1)`, [ids]);
+      await client.query(`UPDATE playbook_registrations SET reviewer_id = NULL WHERE reviewer_id = ANY($1)`, [ids]);
+      await client.query(`UPDATE playbook_registrations SET approved_by = NULL WHERE approved_by = ANY($1)`, [ids]);
+      // handovers
+      await client.query(`UPDATE sales_handovers SET assigned_service_owner_id = NULL WHERE assigned_service_owner_id = ANY($1)`, [ids]);
+      await client.query(`UPDATE sales_handover_commitments SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      // agent proposals
+      await client.query(`UPDATE agent_proposals SET reviewed_by = NULL WHERE reviewed_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE agent_proposals SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
+      // deal value history
+      await client.query(`UPDATE deal_value_history SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
+      // deal play instances
+      await client.query(`UPDATE deal_play_instances SET completed_by = NULL WHERE completed_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE deal_play_instances SET overridden_by = NULL WHERE overridden_by = ANY($1)`, [ids]);
+      // contract play instances
+      await client.query(`UPDATE contract_play_instances SET completed_by = NULL WHERE completed_by = ANY($1)`, [ids]);
+      // contract document versions
+      await client.query(`UPDATE contract_document_versions SET uploaded_by = NULL WHERE uploaded_by = ANY($1)`, [ids]);
+      // contract approvals
+      await client.query(`UPDATE contract_approvals SET approver_user_id = NULL WHERE approver_user_id = ANY($1)`, [ids]);
+      await client.query(`UPDATE contract_approval_config SET approver_user_id = NULL WHERE approver_user_id = ANY($1)`, [ids]);
+      // contract events
+      await client.query(`UPDATE contract_events SET actor_id = NULL WHERE actor_id = ANY($1)`, [ids]);
+      // contract plays
+      await client.query(`UPDATE contract_plays SET assigned_to = NULL WHERE assigned_to = ANY($1)`, [ids]);
+      await client.query(`UPDATE contract_plays SET completed_by = NULL WHERE completed_by = ANY($1)`, [ids]);
+      // contract templates
+      await client.query(`UPDATE contract_templates SET uploaded_by = NULL WHERE uploaded_by = ANY($1)`, [ids]);
+      // cases
+      await client.query(`UPDATE cases SET assigned_to = NULL WHERE assigned_to = ANY($1)`, [ids]);
+      await client.query(`UPDATE cases SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE case_notes SET author_id = NULL WHERE author_id = ANY($1)`, [ids]);
+      await client.query(`UPDATE case_plays SET assigned_to = NULL WHERE assigned_to = ANY($1)`, [ids]);
+      await client.query(`UPDATE case_status_history SET changed_by = NULL WHERE changed_by = ANY($1)`, [ids]);
+      // emails
+      await client.query(`UPDATE emails SET tagged_by = NULL WHERE tagged_by = ANY($1)`, [ids]);
+      // contact activities
+      await client.query(`UPDATE contact_activities SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
+      // deal activities
+      await client.query(`UPDATE deal_activity SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
+      // deal team members
+      await client.query(`UPDATE deal_team_members SET added_by = NULL WHERE added_by = ANY($1)`, [ids]);
+      // deal play assignees
+      await client.query(`UPDATE deal_play_assignees SET assigned_by = NULL WHERE assigned_by = ANY($1)`, [ids]);
+      // account teams / hierarchy
+      await client.query(`UPDATE account_teams SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE account_hierarchy SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      // teams / workflows
+      await client.query(`UPDATE teams SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE workflows SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE workflow_rules SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE workflow_executions SET triggered_by = NULL WHERE triggered_by = ANY($1)`, [ids]);
+      // org invitations / invites
+      await client.query(`UPDATE org_invitations SET invited_by = NULL WHERE invited_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE org_invites SET invited_by = NULL WHERE invited_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE org_users SET invited_by = NULL WHERE invited_by = ANY($1)`, [ids]);
+      // org action config / hierarchy
+      await client.query(`UPDATE org_action_config SET updated_by = NULL WHERE updated_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE org_hierarchy SET reports_to = NULL WHERE reports_to = ANY($1)`, [ids]);
+      // clients
+      await client.query(`UPDATE clients SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE client_activities SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
+      await client.query(`UPDATE client_team_members SET assigned_by = NULL WHERE assigned_by = ANY($1)`, [ids]);
+      // ai token usage
+      await client.query(`UPDATE ai_token_usage SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
+      // platform / super admin
+      await client.query(`UPDATE platform_settings SET updated_by = NULL WHERE updated_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE super_admins SET granted_by = NULL WHERE granted_by = ANY($1)`, [ids]);
+      // super admin audit log — keep the log rows but null the user ref
+      await client.query(`UPDATE super_admin_audit_log SET super_admin_id = NULL WHERE super_admin_id = ANY($1)`, [ids]);
+    }
 
-    // Hard delete — all remaining child records cascade via ON DELETE CASCADE
+    // ── Step 3: delete the org (cascades everything with ON DELETE CASCADE) ─
     await client.query(`DELETE FROM organizations WHERE id = $1`, [orgId]);
+
+    // ── Step 4: delete the detached org-only users ──────────────────────────
+    if (userIds.length > 0) {
+      await client.query(`DELETE FROM users WHERE id = ANY($1)`, [userIds]);
+    }
 
     await client.query('COMMIT');
 
