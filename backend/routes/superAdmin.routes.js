@@ -360,13 +360,15 @@ router.delete('/orgs/:orgId', async (req, res) => {
       await client.query(`UPDATE super_admin_audit_log SET super_admin_id = NULL WHERE super_admin_id = ANY($1)`, [ids]);
     }
 
-    // ── Step 3: delete the org (cascades everything with ON DELETE CASCADE) ─
-    await client.query(`DELETE FROM organizations WHERE id = $1`, [orgId]);
-
-    // ── Step 4: delete the detached org-only users ──────────────────────────
+    // ── Step 3: delete the org-only users BEFORE deleting the org ───────────
+    // users.org_id is NOT NULL with no cascade, so users must be deleted
+    // before the org row, after all FK references to them have been nulled out.
     if (userIds.length > 0) {
       await client.query(`DELETE FROM users WHERE id = ANY($1)`, [userIds]);
     }
+
+    // ── Step 4: delete the org (cascades everything with ON DELETE CASCADE) ─
+    await client.query(`DELETE FROM organizations WHERE id = $1`, [orgId]);
 
     await client.query('COMMIT');
 
