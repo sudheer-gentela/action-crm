@@ -31,11 +31,18 @@ router.patch('/admin/module', adminOnly, async (req, res) => {
       return res.status(400).json({ error: { message: 'enabled must be boolean' } });
     }
 
+    // Read current allowed flag so we preserve it
+    const cur = await db.query(
+      `SELECT (settings->'modules'->'service'->>'allowed')::boolean AS allowed
+       FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const allowed = cur.rows[0]?.allowed ?? true;
     await db.query(
       `UPDATE organizations
        SET settings = jsonb_set(COALESCE(settings,'{}'), '{modules,service}', $2::jsonb, true)
        WHERE id = $1`,
-      [req.orgId, JSON.stringify(enabled)]
+      [req.orgId, JSON.stringify({ allowed, enabled })]
     );
 
     requireModule.invalidate(req.orgId, 'service');

@@ -215,6 +215,13 @@ router.patch('/admin/module', async (req, res) => {
     }
 
     const { pool } = require('../config/database');
+    // Read current allowed flag so we preserve it
+    const cur = await pool.query(
+      `SELECT (settings->'modules'->'handovers'->>'allowed')::boolean AS allowed
+       FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const allowed = cur.rows[0]?.allowed ?? true;
     await pool.query(
       `UPDATE organizations
        SET settings = jsonb_set(
@@ -223,11 +230,10 @@ router.patch('/admin/module', async (req, res) => {
          $1::jsonb
        )
        WHERE id = $2`,
-      [JSON.stringify(enabled), req.orgId]
+      [JSON.stringify({ allowed, enabled }), req.orgId]
     );
 
-    // Notify the frontend so App.js updates orgModules state instantly
-    res.json({ module: 'handovers', enabled });
+    res.json({ module: 'handovers', enabled, allowed });
   } catch (err) {
     console.error('Handovers module toggle error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });

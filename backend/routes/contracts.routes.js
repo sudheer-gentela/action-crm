@@ -28,12 +28,20 @@ router.patch('/admin/module', requireRole('admin','owner'), async (req, res) => 
   try {
     const { enabled } = req.body;
     if (typeof enabled !== 'boolean') return res.status(400).json({ error: { message: 'enabled must be boolean' } });
+    // Read current allowed flag so we preserve it
+    const cur = await db.query(
+      `SELECT settings->>'modules'->>'contracts' AS val,
+              (settings->'modules'->'contracts'->>'allowed')::boolean AS allowed
+       FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const allowed = cur.rows[0]?.allowed ?? true;
     await db.query(
       `UPDATE organizations SET settings = jsonb_set(COALESCE(settings,'{}'),'{modules,contracts}',$2::jsonb,true) WHERE id=$1`,
-      [req.orgId, JSON.stringify(enabled)]
+      [req.orgId, JSON.stringify({ allowed, enabled })]
     );
     requireModule.invalidate(req.orgId, 'contracts');
-    res.json({ enabled });
+    res.json({ enabled, allowed });
   } catch (err) {
     console.error(err); res.status(500).json({ error: { message: 'Failed to update module' } });
   }
