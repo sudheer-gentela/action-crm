@@ -128,15 +128,14 @@ export default function PlaybooksView({ initialTypeFilter }) {
       .then(r => r.ok ? r.json() : Promise.reject())
       .then(data => {
         if (data.playbook_types?.length) {
+          // Sales is always present — ensure it's never missing.
+          // All other tabs only appear when the org has explicitly seeded that module.
           const SYSTEM_TYPES = [
-            { key: 'sales',        label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
-            { key: 'prospecting',  label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
-            { key: 'handover_s2i', label: 'Handover',    icon: '🤝', color: '#0369a1', is_system: true },
+            { key: 'sales', label: 'Sales', icon: '📘', color: '#3b82f6', is_system: true },
           ];
-          const cleaned  = data.playbook_types.filter(t => t.key !== 'handovers');
-          const apiKeys  = new Set(cleaned.map(t => t.key));
+          const apiKeys  = new Set(data.playbook_types.map(t => t.key));
           const missing  = SYSTEM_TYPES.filter(t => !apiKeys.has(t.key));
-          const merged   = [...cleaned, ...missing];
+          const merged   = [...data.playbook_types, ...missing];
           setPlaybookTypes(prev => {
             const prevKeys = prev.map(t => t.key).sort().join(',');
             const nextKeys = merged.map(t => t.key).sort().join(',');

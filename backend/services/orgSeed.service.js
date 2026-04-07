@@ -1491,6 +1491,7 @@ const PLAYBOOK_META = {
 // Maps each seedable module to the playbook_type entry that must exist in
 // organizations.settings.playbook_types for the Playbooks page to show the tab.
 const PLAYBOOK_TYPE_META = {
+  sales:       { key: 'sales',       label: 'Sales',          icon: '📘', color: '#3b82f6', is_system: true },
   prospecting: { key: 'prospecting', label: 'Prospecting',          icon: '🎯', color: '#0F9D8E', is_system: true },
   clm:         { key: 'clm',         label: 'CLM',                  icon: '📄', color: '#7c3aed', is_system: true },
   service:     { key: 'service',     label: 'Service',              icon: '🎧', color: '#0891b2', is_system: true },
@@ -1712,6 +1713,7 @@ async function seedOrg(orgId) {
     // Seed Sales playbook
     const alreadySeeded = await hasBeenSeeded(client, orgId, 'sales');
     if (!alreadySeeded) {
+      await upsertPlaybookType(client, orgId, 'sales');
       const playbookId   = await createPlaybook(client, orgId, 'sales');
       const insertedPlays = await insertPlays(client, orgId, playbookId, 'sales');
       await insertPlaybookRoles(client, playbookId, 'sales', roleMap);
