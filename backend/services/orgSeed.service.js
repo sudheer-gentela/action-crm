@@ -1488,6 +1488,46 @@ const PLAYBOOK_META = {
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Maps each seedable module to the playbook_type entry that must exist in
+// organizations.settings.playbook_types for the Playbooks page to show the tab.
+const PLAYBOOK_TYPE_META = {
+  prospecting: { key: 'prospecting', label: 'Prospecting',          icon: '🎯', color: '#0F9D8E', is_system: true },
+  clm:         { key: 'clm',         label: 'CLM',                  icon: '📄', color: '#7c3aed', is_system: true },
+  service:     { key: 'service',     label: 'Service',              icon: '🎧', color: '#0891b2', is_system: true },
+  handovers:   { key: 'handovers',   label: 'Handover S→I',         icon: '🤝', color: '#0369a1', is_system: true },
+  // sales is already handled via legacy SALES_LEGACY_TYPES in the frontend — no entry needed
+};
+
+/**
+ * Upsert a playbook type entry into organizations.settings.playbook_types.
+ * Idempotent — safe to call on every seed, won't duplicate entries.
+ * Sales is excluded because the frontend handles it via SALES_LEGACY_TYPES.
+ */
+async function upsertPlaybookType(client, orgId, module) {
+  const meta = PLAYBOOK_TYPE_META[module];
+  if (!meta) return; // sales or unknown — skip
+
+  // Load current playbook_types array
+  const result = await client.query(
+    `SELECT settings->'playbook_types' AS types FROM organizations WHERE id = $1`,
+    [orgId]
+  );
+  const current = result.rows[0]?.types;
+  const existing = Array.isArray(current) ? current : [];
+
+  // Only insert if not already present
+  if (existing.some(t => t.key === meta.key)) return;
+
+  const updated = [...existing, meta];
+  await client.query(
+    `UPDATE organizations
+     SET settings   = jsonb_set(COALESCE(settings, '{}'::jsonb), '{playbook_types}', $1::jsonb),
+         updated_at = NOW()
+     WHERE id = $2`,
+    [JSON.stringify(updated), orgId]
+  );
+}
+
 /**
  * Upsert all 16 org roles for an org.
  * Returns a Map<roleKey, roleId> for use in role-linking helpers.
@@ -1713,6 +1753,9 @@ async function seedModulePlaybook(orgId, module) {
 
     // Upsert roles (idempotent — safe to call per module)
     const roleMap = await upsertRoles(client, orgId);
+
+    // Register this module playbook type so the Playbooks page shows the tab
+    await upsertPlaybookType(client, orgId, module);
 
     await upsertStages(client, orgId, module);
     const playbookId    = await createPlaybook(client, orgId, module);
