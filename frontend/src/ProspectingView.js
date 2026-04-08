@@ -2633,10 +2633,13 @@ function SequencesView({ prospects }) {
             <SequenceBuilder
               sequence={editingSeq}
               onSave={(saved) => {
-                setShowBuilder(false);
                 loadSequences();
+                // Re-open in edit mode with the saved sequence so the user
+                // can continue adding steps — especially important on first create
+                setEditingSeq(saved);
+                setShowBuilder(true);
               }}
-              onClose={() => setShowBuilder(false)}
+              onClose={() => { setShowBuilder(false); setEditingSeq(null); }}
             />
           </div>
         </div>
