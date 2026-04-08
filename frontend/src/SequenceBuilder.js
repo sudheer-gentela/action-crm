@@ -222,8 +222,12 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
         }
         const ids = stepsPayload.filter(s => s.id).map(s => s.id);
         if (ids.length) {
+          // Backend expects { steps: [{ id, step_order }] }
+          const reorderPayload = stepsPayload
+            .filter(s => s.id)
+            .map((s, idx) => ({ id: s.id, step_order: idx + 1 }));
           await apiFetch(`/sequences/${initialSequence.id}/steps/reorder`, {
-            method: 'POST', body: JSON.stringify({ order: ids }),
+            method: 'POST', body: JSON.stringify({ steps: reorderPayload }),
           });
         }
         const reloaded = await apiFetch(`/sequences/${initialSequence.id}`);
