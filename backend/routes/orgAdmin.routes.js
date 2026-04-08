@@ -1655,6 +1655,254 @@ async function getDiagnosticRulesConfig(orgId) {
 }
 
 /**
+ * GET /org/admin/diagnostic-rules/summary
+ * Returns the complete org-specific rules document as structured JSON.
+ * Every module, every rule, with effective thresholds substituted in.
+ * Used by OADiagnosticRulesSummary to render the live per-org document.
+ *
+ * Response shape:
+ * {
+ *   generated_at: ISO string,
+ *   org_id: number,
+ *   modules: [
+ *     {
+ *       key, label, icon,
+ *       config: { key: { value, default, customised } },
+ *       rules: [
+ *         { key, title, description, trigger, priority, mode,
+ *           next_step, configurable, param_keys }
+ *       ]
+ *     }
+ *   ]
+ * }
+ */
+router.get('/diagnostic-rules/summary', adminOnly, async (req, res) => {
+  try {
+    const config     = await getDiagnosticRulesConfig(req.orgId);
+    const overrides  = await pool.query(
+      `SELECT settings->'diagnostic_rules' AS rules FROM organizations WHERE id = $1`,
+      [req.orgId]
+    ).then(r => r.rows[0]?.rules || {});
+
+    const c = config; // shorthand
+
+    const modules = [
+      {
+        key: 'deals', label: 'Deals', icon: '💼',
+        config: _buildConfigDisplay('deals', c.deals, DIAGNOSTIC_DEFAULTS.deals, overrides.deals || {}),
+        rules: [
+          {
+            key: 'stagnant_deal', title: 'Stagnant Deal',
+            description: 'Deal has had no stage progression for too long.',
+            trigger: `No stage change in more than ${c.deals.stagnant_days_realtime} days (real-time) or ${c.deals.stagnant_days_nightly} days (nightly sweep). Excludes closed deals.`,
+            priority: 'high', mode: 'Real-time + Nightly sweep', next_step: 'Email',
+            configurable: true, param_keys: ['stagnant_days_realtime', 'stagnant_days_nightly'],
+          },
+          {
+            key: 'close_imminent', title: 'Close Date Imminent',
+            description: 'Deal close date is approaching — final checklist needed.',
+            trigger: `Close date is within ${c.deals.close_imminent_days} days from today.`,
+            priority: 'high', mode: 'Real-time + Nightly sweep', next_step: 'Internal task',
+            configurable: true, param_keys: ['close_imminent_days'],
+          },
+          {
+            key: 'past_close_date', title: 'Past Close Date',
+            description: 'Deal has passed its close date without being won or lost.',
+            trigger: 'Close date is in the past and deal is not in a terminal stage.',
+            priority: 'high', mode: 'Real-time + Nightly sweep', next_step: 'Internal task',
+            configurable: false, param_keys: [],
+          },
+          {
+            key: 'high_value_no_meeting', title: 'High-Value Deal — No Executive Meeting',
+            description: `Deal value exceeds $${c.deals.high_value_threshold.toLocaleString()} but no completed meetings on record.`,
+            trigger: `Deal value > $${c.deals.high_value_threshold.toLocaleString()} AND no completed meetings.`,
+            priority: 'high', mode: 'Real-time + Nightly sweep', next_step: 'Email',
+            configurable: true, param_keys: ['high_value_threshold'],
+          },
+          { key: 'no_contacts', title: 'No Contacts on Deal', description: 'Deal has no contacts linked.', trigger: 'contacts.length === 0', priority: 'high', mode: 'Real-time', next_step: 'Internal task', configurable: false, param_keys: [] },
+          { key: 'health_2a_no_buyer', title: 'No Economic Buyer Identified', description: 'No economic buyer or decision maker tagged on the deal.', trigger: 'Health param 2a state is unknown or absent.', priority: 'high', mode: 'Real-time', next_step: 'Email', configurable: false, param_keys: [] },
+          { key: 'health_2b_no_exec', title: 'No Executive Meeting', description: 'No exec-level meeting has been held on this deal.', trigger: 'Health param 2b absent AND no decision maker contacts.', priority: 'high', mode: 'Real-time', next_step: 'Email', configurable: false, param_keys: [] },
+          { key: 'health_2c_single_thread', title: 'Single-Threaded Deal', description: 'Only one meaningful stakeholder engaged.', trigger: 'Health param 2c absent.', priority: 'medium', mode: 'Real-time', next_step: 'Internal task', configurable: false, param_keys: [] },
+          { key: 'health_1a_unknown', title: 'Close Date Credibility Unconfirmed', description: 'No buyer signal received on close date.', trigger: 'Health param 1a unknown.', priority: 'high', mode: 'Real-time', next_step: 'Email', configurable: false, param_keys: [] },
+          { key: 'health_1b_slipped', title: 'Close Date Slippage', description: 'Close date has slipped one or more times.', trigger: 'Health param 1b confirmed (slippage).', priority: 'high', mode: 'Real-time', next_step: 'Call', configurable: false, param_keys: [] },
+          { key: 'health_5a_competitive', title: 'Competitive Deal', description: 'Competitive presence confirmed — counter-strategy needed.', trigger: 'Health param 5a confirmed.', priority: 'high', mode: 'Real-time', next_step: 'Document', configurable: false, param_keys: [] },
+          { key: 'health_5b_price', title: 'Price Sensitivity', description: 'Price sensitivity flagged on deal.', trigger: 'Health param 5b confirmed.', priority: 'high', mode: 'Real-time', next_step: 'Document', configurable: false, param_keys: [] },
+          { key: 'health_5c_discount', title: 'Discount Approval Pending', description: 'Discount approval is blocking deal progression.', trigger: 'Health param 5c confirmed.', priority: 'high', mode: 'Real-time', next_step: 'Slack', configurable: false, param_keys: [] },
+          { key: 'unanswered_email', title: 'Unanswered Email', description: 'Outbound email has had no reply after 3+ days.', trigger: 'Sent email 3+ days ago with no inbound reply.', priority: 'medium', mode: 'Real-time', next_step: 'Email / Call if >7d', configurable: false, param_keys: [] },
+          { key: 'meeting_followup', title: 'Meeting Follow-Up Needed', description: 'Meeting completed recently with no follow-up email sent.', trigger: 'Meeting completed within last 2 days AND no outbound email since.', priority: 'high', mode: 'Real-time', next_step: 'Email', configurable: false, param_keys: [] },
+          { key: 'no_proposal_doc', title: 'No Proposal Document', description: 'Stage requires a proposal but none has been uploaded.', trigger: 'Playbook stage guidance requires_proposal_doc = true AND no proposal file found.', priority: 'high', mode: 'Real-time', next_step: 'Document', configurable: false, param_keys: [] },
+        ],
+      },
+      {
+        key: 'cases', label: 'Cases', icon: '🎧',
+        config: _buildConfigDisplay('cases', c.cases, DIAGNOSTIC_DEFAULTS.cases, overrides.cases || {}),
+        rules: [
+          { key: 'case_unassigned', title: 'Case Unassigned', description: 'Case has no assigned agent.', trigger: 'assigned_to IS NULL', priority: 'high', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task', configurable: false, param_keys: [] },
+          { key: 'case_no_response', title: 'First Response SLA Breached', description: 'No first response sent within the SLA window.', trigger: 'first_responded_at IS NULL AND now > response_due_at. Response window set by SLA tier settings.', priority: 'high', mode: 'Nightly sweep + Real-time event', next_step: 'Email', configurable: false, param_keys: [] },
+          { key: 'case_resolution_overdue', title: 'Resolution SLA Breached', description: 'Case still unresolved past SLA deadline.', trigger: 'resolved_at IS NULL AND now > resolution_due_at. Resolution window set by SLA tier settings.', priority: 'high', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task', configurable: false, param_keys: [] },
+          {
+            key: 'case_stale', title: 'Case Gone Stale',
+            description: `No activity on an open case for more than ${c.cases.stale_days} days.`,
+            trigger: `Status not in (pending_customer, resolved, closed) AND no note or status change in ${c.cases.stale_days} days.`,
+            priority: 'medium', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task',
+            configurable: true, param_keys: ['stale_days'],
+          },
+          {
+            key: 'case_pending_too_long', title: 'Pending Customer Too Long',
+            description: `Case waiting on customer reply for more than ${c.cases.pending_too_long_days} days.`,
+            trigger: `Status = pending_customer AND no customer reply in ${c.cases.pending_too_long_days} days.`,
+            priority: 'medium', mode: 'Nightly sweep + Real-time event', next_step: 'Email',
+            configurable: true, param_keys: ['pending_too_long_days'],
+          },
+          { key: 'case_escalation_needed', title: 'Critical Case Needs Escalation', description: 'Critical case has breached resolution SLA.', trigger: 'priority = critical AND resolution_breached = true.', priority: 'critical', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task', configurable: false, param_keys: [] },
+        ],
+      },
+      {
+        key: 'handovers', label: 'Handovers', icon: '🤝',
+        config: _buildConfigDisplay('handovers', c.handovers, DIAGNOSTIC_DEFAULTS.handovers, overrides.handovers || {}),
+        rules: [
+          {
+            key: 'handover_no_kickoff', title: 'No Kickoff Meeting Scheduled',
+            description: `Handover active for more than ${c.handovers.no_kickoff_days} days with no kickoff meeting linked.`,
+            trigger: `daysSinceCreated > ${c.handovers.no_kickoff_days} AND no meeting with handover_id found.`,
+            priority: 'high', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task',
+            configurable: true, param_keys: ['no_kickoff_days'],
+          },
+          { key: 'handover_commitment_overdue', title: 'Overdue Commitment', description: 'One or more sales commitments have passed their due date.', trigger: 'Any commitment in sales_handover_commitments where due_date < today.', priority: 'high', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task', configurable: false, param_keys: [] },
+          { key: 'handover_stakeholder_gap', title: 'Required Stakeholder Roles Missing', description: 'Required stakeholder roles are absent from the handover.', trigger: 'implementation_lead, day_to_day_admin, or go_live_approver missing from sales_handover_stakeholders.', priority: 'medium', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task', configurable: false, param_keys: [] },
+          {
+            key: 'handover_stalled', title: 'Handover Stalled',
+            description: `No progress on handover for more than ${c.handovers.stalled_days} days.`,
+            trigger: `daysSinceLastActivity > ${c.handovers.stalled_days}.`,
+            priority: 'medium', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task',
+            configurable: true, param_keys: ['stalled_days'],
+          },
+          { key: 'handover_incomplete_brief', title: 'Handover Brief Incomplete', description: 'Go-live date is set but brief fields are missing.', trigger: 'go_live_date IS NOT NULL AND briefIsComplete = false.', priority: 'high', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task', configurable: false, param_keys: [] },
+        ],
+      },
+      {
+        key: 'prospecting', label: 'Prospecting', icon: '🎯',
+        config: _buildConfigDisplay('prospecting', c.prospecting, DIAGNOSTIC_DEFAULTS.prospecting, overrides.prospecting || {}),
+        rules: [
+          {
+            key: 'prospect_ghosting', title: 'Prospect Ghosting',
+            description: `3+ outreach attempts, zero replies, last outreach more than ${c.prospecting.ghosting_days} days ago.`,
+            trigger: `outreach_count >= 3 AND response_count = 0 AND daysSinceLastOutreach > ${c.prospecting.ghosting_days}.`,
+            priority: 'critical', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task',
+            configurable: true, param_keys: ['ghosting_days'],
+          },
+          {
+            key: 'prospect_conversion_ready', title: 'Ready for Conversion',
+            description: `High engagement (>30% response rate, last response within ${c.prospecting.hot_lead_response_days} days) but still in prospecting.`,
+            trigger: `responseRate > 0.3 AND daysSinceLastResponse <= ${c.prospecting.hot_lead_response_days} AND not yet converted.`,
+            priority: 'critical', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task',
+            configurable: true, param_keys: ['hot_lead_response_days'],
+          },
+          {
+            key: 'prospect_stale_outreach', title: 'Outreach Gone Stale',
+            description: `No outreach in more than ${c.prospecting.stale_days} days.`,
+            trigger: `daysSinceLastOutreach > ${c.prospecting.stale_days} AND not ghosting.`,
+            priority: 'high', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task',
+            configurable: true, param_keys: ['stale_days'],
+          },
+          { key: 'prospect_no_meeting', title: 'Engaged But No Meeting', description: 'Prospect has replied but no meeting has been scheduled.', trigger: 'hasReplied = true AND stage in (engaged, qualified) AND no upcoming meeting.', priority: 'high', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task', configurable: false, param_keys: [] },
+          { key: 'prospect_no_research', title: 'No Research Completed', description: 'Prospect in targeting or research stage with no research notes.', trigger: 'stage in (targeting, research) AND research_notes is empty.', priority: 'medium', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task', configurable: false, param_keys: [] },
+          {
+            key: 'prospect_wrong_channel', title: 'Wrong Outreach Channel',
+            description: `${c.prospecting.wrong_channel_min_attempts}+ attempts with less than ${Math.round(c.prospecting.wrong_channel_max_response_rate * 100)}% response rate — channel not working.`,
+            trigger: `outreach_count >= ${c.prospecting.wrong_channel_min_attempts} AND responseRate < ${c.prospecting.wrong_channel_max_response_rate}.`,
+            priority: 'medium', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task',
+            configurable: true, param_keys: ['wrong_channel_min_attempts', 'wrong_channel_max_response_rate'],
+          },
+          { key: 'prospect_multi_thread', title: 'Single Entry Point', description: 'Only one prospect at the company after 2+ outreach attempts.', trigger: 'otherProspectsAtCompany.length === 0 AND outreach_count >= 2.', priority: 'medium', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task', configurable: false, param_keys: [] },
+          {
+            key: 'prospect_low_icp', title: 'Low ICP Fit',
+            description: `ICP score is below ${c.prospecting.low_icp_threshold}/100.`,
+            trigger: `icp_score < ${c.prospecting.low_icp_threshold}.`,
+            priority: 'low', mode: 'Nightly sweep + Real-time event', next_step: 'Internal task',
+            configurable: true, param_keys: ['low_icp_threshold'],
+          },
+        ],
+      },
+      {
+        key: 'accounts', label: 'Accounts', icon: '🏢',
+        config: _buildConfigDisplay('accounts', c.accounts, DIAGNOSTIC_DEFAULTS.accounts, overrides.accounts || {}),
+        rules: [
+          {
+            key: 'stale_account', title: 'Account Gone Dark',
+            description: `No engagement with a paying customer in more than ${c.accounts.stale_days} days.`,
+            trigger: `daysSinceLastEngagement > ${c.accounts.stale_days} AND wonDealCount > 0.`,
+            priority: 'critical', mode: 'STRAP (Nightly sweep)', next_step: 'Internal task',
+            configurable: true, param_keys: ['stale_days'],
+          },
+          {
+            key: 'renewal_risk', title: 'Renewal Risk',
+            description: `Contract anniversary approaching within ${c.accounts.renewal_window_days} days with no active expansion deal.`,
+            trigger: `Deal close anniversary within ${c.accounts.renewal_window_days} days AND no open deals.`,
+            priority: 'critical', mode: 'STRAP (Nightly sweep)', next_step: 'Internal task',
+            configurable: true, param_keys: ['renewal_window_days'],
+          },
+          { key: 'champion_gap', title: 'No Champion Identified', description: 'No champion contact on a customer account.', trigger: 'champions.length === 0 AND wonDealCount > 0.', priority: 'high', mode: 'STRAP (Nightly sweep)', next_step: 'Internal task', configurable: false, param_keys: [] },
+          { key: 'no_exec_relationship', title: 'No Executive Relationship', description: 'No executive-level contact on a customer account.', trigger: 'executives.length === 0 AND wonDealCount > 0.', priority: 'high', mode: 'STRAP (Nightly sweep)', next_step: 'Internal task', configurable: false, param_keys: [] },
+          {
+            key: 'expansion_blocked', title: 'Expansion Deal Stalled',
+            description: `Open expansion deal idle for more than ${c.accounts.expansion_stalled_days} days.`,
+            trigger: `Any open deal with no updates in ${c.accounts.expansion_stalled_days} days.`,
+            priority: 'high', mode: 'STRAP (Nightly sweep)', next_step: 'Internal task',
+            configurable: true, param_keys: ['expansion_stalled_days'],
+          },
+          { key: 'revenue_concentration', title: 'Revenue Concentrated', description: 'All account revenue from a single deal.', trigger: 'wonDeals.length === 1 AND totalRevenue > 0.', priority: 'medium', mode: 'STRAP (Nightly sweep)', next_step: 'Internal task', configurable: false, param_keys: [] },
+          {
+            key: 'whitespace', title: 'Untapped Departments',
+            description: `Fewer than ${c.accounts.whitespace_min_roles} contact roles and fewer than ${c.accounts.whitespace_min_contacts} contacts on a customer account.`,
+            trigger: `uniqueRoles.size < ${c.accounts.whitespace_min_roles} AND contacts.length < ${c.accounts.whitespace_min_contacts} AND wonDealCount > 0.`,
+            priority: 'medium', mode: 'STRAP (Nightly sweep)', next_step: 'Internal task',
+            configurable: true, param_keys: ['whitespace_min_roles', 'whitespace_min_contacts'],
+          },
+          { key: 'single_product', title: 'Single Product Line', description: 'Customer using only one product or service line.', trigger: 'Only one distinct deal name across won deals.', priority: 'low', mode: 'STRAP (Nightly sweep)', next_step: 'Internal task', configurable: false, param_keys: [] },
+        ],
+      },
+      {
+        key: 'strap', label: 'STRAP', icon: '⚡',
+        config: _buildConfigDisplay('strap', c.strap, DIAGNOSTIC_DEFAULTS.strap, overrides.strap || {}),
+        rules: [
+          {
+            key: 'strap_sweep_behaviour', title: 'STRAP Nightly Re-Validation',
+            description: `Active STRAPs older than ${c.strap.min_age_hours} hours are re-validated each night. If the hurdle has cleared or shifted, the STRAP is auto-resolved and regenerated.`,
+            trigger: `STRAP age > ${c.strap.min_age_hours} hours AND nightly sweep runs (03:00 UTC).`,
+            priority: 'n/a', mode: 'Nightly sweep only', next_step: 'n/a',
+            configurable: true, param_keys: ['min_age_hours'],
+          },
+        ],
+      },
+    ];
+
+    res.json({
+      generated_at: new Date().toISOString(),
+      org_id:       req.orgId,
+      modules,
+    });
+  } catch (err) {
+    console.error('GET /org/admin/diagnostic-rules/summary error:', err);
+    res.status(500).json({ error: { message: 'Failed to generate rules summary' } });
+  }
+});
+
+// Helper: build config display object for a module
+// Returns { key: { value, default: defaultValue, customised } }
+function _buildConfigDisplay(moduleKey, effectiveConfig, moduleDefaults, orgOverrides) {
+  const display = {};
+  for (const [key, defaultValue] of Object.entries(moduleDefaults)) {
+    display[key] = {
+      value:      effectiveConfig[key] ?? defaultValue,
+      default:    defaultValue,
+      customised: orgOverrides[key] !== undefined,
+    };
+  }
+  return display;
+}
+
+/**
  * GET /org/admin/diagnostic-rules
  * Returns the effective diagnostic rules config for this org (defaults merged with overrides).
  * Also returns which values are customised vs default, for UI highlighting.
