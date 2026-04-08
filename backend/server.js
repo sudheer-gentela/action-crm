@@ -294,7 +294,11 @@ app.get('/api/org/context', authenticateToken, orgContext, async (req, res) => {
     );
     const raw = r.rows[0]?.modules || {};
     const modules = Object.fromEntries(
-      Object.entries(raw).map(([k, v]) => [k, v === true || v === 'true' || v === 1 || v === '1'])
+      Object.entries(raw).map(([k, v]) => {
+        // Handle both legacy scalar (true/false) and new object ({ allowed, enabled }) format
+        if (v !== null && typeof v === 'object') return [k, !!v.enabled];
+        return [k, v === true || v === 'true' || v === 1 || v === '1'];
+      })
     );
     res.json({ modules });
   } catch (err) {

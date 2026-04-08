@@ -16,7 +16,14 @@ import PlaybooksView from './PlaybooksView';
 import PlaybookDetail from './PlaybookDetail';
 import PlaybookRegister from './PlaybookRegister';
 import PlaybookApprovals from './PlaybookApprovals';
+import ProspectingView from './ProspectingView';
+import ContractsView from './ContractsView';
+import HandoverView from './HandoverView';
+import SupportView from './SupportView';
+import AgencyView from './AgencyView';
+import Sidebar from './Sidebar';
 
+// ─────────────────────────────────────────────────────────────
 // Normalise the modules object from /org/context into a simple { key: boolean } map.
 // Handles both legacy scalar format (true/false) and new object format ({ allowed, enabled }).
 function normaliseModules(raw) {
@@ -33,12 +40,6 @@ function normaliseModules(raw) {
   }
   return result;
 }
-import ProspectingView from './ProspectingView';
-import ContractsView from './ContractsView';
-import HandoverView from './HandoverView';
-import SupportView from './SupportView';
-import AgencyView from './AgencyView';
-import Sidebar from './Sidebar';
 
 // ─────────────────────────────────────────────────────────────
 // ROLE DEFINITIONS
