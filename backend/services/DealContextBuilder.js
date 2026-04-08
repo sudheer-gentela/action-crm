@@ -34,7 +34,7 @@ class DealContextBuilder {
    * @param {number} orgId
    * @returns {Promise<DealContext>}
    */
-  static async build(dealId, userId, orgId) {
+  static async build(dealId, userId, orgId, config = {}) {
     const [
       deal,
       account,
@@ -79,7 +79,7 @@ class DealContextBuilder {
     }
 
     // Pre-compute derived signals useful to rules engine
-    const derived = this._deriveSignals(deal, contacts, meetings, emails, files);
+    const derived = this._deriveSignals(deal, contacts, meetings, emails, files, config);
 
     return {
       deal,
@@ -114,7 +114,7 @@ class DealContextBuilder {
   // ── Derived signal helpers ────────────────────────────────────────────────
   // Unchanged — operates entirely on already-fetched in-memory data.
 
-  static _deriveSignals(deal, contacts, meetings, emails, files) {
+  static _deriveSignals(deal, contacts, meetings, emails, files, config = {}) {
     const now = Date.now();
 
     // Meetings
@@ -158,7 +158,7 @@ class DealContextBuilder {
       ? Math.ceil((new Date(deal.close_date) - now) / 86400000)
       : null;
     const isPastClose       = daysUntilClose !== null && daysUntilClose < 0;
-    const closingImminently = daysUntilClose !== null && daysUntilClose >= 0 && daysUntilClose <= 7;
+    const closingImminently = daysUntilClose !== null && daysUntilClose >= 0 && daysUntilClose <= (config.close_imminent_days ?? 7);
 
     return {
       completedMeetings,
@@ -180,8 +180,8 @@ class DealContextBuilder {
       daysUntilClose,
       isPastClose,
       closingImminently,
-      isHighValue: parseFloat(deal.value || 0) > 100000,
-      isStagnant:  daysInStage > 14 && !['closed_won', 'closed_lost'].includes(deal.stage),
+      isHighValue: parseFloat(deal.value || 0) > (config.high_value_threshold   ?? 100000),
+      isStagnant:  daysInStage > (config.stagnant_days_realtime ?? 14) && !['closed_won', 'closed_lost'].includes(deal.stage),
     };
   }
 

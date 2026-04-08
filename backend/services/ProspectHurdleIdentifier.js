@@ -21,8 +21,8 @@ class ProspectHurdleIdentifier {
    * @param {object} context - from ProspectContextBuilder
    * @returns {{ hurdleType, title, priority, evidence } | null}
    */
-  static identify(context) {
-    const all = this.identifyAll(context);
+  static identify(context, config = {}) {
+    const all = this.identifyAll(context, config);
     return all.length > 0 ? all[0] : null;
   }
 
@@ -32,7 +32,7 @@ class ProspectHurdleIdentifier {
    * @param {object} context - from ProspectContextBuilder
    * @returns {Array<{ hurdleType, title, priority, evidence }>}
    */
-  static identifyAll(context) {
+  static identifyAll(context, config = {}) {
     const { prospect, derived, icpBreakdown } = context;
 
     const checks = [
@@ -41,9 +41,9 @@ class ProspectHurdleIdentifier {
       this._checkStaleOutreach(prospect, derived),
       this._checkNoMeeting(prospect, derived),
       this._checkNoResearch(prospect, derived),
-      this._checkWrongChannel(prospect, derived),
+      this._checkWrongChannel(prospect, derived, config),
       this._checkMultiThreadNeeded(prospect, derived),
-      this._checkLowIcp(prospect, icpBreakdown),
+      this._checkLowIcp(prospect, icpBreakdown, config),
     ];
 
     return checks.filter(Boolean);
@@ -123,8 +123,10 @@ class ProspectHurdleIdentifier {
 
   // ── wrong_channel: low response rate on current channel ───────────────────
 
-  static _checkWrongChannel(prospect, derived) {
-    if (prospect.outreach_count >= 3 && derived.responseRate < 0.1 && prospect.preferred_channel) {
+  static _checkWrongChannel(prospect, derived, config = {}) {
+    const minAttempts  = config.wrong_channel_min_attempts     ?? 3;
+    const maxRespRate  = config.wrong_channel_max_response_rate ?? 0.10;
+    if (prospect.outreach_count >= minAttempts && derived.responseRate < maxRespRate && prospect.preferred_channel) {
       return {
         hurdleType: 'wrong_channel',
         title: 'Channel not working',
@@ -151,8 +153,9 @@ class ProspectHurdleIdentifier {
 
   // ── low_icp: ICP score below threshold ────────────────────────────────────
 
-  static _checkLowIcp(prospect, icpBreakdown) {
-    if (prospect.icp_score !== null && prospect.icp_score !== undefined && prospect.icp_score < 30) {
+  static _checkLowIcp(prospect, icpBreakdown, config = {}) {
+    const lowIcpThreshold = config.low_icp_threshold ?? 30;
+    if (prospect.icp_score !== null && prospect.icp_score !== undefined && prospect.icp_score < lowIcpThreshold) {
       return {
         hurdleType: 'low_icp',
         title: 'Low ICP fit',

@@ -37,10 +37,10 @@
 
 'use strict';
 
-// ── Thresholds ────────────────────────────────────────────────────────────────
+// ── Default thresholds (overridden by org config passed into evaluate()) ──────
 
-const STALE_DAYS            = 5;
-const PENDING_TOO_LONG_DAYS = 7;
+const DEFAULT_STALE_DAYS            = 5;
+const DEFAULT_PENDING_TOO_LONG_DAYS = 7;
 
 // Terminal statuses — no diagnostic rules fire for these
 const TERMINAL_STATUSES = new Set(['resolved', 'closed']);
@@ -53,8 +53,11 @@ const TERMINAL_STATUSES = new Set(['resolved', 'closed']);
  * @param {object} ctx  — context object built by supportService.buildCaseContext()
  * @returns {Array<{sourceRule, title, description, priority, nextStep}>}
  */
-function evaluate(ctx) {
+function evaluate(ctx, config = {}) {
   const { case: c, derived } = ctx;
+
+  const STALE_DAYS            = config.stale_days            ?? DEFAULT_STALE_DAYS;
+  const PENDING_TOO_LONG_DAYS = config.pending_too_long_days ?? DEFAULT_PENDING_TOO_LONG_DAYS;
 
   if (TERMINAL_STATUSES.has(c.status)) return [];
 

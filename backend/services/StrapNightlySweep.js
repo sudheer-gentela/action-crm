@@ -50,6 +50,7 @@
  */
 
 const db                    = require('../config/database');
+const { getDiagnosticRulesConfig } = require('../routes/orgAdmin.routes');
 const StrapContextResolver  = require('./StrapContextResolver');
 const StrapHurdleIdentifier = require('./StrapHurdleIdentifier');
 const StrapStrategyBuilder  = require('./StrapStrategyBuilder');
@@ -66,7 +67,8 @@ const PROSPECT_TERMINAL_STAGES = new Set(['converted', 'disqualified', 'archived
 // ── How long a STRAP must be active before the sweep re-validates it ──────────
 // Prevents the sweep from immediately challenging a brand-new STRAP that was
 // just confirmed by a rep minutes before the 03:00 cron fires.
-const MIN_STRAP_AGE_HOURS = 12;
+// MIN_STRAP_AGE_HOURS default — now loaded from org diagnostic_rules config
+const DEFAULT_MIN_STRAP_AGE_HOURS = 12;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -90,6 +92,13 @@ class StrapNightlySweep {
 
     const systemUserId = await this._resolveSystemUser(orgId);
 
+    // Load org diagnostic rules config — used for min_age_hours
+    let minStrapAgeHours = DEFAULT_MIN_STRAP_AGE_HOURS;
+    try {
+      const rulesConfig = await getDiagnosticRulesConfig(orgId);
+      minStrapAgeHours  = rulesConfig.strap?.min_age_hours ?? DEFAULT_MIN_STRAP_AGE_HOURS;
+    } catch (_) { /* use default */ }
+
     let validated   = 0;
     let resolved    = 0;
     let regenerated = 0;
@@ -98,7 +107,7 @@ class StrapNightlySweep {
 
     // ── Part A: Validate existing active STRAPs ───────────────────────────────
 
-    const activeStraps = await this._loadActiveStraps(orgId);
+    const activeStraps = await this._loadActiveStraps(orgId, minStrapAgeHours);
     console.log(`[StrapNightlySweep] org=${orgId} active_straps=${activeStraps.length}`);
 
     for (const strap of activeStraps) {
@@ -154,7 +163,7 @@ class StrapNightlySweep {
    * STRAPs created in the last MIN_STRAP_AGE_HOURS hours are skipped so the
    * sweep doesn't immediately challenge a freshly confirmed STRAP.
    */
-  static async _loadActiveStraps(orgId) {
+  static async _loadActiveStraps(orgId, minAgeHours = DEFAULT_MIN_STRAP_AGE_HOURS) {
     const result = await db.query(
       `SELECT id, entity_type, entity_id, hurdle_type, created_by, created_at
        FROM straps
@@ -162,7 +171,7 @@ class StrapNightlySweep {
          AND status = 'active'
          AND created_at < NOW() - ($2 || ' hours')::interval
        ORDER BY entity_type, entity_id`,
-      [orgId, MIN_STRAP_AGE_HOURS]
+      [orgId, minAgeHours]
     );
     return result.rows;
   }

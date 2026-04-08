@@ -1584,7 +1584,175 @@ router.post('/seed-module', adminOnly, async (req, res) => {
 });
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DIAGNOSTIC RULES CONFIG
+// Configurable thresholds for all nightly + real-time diagnostic engines.
+// Stored in organizations.settings.diagnostic_rules.
+// getDiagnosticRulesConfig is exported for use by engine callers.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DIAGNOSTIC_DEFAULTS = {
+  deals: {
+    stagnant_days_realtime: 14,
+    stagnant_days_nightly:  30,
+    close_imminent_days:    7,
+    high_value_threshold:   100000,
+  },
+  cases: {
+    stale_days:            5,
+    pending_too_long_days: 7,
+  },
+  handovers: {
+    no_kickoff_days: 5,
+    stalled_days:    7,
+  },
+  prospecting: {
+    stale_days:                    14,
+    ghosting_days:                 5,
+    hot_lead_response_days:        3,
+    low_icp_threshold:             30,
+    wrong_channel_min_attempts:    3,
+    wrong_channel_max_response_rate: 0.10,
+  },
+  accounts: {
+    stale_days:             30,
+    expansion_stalled_days: 30,
+    renewal_window_days:    90,
+    whitespace_min_roles:   3,
+    whitespace_min_contacts: 5,
+  },
+  strap: {
+    min_age_hours: 12,
+  },
+};
+
+/**
+ * Load the effective diagnostic rules config for an org.
+ * Merges org-level overrides (settings.diagnostic_rules) with DIAGNOSTIC_DEFAULTS.
+ * Returns full config even if org has no overrides — always safe to destructure.
+ *
+ * @param {number} orgId
+ * @returns {Promise<object>} merged config
+ */
+async function getDiagnosticRulesConfig(orgId) {
+  try {
+    const result = await pool.query(
+      `SELECT settings->'diagnostic_rules' AS rules FROM organizations WHERE id = $1`,
+      [orgId]
+    );
+    const overrides = result.rows[0]?.rules || {};
+
+    // Deep merge: org overrides win, defaults fill gaps
+    const merged = {};
+    for (const [module, defaults] of Object.entries(DIAGNOSTIC_DEFAULTS)) {
+      merged[module] = { ...defaults, ...(overrides[module] || {}) };
+    }
+    return merged;
+  } catch (err) {
+    console.error('[getDiagnosticRulesConfig] Failed, using defaults:', err.message);
+    return { ...DIAGNOSTIC_DEFAULTS };
+  }
+}
+
+/**
+ * GET /org/admin/diagnostic-rules
+ * Returns the effective diagnostic rules config for this org (defaults merged with overrides).
+ * Also returns which values are customised vs default, for UI highlighting.
+ */
+router.get('/diagnostic-rules', adminOnly, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT settings->'diagnostic_rules' AS rules FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const overrides = result.rows[0]?.rules || {};
+    const config    = await getDiagnosticRulesConfig(req.orgId);
+
+    // Build a customised map — tells the UI which values have been overridden
+    const customised = {};
+    for (const [module, defaults] of Object.entries(DIAGNOSTIC_DEFAULTS)) {
+      customised[module] = {};
+      for (const key of Object.keys(defaults)) {
+        customised[module][key] = !!(overrides[module] && overrides[module][key] !== undefined);
+      }
+    }
+
+    res.json({ config, defaults: DIAGNOSTIC_DEFAULTS, customised });
+  } catch (err) {
+    console.error('GET /org/admin/diagnostic-rules error:', err);
+    res.status(500).json({ error: { message: 'Failed to load diagnostic rules config' } });
+  }
+});
+
+/**
+ * PATCH /org/admin/diagnostic-rules
+ * Update one or more diagnostic rule thresholds for this org.
+ * Body: { module: 'deals'|'cases'|'handovers'|'prospecting'|'accounts'|'strap', updates: { key: value } }
+ * Validates that keys exist in DIAGNOSTIC_DEFAULTS and values are numbers.
+ */
+router.patch('/diagnostic-rules', adminOnly, async (req, res) => {
+  try {
+    const { module, updates } = req.body;
+
+    const VALID_MODULES = Object.keys(DIAGNOSTIC_DEFAULTS);
+    if (!module || !VALID_MODULES.includes(module)) {
+      return res.status(400).json({
+        error: { message: `module must be one of: ${VALID_MODULES.join(', ')}` },
+      });
+    }
+
+    if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+      return res.status(400).json({ error: { message: 'updates must be an object' } });
+    }
+
+    const moduleDefaults = DIAGNOSTIC_DEFAULTS[module];
+    const validKeys = Object.keys(moduleDefaults);
+
+    // Validate all incoming keys and values
+    for (const [key, value] of Object.entries(updates)) {
+      if (!validKeys.includes(key)) {
+        return res.status(400).json({
+          error: { message: `Unknown key "${key}" for module "${module}". Valid keys: ${validKeys.join(', ')}` },
+        });
+      }
+      if (typeof value !== 'number' || isNaN(value) || value < 0) {
+        return res.status(400).json({
+          error: { message: `Value for "${key}" must be a non-negative number` },
+        });
+      }
+    }
+
+    // Load existing overrides, merge in new updates, write back
+    const current = await pool.query(
+      `SELECT settings->'diagnostic_rules' AS rules FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const existing = current.rows[0]?.rules || {};
+    const merged   = {
+      ...existing,
+      [module]: { ...(existing[module] || {}), ...updates },
+    };
+
+    await pool.query(
+      `UPDATE organizations
+       SET settings   = jsonb_set(COALESCE(settings, '{}'::jsonb), '{diagnostic_rules}', $1::jsonb),
+           updated_at = NOW()
+       WHERE id = $2`,
+      [JSON.stringify(merged), req.orgId]
+    );
+
+    // Return the full updated config
+    const updatedConfig = await getDiagnosticRulesConfig(req.orgId);
+    res.json({ config: updatedConfig, module, updated: updates });
+  } catch (err) {
+    console.error('PATCH /org/admin/diagnostic-rules error:', err);
+    res.status(500).json({ error: { message: 'Failed to update diagnostic rules config' } });
+  }
+});
+
 module.exports = router;
+module.exports.getDiagnosticRulesConfig = getDiagnosticRulesConfig;
+module.exports.DIAGNOSTIC_DEFAULTS      = DIAGNOSTIC_DEFAULTS;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI Token Usage — Org Admin

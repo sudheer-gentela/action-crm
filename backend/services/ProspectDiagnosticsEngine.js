@@ -33,6 +33,7 @@
  */
 
 const db                       = require('../config/database');
+const { getDiagnosticRulesConfig } = require('../routes/orgAdmin.routes');
 const ProspectContextBuilder   = require('./ProspectContextBuilder');
 const ProspectHurdleIdentifier = require('./ProspectHurdleIdentifier');
 
@@ -73,10 +74,13 @@ class ProspectDiagnosticsEngine {
    * @returns {{ upserted: number, resolved: number, skipped: boolean }}
    */
   static async runForProspect(prospectId, orgId, systemUserId) {
+    // Load org diagnostic rules config once — passed to context builder and hurdle identifier
+    const rulesConfig = await getDiagnosticRulesConfig(orgId);
+    const prospConfig = rulesConfig.prospecting || {};
     // Build context (same as outreach composer — no extra DB calls downstream)
     let context;
     try {
-      context = await ProspectContextBuilder.build(prospectId, systemUserId, orgId);
+      context = await ProspectContextBuilder.build(prospectId, systemUserId, orgId, prospConfig);
     } catch (err) {
       console.error(`[ProspectDiagnosticsEngine] Context build failed for prospect ${prospectId}:`, err.message);
       return { upserted: 0, resolved: 0, skipped: true };
@@ -90,7 +94,7 @@ class ProspectDiagnosticsEngine {
     }
 
     // Identify ALL active hurdles for this prospect
-    const hurdles = ProspectHurdleIdentifier.identifyAll(context);
+    const hurdles = ProspectHurdleIdentifier.identifyAll(context, prospConfig);
     const firedSourceRules = [];
 
     let upserted = 0;

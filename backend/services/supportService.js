@@ -25,6 +25,7 @@ const { resolveChannel } = require('./playbook.service');
 const { resolveForPlay } = require('./PlayRouteResolver');
 const ActionPersister  = require('./ActionPersister');
 const CasesRulesEngine = require('./CasesRulesEngine');
+const { getDiagnosticRulesConfig } = require('../routes/orgAdmin.routes');
 const PlayCompletionService = require('./PlayCompletionService');  // Phase 6
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1113,6 +1114,13 @@ async function buildCaseContext(caseRow) {
 async function runNightlySweep(orgId) {
   const stats = { processed: 0, alerts: 0, resolved: 0, errors: 0 };
 
+  // Load org diagnostic rules config once for entire sweep
+  let casesConfig = {};
+  try {
+    const rulesConfig = await getDiagnosticRulesConfig(orgId);
+    casesConfig = rulesConfig.cases || {};
+  } catch (_) { /* use engine defaults */ }
+
   // Fetch all non-terminal cases for the org.
   // We need the assigned_to for the userId param on upsertDiagnosticAlert.
   // When a case is unassigned, fall back to null — ActionPersister accepts null userId.
@@ -1143,7 +1151,7 @@ async function runNightlySweep(orgId) {
       const ctx = await buildCaseContext(caseRow);
 
       // Run all diagnostic rules — pure, no DB
-      const fired = CasesRulesEngine.evaluate(ctx);
+      const fired = CasesRulesEngine.evaluate(ctx, casesConfig);
 
       // Upsert each fired alert
       const firedSourceRules = [];
@@ -1249,7 +1257,13 @@ async function generateForCaseEvent(caseId, orgId, eventType) {
     );
 
     const ctx   = await buildCaseContext(caseRow);
-    const fired = CasesRulesEngine.evaluate(ctx);
+
+    let casesConfigEvent = {};
+    try {
+      const rulesConfig = await getDiagnosticRulesConfig(orgId);
+      casesConfigEvent  = rulesConfig.cases || {};
+    } catch (_) {}
+    const fired = CasesRulesEngine.evaluate(ctx, casesConfigEvent);
 
     const firedSourceRules = [];
     let totalAlerts = 0;

@@ -19,6 +19,7 @@
  */
 
 const db = require('../config/database');
+const { getDiagnosticRulesConfig } = require('../routes/orgAdmin.routes');
 const ActionsRulesEngine      = require('./ActionsRulesEngine');
 const ActionsAIEnhancer       = require('./ActionsAIEnhancer');
 const PlaybookService         = require('./playbook.service');
@@ -67,7 +68,7 @@ function isInternalAction(action) {
 
 // ── Derived context builder ───────────────────────────────────────────────────
 
-function buildDerived(deal, contacts, emails, meetings, files) {
+function buildDerived(deal, contacts, emails, meetings, files, config = {}) {
   const now = Date.now();
   const daysSince = (date) => date ? Math.floor((now - new Date(date)) / 86400000) : 999;
   const daysUntil = (date) => date ? Math.ceil((new Date(date) - now) / 86400000) : null;
@@ -114,9 +115,9 @@ function buildDerived(deal, contacts, emails, meetings, files) {
     daysUntilClose, daysInStage,
     decisionMakers, champions,
     unansweredEmails, failedFiles,
-    isHighValue:       parseFloat(deal.value || 0) > 100000,
-    isStagnant:        daysInStage > 30 && !deal.is_terminal,
-    closingImminently: daysUntilClose !== null && daysUntilClose >= 0 && daysUntilClose <= 7,
+    isHighValue:       parseFloat(deal.value || 0) > (config.high_value_threshold  ?? 100000),
+    isStagnant:        daysInStage > (config.stagnant_days_nightly ?? 30) && !deal.is_terminal,
+    closingImminently: daysUntilClose !== null && daysUntilClose >= 0 && daysUntilClose <= (config.close_imminent_days ?? 7),
     isPastClose:       daysUntilClose !== null && daysUntilClose < 0,
   };
 }
@@ -130,7 +131,15 @@ async function buildContext(deal, allContacts, allEmails, allMeetings, allFiles,
   const files    = allFiles.filter(f => f.deal_id === deal.id);
 
   const stageType = deal.stage_type || 'custom';
-  const derived   = buildDerived(deal, contacts, emails, meetings, files);
+
+  // Load org diagnostic rules config for deal thresholds
+  let dealRulesConfig = {};
+  try {
+    const rulesConfig = await getDiagnosticRulesConfig(orgId);
+    dealRulesConfig = rulesConfig.deals || {};
+  } catch (_) { /* use defaults */ }
+
+  const derived   = buildDerived(deal, contacts, emails, meetings, files, dealRulesConfig);
 
   let healthBreakdown = null;
   if (deal.health_score_breakdown) {

@@ -34,7 +34,7 @@ class ProspectContextBuilder {
    * @param {number} orgId
    * @returns {Promise<ProspectContext>}
    */
-  static async build(prospectId, userId, orgId) {
+  static async build(prospectId, userId, orgId, config = {}) {
     // \u2500\u2500 1. Load prospect \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     const prospect = await this._getProspect(prospectId, orgId);
     if (!prospect) throw new Error(`Prospect ${prospectId} not found`);
@@ -70,7 +70,8 @@ class ProspectContextBuilder {
     const derived = this._deriveSignals(
       prospect, account, accountDeals, accountContacts,
       teamEngagement, emailHistory, siblingProspects,
-      prospectActions, prospectActivities
+      prospectActions, prospectActivities,
+      config
     );
 
     // \u2500\u2500 4. Build the outreach context summary \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -104,7 +105,8 @@ class ProspectContextBuilder {
   static _deriveSignals(
     prospect, account, accountDeals, accountContacts,
     teamEngagement, emailHistory, siblingProspects,
-    prospectActions, prospectActivities
+    prospectActions, prospectActivities,
+    config = {}
   ) {
     const now = Date.now();
 
@@ -125,13 +127,16 @@ class ProspectContextBuilder {
       ? (prospect.response_count / prospect.outreach_count)
       : 0;
 
+    const ghostingDays = config.ghosting_days ?? 5;
     const isGhosting = prospect.outreach_count >= 3
       && prospect.response_count === 0
       && daysSinceLastOutreach !== null
-      && daysSinceLastOutreach > 5;
+      && daysSinceLastOutreach > ghostingDays;
 
-    const isStale = daysSinceLastOutreach !== null && daysSinceLastOutreach > 14;
-    const isHotLead = responseRate > 0.3 && daysSinceLastResponse !== null && daysSinceLastResponse <= 3;
+    const staleDays = config.stale_days ?? 14;
+    const isStale = daysSinceLastOutreach !== null && daysSinceLastOutreach > staleDays;
+    const hotLeadDays = config.hot_lead_response_days ?? 3;
+    const isHotLead = responseRate > 0.3 && daysSinceLastResponse !== null && daysSinceLastResponse <= hotLeadDays;
 
     // \u2500\u2500 Email signals \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     const sentEmails = emailHistory.filter(e => e.direction === 'sent');

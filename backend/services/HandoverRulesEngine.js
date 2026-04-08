@@ -51,8 +51,8 @@
 
 // ── Thresholds ────────────────────────────────────────────────────────────────
 
-const NO_KICKOFF_DAYS  = 5;   // days after creation before no-kickoff rule fires
-const STALLED_DAYS     = 7;   // days with no activity before stalled rule fires
+const DEFAULT_NO_KICKOFF_DAYS = 5;
+const DEFAULT_STALLED_DAYS    = 7;
 
 // Roles that must be present in sales_handover_stakeholders for a complete handover.
 // 'other' is intentionally excluded — it is a catch-all, not a required role.
@@ -74,12 +74,15 @@ const ACTIVE_STATUSES = new Set(['submitted', 'acknowledged', 'in_progress']);
  * @param {object} ctx  — context built by handover.service.buildHandoverContext()
  * @returns {Array<{sourceRule, title, description, priority, nextStep}>}
  */
-function evaluate(ctx) {
+function evaluate(ctx, config = {}) {
   const { handover: h, derived } = ctx;
 
   // Only fire rules on active handovers (submitted → in_progress).
   // Draft handovers are incomplete by design; in_progress is terminal for us
   // but still needs monitoring until the implementation module takes over.
+  const NO_KICKOFF_DAYS = config.no_kickoff_days ?? DEFAULT_NO_KICKOFF_DAYS;
+  const STALLED_DAYS    = config.stalled_days    ?? DEFAULT_STALLED_DAYS;
+
   if (!ACTIVE_STATUSES.has(h.status)) return [];
 
   const now   = new Date();

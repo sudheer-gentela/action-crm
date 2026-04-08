@@ -24,7 +24,7 @@ class AccountContextBuilder {
    * @param {number} orgId
    * @returns {Promise<object>}
    */
-  static async build(accountId, userId, orgId) {
+  static async build(accountId, userId, orgId, config = {}) {
     // ── 1. Load account ─────────────────────────────────────────
     const account = await this._getAccount(accountId, orgId);
     if (!account) throw new Error(`Account ${accountId} not found`);
@@ -45,7 +45,7 @@ class AccountContextBuilder {
     ]);
 
     // ── 3. Derive signals ───────────────────────────────────────
-    const derived = this._deriveSignals(account, deals, contacts, prospects, emailHistory, teamEngagement);
+    const derived = this._deriveSignals(account, deals, contacts, prospects, emailHistory, teamEngagement, config);
 
     return {
       account,
@@ -62,7 +62,7 @@ class AccountContextBuilder {
 
   // ── Derived Signals ─────────────────────────────────────────────────────────
 
-  static _deriveSignals(account, deals, contacts, prospects, emailHistory, teamEngagement) {
+  static _deriveSignals(account, deals, contacts, prospects, emailHistory, teamEngagement, config = {}) {
     const now = Date.now();
     const daysSince = (date) => date ? Math.floor((now - new Date(date)) / 86400000) : 999;
 
@@ -103,7 +103,7 @@ class AccountContextBuilder {
       const anniversary = new Date(closeDate);
       anniversary.setFullYear(anniversary.getFullYear() + 1);
       const daysUntilRenewal = Math.ceil((anniversary - now) / 86400000);
-      return daysUntilRenewal >= 0 && daysUntilRenewal <= 90;
+      return daysUntilRenewal >= 0 && daysUntilRenewal <= (config.renewal_window_days ?? 90);
     });
 
     // ── Whitespace ──────────────────────────────────────────────
@@ -113,7 +113,7 @@ class AccountContextBuilder {
     // ── Expansion signals ───────────────────────────────────────
     const stalledExpansionDeals = openDeals.filter(d => {
       const daysInStage = daysSince(d.updated_at);
-      return daysInStage > 30;
+      return daysInStage > (config.expansion_stalled_days ?? 30);
     });
 
     return {
@@ -154,12 +154,12 @@ class AccountContextBuilder {
       hasUpcomingRenewal: renewalCandidates.length > 0,
 
       // Whitespace & Expansion
-      hasWhitespace: uniqueRoles.size < 3 && contacts.length < 5,
+      hasWhitespace: uniqueRoles.size < (config.whitespace_min_roles ?? 3) && contacts.length < (config.whitespace_min_contacts ?? 5),
       stalledExpansionDeals,
       hasExpansionBlocked: stalledExpansionDeals.length > 0,
 
       // Staleness
-      isStale: daysSinceLastEngagement > 30,
+      isStale: daysSinceLastEngagement > (config.stale_days ?? 30),
 
       // Champion gap — check if any champion exists and has recent engagement
       hasChampionGap: champions.length === 0 && wonDeals.length > 0,

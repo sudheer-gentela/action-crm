@@ -25,6 +25,7 @@ const { pool, withOrgTransaction } = require('../config/database');
 const PlaybookPlayService          = require('./PlaybookPlayService');
 const ActionPersister              = require('./ActionPersister');
 const HandoverRulesEngine          = require('./HandoverRulesEngine');
+const { getDiagnosticRulesConfig }  = require('../routes/orgAdmin.routes');
 const PlayCompletionService        = require('./PlayCompletionService');  // Phase 6
 
 // ── Status machine ────────────────────────────────────────────────────────────
@@ -772,6 +773,13 @@ async function buildHandoverContext(handoverRow) {
 async function runNightlySweep(orgId) {
   const stats = { processed: 0, alerts: 0, resolved: 0, errors: 0 };
 
+  // Load org diagnostic rules config once for entire sweep
+  let handoverConfig = {};
+  try {
+    const rulesConfig  = await getDiagnosticRulesConfig(orgId);
+    handoverConfig     = rulesConfig.handovers || {};
+  } catch (_) { /* use engine defaults */ }
+
   let handovers;
   try {
     const result = await pool.query(
@@ -799,7 +807,7 @@ async function runNightlySweep(orgId) {
       const ctx = await buildHandoverContext(handoverRow);
 
       // Run all diagnostic rules — pure, no DB
-      const fired = HandoverRulesEngine.evaluate(ctx);
+      const fired = HandoverRulesEngine.evaluate(ctx, handoverConfig);
 
       // Upsert each fired alert.
       // entityType='handover', entityId=deal_id — ActionPersister routes this
@@ -918,7 +926,13 @@ async function generateForHandoverEvent(handoverId, orgId, eventType) {
     );
 
     const ctx   = await buildHandoverContext(handoverRow);
-    const fired = HandoverRulesEngine.evaluate(ctx);
+
+    let handoverConfigEvent = {};
+    try {
+      const rulesConfig      = await getDiagnosticRulesConfig(orgId);
+      handoverConfigEvent    = rulesConfig.handovers || {};
+    } catch (_) {}
+    const fired = HandoverRulesEngine.evaluate(ctx, handoverConfigEvent);
 
     const firedSourceRules = [];
     let totalAlerts = 0;
