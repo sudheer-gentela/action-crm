@@ -2363,7 +2363,6 @@ function OADiagnosticRulesEdit() {
   const token  = localStorage.getItem('token') || localStorage.getItem('authToken');
   const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
-  const [config,     setConfig]     = useState(null);
   const [defaults,   setDefaults]   = useState(null);
   const [customised, setCustomised] = useState({});
   const [drafts,     setDrafts]     = useState({});   // { module: { key: value } }
@@ -2377,7 +2376,6 @@ function OADiagnosticRulesEdit() {
     fetch(`${API}/org/admin/diagnostic-rules`, { headers })
       .then(r => r.ok ? r.json() : Promise.reject(r))
       .then(data => {
-        setConfig(data.config);
         setDefaults(data.defaults);
         setCustomised(data.customised || {});
         // Initialise drafts from current config
@@ -2423,7 +2421,6 @@ function OADiagnosticRulesEdit() {
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data?.error?.message || 'Save failed');
-      setConfig(data.config);
       // Reload customised map
       const cfgR = await fetch(`${API}/org/admin/diagnostic-rules`, { headers });
       const cfgData = await cfgR.json();
@@ -2458,7 +2455,6 @@ function OADiagnosticRulesEdit() {
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data?.error?.message || 'Reset failed');
-      setConfig(data.config);
       setSuccess(`${DIAGNOSTIC_MODULE_DEFS.find(m => m.key === moduleKey)?.label} rules reset to defaults ✓`);
       setTimeout(() => setSuccess(''), 3000);
       const cfgR = await fetch(`${API}/org/admin/diagnostic-rules`, { headers });
