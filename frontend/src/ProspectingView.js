@@ -1827,6 +1827,7 @@ function SequencesView({ prospects }) {
   const [loadingDrafts,setLoadingDrafts]= useState(false);
   const [showBuilder,  setShowBuilder]  = useState(false);
   const [editingSeq,   setEditingSeq]   = useState(null);
+  const [viewingSeq,   setViewingSeq]   = useState(null); // full sequence for read-only view
   const [showEnroll,   setShowEnroll]   = useState(false);
   const [enrollSeqId,  setEnrollSeqId]  = useState(null);
   const [selectedProspects, setSelectedProspects] = useState([]);
@@ -1840,6 +1841,28 @@ function SequencesView({ prospects }) {
 
   // Draft inline-edit state: { [draftId]: { subject, body, editing, sending, error } }
   const [draftEdits,   setDraftEdits]   = useState({});
+
+  // Open builder in edit mode — fetches full sequence (with steps) before opening.
+  // The list endpoint only returns step_count, not the steps array.
+  const openBuilderForEdit = async (seq) => {
+    try {
+      const r = await apiFetch(`/sequences/${seq.id}`);
+      setEditingSeq(r.sequence);
+      setShowBuilder(true);
+    } catch (err) {
+      setError('Failed to load sequence: ' + (err.message || 'unknown error'));
+    }
+  };
+
+  // Open read-only view panel — fetches full sequence with steps.
+  const openViewPanel = async (seq) => {
+    try {
+      const r = await apiFetch(`/sequences/${seq.id}`);
+      setViewingSeq(r.sequence);
+    } catch (err) {
+      setError('Failed to load sequence: ' + (err.message || 'unknown error'));
+    }
+  };
 
   const toggleEnrollLogs = async (enrollId) => {
     if (expandedEnrollId === enrollId) {
@@ -2086,7 +2109,14 @@ function SequencesView({ prospects }) {
                       </div>
                       <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                         <button
-                          onClick={() => { setEditingSeq(seq); setShowBuilder(true); }}
+                          onClick={() => openViewPanel(seq)}
+                          title="View steps"
+                          style={{ padding: '3px 8px', borderRadius: 5, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', fontSize: 11, cursor: 'pointer' }}
+                        >
+                          👁
+                        </button>
+                        <button
+                          onClick={() => openBuilderForEdit(seq)}
                           title="Edit"
                           style={{ padding: '3px 8px', borderRadius: 5, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', fontSize: 11, cursor: 'pointer' }}
                         >
@@ -2613,6 +2643,148 @@ function SequencesView({ prospects }) {
         </div>
       )}
 
+      {/* ── Sequence View Panel ─────────────────────────────────────────── */}
+      {viewingSeq && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 1000,
+          background: 'rgba(0,0,0,0.35)',
+          display: 'flex', justifyContent: 'flex-end',
+        }}
+          onClick={e => { if (e.target === e.currentTarget) setViewingSeq(null); }}
+        >
+          <div style={{
+            width: 520, maxWidth: '95vw', height: '100%',
+            background: '#fff', overflowY: 'auto',
+            boxShadow: '-4px 0 24px rgba(0,0,0,0.12)',
+            display: 'flex', flexDirection: 'column',
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: '20px 24px 16px', borderBottom: '1px solid #e5e7eb',
+              display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12,
+            }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#0F9D8E', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+                  SEQUENCE
+                </div>
+                <div style={{ fontWeight: 700, fontSize: 16, color: '#111827', lineHeight: 1.3 }}>
+                  {viewingSeq.name}
+                </div>
+                {viewingSeq.description && (
+                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6, lineHeight: 1.5 }}>
+                    {viewingSeq.description}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: 12, color: '#9ca3af' }}>
+                  <span>{(viewingSeq.steps || []).length} steps</span>
+                  <span>Draft before sending: {viewingSeq.require_approval ? 'Yes' : 'No'}</span>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                <button
+                  onClick={() => { setViewingSeq(null); openBuilderForEdit(viewingSeq); }}
+                  style={{
+                    padding: '6px 14px', borderRadius: 7, fontSize: 12, fontWeight: 600,
+                    background: '#1A3A5C', color: '#fff', border: 'none', cursor: 'pointer',
+                  }}
+                >
+                  ✏️ Edit
+                </button>
+                <button
+                  onClick={() => setViewingSeq(null)}
+                  style={{
+                    padding: '6px 10px', borderRadius: 7, fontSize: 16,
+                    background: 'none', border: '1px solid #e5e7eb', color: '#6b7280', cursor: 'pointer',
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Steps */}
+            <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {(viewingSeq.steps || []).length === 0 ? (
+                <div style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No steps yet</div>
+              ) : (
+                (viewingSeq.steps || []).map((step, idx) => {
+                  const channelEmoji = { email: '✉️', linkedin: '🔗', call: '📞', task: '📋' }[step.channel] || '📋';
+                  const hasContent   = step.subject_template || step.body_template || step.task_note;
+                  return (
+                    <div key={step.id || idx} style={{
+                      border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden',
+                    }}>
+                      {/* Step header */}
+                      <div style={{
+                        padding: '10px 14px',
+                        background: '#f8fafc',
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        borderBottom: hasContent ? '1px solid #e5e7eb' : 'none',
+                      }}>
+                        <div style={{
+                          width: 24, height: 24, borderRadius: '50%',
+                          background: '#0F9D8E', color: '#fff',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 11, fontWeight: 700, flexShrink: 0,
+                        }}>
+                          {idx + 1}
+                        </div>
+                        <span style={{ fontSize: 14 }}>{channelEmoji}</span>
+                        <span style={{ fontWeight: 600, fontSize: 13, color: '#111827', textTransform: 'capitalize' }}>
+                          {step.channel}
+                        </span>
+                        <span style={{ fontSize: 12, color: '#9ca3af' }}>
+                          {step.delay_days === 0 ? 'Day 0 (on enroll)' : `Day +${step.delay_days}`}
+                        </span>
+                        {step.require_approval === true && (
+                          <span style={{ marginLeft: 'auto', fontSize: 10, padding: '2px 6px', borderRadius: 4, background: '#fef3c7', color: '#92400e', fontWeight: 600 }}>
+                            Draft
+                          </span>
+                        )}
+                        {step.require_approval === false && (
+                          <span style={{ marginLeft: 'auto', fontSize: 10, padding: '2px 6px', borderRadius: 4, background: '#dcfce7', color: '#166534', fontWeight: 600 }}>
+                            Auto-send
+                          </span>
+                        )}
+                      </div>
+                      {/* Step content */}
+                      {hasContent && (
+                        <div style={{ padding: '12px 14px' }}>
+                          {step.subject_template && (
+                            <div style={{ marginBottom: 8 }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>Subject</div>
+                              <div style={{ fontSize: 13, color: '#111827', fontWeight: 500 }}>{step.subject_template}</div>
+                            </div>
+                          )}
+                          {step.body_template && (
+                            <div>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>Body</div>
+                              <div style={{
+                                fontSize: 12, color: '#374151', lineHeight: 1.6,
+                                whiteSpace: 'pre-wrap', maxHeight: 200, overflowY: 'auto',
+                                background: '#f9fafb', borderRadius: 6, padding: '8px 10px',
+                              }}>
+                                {step.body_template}
+                              </div>
+                            </div>
+                          )}
+                          {step.task_note && (
+                            <div>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>Note</div>
+                              <div style={{ fontSize: 12, color: '#374151', lineHeight: 1.6 }}>{step.task_note}</div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── SequenceBuilder slide-over ───────────────────────────────────── */}
       {showBuilder && (
         <div
@@ -2634,10 +2806,8 @@ function SequencesView({ prospects }) {
               sequence={editingSeq}
               onSave={(saved) => {
                 loadSequences();
-                // Re-open in edit mode with the saved sequence so the user
-                // can continue adding steps — especially important on first create
-                setEditingSeq(saved);
-                setShowBuilder(true);
+                // Fetch full sequence (with steps) then re-open in edit mode
+                openBuilderForEdit(saved);
               }}
               onClose={() => { setShowBuilder(false); setEditingSeq(null); }}
             />
