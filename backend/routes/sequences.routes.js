@@ -594,7 +594,7 @@ router.get('/drafts', async (req, res) => {
         se.sequence_id, se.enrolled_by,
         s.name AS sequence_name,
         p.id AS prospect_id, p.first_name, p.last_name,
-        p.email AS prospect_email, p.company_name,
+        p.email AS prospect_email, p.company_name, p.linkedin_url,
         -- Auto-select the rep's least-used active personal sender account
         -- CHANGED: client_id IS NULL — excludes client-owned sender accounts
         psa.id   AS sender_id,
@@ -649,6 +649,7 @@ router.get('/drafts', async (req, res) => {
         lastName:    r.last_name,
         email:       r.prospect_email,
         companyName: r.company_name,
+        linkedinUrl: r.linkedin_url || null,
       },
       suggestedSender: r.sender_id ? {
         id:       r.sender_id,
