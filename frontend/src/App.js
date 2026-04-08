@@ -16,6 +16,23 @@ import PlaybooksView from './PlaybooksView';
 import PlaybookDetail from './PlaybookDetail';
 import PlaybookRegister from './PlaybookRegister';
 import PlaybookApprovals from './PlaybookApprovals';
+
+// Normalise the modules object from /org/context into a simple { key: boolean } map.
+// Handles both legacy scalar format (true/false) and new object format ({ allowed, enabled }).
+function normaliseModules(raw) {
+  if (!raw || typeof raw !== 'object') return {};
+  const result = {};
+  for (const [key, val] of Object.entries(raw)) {
+    if (val === null || val === undefined) {
+      result[key] = false;
+    } else if (typeof val === 'object') {
+      result[key] = !!val.enabled;
+    } else {
+      result[key] = val === true || val === 'true';
+    }
+  }
+  return result;
+}
 import ProspectingView from './ProspectingView';
 import ContractsView from './ContractsView';
 import HandoverView from './HandoverView';
@@ -464,7 +481,7 @@ function Dashboard({ user, onLogout }) {
     })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
-        if (data?.modules) setOrgModules(data.modules);
+        if (data?.modules) setOrgModules(normaliseModules(data.modules));
       })
       .catch(() => {}); // non-fatal — modules stay hidden if fetch fails
   }, []);
@@ -499,7 +516,7 @@ function Dashboard({ user, onLogout }) {
   const navItems = NAV_ITEMS_BY_ROLE[activeRole] || NAV_ITEMS_BY_ROLE.member;
 
   // Only surface module items whose flag is enabled in org settings
-  const enabledModuleItems = ALL_MODULE_ITEMS.filter(m => orgModules[m.id] === true);
+  const enabledModuleItems = ALL_MODULE_ITEMS.filter(m => !!orgModules[m.id]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -587,7 +604,7 @@ function Dashboard({ user, onLogout }) {
   useEffect(() => {
     const handleModuleToggle = (e) => {
       const { module, enabled } = e.detail || {};
-      if (module) setOrgModules(prev => ({ ...prev, [module]: enabled }));
+      if (module) setOrgModules(prev => ({ ...prev, [module]: !!enabled }));
     };
     window.addEventListener('moduleToggle', handleModuleToggle);
     return () => window.removeEventListener('moduleToggle', handleModuleToggle);
