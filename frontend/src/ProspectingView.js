@@ -744,6 +744,21 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
     }
   };
 
+  const handleMarkDoneProspectDraft = async (draftId) => {
+    setProspectDraftEdits(prev => ({ ...prev, [draftId]: { ...prev[draftId], sending: true, error: null } }));
+    try {
+      await apiFetch(`/sequences/drafts/${draftId}/complete`, { method: 'POST', body: JSON.stringify({}) });
+      setProspectDrafts(prev => prev.filter(d => d.id !== draftId));
+      setProspectDraftEdits(prev => { const n = { ...prev }; delete n[draftId]; return n; });
+      try {
+        const res = await apiFetch(`/prospects/${prospectId}`);
+        setActivities(res.activities || []);
+      } catch (_) {}
+    } catch (err) {
+      setProspectDraftEdits(prev => ({ ...prev, [draftId]: { ...prev[draftId], sending: false, error: err.message } }));
+    }
+  };
+
   useEffect(() => {
     const fetchDetail = async () => {
       try {
@@ -1327,6 +1342,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                             onSubjectChange={v => setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], subject: v } }))}
                             onBodyChange={v => setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], body: v } }))}
                             onSend={() => handleSendProspectDraft(draft)}
+                            onComplete={() => handleMarkDoneProspectDraft(draft.id)}
                             onDiscard={() => handleDiscardProspectDraft(draft.id)}
                           />
                         );
@@ -1665,11 +1681,17 @@ function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
 // DRAFT CARD  — reused in SequencesView Drafts tab and prospect Activity tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle, onSubjectChange, onBodyChange, onSend, onDiscard, compact = false }) {
-  const overdue = draft.isOverdue || (draft.scheduledSendAt && new Date(draft.scheduledSendAt) < new Date());
+function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle, onSubjectChange, onBodyChange, onSend, onComplete, onDiscard, compact = false }) {
+  const overdue  = draft.isOverdue || (draft.scheduledSendAt && new Date(draft.scheduledSendAt) < new Date());
+  const channel  = draft.channel || 'email';
+  const isEmail  = channel === 'email';
+
   const scheduledLabel = draft.scheduledSendAt
     ? new Date(draft.scheduledSendAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     : null;
+
+  const CHANNEL_LABEL = { email: '✉️ Email', linkedin: '🔗 LinkedIn', call: '📞 Call', task: '📋 Task' };
+  const channelLabel  = CHANNEL_LABEL[channel] || channel;
 
   return (
     <div style={{
@@ -1685,7 +1707,7 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
           background: overdue ? '#fef2f2' : '#f9fafb',
         }}
       >
-        <span style={{ fontSize: 14 }}>✉️</span>
+        <span style={{ fontSize: 14 }}>{isEmail ? '✉️' : channel === 'linkedin' ? '🔗' : channel === 'call' ? '📞' : '📋'}</span>
 
         {!compact && (
           <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', flexShrink: 0 }}>
@@ -1709,7 +1731,7 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
           flex: 1, fontSize: 12, color: '#374151',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>
-          {subject || '(no subject)'}
+          {isEmail ? (subject || '(no subject)') : channelLabel}
         </div>
 
         {overdue ? (
@@ -1726,47 +1748,107 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
         <span style={{ fontSize: 11, color: '#9ca3af' }}>{isOpen ? '▲' : '▼'}</span>
       </div>
 
-      {/* Expanded edit + actions */}
+      {/* Expanded content + actions */}
       {isOpen && (
         <div style={{ padding: 14, borderTop: '1px solid #f3f4f6', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {/* Sender badge */}
-          {draft.suggestedSender && (
-            <div style={{ fontSize: 11, color: '#6b7280' }}>
-              Sending from:{' '}
-              <span style={{
-                fontWeight: 600, color: '#374151',
-                background: '#f3f4f6', padding: '2px 8px', borderRadius: 5,
-              }}>
-                {draft.suggestedSender.provider === 'gmail' ? '📧' : '📮'} {draft.suggestedSender.email}
-                {draft.suggestedSender.label && ` (${draft.suggestedSender.label})`}
-              </span>
-            </div>
+
+          {/* ── EMAIL channel ─────────────────────────────────────────── */}
+          {isEmail && (
+            <>
+              {draft.suggestedSender && (
+                <div style={{ fontSize: 11, color: '#6b7280' }}>
+                  Sending from:{' '}
+                  <span style={{
+                    fontWeight: 600, color: '#374151',
+                    background: '#f3f4f6', padding: '2px 8px', borderRadius: 5,
+                  }}>
+                    {draft.suggestedSender.provider === 'gmail' ? '📧' : '📮'} {draft.suggestedSender.email}
+                    {draft.suggestedSender.label && ` (${draft.suggestedSender.label})`}
+                  </span>
+                </div>
+              )}
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                  Subject
+                </label>
+                <input
+                  value={subject}
+                  onChange={e => onSubjectChange(e.target.value)}
+                  style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111' }}
+                />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                  Body
+                </label>
+                <textarea
+                  value={body}
+                  onChange={e => onBodyChange(e.target.value)}
+                  rows={8}
+                  style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', resize: 'vertical', lineHeight: 1.6 }}
+                />
+              </div>
+            </>
           )}
 
-          {/* Subject */}
-          <div>
-            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-              Subject
-            </label>
-            <input
-              value={subject}
-              onChange={e => onSubjectChange(e.target.value)}
-              style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111' }}
-            />
-          </div>
+          {/* ── LINKEDIN channel ──────────────────────────────────────── */}
+          {channel === 'linkedin' && (
+            <>
+              <div style={{ padding: '10px 12px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#0369a1', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  🔗 LinkedIn Message
+                </div>
+                {body ? (
+                  <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{body}</div>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>No message template — send a personalised note.</div>
+                )}
+              </div>
+              {draft.prospect?.linkedinUrl || draft.prospect?.linkedin_url ? (
+                <a
+                  href={draft.prospect.linkedinUrl || draft.prospect.linkedin_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    padding: '7px 14px', borderRadius: 7, fontSize: 12, fontWeight: 600,
+                    background: '#0a66c2', color: '#fff', textDecoration: 'none',
+                    alignSelf: 'flex-start',
+                  }}
+                >
+                  🔗 Open LinkedIn Profile ↗
+                </a>
+              ) : (
+                <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>
+                  No LinkedIn URL on this prospect — add it in their profile.
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: '#6b7280', background: '#f8fafc', borderRadius: 6, padding: '8px 10px' }}>
+                💡 Send the message directly on LinkedIn, then click <strong>Mark as Done</strong> to advance the sequence.
+              </div>
+            </>
+          )}
 
-          {/* Body */}
-          <div>
-            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-              Body
-            </label>
-            <textarea
-              value={body}
-              onChange={e => onBodyChange(e.target.value)}
-              rows={8}
-              style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', resize: 'vertical', lineHeight: 1.6 }}
-            />
-          </div>
+          {/* ── CALL / TASK channel ───────────────────────────────────── */}
+          {(channel === 'call' || channel === 'task') && (
+            <>
+              <div style={{ padding: '10px 12px', background: '#f9fafb', borderRadius: 8, border: '1px solid #e5e7eb' }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  {channel === 'call' ? '📞 Call Note' : '📋 Task Note'}
+                </div>
+                {draft.taskNote || body ? (
+                  <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                    {draft.taskNote || body}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>No note for this step.</div>
+                )}
+              </div>
+              <div style={{ fontSize: 11, color: '#6b7280', background: '#f8fafc', borderRadius: 6, padding: '8px 10px' }}>
+                💡 {channel === 'call' ? 'Make the call' : 'Complete the task'}, then click <strong>Mark as Done</strong> to advance the sequence.
+              </div>
+            </>
+          )}
 
           {sendError && (
             <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, color: '#dc2626' }}>
@@ -1782,17 +1864,31 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
             >
               🗑 Discard
             </button>
-            <button
-              onClick={onSend}
-              disabled={sending}
-              style={{
-                padding: '7px 18px', borderRadius: 7, border: 'none',
-                background: sending ? '#9ca3af' : '#0F9D8E', color: '#fff',
-                fontSize: 12, fontWeight: 600, cursor: sending ? 'not-allowed' : 'pointer',
-              }}
-            >
-              {sending ? '⏳ Sending…' : '📤 Send Now'}
-            </button>
+            {isEmail ? (
+              <button
+                onClick={onSend}
+                disabled={sending}
+                style={{
+                  padding: '7px 18px', borderRadius: 7, border: 'none',
+                  background: sending ? '#9ca3af' : '#0F9D8E', color: '#fff',
+                  fontSize: 12, fontWeight: 600, cursor: sending ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {sending ? '⏳ Sending…' : '📤 Send Now'}
+              </button>
+            ) : (
+              <button
+                onClick={onComplete}
+                disabled={sending}
+                style={{
+                  padding: '7px 18px', borderRadius: 7, border: 'none',
+                  background: sending ? '#9ca3af' : '#0F9D8E', color: '#fff',
+                  fontSize: 12, fontWeight: 600, cursor: sending ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {sending ? '⏳ Saving…' : '✅ Mark as Done'}
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -1927,6 +2023,17 @@ function SequencesView({ prospects }) {
       setDraftEdits(prev => { const n = { ...prev }; delete n[draftId]; return n; });
     } catch (err) {
       setError('Failed to discard draft: ' + err.message);
+    }
+  };
+
+  const handleMarkDoneDraft = async (draftId) => {
+    setDraftEdits(prev => ({ ...prev, [draftId]: { ...prev[draftId], sending: true, error: null } }));
+    try {
+      await apiFetch(`/sequences/drafts/${draftId}/complete`, { method: 'POST', body: JSON.stringify({}) });
+      setDrafts(prev => prev.filter(d => d.id !== draftId));
+      setDraftEdits(prev => { const n = { ...prev }; delete n[draftId]; return n; });
+    } catch (err) {
+      setDraftEdits(prev => ({ ...prev, [draftId]: { ...prev[draftId], sending: false, error: err.message } }));
     }
   };
 
@@ -2218,6 +2325,7 @@ function SequencesView({ prospects }) {
                     onSubjectChange={v => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], subject: v } }))}
                     onBodyChange={v => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], body: v } }))}
                     onSend={() => handleSendDraft(draft)}
+                    onComplete={() => handleMarkDoneDraft(draft.id)}
                     onDiscard={() => handleDiscardDraft(draft.id)}
                   />
                 );

@@ -957,6 +957,128 @@ router.post('/drafts/:logId/send', async (req, res) => {
 
 // ── DELETE /api/sequences/drafts/:logId
 // Rep discards a draft — step is consumed and enrollment advances.
+// ── POST /api/sequences/drafts/:logId/complete
+// Mark a non-email step (LinkedIn, call, task) as completed manually.
+// The rep did the action outside the CRM — this logs it as done and
+// advances the enrollment to the next step, same as Send Now does for email.
+router.post('/drafts/:logId/complete', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    // Load draft + enrollment context
+    const draftRes = await client.query(
+      `SELECT ssl.*, ss.step_order, ss.channel,
+              se.enrolled_by, se.current_step,
+              s.id AS seq_id, s.name AS sequence_name
+         FROM sequence_step_logs ssl
+         JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
+         JOIN sequence_enrollments se ON se.id  = ssl.enrollment_id
+         JOIN sequences s             ON s.id   = se.sequence_id
+        WHERE ssl.id=$1 AND ssl.org_id=$2 AND ssl.status='draft'`,
+      [req.params.logId, req.orgId]
+    );
+    if (!draftRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Draft not found or already actioned' } });
+    }
+    const draft = draftRes.rows[0];
+
+    if (draft.enrolled_by !== req.user.userId) {
+      return res.status(403).json({ error: { message: 'Only the enrolling rep can complete this step' } });
+    }
+
+    await client.query('BEGIN');
+
+    // ── 1. Mark step log as completed ─────────────────────────────────────
+    await client.query(
+      `UPDATE sequence_step_logs SET status='completed', fired_at=NOW() WHERE id=$1`,
+      [draft.id]
+    );
+
+    // ── 2. Update prospect outreach tracking ──────────────────────────────
+    await client.query(
+      `UPDATE prospects
+          SET outreach_count=outreach_count+1, last_outreach_at=CURRENT_TIMESTAMP,
+              updated_at=CURRENT_TIMESTAMP
+        WHERE id=$1`,
+      [draft.prospect_id]
+    );
+
+    // Auto-advance prospect stage on first outreach
+    const stageRes = await client.query(
+      `SELECT stage FROM prospects WHERE id=$1`,
+      [draft.prospect_id]
+    );
+    if (['target', 'researched'].includes(stageRes.rows[0]?.stage)) {
+      await client.query(
+        `UPDATE prospects
+            SET stage='contacted', stage_changed_at=CURRENT_TIMESTAMP,
+                updated_at=CURRENT_TIMESTAMP
+          WHERE id=$1`,
+        [draft.prospect_id]
+      );
+    }
+
+    // ── 3. Advance enrollment to next step ────────────────────────────────
+    const nextStepRes = await client.query(
+      `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
+      [draft.seq_id, draft.current_step + 1]
+    );
+    if (nextStepRes.rows.length) {
+      const ns = nextStepRes.rows[0];
+      const nextDue = new Date();
+      nextDue.setDate(nextDue.getDate() + (parseInt(ns.delay_days) || 0));
+      await client.query(
+        `UPDATE sequence_enrollments
+            SET current_step=$1, next_step_due=$2
+          WHERE id=$3`,
+        [draft.current_step + 1, nextDue, draft.enrollment_id]
+      );
+    } else {
+      await client.query(
+        `UPDATE sequence_enrollments SET status='completed', completed_at=NOW() WHERE id=$1`,
+        [draft.enrollment_id]
+      );
+    }
+
+    // ── 4. Mark any linked prospecting action completed ───────────────────
+    await client.query(
+      `UPDATE prospecting_actions
+          SET status='completed', completed_at=CURRENT_TIMESTAMP,
+              completed_by=$1, outcome='completed_manually', updated_at=CURRENT_TIMESTAMP
+        WHERE org_id=$2 AND source='sequence_draft'
+          AND (metadata->>'draftLogId')::int=$3
+          AND status != 'completed'`,
+      [req.user.userId, req.orgId, draft.id]
+    );
+
+    // ── 5. Write activity ─────────────────────────────────────────────────
+    await client.query(
+      `INSERT INTO prospecting_activities
+         (prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1,$2,'sequence_step_completed',$3,$4)`,
+      [
+        draft.prospect_id, req.user.userId,
+        `${draft.channel} step completed — ${draft.sequence_name} step ${draft.step_order}`,
+        JSON.stringify({
+          enrollmentId: draft.enrollment_id,
+          draftLogId:   draft.id,
+          stepOrder:    draft.step_order,
+          channel:      draft.channel,
+        }),
+      ]
+    );
+
+    await client.query('COMMIT');
+    res.json({ ok: true });
+
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('POST /sequences/drafts/:logId/complete', err);
+    res.status(500).json({ error: { message: 'Failed to complete step: ' + err.message } });
+  } finally {
+    client.release();
+  }
+});
+
 router.delete('/drafts/:logId', async (req, res) => {
   const client = await pool.connect();
   try {
