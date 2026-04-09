@@ -1366,25 +1366,95 @@ router.post('/:id/convert', async (req, res) => {
   }
 });
 
-// ── POST /:id/linkedin-event — manually log a LinkedIn interaction ────────────
-// Body: { event: 'request_sent'|'connected'|'message_sent'|'replied', note?: string }
-// Stores state in channel_data.linkedin (jsonb), bumps outreach_count / response_count,
-// and writes a row to prospecting_activities.
+// ── GET /by-linkedin-url — look up prospect by LinkedIn profile URL ───────────
+// Used by the Chrome extension. Must be defined BEFORE /:id routes.
+// Query: ?url=https://www.linkedin.com/in/username
+router.get('/by-linkedin-url', async (req, res) => {
+  try {
+    const { url } = req.query;
+    if (!url) {
+      return res.status(400).json({ error: { message: 'url query param is required' } });
+    }
+
+    const normalised = url.replace(/\/$/, '').split('?')[0].toLowerCase();
+
+    const result = await db.query(
+      `SELECT p.*,
+              acc.name  AS account_name,
+              u.first_name AS owner_first_name,
+              u.last_name  AS owner_last_name
+       FROM prospects p
+       LEFT JOIN accounts acc ON p.account_id = acc.id
+       LEFT JOIN users    u   ON p.owner_id   = u.id
+       WHERE p.org_id = $1
+         AND LOWER(TRIM(TRAILING '/' FROM p.linkedin_url)) = $2
+         AND p.deleted_at IS NULL
+       LIMIT 1`,
+      [req.orgId, normalised]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({ prospect: null });
+    }
+
+    const row = result.rows[0];
+    res.json({
+      prospect: {
+        ...row,
+        account: row.account_id ? { id: row.account_id, name: row.account_name } : null,
+        owner:   { first_name: row.owner_first_name, last_name: row.owner_last_name },
+      },
+    });
+  } catch (error) {
+    console.error('LinkedIn URL lookup error:', error);
+    res.status(500).json({ error: { message: 'Lookup failed' } });
+  }
+});
+
+// ── POST /:id/linkedin-event — log a LinkedIn interaction ─────────────────────
+//
+// Body:
+//   event     {string}  required — see VALID_EVENTS
+//   note      {string}  optional — message text or reply summary (max 500 chars)
+//   sentiment {string}  optional — positive | neutral | negative | follow_up_later
+//
+// Events:
+//   connection_request_sent  bumps outreach_count, sets request_sent_at
+//   connection_accepted      sets connected_at (no counter — prospect action)
+//   message_sent             bumps outreach_count, sets last_message_at, message_count++
+//   inmail_sent              bumps outreach_count, sets last_message_at, inmail_count++
+//   reply_received           bumps response_count, sets last_reply_at, stores sentiment
+//   voice_note_sent          bumps outreach_count, sets last_voice_note_at
+//   profile_viewed           sets last_profile_view_at (no counters)
+//   meeting_booked           bumps response_count, sets meeting_booked_at
+//
 router.post('/:id/linkedin-event', async (req, res) => {
   try {
-    const { event, note } = req.body;
-    const VALID_EVENTS = ['request_sent', 'connected', 'message_sent', 'replied'];
+    const { event, note, sentiment } = req.body;
+
+    const VALID_EVENTS = [
+      'connection_request_sent',
+      'connection_accepted',
+      'message_sent',
+      'inmail_sent',
+      'reply_received',
+      'voice_note_sent',
+      'profile_viewed',
+      'meeting_booked',
+    ];
+
+    const VALID_SENTIMENTS = ['positive', 'neutral', 'negative', 'follow_up_later'];
 
     if (!event || !VALID_EVENTS.includes(event)) {
-      return res.status(400).json({
-        error: { message: `event must be one of: ${VALID_EVENTS.join(', ')}` },
-      });
+      return res.status(400).json({ error: { message: `event must be one of: ${VALID_EVENTS.join(', ')}` } });
+    }
+    if (sentiment && !VALID_SENTIMENTS.includes(sentiment)) {
+      return res.status(400).json({ error: { message: `sentiment must be one of: ${VALID_SENTIMENTS.join(', ')}` } });
     }
 
     const prospectRes = await db.query(
       `SELECT id, channel_data, outreach_count, response_count
-       FROM prospects
-       WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+       FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
       [req.params.id, req.orgId]
     );
 
@@ -1397,19 +1467,61 @@ router.post('/:id/linkedin-event', async (req, res) => {
     const li          = channelData.linkedin || {};
     const now         = new Date().toISOString();
 
-    // Update linkedin sub-object
-    li.connection_status = event;
-    if (event === 'request_sent') li.request_sent_at  = now;
-    if (event === 'connected')    li.connected_at      = now;
-    if (event === 'message_sent') {
-      li.last_message_at = now;
-      li.message_count   = (li.message_count || 0) + 1;
+    // Advance connection_status — never go backwards
+    const STATUS_ORDER = [
+      'connection_request_sent', 'connection_accepted',
+      'message_sent', 'reply_received', 'meeting_booked',
+    ];
+    const statusForEvent   = event === 'inmail_sent' ? 'message_sent' : event;
+    const currentStatusIdx = STATUS_ORDER.indexOf(li.connection_status || '');
+    const newStatusIdx     = STATUS_ORDER.indexOf(statusForEvent);
+    if (newStatusIdx > currentStatusIdx) {
+      li.connection_status = statusForEvent;
     }
-    if (event === 'replied')      li.last_reply_at     = now;
+
+    // Per-event timestamp + counter updates
+    switch (event) {
+      case 'connection_request_sent':
+        li.request_sent_at = now;
+        if (note) li.request_note = note.substring(0, 500);
+        break;
+      case 'connection_accepted':
+        li.connected_at = now;
+        break;
+      case 'message_sent':
+        li.last_message_at   = now;
+        li.message_count     = (li.message_count || 0) + 1;
+        if (note) li.last_message_text = note.substring(0, 500);
+        break;
+      case 'inmail_sent':
+        li.last_message_at = now;
+        li.inmail_count    = (li.inmail_count || 0) + 1;
+        li.message_count   = (li.message_count || 0) + 1;
+        if (note) li.last_message_text = note.substring(0, 500);
+        break;
+      case 'reply_received':
+        li.last_reply_at  = now;
+        li.reply_count    = (li.reply_count || 0) + 1;
+        if (sentiment) li.last_reply_sentiment = sentiment;
+        if (note)      li.last_reply_text      = note.substring(0, 500);
+        break;
+      case 'voice_note_sent':
+        li.last_voice_note_at = now;
+        li.voice_note_count   = (li.voice_note_count || 0) + 1;
+        break;
+      case 'profile_viewed':
+        li.last_profile_view_at = now;
+        break;
+      case 'meeting_booked':
+        li.meeting_booked_at = now;
+        if (note) li.meeting_note = note.substring(0, 500);
+        break;
+    }
+
     channelData.linkedin = li;
 
-    const isOutreach = ['request_sent', 'message_sent'].includes(event);
-    const isResponse = event === 'replied';
+    const isOutreach = ['connection_request_sent', 'message_sent', 'inmail_sent', 'voice_note_sent'].includes(event);
+    const isResponse = ['reply_received', 'meeting_booked'].includes(event);
 
     await db.query(
       `UPDATE prospects SET
@@ -1424,27 +1536,35 @@ router.post('/:id/linkedin-event', async (req, res) => {
     );
 
     const EVENT_LABELS = {
-      request_sent: 'LinkedIn connection request sent',
-      connected:    'LinkedIn connection accepted',
-      message_sent: 'LinkedIn message sent',
-      replied:      'LinkedIn reply received',
+      connection_request_sent: 'LinkedIn connection request sent',
+      connection_accepted:     'LinkedIn connection accepted',
+      message_sent:            'LinkedIn message sent',
+      inmail_sent:             'LinkedIn InMail sent',
+      reply_received:          'LinkedIn reply received',
+      voice_note_sent:         'LinkedIn voice note sent',
+      profile_viewed:          'LinkedIn profile viewed',
+      meeting_booked:          'Meeting booked via LinkedIn',
     };
 
+    const descParts = [
+      EVENT_LABELS[event],
+      sentiment ? `(${sentiment})` : null,
+      note       ? `: ${note.substring(0, 120)}` : null,
+    ].filter(Boolean);
+
     await db.query(
-      `INSERT INTO prospecting_activities
-         (prospect_id, user_id, activity_type, description, metadata)
+      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
        VALUES ($1, $2, 'linkedin_event', $3, $4)`,
       [
-        req.params.id,
-        req.user.userId,
-        note ? `${EVENT_LABELS[event]}: ${note}` : EVENT_LABELS[event],
-        JSON.stringify({ event, channel: 'linkedin' }),
+        req.params.id, req.user.userId,
+        descParts.join(' '),
+        JSON.stringify({ event, channel: 'linkedin', sentiment: sentiment || null }),
       ]
     );
 
-    console.log(`🔗 LinkedIn event "${event}" logged for prospect #${req.params.id} by user ${req.user.userId}`);
-
+    console.log(`🔗 LinkedIn "${event}" logged for prospect #${req.params.id} (org ${req.orgId})`);
     res.json({ success: true, event, channelData });
+
   } catch (error) {
     console.error('LinkedIn event error:', error);
     res.status(500).json({ error: { message: 'Failed to record LinkedIn event' } });
