@@ -863,7 +863,7 @@ Return ONLY valid JSON:
 router.post('/', async (req, res) => {
   try {
     const {
-      firstName, lastName, email, phone, linkedinUrl, title, location,
+      firstName, lastName, email, phone, linkedinUrl, title, linkedinHeadline, location,
       companyName, companyDomain, companySize, companyIndustry,
       accountId, source, playbookId, tags,
     } = req.body;
@@ -904,18 +904,18 @@ router.post('/', async (req, res) => {
     const result = await db.query(
       `INSERT INTO prospects (
          org_id, owner_id, first_name, last_name, email, phone, linkedin_url,
-         title, location, company_name, company_domain, company_size,
+         title, linkedin_headline, location, company_name, company_domain, company_size,
          company_industry, account_id, source, playbook_id, tags,
          stage, stage_changed_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7,
-         $8, $9, $10, $11, $12,
-         $13, $14, $15, $16, $17,
+         $8, $9, $10, $11, $12, $13,
+         $14, $15, $16, $17, $18,
          'target', CURRENT_TIMESTAMP
        ) RETURNING *`,
       [
         req.orgId, req.user.userId, firstName, lastName, email, phone, linkedinUrl,
-        title, location, companyName, companyDomain, companySize,
+        title, linkedinHeadline || null, location, companyName, companyDomain, companySize,
         companyIndustry, resolvedAccountId, source || 'manual', playbookId || null,
         JSON.stringify(tags || []),
       ]
@@ -1628,7 +1628,7 @@ router.patch('/:id', async (req, res) => {
   try {
     const allowed = [
       'first_name', 'last_name', 'email', 'phone', 'title',
-      'location', 'linkedin_url', 'company_name', 'company_domain',
+      'linkedin_headline', 'location', 'linkedin_url', 'company_name', 'company_domain',
       'company_size', 'company_industry', 'source', 'preferred_channel',
       'icp_score', 'tags', 'research_notes',
     ];
@@ -1640,7 +1640,8 @@ router.patch('/:id', async (req, res) => {
 
     const camelMap = {
       firstName: 'first_name', lastName: 'last_name',
-      linkedinUrl: 'linkedin_url', companyName: 'company_name',
+      linkedinUrl: 'linkedin_url', linkedinHeadline: 'linkedin_headline',
+      companyName: 'company_name',
       companyDomain: 'company_domain', companySize: 'company_size',
       companyIndustry: 'company_industry', preferredChannel: 'preferred_channel',
       icpScore: 'icp_score', researchNotes: 'research_notes',
