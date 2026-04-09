@@ -1576,7 +1576,6 @@ function LinkedInPanel({ prospect, onEventLogged }) {
   // If nothing logged yet, next is request_sent
   const promptedEvent = currentStatus ? nextEvent : 'request_sent';
 
-  const eventCfg = (key) => LI_EVENTS.find(e => e.key === key);
 
   return (
     <div style={{ padding: '4px 0' }}>
