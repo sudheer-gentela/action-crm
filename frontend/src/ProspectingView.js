@@ -109,6 +109,11 @@ function timeAgo(d) {
   return `${Math.floor(days / 30)}mo ago`;
 }
 
+function stripHtml(str) {
+  if (!str) return '';
+  return str.replace(/(<([^>]+)>)/gi, '');
+}
+
 // ── ProspectingView ──────────────────────────────────────────────────────────
 
 export default function ProspectingView() {
@@ -2876,7 +2881,7 @@ function SequencesView({ prospects }) {
                                                 WebkitMaskImage: 'linear-gradient(to bottom, black 40%, transparent)',
                                               } : {}),
                                             }}>
-                                              {step.body.replace(/<[^>]+>/g, '')}
+                                              {stripHtml(step.body)}
                                             </div>
                                             <button
                                               onClick={() => setExpandedStepBody(prev => ({ ...prev, [step.step_order]: !prev[step.step_order] }))}

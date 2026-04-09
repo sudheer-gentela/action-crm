@@ -1376,7 +1376,17 @@ router.get('/by-linkedin-url', async (req, res) => {
       return res.status(400).json({ error: { message: 'url query param is required' } });
     }
 
-    const normalised = url.replace(/\/$/, '').split('?')[0].toLowerCase();
+    // Extract the slug from both the incoming URL and stored URLs so matching
+    // is robust regardless of: missing https://, www., trailing slashes,
+    // extra path segments, or query params.
+    // e.g. "https://www.linkedin.com/in/paulcrist/",
+    //      "www.linkedin.com/in/paulcrist",
+    //      "linkedin.com/in/paulcrist" all resolve to slug "paulcrist"
+    const slugMatch = url.match(/\/in\/([^/?#]+)/);
+    if (!slugMatch) {
+      return res.status(400).json({ error: { message: 'Could not extract LinkedIn slug from url' } });
+    }
+    const slug = slugMatch[1].toLowerCase();
 
     const result = await db.query(
       `SELECT p.*,
@@ -1387,10 +1397,11 @@ router.get('/by-linkedin-url', async (req, res) => {
        LEFT JOIN accounts acc ON p.account_id = acc.id
        LEFT JOIN users    u   ON p.owner_id   = u.id
        WHERE p.org_id = $1
-         AND LOWER(TRIM(TRAILING '/' FROM p.linkedin_url)) = $2
+         AND LOWER(REGEXP_REPLACE(p.linkedin_url, '.*/in/([^/?#]+).*', '\\1')) = $2
+         AND p.linkedin_url IS NOT NULL
          AND p.deleted_at IS NULL
        LIMIT 1`,
-      [req.orgId, normalised]
+      [req.orgId, slug]
     );
 
     if (result.rows.length === 0) {
