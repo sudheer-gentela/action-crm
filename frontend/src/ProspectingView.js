@@ -1220,6 +1220,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
           )}
 
           {activeTab === 'intel' && (
+            <div>
               <div style={{ marginBottom: 20 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
                   <button
@@ -1330,6 +1331,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                 prospect={prospect}
                 onOpenOutreach={(channel) => openOutreach(channel)}
               />
+            </div>
             </div>
           )}
 
