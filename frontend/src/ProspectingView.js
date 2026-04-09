@@ -1332,7 +1332,6 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                 onOpenOutreach={(channel) => openOutreach(channel)}
               />
             </div>
-            </div>
           )}
 
           {activeTab === 'actions' && (
