@@ -339,7 +339,6 @@ router.post('/bulk', async (req, res) => {
   }
 });
 
-// ── GET /:id — prospect detail ───────────────────────────────────────────────
 // ── GET /by-linkedin-url — look up prospect by LinkedIn profile URL ───────────
 // Used by the Chrome extension. Must be defined BEFORE /:id routes.
 // Query: ?url=https://www.linkedin.com/in/username
@@ -383,11 +382,21 @@ router.get('/by-linkedin-url', async (req, res) => {
     }
 
     const row = result.rows[0];
+
+    // ── Pending sequence drafts count (for extension badge) ──────────────────
+    const draftsResult = await db.query(
+      `SELECT COUNT(*) FROM sequence_drafts
+       WHERE prospect_id = $1 AND status = 'pending'`,
+      [row.id]
+    );
+    const pendingDrafts = parseInt(draftsResult.rows[0].count);
+
     res.json({
       prospect: {
         ...row,
-        account: row.account_id ? { id: row.account_id, name: row.account_name } : null,
-        owner:   { first_name: row.owner_first_name, last_name: row.owner_last_name },
+        account:       row.account_id ? { id: row.account_id, name: row.account_name } : null,
+        owner:         { first_name: row.owner_first_name, last_name: row.owner_last_name },
+        pendingDrafts, // ← consumed by extension badge
       },
     });
   } catch (error) {
@@ -453,7 +462,6 @@ router.get('/:id', async (req, res) => {
 // ── GET /:id/emails — email history for a prospect ───────────────────────────
 router.get('/:id/emails', async (req, res) => {
   try {
-    // Verify prospect belongs to this org
     const check = await db.query(
       'SELECT id FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL',
       [req.params.id, req.orgId]
@@ -516,8 +524,6 @@ router.get('/:id/emails', async (req, res) => {
 });
 
 // ── POST /:id/research — AI-powered prospect research ────────────────────────
-// Calls Claude Haiku to generate research notes from available prospect data.
-// Saves to research_notes and advances target → researched if applicable.
 router.post('/:id/research', async (req, res) => {
   try {
     const prospectResult = await db.query(
@@ -535,7 +541,6 @@ router.post('/:id/research', async (req, res) => {
 
     const p = prospectResult.rows[0];
 
-    // ── Build prospect info block ────────────────────────────────────────────
     const prospectInfo = [
       `Name: ${p.first_name} ${p.last_name}`,
       p.title            ? `Title: ${p.title}`                          : null,
@@ -560,7 +565,6 @@ router.post('/:id/research', async (req, res) => {
       p.account_name     ? `Account name: ${p.account_name}`            : null,
     ].filter(Boolean).join('\n');
 
-    // ── Load AI settings + prompt templates ──────────────────────────────────
     const [userPrefRes, orgIntRes, userStage1Res, orgStage1Res, userStage2Res, orgStage2Res] = await Promise.all([
       db.query(
         `SELECT preferences FROM user_preferences WHERE user_id = $1 AND org_id = $2`,
@@ -596,7 +600,6 @@ router.post('/:id/research', async (req, res) => {
     const orgConfig  = orgIntRes.rows[0]?.config || {};
     const prospPrefs = userPrefs.prospecting || {};
 
-    // Fallback chain: user → org → system default
     const sanitiseModel = (m) => {
       if (!m) return m;
       return m
@@ -611,11 +614,8 @@ router.post('/:id/research', async (req, res) => {
                          : (orgConfig.product_context || '');
 
     const AI_PROMPTS = require('../config/aiPrompts');
-
-    // ── Helper: call the configured AI provider ───────────────────────────────
     const TokenTrackingService = require('../services/TokenTrackingService');
 
-    // callAI — returns { text, usage } so callers can log tokens
     async function callAI(prompt, maxTokens = 800, callType = 'prospecting_research') {
       if (aiProvider === 'openai') {
         const { OpenAI } = require('openai');
@@ -634,7 +634,6 @@ router.post('/:id/research', async (req, res) => {
         const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
         const result = await genAI.getGenerativeModel({ model: aiModel || 'gemini-1.5-flash' })
                                   .generateContent(prompt);
-        // Gemini doesn't return token counts in basic API — log with zeros
         TokenTrackingService.log({ orgId: req.orgId, userId: req.user.userId, callType, provider: 'gemini', model: aiModel, usage: {} }).catch(() => {});
         return { text: result.response.text() || '', usage: {} };
       } else {
@@ -652,8 +651,6 @@ router.post('/:id/research', async (req, res) => {
       }
     }
 
-    // ── STAGE 1: Account research (cached, reused across prospects) ───────────
-    // Check if account already has fresh research (< 30 days old)
     let accountResearchText = '';
     let accountResearchJson = null;
     const CACHE_DAYS = 30;
@@ -669,13 +666,11 @@ router.post('/:id/research', async (req, res) => {
         (Date.now() - new Date(acct.research_updated_at).getTime()) > CACHE_DAYS * 24 * 60 * 60 * 1000;
 
       if (acct?.research_notes && !isStale) {
-        // Use cached account research
         accountResearchText = typeof acct.research_notes === 'string'
           ? acct.research_notes
           : JSON.stringify(acct.research_notes, null, 2);
         console.log(`📋 Using cached account research for account ${p.account_id}`);
       } else {
-        // Run Stage 1 — fresh account research
         console.log(`🔍 Running Stage 1 account research for ${p.company_name}...`);
         const stage1Template = userStage1Res.rows[0]?.template_data
           || orgStage1Res.rows[0]?.template
@@ -689,7 +684,6 @@ router.post('/:id/research', async (req, res) => {
 
           const { text: stage1Raw } = await callAI(stage1Prompt, 1000, 'research_account');
 
-          // Parse JSON response from Stage 1
           try {
             const cleaned = stage1Raw.replace(/\`\`\`json\n?/gi, '').replace(/\`\`\`\n?/g, '').trim();
             const start = cleaned.indexOf('{');
@@ -697,10 +691,9 @@ router.post('/:id/research', async (req, res) => {
             accountResearchJson = JSON.parse(cleaned.substring(start, end + 1));
             accountResearchText = JSON.stringify(accountResearchJson, null, 2);
           } catch {
-            accountResearchText = stage1Raw; // Use raw text if not valid JSON
+            accountResearchText = stage1Raw;
           }
 
-          // Determine which prompt was used for Stage 1
           const stage1PromptId     = orgStage1Res.rows[0]?.id     || null;
           const stage1PromptSource = userStage1Res.rows[0]
             ? 'user_override'
@@ -716,7 +709,6 @@ router.post('/:id/research', async (req, res) => {
             generated_at:        new Date().toISOString(),
           };
 
-          // Cache to accounts table
           db.query(
             `UPDATE accounts
              SET research_notes       = $1,
@@ -730,7 +722,6 @@ router.post('/:id/research', async (req, res) => {
       }
     }
 
-    // ── STAGE 2: Individual person research + pitch ───────────────────────────
     console.log(`🎯 Running Stage 2 person research for ${p.first_name} ${p.last_name}...`);
     const stage2Template = userStage2Res.rows[0]?.template_data
       || orgStage2Res.rows[0]?.template
@@ -764,7 +755,6 @@ Return ONLY valid JSON:
 
     const { text: stage2Raw } = await callAI(stage2Prompt, 900, 'research_person');
 
-    // Parse Stage 2 JSON
     let parsed = null;
     let researchNotes = '';
     try {
@@ -773,14 +763,12 @@ Return ONLY valid JSON:
       const end   = cleaned.lastIndexOf('}');
       parsed = JSON.parse(cleaned.substring(start, end + 1));
 
-      // Format research notes as bullet points for storage
       const bullets = parsed.researchBullets || [];
       researchNotes = bullets.map(b => `• ${b}`).join('\n');
       if (parsed.pitchAngle)  researchNotes += `\n\n💡 Pitch angle: ${parsed.pitchAngle}`;
       if (parsed.crispPitch)  researchNotes += `\n\n✉️ Crisp pitch:\n${parsed.crispPitch}`;
       if (parsed.subjectLine) researchNotes += `\n\n📧 Subject: ${parsed.subjectLine}`;
     } catch {
-      // Fallback: store raw text
       researchNotes = stage2Raw;
     }
 
@@ -788,7 +776,6 @@ Return ONLY valid JSON:
       return res.status(500).json({ error: { message: 'Research generation returned empty response' } });
     }
 
-    // Determine which prompt was used for Stage 2
     const stage2PromptId     = orgStage2Res.rows[0]?.id || null;
     const stage2PromptSource = userStage2Res.rows[0]
       ? 'user_override'
@@ -807,7 +794,6 @@ Return ONLY valid JSON:
       confidence:          parsed?.confidence || null,
     };
 
-    // Save research notes + meta to prospect
     await db.query(
       `UPDATE prospects
        SET research_notes = $1,
@@ -817,7 +803,6 @@ Return ONLY valid JSON:
       [researchNotes, JSON.stringify(prospectMeta), req.params.id, req.orgId]
     );
 
-    // Auto-advance target → researched
     let stageAdvanced = false;
     if (p.stage === 'target') {
       await db.query(
@@ -835,7 +820,6 @@ Return ONLY valid JSON:
       );
     }
 
-    // Log activity
     await db.query(
       `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
        VALUES ($1, $2, 'research_completed', 'AI research notes generated', $3)`,
@@ -850,16 +834,13 @@ Return ONLY valid JSON:
       researchNotes,
       stageAdvanced,
       newStage:           stageAdvanced ? 'researched' : p.stage,
-      // Structured fields from Stage 2 parse (null if parse failed)
       researchBullets:    parsed?.researchBullets    || null,
       pitchAngle:         parsed?.pitchAngle         || null,
       crispPitch:         parsed?.crispPitch         || null,
       suggestedSubject:   parsed?.subjectLine        || null,
       confidence:         parsed?.confidence         || null,
-      // Account research cached flag
       accountResearchCached: !!accountResearchText,
       accountResearch:    accountResearchJson,
-      // Meta: what generated this research
       meta: {
         provider:      aiProvider,
         model:         aiModel,
@@ -871,7 +852,6 @@ Return ONLY valid JSON:
     });
   } catch (error) {
     console.error('Prospect research error:', error);
-    // Specific error for missing API key
     if (error.message?.includes('API key')) {
       return res.status(500).json({ error: { message: 'AI research unavailable — ANTHROPIC_API_KEY not configured' } });
     }
@@ -892,7 +872,6 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: { message: 'firstName and lastName are required' } });
     }
 
-    // Duplicate check: same email in same org
     if (email) {
       const emailDup = await db.query(
         `SELECT id, first_name, last_name FROM prospects
@@ -911,7 +890,6 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Auto-match account by domain
     let resolvedAccountId = accountId || null;
     if (!resolvedAccountId && companyDomain) {
       const accMatch = await db.query(
@@ -1078,23 +1056,16 @@ router.post('/:id/stage', async (req, res) => {
 });
 
 // ── POST /:id/disqualify ──────────────────────────────────────────────────────
-//router.post('/:id/disqualify', async (req, res) => {
-//  req.body.stage = 'disqualified';
-//  req.body.reason = req.body.reason || 'Not a fit';
-//  return router.handle(Object.assign(req, { url: `/${req.params.id}/stage`, method: 'POST' }), res);
-//});
-
 router.post('/:id/disqualify', async (req, res) => {
   const client = await require('../config/database').pool.connect();
   try {
     const {
-      reason,                // 'kill' | 'long_term' | 'unable_to_decide'  (required)
-      accountDisposition,    // 'kill_account' | 'long_term_account' | 'unable_to_decide_account'  (optional)
-      revisitDate,           // ISO date string override — if omitted, defaults are applied
-      accountRevisitDate,    // ISO date string for account — optional
+      reason,
+      accountDisposition,
+      revisitDate,
+      accountRevisitDate,
     } = req.body;
 
-    // ── Validate reason ──────────────────────────────────────────
     const VALID_REASONS = ['kill', 'long_term', 'unable_to_decide'];
     if (!reason || !VALID_REASONS.includes(reason)) {
       return res.status(400).json({
@@ -1104,7 +1075,6 @@ router.post('/:id/disqualify', async (req, res) => {
       });
     }
 
-    // ── Validate accountDisposition if provided ──────────────────
     const VALID_DISPOSITIONS = ['kill_account', 'long_term_account', 'unable_to_decide_account'];
     if (accountDisposition && !VALID_DISPOSITIONS.includes(accountDisposition)) {
       return res.status(400).json({
@@ -1114,7 +1084,6 @@ router.post('/:id/disqualify', async (req, res) => {
       });
     }
 
-    // ── Load prospect ────────────────────────────────────────────
     const current = await client.query(
       `SELECT id, stage, account_id, owner_id
        FROM prospects
@@ -1129,7 +1098,6 @@ router.post('/:id/disqualify', async (req, res) => {
     const prospect     = current.rows[0];
     const currentStage = prospect.stage;
 
-    // ── Check transition is permitted ────────────────────────────
     const allowed = STAGE_TRANSITIONS[currentStage] || [];
     if (currentStage !== 'disqualified' && !allowed.includes('disqualified')) {
       return res.status(400).json({
@@ -1139,7 +1107,6 @@ router.post('/:id/disqualify', async (req, res) => {
       });
     }
 
-    // ── Compute revisit_date default if not provided ─────────────
     let computedRevisitDate = revisitDate || null;
     if (!computedRevisitDate) {
       const today = new Date();
@@ -1150,12 +1117,10 @@ router.post('/:id/disqualify', async (req, res) => {
         today.setDate(today.getDate() + 45);
         computedRevisitDate = today.toISOString().split('T')[0];
       }
-      // reason === 'kill' → computedRevisitDate stays null
     }
 
     await client.query('BEGIN');
 
-    // ── 1. Update prospect ───────────────────────────────────────
     const prospectResult = await client.query(
       `UPDATE prospects
        SET stage               = 'disqualified',
@@ -1168,7 +1133,6 @@ router.post('/:id/disqualify', async (req, res) => {
       [reason, computedRevisitDate, req.params.id, req.orgId]
     );
 
-    // ── 2. Update account disposition if provided ────────────────
     let updatedAccount = null;
     if (accountDisposition && prospect.account_id) {
       const computedAccountRevisitDate = accountRevisitDate || (
@@ -1191,7 +1155,6 @@ router.post('/:id/disqualify', async (req, res) => {
       updatedAccount = accResult.rows[0] || null;
     }
 
-    // ── 3. Log activity ──────────────────────────────────────────
     await client.query(
       `INSERT INTO prospecting_activities
          (prospect_id, user_id, activity_type, description, metadata)
@@ -1216,9 +1179,9 @@ router.post('/:id/disqualify', async (req, res) => {
     console.log(`🚫 Prospect #${req.params.id} disqualified (reason: ${reason}, revisit: ${computedRevisitDate || 'none'}) by user ${req.user.userId} (org ${req.orgId})`);
 
     res.json({
-      prospect:        prospectResult.rows[0],
-      account:         updatedAccount,
-      revisitDate:     computedRevisitDate,
+      prospect:    prospectResult.rows[0],
+      account:     updatedAccount,
+      revisitDate: computedRevisitDate,
     });
 
   } catch (error) {
@@ -1293,7 +1256,6 @@ router.post('/:id/convert', async (req, res) => {
 
     await client.query('BEGIN');
 
-    // 1. Create or find account
     let accountId = p.account_id;
     if (!accountId && p.company_name) {
       if (p.company_domain) {
@@ -1315,7 +1277,6 @@ router.post('/:id/convert', async (req, res) => {
       }
     }
 
-    // 2. Create or find contact
     let contactId = p.contact_id;
     if (!contactId) {
       if (p.email) {
@@ -1356,7 +1317,6 @@ router.post('/:id/convert', async (req, res) => {
       }
     }
 
-    // 3. Optionally create deal
     let dealId = null;
     if (createDeal) {
       let stageKey = dealStage;
@@ -1387,7 +1347,6 @@ router.post('/:id/convert', async (req, res) => {
       );
     }
 
-    // 4. Update prospect as converted
     await client.query(
       `UPDATE prospects
        SET stage = 'converted', stage_changed_at = CURRENT_TIMESTAMP,
@@ -1397,7 +1356,6 @@ router.post('/:id/convert', async (req, res) => {
       [contactId, dealId, accountId, p.id]
     );
 
-    // 5. Log activity
     await client.query(
       `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
        VALUES ($1, $2, 'converted', $3, $4)`,
@@ -1422,24 +1380,7 @@ router.post('/:id/convert', async (req, res) => {
   }
 });
 
-
 // ── POST /:id/linkedin-event — log a LinkedIn interaction ─────────────────────
-//
-// Body:
-//   event     {string}  required — see VALID_EVENTS
-//   note      {string}  optional — message text or reply summary (max 500 chars)
-//   sentiment {string}  optional — positive | neutral | negative | follow_up_later
-//
-// Events:
-//   connection_request_sent  bumps outreach_count, sets request_sent_at
-//   connection_accepted      sets connected_at (no counter — prospect action)
-//   message_sent             bumps outreach_count, sets last_message_at, message_count++
-//   inmail_sent              bumps outreach_count, sets last_message_at, inmail_count++
-//   reply_received           bumps response_count, sets last_reply_at, stores sentiment
-//   voice_note_sent          bumps outreach_count, sets last_voice_note_at
-//   profile_viewed           sets last_profile_view_at (no counters)
-//   meeting_booked           bumps response_count, sets meeting_booked_at
-//
 router.post('/:id/linkedin-event', async (req, res) => {
   try {
     const { event, note, sentiment } = req.body;
@@ -1479,7 +1420,6 @@ router.post('/:id/linkedin-event', async (req, res) => {
     const li          = channelData.linkedin || {};
     const now         = new Date().toISOString();
 
-    // Advance connection_status — never go backwards
     const STATUS_ORDER = [
       'connection_request_sent', 'connection_accepted',
       'message_sent', 'reply_received', 'meeting_booked',
@@ -1491,7 +1431,6 @@ router.post('/:id/linkedin-event', async (req, res) => {
       li.connection_status = statusForEvent;
     }
 
-    // Per-event timestamp + counter updates
     switch (event) {
       case 'connection_request_sent':
         li.request_sent_at = now;
@@ -1699,7 +1638,6 @@ router.patch('/:id', async (req, res) => {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
 
-    // Also accept camelCase from frontend
     const camelMap = {
       firstName: 'first_name', lastName: 'last_name',
       linkedinUrl: 'linkedin_url', companyName: 'company_name',
@@ -1759,14 +1697,7 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-
 // ── POST /:id/generate-actions ───────────────────────────────────────────────
-// Generate actions from the prospect's playbook for the current stage.
-//
-// Body: {
-//   mode?:        'template' | 'ai',   — defaults to 'template'
-//   deduplicate?: boolean,             — skip plays already actioned (default true)
-// }
 router.post('/:id/generate-actions', async (req, res) => {
   try {
     const prospectId = parseInt(req.params.id);
@@ -1774,7 +1705,6 @@ router.post('/:id/generate-actions', async (req, res) => {
     const orgId      = req.orgId;
     const { mode = 'template', deduplicate = true } = req.body;
 
-    // Validate prospect belongs to org
     const prospectRes = await db.query(
       'SELECT * FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL',
       [prospectId, orgId]
@@ -1789,10 +1719,8 @@ router.post('/:id/generate-actions', async (req, res) => {
       return res.status(400).json({ error: { message: 'Prospect has no stage assigned' } });
     }
 
-    // Build full context
     const context = await ProspectContextBuilder.build(prospectId, userId, orgId);
 
-    // Generate action rows
     const { actions, playbookId, playbookName, mode: effectiveMode } =
       await PlaybookActionGenerator.generate({
         entityType: 'prospect',
@@ -1815,7 +1743,6 @@ router.post('/:id/generate-actions', async (req, res) => {
       });
     }
 
-    // Write to prospecting_actions table
     const result = await ActionWriter.write({
       entityType:        'prospect',
       entityId:          prospectId,
@@ -1827,7 +1754,6 @@ router.post('/:id/generate-actions', async (req, res) => {
       deduplicateSource: deduplicate ? 'playbook' : null,
     });
 
-    // Log activity
     if (result.inserted > 0) {
       await db.query(
         `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
@@ -1856,3 +1782,4 @@ router.post('/:id/generate-actions', async (req, res) => {
 
 
 module.exports = router;
+
