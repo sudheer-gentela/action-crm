@@ -626,9 +626,9 @@ function AccountProspectingSection({ accountId }) {
   if (prospects.length === 0) return null;
 
   const STAGE_COLORS = {
-    target: '#6b7280', researched: '#8b5cf6', contacted: '#3b82f6',
-    engaged: '#0F9D8E', qualified: '#10b981', converted: '#059669',
-    disqualified: '#ef4444', nurture: '#f59e0b',
+    target: '#6b7280', research: '#8b5cf6', outreach: '#3b82f6',
+    engaged: '#0F9D8E', discovery_call: '#f59e0b', qualified_sal: '#10b981',
+    converted: '#059669', disqualified: '#ef4444', nurture: '#f59e0b',
   };
 
   return (

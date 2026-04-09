@@ -268,20 +268,20 @@ router.patch('/:id/status', async (req, res) => {
         [action.sequence_step, action.prospect_id]
       );
 
-      // Auto-advance from target/researched → contacted on first outreach
+      // Auto-advance from target/research → outreach on first outreach
       const prospect = await db.query(
         'SELECT stage FROM prospects WHERE id = $1',
         [action.prospect_id]
       );
-      if (prospect.rows[0] && ['target', 'researched'].includes(prospect.rows[0].stage)) {
+      if (prospect.rows[0] && ['target', 'research'].includes(prospect.rows[0].stage)) {
         await db.query(
-          `UPDATE prospects SET stage = 'contacted', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+          `UPDATE prospects SET stage = 'outreach', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
            WHERE id = $1`,
           [action.prospect_id]
         );
         await db.query(
           `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
-           VALUES ($1, $2, 'stage_change', 'Auto-advanced to contacted after first outreach')`,
+           VALUES ($1, $2, 'stage_change', 'Auto-advanced to outreach after first outreach')`,
           [action.prospect_id, req.user.userId]
         );
       }
@@ -312,7 +312,7 @@ router.patch('/:id/status', async (req, res) => {
         'SELECT stage FROM prospects WHERE id = $1',
         [action.prospect_id]
       );
-      if (prospect.rows[0] && prospect.rows[0].stage === 'contacted') {
+      if (prospect.rows[0] && prospect.rows[0].stage === 'outreach') {
         await db.query(
           `UPDATE prospects SET stage = 'engaged', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
            WHERE id = $1`,

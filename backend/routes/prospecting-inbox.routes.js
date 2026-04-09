@@ -744,7 +744,7 @@ router.post('/sync', async (req, res) => {
                 ]
               ).catch(() => {});
 
-              // Auto-advance contacted → engaged + update Responses/WK counter
+              // Auto-advance outreach → engaged + update Responses/WK counter
               try {
                 const prospectRow = await db.query(
                   `SELECT stage FROM prospects WHERE id = $1 AND org_id = $2`,
@@ -752,7 +752,7 @@ router.post('/sync', async (req, res) => {
                 );
                 const currentStage = prospectRow.rows[0]?.stage;
 
-                if (currentStage === 'contacted') {
+                if (currentStage === 'outreach') {
                   await db.query(
                     `UPDATE prospects
                      SET stage = 'engaged',
@@ -769,9 +769,9 @@ router.post('/sync', async (req, res) => {
                     [
                       prospectId,
                       account.user_id,
-                      `Stage advanced: contacted → engaged (reply received)`,
+                      `Stage advanced: outreach → engaged (reply received)`,
                       JSON.stringify({
-                        fromStage:    'contacted',
+                        fromStage:    'outreach',
                         toStage:      'engaged',
                         trigger:      'reply_received',
                         emailSubject: email.subject,
@@ -780,9 +780,9 @@ router.post('/sync', async (req, res) => {
                     ]
                   );
 
-                  console.log(`    🎯 Stage advanced: contacted → engaged for prospectId=${prospectId}`);
+                  console.log(`    🎯 Stage advanced: outreach → engaged for prospectId=${prospectId}`);
                 } else {
-                  // Already past contacted — just update last_response_at
+                  // Already past outreach — just update last_response_at
                   await db.query(
                     `UPDATE prospects
                      SET last_response_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP

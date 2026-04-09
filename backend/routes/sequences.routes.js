@@ -867,9 +867,9 @@ router.post('/drafts/:logId/send', async (req, res) => {
 
     // Auto-advance stage on first outreach
     const stageRes = await client.query(`SELECT stage FROM prospects WHERE id=$1`, [draft.prospect_id]);
-    if (['target', 'researched'].includes(stageRes.rows[0]?.stage)) {
+    if (['target', 'research'].includes(stageRes.rows[0]?.stage)) {
       await client.query(
-        `UPDATE prospects SET stage='contacted', stage_changed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
+        `UPDATE prospects SET stage='outreach', stage_changed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
         [draft.prospect_id]
       );
     }
@@ -1008,10 +1008,10 @@ router.post('/drafts/:logId/complete', async (req, res) => {
       `SELECT stage FROM prospects WHERE id=$1`,
       [draft.prospect_id]
     );
-    if (['target', 'researched'].includes(stageRes.rows[0]?.stage)) {
+    if (['target', 'research'].includes(stageRes.rows[0]?.stage)) {
       await client.query(
         `UPDATE prospects
-            SET stage='contacted', stage_changed_at=CURRENT_TIMESTAMP,
+            SET stage='outreach', stage_changed_at=CURRENT_TIMESTAMP,
                 updated_at=CURRENT_TIMESTAMP
           WHERE id=$1`,
         [draft.prospect_id]

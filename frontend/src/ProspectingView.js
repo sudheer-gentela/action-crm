@@ -13,11 +13,12 @@ import './OutreachComposer.css';
 
 // Fallback stages used while loading or if API fails
 const DEFAULT_PROSPECT_STAGES = [
-  { key: 'target',     label: 'Target',      icon: '🎯', color: '#6b7280' },
-  { key: 'researched', label: 'Researched',   icon: '🔍', color: '#8b5cf6' },
-  { key: 'contacted',  label: 'Contacted',    icon: '📤', color: '#3b82f6' },
-  { key: 'engaged',    label: 'Engaged',      icon: '💬', color: '#0F9D8E' },
-  { key: 'qualified',  label: 'Qualified',    icon: '✅', color: '#10b981' },
+  { key: 'target',        label: 'Target',               icon: '🎯', color: '#6b7280' },
+  { key: 'research',      label: 'Research',             icon: '🔍', color: '#8b5cf6' },
+  { key: 'outreach',      label: 'Outreach',             icon: '📤', color: '#3b82f6' },
+  { key: 'engaged',       label: 'Engaged',              icon: '💬', color: '#0F9D8E' },
+  { key: 'discovery_call',label: 'Sales Discovery Call', icon: '📞', color: '#f59e0b' },
+  { key: 'qualified_sal', label: 'Sales Accepted Lead (SAL)', icon: '✅', color: '#10b981' },
 ];
 
 const DEFAULT_TERMINAL_STAGES = [
@@ -1100,7 +1101,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
             >
               📨 {activeEnrollment ? `In Sequence: ${activeEnrollment.sequence_name}` : 'Enroll in Sequence'}
             </button>
-            {prospect.stage === 'qualified' && (
+            {prospect.stage === 'qualified_sal' && (
               <button className="pv-btn-convert" onClick={handleConvert}>🎉 Convert</button>
             )}
             <div className="pv-stage-menu-wrap" style={{ position: 'relative' }}>
@@ -2003,8 +2004,8 @@ function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
                     <span>{p.first_name} {p.last_name} <span style={{ color: '#9ca3af' }}>· {p.title}</span></span>
                     <span style={{
                       fontSize: 10, padding: '1px 6px', borderRadius: 3,
-                      background: ['engaged', 'qualified', 'converted'].includes(p.stage) ? '#eff6ff' : '#f3f4f6',
-                      color: ['engaged', 'qualified', 'converted'].includes(p.stage) ? '#2563eb' : '#6b7280',
+                      background: ['engaged', 'discovery_call', 'qualified_sal', 'converted'].includes(p.stage) ? '#eff6ff' : '#f3f4f6',
+                      color: ['engaged', 'discovery_call', 'qualified_sal', 'converted'].includes(p.stage) ? '#2563eb' : '#6b7280',
                     }}>
                       {p.stage}
                     </span>
