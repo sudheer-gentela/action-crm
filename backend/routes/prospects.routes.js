@@ -1684,6 +1684,60 @@ router.get('/:id/activities', async (req, res) => {
   }
 });
 
+// ── PATCH /:id — update prospect fields ──────────────────────────────────────
+router.patch('/:id', async (req, res) => {
+  try {
+    const allowed = [
+      'first_name', 'last_name', 'email', 'phone', 'title',
+      'location', 'linkedin_url', 'company_name', 'company_domain',
+      'company_size', 'company_industry', 'source', 'preferred_channel',
+      'icp_score', 'tags', 'research_notes',
+    ];
+
+    const updates = {};
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+
+    // Also accept camelCase from frontend
+    const camelMap = {
+      firstName: 'first_name', lastName: 'last_name',
+      linkedinUrl: 'linkedin_url', companyName: 'company_name',
+      companyDomain: 'company_domain', companySize: 'company_size',
+      companyIndustry: 'company_industry', preferredChannel: 'preferred_channel',
+      icpScore: 'icp_score', researchNotes: 'research_notes',
+    };
+    for (const [camel, snake] of Object.entries(camelMap)) {
+      if (req.body[camel] !== undefined) updates[snake] = req.body[camel];
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: { message: 'No valid fields to update' } });
+    }
+
+    const setClauses = Object.keys(updates).map((k, i) => `${k} = $${i + 1}`);
+    setClauses.push(`updated_at = CURRENT_TIMESTAMP`);
+    const values = [...Object.values(updates), req.params.id, req.orgId];
+
+    const result = await db.query(
+      `UPDATE prospects
+       SET ${setClauses.join(', ')}
+       WHERE id = $${values.length - 1} AND org_id = $${values.length} AND deleted_at IS NULL
+       RETURNING *`,
+      values
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+
+    res.json({ prospect: result.rows[0] });
+  } catch (error) {
+    console.error('Update prospect error:', error);
+    res.status(500).json({ error: { message: 'Failed to update prospect' } });
+  }
+});
+
 // ── DELETE /:id — soft delete ────────────────────────────────────────────────
 router.delete('/:id', async (req, res) => {
   try {

@@ -762,6 +762,10 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   const [activities, setActivities] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('overview');
+  const [editMode, setEditMode]   = useState(false);
+  const [editForm, setEditForm]   = useState({});
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError]   = useState(null);
   const [showStageMenu, setShowStageMenu] = useState(false);
   const [showOutreach, setShowOutreach] = useState(false);
   const [outreachChannel, setOutreachChannel] = useState(null);
@@ -890,6 +894,26 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
     setActiveTab(t);
     if (t === 'intel')    fetchContext();
     if (t === 'activity') loadProspectDrafts();
+  };
+
+  const handleEditSave = async () => {
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      await apiFetch(`/prospects/${prospectId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(editForm),
+      });
+      const res = await apiFetch(`/prospects/${prospectId}`);
+      setProspect(res.prospect);
+      setEditMode(false);
+      setEditForm({});
+      onUpdate();
+    } catch (err) {
+      setEditError(err.message);
+    } finally {
+      setEditSaving(false);
+    }
   };
 
   const handleStageChange = async (newStage) => {
@@ -1141,18 +1165,47 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
         <div className="pv-detail-content">
           {activeTab === 'overview' && (
             <div className="pv-overview-tab">
+
+              {/* Edit / Save toolbar */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8, gap: 6 }}>
+                {editMode ? (
+                  <>
+                    <button onClick={() => { setEditMode(false); setEditForm({}); setEditError(null); }}
+                      style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', color: '#6b7280' }}>
+                      Cancel
+                    </button>
+                    <button onClick={handleEditSave} disabled={editSaving}
+                      style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, border: 'none', background: '#0F9D8E', color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+                      {editSaving ? 'Saving…' : 'Save'}
+                    </button>
+                  </>
+                ) : (
+                  <button onClick={() => { setEditMode(true); setEditForm({
+                    email: prospect.email || '', phone: prospect.phone || '',
+                    linkedin_url: prospect.linkedin_url || '', location: prospect.location || '',
+                    company_name: prospect.company_name || '', company_domain: prospect.company_domain || '',
+                    company_size: prospect.company_size || '', company_industry: prospect.company_industry || '',
+                  }); }}
+                    style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', color: '#374151' }}>
+                    ✏️ Edit
+                  </button>
+                )}
+              </div>
+              {editError && <div style={{ fontSize: 11, color: '#dc2626', marginBottom: 8 }}>{editError}</div>}
+
               <div className="pv-info-grid">
-                <InfoRow label="Email" value={prospect.email} />
-                <InfoRow label="Phone" value={prospect.phone} />
-                <InfoRow label="LinkedIn" value={prospect.linkedin_url ? <a href={prospect.linkedin_url} target="_blank" rel="noreferrer">Profile ↗</a> : null} />
-                <InfoRow label="Location" value={prospect.location} />
-                <InfoRow label="Source" value={prospect.source} />
-                <InfoRow label="Preferred Channel" value={prospect.preferred_channel} />
-                <InfoRow label="ICP Score" value={prospect.icp_score} />
-                <InfoRow label="Outreach Count" value={prospect.outreach_count} />
-                <InfoRow label="Response Count" value={prospect.response_count} />
-                <InfoRow label="Last Outreach" value={prospect.last_outreach_at ? formatDate(prospect.last_outreach_at) : null} />
-                <InfoRow label="Last Response" value={prospect.last_response_at ? formatDate(prospect.last_response_at) : null} />
+                <InfoRow label="Email"    value={prospect.email}    editMode={editMode} editValue={editForm.email}    onEdit={v => setEditForm(f => ({...f, email: v}))} />
+                <InfoRow label="Phone"    value={prospect.phone}    editMode={editMode} editValue={editForm.phone}    onEdit={v => setEditForm(f => ({...f, phone: v}))} />
+                <InfoRow label="LinkedIn" value={prospect.linkedin_url ? <a href={prospect.linkedin_url} target="_blank" rel="noreferrer">Profile ↗</a> : null}
+                                          editMode={editMode} editValue={editForm.linkedin_url} onEdit={v => setEditForm(f => ({...f, linkedin_url: v}))} />
+                <InfoRow label="Location" value={prospect.location}  editMode={editMode} editValue={editForm.location} onEdit={v => setEditForm(f => ({...f, location: v}))} />
+                <InfoRow label="Source"           value={prospect.source} />
+                <InfoRow label="Outreach Count"   value={prospect.outreach_count} />
+                <InfoRow label="Response Count"   value={prospect.response_count} />
+                <InfoRow label="Last Outreach"    value={prospect.last_outreach_at ? formatDate(prospect.last_outreach_at) : null} />
+                <InfoRow label="Last Response"    value={prospect.last_response_at ? formatDate(prospect.last_response_at) : null} />
+                <InfoRow label="Preferred Channel" value={prospect.preferred_channel} optional />
+                <InfoRow label="ICP Score"        value={prospect.icp_score} optional />
               </div>
 
               {prospect.research_notes && (
@@ -1181,10 +1234,10 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
               )}
 
               <div className="pv-info-grid" style={{ marginTop: 16 }}>
-                <InfoRow label="Company" value={prospect.company_name} />
-                <InfoRow label="Domain" value={prospect.company_domain} />
-                <InfoRow label="Size" value={prospect.company_size} />
-                <InfoRow label="Industry" value={prospect.company_industry} />
+                <InfoRow label="Company"  value={prospect.company_name}     editMode={editMode} editValue={editForm.company_name}     onEdit={v => setEditForm(f => ({...f, company_name: v}))} />
+                <InfoRow label="Domain"   value={prospect.company_domain}   editMode={editMode} editValue={editForm.company_domain}   onEdit={v => setEditForm(f => ({...f, company_domain: v}))} />
+                <InfoRow label="Size"     value={prospect.company_size}     editMode={editMode} editValue={editForm.company_size}     onEdit={v => setEditForm(f => ({...f, company_size: v}))} optional />
+                <InfoRow label="Industry" value={prospect.company_industry} editMode={editMode} editValue={editForm.company_industry} onEdit={v => setEditForm(f => ({...f, company_industry: v}))} optional />
               </div>
 
               {prospect.account && (
@@ -2235,12 +2288,28 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
   );
 }
 
-function InfoRow({ label, value }) {
-  if (!value && value !== 0) return null;
+function InfoRow({ label, value, optional = false, editMode = false, editValue, onEdit }) {
+  // optional=true rows are hidden when empty in view mode
+  if (!editMode && optional && !value && value !== 0) return null;
+  const isEmpty = value === null || value === undefined || value === '';
   return (
     <div className="pv-info-row">
       <span className="pv-info-label">{label}</span>
-      <span className="pv-info-value">{value}</span>
+      {editMode && onEdit ? (
+        <input
+          value={editValue ?? ''}
+          onChange={e => onEdit(e.target.value)}
+          style={{
+            flex: 1, fontSize: 12, padding: '2px 6px',
+            border: '1px solid #d1d5db', borderRadius: 4,
+            color: '#374151', background: '#fff', minWidth: 0,
+          }}
+        />
+      ) : (
+        <span className="pv-info-value" style={isEmpty ? { color: '#9ca3af' } : {}}>
+          {!isEmpty ? value : '—'}
+        </span>
+      )}
     </div>
   );
 }
