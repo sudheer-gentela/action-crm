@@ -49,6 +49,31 @@ const CHANNEL_ICONS = {
 
 const TEAL = '#0F9D8E';
 
+// ── LinkedIn constants ───────────────────────────────────────────────────────
+
+const LI_EVENTS = [
+  { key: 'request_sent', label: 'Request Sent',   color: '#2563eb', bg: '#eff6ff', dot: '#2563eb' },
+  { key: 'connected',    label: 'Connected',      color: '#059669', bg: '#ecfdf5', dot: '#059669' },
+  { key: 'message_sent', label: 'Message Sent',   color: '#d97706', bg: '#fffbeb', dot: '#d97706' },
+  { key: 'replied',      label: 'Reply Received', color: '#0F9D8E', bg: '#f0fdfa', dot: '#0F9D8E' },
+];
+
+const LI_STATUS_LABELS = {
+  request_sent: 'Request sent',
+  connected:    'Connected',
+  message_sent: 'Messaged',
+  replied:      'Replied',
+};
+
+function getLiStatus(prospect) {
+  return prospect?.channel_data?.linkedin?.connection_status || null;
+}
+
+function getLiDotColor(status) {
+  const ev = LI_EVENTS.find(e => e.key === status);
+  return ev ? ev.dot : '#d1d5db';
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const API = process.env.REACT_APP_API_URL || '';
@@ -223,6 +248,17 @@ export default function ProspectingView() {
 
   const totalActive = prospects.filter(p => !['converted', 'disqualified'].includes(p.stage)).length;
 
+  // LinkedIn funnel metrics (computed from channel_data on loaded prospects)
+  const liMetrics = React.useMemo(() => {
+    const sent      = prospects.filter(p => p.channel_data?.linkedin?.connection_status).length;
+    const connected = prospects.filter(p => ['connected','message_sent','replied'].includes(p.channel_data?.linkedin?.connection_status)).length;
+    const messaged  = prospects.filter(p => ['message_sent','replied'].includes(p.channel_data?.linkedin?.connection_status)).length;
+    const replied   = prospects.filter(p => p.channel_data?.linkedin?.connection_status === 'replied').length;
+    const acceptRate = sent > 0 ? Math.round((connected / sent) * 100) : null;
+    const replyRate  = messaged > 0 ? Math.round((replied / messaged) * 100) : null;
+    return { sent, connected, messaged, replied, acceptRate, replyRate };
+  }, [prospects]);
+
   // ─────────────────────────────────────────────────────────────────────────────
   // RENDER
   // ─────────────────────────────────────────────────────────────────────────────
@@ -333,6 +369,37 @@ export default function ProspectingView() {
           <span className="pv-metric-label">Responses / wk</span>
         </div>
       </div>
+
+      {/* ── LinkedIn Funnel Strip ───────────────────────────────────────────── */}
+      {liMetrics.sent > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 0,
+          background: '#f8fafc', border: '1px solid #e2e8f0',
+          borderRadius: 8, padding: '8px 16px', marginBottom: 12, flexWrap: 'wrap',
+        }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#0077B5', marginRight: 12, display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ background: '#0077B5', color: '#fff', borderRadius: 3, padding: '1px 5px', fontSize: 10, fontWeight: 700 }}>in</span>
+            LinkedIn Funnel
+          </span>
+          {[
+            { label: 'Requests',  value: liMetrics.sent,      rate: null },
+            { label: 'Connected', value: liMetrics.connected, rate: liMetrics.acceptRate != null ? `${liMetrics.acceptRate}% accepted` : null },
+            { label: 'Messaged',  value: liMetrics.messaged,  rate: null },
+            { label: 'Replied',   value: liMetrics.replied,   rate: liMetrics.replyRate != null ? `${liMetrics.replyRate}% reply rate` : null },
+          ].map((step, i) => (
+            <React.Fragment key={step.label}>
+              {i > 0 && <span style={{ color: '#cbd5e1', fontSize: 16, margin: '0 8px' }}>›</span>}
+              <div style={{ textAlign: 'center' }}>
+                <span style={{ fontSize: 16, fontWeight: 700, color: '#1e293b' }}>{step.value}</span>
+                <span style={{ fontSize: 11, color: '#64748b', marginLeft: 4 }}>{step.label}</span>
+                {step.rate && (
+                  <span style={{ fontSize: 10, color: '#059669', marginLeft: 6, fontWeight: 600 }}>{step.rate}</span>
+                )}
+              </div>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
 
       {/* ── Content Area ───────────────────────────────────────────────────── */}
       {loading ? (
@@ -469,6 +536,12 @@ function ProspectCard({ prospect: p, onClick }) {
             {timeAgo(p.last_outreach_at)}
           </span>
         )}
+        {getLiStatus(p) && (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 10, color: getLiDotColor(getLiStatus(p)) }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: getLiDotColor(getLiStatus(p)), flexShrink: 0 }} />
+            {LI_STATUS_LABELS[getLiStatus(p)]}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -490,6 +563,7 @@ function ListView({ prospects, onSelect }) {
             <th>Title</th>
             <th>Stage</th>
             <th>Channel</th>
+            <th>LinkedIn</th>
             <th>Outreach</th>
             <th>Last Touch</th>
             <th>ICP</th>
@@ -512,6 +586,14 @@ function ListView({ prospects, onSelect }) {
                   </span>
                 </td>
                 <td>{CHANNEL_ICONS[p.preferred_channel] || '—'}</td>
+                <td>
+                  {getLiStatus(p) ? (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: getLiDotColor(getLiStatus(p)) }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: getLiDotColor(getLiStatus(p)), flexShrink: 0 }} />
+                      {LI_STATUS_LABELS[getLiStatus(p)]}
+                    </span>
+                  ) : '—'}
+                </td>
                 <td>{p.outreach_count || 0}</td>
                 <td>{p.last_outreach_at ? timeAgo(p.last_outreach_at) : '—'}</td>
                 <td>{p.icp_score != null ? p.icp_score : '—'}</td>
@@ -519,7 +601,7 @@ function ListView({ prospects, onSelect }) {
             );
           })}
           {prospects.length === 0 && (
-            <tr><td colSpan="8" className="pv-table-empty">No prospects found</td></tr>
+            <tr><td colSpan="9" className="pv-table-empty">No prospects found</td></tr>
           )}
         </tbody>
       </table>
@@ -1027,13 +1109,25 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
 
         {/* Tabs */}
         <div className="pv-detail-tabs">
-          {['overview', 'intel', 'actions', 'activity'].map(t => (
+          {['overview', 'linkedin', 'intel', 'actions', 'activity'].map(t => (
             <button
               key={t}
               className={`pv-detail-tab ${activeTab === t ? 'active' : ''}`}
               onClick={() => handleTabChange(t)}
             >
-              {t === 'overview' ? 'Overview' : t === 'intel' ? '🎯 Intel' : t === 'actions' ? `Actions (${actions.filter(a => a.status === 'pending').length})` : 'Activity'}
+              {t === 'overview' ? 'Overview'
+                : t === 'linkedin' ? (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{ background: '#0077B5', color: '#fff', borderRadius: 2, padding: '0px 4px', fontSize: 9, fontWeight: 700 }}>in</span>
+                    LinkedIn
+                    {getLiStatus(prospect) && (
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: getLiDotColor(getLiStatus(prospect)), marginLeft: 2 }} />
+                    )}
+                  </span>
+                )
+                : t === 'intel' ? '🎯 Intel'
+                : t === 'actions' ? `Actions (${actions.filter(a => a.status === 'pending').length})`
+                : 'Activity'}
             </button>
           ))}
         </div>
@@ -1106,9 +1200,21 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
             </div>
           )}
 
+          {activeTab === 'linkedin' && (
+            <LinkedInPanel
+              prospect={prospect}
+              onEventLogged={async () => {
+                try {
+                  const res = await apiFetch(`/prospects/${prospectId}`);
+                  setProspect(res.prospect);
+                  setActivities(res.activities || []);
+                  onUpdate();
+                } catch (_) {}
+              }}
+            />
+          )}
+
           {activeTab === 'intel' && (
-            <div>
-              {/* Research button + result */}
               <div style={{ marginBottom: 20 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
                   <button
@@ -1405,6 +1511,234 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LINKEDIN PANEL
+// ═════════════════════════════════════════════════════════════════════════════
+
+function LinkedInPanel({ prospect, onEventLogged }) {
+  const li = prospect?.channel_data?.linkedin || {};
+  const currentStatus = li.connection_status || null;
+
+  const [saving, setSaving] = useState(null);   // key of event being saved
+  const [note, setNote] = useState('');
+  const [showNote, setShowNote] = useState(false);
+  const [error, setError] = useState(null);
+
+  const TIMELINE_STEPS = [
+    { key: 'request_sent', label: 'Connection request sent',    tsField: 'request_sent_at' },
+    { key: 'connected',    label: 'Connection accepted',        tsField: 'connected_at',     extra: () => {
+      if (li.request_sent_at && li.connected_at) {
+        const days = Math.round((new Date(li.connected_at) - new Date(li.request_sent_at)) / 86400000);
+        return days === 0 ? 'same day' : `${days}d to accept`;
+      }
+      return null;
+    }},
+    { key: 'message_sent', label: 'Follow-up message sent',     tsField: 'last_message_at',  extra: () => li.message_count > 1 ? `${li.message_count} messages sent` : null },
+    { key: 'replied',      label: 'Reply received',             tsField: 'last_reply_at' },
+  ];
+
+  // Which steps are done — a step is done if status is at or past it
+  const ORDER = ['request_sent', 'connected', 'message_sent', 'replied'];
+  const currentIdx = ORDER.indexOf(currentStatus);
+  const isDone = (key) => currentIdx >= ORDER.indexOf(key);
+
+  const handleEvent = async (eventKey) => {
+    setSaving(eventKey);
+    setError(null);
+    try {
+      await apiFetch(`/prospects/${prospect.id}/linkedin-event`, {
+        method: 'POST',
+        body: JSON.stringify({ event: eventKey, note: note.trim() || undefined }),
+      });
+      setNote('');
+      setShowNote(false);
+      await onEventLogged();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  // Next logical action — the step immediately after current status
+  const nextIdx = currentIdx + 1;
+  const nextEvent = nextIdx < ORDER.length ? ORDER[nextIdx] : null;
+  // If nothing logged yet, next is request_sent
+  const promptedEvent = currentStatus ? nextEvent : 'request_sent';
+
+  const eventCfg = (key) => LI_EVENTS.find(e => e.key === key);
+
+  return (
+    <div style={{ padding: '4px 0' }}>
+
+      {/* Profile link row */}
+      {prospect.linkedin_url && (
+        <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ background: '#0077B5', color: '#fff', borderRadius: 3, padding: '1px 6px', fontSize: 10, fontWeight: 700 }}>in</span>
+          <a
+            href={prospect.linkedin_url}
+            target="_blank"
+            rel="noreferrer"
+            style={{ fontSize: 13, color: '#0077B5', textDecoration: 'none', fontWeight: 500 }}
+          >
+            Open LinkedIn profile ↗
+          </a>
+        </div>
+      )}
+
+      {/* Timeline */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>
+          Outreach timeline
+        </div>
+        {TIMELINE_STEPS.map((step, idx) => {
+          const done = isDone(step.key);
+          const ts   = li[step.tsField];
+          const extraText = step.extra ? step.extra() : null;
+          const isLast = idx === TIMELINE_STEPS.length - 1;
+          return (
+            <div key={step.key} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+              {/* Dot + connector line */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0, paddingTop: 2 }}>
+                <div style={{
+                  width: 10, height: 10, borderRadius: '50%',
+                  background: done ? getLiDotColor(step.key) : 'transparent',
+                  border: done ? `2px solid ${getLiDotColor(step.key)}` : '2px solid #d1d5db',
+                  flexShrink: 0,
+                }} />
+                {!isLast && (
+                  <div style={{ width: 1, height: 22, background: done ? getLiDotColor(step.key) : '#e5e7eb', marginTop: 2, opacity: done ? 0.4 : 1 }} />
+                )}
+              </div>
+              {/* Label */}
+              <div style={{ paddingBottom: isLast ? 0 : 10, flex: 1 }}>
+                <div style={{ fontSize: 13, color: done ? '#1a202c' : '#9ca3af', fontWeight: done ? 500 : 400 }}>
+                  {step.label}
+                </div>
+                {done && (ts || extraText) && (
+                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 1, display: 'flex', gap: 8 }}>
+                    {ts && <span>{formatDate(ts)}</span>}
+                    {extraText && <span style={{ color: getLiDotColor(step.key), fontWeight: 500 }}>· {extraText}</span>}
+                  </div>
+                )}
+                {!done && step.key === promptedEvent && (
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1, fontStyle: 'italic' }}>pending</div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Record an event section */}
+      <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 14 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+          Record an event
+        </div>
+
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+          {LI_EVENTS.map(ev => {
+            const alreadyDone = isDone(ev.key);
+            const isNext = ev.key === promptedEvent;
+            return (
+              <button
+                key={ev.key}
+                onClick={() => handleEvent(ev.key)}
+                disabled={!!saving}
+                style={{
+                  fontSize: 12, padding: '5px 12px',
+                  borderRadius: 6,
+                  border: `1px solid ${alreadyDone ? ev.color : '#e5e7eb'}`,
+                  background: alreadyDone ? ev.bg : isNext ? '#f9fafb' : '#fff',
+                  color: alreadyDone ? ev.color : isNext ? '#374151' : '#6b7280',
+                  cursor: saving ? 'not-allowed' : 'pointer',
+                  fontWeight: alreadyDone ? 600 : 400,
+                  opacity: saving && saving !== ev.key ? 0.5 : 1,
+                  display: 'flex', alignItems: 'center', gap: 5,
+                }}
+              >
+                {saving === ev.key ? '⏳' : (
+                  <span style={{ width: 7, height: 7, borderRadius: '50%', background: alreadyDone ? ev.color : '#d1d5db', flexShrink: 0 }} />
+                )}
+                {alreadyDone ? `✓ ${ev.label}` : ev.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Optional note toggle */}
+        <button
+          onClick={() => setShowNote(v => !v)}
+          style={{
+            fontSize: 11, color: '#6b7280', background: 'none', border: 'none',
+            padding: 0, cursor: 'pointer', marginBottom: showNote ? 8 : 0,
+          }}
+        >
+          {showNote ? '▾ Hide note' : '▸ Add a note (optional)'}
+        </button>
+
+        {showNote && (
+          <textarea
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            placeholder="e.g. 'Sent intro message referencing their recent Series B' or paste the reply summary..."
+            rows={3}
+            style={{
+              width: '100%', fontSize: 12, padding: '8px 10px',
+              border: '1px solid #e5e7eb', borderRadius: 6,
+              resize: 'vertical', color: '#374151', lineHeight: 1.5,
+              boxSizing: 'border-box',
+            }}
+          />
+        )}
+
+        {error && (
+          <div style={{ marginTop: 8, fontSize: 12, color: '#dc2626', padding: '6px 10px', background: '#fef2f2', borderRadius: 6 }}>
+            ⚠️ {error}
+          </div>
+        )}
+      </div>
+
+      {/* Stats summary if anything logged */}
+      {currentStatus && (
+        <div style={{ marginTop: 16, background: '#f8fafc', borderRadius: 8, padding: '10px 14px', border: '1px solid #e2e8f0' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+            LinkedIn stats
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            {li.message_count > 0 && (
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 600, color: '#1a202c' }}>{li.message_count}</div>
+                <div style={{ fontSize: 11, color: '#6b7280' }}>Messages sent</div>
+              </div>
+            )}
+            {li.connected_at && li.request_sent_at && (
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 600, color: '#1a202c' }}>
+                  {Math.max(0, Math.round((new Date(li.connected_at) - new Date(li.request_sent_at)) / 86400000))}d
+                </div>
+                <div style={{ fontSize: 11, color: '#6b7280' }}>Days to accept</div>
+              </div>
+            )}
+            {li.last_reply_at && li.connected_at && (
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 600, color: '#059669' }}>Replied</div>
+                <div style={{ fontSize: 11, color: '#6b7280' }}>{formatDate(li.last_reply_at)}</div>
+              </div>
+            )}
+            {!li.last_reply_at && li.last_message_at && (
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 600, color: '#d97706' }}>{timeAgo(li.last_message_at)}</div>
+                <div style={{ fontSize: 11, color: '#6b7280' }}>Since last message</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1366,6 +1366,91 @@ router.post('/:id/convert', async (req, res) => {
   }
 });
 
+// ── POST /:id/linkedin-event — manually log a LinkedIn interaction ────────────
+// Body: { event: 'request_sent'|'connected'|'message_sent'|'replied', note?: string }
+// Stores state in channel_data.linkedin (jsonb), bumps outreach_count / response_count,
+// and writes a row to prospecting_activities.
+router.post('/:id/linkedin-event', async (req, res) => {
+  try {
+    const { event, note } = req.body;
+    const VALID_EVENTS = ['request_sent', 'connected', 'message_sent', 'replied'];
+
+    if (!event || !VALID_EVENTS.includes(event)) {
+      return res.status(400).json({
+        error: { message: `event must be one of: ${VALID_EVENTS.join(', ')}` },
+      });
+    }
+
+    const prospectRes = await db.query(
+      `SELECT id, channel_data, outreach_count, response_count
+       FROM prospects
+       WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+      [req.params.id, req.orgId]
+    );
+
+    if (prospectRes.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+
+    const p           = prospectRes.rows[0];
+    const channelData = p.channel_data || {};
+    const li          = channelData.linkedin || {};
+    const now         = new Date().toISOString();
+
+    // Update linkedin sub-object
+    li.connection_status = event;
+    if (event === 'request_sent') li.request_sent_at  = now;
+    if (event === 'connected')    li.connected_at      = now;
+    if (event === 'message_sent') {
+      li.last_message_at = now;
+      li.message_count   = (li.message_count || 0) + 1;
+    }
+    if (event === 'replied')      li.last_reply_at     = now;
+    channelData.linkedin = li;
+
+    const isOutreach = ['request_sent', 'message_sent'].includes(event);
+    const isResponse = event === 'replied';
+
+    await db.query(
+      `UPDATE prospects SET
+         channel_data     = $1::jsonb,
+         last_outreach_at = CASE WHEN $2 THEN CURRENT_TIMESTAMP ELSE last_outreach_at END,
+         outreach_count   = CASE WHEN $2 THEN COALESCE(outreach_count, 0) + 1 ELSE outreach_count END,
+         last_response_at = CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE last_response_at END,
+         response_count   = CASE WHEN $3 THEN COALESCE(response_count, 0) + 1 ELSE response_count END,
+         updated_at       = CURRENT_TIMESTAMP
+       WHERE id = $4 AND org_id = $5`,
+      [JSON.stringify(channelData), isOutreach, isResponse, req.params.id, req.orgId]
+    );
+
+    const EVENT_LABELS = {
+      request_sent: 'LinkedIn connection request sent',
+      connected:    'LinkedIn connection accepted',
+      message_sent: 'LinkedIn message sent',
+      replied:      'LinkedIn reply received',
+    };
+
+    await db.query(
+      `INSERT INTO prospecting_activities
+         (prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, 'linkedin_event', $3, $4)`,
+      [
+        req.params.id,
+        req.user.userId,
+        note ? `${EVENT_LABELS[event]}: ${note}` : EVENT_LABELS[event],
+        JSON.stringify({ event, channel: 'linkedin' }),
+      ]
+    );
+
+    console.log(`🔗 LinkedIn event "${event}" logged for prospect #${req.params.id} by user ${req.user.userId}`);
+
+    res.json({ success: true, event, channelData });
+  } catch (error) {
+    console.error('LinkedIn event error:', error);
+    res.status(500).json({ error: { message: 'Failed to record LinkedIn event' } });
+  }
+});
+
 // ── POST /:id/link-account ────────────────────────────────────────────────────
 router.post('/:id/link-account', async (req, res) => {
   try {
