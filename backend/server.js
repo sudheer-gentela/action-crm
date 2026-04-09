@@ -105,20 +105,47 @@ const corsOrigins = process.env.CORS_ORIGIN
   : [];
 
 const corsOptions = {
-  origin: [
-    'http://localhost:3000',
-    'https://action-crm.vercel.app',
-    ...corsOrigins,
-  ].filter(Boolean),
+  origin: (origin, callback) => {
+    // No origin = Postman / Railway health checks — allow
+    if (!origin) return callback(null, true);
+
+    // Known web origins
+    const webOrigins = [
+      'http://localhost:3000',
+      'https://action-crm.vercel.app',
+      'https://app.gowarmcrm.com',
+      ...corsOrigins,
+    ];
+    if (webOrigins.includes(origin)) return callback(null, true);
+
+    // Any GoWarm Chrome extension — allowed at CORS level,
+    // but must also pass the X-GoWarm-Extension-Key check below
+    if (origin.startsWith('chrome-extension://')) return callback(null, true);
+
+    callback(new Error(`CORS blocked: ${origin}`));
+  },
   credentials:     true,
   methods:         ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders:  ['Content-Type', 'Authorization'],
+  allowedHeaders:  ['Content-Type', 'Authorization', 'X-GoWarm-Extension-Key'],
   exposedHeaders:  ['Content-Range', 'X-Content-Range'],
   maxAge: 600
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));  // handle preflight for all routes
+app.options('*', cors(corsOptions));
+
+// Extension secret key guard — any chrome-extension origin must
+// present the correct X-GoWarm-Extension-Key header
+app.use((req, res, next) => {
+  const origin = req.headers.origin || '';
+  if (origin.startsWith('chrome-extension://')) {
+    const key = req.headers['x-gowarm-extension-key'];
+    if (!key || key !== process.env.EXTENSION_API_KEY) {
+      return res.status(403).json({ error: { message: 'Unauthorized extension' } });
+    }
+  }
+  next();
+});
 
 // ─────────────────────────────────────────────────────────────
 // Rate limiting
