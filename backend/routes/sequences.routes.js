@@ -866,11 +866,39 @@ router.post('/drafts/:logId/send', async (req, res) => {
     );
 
     // Auto-advance stage on first outreach
-    const stageRes = await client.query(`SELECT stage FROM prospects WHERE id=$1`, [draft.prospect_id]);
-    if (['target', 'research'].includes(stageRes.rows[0]?.stage)) {
+    const stageRes = await client.query(`SELECT stage, channel_data FROM prospects WHERE id=$1`, [draft.prospect_id]);
+    const currentStage = stageRes.rows[0]?.stage;
+    if (['target', 'research'].includes(currentStage)) {
       await client.query(
         `UPDATE prospects SET stage='outreach', stage_changed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=$1`,
         [draft.prospect_id]
+      );
+    }
+
+    // ── Sync LinkedIn channel_data if this is a LinkedIn step ────────────────
+    if (draft.channel === 'linkedin') {
+      const channelData = stageRes.rows[0]?.channel_data || {};
+      const li          = channelData.linkedin || {};
+      const STATUS_ORDER = [
+        'connection_request_sent', 'connection_accepted',
+        'message_sent', 'reply_received', 'meeting_booked',
+      ];
+      const liStatus   = draft.step_order === 1 ? 'connection_request_sent' : 'message_sent';
+      const currentIdx = STATUS_ORDER.indexOf(li.connection_status || '');
+      const newIdx     = STATUS_ORDER.indexOf(liStatus);
+      if (newIdx > currentIdx) {
+        li.connection_status = liStatus;
+      }
+      if (liStatus === 'connection_request_sent' && !li.request_sent_at) {
+        li.request_sent_at = new Date().toISOString();
+      } else if (liStatus === 'message_sent') {
+        li.last_message_at = new Date().toISOString();
+        li.message_count   = (li.message_count || 0) + 1;
+      }
+      channelData.linkedin = li;
+      await client.query(
+        `UPDATE prospects SET channel_data = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+        [JSON.stringify(channelData), draft.prospect_id]
       );
     }
 
@@ -1005,16 +1033,48 @@ router.post('/drafts/:logId/complete', async (req, res) => {
 
     // Auto-advance prospect stage on first outreach
     const stageRes = await client.query(
-      `SELECT stage FROM prospects WHERE id=$1`,
+      `SELECT stage, channel_data FROM prospects WHERE id=$1`,
       [draft.prospect_id]
     );
-    if (['target', 'research'].includes(stageRes.rows[0]?.stage)) {
+    const currentStage = stageRes.rows[0]?.stage;
+    if (['target', 'research'].includes(currentStage)) {
       await client.query(
         `UPDATE prospects
             SET stage='outreach', stage_changed_at=CURRENT_TIMESTAMP,
                 updated_at=CURRENT_TIMESTAMP
           WHERE id=$1`,
         [draft.prospect_id]
+      );
+    }
+
+    // ── 2b. Sync LinkedIn channel_data if this is a LinkedIn step ────────────
+    // So the LinkedIn funnel status updates when rep clicks Mark as Done,
+    // without requiring a separate Save on the Chrome extension.
+    if (draft.channel === 'linkedin') {
+      const channelData = stageRes.rows[0]?.channel_data || {};
+      const li          = channelData.linkedin || {};
+      const STATUS_ORDER = [
+        'connection_request_sent', 'connection_accepted',
+        'message_sent', 'reply_received', 'meeting_booked',
+      ];
+      // Map sequence step order to LinkedIn status
+      // step 1 = connection request, step 2+ = message
+      const liStatus = draft.step_order === 1 ? 'connection_request_sent' : 'message_sent';
+      const currentIdx = STATUS_ORDER.indexOf(li.connection_status || '');
+      const newIdx     = STATUS_ORDER.indexOf(liStatus);
+      if (newIdx > currentIdx) {
+        li.connection_status = liStatus;
+      }
+      if (liStatus === 'connection_request_sent' && !li.request_sent_at) {
+        li.request_sent_at = new Date().toISOString();
+      } else if (liStatus === 'message_sent') {
+        li.last_message_at = new Date().toISOString();
+        li.message_count   = (li.message_count || 0) + 1;
+      }
+      channelData.linkedin = li;
+      await client.query(
+        `UPDATE prospects SET channel_data = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+        [JSON.stringify(channelData), draft.prospect_id]
       );
     }
 

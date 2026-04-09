@@ -1406,7 +1406,7 @@ router.post('/:id/linkedin-event', async (req, res) => {
     }
 
     const prospectRes = await db.query(
-      `SELECT id, channel_data, outreach_count, response_count
+      `SELECT id, stage, channel_data, outreach_count, response_count
        FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
       [req.params.id, req.orgId]
     );
@@ -1427,6 +1427,15 @@ router.post('/:id/linkedin-event', async (req, res) => {
     const statusForEvent   = event === 'inmail_sent' ? 'message_sent' : event;
     const currentStatusIdx = STATUS_ORDER.indexOf(li.connection_status || '');
     const newStatusIdx     = STATUS_ORDER.indexOf(statusForEvent);
+
+    // ── Dedup guard ──────────────────────────────────────────────────────────
+    // If stage is already outreach+ AND this LinkedIn status was already recorded,
+    // sequences/actions already counted this touch — skip outreach_count bump.
+    const OUTREACH_STAGES = ['outreach', 'engaged', 'discovery_call', 'qualified_sal', 'converted'];
+    const alreadyAdvanced = OUTREACH_STAGES.includes(p.stage);
+    const alreadyLogged   = currentStatusIdx >= newStatusIdx && newStatusIdx >= 0;
+    const skipCount       = alreadyAdvanced && alreadyLogged;
+
     if (newStatusIdx > currentStatusIdx) {
       li.connection_status = statusForEvent;
     }
@@ -1474,6 +1483,28 @@ router.post('/:id/linkedin-event', async (req, res) => {
     const isOutreach = ['connection_request_sent', 'message_sent', 'inmail_sent', 'voice_note_sent'].includes(event);
     const isResponse = ['reply_received', 'meeting_booked'].includes(event);
 
+    // Apply dedup: if sequences already counted this outreach, don't bump counters again
+    const countOutreach = isOutreach && !skipCount;
+    const countResponse = isResponse && !skipCount;
+
+    // Auto-advance stage: target/research → outreach on first outreach
+    // Only runs if sequences haven't already advanced it (skipCount guard)
+    if (isOutreach && !skipCount) {
+      const currentStage = p.stage;
+      if (['target', 'research'].includes(currentStage)) {
+        await db.query(
+          `UPDATE prospects SET stage = 'outreach', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1 AND org_id = $2`,
+          [req.params.id, req.orgId]
+        );
+        await db.query(
+          `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
+           VALUES ($1, $2, 'stage_change', 'Auto-advanced to outreach after LinkedIn outreach')`,
+          [req.params.id, req.user.userId]
+        );
+      }
+    }
+
     await db.query(
       `UPDATE prospects SET
          channel_data     = $1::jsonb,
@@ -1483,7 +1514,7 @@ router.post('/:id/linkedin-event', async (req, res) => {
          response_count   = CASE WHEN $3 THEN COALESCE(response_count, 0) + 1 ELSE response_count END,
          updated_at       = CURRENT_TIMESTAMP
        WHERE id = $4 AND org_id = $5`,
-      [JSON.stringify(channelData), isOutreach, isResponse, req.params.id, req.orgId]
+      [JSON.stringify(channelData), countOutreach, countResponse, req.params.id, req.orgId]
     );
 
     const EVENT_LABELS = {
