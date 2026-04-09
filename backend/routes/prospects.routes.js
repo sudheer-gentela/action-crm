@@ -385,8 +385,8 @@ router.get('/by-linkedin-url', async (req, res) => {
 
     // ── Pending sequence drafts count (for extension badge) ──────────────────
     const draftsResult = await db.query(
-      `SELECT COUNT(*) FROM sequence_drafts
-       WHERE prospect_id = $1 AND status = 'pending'`,
+      `SELECT COUNT(*) FROM sequence_step_logs
+       WHERE prospect_id = $1 AND status = 'draft'`,
       [row.id]
     );
     const pendingDrafts = parseInt(draftsResult.rows[0].count);
