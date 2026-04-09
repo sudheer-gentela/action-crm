@@ -340,6 +340,62 @@ router.post('/bulk', async (req, res) => {
 });
 
 // ── GET /:id — prospect detail ───────────────────────────────────────────────
+// ── GET /by-linkedin-url — look up prospect by LinkedIn profile URL ───────────
+// Used by the Chrome extension. Must be defined BEFORE /:id routes.
+// Query: ?url=https://www.linkedin.com/in/username
+router.get('/by-linkedin-url', async (req, res) => {
+  try {
+    const { url } = req.query;
+    if (!url) {
+      return res.status(400).json({ error: { message: 'url query param is required' } });
+    }
+
+    // Extract the slug from both the incoming URL and stored URLs so matching
+    // is robust regardless of: missing https://, www., trailing slashes,
+    // extra path segments, or query params.
+    // e.g. "https://www.linkedin.com/in/paulcrist/",
+    //      "www.linkedin.com/in/paulcrist",
+    //      "linkedin.com/in/paulcrist" all resolve to slug "paulcrist"
+    const slugMatch = url.match(/\/in\/([^/?#]+)/);
+    if (!slugMatch) {
+      return res.status(400).json({ error: { message: 'Could not extract LinkedIn slug from url' } });
+    }
+    const slug = slugMatch[1].toLowerCase();
+
+    const result = await db.query(
+      `SELECT p.*,
+              acc.name  AS account_name,
+              u.first_name AS owner_first_name,
+              u.last_name  AS owner_last_name
+       FROM prospects p
+       LEFT JOIN accounts acc ON p.account_id = acc.id
+       LEFT JOIN users    u   ON p.owner_id   = u.id
+       WHERE p.org_id = $1
+         AND LOWER(REGEXP_REPLACE(p.linkedin_url, '.*/in/([^/?#]+).*', '\\1')) = $2
+         AND p.linkedin_url IS NOT NULL
+         AND p.deleted_at IS NULL
+       LIMIT 1`,
+      [req.orgId, slug]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({ prospect: null });
+    }
+
+    const row = result.rows[0];
+    res.json({
+      prospect: {
+        ...row,
+        account: row.account_id ? { id: row.account_id, name: row.account_name } : null,
+        owner:   { first_name: row.owner_first_name, last_name: row.owner_last_name },
+      },
+    });
+  } catch (error) {
+    console.error('LinkedIn URL lookup error:', error);
+    res.status(500).json({ error: { message: 'Lookup failed' } });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const result = await db.query(
@@ -1366,61 +1422,6 @@ router.post('/:id/convert', async (req, res) => {
   }
 });
 
-// ── GET /by-linkedin-url — look up prospect by LinkedIn profile URL ───────────
-// Used by the Chrome extension. Must be defined BEFORE /:id routes.
-// Query: ?url=https://www.linkedin.com/in/username
-router.get('/by-linkedin-url', async (req, res) => {
-  try {
-    const { url } = req.query;
-    if (!url) {
-      return res.status(400).json({ error: { message: 'url query param is required' } });
-    }
-
-    // Extract the slug from both the incoming URL and stored URLs so matching
-    // is robust regardless of: missing https://, www., trailing slashes,
-    // extra path segments, or query params.
-    // e.g. "https://www.linkedin.com/in/paulcrist/",
-    //      "www.linkedin.com/in/paulcrist",
-    //      "linkedin.com/in/paulcrist" all resolve to slug "paulcrist"
-    const slugMatch = url.match(/\/in\/([^/?#]+)/);
-    if (!slugMatch) {
-      return res.status(400).json({ error: { message: 'Could not extract LinkedIn slug from url' } });
-    }
-    const slug = slugMatch[1].toLowerCase();
-
-    const result = await db.query(
-      `SELECT p.*,
-              acc.name  AS account_name,
-              u.first_name AS owner_first_name,
-              u.last_name  AS owner_last_name
-       FROM prospects p
-       LEFT JOIN accounts acc ON p.account_id = acc.id
-       LEFT JOIN users    u   ON p.owner_id   = u.id
-       WHERE p.org_id = $1
-         AND LOWER(REGEXP_REPLACE(p.linkedin_url, '.*/in/([^/?#]+).*', '\\1')) = $2
-         AND p.linkedin_url IS NOT NULL
-         AND p.deleted_at IS NULL
-       LIMIT 1`,
-      [req.orgId, slug]
-    );
-
-    if (result.rows.length === 0) {
-      return res.json({ prospect: null });
-    }
-
-    const row = result.rows[0];
-    res.json({
-      prospect: {
-        ...row,
-        account: row.account_id ? { id: row.account_id, name: row.account_name } : null,
-        owner:   { first_name: row.owner_first_name, last_name: row.owner_last_name },
-      },
-    });
-  } catch (error) {
-    console.error('LinkedIn URL lookup error:', error);
-    res.status(500).json({ error: { message: 'Lookup failed' } });
-  }
-});
 
 // ── POST /:id/linkedin-event — log a LinkedIn interaction ─────────────────────
 //
