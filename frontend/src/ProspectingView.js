@@ -673,9 +673,45 @@ function ProspectCreateModal({ onSave, onClose }) {
     firstName: '', lastName: '', email: '', phone: '', linkedinUrl: '',
     title: '', location: '', companyName: '', companyDomain: '',
     companySize: '', companyIndustry: '', source: 'manual', tags: [],
+    playbookId: '',
   });
+  const [playbooks, setPlaybooks]         = useState([]);
+  const [defaultPlaybook, setDefaultPlaybook] = useState(null);
+  const [showMakeDefault, setShowMakeDefault] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await apiFetch('/playbooks?type=prospecting');
+        const all = r.playbooks || [];
+        setPlaybooks(all);
+        setDefaultPlaybook(all.find(pb => pb.is_default) || null);
+      } catch {
+        setPlaybooks([]);
+      }
+    })();
+  }, []);
 
   const set = (field, val) => setForm(prev => ({ ...prev, [field]: val }));
+
+  const handlePlaybookChange = (e) => {
+    const id = e.target.value;
+    set('playbookId', id);
+    // Show "make default" prompt only if user picks a non-default playbook
+    const picked = playbooks.find(pb => String(pb.id) === String(id));
+    setShowMakeDefault(!!picked && !picked.is_default);
+  };
+
+  const handleMakeDefault = async (playbookId) => {
+    try {
+      await apiFetch(`/playbooks/${playbookId}/set-default`, { method: 'POST' });
+      setPlaybooks(prev => prev.map(pb => ({ ...pb, is_default: pb.id === parseInt(playbookId) })));
+      setDefaultPlaybook(playbooks.find(pb => pb.id === parseInt(playbookId)) || null);
+      setShowMakeDefault(false);
+    } catch (err) {
+      alert('Could not update default playbook: ' + err.message);
+    }
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -740,6 +776,35 @@ function ProspectCreateModal({ onSave, onClose }) {
               <option value="inbound">Inbound</option>
               <option value="import">Import</option>
             </select>
+          </div>
+
+          <div className="pv-form-section">
+            <h4>Playbook</h4>
+            <select value={form.playbookId} onChange={handlePlaybookChange}>
+              <option value="">
+                {defaultPlaybook ? `✓ Default: ${defaultPlaybook.name}` : 'Use org default playbook'}
+              </option>
+              {playbooks.map(pb => (
+                <option key={pb.id} value={pb.id}>
+                  {pb.is_default ? '★ ' : ''}{pb.name}
+                </option>
+              ))}
+            </select>
+            {showMakeDefault && (
+              <div style={{ marginTop: 8, padding: '8px 10px', background: '#fff8f0', border: '1px solid #FBCF9D', borderRadius: 6, fontSize: 12 }}>
+                <span style={{ color: '#92400e' }}>Make <strong>{playbooks.find(pb => String(pb.id) === String(form.playbookId))?.name}</strong> the default for all new prospects?</span>
+                <div style={{ marginTop: 6, display: 'flex', gap: 8 }}>
+                  <button type="button" onClick={() => handleMakeDefault(form.playbookId)}
+                    style={{ padding: '3px 10px', background: '#E8630A', color: '#fff', border: 'none', borderRadius: 4, fontSize: 11, cursor: 'pointer', fontWeight: 600 }}>
+                    Yes, make default
+                  </button>
+                  <button type="button" onClick={() => setShowMakeDefault(false)}
+                    style={{ padding: '3px 10px', background: '#f3f4f6', color: '#374151', border: 'none', borderRadius: 4, fontSize: 11, cursor: 'pointer' }}>
+                    No, just this prospect
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="pv-form-actions">

@@ -9,6 +9,7 @@ const HandoverService         = require('../services/handover.service');
 const DealContextBuilder      = require('../services/DealContextBuilder');
 const PlaybookActionGenerator = require('../services/PlaybookActionGenerator');
 const ActionWriter            = require('../services/ActionWriter');
+const PlaybookService         = require('../services/playbook.service');
 const { workflowRulesMiddleware } = require('../middleware/workflowRules.middleware');
 
 router.use(authenticateToken);
@@ -323,11 +324,8 @@ router.post('/', workflowRulesMiddleware('deal', 'create'), async (req, res) => 
 
     let resolvedPlaybookId = playbookId || null;
     if (!resolvedPlaybookId) {
-      const defaultPb = await db.query(
-        `SELECT id FROM playbooks WHERE org_id = $1 AND is_default = TRUE LIMIT 1`,
-        [req.orgId]
-      );
-      resolvedPlaybookId = defaultPb.rows[0]?.id || null;
+      const defaultPb = await PlaybookService.getDefaultPlaybookForEntity(req.orgId, 'deal');
+      resolvedPlaybookId = defaultPb?.id || null;
     }
 
     const result = await db.query(

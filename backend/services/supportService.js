@@ -602,6 +602,19 @@ async function createCase(orgId, userId, {
 }) {
   if (!subject?.trim()) throw Object.assign(new Error('Subject is required'), { status: 400 });
 
+  // Resolve playbook — use explicit playbookId or fall back to org default service playbook
+  let resolvedPlaybookId = playbookId || null;
+  if (!resolvedPlaybookId) {
+    const db = require('../config/database');
+    const defaultPb = await db.query(
+      `SELECT id FROM playbooks
+       WHERE org_id = $1 AND type = 'service' AND is_default = TRUE
+       LIMIT 1`,
+      [orgId]
+    );
+    resolvedPlaybookId = defaultPb.rows[0]?.id || null;
+  }
+
   return withOrgTransaction(orgId, async (client) => {
     const caseNumber = await nextCaseNumber(client, orgId);
     const now = new Date();
@@ -624,7 +637,7 @@ async function createCase(orgId, userId, {
         orgId, caseNumber, subject.trim(), description || null, priority,
         accountId || null, contactId || null, dealId || null,
         slaTierId || null, assignedTeamId || null, assignedTo || null,
-        tags || null, source, playbookId || null,
+        tags || null, source, resolvedPlaybookId,
         userId, now,
       ]
     );

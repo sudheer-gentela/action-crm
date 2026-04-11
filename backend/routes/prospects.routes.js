@@ -229,6 +229,15 @@ router.post('/bulk', async (req, res) => {
     let skipped  = 0;
     const errors = [];
 
+    // Resolve default prospecting playbook once for the whole import
+    const defaultPbResult = await db.query(
+      `SELECT id FROM playbooks
+       WHERE org_id = $1 AND type = 'prospecting' AND is_default = TRUE
+       LIMIT 1`,
+      [req.orgId]
+    );
+    const defaultPlaybookId = defaultPbResult.rows[0]?.id || null;
+
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const rowNum = i + 1;
@@ -271,11 +280,11 @@ router.post('/bulk', async (req, res) => {
           `INSERT INTO prospects (
              org_id, owner_id, first_name, last_name, email, phone, linkedin_url,
              title, location, company_name, company_domain, company_size,
-             company_industry, account_id, source, tags, stage, stage_changed_at
+             company_industry, account_id, source, playbook_id, tags, stage, stage_changed_at
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7,
              $8, $9, $10, $11, $12,
-             $13, $14, $15, $16,
+             $13, $14, $15, $16, $17,
              'target', CURRENT_TIMESTAMP
            )`,
           [
@@ -294,6 +303,7 @@ router.post('/bulk', async (req, res) => {
             row.companyIndustry  || null,
             resolvedAccountId,
             source,
+            row.playbookId       || defaultPlaybookId,
             JSON.stringify(row.tags || []),
           ]
         );
@@ -901,6 +911,18 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // Resolve playbook — use explicit playbookId or fall back to org default
+    let resolvedPlaybookId = playbookId || null;
+    if (!resolvedPlaybookId) {
+      const defaultPb = await db.query(
+        `SELECT id FROM playbooks
+         WHERE org_id = $1 AND type = 'prospecting' AND is_default = TRUE
+         LIMIT 1`,
+        [req.orgId]
+      );
+      resolvedPlaybookId = defaultPb.rows[0]?.id || null;
+    }
+
     const result = await db.query(
       `INSERT INTO prospects (
          org_id, owner_id, first_name, last_name, email, phone, linkedin_url,
@@ -916,7 +938,7 @@ router.post('/', async (req, res) => {
       [
         req.orgId, req.user.userId, firstName, lastName, email, phone, linkedinUrl,
         title, linkedinHeadline || null, location, companyName, companyDomain, companySize,
-        companyIndustry, resolvedAccountId, source || 'manual', playbookId || null,
+        companyIndustry, resolvedAccountId, source || 'manual', resolvedPlaybookId,
         JSON.stringify(tags || []),
       ]
     );

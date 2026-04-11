@@ -32,6 +32,7 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
   const [isSubmitting, setIsSubmitting]         = useState(false);
   const [playbooks, setPlaybooks]               = useState([]);
   const [playbooksLoading, setPlaybooksLoading] = useState(true);
+  const [showMakeDefault, setShowMakeDefault]   = useState(false);
   const [stages, setStages]                     = useState(FALLBACK_STAGES);
   const [stagesLoading, setStagesLoading]       = useState(true);
 
@@ -92,11 +93,26 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
     })();
   }, []);
 
+  const handleMakeDefault = async (playbookId) => {
+    try {
+      await apiService.playbooks.setDefault(playbookId);
+      setPlaybooks(prev => prev.map(pb => ({ ...pb, is_default: pb.id === parseInt(playbookId) })));
+      setShowMakeDefault(false);
+    } catch (err) {
+      console.error('Could not update default playbook:', err.message);
+    }
+  };
+
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
     if (errors[name]) {
       setErrors(prev => ({ ...prev, [name]: null }));
+    }
+    // Show "make default" prompt when user picks a non-default playbook
+    if (name === 'playbook_id') {
+      const picked = playbooks.find(pb => String(pb.id) === String(value));
+      setShowMakeDefault(!!picked && !picked.is_default);
     }
   };
 
@@ -313,6 +329,30 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
               ))}
             </select>
             {playbooksLoading && <span className="field-hint">Loading playbooks...</span>}
+            {showMakeDefault && (
+              <div style={{ marginTop: 8, padding: '8px 10px', background: '#fff8f0', border: '1px solid #FBCF9D', borderRadius: 6, fontSize: 12 }}>
+                <span style={{ color: '#92400e' }}>
+                  Make <strong>{playbooks.find(pb => String(pb.id) === String(formData.playbook_id))?.name}</strong> the default for all new deals?
+                </span>
+                <div style={{ marginTop: 6, display: 'flex', gap: 8 }}>
+                  <button type="button" onClick={() => handleMakeDefault(formData.playbook_id)}
+                    style={{ padding: '3px 10px', background: '#E8630A', color: '#fff', border: 'none', borderRadius: 4, fontSize: 11, cursor: 'pointer', fontWeight: 600 }}>
+                    Yes, make default
+                  </button>
+                  <button type="button" onClick={() => setShowMakeDefault(false)}
+                    style={{ padding: '3px 10px', background: '#f3f4f6', color: '#374151', border: 'none', borderRadius: 4, fontSize: 11, cursor: 'pointer' }}>
+                    No, just this deal
+                  </button>
+                </div>
+              </div>
+            )}
+            {!formData.playbook_id && !playbooksLoading && (
+              <span className="field-hint">
+                {playbooks.find(pb => pb.is_default)
+                  ? `Default: ${playbooks.find(pb => pb.is_default).name}`
+                  : 'No default playbook set for this org'}
+              </span>
+            )}
           </div>
 
           {/* Notes */}

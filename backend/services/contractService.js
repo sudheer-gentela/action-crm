@@ -348,6 +348,19 @@ async function createContract(orgId, userId, data) {
     const e = new Error('companyEntity must be us, uk, or de'); e.status = 400; throw e;
   }
 
+  // Resolve playbook — use explicit playbookId or fall back to org default CLM playbook
+  let resolvedPlaybookId = data.playbookId || null;
+  if (!resolvedPlaybookId) {
+    const db = require('../config/database');
+    const defaultPb = await db.query(
+      `SELECT id FROM playbooks
+       WHERE org_id = $1 AND type = 'clm' AND is_default = TRUE
+       LIMIT 1`,
+      [orgId]
+    );
+    resolvedPlaybookId = defaultPb.rows[0]?.id || null;
+  }
+
   return withOrgTransaction(orgId, async (client) => {
     const r = await client.query(
       `INSERT INTO contracts
@@ -360,7 +373,8 @@ async function createContract(orgId, userId, data) {
           effective_date, expiry_date,
           document_url, document_provider,
           owner_id, created_by,
-          legal_owner_type, review_sub_status)
+          legal_owner_type, review_sub_status,
+          playbook_id)
        VALUES ($1,$2,$3,$4,$5,'draft',
                $6,$7,
                $8,$9,
@@ -370,7 +384,8 @@ async function createContract(orgId, userId, data) {
                $18,$19,
                $20,$21,
                $22,$22,
-               'sales', NULL)
+               'sales', NULL,
+               $23)
        RETURNING *`,
       [
         orgId,
@@ -395,6 +410,7 @@ async function createContract(orgId, userId, data) {
         documentUrl || null,
         documentProvider,
         userId,
+        resolvedPlaybookId,
       ]
     );
     const contract = r.rows[0];
