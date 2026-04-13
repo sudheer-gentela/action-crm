@@ -41,6 +41,7 @@
 const { pool }                        = require('../config/database');
 const { sendEmail: sendGmailEmail }   = require('./googleService');
 const { sendEmail: sendOutlookEmail } = require('./outlookService');
+const { plainTextToHtml }             = require('./emailFormatter');
 
 // ── Template renderer ─────────────────────────────────────────────────────────
 function renderTemplate(template, prospect, account) {
@@ -257,6 +258,8 @@ const SequenceStepFirer = {
             // ── Fetch sender for signature + display_name ─────────────────
             // Client sender if the prospect belongs to a client, else rep's sender.
             // Non-fatal: draft is still created without a signature if nothing connected.
+            // NOTE: body stored in DB stays as plain text so the editor renders it
+            // correctly. plainTextToHtml() is applied at send time only.
             const sender = await resolveSender(client, enrollment.org_id, enrollment.enrolled_by, clientId);
 
             if (sender?.signature) {
@@ -333,8 +336,10 @@ const SequenceStepFirer = {
                 sender.emails_sent_today = 0;
               }
 
-              // Append signature so the sent copy matches what a rep would see
-              const sendBody = appendSignature(body, sender.signature);
+              // Append signature, then convert plain text to HTML so paragraph
+              // breaks and line breaks render correctly in Gmail and Outlook.
+              const sendBodyPlain = appendSignature(body, sender.signature);
+              const sendBody      = plainTextToHtml(sendBodyPlain);
 
               // Dispatch via Gmail or Outlook
               try {

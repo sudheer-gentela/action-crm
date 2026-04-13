@@ -31,6 +31,7 @@
 const express = require('express');
 const { sendEmail: sendGmailEmail }   = require('../services/googleService');
 const { sendEmail: sendOutlookEmail } = require('../services/outlookService');
+const { plainTextToHtml }             = require('../services/emailFormatter');
 const router  = express.Router();
 
 const authenticateToken = require('../middleware/auth.middleware');
@@ -791,7 +792,10 @@ router.post('/drafts/:logId/send', async (req, res) => {
       });
     }
 
-    // ── 5. Ensure signature is present (safety-net) ────────────────────────
+    // ── 5. Ensure signature is present (safety-net), then convert to HTML ────
+    // bodyToSend stays as plain text until the very last moment so the
+    // DB record (step 7) stores the plain-text version. htmlBody is what
+    // actually goes over the wire to Gmail / Outlook.
     let bodyToSend = draft.body || '';
     if (sender.signature) {
       const trimmedSig = sender.signature.trim();
@@ -799,6 +803,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
         bodyToSend = bodyToSend + `\n\n${trimmedSig}`;
       }
     }
+    const htmlBody = plainTextToHtml(bodyToSend);
 
     // ── 6. Send via Gmail or Outlook ───────────────────────────────────────
     let sendError = null;
@@ -807,7 +812,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
         await sendGmailEmail(req.user.userId, {
           to:           prospect.email,
           subject:      draft.subject,
-          body:         bodyToSend,
+          body:         htmlBody,
           isHtml:       true,
           senderEmail:  sender.email,
           accessToken:  sender.access_token,
@@ -817,7 +822,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
         await sendOutlookEmail(req.user.userId, {
           to:      prospect.email,
           subject: draft.subject,
-          body:    bodyToSend,
+          body:    htmlBody,
           isHtml:  true,
         });
       }
