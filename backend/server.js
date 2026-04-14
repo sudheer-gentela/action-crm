@@ -306,6 +306,9 @@ app.use('/api/transcripts', require('./routes/transcripts.routes'));
 
 app.use('/api/action-config', actionConfigRoutes);
 
+// ─── Salesforce Integration (Phase 6) ─────────────────────────────────────────
+app.use('/api/salesforce', require('./routes/salesforce.routes'));
+
 
 
 

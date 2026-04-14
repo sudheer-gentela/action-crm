@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { apiService } from './apiService';
+import { apiService, salesforceAPI } from './apiService';
 import './ContactForm.css';
 
 function ContactForm({ contact, accounts: initialAccounts, onSubmit, onClose }) {
@@ -28,6 +28,13 @@ function ContactForm({ contact, accounts: initialAccounts, onSubmit, onClose }) 
   const [newAccount, setNewAccount] = useState({ name: '', domain: '', industry: '' });
   const [creatingAccount, setCreatingAccount] = useState(false);
   const [accountError, setAccountError] = useState('');
+  const [sfLockedFields, setSfLockedFields] = useState([]);
+
+  useEffect(() => {
+    salesforceAPI.getLockedFields('contact')
+      .then(r => setSfLockedFields(r.data || []))
+      .catch(() => {});
+  }, []);
 
   // Populate form if editing
   useEffect(() => {
@@ -190,6 +197,7 @@ function ContactForm({ contact, accounts: initialAccounts, onSubmit, onClose }) 
             <div className="form-group">
               <label htmlFor="email">
                 Email <span className="required">*</span>
+                {sfLockedFields.includes('email') && <span title="Managed by Salesforce" style={{ marginLeft: 6, fontSize: 11, color: '#0369a1' }}>🔒 SF</span>}
               </label>
               <input
                 type="email"
@@ -199,12 +207,17 @@ function ContactForm({ contact, accounts: initialAccounts, onSubmit, onClose }) 
                 onChange={handleChange}
                 className={errors.email ? 'error' : ''}
                 placeholder="contact@company.com"
+                disabled={sfLockedFields.includes('email')}
+                title={sfLockedFields.includes('email') ? 'Managed by Salesforce' : undefined}
               />
               {errors.email && <span className="error-message">{errors.email}</span>}
             </div>
 
             <div className="form-group">
-              <label htmlFor="phone">Phone</label>
+              <label htmlFor="phone">
+                Phone
+                {sfLockedFields.includes('phone') && <span title="Managed by Salesforce" style={{ marginLeft: 6, fontSize: 11, color: '#0369a1' }}>🔒 SF</span>}
+              </label>
               <input
                 type="tel"
                 id="phone"
@@ -213,6 +226,8 @@ function ContactForm({ contact, accounts: initialAccounts, onSubmit, onClose }) 
                 onChange={handleChange}
                 className={errors.phone ? 'error' : ''}
                 placeholder="+1-555-123-4567"
+                disabled={sfLockedFields.includes('phone')}
+                title={sfLockedFields.includes('phone') ? 'Managed by Salesforce' : undefined}
               />
               {errors.phone && <span className="error-message">{errors.phone}</span>}
             </div>
@@ -220,7 +235,10 @@ function ContactForm({ contact, accounts: initialAccounts, onSubmit, onClose }) 
 
           <div className="form-row">
             <div className="form-group">
-              <label htmlFor="title">Job Title</label>
+              <label htmlFor="title">
+                Job Title
+                {sfLockedFields.includes('title') && <span title="Managed by Salesforce" style={{ marginLeft: 6, fontSize: 11, color: '#0369a1' }}>🔒 SF</span>}
+              </label>
               <input
                 type="text"
                 id="title"
@@ -228,6 +246,8 @@ function ContactForm({ contact, accounts: initialAccounts, onSubmit, onClose }) 
                 value={formData.title}
                 onChange={handleChange}
                 placeholder="VP of Sales"
+                disabled={sfLockedFields.includes('title')}
+                title={sfLockedFields.includes('title') ? 'Managed by Salesforce' : undefined}
               />
             </div>
 

@@ -1395,6 +1395,7 @@ function SAPlatformSettings() {
       <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 24 }}>
         {[
           { id: 'email-filter', label: '📧 Email Filter Defaults' },
+          { id: 'integrations', label: '🔌 CRM Integrations' },
         ].map(t => (
           <button
             key={t.id}
@@ -1420,6 +1421,135 @@ function SAPlatformSettings() {
       </div>
 
       {subTab === 'email-filter' && <SAEmailFilterSettings />}
+      {subTab === 'integrations' && <SAPlatformIntegrations />}
+    </div>
+  );
+}
+
+// ── SAPlatformIntegrations ─────────────────────────────────────────────────────
+// Controls the global feature gates for CRM integrations.
+// SuperAdmin enables write-back capability here; Org Admins configure per-org.
+
+function SAPlatformIntegrations() {
+  const [writeBackEnabled, setWriteBackEnabled] = React.useState(false);
+  const [loading,  setLoading]  = React.useState(true);
+  const [saving,   setSaving]   = React.useState(false);
+  const [dirty,    setDirty]    = React.useState(false);
+  const [error,    setError]    = React.useState('');
+  const [success,  setSuccess]  = React.useState('');
+
+  React.useEffect(() => {
+    setLoading(true);
+    apiService.superAdmin.getPlatformSetting('sf_write_back_enabled')
+      .then(r => {
+        setWriteBackEnabled(r.data?.value?.enabled || false);
+        setDirty(false);
+      })
+      .catch(() => setWriteBackEnabled(false))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true); setError(''); setSuccess('');
+    try {
+      await apiService.superAdmin.updatePlatformSetting('sf_write_back_enabled', { enabled: writeBackEnabled });
+      setSuccess('Integration settings saved ✓');
+      setTimeout(() => setSuccess(''), 4000);
+      setDirty(false);
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to save');
+    } finally { setSaving(false); }
+  };
+
+  if (loading) return <div className="sa-loading">Loading integration settings…</div>;
+
+  return (
+    <div>
+      <div className="sa-warning-box" style={{ marginBottom: 20 }}>
+        <strong>⚠️ Platform-wide effect</strong> — These settings control what Org Admins are
+        allowed to configure. Enabling write-back here does not turn it on for any org —
+        each Org Admin must enable it separately in their Salesforce settings.
+      </div>
+
+      {error   && <div className="sa-alert sa-alert--error">⚠️ {error}<button onClick={() => setError('')}>✕</button></div>}
+      {success && <div className="sa-alert sa-alert--success">✅ {success}</div>}
+
+      {/* Salesforce section */}
+      <div className="sa-card" style={{ marginBottom: 16 }}>
+        <h3 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 700, color: '#111827' }}>
+          ☁️ Salesforce
+        </h3>
+        <p style={{ margin: '0 0 16px', fontSize: 13, color: '#6b7280' }}>
+          Controls what Salesforce features Org Admins can configure.
+        </p>
+
+        {/* Write-back toggle */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 8 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#111827' }}>
+              Enable Salesforce write-back capability
+            </div>
+            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2, lineHeight: 1.5 }}>
+              When on, Org Admins can configure GoWarm to push completed actions back to
+              Salesforce as Tasks. Off by default — each org still needs to enable it separately.
+            </div>
+          </div>
+          <div
+            style={{
+              width: 44, height: 24, borderRadius: 12, flexShrink: 0, marginLeft: 20,
+              background: writeBackEnabled ? '#1A3A5C' : '#d1d5db',
+              position: 'relative', cursor: 'pointer', transition: 'background 0.2s',
+            }}
+            onClick={() => { setWriteBackEnabled(p => !p); setDirty(true); }}
+          >
+            <div style={{
+              position: 'absolute', top: 3,
+              left: writeBackEnabled ? 23 : 3,
+              width: 18, height: 18, borderRadius: '50%', background: '#fff',
+              transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+            }} />
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12, padding: '10px 14px', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 7, fontSize: 12, color: '#0369a1', lineHeight: 1.5 }}>
+          <strong>How write-back works:</strong> Completed GoWarm actions on deals/contacts that
+          have a Salesforce ID are pushed as SF Tasks nightly (04:30 UTC) or in real-time
+          depending on the org's configuration. A <code style={{ background: '#e0f2fe', padding: '1px 4px', borderRadius: 3 }}>GoWarm_Source__c</code> custom field
+          on SF Tasks prevents echo loops — GoWarm won't re-import tasks it wrote.
+        </div>
+      </div>
+
+      {/* Future CRMs placeholder */}
+      <div className="sa-card" style={{ marginBottom: 20, opacity: 0.6 }}>
+        <h3 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 700, color: '#6b7280' }}>
+          🔜 HubSpot / Zoho / Pipedrive
+        </h3>
+        <p style={{ margin: 0, fontSize: 13, color: '#9ca3af' }}>
+          Coming in future phases. These integrations will use the same <code>external_refs</code> schema
+          as Salesforce — no DB changes required when they launch.
+        </p>
+      </div>
+
+      <div style={{ display: 'flex', gap: 10 }}>
+        <button
+          className="sa-btn-primary"
+          onClick={handleSave}
+          disabled={saving || !dirty}
+        >
+          {saving ? 'Saving…' : 'Save integration settings'}
+        </button>
+        <button
+          className="sa-btn-secondary"
+          onClick={() => {
+            apiService.superAdmin.getPlatformSetting('sf_write_back_enabled')
+              .then(r => { setWriteBackEnabled(r.data?.value?.enabled || false); setDirty(false); })
+              .catch(() => {});
+          }}
+          disabled={saving || !dirty}
+        >
+          Discard changes
+        </button>
+      </div>
     </div>
   );
 }

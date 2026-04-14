@@ -10,6 +10,7 @@ import WorkflowCanvas from './WorkflowCanvas';
 import ExecutionLog from './ExecutionLog';
 import OAEmailSettings from './OAEmailSettings';
 import OAMeetingSettings from './OAMeetingSettings';
+import SalesforceConnect from './SalesforceConnect';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -69,6 +70,7 @@ const STATIC_NAV_GROUPS = [
     label: 'General',
     items: [
       { id: 'integrations', icon: '🔌', label: 'Integrations' },
+      { id: 'salesforce',   icon: '☁️', label: 'Salesforce' },
       { id: 'settings', icon: '⚙️', label: 'Org Settings' },
     ],
   },
@@ -133,6 +135,7 @@ const TAB_META = {
   integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },
   'integrations-overview':{ title: 'Email & Calendar', desc: 'Manage Microsoft and Google connections for your team' },
   'integrations-meeting': { title: 'Meeting & Transcript Integrations', desc: 'Configure transcript providers — Zoom, Teams, Fireflies, and more' },
+  salesforce:    { title: 'Salesforce Integration', desc: 'Sync contacts, accounts, deals, and leads with Salesforce. Configure stage/field mapping and write-back settings.' },
   settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
 
 };
@@ -537,6 +540,7 @@ export default function OrgAdminView() {
             {tab === 'email-settings'   && <OAEmailSettings />}
             {tab === 'team-dimensions'  && <OATeamDimensions />}
             {(tab === 'integrations' || tab === 'integrations-overview') && <OAIntegrations orgId={orgId} />}
+            {tab === 'salesforce'        && <OASalesforceSettings />}
             {tab === 'settings'         && <OASettings />}
           </div>
         </div>
@@ -4169,6 +4173,28 @@ function OAPlaybooks() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+// OASalesforceSettings — Salesforce integration settings tab
+// ─────────────────────────────────────────────────────────────────
+
+function OASalesforceSettings() {
+  return (
+    <div className="oa-panel">
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: '0 0 4px', fontSize: 17, fontWeight: 700, color: '#111827' }}>
+          ☁️ Salesforce Integration
+        </h2>
+        <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
+          Connect your Salesforce org to sync contacts, accounts, deals, and leads.
+          Records sync nightly at 04:00 UTC. Stage and field mapping is configurable per org.
+        </p>
+      </div>
+      <SalesforceConnect />
     </div>
   );
 }

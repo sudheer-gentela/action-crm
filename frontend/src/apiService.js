@@ -850,3 +850,61 @@ export const syncAPI = {
 };
 
 export default api;
+
+// ─── Salesforce Integration API ───────────────────────────────────────────────
+export const salesforceAPI = {
+  getAuthUrl: async () => {
+    const response = await fetch(`${API_BASE_URL}/salesforce/connect`, { headers: getAuthHeaders() });
+    if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error || 'Failed to get SF auth URL'); }
+    return response.json();
+  },
+  getStatus: async () => {
+    const response = await fetch(`${API_BASE_URL}/salesforce/status`, { headers: getAuthHeaders() });
+    if (!response.ok) throw new Error('Failed to get SF status');
+    return response.json();
+  },
+  disconnect: async () => {
+    const response = await fetch(`${API_BASE_URL}/salesforce/disconnect`, { method: 'POST', headers: getAuthHeaders() });
+    if (!response.ok) throw new Error('Failed to disconnect SF');
+    return response.json();
+  },
+  triggerSync: async () => {
+    const response = await fetch(`${API_BASE_URL}/salesforce/trigger`, { method: 'POST', headers: getAuthHeaders() });
+    if (!response.ok) throw new Error('Failed to trigger SF sync');
+    return response.json();
+  },
+  getSettings: async () => {
+    const response = await fetch(`${API_BASE_URL}/salesforce/settings`, { headers: getAuthHeaders() });
+    if (!response.ok) throw new Error('Failed to get SF settings');
+    return response.json();
+  },
+  updateSettings: async (settings) => {
+    const response = await fetch(`${API_BASE_URL}/salesforce/settings`, {
+      method: 'PATCH', headers: getAuthHeaders(), body: JSON.stringify(settings),
+    });
+    if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error || 'Failed to save SF settings'); }
+    return response.json();
+  },
+  describeObject: async (sfObject) => {
+    const response = await fetch(`${API_BASE_URL}/salesforce/describe/${sfObject}`, { headers: getAuthHeaders() });
+    if (!response.ok) throw new Error(`Failed to describe ${sfObject}`);
+    return response.json();
+  },
+  getIdentityQueue: async () => {
+    const response = await fetch(`${API_BASE_URL}/salesforce/identity-queue`, { headers: getAuthHeaders() });
+    if (!response.ok) throw new Error('Failed to get identity queue');
+    return response.json();
+  },
+  resolveIdentity: async (id, action) => {
+    const response = await fetch(`${API_BASE_URL}/salesforce/identity-queue/${id}/resolve`, {
+      method: 'POST', headers: getAuthHeaders(), body: JSON.stringify({ action }),
+    });
+    if (!response.ok) throw new Error('Failed to resolve identity');
+    return response.json();
+  },
+  getLockedFields: async (entity) => {
+    const response = await fetch(`${API_BASE_URL}/salesforce/locked-fields/${entity}`, { headers: getAuthHeaders() });
+    if (!response.ok) return { data: [] };
+    return response.json();
+  },
+};

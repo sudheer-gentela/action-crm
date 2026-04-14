@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './DealForm.css';
-import { apiService } from './apiService';
+import { apiService, salesforceAPI } from './apiService';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
@@ -35,6 +35,14 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
   const [showMakeDefault, setShowMakeDefault]   = useState(false);
   const [stages, setStages]                     = useState(FALLBACK_STAGES);
   const [stagesLoading, setStagesLoading]       = useState(true);
+  const [sfLockedFields, setSfLockedFields]     = useState([]);
+
+  // Load SF locked fields (sf_primary mode — these become read-only)
+  useEffect(() => {
+    salesforceAPI.getLockedFields('deal')
+      .then(r => setSfLockedFields(r.data || []))
+      .catch(() => {});
+  }, []);
 
   // Populate form if editing an existing deal
   useEffect(() => {
@@ -181,6 +189,7 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
           <div className="form-group">
             <label htmlFor="name">
               Deal Name <span className="required">*</span>
+              {sfLockedFields.includes('name') && <span title="Managed by Salesforce" style={{ marginLeft: 6, fontSize: 11, color: '#0369a1' }}>🔒 SF</span>}
             </label>
             <input
               type="text"
@@ -190,6 +199,8 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
               onChange={handleChange}
               placeholder="e.g., Acme Corp Enterprise Deal"
               className={errors.name ? 'error' : ''}
+              disabled={sfLockedFields.includes('name')}
+              title={sfLockedFields.includes('name') ? 'Managed by Salesforce' : undefined}
             />
             {errors.name && <span className="error-message">{errors.name}</span>}
           </div>
@@ -234,6 +245,8 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
                   min="0"
                   step="0.01"
                   className={errors.value ? 'error' : ''}
+                  disabled={sfLockedFields.includes('value')}
+                  title={sfLockedFields.includes('value') ? 'Managed by Salesforce' : undefined}
                 />
               </div>
               {errors.value && <span className="error-message">{errors.value}</span>}
@@ -258,13 +271,16 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
           {/* Stage and Health */}
           <div className="form-row">
             <div className="form-group">
-              <label htmlFor="stage">Deal Stage</label>
+              <label htmlFor="stage">
+                Deal Stage
+                {sfLockedFields.includes('stage') && <span title="Managed by Salesforce" style={{ marginLeft: 6, fontSize: 11, color: '#0369a1' }}>🔒 SF</span>}
+              </label>
               <select
                 id="stage"
                 name="stage"
                 value={formData.stage}
                 onChange={handleChange}
-                disabled={stagesLoading}
+                disabled={stagesLoading || sfLockedFields.includes('stage')}
               >
                 {stages.map(s => (
                   <option key={s.key} value={s.key}>
@@ -294,6 +310,7 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
           <div className="form-group">
             <label htmlFor="expected_close_date">
               Expected Close Date <span className="required">*</span>
+              {sfLockedFields.includes('expected_close_date') && <span title="Managed by Salesforce" style={{ marginLeft: 6, fontSize: 11, color: '#0369a1' }}>🔒 SF</span>}
             </label>
             <input
               type="date"
@@ -302,6 +319,8 @@ function DealForm({ deal, onSubmit, onClose, accounts }) {
               value={formData.expected_close_date}
               onChange={handleChange}
               className={errors.expected_close_date ? 'error' : ''}
+              disabled={sfLockedFields.includes('expected_close_date')}
+              title={sfLockedFields.includes('expected_close_date') ? 'Managed by Salesforce' : undefined}
             />
             {errors.expected_close_date && (
               <span className="error-message">{errors.expected_close_date}</span>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './AccountForm.css';
+import { salesforceAPI } from './apiService';
 
 function AccountForm({ account, onSubmit, onClose }) {
   const [formData, setFormData] = useState({
@@ -13,6 +14,13 @@ function AccountForm({ account, onSubmit, onClose }) {
 
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [sfLockedFields, setSfLockedFields] = useState([]);
+
+  useEffect(() => {
+    salesforceAPI.getLockedFields('account')
+      .then(r => setSfLockedFields(r.data || []))
+      .catch(() => {});
+  }, []);
 
   // Populate form if editing
   useEffect(() => {
@@ -89,6 +97,7 @@ function AccountForm({ account, onSubmit, onClose }) {
           <div className="form-group">
             <label htmlFor="name">
               Company Name <span className="required">*</span>
+              {sfLockedFields.includes('name') && <span title="Managed by Salesforce" style={{ marginLeft: 6, fontSize: 11, color: '#0369a1' }}>🔒 SF</span>}
             </label>
             <input
               type="text"
@@ -98,6 +107,8 @@ function AccountForm({ account, onSubmit, onClose }) {
               onChange={handleChange}
               placeholder="e.g., Acme Corporation"
               className={errors.name ? 'error' : ''}
+              disabled={sfLockedFields.includes('name')}
+              title={sfLockedFields.includes('name') ? 'Managed by Salesforce' : undefined}
             />
             {errors.name && <span className="error-message">{errors.name}</span>}
           </div>
@@ -105,7 +116,10 @@ function AccountForm({ account, onSubmit, onClose }) {
           {/* Domain and Industry */}
           <div className="form-row">
             <div className="form-group">
-              <label htmlFor="domain">Website Domain</label>
+              <label htmlFor="domain">
+                Website Domain
+                {sfLockedFields.includes('domain') && <span title="Managed by Salesforce" style={{ marginLeft: 6, fontSize: 11, color: '#0369a1' }}>🔒 SF</span>}
+              </label>
               <input
                 type="text"
                 id="domain"
@@ -114,17 +128,23 @@ function AccountForm({ account, onSubmit, onClose }) {
                 onChange={handleChange}
                 placeholder="acmecorp.com"
                 className={errors.domain ? 'error' : ''}
+                disabled={sfLockedFields.includes('domain')}
+                title={sfLockedFields.includes('domain') ? 'Managed by Salesforce' : undefined}
               />
               {errors.domain && <span className="error-message">{errors.domain}</span>}
             </div>
 
             <div className="form-group">
-              <label htmlFor="industry">Industry</label>
+              <label htmlFor="industry">
+                Industry
+                {sfLockedFields.includes('industry') && <span title="Managed by Salesforce" style={{ marginLeft: 6, fontSize: 11, color: '#0369a1' }}>🔒 SF</span>}
+              </label>
               <select
                 id="industry"
                 name="industry"
                 value={formData.industry}
                 onChange={handleChange}
+                disabled={sfLockedFields.includes('industry')}
               >
                 <option value="">Select industry...</option>
                 <option value="Technology">Technology</option>

@@ -678,6 +678,7 @@ function ProspectCreateModal({ onSave, onClose }) {
   const [playbooks, setPlaybooks]         = useState([]);
   const [defaultPlaybook, setDefaultPlaybook] = useState(null);
   const [showMakeDefault, setShowMakeDefault] = useState(false);
+  const [sfLockedFields, setSfLockedFields]   = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -688,6 +689,13 @@ function ProspectCreateModal({ onSave, onClose }) {
         setDefaultPlaybook(all.find(pb => pb.is_default) || null);
       } catch {
         setPlaybooks([]);
+      }
+      // Load SF locked fields for prospects (sf_primary mode)
+      try {
+        const sfr = await apiFetch('/salesforce/locked-fields/prospect');
+        setSfLockedFields(sfr.data || []);
+      } catch {
+        // Not connected or not in sf_primary — no locks
       }
     })();
   }, []);
@@ -731,15 +739,23 @@ function ProspectCreateModal({ onSave, onClose }) {
         </div>
         <form onSubmit={handleSubmit} className="pv-form">
           <div className="pv-form-section">
-            <h4>Person</h4>
+            <h4>
+              Person
+              {sfLockedFields.length > 0 && <span style={{ fontSize: 11, color: '#0369a1', fontWeight: 400, marginLeft: 8 }}>🔒 Some fields managed by Salesforce</span>}
+            </h4>
             <div className="pv-form-row">
-              <input placeholder="First name *" value={form.firstName} onChange={e => set('firstName', e.target.value)} required />
-              <input placeholder="Last name *" value={form.lastName} onChange={e => set('lastName', e.target.value)} required />
+              <input placeholder="First name *" value={form.firstName} onChange={e => set('firstName', e.target.value)} required
+                disabled={sfLockedFields.includes('first_name')} title={sfLockedFields.includes('first_name') ? 'Managed by Salesforce' : undefined} />
+              <input placeholder="Last name *" value={form.lastName} onChange={e => set('lastName', e.target.value)} required
+                disabled={sfLockedFields.includes('last_name')} title={sfLockedFields.includes('last_name') ? 'Managed by Salesforce' : undefined} />
             </div>
-            <input placeholder="Email" value={form.email} onChange={e => set('email', e.target.value)} type="email" />
-            <input placeholder="Job title" value={form.title} onChange={e => set('title', e.target.value)} />
+            <input placeholder="Email" value={form.email} onChange={e => set('email', e.target.value)} type="email"
+              disabled={sfLockedFields.includes('email')} title={sfLockedFields.includes('email') ? 'Managed by Salesforce' : undefined} />
+            <input placeholder="Job title" value={form.title} onChange={e => set('title', e.target.value)}
+              disabled={sfLockedFields.includes('title')} title={sfLockedFields.includes('title') ? 'Managed by Salesforce' : undefined} />
             <div className="pv-form-row">
-              <input placeholder="Phone" value={form.phone} onChange={e => set('phone', e.target.value)} />
+              <input placeholder="Phone" value={form.phone} onChange={e => set('phone', e.target.value)}
+                disabled={sfLockedFields.includes('phone')} title={sfLockedFields.includes('phone') ? 'Managed by Salesforce' : undefined} />
               <input placeholder="LinkedIn URL" value={form.linkedinUrl} onChange={e => set('linkedinUrl', e.target.value)} />
             </div>
             <input placeholder="Location" value={form.location} onChange={e => set('location', e.target.value)} />
@@ -748,11 +764,14 @@ function ProspectCreateModal({ onSave, onClose }) {
           <div className="pv-form-section">
             <h4>Company</h4>
             <div className="pv-form-row">
-              <input placeholder="Company name" value={form.companyName} onChange={e => set('companyName', e.target.value)} />
-              <input placeholder="Domain (e.g. acme.com)" value={form.companyDomain} onChange={e => set('companyDomain', e.target.value)} />
+              <input placeholder="Company name" value={form.companyName} onChange={e => set('companyName', e.target.value)}
+                disabled={sfLockedFields.includes('company_name')} title={sfLockedFields.includes('company_name') ? 'Managed by Salesforce' : undefined} />
+              <input placeholder="Domain (e.g. acme.com)" value={form.companyDomain} onChange={e => set('companyDomain', e.target.value)}
+                disabled={sfLockedFields.includes('company_domain')} title={sfLockedFields.includes('company_domain') ? 'Managed by Salesforce' : undefined} />
             </div>
             <div className="pv-form-row">
-              <select value={form.companySize} onChange={e => set('companySize', e.target.value)}>
+              <select value={form.companySize} onChange={e => set('companySize', e.target.value)}
+                disabled={sfLockedFields.includes('company_size')}>
                 <option value="">Company size</option>
                 <option value="1-10">1–10</option>
                 <option value="11-50">11–50</option>
@@ -762,7 +781,8 @@ function ProspectCreateModal({ onSave, onClose }) {
                 <option value="1001-5000">1,001–5,000</option>
                 <option value="5001+">5,001+</option>
               </select>
-              <input placeholder="Industry" value={form.companyIndustry} onChange={e => set('companyIndustry', e.target.value)} />
+              <input placeholder="Industry" value={form.companyIndustry} onChange={e => set('companyIndustry', e.target.value)}
+                disabled={sfLockedFields.includes('company_industry')} title={sfLockedFields.includes('company_industry') ? 'Managed by Salesforce' : undefined} />
             </div>
           </div>
 
