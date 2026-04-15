@@ -3829,8 +3829,9 @@ function ProspectingInbox({ scope }) {
                   const wasOpened  = !!email.openedAt;
                   const wasReplied = !!email.repliedAt;
                   return (
+                    <React.Fragment key={email.id}>
                     <tr
-                      key={email.id}
+                      key={`${email.id}-main`}
                       onClick={() => setExpandedId(expandedId === email.id ? null : email.id)}
                       style={{
                         borderBottom: expandedId === email.id ? 'none' : '1px solid #f3f4f6',
@@ -3925,13 +3926,11 @@ function ProspectingInbox({ scope }) {
                       <tr key={`${email.id}-body`} style={{ borderBottom: '1px solid #f3f4f6', background: isReply ? '#f0fdf4' : '#fafafa' }}>
                         <td colSpan={6} style={{ padding: '0 14px 14px 14px' }}>
                           <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                            {/* Meta row */}
                             <div style={{ display: 'flex', gap: 16, fontSize: 11, color: '#6b7280', flexWrap: 'wrap' }}>
-                              <span><strong>From:</strong> {email.fromAddress || (sender.email || '')}</span>
-                              <span><strong>To:</strong> {email.toAddress || (prospect.email || '')}</span>
+                              <span><strong>From:</strong> {email.fromAddress || sender.email || ''}</span>
+                              <span><strong>To:</strong> {email.toAddress || prospect.email || ''}</span>
                               {email.sentAt && <span><strong>Date:</strong> {new Date(email.sentAt).toLocaleString()}</span>}
                             </div>
-                            {/* Body */}
                             <div style={{
                               background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
                               padding: '12px 16px', fontSize: 13, color: '#374151',
@@ -3947,7 +3946,8 @@ function ProspectingInbox({ scope }) {
                         </td>
                       </tr>
                     )}
-                  );
+                  </React.Fragment>
+                );
                 })}
               </tbody>
             </table>
