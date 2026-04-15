@@ -916,11 +916,17 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   }, [prospectId]);
 
   const handleConvertAndSendProspectDraft = async (draft) => {
+    const edit = prospectDraftEdits[draft.id] || {};
+    const subject = edit.subject !== undefined ? edit.subject : draft.subject;
+    if (!subject) {
+      setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], error: 'Please enter a subject line before sending.' } }));
+      return;
+    }
     setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
     try {
       await apiFetch(`/sequences/drafts/${draft.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ channel: 'email' }),
+        body: JSON.stringify({ channel: 'email', subject }),
       });
       await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
       setProspectDrafts(prev => prev.filter(d => d.id !== draft.id));
@@ -2331,17 +2337,33 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
             <>
               {/* Banner: shown when the step has since been changed to email */}
               {onConvertAndSend && (
-                <div style={{ padding: '10px 12px', background: '#fffbeb', borderRadius: 8, border: '1px solid #fcd34d', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                <div style={{ padding: '10px 12px', background: '#fffbeb', borderRadius: 8, border: '1px solid #fcd34d', display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <div style={{ fontSize: 12, color: '#92400e' }}>
                     ⚡ This step was changed to <strong>Email</strong> after this draft was created. You can send it as an email now, or complete the LinkedIn action manually.
                   </div>
-                  <button
-                    onClick={onConvertAndSend}
-                    disabled={sending}
-                    style={{ flexShrink: 0, padding: '6px 14px', borderRadius: 7, border: 'none', background: sending ? '#9ca3af' : '#d97706', color: '#fff', fontSize: 12, fontWeight: 600, cursor: sending ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
-                  >
-                    {sending ? '⏳ Sending…' : '📤 Send as Email'}
-                  </button>
+                  {!subject && (
+                    <div>
+                      <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#92400e', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                        Subject required to send as email
+                      </label>
+                      <input
+                        value={subject}
+                        onChange={e => onSubjectChange(e.target.value)}
+                        placeholder="Enter email subject…"
+                        style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1.5px solid #fcd34d', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', background: '#fff' }}
+                      />
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={onConvertAndSend}
+                      disabled={sending || !subject}
+                      title={!subject ? 'Enter a subject line first' : ''}
+                      style={{ flexShrink: 0, padding: '6px 14px', borderRadius: 7, border: 'none', background: (sending || !subject) ? '#9ca3af' : '#d97706', color: '#fff', fontSize: 12, fontWeight: 600, cursor: (sending || !subject) ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
+                    >
+                      {sending ? '⏳ Sending…' : '📤 Send as Email'}
+                    </button>
+                  </div>
                 </div>
               )}
               <div style={{ padding: '10px 12px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd' }}>
@@ -2560,12 +2582,18 @@ function SequencesView({ prospects }) {
   }, []);
 
   const handleConvertAndSendDraft = async (draft) => {
+    const edit = draftEdits[draft.id] || {};
+    const subject = edit.subject !== undefined ? edit.subject : draft.subject;
+    if (!subject) {
+      setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], error: 'Please enter a subject line before sending.' } }));
+      return;
+    }
     setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
     try {
-      // Patch channel to email, then send
+      // Patch channel to email and ensure subject is saved, then send
       await apiFetch(`/sequences/drafts/${draft.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ channel: 'email' }),
+        body: JSON.stringify({ channel: 'email', subject }),
       });
       await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
       setDrafts(prev => prev.filter(d => d.id !== draft.id));
