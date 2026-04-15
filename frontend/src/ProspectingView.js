@@ -1,5 +1,6 @@
 // ProspectingView v1.2 — Sequences feature added
 import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
+import apiFetch from './apiFetch';
 import OutreachComposer from './OutreachComposer';
 import CoverageScorecard from './CoverageScorecard';
 import StrapPanel from './StrapPanel';
@@ -79,20 +80,8 @@ function getLiDotColor(status) {
 
 const API = process.env.REACT_APP_API_URL || '';
 
-function apiFetch(path, options = {}) {
-  const token = localStorage.getItem('token') || localStorage.getItem('authToken');
-  return fetch(`${API}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {}),
-    },
-    ...options,
-  }).then(r => {
-    if (!r.ok) return r.json().then(e => Promise.reject(new Error(e?.error?.message || r.statusText)));
-    return r.json();
-  });
-}
+// Session-aware fetch — imported from shared utility (handles JWT expiry + silent refresh)
+// See src/apiFetch.js for full documentation.
 
 function formatDate(d) {
   if (!d) return '—';
@@ -880,6 +869,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   }, [prospectId]);
 
   const handleSendProspectDraft = async (draft) => {
+    if (draft.channel && draft.channel !== 'email') { console.error(`handleSendProspectDraft called on ${draft.channel} draft — blocked`); return; }
     const edit = prospectDraftEdits[draft.id] || {};
     setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
     try {
@@ -2488,6 +2478,7 @@ function SequencesView({ prospects }) {
   }, []);
 
   const handleSendDraft = async (draft) => {
+    if (draft.channel && draft.channel !== 'email') { console.error(`handleSendDraft called on ${draft.channel} draft — blocked`); return; }
     const edit = draftEdits[draft.id] || {};
     setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
     try {

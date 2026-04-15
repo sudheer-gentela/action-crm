@@ -731,6 +731,20 @@ router.post('/drafts/:logId/send', async (req, res) => {
     }
     const prospect = prospectRes.rows[0];
 
+    // ── Channel guard — only email drafts can be sent via this endpoint ───
+    // LinkedIn / call / task drafts must be completed via POST /complete,
+    // not this endpoint. Calling Send Now on a non-email draft would silently
+    // do nothing (no matching provider branch) but still mark the log as
+    // 'sent' and advance the enrollment — a ghost send.
+    if (draft.channel !== 'email') {
+      return res.status(400).json({
+        error: {
+          message: `This is a ${draft.channel} step — use "Mark as Done" once you have completed the action on ${draft.channel === 'linkedin' ? 'LinkedIn' : 'the appropriate channel'}.`,
+          code: 'WRONG_CHANNEL',
+        },
+      });
+    }
+
     if (!prospect.email) {
       return res.status(400).json({ error: { message: 'Prospect has no email address' } });
     }
