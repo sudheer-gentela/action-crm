@@ -86,7 +86,7 @@ async function resolveSender(dbClient, orgId, userId, clientId) {
   // ── 1. Client sender (Model B) ──────────────────────────────────────────────
   if (clientId) {
     const r = await dbClient.query(
-      `SELECT id, email, provider, display_name, signature,
+      `SELECT id, email, provider, display_name, signature, linkedin_signature,
               access_token, refresh_token,
               emails_sent_today, last_reset_at
          FROM prospecting_sender_accounts
@@ -111,7 +111,7 @@ async function resolveSender(dbClient, orgId, userId, clientId) {
 
   // ── 2. Rep / personal sender (original path) ────────────────────────────────
   const r = await dbClient.query(
-    `SELECT id, email, provider, display_name, signature,
+    `SELECT id, email, provider, display_name, signature, linkedin_signature,
             access_token, refresh_token,
             emails_sent_today, last_reset_at
        FROM prospecting_sender_accounts
@@ -129,14 +129,26 @@ async function resolveSender(dbClient, orgId, userId, clientId) {
 }
 
 // ── Append signature helper ───────────────────────────────────────────────────
-// Avoids double-appending if the signature text is already present in the body
-// (shouldn't happen on first draft, but defensive).
+// Appends signature to body, guarding against doubles in two ways:
+//   1. Exact match — the current signature text is already in the body
+//   2. First-line match — the body already ends with the first line of the
+//      signature (catches cases where the signature changed since the template
+//      was written, e.g. "www.gowarmcrm.com" → "gowarmcrm.com")
 function appendSignature(body, signature) {
   if (!signature) return body;
   const trimmedSig = signature.trim();
   if (!trimmedSig) return body;
-  if (body && body.includes(trimmedSig)) return body; // already present
-  return (body || '') + `\n\n${trimmedSig}`;
+  if (!body) return trimmedSig;
+
+  // Guard 1: exact match
+  if (body.includes(trimmedSig)) return body;
+
+  // Guard 2: first line of signature already appears near the end of the body.
+  // This catches a changed/reformatted signature already baked into the template.
+  const sigFirstLine = trimmedSig.split('\n')[0].trim();
+  if (sigFirstLine && body.includes(sigFirstLine)) return body;
+
+  return body + `\n\n${trimmedSig}`;
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -262,8 +274,17 @@ const SequenceStepFirer = {
             // correctly. plainTextToHtml() is applied at send time only.
             const sender = await resolveSender(client, enrollment.org_id, enrollment.enrolled_by, clientId);
 
-            if (sender?.signature) {
-              body = appendSignature(body, sender.signature);
+            // Channel-aware signature:
+            //   email    → sender.signature
+            //   linkedin → sender.linkedin_signature if set, else sender.signature
+            //   call/task → no signature
+            if (sender) {
+              if (step.channel === 'email' && sender.signature) {
+                body = appendSignature(body, sender.signature);
+              } else if (step.channel === 'linkedin') {
+                const liSig = sender.linkedin_signature || sender.signature;
+                if (liSig) body = appendSignature(body, liSig);
+              }
             }
 
             // Write draft — fired_at=NULL until rep sends
