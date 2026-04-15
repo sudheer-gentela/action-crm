@@ -1,6 +1,6 @@
 // ProspectingView v1.2 — Sequences feature added
 import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
-import apiFetch from './apiFetch';
+
 import OutreachComposer from './OutreachComposer';
 import CoverageScorecard from './CoverageScorecard';
 import StrapPanel from './StrapPanel';
@@ -80,8 +80,56 @@ function getLiDotColor(status) {
 
 const API = process.env.REACT_APP_API_URL || '';
 
-// Session-aware fetch — imported from shared utility (handles JWT expiry + silent refresh)
-// See src/apiFetch.js for full documentation.
+const API = process.env.REACT_APP_API_URL || '';
+
+let _refreshPromise = null;
+
+async function _refreshToken() {
+  if (_refreshPromise) return _refreshPromise;
+  _refreshPromise = fetch(`${API}/auth/refresh`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${localStorage.getItem('token') || localStorage.getItem('authToken')}`,
+    },
+  }).then(async r => {
+    if (!r.ok) throw new Error('refresh_failed');
+    const { token } = await r.json();
+    localStorage.setItem('token', token);
+    return token;
+  }).finally(() => { _refreshPromise = null; });
+  return _refreshPromise;
+}
+
+function apiFetch(path, options = {}, _isRetry = false) {
+  const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+  return fetch(`${API}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {}),
+    },
+  }).then(async r => {
+    if (r.ok) return r.json();
+    let errBody = {};
+    try { errBody = await r.json(); } catch (_) {}
+    const errMsg = errBody?.error?.message || r.statusText;
+    if (r.status === 403 && errMsg === 'Invalid or expired token' && !_isRetry) {
+      try {
+        await _refreshToken();
+        return apiFetch(path, options, true);
+      } catch {
+        localStorage.removeItem('token');
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+        return new Promise(() => {});
+      }
+    }
+    return Promise.reject(new Error(errMsg));
+  });
+}
 
 function formatDate(d) {
   if (!d) return '—';
