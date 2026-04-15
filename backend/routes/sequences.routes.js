@@ -863,6 +863,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
       return res.status(502).json({ error: { message: userMessage, code: isTokenError ? 'TOKEN_EXPIRED' : 'SEND_FAILED' } });
     }
 
+    const sendError = null; // send succeeded — no error
     await client.query('BEGIN');
 
     // ── 7. Save email to DB ────────────────────────────────────────────────
