@@ -182,51 +182,59 @@ async function sendEmail(userId, { to, subject, body, isHtml = false, accessToke
     let resolvedRefreshToken = refreshToken || undefined;
 
     if (senderEmail && refreshToken) {
-      // Check expiry from DB so we have the freshest expires_at
+      // Proactively refresh only when we KNOW the token is expired.
+      // If expires_at is NULL (older accounts or first connect before expiry tracking),
+      // treat it as still valid — the Gmail SDK will handle mid-call refresh automatically.
+      // This avoids false-positive "needs to be reconnected" errors on healthy accounts.
       try {
         const { pool } = require('../config/database');
         const expiryRes = await pool.query(
           `SELECT expires_at FROM prospecting_sender_accounts WHERE email = $1 LIMIT 1`,
           [senderEmail]
         );
-        const expiresAt = expiryRes.rows[0]?.expires_at
-          ? new Date(expiryRes.rows[0].expires_at).getTime()
-          : 0;
-        const isExpired = expiresAt < Date.now() + 5 * 60 * 1000; // 5-min buffer
+        const rawExpiry = expiryRes.rows[0]?.expires_at;
 
-        if (isExpired) {
-          console.log(`🔄 Sender account ${senderEmail} token expired — refreshing proactively`);
-          const params = new URLSearchParams({
-            client_id:     process.env.GOOGLE_CLIENT_ID,
-            client_secret: process.env.GOOGLE_CLIENT_SECRET,
-            refresh_token: refreshToken,
-            grant_type:    'refresh_token',
-          });
-          const response = await require('axios').post(
-            'https://oauth2.googleapis.com/token',
-            params.toString(),
-            { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-          );
-          resolvedAccessToken = response.data.access_token;
-          const newExpiry = new Date(Date.now() + response.data.expires_in * 1000);
-          // Persist refreshed token
-          await pool.query(
-            `UPDATE prospecting_sender_accounts
-                SET access_token = $1, expires_at = $2, updated_at = CURRENT_TIMESTAMP
-              WHERE email = $3`,
-            [resolvedAccessToken, newExpiry, senderEmail]
-          );
-          console.log(`✅ Sender account ${senderEmail} token refreshed`);
+        // Only attempt proactive refresh when expires_at is known AND expired
+        if (rawExpiry) {
+          const expiresAt = new Date(rawExpiry).getTime();
+          const isExpired = expiresAt < Date.now() + 5 * 60 * 1000; // 5-min buffer
+
+          if (isExpired) {
+            console.log(`🔄 Sender account ${senderEmail} token expires at ${rawExpiry} — refreshing proactively`);
+            const params = new URLSearchParams({
+              client_id:     process.env.GOOGLE_CLIENT_ID,
+              client_secret: process.env.GOOGLE_CLIENT_SECRET,
+              refresh_token: refreshToken,
+              grant_type:    'refresh_token',
+            });
+            const response = await require('axios').post(
+              'https://oauth2.googleapis.com/token',
+              params.toString(),
+              { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+            );
+            resolvedAccessToken = response.data.access_token;
+            const newExpiry = new Date(Date.now() + response.data.expires_in * 1000);
+            await pool.query(
+              `UPDATE prospecting_sender_accounts
+                  SET access_token = $1, expires_at = $2, updated_at = CURRENT_TIMESTAMP
+                WHERE email = $3`,
+              [resolvedAccessToken, newExpiry, senderEmail]
+            );
+            console.log(`✅ Sender account ${senderEmail} token refreshed, new expiry: ${newExpiry}`);
+          }
+        } else {
+          console.log(`ℹ️  Sender account ${senderEmail} has no expires_at — skipping proactive refresh, SDK will handle it`);
         }
       } catch (refreshErr) {
-        // If refresh fails (revoked/invalid_grant), throw a clear actionable error
-        // so the caller returns a 502 and the draft stays in the queue.
-        const isRevoked = /invalid_grant|Token has been expired or revoked/i.test(refreshErr.response?.data?.error || refreshErr.message);
+        // Only block the send on confirmed revocation (invalid_grant).
+        // Network blips, DB errors, etc. fall through — let the SDK attempt with current token.
+        const isRevoked = /invalid_grant|Token has been expired or revoked/i.test(
+          refreshErr.response?.data?.error || refreshErr.message
+        );
         if (isRevoked) {
           throw new Error(`invalid_grant: sender account ${senderEmail} needs to be reconnected in Settings → Outreach.`);
         }
-        // Non-revocation errors (network blip etc.) — log and attempt with current token
-        console.warn(`⚠️  Sender token refresh failed for ${senderEmail}, attempting with current token:`, refreshErr.message);
+        console.warn(`⚠️  Proactive refresh failed for ${senderEmail} (non-fatal, attempting send anyway):`, refreshErr.message);
       }
     }
 

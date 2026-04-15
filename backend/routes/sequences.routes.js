@@ -854,7 +854,9 @@ router.post('/drafts/:logId/send', async (req, res) => {
     } catch (err) {
       console.error(`❌ Draft send failed for log ${req.params.logId} → ${prospect.email}:`, err.message);
       // Surface token expiry as a clear actionable message
-      const isTokenError = /invalid_grant|token.*expired|unauthorized|401/i.test(err.message);
+      // Only flag as token error on confirmed invalid_grant — not generic 401/unauthorized
+      // which can come from other causes and would show a false "needs to be reconnected" message.
+      const isTokenError = /invalid_grant|needs to be reconnected/i.test(err.message);
       const userMessage = isTokenError
         ? `Sending account ${sender.email} needs to be reconnected — go to Settings → Outreach and reconnect it.`
         : `Failed to send email: ${err.message}`;
