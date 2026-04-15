@@ -131,7 +131,7 @@ router.get('/settings', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT settings, instance_url, connected_at, last_sync_at, sync_status
-       FROM org_integrations WHERE org_id = $1 AND provider = 'salesforce'`,
+       FROM org_integrations WHERE org_id = $1 AND integration_type = 'salesforce'`,
       [req.orgId]
     );
     if (result.rows.length === 0) {
@@ -198,7 +198,7 @@ router.patch('/settings', async (req, res) => {
     });
 
     await pool.query(
-      `UPDATE org_integrations SET settings = ${settingsExpr}, updated_at = NOW() WHERE org_id = $1 AND provider = 'salesforce'`,
+      `UPDATE org_integrations SET settings = ${settingsExpr}, updated_at = NOW() WHERE org_id = $1 AND integration_type = 'salesforce'`,
       params
     );
 

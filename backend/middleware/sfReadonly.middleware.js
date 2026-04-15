@@ -40,7 +40,7 @@ async function _getOrgSyncMode(orgId) {
   if (cached && Date.now() - cached.ts < 10000) return cached.mode;
 
   const res = await pool.query(
-    `SELECT settings->>'sf_sync_mode' AS mode FROM org_integrations WHERE org_id = $1 AND provider = 'salesforce'`,
+    `SELECT settings->>'sf_sync_mode' AS mode FROM org_integrations WHERE org_id = $1 AND integration_type = 'salesforce'`,
     [orgId]
   );
   const mode = res.rows[0]?.mode || null;

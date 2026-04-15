@@ -45,7 +45,7 @@ async function runSyncForOrg(orgId) {
 
   // Load integration config
   const intRes = await pool.query(
-    `SELECT settings, instance_url FROM org_integrations WHERE org_id = $1 AND provider = 'salesforce'`,
+    `SELECT settings, instance_url FROM org_integrations WHERE org_id = $1 AND integration_type = 'salesforce'`,
     [orgId]
   );
   if (intRes.rows.length === 0) {
@@ -56,7 +56,7 @@ async function runSyncForOrg(orgId) {
 
   // Mark sync as running
   await pool.query(
-    `UPDATE org_integrations SET sync_status = 'running', updated_at = NOW() WHERE org_id = $1 AND provider = 'salesforce'`,
+    `UPDATE org_integrations SET sync_status = 'running', updated_at = NOW() WHERE org_id = $1 AND integration_type = 'salesforce'`,
     [orgId]
   );
 
@@ -107,7 +107,7 @@ async function runSyncForOrg(orgId) {
     await pool.query(`
       UPDATE org_integrations
       SET sync_status = $2, last_sync_at = NOW(), last_sync_error = NULL, updated_at = NOW()
-      WHERE org_id = $1 AND provider = 'salesforce'
+      WHERE org_id = $1 AND integration_type = 'salesforce'
     `, [orgId, errors.length > 0 ? 'completed_with_errors' : 'idle']);
 
     console.log(
@@ -119,7 +119,7 @@ async function runSyncForOrg(orgId) {
     await pool.query(`
       UPDATE org_integrations
       SET sync_status = 'error', last_sync_error = $2, updated_at = NOW()
-      WHERE org_id = $1 AND provider = 'salesforce'
+      WHERE org_id = $1 AND integration_type = 'salesforce'
     `, [orgId, err.message]);
     throw err;
   }
@@ -295,7 +295,7 @@ async function _syncTasks(sf, orgId, settings) {
  */
 async function runWriteBackForOrg(orgId) {
   const intRes = await pool.query(
-    `SELECT settings FROM org_integrations WHERE org_id = $1 AND provider = 'salesforce'`,
+    `SELECT settings FROM org_integrations WHERE org_id = $1 AND integration_type = 'salesforce'`,
     [orgId]
   );
   if (intRes.rows.length === 0) return { skipped: true, reason: 'no_integration' };
@@ -612,7 +612,7 @@ async function _saveCursor(orgId, sfObject, cursor) {
   await pool.query(`
     UPDATE org_integrations
     SET settings = jsonb_set(settings, $2, $3::jsonb), updated_at = NOW()
-    WHERE org_id = $1 AND provider = 'salesforce'
+    WHERE org_id = $1 AND integration_type = 'salesforce'
   `, [orgId, `{sync_cursors,${sfObject}}`, JSON.stringify(cursor)]);
 }
 
@@ -635,7 +635,7 @@ async function getConnectedOrgs() {
     SELECT oi.org_id
     FROM org_integrations oi
     JOIN oauth_tokens ot ON ot.provider = 'salesforce' AND ot.user_id = oi.connected_by
-    WHERE oi.provider = 'salesforce'
+    WHERE oi.integration_type = 'salesforce'
       AND oi.instance_url IS NOT NULL
       AND oi.connected_at IS NOT NULL
   `);

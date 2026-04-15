@@ -106,15 +106,15 @@ async function exchangeCode(code, stateStr) {
 
     // Save tokens to oauth_tokens (same table as Outlook/Gmail)
     await client.query(`
-      INSERT INTO oauth_tokens (user_id, org_id, provider, access_token, refresh_token, expires_at, token_data, created_at, updated_at)
+      INSERT INTO oauth_tokens (user_id, org_id, provider, access_token, refresh_token, expires_at, account_data, created_at, updated_at)
       VALUES ($1, $2, 'salesforce', $3, $4, $5, $6, NOW(), NOW())
       ON CONFLICT (user_id, provider)
       DO UPDATE SET
-        access_token = EXCLUDED.access_token,
+        access_token  = EXCLUDED.access_token,
         refresh_token = COALESCE(EXCLUDED.refresh_token, oauth_tokens.refresh_token),
-        expires_at   = EXCLUDED.expires_at,
-        token_data   = EXCLUDED.token_data,
-        updated_at   = NOW()
+        expires_at    = EXCLUDED.expires_at,
+        account_data  = EXCLUDED.account_data,
+        updated_at    = NOW()
     `, [
       userId, orgId, access_token, refresh_token, expiresAt,
       JSON.stringify({ instance_url, sf_user_id: sfUserId, sf_username: sfUsername, sf_email: sfEmail }),
@@ -122,10 +122,11 @@ async function exchangeCode(code, stateStr) {
 
     // Upsert org_integrations row — create or update on reconnect
     await client.query(`
-      INSERT INTO org_integrations (org_id, provider, instance_url, connected_by, connected_at, sync_status, settings, created_at, updated_at)
-      VALUES ($1, 'salesforce', $2, $3, NOW(), 'idle', $4, NOW(), NOW())
-      ON CONFLICT (org_id, provider)
+      INSERT INTO org_integrations (org_id, integration_type, provider, instance_url, connected_by, connected_at, sync_status, settings, created_at, updated_at)
+      VALUES ($1, 'salesforce', 'salesforce', $2, $3, NOW(), 'idle', $4, NOW(), NOW())
+      ON CONFLICT (org_id, integration_type)
       DO UPDATE SET
+        provider     = 'salesforce',
         instance_url = EXCLUDED.instance_url,
         connected_by = EXCLUDED.connected_by,
         connected_at = NOW(),
@@ -170,9 +171,9 @@ async function getValidToken(orgId) {
   // Find the token — keyed to the org admin who connected SF
   // (org_integrations.connected_by links to the admin's user_id in oauth_tokens)
   const res = await pool.query(`
-    SELECT ot.access_token, ot.refresh_token, ot.expires_at, ot.token_data, ot.user_id
+    SELECT ot.access_token, ot.refresh_token, ot.expires_at, ot.account_data, ot.user_id
     FROM oauth_tokens ot
-    JOIN org_integrations oi ON oi.org_id = $1 AND oi.provider = 'salesforce' AND oi.connected_by = ot.user_id
+    JOIN org_integrations oi ON oi.org_id = $1 AND oi.integration_type = 'salesforce' AND oi.connected_by = ot.user_id
     WHERE ot.provider = 'salesforce'
     LIMIT 1
   `, [orgId]);
@@ -182,7 +183,7 @@ async function getValidToken(orgId) {
   }
 
   const token       = res.rows[0];
-  const instanceUrl = token.token_data?.instance_url;
+  const instanceUrl = token.account_data?.instance_url;
   const expiresAt   = new Date(token.expires_at);
   const fiveMinutes = 5 * 60 * 1000;
 
@@ -232,7 +233,7 @@ async function revokeToken(orgId) {
   const res = await pool.query(`
     SELECT ot.access_token, ot.user_id
     FROM oauth_tokens ot
-    JOIN org_integrations oi ON oi.org_id = $1 AND oi.provider = 'salesforce' AND oi.connected_by = ot.user_id
+    JOIN org_integrations oi ON oi.org_id = $1 AND oi.integration_type = 'salesforce' AND oi.connected_by = ot.user_id
     WHERE ot.provider = 'salesforce'
     LIMIT 1
   `, [orgId]);
@@ -257,7 +258,7 @@ async function revokeToken(orgId) {
     await client.query(`
       UPDATE org_integrations
       SET sync_status = 'idle', connected_by = NULL, connected_at = NULL, instance_url = NULL, updated_at = NOW()
-      WHERE org_id = $1 AND provider = 'salesforce'
+      WHERE org_id = $1 AND integration_type = 'salesforce'
     `, [orgId]);
     await client.query('COMMIT');
   } catch (err) {
@@ -279,7 +280,7 @@ async function getConnectionStatus(orgId) {
     FROM org_integrations oi
     LEFT JOIN oauth_tokens ot
       ON ot.provider = 'salesforce' AND ot.user_id = oi.connected_by
-    WHERE oi.org_id = $1 AND oi.provider = 'salesforce'
+    WHERE oi.org_id = $1 AND oi.integration_type = 'salesforce'
   `, [orgId]);
 
   if (res.rows.length === 0) return { connected: false };
@@ -294,8 +295,8 @@ async function getConnectionStatus(orgId) {
     lastSyncAt:   row.last_sync_at,
     syncStatus:   row.sync_status,
     lastSyncError: row.last_sync_error,
-    sfEmail:      row.token_data?.sf_email,
-    sfUsername:   row.token_data?.sf_username,
+    sfEmail:      row.account_data?.sf_email,
+    sfUsername:   row.account_data?.sf_username,
     settings:     row.settings,
   };
 }
