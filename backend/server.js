@@ -236,6 +236,9 @@ app.use('/api/google',    googleRoutes);
 app.use('/api/sync',      syncRoutes);
 app.use('/api/ai',        aiRoutes);
 app.use('/api/prompts',   promptsRoutes);
+// ─── Salesforce Integration — must be before dealHealthRoutes which catches all /api/* ──
+app.use('/api/salesforce', require('./routes/salesforce.routes'));
+
 app.use('/api',           dealHealthRoutes);
 app.use('/api/storage',   storageRoutes);
 app.use('/api/super',      superAdminRoutes);
@@ -306,8 +309,6 @@ app.use('/api/transcripts', require('./routes/transcripts.routes'));
 
 app.use('/api/action-config', actionConfigRoutes);
 
-// ─── Salesforce Integration (Phase 6) ─────────────────────────────────────────
-app.use('/api/salesforce', require('./routes/salesforce.routes'));
 
 
 
