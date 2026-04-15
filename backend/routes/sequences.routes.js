@@ -668,19 +668,26 @@ router.get('/drafts', async (req, res) => {
 });
 
 // ── PATCH /api/sequences/drafts/:logId
-// Rep edits subject and/or body before sending.
+// Rep edits subject, body, and/or channel before sending.
+// channel is allowed when correcting a draft whose step was changed after creation
+// (e.g. linkedin -> email). Only 'email' is a valid target channel for sending.
 router.patch('/drafts/:logId', async (req, res) => {
-  const { subject, body } = req.body;
+  const { subject, body, channel } = req.body;
+  const ALLOWED_CHANNELS = ['email', 'linkedin', 'call', 'task'];
+  if (channel !== undefined && !ALLOWED_CHANNELS.includes(channel)) {
+    return res.status(400).json({ error: { message: `Invalid channel: ${channel}` } });
+  }
   try {
     const { rows } = await pool.query(
       `UPDATE sequence_step_logs
           SET subject = COALESCE($1, subject),
-              body    = COALESCE($2, body)
-        WHERE id = $3
-          AND org_id = $4
+              body    = COALESCE($2, body),
+              channel = COALESCE($3, channel)
+        WHERE id = $4
+          AND org_id = $5
           AND status = 'draft'
         RETURNING *`,
-      [subject ?? null, body ?? null, req.params.logId, req.orgId]
+      [subject ?? null, body ?? null, channel ?? null, req.params.logId, req.orgId]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Draft not found or already sent' } });
     res.json({ draft: rows[0] });

@@ -915,6 +915,25 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
     }
   }, [prospectId]);
 
+  const handleConvertAndSendProspectDraft = async (draft) => {
+    setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
+    try {
+      await apiFetch(`/sequences/drafts/${draft.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ channel: 'email' }),
+      });
+      await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
+      setProspectDrafts(prev => prev.filter(d => d.id !== draft.id));
+      setProspectDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
+      try {
+        const res = await apiFetch(`/prospects/${prospectId}`);
+        setActivities(res.activities || []);
+      } catch (_) {}
+    } catch (err) {
+      setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: false, error: err.message } }));
+    }
+  };
+
   const handleSendProspectDraft = async (draft) => {
     if (draft.channel && draft.channel !== 'email') { console.error(`handleSendProspectDraft called on ${draft.channel} draft — blocked`); return; }
     const edit = prospectDraftEdits[draft.id] || {};
@@ -1632,6 +1651,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                             onSend={() => handleSendProspectDraft(draft)}
                             onComplete={() => handleMarkDoneProspectDraft(draft.id)}
                             onDiscard={() => handleDiscardProspectDraft(draft.id)}
+                            onConvertAndSend={() => handleConvertAndSendProspectDraft(draft)}
                           />
                         );
                       })}
@@ -2196,7 +2216,7 @@ function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
 // DRAFT CARD  — reused in SequencesView Drafts tab and prospect Activity tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle, onSubjectChange, onBodyChange, onSend, onComplete, onDiscard, compact = false }) {
+function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle, onSubjectChange, onBodyChange, onSend, onComplete, onDiscard, onConvertAndSend, compact = false }) {
   const overdue  = draft.isOverdue || (draft.scheduledSendAt && new Date(draft.scheduledSendAt) < new Date());
   const channel  = draft.channel || 'email';
   const isEmail  = channel === 'email';
@@ -2309,6 +2329,21 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
           {/* ── LINKEDIN channel ──────────────────────────────────────── */}
           {channel === 'linkedin' && (
             <>
+              {/* Banner: shown when the step has since been changed to email */}
+              {onConvertAndSend && (
+                <div style={{ padding: '10px 12px', background: '#fffbeb', borderRadius: 8, border: '1px solid #fcd34d', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                  <div style={{ fontSize: 12, color: '#92400e' }}>
+                    ⚡ This step was changed to <strong>Email</strong> after this draft was created. You can send it as an email now, or complete the LinkedIn action manually.
+                  </div>
+                  <button
+                    onClick={onConvertAndSend}
+                    disabled={sending}
+                    style={{ flexShrink: 0, padding: '6px 14px', borderRadius: 7, border: 'none', background: sending ? '#9ca3af' : '#d97706', color: '#fff', fontSize: 12, fontWeight: 600, cursor: sending ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}
+                  >
+                    {sending ? '⏳ Sending…' : '📤 Send as Email'}
+                  </button>
+                </div>
+              )}
               <div style={{ padding: '10px 12px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd' }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: '#0369a1', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                   🔗 LinkedIn Message
@@ -2523,6 +2558,22 @@ function SequencesView({ prospects }) {
       setLoadingDrafts(false);
     }
   }, []);
+
+  const handleConvertAndSendDraft = async (draft) => {
+    setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
+    try {
+      // Patch channel to email, then send
+      await apiFetch(`/sequences/drafts/${draft.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ channel: 'email' }),
+      });
+      await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
+      setDrafts(prev => prev.filter(d => d.id !== draft.id));
+      setDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
+    } catch (err) {
+      setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: false, error: err.message } }));
+    }
+  };
 
   const handleSendDraft = async (draft) => {
     if (draft.channel && draft.channel !== 'email') { console.error(`handleSendDraft called on ${draft.channel} draft — blocked`); return; }
@@ -2859,6 +2910,7 @@ function SequencesView({ prospects }) {
                     onSend={() => handleSendDraft(draft)}
                     onComplete={() => handleMarkDoneDraft(draft.id)}
                     onDiscard={() => handleDiscardDraft(draft.id)}
+                    onConvertAndSend={() => handleConvertAndSendDraft(draft)}
                   />
                 );
               })}
