@@ -276,7 +276,7 @@ async function revokeToken(orgId) {
 async function getConnectionStatus(orgId) {
   const res = await pool.query(`
     SELECT oi.instance_url, oi.connected_at, oi.last_sync_at, oi.sync_status,
-           oi.last_sync_error, oi.settings, ot.token_data
+           oi.last_sync_error, oi.settings, ot.account_data
     FROM org_integrations oi
     LEFT JOIN oauth_tokens ot
       ON ot.provider = 'salesforce' AND ot.user_id = oi.connected_by
