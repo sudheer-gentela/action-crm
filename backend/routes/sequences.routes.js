@@ -591,7 +591,7 @@ router.get('/drafts', async (req, res) => {
       SELECT
         ssl.id, ssl.enrollment_id, ssl.subject, ssl.body,
         ssl.scheduled_send_at, ssl.status,
-        ss.step_order, ss.channel,
+        ss.step_order, ssl.channel,
         se.sequence_id, se.enrolled_by,
         s.name AS sequence_name,
         p.id AS prospect_id, p.first_name, p.last_name,
