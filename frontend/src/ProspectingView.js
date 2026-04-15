@@ -80,7 +80,6 @@ function getLiDotColor(status) {
 
 const API = process.env.REACT_APP_API_URL || '';
 
-const API = process.env.REACT_APP_API_URL || '';
 
 let _refreshPromise = null;
 
