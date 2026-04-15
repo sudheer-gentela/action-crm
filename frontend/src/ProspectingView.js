@@ -954,7 +954,11 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
           }),
         });
       }
-      await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
+      const sendRes = await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
+      if (sendRes && sendRes.emailSent === false && sendRes.sendError) {
+        setProspectDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: false, error: sendRes.sendError } }));
+        return;
+      }
       setProspectDrafts(prev => prev.filter(d => d.id !== draft.id));
       setProspectDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
       // Refresh activity feed to show the sent step
@@ -2618,7 +2622,14 @@ function SequencesView({ prospects }) {
           }),
         });
       }
-      await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
+      const sendRes = await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
+      // Backend returns { ok, emailSent, sendError } — if emailSent is false the
+      // draft was marked sent in DB but the email never left. With the new fail-fast
+      // backend this shouldn't happen, but guard here too.
+      if (sendRes && sendRes.emailSent === false && sendRes.sendError) {
+        setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: false, error: sendRes.sendError } }));
+        return;
+      }
       setDrafts(prev => prev.filter(d => d.id !== draft.id));
       setDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
     } catch (err) {

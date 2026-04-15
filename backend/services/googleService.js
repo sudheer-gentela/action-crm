@@ -172,13 +172,69 @@ async function sendEmail(userId, { to, subject, body, isHtml = false, accessToke
   let auth;
 
   if (accessToken) {
-    // Use the prospecting sender account's own tokens
+    // Use the prospecting sender account's own tokens.
+    // Proactively refresh if the access token is expired or within 5 minutes of
+    // expiry — mirrors getAuthenticatedClient(). This prevents the ghost-send
+    // pattern where an expired token causes a silent failure after DB writes.
     const oauth2Client = getOAuth2Client();
+
+    let resolvedAccessToken  = accessToken;
+    let resolvedRefreshToken = refreshToken || undefined;
+
+    if (senderEmail && refreshToken) {
+      // Check expiry from DB so we have the freshest expires_at
+      try {
+        const { pool } = require('../config/database');
+        const expiryRes = await pool.query(
+          `SELECT expires_at FROM prospecting_sender_accounts WHERE email = $1 LIMIT 1`,
+          [senderEmail]
+        );
+        const expiresAt = expiryRes.rows[0]?.expires_at
+          ? new Date(expiryRes.rows[0].expires_at).getTime()
+          : 0;
+        const isExpired = expiresAt < Date.now() + 5 * 60 * 1000; // 5-min buffer
+
+        if (isExpired) {
+          console.log(`🔄 Sender account ${senderEmail} token expired — refreshing proactively`);
+          const params = new URLSearchParams({
+            client_id:     process.env.GOOGLE_CLIENT_ID,
+            client_secret: process.env.GOOGLE_CLIENT_SECRET,
+            refresh_token: refreshToken,
+            grant_type:    'refresh_token',
+          });
+          const response = await require('axios').post(
+            'https://oauth2.googleapis.com/token',
+            params.toString(),
+            { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+          );
+          resolvedAccessToken = response.data.access_token;
+          const newExpiry = new Date(Date.now() + response.data.expires_in * 1000);
+          // Persist refreshed token
+          await pool.query(
+            `UPDATE prospecting_sender_accounts
+                SET access_token = $1, expires_at = $2, updated_at = CURRENT_TIMESTAMP
+              WHERE email = $3`,
+            [resolvedAccessToken, newExpiry, senderEmail]
+          );
+          console.log(`✅ Sender account ${senderEmail} token refreshed`);
+        }
+      } catch (refreshErr) {
+        // If refresh fails (revoked/invalid_grant), throw a clear actionable error
+        // so the caller returns a 502 and the draft stays in the queue.
+        const isRevoked = /invalid_grant|Token has been expired or revoked/i.test(refreshErr.response?.data?.error || refreshErr.message);
+        if (isRevoked) {
+          throw new Error(`invalid_grant: sender account ${senderEmail} needs to be reconnected in Settings → Outreach.`);
+        }
+        // Non-revocation errors (network blip etc.) — log and attempt with current token
+        console.warn(`⚠️  Sender token refresh failed for ${senderEmail}, attempting with current token:`, refreshErr.message);
+      }
+    }
+
     oauth2Client.setCredentials({
-      access_token:  accessToken,
-      refresh_token: refreshToken || undefined,
+      access_token:  resolvedAccessToken,
+      refresh_token: resolvedRefreshToken,
     });
-    // Save refreshed tokens back to prospecting_sender_accounts if auto-refreshed
+    // Save refreshed tokens back if Google auto-refreshes mid-call
     oauth2Client.on('tokens', async (tokens) => {
       if (senderEmail && tokens.access_token) {
         const { pool } = require('../config/database');

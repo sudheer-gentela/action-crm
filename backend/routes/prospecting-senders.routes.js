@@ -219,4 +219,101 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// ── POST /:id/validate — test whether the sender account token is still live ──
+// Called by Settings → Outreach when the page loads, so stale accounts are
+// flagged before a send attempt rather than after.
+// Returns { valid: true } or { valid: false, reason: '...' }
+router.post('/:id/validate', async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT * FROM prospecting_sender_accounts
+        WHERE id = $1 AND org_id = $2 AND user_id = $3`,
+      [req.params.id, req.orgId, req.user.userId]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: { message: 'Sender account not found' } });
+    }
+    const sender = result.rows[0];
+
+    if (!sender.refresh_token) {
+      return res.json({ valid: false, reason: 'No refresh token — please reconnect this account.' });
+    }
+
+    // Try a lightweight token refresh to confirm the credential is still valid
+    const axios = require('axios');
+    if (sender.provider === 'gmail') {
+      try {
+        const params = new URLSearchParams({
+          client_id:     process.env.GOOGLE_CLIENT_ID,
+          client_secret: process.env.GOOGLE_CLIENT_SECRET,
+          refresh_token: sender.refresh_token,
+          grant_type:    'refresh_token',
+        });
+        const response = await axios.post(
+          'https://oauth2.googleapis.com/token',
+          params.toString(),
+          { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+        );
+        // Persist the fresh access token
+        await db.query(
+          `UPDATE prospecting_sender_accounts
+              SET access_token = $1, expires_at = $2, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $3`,
+          [response.data.access_token, new Date(Date.now() + response.data.expires_in * 1000), sender.id]
+        );
+        return res.json({ valid: true });
+      } catch (err) {
+        const isRevoked = /invalid_grant|Token has been expired or revoked/i.test(
+          err.response?.data?.error || err.message
+        );
+        return res.json({
+          valid: false,
+          reason: isRevoked
+            ? 'Access was revoked — please reconnect this account.'
+            : `Token validation failed: ${err.message}`,
+        });
+      }
+    }
+
+    // Outlook — attempt a refresh via tokenService
+    if (sender.provider === 'outlook') {
+      try {
+        const tenantId = process.env.MICROSOFT_TENANT_ID;
+        const params = new URLSearchParams({
+          client_id:     process.env.MICROSOFT_CLIENT_ID,
+          client_secret: process.env.MICROSOFT_CLIENT_SECRET,
+          refresh_token: sender.refresh_token,
+          grant_type:    'refresh_token',
+          scope:         'https://graph.microsoft.com/Mail.Send offline_access',
+        });
+        const response = await axios.post(
+          `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
+          params.toString(),
+          { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+        );
+        await db.query(
+          `UPDATE prospecting_sender_accounts
+              SET access_token = $1, expires_at = $2, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $3`,
+          [response.data.access_token, new Date(Date.now() + response.data.expires_in * 1000), sender.id]
+        );
+        return res.json({ valid: true });
+      } catch (err) {
+        const isRevoked = /invalid_grant|AADSTS/i.test(err.response?.data?.error || err.message);
+        return res.json({
+          valid: false,
+          reason: isRevoked
+            ? 'Access was revoked — please reconnect this account.'
+            : `Token validation failed: ${err.message}`,
+        });
+      }
+    }
+
+    return res.json({ valid: false, reason: 'Unknown provider' });
+  } catch (error) {
+    console.error('Validate sender error:', error);
+    res.status(500).json({ error: { message: 'Failed to validate sender account' } });
+  }
+});
+
 module.exports = router;

@@ -591,7 +591,7 @@ router.get('/drafts', async (req, res) => {
       SELECT
         ssl.id, ssl.enrollment_id, ssl.subject, ssl.body,
         ssl.scheduled_send_at, ssl.status,
-        ss.step_order, ssl.channel,
+        ss.step_order, ss.channel,
         se.sequence_id, se.enrolled_by,
         s.name AS sequence_name,
         p.id AS prospect_id, p.first_name, p.last_name,
@@ -827,7 +827,11 @@ router.post('/drafts/:logId/send', async (req, res) => {
     const htmlBody = plainTextToHtml(bodyToSend);
 
     // ── 6. Send via Gmail or Outlook ───────────────────────────────────────
-    let sendError = null;
+    // IMPORTANT: errors here are NOT swallowed. If the send fails (expired token,
+    // network error, etc.) we return a 502 immediately so:
+    //   a) The draft stays in the queue — the rep can retry after reconnecting
+    //   b) We never write a ghost 'sent' record to the DB
+    // The frontend catches the 502 and shows the error on the draft card.
     try {
       if (sender.provider === 'gmail') {
         await sendGmailEmail(req.user.userId, {
@@ -848,8 +852,13 @@ router.post('/drafts/:logId/send', async (req, res) => {
         });
       }
     } catch (err) {
-      sendError = err.message;
-      console.warn(`⚠️  Sequence draft send failed (saving to DB anyway): ${err.message}`);
+      console.error(`❌ Draft send failed for log ${req.params.logId} → ${prospect.email}:`, err.message);
+      // Surface token expiry as a clear actionable message
+      const isTokenError = /invalid_grant|token.*expired|unauthorized|401/i.test(err.message);
+      const userMessage = isTokenError
+        ? `Sending account ${sender.email} needs to be reconnected — go to Settings → Outreach and reconnect it.`
+        : `Failed to send email: ${err.message}`;
+      return res.status(502).json({ error: { message: userMessage, code: isTokenError ? 'TOKEN_EXPIRED' : 'SEND_FAILED' } });
     }
 
     await client.query('BEGIN');
