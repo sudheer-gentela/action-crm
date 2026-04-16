@@ -890,6 +890,11 @@ export const salesforceAPI = {
     if (!response.ok) throw new Error(`Failed to describe ${sfObject}`);
     return response.json();
   },
+  getStages: async () => {
+    const response = await fetch(`${API_BASE_URL}/salesforce/stages`, { headers: getAuthHeaders() });
+    if (!response.ok) throw new Error('Failed to fetch SF stages');
+    return response.json();
+  },
   getIdentityQueue: async () => {
     const response = await fetch(`${API_BASE_URL}/salesforce/identity-queue`, { headers: getAuthHeaders() });
     if (!response.ok) throw new Error('Failed to get identity queue');

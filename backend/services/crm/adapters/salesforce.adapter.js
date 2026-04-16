@@ -32,6 +32,7 @@ const {
   normalizeHierarchyRole,
   buildExternalRefs,
 } = require('../mapper');
+const { getCustomFieldMappings } = require('../customFieldSync');
 
 const CRM_TYPE = 'salesforce';
 const MAX_RECORDS = 1500;
@@ -56,6 +57,16 @@ class SalesforceAdapter {
       [this.orgId]
     );
     this.fieldMap = intRes.rows[0]?.settings?.field_map || [];
+
+    // Pre-compute custom field mappings per entity type (fields that go to
+    // entity_custom_fields rather than a standard GoWarm column).
+    // Stored as maps from sf_field → gw_field for fast lookup in normalize methods.
+    this._customFields = {
+      Account:     _buildCustomLookup(getCustomFieldMappings(this.fieldMap, 'Account',     'account')),
+      Contact:     _buildCustomLookup(getCustomFieldMappings(this.fieldMap, 'Contact',     'contact')),
+      Opportunity: _buildCustomLookup(getCustomFieldMappings(this.fieldMap, 'Opportunity', 'deal')),
+      Lead:        _buildCustomLookup(getCustomFieldMappings(this.fieldMap, 'Lead',        'prospect')),
+    };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -95,16 +106,17 @@ class SalesforceAdapter {
 
   _normalizeAccount(r) {
     return {
-      crmId:        r.Id,
-      name:         r.Name || 'Unknown Account',
-      domain:       extractDomain(r.Website),
-      industry:     this._resolveField(r, 'Account', 'account.industry') || r.Industry || null,
-      size:         employeesToSize(this._resolveField(r, 'Account', 'account.size') || r.NumberOfEmployees),
-      location:     _buildLocation(r, 'Billing'),
-      description:  this._resolveField(r, 'Account', 'account.description') || r.Description || null,
-      ownerEmail:   r.Owner?.Email || null,
-      lastModified: r.LastModifiedDate,
-      externalRefs: buildExternalRefs(CRM_TYPE, r.Id, 'Account', r.LastModifiedDate),
+      crmId:             r.Id,
+      name:              r.Name || 'Unknown Account',
+      domain:            extractDomain(r.Website),
+      industry:          this._resolveField(r, 'Account', 'account.industry') || r.Industry || null,
+      size:              employeesToSize(this._resolveField(r, 'Account', 'account.size') || r.NumberOfEmployees),
+      location:          _buildLocation(r, 'Billing'),
+      description:       this._resolveField(r, 'Account', 'account.description') || r.Description || null,
+      ownerEmail:        r.Owner?.Email || null,
+      lastModified:      r.LastModifiedDate,
+      externalRefs:      buildExternalRefs(CRM_TYPE, r.Id, 'Account', r.LastModifiedDate),
+      customFieldValues: _collectCustomValues(r, this._customFields.Account),
     };
   }
 
@@ -157,6 +169,7 @@ class SalesforceAdapter {
       ownerEmail:            r.Owner?.Email || null,
       lastModified:          r.LastModifiedDate,
       externalRefs:          buildExternalRefs(CRM_TYPE, r.Id, 'Contact', r.LastModifiedDate),
+      customFieldValues:     _collectCustomValues(r, this._customFields.Contact),
     };
   }
 
@@ -200,6 +213,7 @@ class SalesforceAdapter {
       notes:             r.Description || null,
       lastModified:      r.LastModifiedDate,
       externalRefs:      buildExternalRefs(CRM_TYPE, r.Id, 'Opportunity', r.LastModifiedDate),
+      customFieldValues: _collectCustomValues(r, this._customFields.Opportunity),
     };
   }
 
@@ -265,6 +279,7 @@ class SalesforceAdapter {
       convertedDealId:    r.ConvertedOpportunityId || null,
       lastModified:       r.LastModifiedDate,
       externalRefs:       buildExternalRefs(CRM_TYPE, r.Id, 'Lead', r.LastModifiedDate),
+      customFieldValues:  _collectCustomValues(r, this._customFields.Lead),
     };
   }
 
@@ -530,6 +545,46 @@ function _buildLeadLocation(rec) {
 function _ratingToScore(rating) {
   const map = { Hot: 90, Warm: 65, Cold: 30 };
   return map[rating] ?? null;
+}
+
+/**
+ * Build a fast lookup map: SF field name → GoWarm field key.
+ * Used at normalize time to extract custom field values without
+ * iterating the full custom field mappings array per record.
+ *
+ * @param {Array<{ sf_field: string, gw_field: string }>} customMappings
+ * @returns {Map<string, string>}
+ */
+function _buildCustomLookup(customMappings) {
+  const map = new Map();
+  for (const m of customMappings) {
+    map.set(m.sf_field, m.gw_field);
+  }
+  return map;
+}
+
+/**
+ * Collect custom field values from a raw SF record using the pre-built lookup map.
+ * Returns an object { [gw_field_key]: raw_value } for all custom fields present.
+ *
+ * A field is included even if its value is null/undefined — the sync layer
+ * writes null explicitly so "no value" is recorded rather than "never seen".
+ *
+ * @param {object}           sfRecord       - Raw SF API record object
+ * @param {Map<string,string>} customLookup  - sf_field → gw_field map from _buildCustomLookup
+ * @returns {Object}
+ */
+function _collectCustomValues(sfRecord, customLookup) {
+  if (!customLookup || customLookup.size === 0) return {};
+  const result = {};
+  for (const [sfField, gwField] of customLookup) {
+    // Only include fields that are actually present on the record
+    // (i.e. were fetched in the SOQL query)
+    if (Object.prototype.hasOwnProperty.call(sfRecord, sfField)) {
+      result[gwField] = sfRecord[sfField] ?? null;
+    }
+  }
+  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -107,6 +107,22 @@ router.post('/trigger', async (req, res) => {
   }
 });
 
+// GET /stages — fetch live SF Opportunity stage picklist values for stage mapping UI
+// Returns the active StageName picklist from the connected SF org.
+// Front-end uses this to drive the "SF Stage" dropdown in Stage Mapping tab,
+// replacing the previous free-text input that required exact typing.
+router.get('/stages', async (req, res) => {
+  try {
+    const { createSalesforceAdapter } = require('../services/crm/adapters/salesforce.adapter');
+    const adapter = await createSalesforceAdapter(req.orgId);
+    const stages  = await adapter.getOpportunityStages();
+    res.json({ success: true, data: stages });
+  } catch (err) {
+    console.error('SF stages error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // GET /describe/:object — fetch SF object fields for field mapping UI
 router.get('/describe/:object', async (req, res) => {
   const ALLOWED_OBJECTS = ['Contact', 'Account', 'Opportunity', 'Lead', 'Task'];

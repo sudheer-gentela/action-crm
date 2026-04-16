@@ -333,14 +333,35 @@ function SyncModeTab({ settings, onSave, saving }) {
 // ── StageMappingTab ────────────────────────────────────────────────────────────
 
 function StageMappingTab({ settings, onSave, saving }) {
-  const [stageMap, setStageMap] = useState(settings?.stage_map || {});
-  const [newSfStage, setNewSfStage] = useState('');
-  const [newGwStage, setNewGwStage] = useState('');
-  const [gwEntity,   setGwEntity]   = useState('deal');
-  const [dirty, setDirty] = useState(false);
+  const [stageMap,      setStageMap]      = useState(settings?.stage_map || {});
+  const [sfStages,      setSfStages]      = useState([]);   // live from SF org
+  const [sfStagesLoading, setSfStagesLoading] = useState(true);
+  const [sfStagesError,   setSfStagesError]   = useState('');
+  const [newSfStage,    setNewSfStage]    = useState('');
+  const [newGwStage,    setNewGwStage]    = useState('');
+  const [gwEntity,      setGwEntity]      = useState('deal');
+  const [dirty,         setDirty]         = useState(false);
 
-  // Sync stageMap when settings load (useState only runs once on mount,
-  // so if settings arrive after first render the map would stay empty)
+  // Fetch live SF stage picklist on mount
+  useEffect(() => {
+    let cancelled = false;
+    setSfStagesLoading(true);
+    setSfStagesError('');
+    salesforceAPI.getStages()
+      .then(res => {
+        if (cancelled) return;
+        setSfStages(res.data || []);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        setSfStagesError('Could not load SF stages — enter stage name manually below.');
+        setSfStages([]);
+      })
+      .finally(() => { if (!cancelled) setSfStagesLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Sync stageMap when settings arrive after first render
   useEffect(() => {
     if (settings?.stage_map && !dirty) {
       setStageMap(settings.stage_map);
@@ -361,11 +382,14 @@ function StageMappingTab({ settings, onSave, saving }) {
 
   const stageOptions = GW_STAGE_OPTIONS[gwEntity] || GW_STAGE_OPTIONS.deal;
 
+  // Stages that haven't been mapped yet (to avoid cluttering the dropdown)
+  const unmappedSfStages = sfStages.filter(s => !(s.value in stageMap));
+
   return (
     <div className="sf-section">
       <p className="sf-section-desc">
-        Map Salesforce stage names to GoWarm stages. Without a mapping, stage won't sync.
-        Salesforce stage names are case-sensitive — enter them exactly as they appear in SF.
+        Map Salesforce stage names to GoWarm stages. Without a mapping, the deal or prospect
+        stage won't sync. Select from your live SF stages below.
       </p>
 
       <div className="sf-field-row" style={{ marginBottom: 16 }}>
@@ -402,24 +426,69 @@ function StageMappingTab({ settings, onSave, saving }) {
         <div className="sf-empty-state">No stage mappings yet. Add your first mapping below.</div>
       )}
 
-      {/* Add new */}
-      <div className="sf-add-mapping">
-        <input
-          className="sf-input"
-          placeholder="SF stage name (e.g. Prospecting)"
-          value={newSfStage}
-          onChange={e => setNewSfStage(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && addMapping()}
-        />
+      {/* Add new mapping */}
+      <div className="sf-add-mapping" style={{ marginTop: 16 }}>
+
+        {/* SF stage — select if loaded, text input as fallback */}
+        {sfStagesLoading ? (
+          <div className="sf-input sf-input--loading">Loading SF stages…</div>
+        ) : sfStages.length > 0 ? (
+          <select
+            className="sf-select"
+            value={newSfStage}
+            onChange={e => setNewSfStage(e.target.value)}
+          >
+            <option value="">Select SF stage…</option>
+            {unmappedSfStages.map(s => (
+              <option key={s.value} value={s.value}>{s.label}</option>
+            ))}
+            {/* If all stages mapped, still allow re-mapping via full list */}
+            {unmappedSfStages.length === 0 && sfStages.map(s => (
+              <option key={s.value} value={s.value}>{s.label}</option>
+            ))}
+          </select>
+        ) : (
+          <>
+            {sfStagesError && (
+              <div className="sf-inline-warn">{sfStagesError}</div>
+            )}
+            <input
+              className="sf-input"
+              placeholder="SF stage name (e.g. Prospecting)"
+              value={newSfStage}
+              onChange={e => setNewSfStage(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addMapping()}
+            />
+          </>
+        )}
+
         <span className="sf-map-arrow">→</span>
+
         <select className="sf-select" value={newGwStage} onChange={e => setNewGwStage(e.target.value)}>
           <option value="">Select GoWarm stage…</option>
           {stageOptions.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
         </select>
-        <button className="sf-btn sf-btn--ghost" onClick={addMapping} disabled={!newSfStage || !newGwStage}>
+
+        <button
+          className="sf-btn sf-btn--ghost"
+          onClick={addMapping}
+          disabled={!newSfStage || !newGwStage}
+        >
           Add
         </button>
       </div>
+
+      {/* Coverage summary — how many SF stages are mapped */}
+      {sfStages.length > 0 && (
+        <div className="sf-stage-coverage">
+          {Object.keys(stageMap).length} of {sfStages.length} SF stage{sfStages.length !== 1 ? 's' : ''} mapped
+          {Object.keys(stageMap).length < sfStages.length && (
+            <span className="sf-stage-coverage--warn">
+              {' '}— {sfStages.filter(s => !(s.value in stageMap)).map(s => s.label).join(', ')} {sfStages.length - Object.keys(stageMap).length === 1 ? 'is' : 'are'} unmapped
+            </span>
+          )}
+        </div>
+      )}
 
       <button
         className="sf-btn sf-btn--primary"

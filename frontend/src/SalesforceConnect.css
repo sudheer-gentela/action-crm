@@ -357,6 +357,39 @@
   flex-wrap: wrap;
 }
 
+.sf-input--loading {
+  flex: 1;
+  min-width: 160px;
+  padding: 7px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #f3f4f6;
+  color: #9ca3af;
+  font-size: 13px;
+  font-style: italic;
+}
+
+.sf-inline-warn {
+  width: 100%;
+  font-size: 12px;
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 5px;
+  padding: 6px 10px;
+  margin-bottom: 4px;
+}
+
+.sf-stage-coverage {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.sf-stage-coverage--warn {
+  color: #b45309;
+}
+
 .sf-add-field-mapping {
   background: #f8fafc;
   border: 1px solid #e5e7eb;
