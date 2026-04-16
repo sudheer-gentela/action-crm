@@ -47,6 +47,15 @@ class SalesforceAdapter {
 
   async init() {
     this.client = await createClient(this.orgId);
+
+    // Load field_map from org settings so adapter knows which custom
+    // fields to fetch — no hardcoded field names anywhere in this file.
+    const { pool } = require('../../config/database');
+    const intRes = await pool.query(
+      `SELECT settings FROM org_integrations WHERE org_id = $1 AND integration_type = 'salesforce'`,
+      [this.orgId]
+    );
+    this.fieldMap = intRes.rows[0]?.settings?.field_map || [];
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -59,12 +68,19 @@ class SalesforceAdapter {
    * @returns {{ records: NormalizedAccount[], nextCursor: string|null }}
    */
   async getAccounts(cursor = null) {
-    const fields = [
-      'Id', 'Name', 'Website', 'Industry', 'NumberOfEmployees',
+    const baseFields = [
+      'Id', 'Name', 'Website',
       'BillingCity', 'BillingState', 'BillingCountry',
       'Description', 'OwnerId', 'Owner.Email', 'LastModifiedDate',
     ];
 
+    // Add any Account fields configured in field_map (e.g. Number_Of_Team_Members__c)
+    const customFields = this.fieldMap
+      .filter(m => m.sf_object === 'Account')
+      .map(m => m.sf_field)
+      .filter(f => !baseFields.includes(f));
+
+    const fields  = [...new Set([...baseFields, ...customFields])];
     const soql    = this._buildIncrementalQuery('Account', fields, cursor);
     const result  = await this.client.query(soql);
     const records = result.records.map(r => this._normalizeAccount(r));
@@ -82,10 +98,10 @@ class SalesforceAdapter {
       crmId:        r.Id,
       name:         r.Name || 'Unknown Account',
       domain:       extractDomain(r.Website),
-      industry:     r.Industry || null,
-      size:         employeesToSize(r.NumberOfEmployees),
+      industry:     this._resolveField(r, 'Account', 'account.industry') || r.Industry || null,
+      size:         employeesToSize(this._resolveField(r, 'Account', 'account.size') || r.NumberOfEmployees),
       location:     _buildLocation(r, 'Billing'),
-      description:  r.Description || null,
+      description:  this._resolveField(r, 'Account', 'account.description') || r.Description || null,
       ownerEmail:   r.Owner?.Email || null,
       lastModified: r.LastModifiedDate,
       externalRefs: buildExternalRefs(CRM_TYPE, r.Id, 'Account', r.LastModifiedDate),
@@ -101,16 +117,19 @@ class SalesforceAdapter {
    * @returns {{ records: NormalizedContact[], nextCursor: string|null }}
    */
   async getContacts(cursor = null) {
-    const fields = [
+    const baseFields = [
       'Id', 'AccountId', 'FirstName', 'LastName', 'Email', 'Phone',
       'Title', 'MailingCity', 'MailingState', 'MailingCountry',
-      // Common custom fields — adapter tries to fetch, ignores if missing
-      'LinkedIn_URL__c', 'LinkedInUrl__c',
-      'ReportsToId',
-      'OwnerId', 'Owner.Email',
-      'LastModifiedDate',
+      'ReportsToId', 'OwnerId', 'Owner.Email', 'LastModifiedDate',
     ];
 
+    // Add any Contact fields configured in field_map (e.g. LinkedinUrl__c)
+    const customFields = this.fieldMap
+      .filter(m => m.sf_object === 'Contact')
+      .map(m => m.sf_field)
+      .filter(f => !baseFields.includes(f));
+
+    const fields = [...new Set([...baseFields, ...customFields])];
     const soql   = this._buildIncrementalQuery('Contact', fields, cursor);
     const result = await this.client.query(soql);
     const records = result.records.map(r => this._normalizeContact(r));
@@ -131,9 +150,9 @@ class SalesforceAdapter {
       lastName:              r.LastName  || 'Unknown',
       email:                 r.Email?.toLowerCase().trim() || null,
       phone:                 r.Phone || null,
-      title:                 r.Title || null,
+      title:                 this._resolveField(r, 'Contact', 'contact.title') || r.Title || null,
       location:              _buildLocation(r, 'Mailing'),
-      linkedinUrl:           r.LinkedIn_URL__c || r.LinkedInUrl__c || null,
+      linkedinUrl:           this._resolveField(r, 'Contact', 'contact.linkedin_url') || null,
       reportsToContactCrmId: r.ReportsToId || null,
       ownerEmail:            r.Owner?.Email || null,
       lastModified:          r.LastModifiedDate,
@@ -193,11 +212,10 @@ class SalesforceAdapter {
    * @returns {{ records: NormalizedProspect[], nextCursor: string|null }}
    */
   async getLeads(cursor = null) {
-    const fields = [
+    const baseFields = [
       'Id', 'FirstName', 'LastName', 'Email', 'Phone', 'Title',
       'Company', 'Website', 'Industry', 'NumberOfEmployees',
       'City', 'State', 'Country',
-      'LinkedIn_URL__c', 'LinkedInUrl__c',
       'LeadSource', 'Rating',
       'OwnerId', 'Owner.Email',
       'IsConverted',
@@ -205,6 +223,13 @@ class SalesforceAdapter {
       'LastModifiedDate',
     ];
 
+    // Add any Lead fields configured in field_map
+    const customFields = this.fieldMap
+      .filter(m => m.sf_object === 'Lead')
+      .map(m => m.sf_field)
+      .filter(f => !baseFields.includes(f));
+
+    const fields = [...new Set([...baseFields, ...customFields])];
     const soql   = this._buildIncrementalQuery('Lead', fields, cursor);
     const result = await this.client.query(soql);
     const records = result.records.map(r => this._normalizeLead(r));
@@ -224,9 +249,9 @@ class SalesforceAdapter {
       lastName:           r.LastName  || 'Unknown',
       email:              r.Email?.toLowerCase().trim() || null,
       phone:              r.Phone || null,
-      title:              r.Title || null,
+      title:              this._resolveField(r, 'Lead', 'prospect.title') || r.Title || null,
       location:           _buildLeadLocation(r),
-      linkedinUrl:        r.LinkedIn_URL__c || r.LinkedInUrl__c || null,
+      linkedinUrl:        this._resolveField(r, 'Lead', 'prospect.linkedin_url') || null,
       companyName:        r.Company || 'Unknown',
       companyDomain:      extractDomain(r.Website),
       companySize:        employeesToSize(r.NumberOfEmployees),
@@ -433,6 +458,32 @@ class SalesforceAdapter {
       console.warn(`  ⚠️  [SF] getOpportunityStages: ${err.message}`);
       return [];
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIELD MAP RESOLVER (internal)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Look up a field value from a raw SF record using the org's field_map config.
+   * Finds the mapping entry for this sf_object + gw_field, then reads that
+   * sf_field name from the raw SF record.
+   *
+   * This means no SF custom field names are ever hardcoded in this adapter —
+   * the org admin configures them once in Settings → Salesforce → Field Mapping
+   * and they work automatically here.
+   *
+   * @param {object} r         - Raw SF API record
+   * @param {string} sfObject  - 'Account' | 'Contact' | 'Opportunity' | 'Lead'
+   * @param {string} gwField   - GoWarm field key e.g. 'contact.linkedin_url'
+   * @returns {any|null}
+   */
+  _resolveField(r, sfObject, gwField) {
+    const mapping = this.fieldMap.find(
+      m => m.sf_object === sfObject && m.gw_field === gwField
+    );
+    if (!mapping) return null;
+    return r[mapping.sf_field] ?? null;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
