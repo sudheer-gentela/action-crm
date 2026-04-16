@@ -30,6 +30,7 @@ const { pool }         = require('../../config/database');
 const { resolveStage } = require('./mapper');
 const { syncHierarchy } = require('./hierarchySync');
 const { syncDealProducts } = require('./productSync');
+const { syncCustomFields } = require('./customFieldSync');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API
@@ -70,11 +71,11 @@ async function runSyncForOrg(orgId, crmType, adapter) {
   );
 
   const results = {
-    hierarchy: null,
-    accounts:  { upserted: 0 },
-    contacts:  { upserted: 0 },
-    deals:     { upserted: 0, products: 0, dealContacts: 0 },
-    prospects: { upserted: 0 },
+    hierarchy:    null,
+    accounts:     { upserted: 0, customFields: 0 },
+    contacts:     { upserted: 0, customFields: 0 },
+    deals:        { upserted: 0, products: 0, dealContacts: 0, customFields: 0 },
+    prospects:    { upserted: 0, customFields: 0 },
   };
 
   try {
@@ -153,7 +154,8 @@ async function runSyncForOrg(orgId, crmType, adapter) {
     console.log(
       `✅ [CRM Sync] org ${orgId} ${crmType} done in ${duration}s — ` +
       `accounts:${results.accounts.upserted} contacts:${results.contacts.upserted} ` +
-      `deals:${results.deals.upserted} prospects:${results.prospects.upserted}`
+      `deals:${results.deals.upserted} prospects:${results.prospects.upserted} ` +
+      `customFields:${results.accounts.customFields + results.contacts.customFields + results.deals.customFields + results.prospects.customFields}`
     );
 
   } catch (err) {
@@ -178,7 +180,7 @@ async function _syncAccounts(orgId, crmType, adapter, cursor) {
 
   if (records.length === 0) {
     console.log(`  ✓ [CRM Sync] Accounts: no new records`);
-    return { upserted: 0, nextCursor: null };
+    return { upserted: 0, customFields: 0, nextCursor: null };
   }
 
   // Resolve all owner emails in one query
@@ -186,18 +188,28 @@ async function _syncAccounts(orgId, crmType, adapter, cursor) {
   const emailToUser = await _resolveOwners(orgId, ownerEmails);
 
   let upserted = 0;
+  let customFieldsWritten = 0;
   for (const record of records) {
     try {
       const ownerId = record.ownerEmail ? emailToUser.get(record.ownerEmail) || null : null;
-      await _upsertAccount(orgId, crmType, record, ownerId);
+      const accountId = await _upsertAccount(orgId, crmType, record, ownerId);
       upserted++;
+
+      // Write custom fields (fields in field_map with no standard column mapping)
+      if (accountId && record.customFieldValues) {
+        const cf = await syncCustomFields({
+          orgId, entityType: 'account', entityId: accountId,
+          customFieldValues: record.customFieldValues,
+        });
+        customFieldsWritten += cf.written;
+      }
     } catch (err) {
       console.error(`  ⚠️  [CRM Sync] Account ${record.crmId}: ${err.message}`);
     }
   }
 
-  console.log(`  ✓ [CRM Sync] Accounts: ${upserted} upserted`);
-  return { upserted, nextCursor };
+  console.log(`  ✓ [CRM Sync] Accounts: ${upserted} upserted, ${customFieldsWritten} custom fields`);
+  return { upserted, customFields: customFieldsWritten, nextCursor };
 }
 
 async function _syncContacts(orgId, crmType, adapter, cursor) {
@@ -206,13 +218,14 @@ async function _syncContacts(orgId, crmType, adapter, cursor) {
 
   if (records.length === 0) {
     console.log(`  ✓ [CRM Sync] Contacts: no new records`);
-    return { upserted: 0, nextCursor: null };
+    return { upserted: 0, customFields: 0, nextCursor: null };
   }
 
   const ownerEmails = [...new Set(records.map(r => r.ownerEmail).filter(Boolean))];
   const emailToUser = await _resolveOwners(orgId, ownerEmails);
 
   let upserted = 0;
+  let customFieldsWritten = 0;
   for (const record of records) {
     try {
       const userId    = record.ownerEmail ? emailToUser.get(record.ownerEmail) || null : null;
@@ -220,8 +233,16 @@ async function _syncContacts(orgId, crmType, adapter, cursor) {
         ? await _resolveCrmId(orgId, 'accounts', crmType, record.accountCrmId)
         : null;
 
-      await _upsertContact(orgId, crmType, record, userId, accountId);
+      const contactId = await _upsertContact(orgId, crmType, record, userId, accountId);
       upserted++;
+
+      if (contactId && record.customFieldValues) {
+        const cf = await syncCustomFields({
+          orgId, entityType: 'contact', entityId: contactId,
+          customFieldValues: record.customFieldValues,
+        });
+        customFieldsWritten += cf.written;
+      }
     } catch (err) {
       console.error(`  ⚠️  [CRM Sync] Contact ${record.crmId}: ${err.message}`);
     }
@@ -246,8 +267,8 @@ async function _syncContacts(orgId, crmType, adapter, cursor) {
     }
   }
 
-  console.log(`  ✓ [CRM Sync] Contacts: ${upserted} upserted`);
-  return { upserted, nextCursor };
+  console.log(`  ✓ [CRM Sync] Contacts: ${upserted} upserted, ${customFieldsWritten} custom fields`);
+  return { upserted, customFields: customFieldsWritten, nextCursor };
 }
 
 async function _syncDeals(orgId, crmType, adapter, cursor, stageMap) {
@@ -256,15 +277,16 @@ async function _syncDeals(orgId, crmType, adapter, cursor, stageMap) {
 
   if (records.length === 0) {
     console.log(`  ✓ [CRM Sync] Deals: no new records`);
-    return { upserted: 0, products: 0, dealContacts: 0, nextCursor: null };
+    return { upserted: 0, products: 0, dealContacts: 0, customFields: 0, nextCursor: null };
   }
 
   const ownerEmails = [...new Set(records.map(r => r.ownerEmail).filter(Boolean))];
   const emailToUser = await _resolveOwners(orgId, ownerEmails);
 
-  let upserted     = 0;
-  let totalProducts = 0;
+  let upserted          = 0;
+  let totalProducts     = 0;
   let totalDealContacts = 0;
+  let customFieldsWritten = 0;
 
   for (const record of records) {
     try {
@@ -283,6 +305,15 @@ async function _syncDeals(orgId, crmType, adapter, cursor, stageMap) {
 
       if (gwDealId) {
         upserted++;
+
+        // Write custom fields
+        if (record.customFieldValues) {
+          const cf = await syncCustomFields({
+            orgId, entityType: 'deal', entityId: gwDealId,
+            customFieldValues: record.customFieldValues,
+          });
+          customFieldsWritten += cf.written;
+        }
 
         // Sync deal contacts (OpportunityContactRoles)
         try {
@@ -305,8 +336,8 @@ async function _syncDeals(orgId, crmType, adapter, cursor, stageMap) {
     }
   }
 
-  console.log(`  ✓ [CRM Sync] Deals: ${upserted} upserted, ${totalProducts} products, ${totalDealContacts} deal contacts`);
-  return { upserted, products: totalProducts, dealContacts: totalDealContacts, nextCursor };
+  console.log(`  ✓ [CRM Sync] Deals: ${upserted} upserted, ${totalProducts} products, ${totalDealContacts} deal contacts, ${customFieldsWritten} custom fields`);
+  return { upserted, products: totalProducts, dealContacts: totalDealContacts, customFields: customFieldsWritten, nextCursor };
 }
 
 async function _syncLeads(orgId, crmType, adapter, cursor, stageMap) {
@@ -315,13 +346,14 @@ async function _syncLeads(orgId, crmType, adapter, cursor, stageMap) {
 
   if (records.length === 0) {
     console.log(`  ✓ [CRM Sync] Leads: no new records`);
-    return { upserted: 0, nextCursor: null };
+    return { upserted: 0, customFields: 0, nextCursor: null };
   }
 
   const ownerEmails = [...new Set(records.map(r => r.ownerEmail).filter(Boolean))];
   const emailToUser = await _resolveOwners(orgId, ownerEmails);
 
   let upserted = 0;
+  let customFieldsWritten = 0;
   for (const record of records) {
     try {
       // Converted leads: update the corresponding contact/deal's external_refs
@@ -339,15 +371,23 @@ async function _syncLeads(orgId, crmType, adapter, cursor, stageMap) {
         ? await _resolveCrmId(orgId, 'accounts', crmType, record.accountCrmId)
         : null;
 
-      await _upsertProspect(orgId, crmType, record, ownerId, accountId, stageMap);
+      const prospectId = await _upsertProspect(orgId, crmType, record, ownerId, accountId, stageMap);
       upserted++;
+
+      if (prospectId && record.customFieldValues) {
+        const cf = await syncCustomFields({
+          orgId, entityType: 'prospect', entityId: prospectId,
+          customFieldValues: record.customFieldValues,
+        });
+        customFieldsWritten += cf.written;
+      }
     } catch (err) {
       console.error(`  ⚠️  [CRM Sync] Lead ${record.crmId}: ${err.message}`);
     }
   }
 
-  console.log(`  ✓ [CRM Sync] Leads: ${upserted} upserted`);
-  return { upserted, nextCursor };
+  console.log(`  ✓ [CRM Sync] Leads: ${upserted} upserted, ${customFieldsWritten} custom fields`);
+  return { upserted, customFields: customFieldsWritten, nextCursor };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
