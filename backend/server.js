@@ -238,6 +238,7 @@ app.use('/api/ai',        aiRoutes);
 app.use('/api/prompts',   promptsRoutes);
 // ─── Salesforce Integration — must be before dealHealthRoutes which catches all /api/* ──
 app.use('/api/salesforce', require('./routes/salesforce.routes'));
+app.use('/api/hubspot',    require('./routes/hubspot.routes'));
 
 app.use('/api',           dealHealthRoutes);
 app.use('/api/storage',   storageRoutes);
@@ -424,9 +425,25 @@ app.listen(PORT, () => {
       }
     });
 
+    // ── Salesforce write-back: nightly at 04:30 UTC ───────────
+    // Runs 30 min after inbound sync (04:00) so newly-completed actions
+    // from the prior day are all captured. Only pushes orgs with write_back_enabled=true.
+    cron.schedule('30 4 * * *', async () => {
+      try {
+        const { runNightlyWriteBack } = require('./services/crm/writeBack');
+        const result = await runNightlyWriteBack();
+        if (result.pushed > 0 || result.errors > 0) {
+          console.log(`📤 WriteBack Cron: ${result.orgs} orgs, ${result.pushed} actions pushed, ${result.errors} errors`);
+        }
+      } catch (err) {
+        console.error('📤 WriteBack Cron: error:', err.message);
+      }
+    });
+
     console.log('✅ Agentic framework cron jobs initialized (proposal expiry: hourly)');
     console.log('✅ CLM cron jobs initialized (contract expiry: hourly, notifications: daily 9am)');
     console.log('✅ Sequences cron initialized (fire due steps: every 15 min)');
+    console.log('✅ SF write-back cron initialized (nightly 04:30 UTC)');
   } catch (error) {
     console.error('⚠️  Failed to initialize cron jobs:', error.message);
     console.error('   Install node-cron: npm install node-cron');

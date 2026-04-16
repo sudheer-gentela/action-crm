@@ -155,6 +155,19 @@ async function exchangeCode(code, stateStr) {
   }
 
   console.log(`✅ Salesforce connected for org ${orgId} by user ${userId} — instance: ${instance_url}`);
+
+  // Provision GoWarm_Source__c on SF Task — idempotent, fire-and-forget
+  // Runs after the connect response is already committed so it never blocks OAuth
+  setImmediate(async () => {
+    try {
+      const { createClient } = require('./salesforce.client');
+      const sf = await createClient(orgId);
+      await sf.ensureCustomObjects();
+    } catch (err) {
+      console.warn(`⚠️  [SF Setup] ensureCustomObjects failed for org ${orgId}: ${err.message}`);
+    }
+  });
+
   return { userId, orgId, instanceUrl: instance_url, email: sfEmail };
 }
 

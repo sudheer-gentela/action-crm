@@ -1238,6 +1238,28 @@ router.patch('/:id/status', async (req, res) => {
     }
 
     res.json({ action: completedAction, nextAction: nextAction || null });
+
+    // ── Salesforce write-back (realtime mode) ────────────────────────────────
+    // Fire-and-forget after response is sent — never blocks the API caller.
+    // Only runs if write_back_enabled=true AND write_back_mode='realtime'.
+    if (isCompleting) {
+      setImmediate(async () => {
+        try {
+          const intRes = await db.query(
+            `SELECT settings FROM org_integrations
+             WHERE org_id = $1 AND integration_type = 'salesforce'`,
+            [req.orgId]
+          );
+          const settings = intRes.rows[0]?.settings || {};
+          if (settings.write_back_enabled && settings.write_back_mode === 'realtime') {
+            const { runWriteBackForOrg } = require('../services/crm/writeBack');
+            await runWriteBackForOrg(req.orgId, { actionId: completedAction.id });
+          }
+        } catch (err) {
+          console.error(`[WriteBack] realtime push failed for action ${completedAction.id}:`, err.message);
+        }
+      });
+    }
   } catch (error) {
     console.error('Status update error:', error);
     res.status(500).json({ error: { message: 'Failed to update status' } });

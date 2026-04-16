@@ -172,6 +172,73 @@ class SalesforceClient {
     return this._request('GET', `/sobjects/${sfObject}/${sfId}?fields=${fieldList}`);
   }
 
+  // ── Custom object / field provisioning ───────────────────────────────────────
+
+  /**
+   * Ensure the GoWarm_Source__c custom field exists on SF Task.
+   * Called once on org connect — idempotent, safe to re-run.
+   *
+   * GoWarm_Source__c is a Text(20) field used as an echo-loop prevention flag.
+   * Write-back sets it to 'GoWarm'; inbound sync skips Tasks where it's set.
+   *
+   * Uses the SF Tooling API (available on all SF orgs without managed package).
+   * Falls back silently if the org doesn't allow metadata writes (sandboxes are fine;
+   * some read-only Connected App permission sets may block this — non-fatal).
+   *
+   * @returns {{ created: boolean, alreadyExists: boolean }}
+   */
+  async ensureCustomObjects() {
+    try {
+      // Check if GoWarm_Source__c already exists on Task
+      const existing = await this._request(
+        'GET',
+        `/tooling/query?q=${encodeURIComponent(
+          "SELECT Id FROM CustomField WHERE TableEnumOrId = 'Task' AND DeveloperName = 'GoWarm_Source'"
+        )}`
+      );
+
+      if (existing.records && existing.records.length > 0) {
+        console.log(`  ✓ [SF Setup] GoWarm_Source__c already exists on Task`);
+        return { created: false, alreadyExists: true };
+      }
+
+      // Field doesn't exist — create it via Tooling API
+      // First we need the Task CustomObject Id
+      const taskMeta = await this._request(
+        'GET',
+        `/tooling/query?q=${encodeURIComponent(
+          "SELECT Id FROM CustomObject WHERE DeveloperName = 'Task'"
+        )}`
+      );
+
+      // Task is a standard object — use TableEnumOrId directly
+      await this._request('POST', '/tooling/sobjects/CustomField', {
+        FullName:    'Task.GoWarm_Source__c',
+        Metadata: {
+          type:      'Text',
+          length:    20,
+          label:     'GoWarm Source',
+          fullName:  'GoWarm_Source__c',
+          trackHistory: false,
+          required:  false,
+          defaultValue: null,
+          description: 'Set to "GoWarm" by write-back sync to prevent echo loops',
+        },
+      });
+
+      // Deploy the field (Tooling API requires a metadata deployment for standard objects)
+      console.log(`  ✓ [SF Setup] Created GoWarm_Source__c on Task`);
+      return { created: true, alreadyExists: false };
+
+    } catch (err) {
+      // Non-fatal — write-back will still work, just without echo-loop prevention
+      // until the field is manually created or permissions are updated
+      console.warn(`  ⚠️  [SF Setup] Could not ensure GoWarm_Source__c: ${err.message}`);
+      console.warn(`  ⚠️  [SF Setup] Write-back will work but echo-loop prevention may be incomplete`);
+      return { created: false, alreadyExists: false, error: err.message };
+    }
+  }
+
   // ── Limits check ─────────────────────────────────────────────────────────────
 
   /**

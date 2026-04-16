@@ -20,6 +20,7 @@
 
 const { runSyncForOrg: _runSyncForOrg, getConnectedOrgs } = require('./orchestrator');
 const { createSalesforceAdapter } = require('./adapters/salesforce.adapter');
+const { createHubSpotAdapter }    = require('./adapters/hubspot.adapter');
 
 /**
  * Adapter factory — returns an initialised adapter for a given CRM type.
@@ -33,12 +34,11 @@ async function _createAdapter(orgId, crmType) {
     case 'salesforce':
       return createSalesforceAdapter(orgId);
 
-    // case 'hubspot':
-    //   const { createHubSpotAdapter } = require('./adapters/hubspot.adapter');
-    //   return createHubSpotAdapter(orgId);
+    case 'hubspot':
+      return createHubSpotAdapter(orgId);
 
     default:
-      throw new Error(`Unknown CRM type: ${crmType}. Supported: salesforce`);
+      throw new Error(`Unknown CRM type: ${crmType}. Supported: salesforce, hubspot`);
   }
 }
 
