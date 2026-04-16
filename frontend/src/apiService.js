@@ -927,3 +927,43 @@ export const salesforceAPI = {
     return response.json();
   },
 };
+
+export const hubspotAPI = {
+  getAuthUrl: async () => {
+    const response = await fetch(`${API_BASE_URL}/hubspot/connect`, { headers: getAuthHeaders() });
+    if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error || 'Failed to get HubSpot auth URL'); }
+    return response.json();
+  },
+  getStatus: async () => {
+    const response = await fetch(`${API_BASE_URL}/hubspot/status`, { headers: getAuthHeaders() });
+    if (!response.ok) throw new Error('Failed to get HubSpot status');
+    return response.json();
+  },
+  disconnect: async () => {
+    const response = await fetch(`${API_BASE_URL}/hubspot/disconnect`, { method: 'POST', headers: getAuthHeaders() });
+    if (!response.ok) throw new Error('Failed to disconnect HubSpot');
+    return response.json();
+  },
+  triggerSync: async () => {
+    const response = await fetch(`${API_BASE_URL}/hubspot/trigger`, { method: 'POST', headers: getAuthHeaders() });
+    if (!response.ok) throw new Error('Failed to trigger HubSpot sync');
+    return response.json();
+  },
+  getSettings: async () => {
+    const response = await fetch(`${API_BASE_URL}/hubspot/settings`, { headers: getAuthHeaders() });
+    if (!response.ok) throw new Error('Failed to get HubSpot settings');
+    return response.json();
+  },
+  updateSettings: async (settings) => {
+    const response = await fetch(`${API_BASE_URL}/hubspot/settings`, {
+      method: 'PATCH', headers: getAuthHeaders(), body: JSON.stringify(settings),
+    });
+    if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error || 'Failed to save HubSpot settings'); }
+    return response.json();
+  },
+  getStages: async () => {
+    const response = await fetch(`${API_BASE_URL}/hubspot/stages`, { headers: getAuthHeaders() });
+    if (!response.ok) throw new Error('Failed to fetch HubSpot stages');
+    return response.json();
+  },
+};

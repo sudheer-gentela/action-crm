@@ -11,6 +11,7 @@ import ExecutionLog from './ExecutionLog';
 import OAEmailSettings from './OAEmailSettings';
 import OAMeetingSettings from './OAMeetingSettings';
 import SalesforceConnect from './SalesforceConnect';
+import HubSpotConnect    from './HubSpotConnect';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -71,6 +72,7 @@ const STATIC_NAV_GROUPS = [
     items: [
       { id: 'integrations', icon: '🔌', label: 'Integrations' },
       { id: 'salesforce',   icon: '☁️', label: 'Salesforce' },
+      { id: 'hubspot',      icon: '🟠', label: 'HubSpot' },
       { id: 'settings', icon: '⚙️', label: 'Org Settings' },
     ],
   },
@@ -136,6 +138,7 @@ const TAB_META = {
   'integrations-overview':{ title: 'Email & Calendar', desc: 'Manage Microsoft and Google connections for your team' },
   'integrations-meeting': { title: 'Meeting & Transcript Integrations', desc: 'Configure transcript providers — Zoom, Teams, Fireflies, and more' },
   salesforce:    { title: 'Salesforce Integration', desc: 'Sync contacts, accounts, deals, and leads with Salesforce. Configure stage/field mapping and write-back settings.' },
+  hubspot:       { title: 'HubSpot Integration',    desc: 'Sync companies, contacts, and deals with HubSpot. Configure stage and field mapping.' },
   settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
 
 };
@@ -541,6 +544,7 @@ export default function OrgAdminView() {
             {tab === 'team-dimensions'  && <OATeamDimensions />}
             {(tab === 'integrations' || tab === 'integrations-overview') && <OAIntegrations orgId={orgId} />}
             {tab === 'salesforce'        && <OASalesforceSettings />}
+            {tab === 'hubspot'           && <OAHubSpotSettings />}
             {tab === 'settings'         && <OASettings />}
           </div>
         </div>
@@ -4268,6 +4272,26 @@ function OASalesforceSettings() {
         </p>
       </div>
       <SalesforceConnect />
+    </div>
+  );
+}
+
+// OAHubSpotSettings — HubSpot integration settings tab
+// ─────────────────────────────────────────────────────────────────
+
+function OAHubSpotSettings() {
+  return (
+    <div className="oa-panel">
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: '0 0 4px', fontSize: 17, fontWeight: 700, color: '#111827' }}>
+          🟠 HubSpot Integration
+        </h2>
+        <p style={{ margin: 0, fontSize: 13, color: '#6b7280' }}>
+          Connect your HubSpot portal to sync companies, contacts, and deals.
+          Records sync nightly at 04:00 UTC. Stage and field mapping is configurable per org.
+        </p>
+      </div>
+      <HubSpotConnect />
     </div>
   );
 }
