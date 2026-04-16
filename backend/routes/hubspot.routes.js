@@ -66,6 +66,16 @@ router.get('/connect', async (req, res) => {
   }
 });
 
+// GET /debug-env — TEMPORARY: remove after diagnosing HubSpot env var issue
+router.get('/debug-env', async (req, res) => {
+  res.json({
+    HUBSPOT_CLIENT_ID:     process.env.HUBSPOT_CLIENT_ID ? '✅ set' : '❌ missing',
+    HUBSPOT_CLIENT_SECRET: process.env.HUBSPOT_CLIENT_SECRET ? '✅ set' : '❌ missing',
+    HUBSPOT_REDIRECT_URI:  process.env.HUBSPOT_REDIRECT_URI  ? '✅ set' : '❌ missing',
+    HUBSPOT_REDIRECT_URI_VALUE: process.env.HUBSPOT_REDIRECT_URI || null,
+  });
+});
+
 // GET /status
 router.get('/status', async (req, res) => {
   try {
