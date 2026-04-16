@@ -50,7 +50,7 @@ class SalesforceAdapter {
 
     // Load field_map from org settings so adapter knows which custom
     // fields to fetch — no hardcoded field names anywhere in this file.
-    const { pool } = require('../../config/database');
+    const { pool } = require('../../../config/database');
     const intRes = await pool.query(
       `SELECT settings FROM org_integrations WHERE org_id = $1 AND integration_type = 'salesforce'`,
       [this.orgId]
