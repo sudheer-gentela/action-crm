@@ -313,9 +313,11 @@ class SalesforceAdapter {
    * @returns {NormalizedLineItem[]}
    */
   async getDealProducts(dealCrmId) {
+    // Note: Discount and ProductCode are optional SF features not available on all orgs.
+    // ProductCode is fetched via PricebookEntry.Product2.ProductCode instead.
+    // TotalPrice is a formula field — not needed since we compute it in GoWarm.
     const soql = `
-      SELECT Id, Name, Quantity, UnitPrice, TotalPrice,
-             Discount, ProductCode,
+      SELECT Id, Name, Quantity, UnitPrice,
              PricebookEntry.Product2.Name,
              PricebookEntry.Product2.Description,
              PricebookEntry.Product2.ProductCode,
@@ -329,7 +331,7 @@ class SalesforceAdapter {
       const result = await this.client.query(soql);
       return result.records.map(r => this._normalizeLineItem(r));
     } catch (err) {
-      // Products might not be enabled on this SF org
+      // Products might not be enabled on this SF org — skip gracefully
       console.warn(`  ⚠️  [SF] getDealProducts for ${dealCrmId}: ${err.message} — skipping`);
       return [];
     }
@@ -338,10 +340,9 @@ class SalesforceAdapter {
   _normalizeLineItem(r) {
     const product   = r.PricebookEntry?.Product2;
     const name      = product?.Name || r.Name || 'Unknown Product';
-    const sku       = product?.ProductCode || r.ProductCode || null;
+    const sku       = product?.ProductCode || null; // via PricebookEntry only — top-level ProductCode not available on all orgs
     const family    = product?.Family || null;
     const unitPrice = parseFloat(r.UnitPrice) || 0;
-    const discount  = parseFloat(r.Discount) || 0;
 
     // SF Family field often maps to our product_type distinction
     const { productType, billingFrequency } = normalizeProductType(family);
@@ -352,10 +353,10 @@ class SalesforceAdapter {
       sku,
       quantity:         parseFloat(r.Quantity) || 1,
       unitPrice,
-      discountPct:      discount,
+      discountPct:      0,   // Discount field not available on all SF orgs — defaults to 0
       productType,
       billingFrequency,
-      contractTerm:     null,   // SF doesn't have a standard contract_term field
+      contractTerm:     null,
       effectiveDate:    r.ServiceDate || null,
       renewalDate:      null,
       categoryName:     family || null,
