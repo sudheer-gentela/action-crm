@@ -480,8 +480,15 @@ class SalesforceAdapter {
    * @returns {any|null}
    */
   _resolveField(r, sfObject, gwField) {
+    // field_map stores gw_field without entity prefix
+    // e.g. 'linkedin_url' not 'contact.linkedin_url'
+    // Strip the prefix before matching if present
+    const bareField = gwField.includes('.')
+      ? gwField.split('.').slice(1).join('.')
+      : gwField;
+
     const mapping = this.fieldMap.find(
-      m => m.sf_object === sfObject && m.gw_field === gwField
+      m => m.sf_object === sfObject && m.gw_field === bareField
     );
     if (!mapping) return null;
     return r[mapping.sf_field] ?? null;
