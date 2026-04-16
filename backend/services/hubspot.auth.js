@@ -31,9 +31,15 @@ const HS_TOKEN_URL    = 'https://api.hubapi.com/oauth/v1/token';
 const HS_REVOKE_URL   = 'https://api.hubapi.com/oauth/v1/refresh-tokens';
 const HS_API_BASE     = 'https://api.hubapi.com';
 
-const CLIENT_ID     = process.env.HUBSPOT_CLIENT_ID;
-const CLIENT_SECRET = process.env.HUBSPOT_CLIENT_SECRET;
-const REDIRECT_URI  = process.env.HUBSPOT_REDIRECT_URI;
+// Read env vars at call time (not module load time) so Railway injections
+// are always picked up regardless of require() caching order.
+function _env() {
+  return {
+    CLIENT_ID:     process.env.HUBSPOT_CLIENT_ID,
+    CLIENT_SECRET: process.env.HUBSPOT_CLIENT_SECRET,
+    REDIRECT_URI:  process.env.HUBSPOT_REDIRECT_URI,
+  };
+}
 
 const SCOPES = [
   'crm.objects.companies.read',
@@ -47,6 +53,7 @@ const SCOPES = [
 // ── getAuthUrl ────────────────────────────────────────────────────────────────
 
 function getAuthUrl(userId, orgId) {
+  const { CLIENT_ID, REDIRECT_URI } = _env();
   if (!CLIENT_ID || !REDIRECT_URI) {
     throw new Error('HUBSPOT_CLIENT_ID and HUBSPOT_REDIRECT_URI env vars are required');
   }
@@ -76,6 +83,7 @@ function getAuthUrl(userId, orgId) {
  * @returns {{ userId, orgId, hubId, email }}
  */
 async function exchangeCode(code, stateStr) {
+  const { CLIENT_ID, CLIENT_SECRET, REDIRECT_URI } = _env();
   let stateData;
   try {
     stateData = JSON.parse(Buffer.from(stateStr, 'base64').toString());
@@ -216,6 +224,7 @@ async function getValidToken(orgId) {
 // ── _refreshToken ─────────────────────────────────────────────────────────────
 
 async function _refreshToken(refreshToken, userId, orgId) {
+  const { CLIENT_ID, CLIENT_SECRET } = _env();
   const res = await axios.post(HS_TOKEN_URL, new URLSearchParams({
     grant_type:    'refresh_token',
     client_id:     CLIENT_ID,
