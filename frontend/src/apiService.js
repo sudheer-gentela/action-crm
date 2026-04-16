@@ -379,6 +379,20 @@ export const apiService = {
     bulkUpdateHierarchy: (entries) => api.post('/org/admin/hierarchy/bulk', { entries }),
     removeFromHierarchy: (userId) => api.delete(`/org/admin/hierarchy/${userId}`),
     removeDottedLine: (userId, managerId) => api.delete(`/org/admin/hierarchy/${userId}/dotted/${managerId}`),
+    importHierarchy: async (file) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await fetch(`${API_BASE_URL}/org/admin/hierarchy/import`, {
+        method: 'POST',
+        headers: getAuthHeaders(), // no Content-Type — browser sets multipart boundary automatically
+        body: formData,
+      });
+      if (!response.ok) {
+        const e = await response.json().catch(() => ({}));
+        throw new Error(e.error?.message || 'Failed to import hierarchy CSV');
+      }
+      return response.json();
+    },
     getPlaybookTypes: () => api.get('/org/admin/playbook-types'),
     createPlaybookType: (data) => api.post('/org/admin/playbook-types', data),
     updatePlaybookType: (key, data) => api.put(`/org/admin/playbook-types/${key}`, data),

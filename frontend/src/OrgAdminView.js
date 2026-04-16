@@ -853,6 +853,8 @@ function OAHierarchy() {
   const [dropTarget, setDropTarget] = useState(null);
   const [showDotted, setShowDotted] = useState(true);
   const [addingDotted, setAddingDotted] = useState(null); // userId to add dotted line to
+  const [importing, setImporting]       = useState(false);
+  const [importResult, setImportResult] = useState(null); // summary from last import
 
   const load = useCallback(async () => {
     try {
@@ -868,6 +870,29 @@ function OAHierarchy() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const handleCsvImport = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    setImportResult(null);
+    setError('');
+    try {
+      const res = await apiService.orgAdmin.importHierarchy(file);
+      setImportResult(res.summary);
+      if (res.summary.imported > 0) {
+        setSuccess(`Imported ${res.summary.imported} row${res.summary.imported !== 1 ? 's' : ''} successfully`);
+        load(); // refresh tree
+      } else {
+        setError('No rows were imported — check the warnings below');
+      }
+    } catch (err) {
+      setError(err.message || 'CSV import failed');
+    } finally {
+      setImporting(false);
+      e.target.value = ''; // reset so same file can be re-uploaded after a fix
+    }
+  };
 
   // ── Build tree from flat list ────────────────────────────
   const buildTreeNodes = (flatList, allMembers) => {
@@ -1305,12 +1330,60 @@ function OAHierarchy() {
           <strong>Drag & drop</strong> cards to reassign reporting lines. Use <strong>⤴</strong> to add dotted (matrix) lines.
           Hierarchy controls data visibility; admin access is still via org roles.
         </div>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>
-          <input type="checkbox" checked={showDotted} onChange={e => setShowDotted(e.target.checked)}
-            style={{ accentColor: '#f59e0b' }} />
-          Show dotted lines
-        </label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>
+            <input type="checkbox" checked={showDotted} onChange={e => setShowDotted(e.target.checked)}
+              style={{ accentColor: '#f59e0b' }} />
+            Show dotted lines
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0' }}>
+            <input
+              type="file"
+              accept=".csv"
+              style={{ display: 'none' }}
+              onChange={handleCsvImport}
+              disabled={importing}
+            />
+            <button
+              style={{
+                fontSize: '12px', fontWeight: 600, padding: '5px 12px',
+                borderRadius: '6px', border: '1px solid #c7d2fe', cursor: importing ? 'wait' : 'pointer',
+                background: '#eef2ff', color: '#4338ca',
+                opacity: importing ? 0.6 : 1,
+              }}
+              onClick={e => e.currentTarget.previousSibling.click()}
+              disabled={importing}
+              title="Upload a CSV with columns: email, manager_email, hierarchy_role, team_name"
+            >
+              {importing ? '⏳ Importing…' : '⬆ Import CSV'}
+            </button>
+          </label>
+        </div>
       </div>
+
+      {/* CSV import result summary */}
+      {importResult && (
+        <div style={{
+          background: importResult.imported > 0 ? '#f0fdf4' : '#fffbeb',
+          border: `1px solid ${importResult.imported > 0 ? '#bbf7d0' : '#fde68a'}`,
+          borderRadius: '8px', padding: '12px 16px', marginBottom: '16px', fontSize: '13px',
+        }}>
+          <div style={{ fontWeight: 600, marginBottom: importResult.errors.length > 0 ? 6 : 0 }}>
+            Import complete — {importResult.imported} imported, {importResult.skipped} skipped
+            {importResult.teams > 0 && `, ${importResult.teams} team${importResult.teams !== 1 ? 's' : ''} updated`}
+          </div>
+          {importResult.errors.length > 0 && (
+            <details>
+              <summary style={{ cursor: 'pointer', color: '#b45309', fontSize: '12px' }}>
+                {importResult.errors.length} warning{importResult.errors.length !== 1 ? 's' : ''}
+              </summary>
+              <ul style={{ margin: '6px 0 0', paddingLeft: '20px', color: '#92400e', fontSize: '12px' }}>
+                {importResult.errors.map((msg, i) => <li key={i}>{msg}</li>)}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
 
       {/* Drop zone: root level */}
       <div
@@ -1341,7 +1414,7 @@ function OAHierarchy() {
           }}>
             <p style={{ fontSize: '15px', fontWeight: 500 }}>No hierarchy set up yet</p>
             <p style={{ fontSize: '13px', marginTop: '6px' }}>
-              Add members from the list below, then drag to arrange.
+              Add members from the list below, drag to arrange, or use <strong>⬆ Import CSV</strong> to bulk-load from a spreadsheet.
             </p>
           </div>
         ) : (

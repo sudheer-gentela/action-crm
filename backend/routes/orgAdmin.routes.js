@@ -1998,6 +1998,240 @@ router.patch('/diagnostic-rules', adminOnly, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// HIERARCHY CSV IMPORT
+// POST /api/org/admin/hierarchy/import
+//
+// Accepts a CSV file with columns:
+//   email, manager_email, hierarchy_role, team_name  (header row required)
+//
+// Required columns: email
+// Optional columns: manager_email, hierarchy_role, team_name
+//
+// hierarchy_role values: rep | manager | director | vp | cro  (defaults to 'rep')
+//
+// Behaviour matches CRM sync hierarchy logic:
+//   - Join key is email — user must already exist in GoWarm org
+//   - Upserts org_hierarchy solid lines (does not delete existing rows)
+//   - Upserts teams + team_memberships by team_name
+//   - Rows with unrecognised emails are skipped and reported back
+//   - Returns a summary: { imported, skipped, errors[], teams }
+// ─────────────────────────────────────────────────────────────────────────────
+
+const multer = require('multer');
+const csvUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 1 * 1024 * 1024 }, // 1 MB — hierarchy CSVs are tiny
+  fileFilter: (req, file, cb) => {
+    const ok = file.mimetype === 'text/csv'
+      || file.mimetype === 'application/vnd.ms-excel'
+      || file.originalname.endsWith('.csv');
+    ok ? cb(null, true) : cb(new Error('Only CSV files are allowed'));
+  },
+});
+
+router.post('/hierarchy/import', adminOnly, csvUpload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: { message: 'No CSV file uploaded. Use field name "file".' } });
+  }
+
+  // ── Parse CSV ─────────────────────────────────────────────────────────────
+  let rows;
+  try {
+    rows = _parseHierarchyCsv(req.file.buffer.toString('utf8'));
+  } catch (err) {
+    return res.status(400).json({ error: { message: `CSV parse error: ${err.message}` } });
+  }
+
+  if (rows.length === 0) {
+    return res.status(400).json({ error: { message: 'CSV contains no data rows (only a header?)' } });
+  }
+
+  // ── Build email → GoWarm user_id map for this org ─────────────────────────
+  const emailMapRes = await pool.query(
+    `SELECT u.id, LOWER(u.email) AS email
+     FROM users u
+     JOIN org_users ou ON ou.user_id = u.id
+     WHERE ou.org_id = $1 AND ou.is_active = true`,
+    [req.orgId]
+  );
+  const emailToUserId = new Map();
+  for (const row of emailMapRes.rows) {
+    emailToUserId.set(row.email, row.id);
+  }
+
+  // ── Process rows ──────────────────────────────────────────────────────────
+  const VALID_ROLES = new Set(['rep', 'manager', 'director', 'vp', 'cro']);
+  let imported = 0;
+  let skipped  = 0;
+  const errors = [];
+  const teamGroups = new Map(); // teamName → Set<userId>
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const lineNum = i + 2; // +2 = 1-indexed + header row
+    const email = row.email?.toLowerCase().trim();
+
+    if (!email) {
+      errors.push(`Row ${lineNum}: missing email — skipped`);
+      skipped++;
+      continue;
+    }
+
+    const userId = emailToUserId.get(email);
+    if (!userId) {
+      errors.push(`Row ${lineNum}: "${email}" not found in org — skipped`);
+      skipped++;
+      continue;
+    }
+
+    const managerEmail = row.manager_email?.toLowerCase().trim() || null;
+    const managerId    = managerEmail ? emailToUserId.get(managerEmail) || null : null;
+
+    if (managerEmail && !managerId) {
+      errors.push(`Row ${lineNum}: manager "${managerEmail}" not found in org — reporting line left null`);
+      // Non-fatal: still import the user, just without a manager
+    }
+
+    const rawRole      = row.hierarchy_role?.toLowerCase().trim();
+    const hierarchyRole = VALID_ROLES.has(rawRole) ? rawRole : 'rep';
+
+    try {
+      await pool.query(`
+        INSERT INTO org_hierarchy (org_id, user_id, reports_to, hierarchy_role, relationship_type, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, 'solid', NOW(), NOW())
+        ON CONFLICT (org_id, user_id)
+          WHERE relationship_type = 'solid'
+        DO UPDATE SET
+          reports_to     = EXCLUDED.reports_to,
+          hierarchy_role = EXCLUDED.hierarchy_role,
+          updated_at     = NOW()
+      `, [req.orgId, userId, managerId, hierarchyRole]);
+
+      imported++;
+    } catch (err) {
+      errors.push(`Row ${lineNum}: DB error for "${email}" — ${err.message}`);
+      skipped++;
+      continue;
+    }
+
+    // Collect team membership
+    const teamName = row.team_name?.trim();
+    if (teamName) {
+      if (!teamGroups.has(teamName)) teamGroups.set(teamName, new Set());
+      teamGroups.get(teamName).add(userId);
+    }
+  }
+
+  // ── Upsert teams + memberships ────────────────────────────────────────────
+  let teamsCreated = 0;
+  for (const [teamName, userIds] of teamGroups) {
+    try {
+      const orgRoleKey = teamName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+      const teamRes = await pool.query(`
+        INSERT INTO teams (org_id, name, dimension, org_role_key, is_active, created_at, updated_at)
+        VALUES ($1, $2, 'sales', $3, true, NOW(), NOW())
+        ON CONFLICT (org_id, dimension, name)
+        DO UPDATE SET org_role_key = EXCLUDED.org_role_key, is_active = true, updated_at = NOW()
+        RETURNING id
+      `, [req.orgId, teamName, orgRoleKey]);
+
+      const teamId = teamRes.rows[0].id;
+      for (const userId of userIds) {
+        await pool.query(`
+          INSERT INTO team_memberships (org_id, user_id, team_id, role, is_primary, created_at)
+          VALUES ($1, $2, $3, 'member', true, NOW())
+          ON CONFLICT (user_id, team_id) DO NOTHING
+        `, [req.orgId, userId, teamId]);
+      }
+      teamsCreated++;
+    } catch (err) {
+      errors.push(`Team "${teamName}": ${err.message}`);
+    }
+  }
+
+  console.log(
+    `📥 [Hierarchy Import] org ${req.orgId} — imported:${imported} skipped:${skipped} teams:${teamsCreated} errors:${errors.length}`
+  );
+
+  res.json({
+    success: true,
+    summary: {
+      totalRows: rows.length,
+      imported,
+      skipped,
+      teams: teamsCreated,
+      errors, // array of human-readable strings, shown in UI
+    },
+  });
+});
+
+/**
+ * Parse a CSV string into an array of plain objects keyed by header names.
+ * Handles quoted fields (RFC 4180), trims whitespace from keys and values.
+ * Throws if required header 'email' is missing.
+ *
+ * @param {string} csvText
+ * @returns {Array<Object>}
+ */
+function _parseHierarchyCsv(csvText) {
+  const lines = csvText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+
+  // Skip blank lines at the top
+  while (lines.length && !lines[0].trim()) lines.shift();
+  if (lines.length === 0) throw new Error('Empty file');
+
+  const headers = _splitCsvLine(lines[0]).map(h => h.toLowerCase().trim());
+  if (!headers.includes('email')) {
+    throw new Error(`Header row must include "email". Found: ${headers.join(', ')}`);
+  }
+
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue; // skip blank lines
+
+    const values = _splitCsvLine(line);
+    const obj = {};
+    for (let j = 0; j < headers.length; j++) {
+      obj[headers[j]] = (values[j] || '').trim();
+    }
+    rows.push(obj);
+  }
+
+  return rows;
+}
+
+/**
+ * Split a single CSV line into fields, respecting double-quoted fields.
+ * Unquotes and un-escapes `""` → `"`.
+ *
+ * @param {string} line
+ * @returns {string[]}
+ */
+function _splitCsvLine(line) {
+  const fields = [];
+  let current  = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch   = line[i];
+    const next = line[i + 1];
+
+    if (inQuotes) {
+      if (ch === '"' && next === '"') { current += '"'; i++; }  // escaped quote
+      else if (ch === '"')             { inQuotes = false; }     // closing quote
+      else                             { current += ch; }
+    } else {
+      if (ch === '"')  { inQuotes = true; }
+      else if (ch === ',') { fields.push(current); current = ''; }
+      else { current += ch; }
+    }
+  }
+  fields.push(current);
+  return fields;
+}
+
 module.exports = router;
 module.exports.getDiagnosticRulesConfig = getDiagnosticRulesConfig;
 module.exports.DIAGNOSTIC_DEFAULTS      = DIAGNOSTIC_DEFAULTS;
