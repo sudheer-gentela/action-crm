@@ -48,7 +48,7 @@ const SupportService  = require('../services/supportService');
 const HandoverService = require('../services/handover.service');
 const { runNightlySweep: runProspectingNightlySweep } = require('../services/prospectingActions.service');  // Phase 4
 const StrapNightlySweep = require('../services/StrapNightlySweep');                                         // Phase 5
-const sfSync            = require('../services/salesforce.sync.service');                                   // Phase 6 SF
+const sfSync            = require('../services/crm');                                                        // Phase 6 SF
 
 
 
@@ -1170,28 +1170,25 @@ function startScheduler() {
   }, { timezone: 'UTC' });
 
   // ── Salesforce sync — nightly at 04:00 UTC ───────────────────────────────  // Phase 6
-  // Phase 1 (data hydration) + Phase 2 (activity signal reading).
   // Runs for all orgs that have an active SF connection.
   // Uses LastModifiedDate cursor — safe to run every night, only pulls changes.
   // Staggered 15 min after email filter log purge (03:45) to avoid DB contention.
   cron.schedule('0 4 * * *', async () => {
-    console.log('🌙 Running nightly Salesforce sync (Phase 1+2)...');
+    console.log('🌙 Running nightly Salesforce sync...');
     try {
-      const orgIds = await sfSync.getConnectedOrgs();
+      const orgIds = await sfSync.getConnectedOrgs('salesforce');
       if (orgIds.length === 0) {
         console.log('  ℹ️  No orgs with active Salesforce connection — skipping');
         return;
       }
-      let totalAccounts = 0, totalContacts = 0, totalDeals = 0, totalProspects = 0,
-          totalTasks = 0, totalErrors = 0;
+      let totalAccounts = 0, totalContacts = 0, totalDeals = 0, totalProspects = 0, totalErrors = 0;
       for (const orgId of orgIds) {
         try {
-          const r = await sfSync.runSyncForOrg(orgId);
-          totalAccounts  += r.phase1.accounts;
-          totalContacts  += r.phase1.contacts;
-          totalDeals     += r.phase1.deals;
-          totalProspects += r.phase1.prospects;
-          totalTasks     += r.phase2.tasks;
+          const r = await sfSync.runSyncForOrg(orgId, 'salesforce');
+          totalAccounts  += r.results.accounts?.upserted  || 0;
+          totalContacts  += r.results.contacts?.upserted  || 0;
+          totalDeals     += r.results.deals?.upserted     || 0;
+          totalProspects += r.results.prospects?.upserted || 0;
           if (r.errors.length > 0) totalErrors += r.errors.length;
         } catch (err) {
           console.error(`❌ SF sync error for org ${orgId}:`, err.message);
@@ -1203,7 +1200,7 @@ function startScheduler() {
       console.log(
         `✅ SF sync done — orgs: ${orgIds.length}, ` +
         `accounts: ${totalAccounts}, contacts: ${totalContacts}, ` +
-        `deals: ${totalDeals}, prospects: ${totalProspects}, tasks: ${totalTasks}, errors: ${totalErrors}`
+        `deals: ${totalDeals}, prospects: ${totalProspects}, errors: ${totalErrors}`
       );
     } catch (err) {
       console.error('❌ Salesforce sync cron error:', err.message);
@@ -1211,33 +1208,13 @@ function startScheduler() {
   }, { timezone: 'UTC' });
 
   // ── Salesforce write-back — nightly at 04:30 UTC ─────────────────────────  // Phase 6
-  // Phase 3: completed GoWarm actions → SF Tasks.
-  // Only runs for orgs where write_back_enabled = true (off by default).
-  // SuperAdmin must enable globally; Org Admin toggles per org.
-  // Staggered 30 min after Phase 1+2 sync to ensure data is hydrated first.
+  // Phase 3: GoWarm actions → SF GoWarm_Action__c object.
+  // NOT YET IMPLEMENTED — placeholder for Phase 3 build.
+  // Will run for orgs where write_back_enabled = true (off by default).
   cron.schedule('30 4 * * *', async () => {
-    console.log('🌙 Running nightly Salesforce write-back (Phase 3)...');
-    try {
-      const orgIds = await sfSync.getConnectedOrgs();
-      let totalWritten = 0, totalSkipped = 0, totalErrors = 0;
-      for (const orgId of orgIds) {
-        try {
-          const r = await sfSync.runWriteBackForOrg(orgId);
-          if (r.skipped) { totalSkipped++; continue; }
-          totalWritten += r.written || 0;
-        } catch (err) {
-          console.error(`❌ SF write-back error for org ${orgId}:`, err.message);
-          totalErrors++;
-        }
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
-      console.log(
-        `✅ SF write-back done — orgs_checked: ${orgIds.length}, ` +
-        `written: ${totalWritten}, skipped_disabled: ${totalSkipped}, errors: ${totalErrors}`
-      );
-    } catch (err) {
-      console.error('❌ Salesforce write-back cron error:', err.message);
-    }
+    // Phase 3 write-back not yet implemented.
+    // Uncomment when crm/writeBack.js is built.
+    // console.log('🌙 Running nightly Salesforce write-back (Phase 3)...');
   }, { timezone: 'UTC' });
 
   console.log('✅ Deal action scheduler started (nightly 01:00 UTC)');

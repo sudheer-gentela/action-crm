@@ -339,6 +339,14 @@ function StageMappingTab({ settings, onSave, saving }) {
   const [gwEntity,   setGwEntity]   = useState('deal');
   const [dirty, setDirty] = useState(false);
 
+  // Sync stageMap when settings load (useState only runs once on mount,
+  // so if settings arrive after first render the map would stay empty)
+  useEffect(() => {
+    if (settings?.stage_map && !dirty) {
+      setStageMap(settings.stage_map);
+    }
+  }, [settings?.stage_map]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const addMapping = () => {
     const sfKey = newSfStage.trim();
     if (!sfKey || !newGwStage) return;
@@ -429,6 +437,13 @@ function StageMappingTab({ settings, onSave, saving }) {
 
 function FieldMappingTab({ settings, onSave, saving }) {
   const [fieldMap, setFieldMap] = useState(settings?.field_map || []);
+
+  // Sync fieldMap when settings load
+  useEffect(() => {
+    if (settings?.field_map && !dirty) {
+      setFieldMap(settings.field_map);
+    }
+  }, [settings?.field_map]); // eslint-disable-line react-hooks/exhaustive-deps
   const [sfFields, setSfFields] = useState({});
   const [newMapping, setNewMapping] = useState({ sf_object: 'Opportunity', sf_field: '', gw_entity: 'deal', gw_field: '', direction: 'sf_to_gw' });
   const [loadingFields, setLoadingFields] = useState({});

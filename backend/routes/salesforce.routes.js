@@ -21,7 +21,7 @@ const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }   = require('../middleware/orgContext.middleware');
 const { pool }         = require('../config/database');
 const sfAuth           = require('../services/salesforce.auth');
-const sfSync           = require('../services/salesforce.sync.service');
+const sfSync           = require('../services/crm');
 const { createClient } = require('../services/salesforce.client');
 
 const FRONTEND_URL = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://app.gowarmcrm.com';
@@ -96,8 +96,8 @@ router.post('/trigger', async (req, res) => {
     }
 
     // Run async — don't wait for completion (sync can take minutes)
-    sfSync.runSyncForOrg(req.orgId)
-      .then(r  => console.log(`Manual SF sync completed for org ${req.orgId}:`, r))
+    sfSync.runSyncForOrg(req.orgId, 'salesforce')
+      .then(r  => console.log(`Manual SF sync completed for org ${req.orgId}:`, r.results))
       .catch(e => console.error(`Manual SF sync error for org ${req.orgId}:`, e.message));
 
     res.json({ success: true, message: 'Sync started — check status in a few minutes' });
@@ -222,65 +222,6 @@ router.get('/locked-fields/:entity', async (req, res) => {
     res.json({ success: true, data: fields });
   } catch (err) {
     res.json({ success: true, data: [] }); // Non-blocking — fail open
-  }
-});
-
-// GET /identity-queue — pending identity resolution actions for this org
-router.get('/identity-queue', async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT ci.id, ci.identity_type, ci.identity_value, ci.confidence, ci.created_at,
-             ci.canonical_contact_id, ci.canonical_prospect_id,
-             a.id AS action_id, a.title AS action_title, a.deal_id,
-             d.name AS deal_name
-      FROM contact_identities ci
-      LEFT JOIN actions a ON a.source = 'salesforce_sync' AND a.source_id = ci.identity_value AND a.org_id = $1
-      LEFT JOIN deals d ON d.id = a.deal_id
-      WHERE ci.org_id = $1 AND ci.status = 'pending_review'
-      ORDER BY ci.created_at DESC
-      LIMIT 50
-    `, [req.orgId]);
-    res.json({ success: true, data: result.rows });
-  } catch (err) {
-    console.error('SF identity queue error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// POST /identity-queue/:id/resolve — confirm or reject a pending identity match
-router.post('/identity-queue/:id/resolve', async (req, res) => {
-  const { action } = req.body; // 'confirm' | 'reject' | 'create_new'
-  if (!['confirm', 'reject', 'create_new'].includes(action)) {
-    return res.status(400).json({ success: false, error: 'action must be confirm, reject, or create_new' });
-  }
-
-  try {
-    const ciRes = await pool.query(
-      `SELECT * FROM contact_identities WHERE id = $1 AND org_id = $2`,
-      [req.params.id, req.orgId]
-    );
-    if (ciRes.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Identity record not found' });
-    }
-
-    const newStatus = action === 'confirm' ? 'confirmed' : 'rejected';
-    await pool.query(`
-      UPDATE contact_identities
-      SET status = $2, confirmed_by = $3, confirmed_at = NOW()
-      WHERE id = $1
-    `, [req.params.id, newStatus, req.user.userId]);
-
-    // Complete the identity resolution action on the deal
-    await pool.query(`
-      UPDATE actions
-      SET completed = true, completed_at = NOW(), updated_at = NOW()
-      WHERE source = 'salesforce_sync' AND source_id = $1 AND org_id = $2
-    `, [ciRes.rows[0].identity_value, req.orgId]);
-
-    res.json({ success: true, message: `Identity ${newStatus}` });
-  } catch (err) {
-    console.error('SF identity resolve error:', err.message);
-    res.status(500).json({ success: false, error: err.message });
   }
 });
 
