@@ -590,11 +590,13 @@ router.get('/drafts', async (req, res) => {
     // Sender resolution mirrors SequenceStepFirer.resolveSender():
     //   1. If prospect.client_id is set, prefer a client-owned sender.
     //   2. Otherwise fall back to the rep's personal sender (client_id IS NULL).
-    // Surfaces signature fields so LinkedIn drafts render correctly.
     //
     // Source-of-truth for rendering: ss.channel (the CURRENT sequence step),
     // NOT ssl.channel (the draft-time snapshot). We return both so the UI
     // can detect drift (rep edited the sequence after draft was created).
+    //
+    // ownerType is derived in SQL (client vs user priority) rather than
+    // read from a column.
     let query = `
       SELECT
         ssl.id, ssl.enrollment_id, ssl.subject, ssl.body,
@@ -626,7 +628,8 @@ router.get('/drafts', async (req, res) => {
         SELECT id, email, provider, label, display_name,
                signature, linkedin_signature, owner_type
         FROM (
-          -- Client sender (preferred when prospect belongs to a client)
+          -- Client sender (preferred when prospect belongs to a client).
+          -- Dormant: agency module not in use, so this branch returns zero rows.
           SELECT id, email, provider, label, display_name,
                  signature, linkedin_signature,
                  'client'::text AS owner_type,
@@ -640,7 +643,7 @@ router.get('/drafts', async (req, res) => {
 
           UNION ALL
 
-          -- Rep personal sender (fallback)
+          -- Rep personal sender (the only branch that matches in practice).
           SELECT id, email, provider, label, display_name,
                  signature, linkedin_signature,
                  'user'::text AS owner_type,

@@ -778,12 +778,13 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
   const startEdit = (sender) => {
     setEditingId(sender.id);
     setEditValues({
-      label:           sender.label           || '',
-      displayName:     sender.displayName     || '',
-      signature:       sender.signature       || '',
-      dailyLimit:      sender.dailyLimit      ?? '',
-      minDelayMinutes: sender.minDelayMinutes ?? '',
-      isActive:        sender.isActive,
+      label:              sender.label              || '',
+      displayName:        sender.displayName        || '',
+      signature:          sender.signature          || '',
+      linkedinSignature:  sender.linkedinSignature  || '',
+      dailyLimit:         sender.dailyLimit         ?? '',
+      minDelayMinutes:    sender.minDelayMinutes    ?? '',
+      isActive:           sender.isActive,
     });
   };
 
@@ -792,12 +793,13 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
   const saveEdit = async (senderId) => {
     try {
       const payload = {
-        label:           editValues.label           || null,
-        displayName:     editValues.displayName     || null,
-        signature:       editValues.signature       || null,
-        isActive:        editValues.isActive,
-        dailyLimit:      editValues.dailyLimit      !== '' ? parseInt(editValues.dailyLimit)      : undefined,
-        minDelayMinutes: editValues.minDelayMinutes !== '' ? parseInt(editValues.minDelayMinutes) : undefined,
+        label:              editValues.label              || null,
+        displayName:        editValues.displayName        || null,
+        signature:          editValues.signature          || null,
+        linkedinSignature:  editValues.linkedinSignature  || null,
+        isActive:           editValues.isActive,
+        dailyLimit:         editValues.dailyLimit         !== '' ? parseInt(editValues.dailyLimit)      : undefined,
+        minDelayMinutes:    editValues.minDelayMinutes    !== '' ? parseInt(editValues.minDelayMinutes) : undefined,
       };
       await apiService.prospectingSenders.update(senderId, payload);
       showFlash('success', 'Sender account updated.');
@@ -980,6 +982,21 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
                             Plain text or HTML. Appended automatically when emails are sent.
                           </div>
                         </div>
+                        <div>
+                          <label style={{ fontSize: 11, color: '#6b7280', display: 'block', marginBottom: 4 }}>
+                            LinkedIn signature <span style={{ color: '#9ca3af' }}>(used for LinkedIn drafts — falls back to email signature if blank)</span>
+                          </label>
+                          <textarea
+                            value={editValues.linkedinSignature}
+                            onChange={e => setEditValues(p => ({ ...p, linkedinSignature: e.target.value }))}
+                            placeholder={`e.g. — Alex`}
+                            rows={2}
+                            style={{ width: '100%', padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontFamily: 'inherit', resize: 'vertical', boxSizing: 'border-box' }}
+                          />
+                          <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>
+                            Keep it short — LinkedIn DMs aren't emails. A first name sign-off is usually enough.
+                          </div>
+                        </div>
                       </div>
 
                       <div style={{ display: 'flex', gap: 8 }}>
@@ -1037,6 +1054,9 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
                           )}
                           {sender.signature && (
                             <span style={{ color: '#6b7280' }}>✓ Signature set</span>
+                          )}
+                          {sender.linkedinSignature && (
+                            <span style={{ color: '#6b7280' }}>✓ LinkedIn signature set</span>
                           )}
                         </div>
                       </div>

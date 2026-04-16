@@ -43,6 +43,7 @@ function mapSenderRow(row) {
     lastSentAt:         row.last_sent_at,
     displayName:        row.display_name,
     signature:          row.signature,
+    linkedinSignature:  row.linkedin_signature,
     createdAt:          row.created_at,
     updatedAt:          row.updated_at,
   };
@@ -126,7 +127,7 @@ router.get('/connect-url', async (req, res) => {
 // ── PATCH /:id — update label, limits, active status, display_name, signature ─
 router.patch('/:id', async (req, res) => {
   try {
-    const { label, isActive, dailyLimit, minDelayMinutes, displayName, signature } = req.body;
+    const { label, isActive, dailyLimit, minDelayMinutes, displayName, signature, linkedinSignature } = req.body;
 
     // Load org ceiling so we can enforce it on any incoming limit
     const limitsResult = await db.query(
@@ -170,6 +171,7 @@ router.patch('/:id', async (req, res) => {
     maybeSet('min_delay_minutes',  effectiveMinDelayMinutes);
     maybeSet('display_name',       displayName);
     maybeSet('signature',          signature);
+    maybeSet('linkedin_signature', linkedinSignature);
 
     if (fields.length === 0) {
       return res.status(400).json({ error: { message: 'No fields to update' } });
