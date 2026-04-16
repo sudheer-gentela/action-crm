@@ -587,38 +587,76 @@ router.post('/enrollments/:enrollId/resume', async (req, res) => {
 router.get('/drafts', async (req, res) => {
   const { prospectId } = req.query;
   try {
+    // Sender resolution mirrors SequenceStepFirer.resolveSender():
+    //   1. If prospect.client_id is set, prefer a client-owned sender.
+    //   2. Otherwise fall back to the rep's personal sender (client_id IS NULL).
+    // Surfaces signature fields so LinkedIn drafts render correctly.
+    //
+    // Source-of-truth for rendering: ss.channel (the CURRENT sequence step),
+    // NOT ssl.channel (the draft-time snapshot). We return both so the UI
+    // can detect drift (rep edited the sequence after draft was created).
     let query = `
       SELECT
         ssl.id, ssl.enrollment_id, ssl.subject, ssl.body,
         ssl.scheduled_send_at, ssl.status,
-        ss.step_order, ssl.channel,
+        ssl.channel        AS draft_channel,
+        ss.step_order,
+        ss.channel         AS step_channel,
+        ss.subject_template AS step_subject_template,
+        ss.body_template    AS step_body_template,
         se.sequence_id, se.enrolled_by,
         s.name AS sequence_name,
         p.id AS prospect_id, p.first_name, p.last_name,
         p.email AS prospect_email, p.company_name, p.linkedin_url,
-        -- Auto-select the rep's least-used active personal sender account
-        -- CHANGED: client_id IS NULL — excludes client-owned sender accounts
-        psa.id   AS sender_id,
-        psa.email AS sender_email,
-        psa.provider AS sender_provider,
-        psa.label AS sender_label
+        p.client_id AS prospect_client_id,
+        psa.id                 AS sender_id,
+        psa.email              AS sender_email,
+        psa.provider           AS sender_provider,
+        psa.label              AS sender_label,
+        psa.display_name       AS sender_display_name,
+        psa.signature          AS sender_signature,
+        psa.linkedin_signature AS sender_linkedin_signature,
+        psa.owner_type         AS sender_owner_type
       FROM sequence_step_logs ssl
       JOIN sequence_enrollments se ON se.id  = ssl.enrollment_id
       JOIN sequences s             ON s.id   = se.sequence_id
       JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
       JOIN prospects p             ON p.id   = ssl.prospect_id
-      -- Pick the rep's least-used personal sender via a lateral join
       LEFT JOIN LATERAL (
-        SELECT id, email, provider, label
-          FROM prospecting_sender_accounts
-         WHERE org_id     = ssl.org_id
-           AND user_id    = se.enrolled_by
-           AND client_id  IS NULL
-           AND is_active  = true
-         ORDER BY
-           (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
-           last_sent_at ASC NULLS FIRST
-         LIMIT 1
+        SELECT id, email, provider, label, display_name,
+               signature, linkedin_signature, owner_type
+        FROM (
+          -- Client sender (preferred when prospect belongs to a client)
+          SELECT id, email, provider, label, display_name,
+                 signature, linkedin_signature,
+                 'client'::text AS owner_type,
+                 1              AS priority,
+                 last_reset_at, emails_sent_today, last_sent_at
+            FROM prospecting_sender_accounts
+           WHERE org_id     = ssl.org_id
+             AND client_id IS NOT NULL
+             AND client_id  = p.client_id
+             AND is_active  = true
+
+          UNION ALL
+
+          -- Rep personal sender (fallback)
+          SELECT id, email, provider, label, display_name,
+                 signature, linkedin_signature,
+                 'user'::text AS owner_type,
+                 2            AS priority,
+                 last_reset_at, emails_sent_today, last_sent_at
+            FROM prospecting_sender_accounts
+           WHERE org_id     = ssl.org_id
+             AND user_id    = se.enrolled_by
+             AND client_id IS NULL
+             AND is_active  = true
+        ) candidates
+        ORDER BY
+          priority ASC,
+          (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+          last_sent_at ASC NULLS FIRST
+        LIMIT 1
       ) psa ON true
       WHERE ssl.org_id = $1
         AND ssl.status = 'draft'
@@ -633,32 +671,54 @@ router.get('/drafts', async (req, res) => {
 
     const { rows } = await pool.query(query, params);
 
-    const drafts = rows.map(r => ({
-      id:             r.id,
-      enrollmentId:   r.enrollment_id,
-      sequenceId:     r.sequence_id,
-      sequenceName:   r.sequence_name,
-      stepOrder:      r.step_order,
-      channel:        r.channel,
-      subject:        r.subject || '',
-      body:           r.body    || '',
-      scheduledSendAt: r.scheduled_send_at,
-      isOverdue:      new Date(r.scheduled_send_at) < new Date(),
-      prospect: {
-        id:          r.prospect_id,
-        firstName:   r.first_name,
-        lastName:    r.last_name,
-        email:       r.prospect_email,
-        companyName: r.company_name,
-        linkedinUrl: r.linkedin_url || null,
-      },
-      suggestedSender: r.sender_id ? {
-        id:       r.sender_id,
-        email:    r.sender_email,
-        provider: r.sender_provider,
-        label:    r.sender_label,
-      } : null,
-    }));
+    const drafts = rows.map(r => {
+      // Source of truth = current sequence step channel.
+      // draftChannel is the snapshot at creation time; exposed so the UI
+      // can show a hint when they disagree (rep edited the sequence).
+      const channel      = r.step_channel;       // live step channel
+      const draftChannel = r.draft_channel;      // snapshot
+      const channelDrift = channel !== draftChannel;
+
+      // Subject can be empty on LinkedIn drafts — if the step is now email
+      // and the draft was composed as LinkedIn, fall back to the step
+      // template so the email has at least something in the subject line.
+      const subject = r.subject || (channelDrift && channel === 'email' ? (r.step_subject_template || '') : '');
+
+      return {
+        id:              r.id,
+        enrollmentId:    r.enrollment_id,
+        sequenceId:      r.sequence_id,
+        sequenceName:    r.sequence_name,
+        stepOrder:       r.step_order,
+        channel,                 // live step channel — render by this
+        draftChannel,            // snapshot at creation — for drift hint
+        channelDrift,            // true if the sequence was edited after drafting
+        subject,
+        body:            r.body || '',
+        scheduledSendAt: r.scheduled_send_at,
+        isOverdue:       new Date(r.scheduled_send_at) < new Date(),
+        // Send Now is only valid for current-email steps with a prospect email.
+        canSendNow:      channel === 'email' && !!r.prospect_email,
+        prospect: {
+          id:          r.prospect_id,
+          firstName:   r.first_name,
+          lastName:    r.last_name,
+          email:       r.prospect_email,
+          companyName: r.company_name,
+          linkedinUrl: r.linkedin_url || null,
+        },
+        suggestedSender: r.sender_id ? {
+          id:                r.sender_id,
+          email:             r.sender_email,
+          provider:          r.sender_provider,
+          label:             r.sender_label,
+          displayName:       r.sender_display_name,
+          signature:         r.sender_signature,
+          linkedinSignature: r.sender_linkedin_signature,
+          ownerType:         r.sender_owner_type, // 'client' | 'user'
+        } : null,
+      };
+    });
 
     res.json({ drafts });
   } catch (err) {
@@ -705,8 +765,14 @@ router.post('/drafts/:logId/send', async (req, res) => {
   const client = await pool.connect();
   try {
     // ── 1. Load draft + enrollment + prospect ──────────────────────────────
+    // ss.channel is the CURRENT step channel (source of truth).
+    // ssl.channel is the snapshot at draft creation — kept for diagnostics.
     const draftRes = await client.query(
-      `SELECT ssl.*, ss.step_order, se.enrolled_by, se.sequence_id,
+      `SELECT ssl.*,
+              ssl.channel AS draft_channel,
+              ss.step_order,
+              ss.channel  AS step_channel,
+              se.enrolled_by, se.sequence_id,
               se.current_step, se.org_id AS enroll_org_id,
               s.name AS sequence_name
          FROM sequence_step_logs ssl
@@ -738,15 +804,17 @@ router.post('/drafts/:logId/send', async (req, res) => {
     }
     const prospect = prospectRes.rows[0];
 
-    // ── Channel guard — only email drafts can be sent via this endpoint ───
-    // LinkedIn / call / task drafts must be completed via POST /complete,
-    // not this endpoint. Calling Send Now on a non-email draft would silently
-    // do nothing (no matching provider branch) but still mark the log as
-    // 'sent' and advance the enrollment — a ghost send.
-    if (draft.channel !== 'email') {
+    // ── Channel guard — send only if the CURRENT step is email ──────────────
+    // Source of truth is ss.channel (the live sequence step), not ssl.channel.
+    // Two drift scenarios are possible and handled here:
+    //   (a) Draft was linkedin, step is now email → allow send (rule #3).
+    //   (b) Draft was email, step is now linkedin → block, rep must Mark Done.
+    // A non-email send would silently do nothing in the provider branch
+    // but still mark the log 'sent' and advance the enrollment — a ghost send.
+    if (draft.step_channel !== 'email') {
       return res.status(400).json({
         error: {
-          message: `This is a ${draft.channel} step — use "Mark as Done" once you have completed the action on ${draft.channel === 'linkedin' ? 'LinkedIn' : 'the appropriate channel'}.`,
+          message: `This step is now a ${draft.step_channel} step — use "Mark as Done" once you have completed the action on ${draft.step_channel === 'linkedin' ? 'LinkedIn' : 'the appropriate channel'}.`,
           code: 'WRONG_CHANNEL',
         },
       });
@@ -1050,6 +1118,19 @@ router.post('/drafts/:logId/complete', async (req, res) => {
 
     if (draft.enrolled_by !== req.user.userId) {
       return res.status(403).json({ error: { message: 'Only the enrolling rep can complete this step' } });
+    }
+
+    // ── Channel guard — reject /complete for steps that are now email ─────
+    // If the step is currently email, the rep should use Send Now so an
+    // actual email goes out. Letting /complete through here would silently
+    // close the step without sending anything.
+    if (draft.channel === 'email') {
+      return res.status(400).json({
+        error: {
+          message: 'This step is now an email step — use "Send Now" to dispatch it.',
+          code: 'WRONG_CHANNEL',
+        },
+      });
     }
 
     await client.query('BEGIN');

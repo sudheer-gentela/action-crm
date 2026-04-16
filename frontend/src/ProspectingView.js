@@ -2300,6 +2300,11 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
           {/* ── EMAIL channel ─────────────────────────────────────────── */}
           {isEmail && (
             <>
+              {draft.channelDrift && draft.draftChannel === 'linkedin' && (
+                <div style={{ padding: '10px 12px', background: '#fffbeb', borderRadius: 8, border: '1px solid #fcd34d', fontSize: 12, color: '#92400e' }}>
+                  ⚡ This step was changed from <strong>LinkedIn</strong> to <strong>Email</strong> after the draft was created. The body below was written for LinkedIn — review and edit before sending.
+                </div>
+              )}
               {draft.suggestedSender && (
                 <div style={{ fontSize: 11, color: '#6b7280' }}>
                   Sending from:{' '}
@@ -2314,12 +2319,13 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
               )}
               <div>
                 <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                  Subject
+                  Subject{!subject && <span style={{ color: '#dc2626' }}> *required</span>}
                 </label>
                 <input
                   value={subject}
                   onChange={e => onSubjectChange(e.target.value)}
-                  style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111' }}
+                  placeholder={!subject ? 'Enter email subject…' : ''}
+                  style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: `1px solid ${!subject ? '#fca5a5' : '#e5e7eb'}`, fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111' }}
                 />
               </div>
               <div>
@@ -2339,80 +2345,58 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
           {/* ── LINKEDIN channel ──────────────────────────────────────── */}
           {channel === 'linkedin' && (
             <>
-              {onConvertAndSend ? (
-                /* ── Convert mode: step was changed to email — show full email composer ── */
-                <>
-                  <div style={{ padding: '10px 12px', background: '#fffbeb', borderRadius: 8, border: '1px solid #fcd34d', fontSize: 12, color: '#92400e' }}>
-                    ⚡ This step was changed to <strong>Email</strong> after this draft was created. Edit the subject and body below, then send as email — or complete the LinkedIn action manually using the link below.
-                  </div>
-                  {/* Subject */}
-                  <div>
-                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                      Subject{!subject && <span style={{ color: '#dc2626' }}> *required</span>}
-                    </label>
-                    <input
-                      value={subject}
-                      onChange={e => onSubjectChange(e.target.value)}
-                      placeholder="Enter email subject…"
-                      style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: `1px solid ${!subject ? '#fca5a5' : '#e5e7eb'}`, fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', background: '#fff' }}
-                    />
-                  </div>
-                  {/* Editable body */}
-                  <div>
-                    <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                      Body
-                    </label>
-                    <textarea
-                      value={body}
-                      onChange={e => onBodyChange(e.target.value)}
-                      rows={8}
-                      style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', resize: 'vertical', lineHeight: 1.6 }}
-                    />
-                  </div>
-                  {/* LinkedIn profile link still available */}
-                  {(draft.prospect?.linkedinUrl || draft.prospect?.linkedin_url) && (
-                    <a
-                      href={draft.prospect.linkedinUrl || draft.prospect.linkedin_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 7, fontSize: 12, fontWeight: 600, background: '#0a66c2', color: '#fff', textDecoration: 'none', alignSelf: 'flex-start' }}
-                    >
-                      🔗 Open LinkedIn Profile ↗
-                    </a>
-                  )}
-                </>
-              ) : (
-                /* ── Normal LinkedIn mode: read-only message + profile link ── */
-                <>
-                  <div style={{ padding: '10px 12px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd' }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: '#0369a1', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                      🔗 LinkedIn Message
-                    </div>
-                    {body ? (
-                      <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{body}</div>
-                    ) : (
-                      <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>No message template — send a personalised note.</div>
-                    )}
-                  </div>
-                  {draft.prospect?.linkedinUrl || draft.prospect?.linkedin_url ? (
-                    <a
-                      href={draft.prospect.linkedinUrl || draft.prospect.linkedin_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 7, fontSize: 12, fontWeight: 600, background: '#0a66c2', color: '#fff', textDecoration: 'none', alignSelf: 'flex-start' }}
-                    >
-                      🔗 Open LinkedIn Profile ↗
-                    </a>
-                  ) : (
-                    <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>
-                      No LinkedIn URL on this prospect — add it in their profile.
-                    </div>
-                  )}
-                  <div style={{ fontSize: 11, color: '#6b7280', background: '#f8fafc', borderRadius: 6, padding: '8px 10px' }}>
-                    💡 Send the message directly on LinkedIn, then click <strong>Mark as Done</strong> to advance the sequence.
-                  </div>
-                </>
+              {draft.channelDrift && draft.draftChannel === 'email' && (
+                <div style={{ padding: '10px 12px', background: '#fffbeb', borderRadius: 8, border: '1px solid #fcd34d', fontSize: 12, color: '#92400e' }}>
+                  ⚡ This step was changed from <strong>Email</strong> to <strong>LinkedIn</strong> after the draft was created. The message below was written as an email — trim it before posting to LinkedIn.
+                </div>
               )}
+              <div style={{ padding: '10px 12px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #bae6fd' }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  marginBottom: 6,
+                }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: '#0369a1', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    🔗 LinkedIn Message
+                  </div>
+                  {body && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(body);
+                      }}
+                      style={{
+                        padding: '3px 10px', borderRadius: 6, border: '1px solid #bae6fd',
+                        background: '#fff', color: '#0369a1', fontSize: 11, fontWeight: 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      📋 Copy message
+                    </button>
+                  )}
+                </div>
+                {body ? (
+                  <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{body}</div>
+                ) : (
+                  <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>No message template — send a personalised note.</div>
+                )}
+              </div>
+              {draft.prospect?.linkedinUrl || draft.prospect?.linkedin_url ? (
+                <a
+                  href={draft.prospect.linkedinUrl || draft.prospect.linkedin_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 7, fontSize: 12, fontWeight: 600, background: '#0a66c2', color: '#fff', textDecoration: 'none', alignSelf: 'flex-start' }}
+                >
+                  🔗 Open LinkedIn Profile ↗
+                </a>
+              ) : (
+                <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>
+                  No LinkedIn URL on this prospect — add it in their profile.
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: '#6b7280', background: '#f8fafc', borderRadius: 6, padding: '8px 10px' }}>
+                💡 Copy the message, open the profile, send it on LinkedIn, then click <strong>Mark as Done</strong> to advance the sequence.
+              </div>
             </>
           )}
 
@@ -2454,34 +2438,16 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
             {isEmail ? (
               <button
                 onClick={onSend}
-                disabled={sending}
+                disabled={sending || !subject}
+                title={!subject ? 'Enter a subject line first' : ''}
                 style={{
                   padding: '7px 18px', borderRadius: 7, border: 'none',
-                  background: sending ? '#9ca3af' : '#0F9D8E', color: '#fff',
-                  fontSize: 12, fontWeight: 600, cursor: sending ? 'not-allowed' : 'pointer',
+                  background: (sending || !subject) ? '#9ca3af' : '#0F9D8E', color: '#fff',
+                  fontSize: 12, fontWeight: 600, cursor: (sending || !subject) ? 'not-allowed' : 'pointer',
                 }}
               >
                 {sending ? '⏳ Sending…' : '📤 Send Now'}
               </button>
-            ) : onConvertAndSend ? (
-              /* LinkedIn convert mode — both options available */
-              <>
-                <button
-                  onClick={onComplete}
-                  disabled={sending}
-                  style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid #d1d5db', background: '#f9fafb', color: '#374151', fontSize: 12, fontWeight: 600, cursor: sending ? 'not-allowed' : 'pointer' }}
-                >
-                  {sending ? '⏳ Saving…' : '✅ Mark as Done'}
-                </button>
-                <button
-                  onClick={onConvertAndSend}
-                  disabled={sending || !subject}
-                  title={!subject ? 'Enter a subject line first' : ''}
-                  style={{ padding: '7px 18px', borderRadius: 7, border: 'none', background: (sending || !subject) ? '#9ca3af' : '#d97706', color: '#fff', fontSize: 12, fontWeight: 600, cursor: (sending || !subject) ? 'not-allowed' : 'pointer' }}
-                >
-                  {sending ? '⏳ Sending…' : '📤 Send as Email'}
-                </button>
-              </>
             ) : (
               <button
                 onClick={onComplete}
