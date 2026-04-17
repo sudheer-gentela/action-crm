@@ -31,7 +31,7 @@ const UI_PREF_DEFAULTS = {
 
 // Modules that are allowed to be pinned (must match orgModules keys in App.js)
 const PINNABLE_MODULE_IDS = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
-const PINNED_MODULES_CAP  = 2;
+const PINNED_MODULES_CAP  = 4;
 
 // ── Helper ────────────────────────────────────────────────────────────────
 async function getUiPrefs(userId, orgId) {

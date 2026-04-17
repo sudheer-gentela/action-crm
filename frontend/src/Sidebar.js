@@ -13,12 +13,16 @@ const ROLE_BADGE_CONFIG = {
 // ─────────────────────────────────────────────────────────────
 // NAV STRUCTURE
 // contracts added to Pipeline section, after deals
+// NOTE: module IDs (prospecting, contracts, handovers, service, agency) are
+// intentionally NOT listed in any section here — they're rendered separately
+// via a dynamic "Pinned" section placed between Pipeline and Workflow when
+// the user pins any of them. Actions stays first in Pipeline as the anchor.
 // ─────────────────────────────────────────────────────────────
 const MEMBER_NAV_SECTIONS = [
   {
     id: 'pipeline',
     label: 'Pipeline',
-    items: ['actions', 'prospecting', 'deals', 'contacts', 'accounts'],
+    items: ['actions', 'deals', 'contacts', 'accounts'],
   },
   {
     id: 'workflow',
@@ -332,27 +336,29 @@ export default function Sidebar({
 }) {
   const navItemMap = {};
   navItems.forEach(item => { navItemMap[item.id] = item; });
-  // Pinned modules participate in MEMBER_NAV_SECTIONS (prospecting is listed
-  // there already). For non-pipeline modules (contracts/handovers/service/
-  // agency), we inject them into the Pipeline section below.
+  // Merge pinned modules into the item map so NavSection can resolve them.
   pinnedModuleItems.forEach(item => { navItemMap[item.id] = item; });
 
-  // Build the sections list, injecting any pinned modules that aren't already
-  // hardcoded in a section (prospecting is; contracts/handovers/etc aren't).
-  const HARDCODED_SECTION_ITEM_IDS = new Set(
-    MEMBER_NAV_SECTIONS.flatMap(s => s.items)
-  );
-  const pinnedNotInSection = pinnedModuleItems
-    .map(m => m.id)
-    .filter(id => !HARDCODED_SECTION_ITEM_IDS.has(id));
-
-  const memberNavSections = pinnedNotInSection.length === 0
+  // Build the sections list. When the user has any modules pinned, insert a
+  // dedicated "Pinned" section between Pipeline and Workflow — so Actions
+  // stays first (daily landing spot) and pinned modules are visually grouped.
+  const memberNavSections = pinnedModuleItems.length === 0
     ? MEMBER_NAV_SECTIONS
-    : MEMBER_NAV_SECTIONS.map(section =>
-        section.id === 'pipeline'
-          ? { ...section, items: [...section.items, ...pinnedNotInSection] }
-          : section
-      );
+    : (() => {
+        const pinnedSection = {
+          id:    'pinned',
+          label: 'Pinned',
+          items: pinnedModuleItems.map(m => m.id),
+        };
+        // Insert right after Pipeline (index 0) — before Workflow.
+        const pipelineIdx = MEMBER_NAV_SECTIONS.findIndex(s => s.id === 'pipeline');
+        const insertAt    = pipelineIdx === -1 ? 0 : pipelineIdx + 1;
+        return [
+          ...MEMBER_NAV_SECTIONS.slice(0, insertAt),
+          pinnedSection,
+          ...MEMBER_NAV_SECTIONS.slice(insertAt),
+        ];
+      })();
 
   const isMemberRole = activeRole === 'member';
 

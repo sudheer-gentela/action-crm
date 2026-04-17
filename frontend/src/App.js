@@ -504,7 +504,7 @@ function Dashboard({ user, onLogout }) {
   }, []);
 
   // Cap on how many modules a user can pin to the sidebar (mirror of backend)
-  const PINNED_MODULES_CAP = 2;
+  const PINNED_MODULES_CAP = 4;
 
   // Toggle pin state for a module. Optimistic UI — rolls back on API error.
   const handleTogglePin = async (moduleId) => {
