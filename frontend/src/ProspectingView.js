@@ -1,5 +1,5 @@
 // ProspectingView v1.2 — Sequences feature added
-import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
+import React, { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react';
 
 import OutreachComposer from './OutreachComposer';
 import CoverageScorecard from './CoverageScorecard';
@@ -171,6 +171,10 @@ export default function ProspectingView() {
   const BULK_ENROLL_CAP = 20;
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [showBulkEnrollModal, setShowBulkEnrollModal] = useState(false);
+  const [showBulkDiscardModal, setShowBulkDiscardModal] = useState(false);
+  // Single-prospect discard (from a card/row ⋯ menu). Holds the prospect
+  // whose menu was used; modal opens when non-null.
+  const [discardTargetProspect, setDiscardTargetProspect] = useState(null);
 
   const isSelected = (id) => selectedIds.has(id);
   const clearSelection = () => setSelectedIds(new Set());
@@ -508,6 +512,7 @@ export default function ProspectingView() {
           onToggleSelect={toggleSelect}
           selectionActive={selectedIds.size > 0}
           atCap={selectedIds.size >= BULK_ENROLL_CAP}
+          onDiscard={setDiscardTargetProspect}
         />
       ) : viewMode === 'list' ? (
         <ListView
@@ -520,6 +525,7 @@ export default function ProspectingView() {
           selectedCount={selectedIds.size}
           atCap={selectedIds.size >= BULK_ENROLL_CAP}
           bulkCap={BULK_ENROLL_CAP}
+          onDiscard={setDiscardTargetProspect}
         />
       ) : viewMode === 'account' ? (
         <AccountView
@@ -530,6 +536,7 @@ export default function ProspectingView() {
           onSelectMany={selectMany}
           onUnselectMany={unselectMany}
           atCap={selectedIds.size >= BULK_ENROLL_CAP}
+          onDiscard={setDiscardTargetProspect}
         />
       ) : viewMode === 'sequences' ? (
         <SequencesView prospects={prospects} />
@@ -547,6 +554,31 @@ export default function ProspectingView() {
             fetchProspects();
           }}
           onClose={() => setShowBulkEnrollModal(false)}
+        />
+      )}
+
+      {/* ── Bulk Discard Modal ─────────────────────────────────────────────── */}
+      {showBulkDiscardModal && (
+        <DiscardProspectModal
+          prospects={prospects.filter(p => selectedIds.has(p.id))}
+          onDiscarded={() => {
+            setShowBulkDiscardModal(false);
+            clearSelection();
+            fetchProspects();
+          }}
+          onClose={() => setShowBulkDiscardModal(false)}
+        />
+      )}
+
+      {/* ── Per-card Discard Modal (from ⋯ menu) ───────────────────────────── */}
+      {discardTargetProspect && (
+        <DiscardProspectModal
+          prospects={[discardTargetProspect]}
+          onDiscarded={() => {
+            setDiscardTargetProspect(null);
+            fetchProspects();
+          }}
+          onClose={() => setDiscardTargetProspect(null)}
         />
       )}
 
@@ -587,6 +619,16 @@ export default function ProspectingView() {
             }}
           >
             📨 Enroll in sequence
+          </button>
+          <button
+            onClick={() => setShowBulkDiscardModal(true)}
+            style={{
+              padding: '7px 14px', borderRadius: 7, border: '1px solid #fecaca',
+              background: '#fef2f2', color: '#dc2626',
+              fontSize: 13, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            🗑 Discard
           </button>
           <button
             onClick={clearSelection}
@@ -636,7 +678,7 @@ export default function ProspectingView() {
 // PIPELINE BOARD
 // ═════════════════════════════════════════════════════════════════════════════
 
-function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, terminalCounts, isSelected, onToggleSelect, selectionActive, atCap }) {
+function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, terminalCounts, isSelected, onToggleSelect, selectionActive, atCap, onDiscard }) {
   const { terminalStages } = useStages();
   return (
     <div className="pv-pipeline">
@@ -658,6 +700,7 @@ function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, termin
                   onToggleSelect={onToggleSelect}
                   selectionActive={selectionActive}
                   atCap={atCap}
+                  onDiscard={onDiscard}
                 />
               ))}
               {(groupedByStage[stage.key] || []).length === 0 && (
@@ -684,12 +727,13 @@ function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, termin
 // PROSPECT CARD (used in pipeline)
 // ═════════════════════════════════════════════════════════════════════════════
 
-function ProspectCard({ prospect: p, onClick, isSelected = false, onToggleSelect, selectionActive = false, atCap = false }) {
+function ProspectCard({ prospect: p, onClick, isSelected = false, onToggleSelect, selectionActive = false, atCap = false, onDiscard }) {
   // The checkbox is fully visible when:
   //   - the card is selected, OR
   //   - the user already has a selection in progress (so additions are easy)
   // Otherwise it's 0.35 opacity and rises on hover via the existing .pv-card:hover rule.
   const showCheckbox = !!onToggleSelect;
+  const showMenu     = !!onDiscard;
   const visible      = isSelected || selectionActive;
   const disabled     = !isSelected && atCap;
 
@@ -726,6 +770,18 @@ function ProspectCard({ prospect: p, onClick, isSelected = false, onToggleSelect
             style={{ cursor: disabled ? 'not-allowed' : 'pointer' }}
           />
         </label>
+      )}
+      {showMenu && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 2,
+            // sits left of the checkbox if present, else tight to the right
+            right: showCheckbox ? 28 : 4,
+          }}
+        >
+          <ProspectRowMenu prospect={p} onDiscard={onDiscard} />
+        </div>
       )}
       <div className="pv-card-top">
         <span className="pv-card-name">{p.first_name} {p.last_name}</span>
@@ -782,8 +838,10 @@ function ListView({
   selectedCount = 0,
   atCap = false,
   bulkCap = 20,
+  onDiscard,
 }) {
   const { allStages } = useStages();
+  const showMenu = !!onDiscard;
 
   // Header "select all" — checked when all visible rows are selected.
   // If any are unselected, header acts as "select all visible" (bounded by cap).
@@ -797,6 +855,9 @@ function ListView({
       onSelectMany && onSelectMany(visibleIds);
     }
   };
+
+  // Column count used for the empty-state cell's colSpan.
+  const colCount = 9 + (onToggleSelect ? 1 : 0) + (showMenu ? 1 : 0);
 
   return (
     <div className="pv-list">
@@ -824,6 +885,7 @@ function ListView({
             <th>Outreach</th>
             <th>Last Touch</th>
             <th>ICP</th>
+            {showMenu && <th style={{ width: 36 }}></th>}
           </tr>
         </thead>
         <tbody>
@@ -881,11 +943,16 @@ function ListView({
                 <td>{p.outreach_count || 0}</td>
                 <td>{p.last_outreach_at ? timeAgo(p.last_outreach_at) : '—'}</td>
                 <td>{p.icp_score != null ? p.icp_score : '—'}</td>
+                {showMenu && (
+                  <td onClick={e => e.stopPropagation()} style={{ textAlign: 'right' }}>
+                    <ProspectRowMenu prospect={p} onDiscard={onDiscard} />
+                  </td>
+                )}
               </tr>
             );
           })}
           {prospects.length === 0 && (
-            <tr><td colSpan={onToggleSelect ? 10 : 9} className="pv-table-empty">No prospects found</td></tr>
+            <tr><td colSpan={colCount} className="pv-table-empty">No prospects found</td></tr>
           )}
         </tbody>
       </table>
@@ -897,9 +964,10 @@ function ListView({
 // ACCOUNT VIEW
 // ═════════════════════════════════════════════════════════════════════════════
 
-function AccountView({ groups, onSelect, isSelected, onToggleSelect, onSelectMany, onUnselectMany, atCap }) {
+function AccountView({ groups, onSelect, isSelected, onToggleSelect, onSelectMany, onUnselectMany, atCap, onDiscard }) {
   const { allStages } = useStages();
   const showCheckbox = !!onToggleSelect;
+  const showMenu     = !!onDiscard;
   return (
     <div className="pv-account-view">
       {groups.sort((a, b) => b.prospects.length - a.prospects.length).map((group, idx) => {
@@ -977,6 +1045,14 @@ function AccountView({ groups, onSelect, isSelected, onToggleSelect, onSelectMan
                       {stageCfg?.icon} {stageCfg?.label}
                     </span>
                     <span className="pv-apr-touches">{p.outreach_count || 0} touches</span>
+                    {showMenu && (
+                      <span
+                        onClick={e => e.stopPropagation()}
+                        style={{ marginLeft: 'auto', lineHeight: 0 }}
+                      >
+                        <ProspectRowMenu prospect={p} onDiscard={onDiscard} />
+                      </span>
+                    )}
                   </div>
                 );
               })}
@@ -1190,6 +1266,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   const [generating, setGenerating] = useState(false);
   const [contextData, setContextData] = useState(null);
   const [contextLoading, setContextLoading] = useState(false);
+  const [showDiscardModal, setShowDiscardModal] = useState(false);
 
   // Drafts for this prospect (pinned in Activity tab)
   const [prospectDrafts,        setProspectDrafts]        = useState([]);
@@ -1362,15 +1439,16 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   };
 
   const handleStageChange = async (newStage) => {
+    // Disqualify takes the structured-reason modal route — not a prompt.
+    if (newStage === 'disqualified') {
+      setShowStageMenu(false);
+      setShowDiscardModal(true);
+      return;
+    }
     try {
-      let reason = null;
-      if (newStage === 'disqualified') {
-        reason = prompt('Reason for disqualification:');
-        if (reason === null) return;
-      }
       await apiFetch(`/prospects/${prospectId}/stage`, {
         method: 'POST',
-        body: JSON.stringify({ stage: newStage, reason }),
+        body: JSON.stringify({ stage: newStage }),
       });
       // Refresh
       const res = await apiFetch(`/prospects/${prospectId}`);
@@ -2013,6 +2091,23 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
             actionToExecute={outreachAction}
             onComplete={handleOutreachComplete}
             onClose={() => { setShowOutreach(false); setOutreachAction(null); }}
+          />
+        )}
+
+        {/* DiscardProspectModal — structured disqualify flow */}
+        {showDiscardModal && prospect && (
+          <DiscardProspectModal
+            prospects={[prospect]}
+            onDiscarded={async () => {
+              setShowDiscardModal(false);
+              try {
+                const res = await apiFetch(`/prospects/${prospectId}`);
+                setProspect(res.prospect);
+                setActivities(res.activities || []);
+              } catch (_) {}
+              onUpdate();
+            }}
+            onClose={() => setShowDiscardModal(false)}
           />
         )}
       </div>
@@ -2783,6 +2878,292 @@ function InfoRow({ label, value, optional = false, editMode = false, editValue, 
           {!isEmpty ? value : '—'}
         </span>
       )}
+    </div>
+  );
+}
+
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DISCARD PROSPECT MODAL
+// Structured-reason disqualification for one or many prospects.
+// Used from:
+//   - Detail panel "Move Stage" → disqualified
+//   - Bulk action bar "🗑 Discard"
+//   - Per-card ⋯ menu → "Discard"
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── Shared ⋯ menu for prospect cards/rows ─────────────────────────────────
+// Currently only "Discard" — room to grow (Move stage, Add tag, etc.).
+// Uses inline popover; closes on outside click or selection.
+function ProspectRowMenu({ prospect, onDiscard, stopClickPropagation = true, style = {} }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handle = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, [open]);
+
+  const stop = (e) => { if (stopClickPropagation) e.stopPropagation(); };
+
+  return (
+    <span ref={ref} style={{ position: 'relative', display: 'inline-flex', ...style }}>
+      <button
+        onClick={e => { stop(e); setOpen(o => !o); }}
+        title="More actions"
+        style={{
+          background: 'transparent',
+          border: 'none',
+          color: '#6b7280',
+          fontSize: 16,
+          lineHeight: 1,
+          padding: '2px 6px',
+          borderRadius: 4,
+          cursor: 'pointer',
+        }}
+      >
+        ⋯
+      </button>
+      {open && (
+        <div
+          onClick={stop}
+          style={{
+            position: 'absolute',
+            top: '100%', right: 0,
+            marginTop: 2,
+            background: '#fff',
+            border: '1px solid #e5e7eb',
+            borderRadius: 7,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+            minWidth: 150,
+            zIndex: 120,
+            padding: 4,
+          }}
+        >
+          <button
+            onClick={e => {
+              stop(e);
+              setOpen(false);
+              if (onDiscard) onDiscard(prospect);
+            }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              width: '100%',
+              padding: '7px 10px',
+              border: 'none', background: 'transparent',
+              color: '#dc2626',
+              fontSize: 13, textAlign: 'left',
+              borderRadius: 5, cursor: 'pointer',
+            }}
+          >
+            🗑 Discard…
+          </button>
+        </div>
+      )}
+    </span>
+  );
+}
+
+const DISCARD_REASONS = [
+  { code: 'account_not_fit', label: 'Account not a fit',  hint: 'Wrong industry, size, geography, etc.' },
+  { code: 'contact_not_fit', label: 'Contact not a fit',  hint: 'Wrong role, seniority, or left the company.' },
+  { code: 'timing',          label: 'Timing not right',   hint: 'Good fit, but not buying right now.' },
+  { code: 'competitor',      label: 'Using a competitor', hint: 'Committed to a competing vendor.' },
+  { code: 'no_budget',       label: 'No budget',          hint: 'Budget frozen or not available.' },
+  { code: 'duplicate',       label: 'Duplicate',          hint: 'Same person already in the system.' },
+  { code: 'other',           label: 'Other',              hint: 'None of the above — use the note.' },
+];
+
+function DiscardProspectModal({ prospects, onDiscarded, onClose }) {
+  const [reasonCode, setReasonCode] = useState('');
+  const [note, setNote]             = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError]           = useState(null);
+  const [progress, setProgress]     = useState({ done: 0, total: prospects.length });
+
+  const selectedReason = DISCARD_REASONS.find(r => r.code === reasonCode);
+  const isBulk  = prospects.length > 1;
+
+  const handleDiscard = async () => {
+    if (!reasonCode) {
+      setError('Please pick a reason.');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    setProgress({ done: 0, total: prospects.length });
+
+    const failures = [];
+    // Sequential rather than parallel — keeps the server load predictable and
+    // gives us a clean progress readout. Bulk sizes are capped elsewhere.
+    for (const p of prospects) {
+      try {
+        await apiFetch(`/prospects/${p.id}/stage`, {
+          method: 'POST',
+          body: JSON.stringify({
+            stage:      'disqualified',
+            reasonCode,
+            reason:     note.trim() || null,
+          }),
+        });
+      } catch (err) {
+        failures.push({ prospect: p, message: err.message });
+      }
+      setProgress(prev => ({ done: prev.done + 1, total: prev.total }));
+    }
+
+    setSubmitting(false);
+
+    if (failures.length === 0) {
+      onDiscarded();
+    } else if (failures.length === prospects.length) {
+      setError(`All ${prospects.length} failed. First error: ${failures[0].message}`);
+    } else {
+      // Partial success — close the modal and surface via a light message.
+      // The parent will refresh the list, so failures will appear as still-active.
+      setError(
+        `${prospects.length - failures.length} of ${prospects.length} discarded. ` +
+        `${failures.length} failed (likely stage transition not allowed). ` +
+        `See activity for details.`
+      );
+    }
+  };
+
+  const title = isBulk
+    ? `Discard ${prospects.length} prospects`
+    : `Discard ${prospects[0]?.first_name || ''} ${prospects[0]?.last_name || ''}`.trim() || 'Discard prospect';
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        background: 'rgba(0,0,0,0.4)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 1100,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: '#fff', borderRadius: 12,
+          width: 480, maxWidth: '90vw',
+          maxHeight: '85vh', overflowY: 'auto',
+          padding: '18px 20px',
+          boxShadow: '0 20px 40px rgba(0,0,0,0.15)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#111827' }}>🗑 {title}</h3>
+          <button
+            onClick={onClose}
+            disabled={submitting}
+            style={{ background: 'none', border: 'none', fontSize: 18, color: '#6b7280', cursor: submitting ? 'not-allowed' : 'pointer' }}
+          >✕</button>
+        </div>
+
+        {isBulk && (
+          <div style={{ background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 6, padding: '8px 12px', fontSize: 12, color: '#92400e', marginBottom: 12 }}>
+            The same reason will be applied to all {prospects.length} selected prospects.
+          </div>
+        )}
+
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+          Reason <span style={{ color: '#dc2626' }}>*</span>
+        </label>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+          {DISCARD_REASONS.map(r => (
+            <label
+              key={r.code}
+              style={{
+                display: 'flex', alignItems: 'flex-start', gap: 8,
+                padding: '8px 10px',
+                border: `1.5px solid ${reasonCode === r.code ? '#0F9D8E' : '#e5e7eb'}`,
+                borderRadius: 7,
+                background: reasonCode === r.code ? '#ecfdf5' : '#fff',
+                cursor: submitting ? 'not-allowed' : 'pointer',
+              }}
+            >
+              <input
+                type="radio"
+                name="discard-reason"
+                checked={reasonCode === r.code}
+                onChange={() => setReasonCode(r.code)}
+                disabled={submitting}
+                style={{ marginTop: 2 }}
+              />
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{r.label}</div>
+                <div style={{ fontSize: 11, color: '#6b7280', marginTop: 1 }}>{r.hint}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+          Note <span style={{ color: '#9ca3af', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional)</span>
+        </label>
+        <textarea
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          disabled={submitting}
+          rows={3}
+          placeholder={
+            selectedReason
+              ? `Why "${selectedReason.label.toLowerCase()}"? Helps future reporting.`
+              : 'Any extra context — appears in the activity log.'
+          }
+          style={{
+            width: '100%', padding: '8px 10px',
+            borderRadius: 7, border: '1px solid #e5e7eb',
+            fontSize: 13, fontFamily: 'inherit',
+            boxSizing: 'border-box', resize: 'vertical',
+          }}
+        />
+
+        {error && (
+          <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, color: '#dc2626', marginTop: 12 }}>
+            ⚠️ {error}
+          </div>
+        )}
+
+        {submitting && isBulk && (
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 12 }}>
+            Discarding… {progress.done} / {progress.total}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+          <button
+            onClick={onClose}
+            disabled={submitting}
+            style={{
+              padding: '8px 16px', borderRadius: 7,
+              border: '1px solid #d1d5db', background: '#fff', color: '#374151',
+              fontSize: 13, cursor: submitting ? 'not-allowed' : 'pointer',
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleDiscard}
+            disabled={submitting || !reasonCode}
+            style={{
+              padding: '8px 18px', borderRadius: 7, border: 'none',
+              background: (submitting || !reasonCode) ? '#9ca3af' : '#dc2626',
+              color: '#fff', fontSize: 13, fontWeight: 600,
+              cursor: (submitting || !reasonCode) ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {submitting ? '⏳ Discarding…' : (isBulk ? `🗑 Discard ${prospects.length}` : '🗑 Discard')}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

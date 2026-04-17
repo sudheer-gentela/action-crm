@@ -1023,13 +1023,34 @@ router.put('/:id', async (req, res) => {
   }
 });
 
+// Allowed codes for structured discard reasons. If a reason_code is provided
+// on a disqualify transition it must be one of these; anything else is
+// rejected with a 400. Keep this in sync with the frontend DISCARD_REASONS.
+const VALID_DQ_REASON_CODES = [
+  'account_not_fit',
+  'contact_not_fit',
+  'timing',
+  'competitor',
+  'no_budget',
+  'duplicate',
+  'other',
+];
+
 // ── POST /:id/stage — change prospect stage ──────────────────────────────────
 router.post('/:id/stage', async (req, res) => {
   try {
-    const { stage, reason } = req.body;
+    const { stage, reason, reasonCode } = req.body;
 
     if (!VALID_STAGES.includes(stage)) {
       return res.status(400).json({ error: { message: `Invalid stage: ${stage}` } });
+    }
+
+    // Validate reason_code when disqualifying. Optional for backward compat —
+    // older clients may still send reason without a code.
+    if (stage === 'disqualified' && reasonCode != null && !VALID_DQ_REASON_CODES.includes(reasonCode)) {
+      return res.status(400).json({
+        error: { message: `Invalid reasonCode: ${reasonCode}. Allowed: ${VALID_DQ_REASON_CODES.join(', ')}` }
+      });
     }
 
     const current = await db.query(
@@ -1050,14 +1071,22 @@ router.post('/:id/stage', async (req, res) => {
       });
     }
 
+    // Persist both free-text reason and structured code. Both are only written
+    // on a disqualified transition; other stage changes leave them unchanged.
     const result = await db.query(
       `UPDATE prospects
        SET stage = $1, stage_changed_at = CURRENT_TIMESTAMP,
-           disqualified_reason = COALESCE($2, disqualified_reason),
+           disqualified_reason      = COALESCE($2, disqualified_reason),
+           disqualified_reason_code = COALESCE($3, disqualified_reason_code),
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $3 AND org_id = $4
+       WHERE id = $4 AND org_id = $5
        RETURNING *`,
-      [stage, stage === 'disqualified' ? reason : null, req.params.id, req.orgId]
+      [
+        stage,
+        stage === 'disqualified' ? (reason     || null) : null,
+        stage === 'disqualified' ? (reasonCode || null) : null,
+        req.params.id, req.orgId,
+      ]
     );
 
     await db.query(
@@ -1066,7 +1095,12 @@ router.post('/:id/stage', async (req, res) => {
       [
         req.params.id, req.user.userId,
         `Stage changed from ${currentStage} to ${stage}`,
-        JSON.stringify({ from: currentStage, to: stage, reason: reason || null }),
+        JSON.stringify({
+          from:       currentStage,
+          to:         stage,
+          reason:     reason     || null,
+          reasonCode: reasonCode || null,
+        }),
       ]
     );
 
