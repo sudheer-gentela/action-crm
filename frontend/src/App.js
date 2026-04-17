@@ -472,6 +472,7 @@ function Dashboard({ user, onLogout }) {
   const [sidebarOpen, setSidebarOpen]           = useState(false);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
   const [orgModules, setOrgModules]             = useState({});  // { contracts: true/false, ... }
+  const [pinnedModules, setPinnedModules]       = useState([]);  // array of module IDs pinned to sidebar
 
   // Fetch org module flags once on mount — accessible to ALL roles via /org/context
   useEffect(() => {
@@ -486,6 +487,65 @@ function Dashboard({ user, onLogout }) {
       })
       .catch(() => {}); // non-fatal — modules stay hidden if fetch fails
   }, []);
+
+  // Fetch user preferences (pinned_modules) once on mount
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    const API   = process.env.REACT_APP_API_URL || '';
+    fetch(`${API}/users/me/preferences`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        const pinned = data?.preferences?.pinned_modules;
+        if (Array.isArray(pinned)) setPinnedModules(pinned);
+      })
+      .catch(() => {}); // non-fatal — stays empty
+  }, []);
+
+  // Cap on how many modules a user can pin to the sidebar (mirror of backend)
+  const PINNED_MODULES_CAP = 2;
+
+  // Toggle pin state for a module. Optimistic UI — rolls back on API error.
+  const handleTogglePin = async (moduleId) => {
+    const isPinned = pinnedModules.includes(moduleId);
+    let next;
+    if (isPinned) {
+      next = pinnedModules.filter(id => id !== moduleId);
+    } else {
+      if (pinnedModules.length >= PINNED_MODULES_CAP) {
+        // At cap — do nothing. Sidebar UI disables the pin icon in this state
+        // but this is the server-of-truth guard in case the UI allows it through.
+        return;
+      }
+      next = [...pinnedModules, moduleId];
+    }
+
+    // Optimistic update
+    const prev = pinnedModules;
+    setPinnedModules(next);
+
+    try {
+      const token = localStorage.getItem('token');
+      const API   = process.env.REACT_APP_API_URL || '';
+      const res = await fetch(`${API}/users/me/preferences`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type':  'application/json',
+          Authorization:   `Bearer ${token}`,
+        },
+        body: JSON.stringify({ pinned_modules: next }),
+      });
+      if (!res.ok) throw new Error('save failed');
+      const data = await res.json();
+      if (Array.isArray(data?.preferences?.pinned_modules)) {
+        setPinnedModules(data.preferences.pinned_modules);
+      }
+    } catch (_) {
+      // Roll back optimistic update
+      setPinnedModules(prev);
+    }
+  };
 
   const isSuperAdmin = user?.is_super_admin === true;
   const orgRole      = user?.org_role || user?.role || 'member';
@@ -518,6 +578,13 @@ function Dashboard({ user, onLogout }) {
 
   // Only surface module items whose flag is enabled in org settings
   const enabledModuleItems = ALL_MODULE_ITEMS.filter(m => !!orgModules[m.id]);
+
+  // Modules the user has pinned that are also org-enabled. Preserves
+  // user-chosen order. Capped at PINNED_MODULES_CAP.
+  const pinnedModuleItems = pinnedModules
+    .map(id => enabledModuleItems.find(m => m.id === id))
+    .filter(Boolean)
+    .slice(0, PINNED_MODULES_CAP);
 
   useEffect(() => {
     const handleResize = () => {
@@ -636,6 +703,10 @@ function Dashboard({ user, onLogout }) {
         user={user}
         navItems={navItems}
         allModuleItems={enabledModuleItems}
+        pinnedModuleItems={pinnedModuleItems}
+        pinnedModuleIds={pinnedModules}
+        pinnedModulesCap={PINNED_MODULES_CAP}
+        onTogglePin={handleTogglePin}
         currentTab={currentTab}
         onNavClick={handleNavClick}
         activeRole={activeRole}

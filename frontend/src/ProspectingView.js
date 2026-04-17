@@ -494,56 +494,6 @@ export default function ProspectingView() {
         </div>
       )}
 
-      {/* ── Bulk selection action bar (top, sticky) ───────────────────────── */}
-      {/* Rendered inline above the content area. Sticks to the top of the */}
-      {/* scroll container as the user scrolls through prospects.          */}
-      {selectedIds.size > 0 && (
-        <div style={{
-          position: 'sticky',
-          top: 0,
-          background: '#ecfdf5',
-          border: '1px solid #6ee7b7',
-          borderRadius: 8,
-          padding: '10px 14px',
-          marginBottom: 12,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          zIndex: 20,
-          boxShadow: '0 2px 8px rgba(15, 157, 142, 0.08)',
-        }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: '#065f46' }}>
-            ✓ {selectedIds.size} selected
-          </span>
-          {selectedIds.size >= BULK_ENROLL_CAP && (
-            <span style={{ fontSize: 11, color: '#92400e', background: '#fef3c7', padding: '2px 8px', borderRadius: 4 }}>
-              Max {BULK_ENROLL_CAP} reached
-            </span>
-          )}
-          <div style={{ flex: 1 }} />
-          <button
-            onClick={() => setShowBulkEnrollModal(true)}
-            style={{
-              padding: '7px 16px', borderRadius: 7, border: 'none',
-              background: '#0F9D8E', color: '#fff',
-              fontSize: 13, fontWeight: 600, cursor: 'pointer',
-            }}
-          >
-            📨 Enroll in sequence
-          </button>
-          <button
-            onClick={clearSelection}
-            style={{
-              padding: '7px 14px', borderRadius: 7, border: '1px solid #9FE1CB',
-              background: '#fff', color: '#065f46',
-              fontSize: 13, cursor: 'pointer',
-            }}
-          >
-            Clear
-          </button>
-        </div>
-      )}
-
       {/* ── Content Area ───────────────────────────────────────────────────── */}
       {loading ? (
         <div className="pv-loading">Loading prospects...</div>
@@ -598,6 +548,57 @@ export default function ProspectingView() {
           }}
           onClose={() => setShowBulkEnrollModal(false)}
         />
+      )}
+
+      {/* ── Bulk selection action bar (bottom, fixed) ─────────────────────── */}
+      {/* Fixed at viewport bottom so it's always visible during selection,  */}
+      {/* without needing to scroll. Hidden while a prospect detail panel is */}
+      {/* open — that overlay (z-index 999) would cover it anyway.           */}
+      {selectedIds.size > 0 && !selectedProspect && (
+        <div style={{
+          position: 'fixed',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          background: '#ecfdf5',
+          borderTop: '2px solid #6ee7b7',
+          padding: '10px 18px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          zIndex: 900,
+          boxShadow: '0 -4px 12px rgba(15, 157, 142, 0.12)',
+        }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#065f46' }}>
+            ✓ {selectedIds.size} selected
+          </span>
+          {selectedIds.size >= BULK_ENROLL_CAP && (
+            <span style={{ fontSize: 11, color: '#92400e', background: '#fef3c7', padding: '2px 8px', borderRadius: 4 }}>
+              Max {BULK_ENROLL_CAP} reached
+            </span>
+          )}
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={() => setShowBulkEnrollModal(true)}
+            style={{
+              padding: '7px 16px', borderRadius: 7, border: 'none',
+              background: '#0F9D8E', color: '#fff',
+              fontSize: 13, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            📨 Enroll in sequence
+          </button>
+          <button
+            onClick={clearSelection}
+            style={{
+              padding: '7px 14px', borderRadius: 7, border: '1px solid #9FE1CB',
+              background: '#fff', color: '#065f46',
+              fontSize: 13, cursor: 'pointer',
+            }}
+          >
+            Clear
+          </button>
+        </div>
       )}
 
       {/* ── Create Form Modal ──────────────────────────────────────────────── */}

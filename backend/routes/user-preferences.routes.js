@@ -24,7 +24,14 @@ router.use(orgContext);
 const UI_PREF_DEFAULTS = {
   actions_show_sparkline:  false,
   actions_recent_windows:  ['12h', '1d', '1w'],
+  // Modules the user has pinned to the main sidebar. Capped at 2.
+  // Only module IDs from PINNABLE_MODULE_IDS below are accepted.
+  pinned_modules:          [],
 };
+
+// Modules that are allowed to be pinned (must match orgModules keys in App.js)
+const PINNABLE_MODULE_IDS = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
+const PINNED_MODULES_CAP  = 2;
 
 // ── Helper ────────────────────────────────────────────────────────────────
 async function getUiPrefs(userId, orgId) {
@@ -62,6 +69,28 @@ router.patch('/preferences', async (req, res) => {
 
     if (Object.keys(filtered).length === 0) {
       return res.status(400).json({ error: { message: 'No valid preference keys supplied' } });
+    }
+
+    // ── Validate pinned_modules ───────────────────────────────────────────
+    // Must be an array of valid module IDs, no duplicates, capped at 2.
+    if ('pinned_modules' in filtered) {
+      const raw = filtered.pinned_modules;
+      if (!Array.isArray(raw)) {
+        return res.status(400).json({ error: { message: 'pinned_modules must be an array' } });
+      }
+      const dedup = [];
+      for (const id of raw) {
+        if (typeof id !== 'string')            continue;
+        if (!PINNABLE_MODULE_IDS.includes(id))  continue;
+        if (dedup.includes(id))                 continue;
+        dedup.push(id);
+      }
+      if (dedup.length > PINNED_MODULES_CAP) {
+        return res.status(400).json({
+          error: { message: `You can pin at most ${PINNED_MODULES_CAP} modules.`, code: 'PIN_CAP_EXCEEDED' }
+        });
+      }
+      filtered.pinned_modules = dedup;
     }
 
     // Upsert on composite PK (user_id, org_id) — merges only the 'ui' key

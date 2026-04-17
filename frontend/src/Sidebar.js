@@ -191,7 +191,15 @@ function UserCard({ user, activeRole, availableRoles, onRoleSwitch, onLogout, co
 // Sits above UserCard in sb-bottom. Uses existing sb-nav-item
 // styles to match the sidebar perfectly.
 // ─────────────────────────────────────────────────────────────
-function ModuleLauncher({ allModuleItems = [], currentTab, onNavClick, collapsed }) {
+function ModuleLauncher({
+  allModuleItems = [],
+  currentTab,
+  onNavClick,
+  collapsed,
+  pinnedModuleIds = [],
+  pinnedModulesCap = 2,
+  onTogglePin,
+}) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -206,6 +214,18 @@ function ModuleLauncher({ allModuleItems = [], currentTab, onNavClick, collapsed
   const handleSelect = (id) => {
     onNavClick(id);
     setOpen(false);
+  };
+
+  // Handle pin/unpin click — stops propagation so the tile itself doesn't
+  // navigate. Returns early when at cap and trying to pin a new one.
+  const handlePinClick = (e, id) => {
+    e.stopPropagation();
+    const isPinned = pinnedModuleIds.includes(id);
+    if (!isPinned && pinnedModuleIds.length >= pinnedModulesCap) {
+      // At cap — no-op. The pin button is already styled as disabled in this state.
+      return;
+    }
+    if (onTogglePin) onTogglePin(id);
   };
 
   return (
@@ -230,17 +250,56 @@ function ModuleLauncher({ allModuleItems = [], currentTab, onNavClick, collapsed
         <div className={`sb-launcher-panel ${collapsed ? 'sb-launcher-panel--left' : 'sb-launcher-panel--above'}`}>
           <div className="sb-launcher-header">More Modules</div>
           <div className="sb-launcher-grid">
-            {allModuleItems.map(item => (
-              <button
-                key={item.id}
-                className={`sb-launcher-tile ${currentTab === item.id ? 'sb-launcher-tile--active' : ''}`}
-                onClick={() => handleSelect(item.id)}
-                title={item.label}
-              >
-                <span className="sb-launcher-icon">{item.icon}</span>
-                <span className="sb-launcher-label">{item.label}</span>
-              </button>
-            ))}
+            {allModuleItems.map(item => {
+              const isPinned = pinnedModuleIds.includes(item.id);
+              const atCap    = !isPinned && pinnedModuleIds.length >= pinnedModulesCap;
+              return (
+                <button
+                  key={item.id}
+                  className={`sb-launcher-tile ${currentTab === item.id ? 'sb-launcher-tile--active' : ''} ${isPinned ? 'sb-launcher-tile--pinned' : ''}`}
+                  onClick={() => handleSelect(item.id)}
+                  title={item.label}
+                  style={{ position: 'relative' }}
+                >
+                  <span
+                    className="sb-launcher-pin"
+                    onClick={e => handlePinClick(e, item.id)}
+                    role="button"
+                    tabIndex={0}
+                    title={
+                      isPinned ? 'Unpin from sidebar'
+                      : atCap  ? `Unpin one first (max ${pinnedModulesCap} pinned)`
+                      :          'Pin to sidebar'
+                    }
+                    style={{
+                      position: 'absolute',
+                      top: 4, right: 4,
+                      fontSize: 12, lineHeight: 1,
+                      padding: '2px 4px', borderRadius: 4,
+                      cursor: atCap ? 'not-allowed' : 'pointer',
+                      opacity: isPinned ? 1 : (atCap ? 0.25 : 0.55),
+                      background: isPinned ? 'rgba(15, 157, 142, 0.15)' : 'transparent',
+                      color:      isPinned ? '#0F9D8E' : 'inherit',
+                      transition: 'opacity 0.15s, background 0.15s',
+                    }}
+                  >
+                    {isPinned ? '📌' : '📍'}
+                  </span>
+                  <span className="sb-launcher-icon">{item.icon}</span>
+                  <span className="sb-launcher-label">{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div style={{
+            padding: '6px 10px',
+            fontSize: 11,
+            color: '#94a3b8',
+            borderTop: '1px solid rgba(0,0,0,0.06)',
+            marginTop: 4,
+            lineHeight: 1.5,
+          }}>
+            📌 pinned to sidebar · 📍 click to pin ({pinnedModuleIds.length}/{pinnedModulesCap})
           </div>
         </div>
       )}
@@ -255,6 +314,10 @@ export default function Sidebar({
   user,
   navItems,
   allModuleItems,
+  pinnedModuleItems = [],
+  pinnedModuleIds   = [],
+  pinnedModulesCap  = 2,
+  onTogglePin,
   currentTab,
   onNavClick,
   activeRole,
@@ -269,6 +332,27 @@ export default function Sidebar({
 }) {
   const navItemMap = {};
   navItems.forEach(item => { navItemMap[item.id] = item; });
+  // Pinned modules participate in MEMBER_NAV_SECTIONS (prospecting is listed
+  // there already). For non-pipeline modules (contracts/handovers/service/
+  // agency), we inject them into the Pipeline section below.
+  pinnedModuleItems.forEach(item => { navItemMap[item.id] = item; });
+
+  // Build the sections list, injecting any pinned modules that aren't already
+  // hardcoded in a section (prospecting is; contracts/handovers/etc aren't).
+  const HARDCODED_SECTION_ITEM_IDS = new Set(
+    MEMBER_NAV_SECTIONS.flatMap(s => s.items)
+  );
+  const pinnedNotInSection = pinnedModuleItems
+    .map(m => m.id)
+    .filter(id => !HARDCODED_SECTION_ITEM_IDS.has(id));
+
+  const memberNavSections = pinnedNotInSection.length === 0
+    ? MEMBER_NAV_SECTIONS
+    : MEMBER_NAV_SECTIONS.map(section =>
+        section.id === 'pipeline'
+          ? { ...section, items: [...section.items, ...pinnedNotInSection] }
+          : section
+      );
 
   const isMemberRole = activeRole === 'member';
 
@@ -297,7 +381,7 @@ export default function Sidebar({
         {/* Navigation */}
         <nav className="sb-nav">
           {isMemberRole ? (
-            MEMBER_NAV_SECTIONS.map(section => (
+            memberNavSections.map(section => (
               <NavSection
                 key={section.id}
                 section={section}
@@ -350,6 +434,9 @@ export default function Sidebar({
               currentTab={currentTab}
               onNavClick={onNavClick}
               collapsed={collapsed}
+              pinnedModuleIds={pinnedModuleIds}
+              pinnedModulesCap={pinnedModulesCap}
+              onTogglePin={onTogglePin}
             />
           )}
 
