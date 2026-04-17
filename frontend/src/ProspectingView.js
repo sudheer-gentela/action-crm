@@ -164,6 +164,57 @@ export default function ProspectingView() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
 
+  // ── Bulk selection state ──────────────────────────────────────────────────
+  // A set of prospect IDs the user has checked for bulk actions (currently
+  // only "Enroll in sequence"). Capped at BULK_ENROLL_CAP because the enroll
+  // modal itself doesn't accept more than that.
+  const BULK_ENROLL_CAP = 20;
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [showBulkEnrollModal, setShowBulkEnrollModal] = useState(false);
+
+  const isSelected = (id) => selectedIds.has(id);
+  const clearSelection = () => setSelectedIds(new Set());
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        // Hard cap: can't add a 21st.
+        if (next.size >= BULK_ENROLL_CAP) return prev;
+        next.add(id);
+      }
+      return next;
+    });
+  };
+  // Select every prospect in the given array, up to the cap. Prospects already
+  // selected stay selected; new IDs get added until the cap is reached.
+  const selectMany = (ids) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (next.size >= BULK_ENROLL_CAP) break;
+        next.add(id);
+      }
+      return next;
+    });
+  };
+  // Unselect every prospect in the given array.
+  const unselectMany = (ids) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      for (const id of ids) next.delete(id);
+      return next;
+    });
+  };
+
+  // Clear selection when the user switches views or changes the search query.
+  // Prevents stale selections (prospect might be filtered out of the current
+  // view) from lingering invisibly and confusing the rep.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [viewMode, searchQuery, scope]);
+
   const handleImportProspects = async (rows) => {
     const res = await apiFetch('/prospects/bulk', {
       method: 'POST',
@@ -453,21 +504,96 @@ export default function ProspectingView() {
           onSelect={setSelectedProspect}
           onStageChange={handleStageChange}
           terminalCounts={{ converted: convertedCount, disqualified: disqualifiedCount, nurture: nurtureCount }}
+          isSelected={isSelected}
+          onToggleSelect={toggleSelect}
+          selectionActive={selectedIds.size > 0}
+          atCap={selectedIds.size >= BULK_ENROLL_CAP}
         />
       ) : viewMode === 'list' ? (
         <ListView
           prospects={prospects}
           onSelect={setSelectedProspect}
+          isSelected={isSelected}
+          onToggleSelect={toggleSelect}
+          onSelectMany={selectMany}
+          onUnselectMany={unselectMany}
+          selectedCount={selectedIds.size}
+          atCap={selectedIds.size >= BULK_ENROLL_CAP}
+          bulkCap={BULK_ENROLL_CAP}
         />
       ) : viewMode === 'account' ? (
         <AccountView
           groups={Object.values(groupedByAccount)}
           onSelect={setSelectedProspect}
+          isSelected={isSelected}
+          onToggleSelect={toggleSelect}
+          onSelectMany={selectMany}
+          onUnselectMany={unselectMany}
+          atCap={selectedIds.size >= BULK_ENROLL_CAP}
         />
       ) : viewMode === 'sequences' ? (
         <SequencesView prospects={prospects} />
       ) : (
         <ProspectingInbox scope={scope} />
+      )}
+
+      {/* ── Bulk selection action bar (bottom) ─────────────────────────────── */}
+      {selectedIds.size > 0 && (
+        <div style={{
+          position: 'sticky',
+          bottom: 0,
+          background: '#fff',
+          borderTop: '1px solid #e5e7eb',
+          boxShadow: '0 -4px 12px rgba(0,0,0,0.06)',
+          padding: '10px 18px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          zIndex: 50,
+        }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#065f46' }}>
+            {selectedIds.size} selected
+          </span>
+          {selectedIds.size >= BULK_ENROLL_CAP && (
+            <span style={{ fontSize: 11, color: '#92400e', background: '#fef3c7', padding: '2px 8px', borderRadius: 4 }}>
+              Max {BULK_ENROLL_CAP} reached
+            </span>
+          )}
+          <div style={{ flex: 1 }} />
+          <button
+            onClick={() => setShowBulkEnrollModal(true)}
+            style={{
+              padding: '7px 16px', borderRadius: 7, border: 'none',
+              background: '#0F9D8E', color: '#fff',
+              fontSize: 13, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            📨 Enroll in sequence
+          </button>
+          <button
+            onClick={clearSelection}
+            style={{
+              padding: '7px 14px', borderRadius: 7, border: '1px solid #d1d5db',
+              background: '#fff', color: '#374151',
+              fontSize: 13, cursor: 'pointer',
+            }}
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
+      {/* ── Bulk Enroll Modal ──────────────────────────────────────────────── */}
+      {showBulkEnrollModal && (
+        <SequenceEnrollModal
+          prospects={prospects.filter(p => selectedIds.has(p.id))}
+          onEnrolled={() => {
+            setShowBulkEnrollModal(false);
+            clearSelection();
+            fetchProspects();
+          }}
+          onClose={() => setShowBulkEnrollModal(false)}
+        />
       )}
 
       {/* ── Create Form Modal ──────────────────────────────────────────────── */}
@@ -505,7 +631,7 @@ export default function ProspectingView() {
 // PIPELINE BOARD
 // ═════════════════════════════════════════════════════════════════════════════
 
-function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, terminalCounts }) {
+function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, terminalCounts, isSelected, onToggleSelect, selectionActive, atCap }) {
   const { terminalStages } = useStages();
   return (
     <div className="pv-pipeline">
@@ -519,7 +645,15 @@ function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, termin
             </div>
             <div className="pv-col-body">
               {(groupedByStage[stage.key] || []).map(p => (
-                <ProspectCard key={p.id} prospect={p} onClick={() => onSelect(p)} />
+                <ProspectCard
+                  key={p.id}
+                  prospect={p}
+                  onClick={() => onSelect(p)}
+                  isSelected={isSelected && isSelected(p.id)}
+                  onToggleSelect={onToggleSelect}
+                  selectionActive={selectionActive}
+                  atCap={atCap}
+                />
               ))}
               {(groupedByStage[stage.key] || []).length === 0 && (
                 <div className="pv-col-empty">No prospects</div>
@@ -545,9 +679,49 @@ function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, termin
 // PROSPECT CARD (used in pipeline)
 // ═════════════════════════════════════════════════════════════════════════════
 
-function ProspectCard({ prospect: p, onClick }) {
+function ProspectCard({ prospect: p, onClick, isSelected = false, onToggleSelect, selectionActive = false, atCap = false }) {
+  // The checkbox is fully visible when:
+  //   - the card is selected, OR
+  //   - the user already has a selection in progress (so additions are easy)
+  // Otherwise it's 0.35 opacity and rises on hover via the existing .pv-card:hover rule.
+  const showCheckbox = !!onToggleSelect;
+  const visible      = isSelected || selectionActive;
+  const disabled     = !isSelected && atCap;
+
   return (
-    <div className="pv-card" onClick={onClick}>
+    <div
+      className="pv-card"
+      onClick={onClick}
+      style={{
+        position: 'relative',
+        ...(isSelected ? { background: '#ecfdf5', borderColor: '#6ee7b7' } : {}),
+      }}
+    >
+      {showCheckbox && (
+        <label
+          onClick={e => {
+            e.stopPropagation();
+            if (!disabled) onToggleSelect(p.id);
+          }}
+          title={disabled ? 'Max reached' : (isSelected ? 'Unselect' : 'Select')}
+          style={{
+            position: 'absolute',
+            top: 6, right: 6,
+            cursor: disabled ? 'not-allowed' : 'pointer',
+            opacity: visible ? 1 : 0.35,
+            transition: 'opacity 0.15s',
+            lineHeight: 0,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={!!isSelected}
+            disabled={disabled}
+            onChange={() => {}}
+            style={{ cursor: disabled ? 'not-allowed' : 'pointer' }}
+          />
+        </label>
+      )}
       <div className="pv-card-top">
         <span className="pv-card-name">{p.first_name} {p.last_name}</span>
         {p.icp_score != null && (
@@ -593,13 +767,49 @@ function ProspectCard({ prospect: p, onClick }) {
 // LIST VIEW
 // ═════════════════════════════════════════════════════════════════════════════
 
-function ListView({ prospects, onSelect }) {
+function ListView({
+  prospects,
+  onSelect,
+  isSelected,
+  onToggleSelect,
+  onSelectMany,
+  onUnselectMany,
+  selectedCount = 0,
+  atCap = false,
+  bulkCap = 20,
+}) {
   const { allStages } = useStages();
+
+  // Header "select all" — checked when all visible rows are selected.
+  // If any are unselected, header acts as "select all visible" (bounded by cap).
+  const visibleIds     = prospects.map(p => p.id);
+  const allSelected    = visibleIds.length > 0 && visibleIds.every(id => isSelected && isSelected(id));
+  const someSelected   = !allSelected && visibleIds.some(id => isSelected && isSelected(id));
+  const handleHeaderToggle = () => {
+    if (allSelected) {
+      onUnselectMany && onUnselectMany(visibleIds);
+    } else {
+      onSelectMany && onSelectMany(visibleIds);
+    }
+  };
+
   return (
     <div className="pv-list">
       <table className="pv-table">
         <thead>
           <tr>
+            {onToggleSelect && (
+              <th style={{ width: 32, paddingLeft: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  ref={el => { if (el) el.indeterminate = someSelected; }}
+                  onChange={handleHeaderToggle}
+                  title={allSelected ? 'Unselect all visible' : 'Select all visible (up to ' + bulkCap + ')'}
+                  style={{ cursor: 'pointer' }}
+                />
+              </th>
+            )}
             <th>Name</th>
             <th>Company</th>
             <th>Title</th>
@@ -614,8 +824,35 @@ function ListView({ prospects, onSelect }) {
         <tbody>
           {prospects.map(p => {
             const stageCfg = allStages.find(s => s.key === p.stage);
+            const selected = isSelected && isSelected(p.id);
+            // Prevent adding a new row past the cap; allow unchecking always.
+            const disabled = !selected && atCap;
             return (
-              <tr key={p.id} onClick={() => onSelect(p)} className="pv-table-row">
+              <tr
+                key={p.id}
+                onClick={() => onSelect(p)}
+                className="pv-table-row"
+                style={selected ? { background: '#ecfdf5' } : undefined}
+              >
+                {onToggleSelect && (
+                  <td
+                    style={{ paddingLeft: 12 }}
+                    onClick={e => {
+                      // Don't let row-click navigate when the user is clicking the checkbox cell.
+                      e.stopPropagation();
+                      if (!disabled) onToggleSelect(p.id);
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!selected}
+                      disabled={disabled}
+                      onChange={() => {}}
+                      title={disabled ? `Max ${bulkCap} per bulk enroll` : ''}
+                      style={{ cursor: disabled ? 'not-allowed' : 'pointer' }}
+                    />
+                  </td>
+                )}
                 <td className="pv-table-name">
                   {p.first_name} {p.last_name}
                   {p.email && <span className="pv-table-email">{p.email}</span>}
@@ -643,7 +880,7 @@ function ListView({ prospects, onSelect }) {
             );
           })}
           {prospects.length === 0 && (
-            <tr><td colSpan="9" className="pv-table-empty">No prospects found</td></tr>
+            <tr><td colSpan={onToggleSelect ? 10 : 9} className="pv-table-empty">No prospects found</td></tr>
           )}
         </tbody>
       </table>
@@ -655,42 +892,93 @@ function ListView({ prospects, onSelect }) {
 // ACCOUNT VIEW
 // ═════════════════════════════════════════════════════════════════════════════
 
-function AccountView({ groups, onSelect }) {
+function AccountView({ groups, onSelect, isSelected, onToggleSelect, onSelectMany, onUnselectMany, atCap }) {
   const { allStages } = useStages();
+  const showCheckbox = !!onToggleSelect;
   return (
     <div className="pv-account-view">
-      {groups.sort((a, b) => b.prospects.length - a.prospects.length).map((group, idx) => (
-        <div key={idx} className="pv-account-group">
-          <div className="pv-account-header">
-            <span className="pv-account-name">
-              🏢 {group.accountName}
-              {group.domain && <span className="pv-account-domain">{group.domain}</span>}
-            </span>
-            <span className="pv-account-count">{group.prospects.length} prospect{group.prospects.length !== 1 ? 's' : ''}</span>
-          </div>
-          {/* Coverage scorecard for linked accounts */}
-          {group.accountId && (
-            <div style={{ padding: '0 12px 8px' }}>
-              <CoverageScorecard accountId={group.accountId} />
+      {groups.sort((a, b) => b.prospects.length - a.prospects.length).map((group, idx) => {
+        const groupIds      = group.prospects.map(p => p.id);
+        const groupSelCount = showCheckbox ? groupIds.filter(id => isSelected(id)).length : 0;
+        const allGroupSelected  = showCheckbox && groupSelCount === groupIds.length && groupIds.length > 0;
+        const someGroupSelected = showCheckbox && groupSelCount > 0 && !allGroupSelected;
+
+        const handleGroupToggle = () => {
+          if (allGroupSelected) {
+            onUnselectMany && onUnselectMany(groupIds);
+          } else {
+            onSelectMany && onSelectMany(groupIds);
+          }
+        };
+
+        return (
+          <div key={idx} className="pv-account-group">
+            <div className="pv-account-header" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {showCheckbox && (
+                <input
+                  type="checkbox"
+                  checked={allGroupSelected}
+                  ref={el => { if (el) el.indeterminate = someGroupSelected; }}
+                  onChange={e => { e.stopPropagation(); handleGroupToggle(); }}
+                  onClick={e => e.stopPropagation()}
+                  title={allGroupSelected ? 'Unselect everyone in this account' : 'Select everyone in this account'}
+                  style={{ cursor: 'pointer' }}
+                />
+              )}
+              <span className="pv-account-name" style={{ flex: 1 }}>
+                🏢 {group.accountName}
+                {group.domain && <span className="pv-account-domain">{group.domain}</span>}
+              </span>
+              <span className="pv-account-count">{group.prospects.length} prospect{group.prospects.length !== 1 ? 's' : ''}</span>
             </div>
-          )}
-          <div className="pv-account-prospects">
-            {group.prospects.map(p => {
-              const stageCfg = allStages.find(s => s.key === p.stage);
-              return (
-                <div key={p.id} className="pv-account-prospect-row" onClick={() => onSelect(p)}>
-                  <span className="pv-apr-name">{p.first_name} {p.last_name}</span>
-                  <span className="pv-apr-title">{p.title || ''}</span>
-                  <span className="pv-stage-badge" style={{ background: stageCfg?.color + '20', color: stageCfg?.color }}>
-                    {stageCfg?.icon} {stageCfg?.label}
-                  </span>
-                  <span className="pv-apr-touches">{p.outreach_count || 0} touches</span>
-                </div>
-              );
-            })}
+            {/* Coverage scorecard for linked accounts */}
+            {group.accountId && (
+              <div style={{ padding: '0 12px 8px' }}>
+                <CoverageScorecard accountId={group.accountId} />
+              </div>
+            )}
+            <div className="pv-account-prospects">
+              {group.prospects.map(p => {
+                const stageCfg = allStages.find(s => s.key === p.stage);
+                const selected = showCheckbox && isSelected(p.id);
+                const disabled = showCheckbox && !selected && atCap;
+                return (
+                  <div
+                    key={p.id}
+                    className="pv-account-prospect-row"
+                    onClick={() => onSelect(p)}
+                    style={selected ? { background: '#ecfdf5' } : undefined}
+                  >
+                    {showCheckbox && (
+                      <span
+                        onClick={e => {
+                          e.stopPropagation();
+                          if (!disabled) onToggleSelect(p.id);
+                        }}
+                        style={{ marginRight: 6, cursor: disabled ? 'not-allowed' : 'pointer', lineHeight: 0 }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!!selected}
+                          disabled={disabled}
+                          onChange={() => {}}
+                          style={{ cursor: disabled ? 'not-allowed' : 'pointer' }}
+                        />
+                      </span>
+                    )}
+                    <span className="pv-apr-name">{p.first_name} {p.last_name}</span>
+                    <span className="pv-apr-title">{p.title || ''}</span>
+                    <span className="pv-stage-badge" style={{ background: stageCfg?.color + '20', color: stageCfg?.color }}>
+                      {stageCfg?.icon} {stageCfg?.label}
+                    </span>
+                    <span className="pv-apr-touches">{p.outreach_count || 0} touches</span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
       {groups.length === 0 && (
         <div className="pv-empty-state">
           <p>No prospects found. Add a prospect to get started!</p>
