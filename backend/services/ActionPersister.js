@@ -130,9 +130,9 @@ class ActionPersister {
       return this._upsertProspectDiagnostic(params);
     }
 
-    const fkCol     = FK_COLUMN[entityType];
-    const fkValue   = explicitDealId || entityId;
-    const safeNext  = VALID_NEXT_STEPS.has(nextStep) ? nextStep : 'email';
+    const fkCol        = FK_COLUMN[entityType];
+    const fkValue      = explicitDealId || entityId;
+    const safeNext     = VALID_NEXT_STEPS.has(nextStep) ? nextStep : 'email';
     const conflictCols = UPSERT_CONFLICT_COLS[entityType];
 
     if (!fkCol || !conflictCols) {
@@ -140,17 +140,29 @@ class ActionPersister {
       return null;
     }
 
-    // Resolve deal_id for non-deal entities that still need it for linking
+    // Resolve the three entity-FK columns explicitly. For deal/handover entity
+    // types, fkCol IS 'deal_id' — so we must not list it a second time or
+    // Postgres throws "column deal_id specified more than once".
+    //
+    // Strategy: compute each of deal_id, contract_id, case_id independently
+    // based on entityType, then list them once each in the INSERT column list.
+    //
+    //   entityType='deal'      → deal_id = fkValue,    contract_id = null, case_id = null
+    //   entityType='handover'  → deal_id = fkValue,    contract_id = null, case_id = null
+    //   entityType='contract'  → deal_id = params.dealId or null, contract_id = fkValue, case_id = null
+    //   entityType='case'      → deal_id = params.dealId or null, contract_id = null, case_id = fkValue
     const dealId = (entityType === 'deal' || entityType === 'handover')
       ? fkValue
       : (params.dealId || null);
+    const contractId = (entityType === 'contract') ? fkValue : null;
+    const caseId     = (entityType === 'case')     ? fkValue : null;
 
     try {
       const result = await db.query(
         `INSERT INTO actions (
            org_id, user_id,
-           ${fkCol},
-           deal_id, account_id, contact_id,
+           deal_id, contract_id, case_id,
+           account_id, contact_id,
            type, action_type,
            title, description,
            priority, due_date,
@@ -160,14 +172,14 @@ class ActionPersister {
            status, created_at, updated_at
          ) VALUES (
            $1, $2,
-           $3,
-           $4, $5, $6,
-           $7, $7,
-           $8, $9,
-           $10, $11,
-           $12, $13,
-           'auto_generated', $14,
-           $15, $16, $17,
+           $3, $4, $5,
+           $6, $7,
+           $8, $8,
+           $9, $10,
+           $11, $12,
+           $13, $14,
+           'auto_generated', $15,
+           $16, $17, $18,
            'yet_to_start', NOW(), NOW()
          )
          ON CONFLICT ${conflictCols}
@@ -182,15 +194,15 @@ class ActionPersister {
            -- status intentionally NOT updated — preserves snooze/in_progress
          RETURNING id`,
         [
-          orgId, userId,
-          fkValue,
-          dealId, accountId, contactId,
-          actionType,
-          title, description,
-          priority, dueDate,
-          safeNext, isInternal,
-          sourceRule,
-          suggestedAction, healthParam, dealStage,
+          orgId, userId,               // $1, $2
+          dealId, contractId, caseId,  // $3, $4, $5
+          accountId, contactId,        // $6, $7
+          actionType,                  // $8 (used twice for type + action_type)
+          title, description,          // $9, $10
+          priority, dueDate,           // $11, $12
+          safeNext, isInternal,        // $13, $14
+          sourceRule,                  // $15
+          suggestedAction, healthParam, dealStage,  // $16, $17, $18
         ]
       );
       return result.rows[0]?.id ?? null;
