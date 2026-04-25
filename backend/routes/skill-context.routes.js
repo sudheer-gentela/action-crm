@@ -12,6 +12,7 @@
 const express = require('express');
 const router  = express.Router();
 const { pool } = require('../config/database');
+const { buildProspectSkillContext } = require('../services/SkillContextService');
 
 // ─────────────────────────────────────────────────────────────
 // Auth middleware — shared secret
@@ -251,6 +252,66 @@ router.get('/deals/:dealId', async (req, res) => {
     res.json(payload);
   } catch (err) {
     console.error('skill-context fetch failed:', err);
+    res.status(500).json({ error: { message: err.message } });
+  } finally {
+    if (client) client.release();
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// GET /api/skill-context/prospects/:prospectId
+//
+// Optional query params:
+//   ?as_user=:userId  - merge user-level prospecting_config overrides on top
+//                        of org-default config. When omitted, returns
+//                        org-default org_context only (with prospect owner
+//                        used for rep info as a courtesy fallback).
+//
+// Returns the canonical gowarm-prospect.json-shaped payload.
+// ─────────────────────────────────────────────────────────────
+router.get('/prospects/:prospectId', async (req, res) => {
+  const { prospectId } = req.params;
+  const asUserIdRaw = req.query.as_user;
+
+  if (!/^\d+$/.test(prospectId)) {
+    return res.status(400).json({ error: { message: 'prospectId must be numeric' } });
+  }
+  if (asUserIdRaw && !/^\d+$/.test(asUserIdRaw)) {
+    return res.status(400).json({ error: { message: 'as_user must be numeric' } });
+  }
+
+  let client;
+  try {
+    client = await pool.connect();
+
+    // Step 1: lookup prospect's org_id (pre-RLS) — same pattern as deal route
+    const orgLookup = await client.query(
+      `SELECT id, org_id FROM prospects
+        WHERE id = $1 AND deleted_at IS NULL`,
+      [prospectId]
+    );
+    if (orgLookup.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+    const orgId = orgLookup.rows[0].org_id;
+
+    // We release this client; the service grabs its own connection
+    client.release();
+    client = null;
+
+    const payload = await buildProspectSkillContext({
+      prospectId: parseInt(prospectId, 10),
+      orgId,
+      asUserId: asUserIdRaw ? parseInt(asUserIdRaw, 10) : null,
+    });
+
+    res.json(payload);
+  } catch (err) {
+    if (client) { client.release(); client = null; }
+    if (err.statusCode === 404) {
+      return res.status(404).json({ error: { message: err.message } });
+    }
+    console.error('skill-context prospect fetch failed:', err);
     res.status(500).json({ error: { message: err.message } });
   } finally {
     if (client) client.release();
