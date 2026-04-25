@@ -279,7 +279,8 @@ function buildOrgContext({ orgConfig, userConfig, repUser, competitors }) {
     : '';
   const rep = {
     name: fallbackName || 'Sales rep',
-    title: repFromUser.title_for_signature || (repUser?.title) || null,
+    // Title comes only from user-level prospecting_config (users table has no title column).
+    title: repFromUser.title_for_signature || null,
     email_signature: repFromUser.email_signature_block || null,
   };
 
@@ -495,7 +496,7 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
       userConfig = upRes[0]?.preferences?.prospecting_config || null;
 
       const userRes = await client.query(
-        `SELECT id, first_name, last_name, email, title
+        `SELECT id, first_name, last_name, email, department
            FROM users WHERE id = $1`,
         [asUserId]
       );
@@ -503,7 +504,7 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
     } else if (prospect.owner_id) {
       // Fall back to prospect owner for rep info, even without per-user override
       const userRes = await client.query(
-        `SELECT id, first_name, last_name, email, title
+        `SELECT id, first_name, last_name, email, department
            FROM users WHERE id = $1`,
         [prospect.owner_id]
       );
