@@ -276,6 +276,7 @@ app.use('/api/prospect-context',    prospectContextRoutes);
 app.use('/api/org-hierarchy',       orgHierarchyRoutes);
 app.use('/api/team-notifications',  teamNotificationsRoutes);
 app.use('/api/users/me',            userPreferencesRoutes);
+app.use('/api/linkedin-profiles',   require('./routes/linkedin-profiles.routes'));
 
 // ── Prospecting Phase 2 ───────────────────────────────────────
 app.use('/api/prospecting-senders', prospectingSendersRoutes);
