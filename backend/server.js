@@ -149,20 +149,18 @@ app.options('*', cors(corsOptions));
 //});
 
 
+// Extension secret key guard — any chrome-extension origin must
+// present the correct X-GoWarm-Extension-Key header
 app.use((req, res, next) => {
   const origin = req.headers.origin || '';
   if (origin.startsWith('chrome-extension://')) {
     const key = req.headers['x-gowarm-extension-key'];
-    // ─── TEMP DIAGNOSTIC — remove after debug ───
-    console.log('[ext-guard]', {
-      origin,
-      key_received: key ? `${key.slice(0, 8)}...${key.slice(-4)}` : 'MISSING',
-      key_expected: process.env.EXTENSION_API_KEY 
-        ? `${process.env.EXTENSION_API_KEY.slice(0, 8)}...${process.env.EXTENSION_API_KEY.slice(-4)}`
-        : 'NOT SET ON SERVER',
-      match: key === process.env.EXTENSION_API_KEY,
-    });
-    // ────────────────────────────────────────────
+    console.log('[ext-guard]',
+      'origin=', origin,
+      'key_len=', key ? key.length : 0,
+      'env_len=', process.env.EXTENSION_API_KEY ? process.env.EXTENSION_API_KEY.length : 0,
+      'match=', key === process.env.EXTENSION_API_KEY
+    );
     if (!key || key !== process.env.EXTENSION_API_KEY) {
       return res.status(403).json({ error: { message: 'Unauthorized extension' } });
     }
