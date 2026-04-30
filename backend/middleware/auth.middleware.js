@@ -25,15 +25,27 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ error: { message: 'Access token required' } });
   }
 
-  try {
+ // try {
+  //  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  //  req.user   = decoded;                                        // full payload — backwards compat
+ //   req.userId = decoded.userId || decoded.id || decoded.sub;   // JWT uses 'userId' key
+//    req.orgId  = decoded.org_id || null;                        // populated once JWT is updated
+//    next();
+//  } catch (error) {
+//    return res.status(403).json({ error: { message: 'Invalid or expired token' } });
+//  }
+//};
+
+
+try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user   = decoded;                                        // full payload — backwards compat
-    req.userId = decoded.userId || decoded.id || decoded.sub;   // JWT uses 'userId' key
-    req.orgId  = decoded.org_id || null;                        // populated once JWT is updated
+    req.user   = decoded;
+    req.userId = decoded.userId || decoded.id || decoded.sub;
+    req.orgId  = decoded.org_id || null;
     next();
   } catch (error) {
+    console.log('[auth-fail] name=' + error.name + ' msg=' + error.message + ' tokenLen=' + token.length + ' tokenHead=' + token.slice(0, 20) + ' secretLen=' + (process.env.JWT_SECRET ? process.env.JWT_SECRET.length : 0));
     return res.status(403).json({ error: { message: 'Invalid or expired token' } });
-  }
-};
+  };
 
 module.exports = authenticateToken;
