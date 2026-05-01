@@ -2224,9 +2224,6 @@ function LinkedInPanel({ prospect, onEventLogged }) {
                     {extraText && <span style={{ color: getLiDotColor(step.key), fontWeight: 500 }}>· {extraText}</span>}
                   </div>
                 )}
-                {!done && step.key === promptedEvent && (
-                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1, fontStyle: 'italic' }}>pending</div>
-                )}
               </div>
             </div>
           );
