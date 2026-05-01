@@ -135,25 +135,14 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-// Extension secret key guard — any chrome-extension origin must
-// present the correct X-GoWarm-Extension-Key header
-//app.use((req, res, next) => {
-//  const origin = req.headers.origin || '';
-//  if (origin.startsWith('chrome-extension://')) {
-//    const key = req.headers['x-gowarm-extension-key'];
-//    if (!key || key !== process.env.EXTENSION_API_KEY) {
-//      return res.status(403).json({ error: { message: 'Unauthorized extension' } });
-//    }
-//  }
-//  next();
-//});
-
-
-// Extension secret key guard — any chrome-extension origin must
-// present the correct X-GoWarm-Extension-Key header
-// Extension secret key guard — any chrome-extension origin must
-// present the correct X-GoWarm-Extension-Key header.
+// Extension secret key guard — chrome-extension origins must present
+// the correct X-GoWarm-Extension-Key header.
 app.use((req, res, next) => {
+  // CORS preflights cannot carry custom headers — let them through so the
+  // browser's actual request can include the key. The actual request hits
+  // the same guard and is checked properly.
+  if (req.method === 'OPTIONS') return next();
+
   const origin = req.headers.origin || '';
 
   if (origin.startsWith('chrome-extension://')) {
@@ -169,6 +158,7 @@ app.use((req, res, next) => {
 
   return next();
 });
+
 
 // ─────────────────────────────────────────────────────────────
 // Rate limiting
