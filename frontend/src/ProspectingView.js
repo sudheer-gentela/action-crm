@@ -2335,6 +2335,317 @@ function LinkedInPanel({ prospect, onEventLogged }) {
           </div>
         </div>
       )}
+
+      {/* Profile data captured from LinkedIn extension */}
+      <LinkedInProfileSection prospect={prospect} />
+    </div>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LinkedIn Profile Section — captured profile data display
+// ═════════════════════════════════════════════════════════════════════════════
+
+function cleanAbout(text) {
+  if (!text) return '';
+  return text.replace(/^About\s*\n+/i, '').trim();
+}
+
+function cleanRelativeTime(s) {
+  if (!s) return '';
+  // Strip trailing "· …" artifacts: "2mo •" → "2mo", "1w • Edited •" → "1w"
+  return s.replace(/\s*[•·]\s*Edited\s*[•·]?\s*$/i, '')
+          .replace(/\s*[•·]\s*$/, '')
+          .trim();
+}
+
+function formatMonthRange(months) {
+  if (!months || months < 1) return '';
+  const y = Math.floor(months / 12);
+  const m = months % 12;
+  if (y === 0) return `${m}mo`;
+  if (m === 0) return `${y}y`;
+  return `${y}y ${m}mo`;
+}
+
+function formatExpDate(d) {
+  if (!d) return null;
+  const dt = new Date(d);
+  if (isNaN(dt)) return null;
+  return dt.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+}
+
+function LinkedInProfileSection({ prospect }) {
+  const [profile, setProfile] = useState(undefined); // undefined = loading, null = not found, object = loaded
+  const [error, setError] = useState(null);
+  const [open, setOpen] = useState({ about: true, experience: true, education: false, activity: false });
+  const [aboutExpanded, setAboutExpanded] = useState(false);
+  const [expDescOpen, setExpDescOpen] = useState({}); // index -> bool
+
+  const linkedinUrl = prospect?.linkedin_url;
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!linkedinUrl) {
+      setProfile(null);
+      return;
+    }
+    setProfile(undefined);
+    setError(null);
+    apiFetch(`/linkedin-profiles/by-url?url=${encodeURIComponent(linkedinUrl)}`)
+      .then(r => {
+        if (cancelled) return;
+        setProfile(r.profile || null);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        setError(err.message || 'Failed to load profile');
+        setProfile(null);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkedinUrl]);
+
+  const toggle = (k) => setOpen(prev => ({ ...prev, [k]: !prev[k] }));
+
+  // ── Empty / missing states ────────────────────────────────────────────────
+  if (!linkedinUrl) {
+    return (
+      <div style={{ marginTop: 20, padding: '14px 16px', background: '#f9fafb', borderRadius: 8, border: '1px dashed #d1d5db' }}>
+        <div style={{ fontSize: 12, color: '#6b7280' }}>
+          No LinkedIn URL on this prospect. Add one to enable LinkedIn data capture.
+        </div>
+      </div>
+    );
+  }
+
+  if (profile === undefined) {
+    return (
+      <div style={{ marginTop: 20, padding: '14px 16px' }}>
+        <div style={{ fontSize: 12, color: '#9ca3af' }}>Loading LinkedIn profile data…</div>
+      </div>
+    );
+  }
+
+  if (error && profile === null) {
+    return (
+      <div style={{ marginTop: 20, padding: '14px 16px', background: '#fef2f2', borderRadius: 8, border: '1px solid #fecaca' }}>
+        <div style={{ fontSize: 12, color: '#dc2626' }}>⚠️ {error}</div>
+      </div>
+    );
+  }
+
+  if (profile === null) {
+    return (
+      <div style={{ marginTop: 20, padding: '14px 16px', background: '#f9fafb', borderRadius: 8, border: '1px dashed #d1d5db' }}>
+        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>
+          Profile not yet captured.
+        </div>
+        <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>
+          Visit this prospect's LinkedIn page with the GoWarmCRM extension installed to capture their profile data.
+        </div>
+        <a
+          href={linkedinUrl}
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            display: 'inline-block', fontSize: 12, padding: '5px 12px', borderRadius: 6,
+            background: '#0077B5', color: '#fff', textDecoration: 'none', fontWeight: 500,
+          }}
+        >
+          Open LinkedIn profile ↗
+        </a>
+      </div>
+    );
+  }
+
+  // ── Loaded ────────────────────────────────────────────────────────────────
+  const about = cleanAbout(profile.about);
+  const experience = Array.isArray(profile.experience) ? profile.experience : [];
+  const education = Array.isArray(profile.education) ? profile.education : [];
+  const activity = Array.isArray(profile.activity) ? profile.activity : [];
+
+  const ABOUT_PREVIEW_LEN = 220;
+  const showAboutToggle = about.length > ABOUT_PREVIEW_LEN;
+  const aboutDisplay = aboutExpanded || !showAboutToggle ? about : about.slice(0, ABOUT_PREVIEW_LEN).trim() + '…';
+
+  const sectionHeaderStyle = {
+    display: 'flex', alignItems: 'center', gap: 6,
+    fontSize: 12, fontWeight: 600, color: '#374151',
+    background: 'none', border: 'none', padding: '8px 0',
+    cursor: 'pointer', width: '100%', textAlign: 'left',
+  };
+  const caret = (isOpen) => (
+    <span style={{ fontSize: 10, color: '#9ca3af', width: 10, display: 'inline-block' }}>
+      {isOpen ? '▾' : '▸'}
+    </span>
+  );
+
+  return (
+    <div style={{ marginTop: 20, borderTop: '1px solid #f0f0f0', paddingTop: 14 }}>
+      {/* Header with provenance */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          Profile data
+        </div>
+        <div style={{ fontSize: 11, color: '#9ca3af', display: 'flex', alignItems: 'center', gap: 8 }}>
+          {profile.last_captured_at && (
+            <span>Captured {timeAgo(profile.last_captured_at).toLowerCase()}</span>
+          )}
+          <a
+            href={linkedinUrl}
+            target="_blank"
+            rel="noreferrer"
+            title="Open LinkedIn profile to recapture"
+            style={{ color: '#0077B5', textDecoration: 'none', fontSize: 11 }}
+          >
+            ↻
+          </a>
+        </div>
+      </div>
+
+      {/* Headline + location (always visible if present) */}
+      {(profile.headline || profile.location) && (
+        <div style={{ marginBottom: 12, fontSize: 12, color: '#4b5563', lineHeight: 1.45 }}>
+          {profile.headline && <div style={{ fontWeight: 500, color: '#1a202c' }}>{profile.headline}</div>}
+          {profile.location && <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{profile.location}</div>}
+        </div>
+      )}
+
+      {/* Backfill hint */}
+      {profile.source === 'backfill' && (
+        <div style={{ marginBottom: 12, padding: '8px 10px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, fontSize: 11, color: '#92400e' }}>
+          Limited data — recapture from LinkedIn for full experience, education, and activity details.
+        </div>
+      )}
+
+      {/* About */}
+      <button onClick={() => toggle('about')} style={sectionHeaderStyle}>
+        {caret(open.about)}
+        <span>About</span>
+        {!about && <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 400 }}>— not captured</span>}
+      </button>
+      {open.about && about && (
+        <div style={{ fontSize: 12, color: '#374151', lineHeight: 1.5, paddingLeft: 16, marginBottom: 6, whiteSpace: 'pre-wrap' }}>
+          {aboutDisplay}
+          {showAboutToggle && (
+            <button
+              onClick={() => setAboutExpanded(v => !v)}
+              style={{ marginLeft: 6, background: 'none', border: 'none', color: '#0077B5', fontSize: 11, cursor: 'pointer', padding: 0 }}
+            >
+              {aboutExpanded ? 'Show less' : 'Show more'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Experience */}
+      <button onClick={() => toggle('experience')} style={sectionHeaderStyle}>
+        {caret(open.experience)}
+        <span>Experience{experience.length > 0 ? ` (${experience.length})` : ''}</span>
+        {experience.length === 0 && <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 400 }}>— not captured</span>}
+      </button>
+      {open.experience && experience.length > 0 && (
+        <div style={{ paddingLeft: 16, marginBottom: 6 }}>
+          {experience.map((exp, i) => {
+            const start = formatExpDate(exp.start_date);
+            const end   = exp.end_date ? formatExpDate(exp.end_date) : 'Present';
+            const dur   = formatMonthRange(exp.duration_months);
+            const dateLine = [start && end ? `${start} – ${end}` : (start || end), dur].filter(Boolean).join(' · ');
+            const hasDesc = exp.description && exp.description.trim().length > 0;
+            const descOpen = !!expDescOpen[i];
+            return (
+              <div key={i} style={{ paddingBottom: 10, marginBottom: 10, borderBottom: i < experience.length - 1 ? '1px solid #f3f4f6' : 'none' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#1a202c' }}>
+                  {exp.title || <span style={{ color: '#9ca3af', fontStyle: 'italic', fontWeight: 400 }}>(no title captured)</span>}
+                </div>
+                {exp.company && (
+                  <div style={{ fontSize: 12, color: '#4b5563', marginTop: 1 }}>{exp.company}</div>
+                )}
+                {dateLine && (
+                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{dateLine}</div>
+                )}
+                {exp.location && (
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1 }}>{exp.location}</div>
+                )}
+                {hasDesc && (
+                  <button
+                    onClick={() => setExpDescOpen(prev => ({ ...prev, [i]: !prev[i] }))}
+                    style={{ marginTop: 4, background: 'none', border: 'none', color: '#0077B5', fontSize: 11, cursor: 'pointer', padding: 0 }}
+                  >
+                    {descOpen ? '▾ Hide description' : '▸ Show description'}
+                  </button>
+                )}
+                {hasDesc && descOpen && (
+                  <div style={{ fontSize: 12, color: '#374151', lineHeight: 1.5, marginTop: 4, whiteSpace: 'pre-wrap' }}>
+                    {exp.description}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Education */}
+      <button onClick={() => toggle('education')} style={sectionHeaderStyle}>
+        {caret(open.education)}
+        <span>Education{education.length > 0 ? ` (${education.length})` : ''}</span>
+        {education.length === 0 && <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 400 }}>— not captured</span>}
+      </button>
+      {open.education && education.length > 0 && (
+        <div style={{ paddingLeft: 16, marginBottom: 6 }}>
+          {education.map((ed, i) => {
+            const yrs = ed.start_year && ed.end_year ? `${ed.start_year} – ${ed.end_year}` : (ed.start_year || ed.end_year || '');
+            const detail = [ed.degree, ed.field_of_study].filter(Boolean).join(' · ');
+            return (
+              <div key={i} style={{ paddingBottom: 8, marginBottom: 8, borderBottom: i < education.length - 1 ? '1px solid #f3f4f6' : 'none' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#1a202c' }}>{ed.school || '(school not captured)'}</div>
+                {detail && <div style={{ fontSize: 12, color: '#4b5563', marginTop: 1 }}>{detail}</div>}
+                {yrs && <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{yrs}</div>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Activity */}
+      <button onClick={() => toggle('activity')} style={sectionHeaderStyle}>
+        {caret(open.activity)}
+        <span>Recent activity{activity.length > 0 ? ` (${activity.length})` : ''}</span>
+        {activity.length === 0 && <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 400 }}>— not captured</span>}
+      </button>
+      {open.activity && activity.length > 0 && (
+        <div style={{ paddingLeft: 16, marginBottom: 6 }}>
+          {activity.map((item, i) => {
+            const rel = cleanRelativeTime(item.relative_time);
+            const kindLabel = item.kind === 'reaction' ? (item.action || 'reacted') : (item.kind || '');
+            return (
+              <div key={item.id || i} style={{ paddingBottom: 8, marginBottom: 8, borderBottom: i < activity.length - 1 ? '1px solid #f3f4f6' : 'none' }}>
+                <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 2, display: 'flex', gap: 6, alignItems: 'center' }}>
+                  {kindLabel && <span style={{ textTransform: 'capitalize', fontWeight: 500, color: '#4b5563' }}>{kindLabel}</span>}
+                  {rel && <span>· {rel}</span>}
+                  {item.source_url && (
+                    <a
+                      href={item.source_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ marginLeft: 'auto', color: '#0077B5', textDecoration: 'none', fontSize: 11 }}
+                    >
+                      view ↗
+                    </a>
+                  )}
+                </div>
+                {item.text && (
+                  <div style={{ fontSize: 12, color: '#374151', lineHeight: 1.45, whiteSpace: 'pre-wrap' }}>
+                    {item.text.length > 280 ? item.text.slice(0, 280).trim() + '…' : item.text}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
