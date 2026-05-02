@@ -7,6 +7,7 @@ import StrapPanel from './StrapPanel';
 import CSVImportModal from './CSVImportModal';
 import SequenceBuilder from './SequenceBuilder';
 import SequenceEnrollModal from './SequenceEnrollModal';
+import LinkedInDataDrawer from './LinkedInDataDrawer';
 import './ProspectingView.css';
 import './OutreachComposer.css';
 
@@ -1273,6 +1274,11 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   const [prospectDraftEdits,    setProspectDraftEdits]    = useState({});
   const [loadingProspectDrafts, setLoadingProspectDrafts] = useState(false);
 
+  // Track which DraftCards have the personalize drawer open. We widen the
+  // side panel whenever any card has its drawer open.
+  const [openDrawers, setOpenDrawers] = useState({}); // { [draftId]: true }
+  const anyDrawerOpen = Object.values(openDrawers).some(Boolean);
+
   const loadProspectDrafts = useCallback(async () => {
     setLoadingProspectDrafts(true);
     try {
@@ -1570,7 +1576,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   if (loading) {
     return (
       <div className="pv-detail-overlay" onClick={onClose}>
-        <div className="pv-detail-panel" onClick={e => e.stopPropagation()}>
+        <div className={`pv-detail-panel${anyDrawerOpen ? ' pv-detail-panel--with-drawer' : ''}`} onClick={e => e.stopPropagation()}>
           <div className="pv-loading">Loading...</div>
         </div>
       </div>
@@ -1584,7 +1590,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
 
   return (
     <div className="pv-detail-overlay" onClick={onClose}>
-      <div className="pv-detail-panel" onClick={e => e.stopPropagation()}>
+      <div className={`pv-detail-panel${anyDrawerOpen ? ' pv-detail-panel--with-drawer' : ''}`} onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="pv-detail-header">
           <div className="pv-detail-header-left">
@@ -2033,6 +2039,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                             onComplete={() => handleMarkDoneProspectDraft(draft.id)}
                             onDiscard={() => handleDiscardProspectDraft(draft.id)}
                             onConvertAndSend={() => handleConvertAndSendProspectDraft(draft)}
+                            onDrawerToggle={(open) => setOpenDrawers(prev => ({ ...prev, [draft.id]: open }))}
                           />
                         );
                       })}
@@ -2922,10 +2929,76 @@ function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
 // DRAFT CARD  — reused in SequencesView Drafts tab and prospect Activity tab
 // ─────────────────────────────────────────────────────────────────────────────
 
-function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle, onSubjectChange, onBodyChange, onSend, onComplete, onDiscard, onConvertAndSend, compact = false }) {
+function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle, onSubjectChange, onBodyChange, onSend, onComplete, onDiscard, onConvertAndSend, compact = false, onDrawerToggle }) {
   const overdue  = draft.isOverdue || (draft.scheduledSendAt && new Date(draft.scheduledSendAt) < new Date());
   const channel  = draft.channel || 'email';
   const isEmail  = channel === 'email';
+
+  // ── Personalize drawer state ────────────────────────────────────────────────
+  // Local to the card; bubble up via onDrawerToggle so the parent panel can
+  // widen to accommodate the drawer. Only relevant when the card is itself
+  // expanded (isOpen) — collapsing the card auto-closes the drawer.
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const bodyRef = useRef(null);
+
+  const linkedinUrl = draft.prospect?.linkedinUrl || draft.prospect?.linkedin_url || null;
+
+  useEffect(() => {
+    // Close drawer + tell parent when the card collapses.
+    if (!isOpen && drawerOpen) {
+      setDrawerOpen(false);
+      if (onDrawerToggle) onDrawerToggle(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
+
+  const toggleDrawer = useCallback(() => {
+    setDrawerOpen(prev => {
+      const next = !prev;
+      if (onDrawerToggle) onDrawerToggle(next);
+      return next;
+    });
+  }, [onDrawerToggle]);
+
+  const closeDrawer = useCallback(() => {
+    setDrawerOpen(false);
+    if (onDrawerToggle) onDrawerToggle(false);
+  }, [onDrawerToggle]);
+
+  // Insert snippet at cursor position in the body textarea, or append if not
+  // focused. Always inserts on its own line (or pair of lines) for readability.
+  const handleInsertSnippet = useCallback((snippet) => {
+    if (!snippet) return;
+    const ta = bodyRef.current;
+    const cur = body || '';
+    const text = snippet.trim();
+    if (!ta || ta !== document.activeElement) {
+      // No focus → append with a blank line separator.
+      const sep = cur && !cur.endsWith('\n\n') ? (cur.endsWith('\n') ? '\n' : '\n\n') : '';
+      onBodyChange(cur + sep + text);
+      return;
+    }
+    const start = ta.selectionStart ?? cur.length;
+    const end   = ta.selectionEnd   ?? cur.length;
+    const before = cur.slice(0, start);
+    const after  = cur.slice(end);
+    // Add blank-line buffers if the surrounding text isn't already broken.
+    const lead  = before && !before.endsWith('\n\n') ? (before.endsWith('\n') ? '\n' : '\n\n') : '';
+    const trail = after && !after.startsWith('\n')   ? '\n' : '';
+    const inserted = lead + text + trail;
+    const next = before + inserted + after;
+    onBodyChange(next);
+    // Restore cursor after the inserted block on next tick.
+    setTimeout(() => {
+      if (bodyRef.current) {
+        const pos = (before + inserted).length;
+        bodyRef.current.focus();
+        bodyRef.current.setSelectionRange(pos, pos);
+      }
+    }, 0);
+  }, [body, onBodyChange]);
+
+  const drawerVisible = drawerOpen && isOpen;
 
   const scheduledLabel = draft.scheduledSendAt
     ? new Date(draft.scheduledSendAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -2995,22 +3068,57 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
 
           {/* ── EMAIL channel ─────────────────────────────────────────── */}
           {isEmail && (
-            <>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'stretch' }}>
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
               {draft.channelDrift && draft.draftChannel === 'linkedin' && (
                 <div style={{ padding: '10px 12px', background: '#fffbeb', borderRadius: 8, border: '1px solid #fcd34d', fontSize: 12, color: '#92400e' }}>
                   ⚡ This step was changed from <strong>LinkedIn</strong> to <strong>Email</strong> after the draft was created. The body below was written for LinkedIn — review and edit before sending.
                 </div>
               )}
               {draft.suggestedSender && (
-                <div style={{ fontSize: 11, color: '#6b7280' }}>
-                  Sending from:{' '}
-                  <span style={{
-                    fontWeight: 600, color: '#374151',
-                    background: '#f3f4f6', padding: '2px 8px', borderRadius: 5,
-                  }}>
-                    {draft.suggestedSender.provider === 'gmail' ? '📧' : '📮'} {draft.suggestedSender.email}
-                    {draft.suggestedSender.label && ` (${draft.suggestedSender.label})`}
-                  </span>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <div style={{ fontSize: 11, color: '#6b7280' }}>
+                    Sending from:{' '}
+                    <span style={{
+                      fontWeight: 600, color: '#374151',
+                      background: '#f3f4f6', padding: '2px 8px', borderRadius: 5,
+                    }}>
+                      {draft.suggestedSender.provider === 'gmail' ? '📧' : '📮'} {draft.suggestedSender.email}
+                      {draft.suggestedSender.label && ` (${draft.suggestedSender.label})`}
+                    </span>
+                  </div>
+                  {linkedinUrl && (
+                    <button
+                      type="button"
+                      onClick={toggleDrawer}
+                      style={{
+                        fontSize: 11, padding: '4px 10px', borderRadius: 5,
+                        border: `1px solid ${drawerOpen ? '#0077B5' : '#d1d5db'}`,
+                        background: drawerOpen ? '#0077B5' : '#fff',
+                        color: drawerOpen ? '#fff' : '#374151',
+                        cursor: 'pointer', fontWeight: 500, flexShrink: 0,
+                      }}
+                    >
+                      ✨ Personalize
+                    </button>
+                  )}
+                </div>
+              )}
+              {!draft.suggestedSender && linkedinUrl && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <button
+                    type="button"
+                    onClick={toggleDrawer}
+                    style={{
+                      fontSize: 11, padding: '4px 10px', borderRadius: 5,
+                      border: `1px solid ${drawerOpen ? '#0077B5' : '#d1d5db'}`,
+                      background: drawerOpen ? '#0077B5' : '#fff',
+                      color: drawerOpen ? '#fff' : '#374151',
+                      cursor: 'pointer', fontWeight: 500,
+                    }}
+                  >
+                    ✨ Personalize
+                  </button>
                 </div>
               )}
               <div>
@@ -3029,13 +3137,22 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
                   Body
                 </label>
                 <textarea
+                  ref={bodyRef}
                   value={body}
                   onChange={e => onBodyChange(e.target.value)}
                   rows={8}
                   style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', resize: 'vertical', lineHeight: 1.6 }}
                 />
               </div>
-            </>
+              </div>
+              {drawerVisible && (
+                <LinkedInDataDrawer
+                  linkedinUrl={linkedinUrl}
+                  onInsert={handleInsertSnippet}
+                  onClose={closeDrawer}
+                />
+              )}
+            </div>
           )}
 
           {/* ── LINKEDIN channel ──────────────────────────────────────── */}

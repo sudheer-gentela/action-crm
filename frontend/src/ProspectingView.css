@@ -630,6 +630,15 @@
   box-shadow: -4px 0 20px rgba(0, 0, 0, 0.1);
   display: flex;
   flex-direction: column;
+  transition: width 0.18s ease-out;
+}
+
+/* Widened state when a DraftCard's personalize drawer is open. The drawer
+   itself is 360px + 12px gap; we add 400px of headroom to cover both. On
+   small screens the max-width: 95vw clamp prevents overflow. */
+.pv-detail-panel--with-drawer {
+  width: 920px;
+  max-width: 95vw;
 }
 
 .pv-detail-header {
