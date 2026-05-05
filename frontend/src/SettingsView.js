@@ -8,6 +8,7 @@ import DealHealthSettings from './DealHealthSettings';
 import NotificationSettings from './NotificationSettings';
 import UserTranscriptSettings from './UserTranscriptSettings';
 import ActionAISettings from './ActionAISettings';
+import PersonalizeConfigBlock from './PersonalizeConfigBlock';
 
 // ── Sidebar nav structure ────────────────────────────────────────────────────
 // Each group has a label and items. Items with `children` expand inline.
@@ -26,8 +27,9 @@ const NAV_GROUPS = [
         { id: 'connections-org',         label: 'Org Connections', adminOnly: true },
       ],
       },
-      { id: 'usage',        label: 'Usage & Billing',   icon: '📊' },
-      { id: 'preferences',  label: 'My Preferences',    icon: '🎛️' },
+      { id: 'usage',                 label: 'Usage & Billing',           icon: '📊' },
+      { id: 'preferences',           label: 'My Preferences',            icon: '🎛️' },
+      { id: 'personalize-linkedin',  label: 'LinkedIn Personalization',  icon: '✨' },
     ],
   },
   {
@@ -199,8 +201,9 @@ export default function SettingsView({ initialTab }) {
           {activeId === 'connections-my'   && <MyConnectionsSettings />}
           {activeId === 'connections-transcript'  && <UserTranscriptSettings />}
           {activeId === 'connections-org'  && <OrgConnectionsSettings />}
-          {activeId === 'usage'            && <UserAIUsageSettings />}
-          {activeId === 'preferences'      && <UserPreferencesSettings />}
+          {activeId === 'usage'                && <UserAIUsageSettings />}
+          {activeId === 'preferences'          && <UserPreferencesSettings />}
+          {activeId === 'personalize-linkedin' && <PersonalizeLinkedInSettings />}
           {/* AI */}
           {activeId === 'ai-prefs'         && <AIPreferencesPanel />}
           {activeId === 'ai-prompts'       && <PromptsSettings readOnly={readOnly} />}
@@ -229,6 +232,144 @@ export default function SettingsView({ initialTab }) {
      function AIPreferencesPanel() {
        return <ActionAISettings />;
      }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PersonalizeLinkedInSettings — user-level defaults (Surface B Phase 2)
+// Bottom of the cascade above SYSTEM_DEFAULT.
+// Storage: user_preferences.preferences->'personalize_linkedin'
+// ─────────────────────────────────────────────────────────────────────────────
+
+function PersonalizeLinkedInSettings() {
+  const [config,  setConfig]  = useState(null);  // null = inherit (no pref set)
+  const [loading, setLoading] = useState(true);
+  const [saving,  setSaving]  = useState(false);
+  const [error,   setError]   = useState('');
+  const [success, setSuccess] = useState('');
+
+  const loadConfig = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const API   = process.env.REACT_APP_API_URL;
+      const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+      const r = await fetch(`${API}/users/me/preferences/personalize-linkedin`, { headers });
+      const data = await r.json();
+      setConfig(data?.config || null);
+    } catch (e) {
+      setError('Failed to load preferences: ' + e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadConfig(); }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      const API   = process.env.REACT_APP_API_URL;
+      const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+      const r = await fetch(`${API}/users/me/preferences/personalize-linkedin`, {
+        method:  'PATCH',
+        headers,
+        body:    JSON.stringify({ config }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data?.error?.message || 'Save failed');
+      setConfig(data?.config || null);
+      setSuccess('Preferences saved ✓');
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (e) {
+      setError('Failed to save: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClear = async () => {
+    if (!window.confirm('Clear your default? AI will use no LinkedIn fields unless you set them per sequence or step.')) return;
+    setConfig(null);
+    setSaving(true);
+    setError('');
+    setSuccess('');
+    try {
+      const API   = process.env.REACT_APP_API_URL;
+      const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+      const r = await fetch(`${API}/users/me/preferences/personalize-linkedin`, {
+        method:  'PATCH',
+        headers,
+        body:    JSON.stringify({ config: null }),
+      });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        throw new Error(data?.error?.message || 'Clear failed');
+      }
+      setSuccess('Default cleared ✓');
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (e) {
+      setError('Failed to clear: ' + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div className="sv-loading">Loading preferences…</div>;
+
+  return (
+    <div className="sv-panel">
+      <div className="sv-panel-header">
+        <div>
+          <h2>✨ LinkedIn Personalization</h2>
+          <p className="sv-panel-desc">
+            Default LinkedIn fields the AI will use when generating outreach drafts. Each
+            sequence and step can override this.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {config && (
+            <button className="sv-btn-secondary" onClick={handleClear} disabled={saving}>
+              Clear
+            </button>
+          )}
+          <button className="sv-btn-primary" onClick={handleSave} disabled={saving}>
+            {saving ? '⏳ Saving…' : '💾 Save'}
+          </button>
+        </div>
+      </div>
+      {error   && <div className="sv-error">⚠️ {error}</div>}
+      {success && <div className="sv-success">{success}</div>}
+      <div className="sv-panel-body">
+        <div className="sv-section">
+          <PersonalizeConfigBlock
+            value={config}
+            onChange={setConfig}
+            // No inheritance: user-level is bottom of cascade above SYSTEM_DEFAULT.
+            // Pass null inheritedFrom so the "Customize" / "Reset" UX doesn't show.
+            inheritedFrom={null}
+            inheritedValue={null}
+            showResetButton={false}
+          />
+          {!config && (
+            <p className="sv-hint" style={{ marginTop: 10 }}>
+              No default set — the AI will use no LinkedIn fields unless you configure
+              them per sequence or step. Tick the boxes above to set a default for all
+              your sequences.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 
 // ════════════════════════════════════════════════════════════

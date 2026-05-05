@@ -3069,7 +3069,15 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
           {/* ── EMAIL channel ─────────────────────────────────────────── */}
           {isEmail && (
             <div style={{ display: 'flex', gap: 12, alignItems: 'stretch' }}>
-              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {/* Editor column min-width:
+                 - In panel context (compact), parent .pv-detail-panel widens via
+                   .pv-detail-panel--with-drawer (520→920px) when the drawer opens,
+                   so we let this column squeeze (minWidth:0) — the panel handles width.
+                 - In all-prospects context (!compact), there's no parent panel to widen
+                   (the card sits in a flat tab body). Without a minimum the editor would
+                   squeeze unreadably narrow next to the 360px drawer. 360px keeps the
+                   subject/body inputs usable on typical desktop widths. */}
+              <div style={{ flex: 1, minWidth: compact ? 0 : 360, display: 'flex', flexDirection: 'column', gap: 10 }}>
               {draft.channelDrift && draft.draftChannel === 'linkedin' && (
                 <div style={{ padding: '10px 12px', background: '#fffbeb', borderRadius: 8, border: '1px solid #fcd34d', fontSize: 12, color: '#92400e' }}>
                   ⚡ This step was changed from <strong>LinkedIn</strong> to <strong>Email</strong> after the draft was created. The body below was written for LinkedIn — review and edit before sending.

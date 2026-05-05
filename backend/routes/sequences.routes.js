@@ -85,7 +85,7 @@ router.get('/', async (req, res) => {
 
 // POST /api/sequences  — body: { name, description, require_approval, steps: [{channel, delay_days, subject_template, body_template, task_note, require_approval}] }
 router.post('/', async (req, res) => {
-  const { name, description, require_approval = true, steps = [] } = req.body;
+  const { name, description, require_approval = true, personalize_config_default = null, steps = [] } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: { message: 'name is required' } });
 
   const client = await pool.connect();
@@ -93,9 +93,10 @@ router.post('/', async (req, res) => {
     await client.query('BEGIN');
 
     const seqRes = await client.query(
-      `INSERT INTO sequences (org_id, name, description, created_by, require_approval)
-            VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [req.orgId, name.trim(), description || null, req.user.userId, require_approval]
+      `INSERT INTO sequences (org_id, name, description, created_by, require_approval, personalize_config_default)
+            VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [req.orgId, name.trim(), description || null, req.user.userId, require_approval,
+       personalize_config_default ? JSON.stringify(personalize_config_default) : null]
     );
     const seq = seqRes.rows[0];
 
@@ -105,11 +106,13 @@ router.post('/', async (req, res) => {
       const sr = await client.query(
         `INSERT INTO sequence_steps
                      (sequence_id, org_id, step_order, channel, delay_days,
-                      subject_template, body_template, task_note, require_approval)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+                      subject_template, body_template, task_note, require_approval,
+                      personalize_config)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
         [seq.id, req.orgId, i + 1, s.channel, s.delay_days ?? 0,
          s.subject_template || null, s.body_template || null, s.task_note || null,
-         s.require_approval !== undefined ? s.require_approval : null]
+         s.require_approval !== undefined ? s.require_approval : null,
+         s.personalize_config ? JSON.stringify(s.personalize_config) : null]
       );
       insertedSteps.push(sr.rows[0]);
     }
@@ -1367,15 +1370,26 @@ router.get('/:id', async (req, res) => {
 
 // PUT /api/sequences/:id
 router.put('/:id', async (req, res) => {
-  const { name, description, require_approval } = req.body;
+  const { name, description, require_approval, personalize_config_default } = req.body;
   try {
+    // personalize_config_default semantics:
+    //   undefined → don't touch (COALESCE keeps existing)
+    //   null      → explicitly clear (revert to user/system default in cascade)
+    //   object    → set new override
+    const pcdParam = personalize_config_default === undefined
+      ? null
+      : (personalize_config_default === null ? null : JSON.stringify(personalize_config_default));
+    const pcdProvided = personalize_config_default !== undefined;
+
     const { rows } = await pool.query(
       `UPDATE sequences SET name=$1, description=$2,
         require_approval=COALESCE($3, require_approval),
+        personalize_config_default = CASE WHEN $4::boolean THEN $5::jsonb ELSE personalize_config_default END,
         updated_at=NOW()
-        WHERE id=$4 AND org_id=$5 RETURNING *`,
+        WHERE id=$6 AND org_id=$7 RETURNING *`,
       [name, description || null,
        require_approval !== undefined ? require_approval : null,
+       pcdProvided, pcdParam,
        req.params.id, req.orgId]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
@@ -1408,7 +1422,7 @@ router.delete('/:id', async (req, res) => {
 
 // POST /api/sequences/:id/steps
 router.post('/:id/steps', async (req, res) => {
-  const { channel, delay_days, subject_template, body_template, task_note, require_approval } = req.body;
+  const { channel, delay_days, subject_template, body_template, task_note, require_approval, personalize_config } = req.body;
   try {
     const maxRes = await pool.query(
       `SELECT COALESCE(MAX(step_order), 0) AS max_order FROM sequence_steps WHERE sequence_id=$1`,
@@ -1419,11 +1433,13 @@ router.post('/:id/steps', async (req, res) => {
     const { rows } = await pool.query(
       `INSERT INTO sequence_steps
          (sequence_id, org_id, step_order, channel, delay_days,
-          subject_template, body_template, task_note, require_approval)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+          subject_template, body_template, task_note, require_approval,
+          personalize_config)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
       [req.params.id, req.orgId, nextOrder, channel, delay_days ?? 0,
        subject_template || null, body_template || null, task_note || null,
-       require_approval !== undefined ? require_approval : null]
+       require_approval !== undefined ? require_approval : null,
+       personalize_config ? JSON.stringify(personalize_config) : null]
     );
     res.status(201).json({ step: rows[0] });
   } catch (err) {
@@ -1434,19 +1450,27 @@ router.post('/:id/steps', async (req, res) => {
 
 // PUT /api/sequences/:id/steps/:stepId
 router.put('/:id/steps/:stepId', async (req, res) => {
-  const { channel, delay_days, subject_template, body_template, task_note, require_approval } = req.body;
+  const { channel, delay_days, subject_template, body_template, task_note, require_approval, personalize_config } = req.body;
   try {
+    // personalize_config: undefined → don't touch; null → clear (inherit); obj → set
+    const pcParam = personalize_config === undefined
+      ? null
+      : (personalize_config === null ? null : JSON.stringify(personalize_config));
+    const pcProvided = personalize_config !== undefined;
+
     const { rows } = await pool.query(
       `UPDATE sequence_steps
           SET channel=$1, delay_days=$2, subject_template=$3,
               body_template=$4, task_note=$5,
               require_approval=COALESCE($6, require_approval),
+              personalize_config = CASE WHEN $7::boolean THEN $8::jsonb ELSE personalize_config END,
               updated_at=NOW()
-        WHERE id=$7 AND sequence_id=$8
+        WHERE id=$9 AND sequence_id=$10
         RETURNING *`,
       [channel, delay_days ?? 0, subject_template || null,
        body_template || null, task_note || null,
        require_approval !== undefined ? require_approval : null,
+       pcProvided, pcParam,
        req.params.stepId, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Step not found' } });

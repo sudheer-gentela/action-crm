@@ -184,6 +184,105 @@ router.patch('/preferences/prospecting', async (req, res) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// LinkedIn Personalization Defaults — User Preferences (My Preferences)
+// Stored in user_preferences.preferences->'personalize_linkedin' JSONB
+// Separate from 'ui' and 'prospecting' namespaces to keep concerns clean.
+//
+// Surface B Phase 2 — bottom of the cascade above SYSTEM_DEFAULT for
+// "which LinkedIn fields should the AI pull from when generating drafts."
+// See services/personalizeConfig.js for the full cascade resolver.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PERSONALIZE_LINKEDIN_KEYS = [
+  'current_role',
+  'prior_roles',
+  'recent_activity',
+  'education',
+  'about_headline',
+];
+
+async function getPersonalizeLinkedInPrefs(userId, orgId) {
+  const { rows: [row] } = await db.query(
+    `SELECT preferences->'personalize_linkedin' AS cfg
+     FROM user_preferences
+     WHERE user_id = $1 AND org_id = $2`,
+    [userId, orgId]
+  );
+  if (!row?.cfg) return null;
+  const stored = typeof row.cfg === 'string' ? JSON.parse(row.cfg) : row.cfg;
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return null;
+  // Return only the allowed keys, coerce to boolean. Missing keys → false.
+  const clean = {};
+  for (const key of PERSONALIZE_LINKEDIN_KEYS) {
+    clean[key] = typeof stored[key] === 'boolean' ? stored[key] : false;
+  }
+  return clean;
+}
+
+// ── GET /users/me/preferences/personalize-linkedin ─────────────────────────
+// Returns null if the user has no preference set (i.e. they inherit from
+// SYSTEM_DEFAULT). Returns a full 5-key boolean object otherwise.
+router.get('/preferences/personalize-linkedin', async (req, res) => {
+  try {
+    const config = await getPersonalizeLinkedInPrefs(req.user.userId, req.orgId);
+    res.json({ config });
+  } catch (error) {
+    console.error('GET /users/me/preferences/personalize-linkedin error:', error);
+    res.status(500).json({ error: { message: 'Failed to load personalize preferences' } });
+  }
+});
+
+// ── PATCH /users/me/preferences/personalize-linkedin ───────────────────────
+// Body: { config: { current_role, prior_roles, ... } | null }
+// null clears the preference (revert to SYSTEM_DEFAULT — i.e. inherit nothing).
+router.patch('/preferences/personalize-linkedin', async (req, res) => {
+  try {
+    const { config } = req.body;
+
+    let clean = null;
+    if (config && typeof config === 'object' && !Array.isArray(config)) {
+      clean = {};
+      for (const key of PERSONALIZE_LINKEDIN_KEYS) {
+        clean[key] = typeof config[key] === 'boolean' ? config[key] : false;
+      }
+    }
+
+    if (clean === null) {
+      // Clear the preference — remove the key entirely.
+      // jsonb '#-' deletes the key at the given path, so the cascade resolver
+      // sees no user-level value and falls through to SYSTEM_DEFAULT.
+      await db.query(`
+        INSERT INTO user_preferences (user_id, org_id, preferences)
+        VALUES ($1, $2, '{}'::jsonb)
+        ON CONFLICT (user_id, org_id) DO UPDATE
+        SET preferences = COALESCE(user_preferences.preferences, '{}'::jsonb) #- '{personalize_linkedin}',
+            updated_at = CURRENT_TIMESTAMP
+      `, [req.user.userId, req.orgId]);
+    } else {
+      // Upsert the key — same merge pattern as 'ui' and 'prospecting' above.
+      await db.query(`
+        INSERT INTO user_preferences (user_id, org_id, preferences)
+        VALUES ($1, $2, jsonb_build_object('personalize_linkedin', $3::jsonb))
+        ON CONFLICT (user_id, org_id) DO UPDATE
+        SET preferences = jsonb_set(
+          COALESCE(user_preferences.preferences, '{}'::jsonb),
+          '{personalize_linkedin}',
+          $3::jsonb
+        ),
+        updated_at = CURRENT_TIMESTAMP
+      `, [req.user.userId, req.orgId, JSON.stringify(clean)]);
+    }
+
+    const config_out = await getPersonalizeLinkedInPrefs(req.user.userId, req.orgId);
+    res.json({ config: config_out });
+  } catch (error) {
+    console.error('PATCH /users/me/preferences/personalize-linkedin error:', error);
+    res.status(500).json({ error: { message: 'Failed to save personalize preferences' } });
+  }
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ADD TO: backend/routes/user-preferences.routes.js
 // (or create as a new file and register in server.js)
 //

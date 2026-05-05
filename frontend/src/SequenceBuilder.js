@@ -16,7 +16,8 @@
  *   onClose   — close / cancel handler
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
+import PersonalizeConfigBlock from './PersonalizeConfigBlock';
 
 const API = process.env.REACT_APP_API_URL || '';
 
@@ -60,7 +61,8 @@ function blankStep(order) {
     subject_template: '',
     body_template:    '',
     task_note:        '',
-    require_approval: null, // null = inherit from sequence
+    require_approval:    null, // null = inherit from sequence
+    personalize_config:  null, // null = inherit from sequence default → user pref → SYSTEM_DEFAULT
   };
 }
 
@@ -80,10 +82,11 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
     (initialSequence?.steps || []).length > 0
       ? initialSequence.steps.map(s => ({
           ...s,
-          _id:              s.id,
-          mode:             s.mode || 'manual',
-          ai_generated:     false,
-          require_approval: s.require_approval !== undefined ? s.require_approval : null,
+          _id:                s.id,
+          mode:               s.mode || 'manual',
+          ai_generated:       false,
+          require_approval:   s.require_approval !== undefined ? s.require_approval : null,
+          personalize_config: s.personalize_config !== undefined ? s.personalize_config : null,
         }))
       : [blankStep(1)]
   );
@@ -93,6 +96,43 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
   const [error,        setError]        = useState('');
   const [generated,    setGenerated]    = useState(false);
   const [expandedStep, setExpandedStep] = useState(steps[0]?._id || null);
+
+  // ── LinkedIn personalization config ────────────────────────────────────────
+  // Sequence-level default — null means inherit from user pref → SYSTEM_DEFAULT.
+  const [personalizeConfigDefault, setPersonalizeConfigDefault] = useState(
+    initialSequence?.personalize_config_default ?? null
+  );
+  // User-level preference, fetched once on mount, used as the inherited preview
+  // when sequence-level is null. null = user has no pref set.
+  const [userPersonalizePref, setUserPersonalizePref] = useState(null);
+  // "Set as my default" feedback toast (sequence-level only).
+  const [savedAsDefault,       setSavedAsDefault]     = useState(false);
+  const [savingAsDefault,      setSavingAsDefault]    = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/users/me/preferences/personalize-linkedin')
+      .then(r => { if (!cancelled) setUserPersonalizePref(r.config || null); })
+      .catch(() => { /* non-fatal — falls through to SYSTEM_DEFAULT preview */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleSetAsMyDefault = async () => {
+    setSavingAsDefault(true);
+    try {
+      const r = await apiFetch('/users/me/preferences/personalize-linkedin', {
+        method: 'PATCH',
+        body:   JSON.stringify({ config: personalizeConfigDefault }),
+      });
+      setUserPersonalizePref(r.config || null);
+      setSavedAsDefault(true);
+      setTimeout(() => setSavedAsDefault(false), 2000);
+    } catch (e) {
+      setError('Failed to save default: ' + e.message);
+    } finally {
+      setSavingAsDefault(false);
+    }
+  };
 
   const aiStepCount = steps.filter(s => s.mode === 'ai').length;
 
@@ -200,7 +240,12 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
       if (isEdit) {
         await apiFetch(`/sequences/${initialSequence.id}`, {
           method: 'PUT',
-          body:   JSON.stringify({ name, description: toneGoal, require_approval: requireApproval }),
+          body:   JSON.stringify({
+            name,
+            description: toneGoal,
+            require_approval: requireApproval,
+            personalize_config_default: personalizeConfigDefault,
+          }),
         });
         const existingIds = (initialSequence.steps || []).map(s => s.id);
         const currentIds  = stepsPayload.filter(s => s.id).map(s => s.id);
@@ -235,7 +280,13 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
       } else {
         const res = await apiFetch('/sequences', {
           method: 'POST',
-          body:   JSON.stringify({ name, description: toneGoal, require_approval: requireApproval, steps: stepsPayload }),
+          body:   JSON.stringify({
+            name,
+            description: toneGoal,
+            require_approval: requireApproval,
+            personalize_config_default: personalizeConfigDefault,
+            steps: stepsPayload,
+          }),
         });
         saved = res.sequence;
       }
@@ -316,6 +367,42 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             rows={3}
             style={{ ...inputStyle, width: '100%', resize: 'vertical', lineHeight: 1.6 }}
           />
+        </div>
+
+        {/* Sequence-level LinkedIn personalization default */}
+        <div>
+          <PersonalizeConfigBlock
+            value={personalizeConfigDefault}
+            onChange={setPersonalizeConfigDefault}
+            inheritedFrom={userPersonalizePref ? 'your preferences' : 'off (system default)'}
+            inheritedValue={userPersonalizePref}
+          />
+          {/* Save-as-default action — only meaningful when sequence has its own override */}
+          {personalizeConfigDefault && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, paddingLeft: 4 }}>
+              <button
+                type="button"
+                onClick={handleSetAsMyDefault}
+                disabled={savingAsDefault}
+                style={{
+                  padding: '5px 12px', borderRadius: 6,
+                  border: '1px solid #d1d5db', background: '#fff',
+                  color: '#374151', fontSize: 11, fontWeight: 500,
+                  cursor: savingAsDefault ? 'wait' : 'pointer',
+                }}
+              >
+                {savingAsDefault ? 'Saving…' : 'Set as my default'}
+              </button>
+              {savedAsDefault && (
+                <span style={{ fontSize: 11, color: TEAL, fontWeight: 500 }}>
+                  ✓ Saved as your default
+                </span>
+              )}
+              <span style={{ fontSize: 10.5, color: '#9ca3af' }}>
+                Applies to future sequences with no override
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Draft approval setting */}
@@ -405,6 +492,8 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
               total={steps.length}
               expanded={expandedStep === step._id}
               seqRequireApproval={requireApproval}
+              seqPersonalizeDefault={personalizeConfigDefault}
+              userPersonalizePref={userPersonalizePref}
               onToggle={() => setExpandedStep(expandedStep === step._id ? null : step._id)}
               onChange={(field, val) => updateStep(step._id, field, val)}
               onRemove={() => removeStep(step._id)}
@@ -444,12 +533,23 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
 // STEP CARD
 // ─────────────────────────────────────────────────────────────────────────────
 
-function StepCard({ step, index, total, expanded, seqRequireApproval, onToggle, onChange, onRemove, onToggleMode, onMoveUp, onMoveDown }) {
+function StepCard({ step, index, total, expanded, seqRequireApproval, seqPersonalizeDefault, userPersonalizePref, onToggle, onChange, onRemove, onToggleMode, onMoveUp, onMoveDown }) {
   const channelCfg = CHANNEL_OPTIONS.find(c => c.value === step.channel) || CHANNEL_OPTIONS[0];
   const isAI       = step.mode === 'ai';
   const hasContent = channelCfg.hasContent;
 
   const isEmailChannel = step.channel === 'email';
+
+  // Personalization is meaningful only on channels where the AI writes copy
+  // (email + linkedin). Call/task have no body to personalize.
+  const showPersonalize = step.channel === 'email' || step.channel === 'linkedin';
+
+  // What the step inherits when its own personalize_config is null:
+  //   sequence default → user pref → null (which displays as SYSTEM_DEFAULT)
+  const stepInheritedFrom  = seqPersonalizeDefault
+    ? 'sequence default'
+    : (userPersonalizePref ? 'your preferences' : 'off (system default)');
+  const stepInheritedValue = seqPersonalizeDefault || userPersonalizePref || null;
 
   return (
     <div style={{
@@ -642,6 +742,17 @@ function StepCard({ step, index, total, expanded, seqRequireApproval, onToggle, 
                 placeholder="e.g. Call and introduce yourself, reference the email sent on day 0"
                 style={{ ...inputStyle, width: '100%' }} />
             </div>
+          )}
+
+          {/* Per-step LinkedIn personalization (email + linkedin only) */}
+          {showPersonalize && (
+            <PersonalizeConfigBlock
+              value={step.personalize_config}
+              onChange={(cfg) => onChange('personalize_config', cfg)}
+              inheritedFrom={stepInheritedFrom}
+              inheritedValue={stepInheritedValue}
+              compact
+            />
           )}
         </div>
       )}
