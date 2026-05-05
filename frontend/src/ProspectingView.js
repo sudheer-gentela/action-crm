@@ -8,6 +8,7 @@ import CSVImportModal from './CSVImportModal';
 import SequenceBuilder from './SequenceBuilder';
 import SequenceEnrollModal from './SequenceEnrollModal';
 import LinkedInDataDrawer from './LinkedInDataDrawer';
+import PersonalizeProvenanceFooter from './PersonalizeProvenanceFooter';
 import './ProspectingView.css';
 import './OutreachComposer.css';
 
@@ -3151,6 +3152,10 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
                   rows={8}
                   style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', resize: 'vertical', lineHeight: 1.6 }}
                 />
+                {/* Phase 3: AI provenance — what LinkedIn data the AI saw when drafting */}
+                {draft.personalizeSources && (
+                  <PersonalizeProvenanceFooter sources={draft.personalizeSources} />
+                )}
               </div>
               </div>
               {drawerVisible && (
@@ -3201,6 +3206,10 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
                   <div style={{ fontSize: 12, color: '#94a3b8', fontStyle: 'italic' }}>No message template — send a personalised note.</div>
                 )}
               </div>
+              {/* Phase 3: AI provenance — same component as email channel for consistency */}
+              {draft.personalizeSources && (
+                <PersonalizeProvenanceFooter sources={draft.personalizeSources} />
+              )}
               {draft.prospect?.linkedinUrl || draft.prospect?.linkedin_url ? (
                 <a
                   href={draft.prospect.linkedinUrl || draft.prospect.linkedin_url}

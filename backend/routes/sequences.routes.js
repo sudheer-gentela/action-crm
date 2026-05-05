@@ -38,6 +38,8 @@ const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
 const { pool }          = require('../config/database');
 const TokenTrackingService = require('../services/TokenTrackingService');
+const { resolvePersonalizeConfig } = require('../services/personalizeConfig');
+const { buildLinkedInArtifacts }   = require('../services/linkedinSnippets');
 
 // ── AI provider chain (same pattern as ProspectingAIEnhancer) ─────────────────
 const Anthropic = require('@anthropic-ai/sdk');
@@ -148,6 +150,7 @@ router.post('/ai-personalise-enrollment', async (req, res) => {
       [sequenceId, req.orgId]
     );
     if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Sequence not found' } });
+    const sequence = seqRes.rows[0];
 
     const stepsRes = await pool.query(
       `SELECT * FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order`,
@@ -167,6 +170,51 @@ router.post('/ai-personalise-enrollment', async (req, res) => {
     );
     if (!prospectRes.rows.length) return res.status(404).json({ error: { message: 'Prospect not found' } });
     const prospect = prospectRes.rows[0];
+
+    // ── Phase 3: load LinkedIn profile (best-effort) ──────────────────────────
+    // Match the by-url lookup used by the drawer: match by slug within org.
+    // Non-fatal — if no profile, every step's provenance is null and no data
+    // gets injected.
+    let linkedinProfile = null;
+    if (prospect.linkedin_url) {
+      const slugMatch = String(prospect.linkedin_url).match(/\/in\/([^/?#]+)/);
+      const slug = slugMatch ? slugMatch[1].toLowerCase() : null;
+      if (slug) {
+        try {
+          const profRes = await pool.query(
+            `SELECT * FROM linkedin_profiles
+              WHERE org_id = $1 AND linkedin_slug = $2
+              LIMIT 1`,
+            [req.orgId, slug]
+          );
+          linkedinProfile = profRes.rows[0] || null;
+        } catch (e) {
+          // Schema/connection error — proceed without LinkedIn data, never block draft generation.
+          console.warn('ai-personalise-enrollment: LinkedIn profile fetch failed:', e.message);
+        }
+      }
+    }
+
+    // ── Phase 3: resolve per-step config + build per-step artifacts ───────────
+    // Each step gets its own (config, promptBlock, provenance) tuple.
+    // Steps where personalize is meaningful (email + linkedin channels) are
+    // resolved; call/task steps skip both (no body to personalize).
+    const stepArtifacts = [];
+    for (const step of steps) {
+      const isPersonalizable = step.channel === 'email' || step.channel === 'linkedin';
+      if (!isPersonalizable) {
+        stepArtifacts.push({ step, config: null, promptBlock: null, provenance: null, source: 'n/a' });
+        continue;
+      }
+      const { config, source } = await resolvePersonalizeConfig(pool, {
+        userId:   req.user.userId,
+        orgId:    req.orgId,
+        sequence,
+        step,
+      });
+      const { promptBlock, provenance } = buildLinkedInArtifacts(linkedinProfile, config);
+      stepArtifacts.push({ step, config, promptBlock, provenance, source });
+    }
 
     const hasResearch = !!(prospect.research_notes || prospect.account_research);
 
@@ -213,6 +261,42 @@ router.post('/ai-personalise-enrollment', async (req, res) => {
         ].filter(Boolean).join('\n')
       : 'No research available — write from first principles using their role, company and industry.';
 
+    // ── Phase 3: build LinkedIn block + per-step usage rules ──────────────────
+    // To avoid duplicating snippets across steps when configs overlap (the
+    // common case), build a single shared block listing every (field, value)
+    // tuple referenced by ANY step, then tell the AI which fields are
+    // permitted per step. Provenance per step still honestly reflects only
+    // that step's own resolved config.
+    let linkedinPromptSection = '';
+    {
+      // Union of all (field, value) pairs across all step provenances, keyed
+      // by field+value so identical snippets de-dupe.
+      const seen = new Set();
+      const sharedSnippets = [];
+      for (const sa of stepArtifacts) {
+        const snips = sa.provenance?.snippets || [];
+        for (const s of snips) {
+          const k = s.field + '\u0000' + s.value;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          sharedSnippets.push(s);
+        }
+      }
+      if (sharedSnippets.length > 0) {
+        const lines = [
+          'CAPTURED LINKEDIN DATA (use only where it adds genuine specificity. Do not invent details. If a field is empty, do not reference it):',
+          ...sharedSnippets.map(s => `  - [${s.field}] ${s.value}`),
+          '',
+          'PER-STEP USAGE — when writing each step, ONLY reference the LinkedIn fields listed for that step:',
+          ...stepArtifacts.map(sa => {
+            const fields = sa.provenance?.fields_used || [];
+            return `  Step ${sa.step.step_order}: ${fields.length ? fields.join(', ') : '(none — do not reference any LinkedIn data)'}`;
+          }),
+        ];
+        linkedinPromptSection = '\n\n' + lines.join('\n');
+      }
+    }
+
     const systemPrompt = `You are an expert SDR writing highly personalised outreach emails. You write from research, not from templates.
 Return ONLY valid JSON — no markdown fences, no prose.`;
 
@@ -223,13 +307,13 @@ Name: ${prospect.first_name} ${prospect.last_name}
 Title: ${prospect.title || 'unknown'}
 Company: ${prospect.account_name || prospect.company_name || 'unknown'}
 Industry: ${prospect.account_industry || 'unknown'}
-${researchBlock}
+${researchBlock}${linkedinPromptSection}
 
 SENDER: ${senderDisplayName || prospect.account_name || 'the sender'}
 ${senderDisplayName ? 'End each email body with a natural sign-off using the sender name above (e.g. "Best,\n' + senderDisplayName + '"). Do NOT add a signature block — just the name sign-off.' : ''}
 
-SEQUENCE: "${seqRes.rows[0].name}"
-Tone & Goal: ${seqRes.rows[0].description || 'Professional outreach'}
+SEQUENCE: "${sequence.name}"
+Tone & Goal: ${sequence.description || 'Professional outreach'}
 
 WRITING RULES:
 - Step 1: Open with the most specific insight from the research. Write something that could only be for this person.
@@ -276,14 +360,24 @@ Return JSON:
     const clean  = raw.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
 
+    // ── Phase 3: thread per-step provenance into the response ────────────────
+    // Frontend will pass this through to the enroll endpoint, which stores it
+    // in sequence_enrollments.personalised_steps so SequenceStepFirer can
+    // copy it onto the draft row at fire time.
+    const provenanceByStep = {};
+    for (const sa of stepArtifacts) {
+      if (sa.provenance) provenanceByStep[sa.step.step_order] = sa.provenance;
+    }
+
     res.json({
       prospectId,
       hasResearch,
       steps: (parsed.steps || []).map(s => ({
-        step_order: s.step_order,
-        subject:    s.subject    || '',
-        body:       s.body       || '',
-        task_note:  s.task_note  || '',
+        step_order:          s.step_order,
+        subject:             s.subject    || '',
+        body:                s.body       || '',
+        task_note:           s.task_note  || '',
+        personalize_sources: provenanceByStep[s.step_order] || null,
       })),
     });
 
@@ -605,6 +699,7 @@ router.get('/drafts', async (req, res) => {
         ssl.id, ssl.enrollment_id, ssl.subject, ssl.body,
         ssl.scheduled_send_at, ssl.status,
         ssl.channel        AS draft_channel,
+        ssl.personalize_sources,
         ss.step_order,
         ss.channel         AS step_channel,
         ss.subject_template AS step_subject_template,
@@ -723,6 +818,9 @@ router.get('/drafts', async (req, res) => {
           linkedinSignature: r.sender_linkedin_signature,
           ownerType:         r.sender_owner_type, // 'client' | 'user'
         } : null,
+        // Phase 3: provenance for the AI's LinkedIn data sources, if any.
+        // Null when the step had no personalize config or no profile data.
+        personalizeSources: r.personalize_sources || null,
       };
     });
 

@@ -252,6 +252,14 @@ const SequenceStepFirer = {
           const subject = personalisedStep?.subject ?? renderTemplate(step.subject_template, prospect || {}, account);
           let   body    = personalisedStep?.body    ?? renderTemplate(step.body_template,    prospect || {}, account);
 
+          // Phase 3: provenance — if the AI generated this draft with LinkedIn
+          // data, the enrollment.personalised_steps blob carries a
+          // personalize_sources object. Copy it onto the log row so the
+          // rep-facing footer + immutable audit trail both stay consistent.
+          const personalizeSourcesJson = personalisedStep?.personalize_sources
+            ? JSON.stringify(personalisedStep.personalize_sources)
+            : null;
+
           // ── DRAFT BRANCH ──────────────────────────────────────────────────
           if (step.channel !== 'email' || effectiveRequireApproval) {
             // Idempotency: don't create a second draft for this step
@@ -291,8 +299,9 @@ const SequenceStepFirer = {
             await client.query(
               `INSERT INTO sequence_step_logs
                            (org_id, enrollment_id, sequence_step_id, prospect_id,
-                            channel, status, subject, body, scheduled_send_at, fired_at)
-                    VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, NOW(), NULL)`,
+                            channel, status, subject, body, scheduled_send_at, fired_at,
+                            personalize_sources)
+                    VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, NOW(), NULL, $8::jsonb)`,
               [
                 enrollment.org_id,
                 enrollment.id,
@@ -301,6 +310,7 @@ const SequenceStepFirer = {
                 step.channel,
                 subject,
                 body,
+                personalizeSourcesJson,
               ]
             );
 
@@ -424,8 +434,9 @@ const SequenceStepFirer = {
           await client.query(
             `INSERT INTO sequence_step_logs
                          (org_id, enrollment_id, sequence_step_id, prospect_id,
-                          channel, status, subject, body, email_id, fired_at)
-                  VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, $8, NOW())`,
+                          channel, status, subject, body, email_id, fired_at,
+                          personalize_sources)
+                  VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, $8, NOW(), $9::jsonb)`,
             [
               enrollment.org_id,
               enrollment.id,
@@ -435,6 +446,7 @@ const SequenceStepFirer = {
               subject,
               body,
               emailId,
+              personalizeSourcesJson,
             ]
           );
 
