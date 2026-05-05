@@ -22,21 +22,31 @@ const loginSchema = Joi.object({
 
 // ─────────────────────────────────────────────────────────────
 // Helper: look up org membership for a user and return the
-// payload fields needed for the JWT.
-// Returns { org_id, role } — both null if user has no org yet.
+// payload fields needed for the JWT and the /verify response.
+// Returns { org_id, role, org_name, org_slug } — all null
+// (except role which defaults to 'member') if user has no org.
+//
+// We JOIN organizations so the /verify response can carry the
+// human-readable org name. The Chrome extension consumes this
+// to display "Saving as <email> · <org_name>" so reps can tell
+// at a glance which workspace their LinkedIn captures land in.
+// JWT payload still only carries id+role to keep tokens small.
 // ─────────────────────────────────────────────────────────────
 async function getOrgPayload(userId) {
   const result = await db.query(
-    `SELECT org_id, role
-     FROM org_users
-     WHERE user_id = $1 AND is_active = TRUE
-     ORDER BY joined_at ASC
+    `SELECT ou.org_id, ou.role, o.name AS org_name, o.slug AS org_slug
+     FROM org_users ou
+     LEFT JOIN organizations o ON o.id = ou.org_id
+     WHERE ou.user_id = $1 AND ou.is_active = TRUE
+     ORDER BY ou.joined_at ASC
      LIMIT 1`,
     [userId]
   );
   return {
-    org_id: result.rows[0]?.org_id ?? null,
-    role:   result.rows[0]?.role   ?? 'member',
+    org_id:   result.rows[0]?.org_id   ?? null,
+    role:     result.rows[0]?.role     ?? 'member',
+    org_name: result.rows[0]?.org_name ?? null,
+    org_slug: result.rows[0]?.org_slug ?? null,
   };
 }
 
@@ -119,6 +129,8 @@ router.post('/register', async (req, res) => {
         role:           user.role,
         org_id:         orgPayload.org_id,
         org_role:       orgPayload.role,
+        org_name:       orgPayload.org_name,
+        org_slug:       orgPayload.org_slug,
         is_super_admin: superAdmin,
       },
       token
@@ -182,6 +194,8 @@ router.post('/login', async (req, res) => {
         role:           user.role,
         org_id:         orgPayload.org_id,
         org_role:       orgPayload.role,
+        org_name:       orgPayload.org_name,
+        org_slug:       orgPayload.org_slug,
         is_super_admin: superAdmin,
       },
       token
@@ -229,6 +243,8 @@ router.get('/verify', async (req, res) => {
         role:           user.role,
         org_id:         orgPayload.org_id,
         org_role:       orgPayload.role,
+        org_name:       orgPayload.org_name,
+        org_slug:       orgPayload.org_slug,
         is_super_admin: superAdmin,
       }
     });
