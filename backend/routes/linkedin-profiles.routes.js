@@ -119,20 +119,147 @@ function sanitizeActivity(arr) {
     }));
 }
 
-// Merge incoming activity items with the existing array, deduping by id.
-// Existing items win on conflict (so we don't overwrite a richer earlier
-// capture with a thinner re-capture). Newly-seen items are appended.
-// Cap at 200 to prevent unbounded growth.
-function mergeActivity(existing, incoming) {
-  const out  = Array.isArray(existing) ? [...existing] : [];
-  const seen = new Set(out.map(x => x?.id).filter(Boolean));
-  for (const item of incoming) {
-    if (!item.id || !seen.has(item.id)) {
-      out.push(item);
-      if (item.id) seen.add(item.id);
+// ─────────────────────────────────────────────────────────────────────────────
+// Convert a LinkedIn-style relative time string ("1w", "3d", "5h", "2mo",
+// "1y", "30s") into an absolute UTC ISO timestamp, anchored to `now`.
+//
+// Returns null if the string is unparseable. We're deliberately lenient
+// about whitespace and punctuation because the strings come straight off
+// LinkedIn's UI and have included things like "• 1w" in past captures.
+//
+// The buckets LinkedIn actually uses, observed in production:
+//   s/sec   = seconds
+//   m/min   = minutes  ← careful: 'm' alone here means minutes, NOT months
+//   h/hr    = hours
+//   d       = days
+//   w       = weeks
+//   mo      = months
+//   y       = years
+//
+// Months are approximated as 30 days, years as 365. This is fine for sort
+// ordering — we never display this derived timestamp to the user, only
+// use it as a sort key. The original `relative_time` string is preserved
+// on the item for display.
+function parseRelativeTimeToOccurredAt(relStr, nowMs) {
+  if (!relStr || typeof relStr !== 'string') return null;
+  // Strip leading bullets, dots, whitespace.
+  const cleaned = relStr.replace(/^[•·\s<]+/, '').trim();
+  // Match: digits, optional space, unit. Unit can be 1-3 chars, letters only.
+  const m = cleaned.match(/^(\d+)\s*([a-z]{1,3})\b/i);
+  if (!m) return null;
+  const n    = parseInt(m[1], 10);
+  const unit = m[2].toLowerCase();
+  if (!Number.isFinite(n) || n < 0) return null;
+
+  let ms;
+  switch (unit) {
+    case 's':
+    case 'sec':  ms = n * 1000; break;
+    case 'm':
+    case 'min':  ms = n * 60 * 1000; break;
+    case 'h':
+    case 'hr':   ms = n * 60 * 60 * 1000; break;
+    case 'd':    ms = n * 24 * 60 * 60 * 1000; break;
+    case 'w':    ms = n * 7  * 24 * 60 * 60 * 1000; break;
+    case 'mo':   ms = n * 30 * 24 * 60 * 60 * 1000; break;
+    case 'y':    ms = n * 365 * 24 * 60 * 60 * 1000; break;
+    default:     return null;
+  }
+  return new Date(nowMs - ms).toISOString();
+}
+
+// Pick the best timestamp for sort ordering. Preference order:
+//   1. derived from relative_time (the most accurate signal — it reflects
+//      when LinkedIn says the post happened, not when we scraped it)
+//   2. existing item.occurred_at, IF it looks like a real post date
+//      (older than ~10 minutes) rather than a scrape-time marker
+//   3. null — caller decides where unsorted items go (we send them last)
+function bestOccurredAt(item, nowMs) {
+  const fromRel = parseRelativeTimeToOccurredAt(item?.relative_time, nowMs);
+  if (fromRel) return fromRel;
+  // Fall back to occurred_at only if it's plausibly a real post date.
+  // The extension stamps occurred_at = scrape-time, so values within a
+  // few minutes of "now" are almost certainly that, not the post date.
+  if (item?.occurred_at) {
+    const t = Date.parse(item.occurred_at);
+    if (Number.isFinite(t) && (nowMs - t) > 10 * 60 * 1000) {
+      return item.occurred_at;
     }
   }
-  return out.slice(-200);
+  return null;
+}
+
+// Merge incoming activity items with the existing array, deduping by id.
+// Existing items win on body content (so we don't overwrite a richer
+// earlier capture with a thinner re-capture), but we *do* refresh the
+// relative_time and recompute occurred_at on re-encounter — the post is
+// the same, but our time signals get updated. New items are appended.
+//
+// After merging, the array is sorted latest-first by derived occurred_at
+// so every consumer of linkedin_activity (the prospect drawer, the API
+// /by-url response, the extension's diff view) sees newest at the top
+// without having to re-sort. Items with no parseable date sink to the
+// bottom, preserving their relative order.
+//
+// Cap at 200 to prevent unbounded growth — the cap is applied AFTER
+// sorting so we keep the 200 most-recent rather than the 200 oldest.
+function mergeActivity(existing, incoming) {
+  const nowMs = Date.now();
+  const out   = Array.isArray(existing) ? existing.map(x => ({ ...x })) : [];
+  const byId  = new Map();
+  out.forEach((it, idx) => { if (it?.id) byId.set(it.id, idx); });
+
+  for (const item of incoming) {
+    if (item?.id && byId.has(item.id)) {
+      // Re-encounter: refresh time signals on the existing item but
+      // keep its body/text (the existing version may be richer).
+      const idx  = byId.get(item.id);
+      const prev = out[idx];
+      out[idx] = {
+        ...prev,
+        relative_time: item.relative_time || prev.relative_time,
+        occurred_at:   bestOccurredAt(item, nowMs) || prev.occurred_at || null,
+      };
+    } else {
+      // New item — derive a real occurred_at if we can.
+      out.push({
+        ...item,
+        occurred_at: bestOccurredAt(item, nowMs) || item.occurred_at || null,
+      });
+      if (item?.id) byId.set(item.id, out.length - 1);
+    }
+  }
+
+  // Backfill: any pre-existing item whose occurred_at still smells like a
+  // scrape-time marker (within 10min of now means it was set by an old
+  // capture during this very request — but more relevantly, items written
+  // before this version of the code shipped have scrape-time stamps from
+  // their original capture date, which IS roughly when the post showed
+  // a given relative_time, so they're actually OK as a sort key). We
+  // only rewrite occurred_at if relative_time gives us a better answer.
+  for (let i = 0; i < out.length; i++) {
+    const it = out[i];
+    if (!it) continue;
+    const better = parseRelativeTimeToOccurredAt(it.relative_time, nowMs);
+    if (better && (!it.occurred_at || Date.parse(it.occurred_at) > Date.parse(better) + 5 * 60 * 1000)) {
+      // Trust derived only if it's meaningfully OLDER than what's stored
+      // (stored value of "now" loses to derived value of "1w ago"). The
+      // 5-min slack avoids churn on items whose values are already close.
+      out[i] = { ...it, occurred_at: better };
+    }
+  }
+
+  // Sort latest-first. Items with no occurred_at sink to the bottom while
+  // preserving their relative order via a stable secondary key (original
+  // index). Node's Array.prototype.sort is stable since v12.
+  out.sort((a, b) => {
+    const ta = a?.occurred_at ? Date.parse(a.occurred_at) : -Infinity;
+    const tb = b?.occurred_at ? Date.parse(b.occurred_at) : -Infinity;
+    return tb - ta;   // descending: latest first
+  });
+
+  // Cap at 200 most-recent.
+  return out.slice(0, 200);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
