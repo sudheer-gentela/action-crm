@@ -217,7 +217,21 @@ async function enrich({ linkedinCompanyUrl, domain }) {
     return { ok: false, reason: 'rate_limited', status: 429 };
   }
   if (!resp.ok) {
-    return { ok: false, reason: 'http_error', status: resp.status };
+    // Surface the upstream status and a snippet of the body so the caller
+    // can tell the difference between a 400 (malformed input), 5xx (their
+    // server problem), and other unexpected codes. We cap the body at
+    // 500 chars so a runaway HTML error page doesn't bloat the response.
+    let upstreamBody = null;
+    try {
+      const text = await resp.text();
+      upstreamBody = text ? text.slice(0, 500) : null;
+    } catch (_) { /* ignore body-read failures */ }
+    return {
+      ok: false,
+      reason: 'http_error',
+      status: resp.status,
+      upstream_body: upstreamBody,
+    };
   }
 
   let raw;

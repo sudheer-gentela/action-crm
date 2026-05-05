@@ -1528,6 +1528,8 @@ router.post('/:id/enrich-from-coresignal', async (req, res) => {
         reason:    result.reason,
         accountId: result.accountId,
         provider:  result.provider,
+        upstream_status: result.upstream_status,
+        upstream_body:   result.upstream_body,
       });
     }
 

@@ -112,18 +112,23 @@ async function enrichAccountForProspect({ prospectId, orgId }) {
                   jsonb_build_object(
                     'status',     'failed',
                     'reason',     $3::text,
+                    'http_status',  to_jsonb($4::int),
+                    'upstream_body', to_jsonb($5::text),
                     'attempted_at', to_jsonb(CURRENT_TIMESTAMP)
                   )
                 ),
             updated_at = CURRENT_TIMESTAMP
           WHERE id = $1`,
-        [account.id, result.provider, result.reason]
+        [account.id, result.provider, result.reason,
+         result.status || null, result.upstream_body || null]
       );
       return {
         ok: false,
         accountId: account.id,
         reason: result.reason,
         provider: result.provider,
+        upstream_status: result.status || null,
+        upstream_body:   result.upstream_body || null,
       };
     }
 
