@@ -8,6 +8,7 @@ const ProspectContextBuilder  = require('../services/ProspectContextBuilder');
 const PlaybookActionGenerator = require('../services/PlaybookActionGenerator');
 const ActionWriter            = require('../services/ActionWriter');
 const { resolveAccountId, normalizeLinkedInCompanyUrl } = require('../services/domainResolver');
+const { enrichAccountForProspect } = require('../services/enrichmentService');
 
 
 router.use(authenticateToken);
@@ -1476,6 +1477,64 @@ router.post('/:id/convert', async (req, res) => {
     res.status(500).json({ error: { message: 'Failed to convert prospect' } });
   } finally {
     client.release();
+  }
+});
+
+// ── POST /:id/enrich-from-coresignal — enrich the prospect's account ──────────
+//
+// Called by the extension (and eventually by an in-product UI button) to
+// fill in firmographics for the prospect's account. Reads either the
+// account's linkedin_company_url or its (real) domain, calls the
+// configured enrichment provider (CoreSignal by default), and applies
+// the result to the account row.
+//
+// Apply rules are documented in services/enrichmentService.js — short
+// version: never overwrites existing real values, only fills blanks.
+//
+// Response shape (200 on success, 422 on provider failure that wasn't
+// our fault, 404 on prospect/account not found):
+//   { ok: true,  accountId, status, enriched: { ... }, provider }
+//   { ok: false, accountId?, reason, provider? }
+router.post('/:id/enrich-from-coresignal', async (req, res) => {
+  try {
+    const prospectId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(prospectId)) {
+      return res.status(400).json({ error: { message: 'invalid prospect id' } });
+    }
+
+    const result = await enrichAccountForProspect({
+      prospectId,
+      orgId: req.orgId,
+    });
+
+    if (!result.ok) {
+      // Distinguish "we couldn't find the inputs" (4xx) from "provider
+      // gave up" (also 4xx but for a different reason). Both are caller-
+      // visible, but the status code helps the extension surface the
+      // right message.
+      const userVisible404 = ['prospect_not_found', 'account_not_found'];
+      const userVisible422 = [
+        'prospect_has_no_account', 'no_identifier_on_account',
+        'not_found', 'no_credits', 'auth_failed', 'rate_limited',
+        'timeout', 'network_error', 'invalid_response',
+        'http_error', 'no_api_key', 'no_identifier',
+        'unknown_provider',
+      ];
+      const code = userVisible404.includes(result.reason) ? 404
+                 : userVisible422.includes(result.reason) ? 422
+                 : 500;
+      return res.status(code).json({
+        ok: false,
+        reason:    result.reason,
+        accountId: result.accountId,
+        provider:  result.provider,
+      });
+    }
+
+    res.json(result);
+  } catch (err) {
+    console.error('enrich-from-coresignal error:', err);
+    res.status(500).json({ error: { message: 'Enrichment failed: ' + err.message } });
   }
 });
 
