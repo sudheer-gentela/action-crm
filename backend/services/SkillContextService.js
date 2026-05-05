@@ -63,6 +63,37 @@ function inferFunction(title) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pick the prospect's current role from the captured experience array.
+//
+// The Chrome extension stores experience as an array of:
+//   { title, company, location, start_date, end_date, duration_months, description }
+//
+// "Current" = end_date is null, empty string, or the literal "Present"
+// (case-insensitive). LinkedIn lists current roles at the top of the
+// experience section, so taking the first match is reliable. Falls back
+// to experience[0] if nothing matches the current-role rule, and to
+// null if the array is empty.
+//
+// Returns { title, company } so the caller can use either or both.
+// ─────────────────────────────────────────────────────────────────────────────
+function pickCurrentRole(experience) {
+  if (!Array.isArray(experience) || experience.length === 0) return null;
+
+  const isCurrent = (e) => {
+    const ed = e?.end_date;
+    if (ed == null) return true;
+    const s = String(ed).trim().toLowerCase();
+    return s === '' || s === 'present';
+  };
+
+  const current = experience.find(isCurrent) || experience[0];
+  return {
+    title:   current?.title   || null,
+    company: current?.company || null,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Split the prospect.linkedin_activity array into the three buckets the
 // skill expects: posts, comments, reactions.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -546,6 +577,31 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
     const liExperience = Array.isArray(liExtra[0]?.experience) ? liExtra[0].experience : [];
     const liEducation  = Array.isArray(liExtra[0]?.education)  ? liExtra[0].education  : [];
 
+    // ── Derive title and company with experience as a fallback ─────────────
+    //
+    // Priority order:
+    //   1. The value already on the prospects row (set at creation, e.g.
+    //      CSV import or manual add).
+    //   2. The current role from the captured LinkedIn experience array.
+    //   3. Empty string / null — let the skill handle the sparse case.
+    //
+    // The headline column is intentionally NOT a fallback for title.
+    // Senior-role headlines on LinkedIn are usually multi-clause
+    // positioning copy ("Head of X | Future-Focused CMO | PE Growth
+    // Operator"), which doesn't parse cleanly into a role label. The
+    // current role's title field is a much cleaner anchor for the skill
+    // and for the seniority/function inferences below.
+    const currentRole = pickCurrentRole(liExperience);
+    const derivedTitle =
+      (prospect.title && prospect.title.trim()) ||
+      (currentRole?.title) ||
+      '';
+    const derivedCompany =
+      (prospect.company_name && prospect.company_name.trim()) ||
+      (account?.name) ||
+      (currentRole?.company) ||
+      '';
+
     // LinkedIn activity split
     const linkedInActivity = splitLinkedInActivity(prospect.linkedin_activity);
 
@@ -565,12 +621,12 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
     const payload = {
       prospect: {
         name: [prospect.first_name, prospect.last_name].filter(Boolean).join(' '),
-        title: prospect.title || '',
-        company: prospect.company_name || account?.name || '',
+        title: derivedTitle,
+        company: derivedCompany,
         linkedin_url: prospect.linkedin_url || null,
         email: prospect.email || null,
-        seniority_level: inferSeniority(prospect.title),
-        function: inferFunction(prospect.title),
+        seniority_level: inferSeniority(derivedTitle),
+        function: inferFunction(derivedTitle),
         tenure_in_role_months: null,    // not yet tracked
         seat_count_under: null,         // not yet tracked
         headline: prospect.linkedin_headline || null,
@@ -580,7 +636,7 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
         skills_listed: [],              // future
       },
       account: {
-        name: prospect.company_name || account?.name || '',
+        name: derivedCompany,
         industry: prospect.company_industry || account?.industry || '',
         sub_industry: null,
         size: prospect.company_size || account?.size || '',
