@@ -520,6 +520,32 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
     // ICP signals from prospect.icp_signals JSONB
     const icpSignals = prospect.icp_signals || {};
 
+    // ── LinkedIn captured profile (experience + education) ─────────────────
+    //
+    // The Chrome extension writes the full captured profile into
+    // linkedin_profiles, but the legacy dual-write to prospects.linkedin_*
+    // only carries headline/about/activity. To get experience and education
+    // we join linkedin_profiles by the slug parsed from the prospect's
+    // linkedin_url. The regex here mirrors extractSlug() in
+    // linkedin-profiles.routes.js so the JOIN matches whatever the writer
+    // stored. (Writer rule: capture between '/in/' and the next '/' '?'
+    // or '#', then lowercase.)
+    //
+    // safeQuery wraps the call so the service still works in environments
+    // where linkedin_profiles hasn't been migrated in yet — empty arrays
+    // are a perfectly valid output for the skill (it has dedicated
+    // handling for sparse payloads).
+    const liExtra = await safeQuery(client,
+      `SELECT experience, education
+         FROM linkedin_profiles
+        WHERE org_id = $1
+          AND linkedin_slug = lower(substring($2 from '/in/([^/?#]+)'))
+        LIMIT 1`,
+      [orgId, prospect.linkedin_url || '']
+    );
+    const liExperience = Array.isArray(liExtra[0]?.experience) ? liExtra[0].experience : [];
+    const liEducation  = Array.isArray(liExtra[0]?.education)  ? liExtra[0].education  : [];
+
     // LinkedIn activity split
     const linkedInActivity = splitLinkedInActivity(prospect.linkedin_activity);
 
@@ -549,8 +575,8 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
         seat_count_under: null,         // not yet tracked
         headline: prospect.linkedin_headline || null,
         about: prospect.linkedin_about || null,
-        experience: [],                 // future: from a linkedin_experience column
-        education: [],                  // future: from a linkedin_education column
+        experience: liExperience,        // joined from linkedin_profiles (extension capture)
+        education:  liEducation,         // joined from linkedin_profiles (extension capture)
         skills_listed: [],              // future
       },
       account: {
