@@ -146,24 +146,61 @@ function deriveDomain({ companyDomain, email }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// normalizeLinkedInCompanyUrl
+//
+// LinkedIn's company URLs come in many shapes:
+//   https://www.linkedin.com/company/vitaledge-technologies/
+//   linkedin.com/company/vitaledge-technologies/people/
+//   /company/vitaledge-technologies?utm_source=...
+// Normalize to the canonical form so writes and comparisons are stable:
+//   https://www.linkedin.com/company/<slug>
+//
+// Returns null for input that doesn't contain /company/<slug> at all,
+// for non-LinkedIn hosts, or for the literal /company/ followed by an
+// admin/aggregate path (e.g. /company/setup/new). The slug must look
+// like a slug — alphanumerics, dashes, underscores, dots.
+// ─────────────────────────────────────────────────────────────────────────────
+function normalizeLinkedInCompanyUrl(input) {
+  if (input == null) return null;
+  const s = String(input).trim();
+  if (!s) return null;
+  const m = s.match(/(?:linkedin\.com)?\/company\/([A-Za-z0-9._-]+)/i);
+  if (!m) return null;
+  const slug = m[1].toLowerCase();
+  // Reject obvious LinkedIn admin paths that aren't real companies.
+  if (slug === 'setup' || slug === 'new' || slug === 'admin') return null;
+  return `https://www.linkedin.com/company/${slug}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // resolveAccountId
 //
 // Given a payload + a pg client (or pool) + orgId/ownerId, return an
 // account_id. NEVER throws on missing-domain. Behavior:
 //
-//   - If the writer passed an explicit accountId → trust it, return as-is.
+//   - If the writer passed an explicit accountId → trust it. Backfill the
+//     account's linkedin_company_url if missing and the writer provided one.
 //   - If a real domain resolves:
 //       a. Match by (org_id, LOWER(domain)) — return existing account id.
+//          Backfill linkedin_company_url if missing.
 //       b. If no match, also try matching by (org_id, LOWER(TRIM(name))) —
 //          if a catchall account already exists for this name, ADOPT it
-//          and upgrade it: set its domain to the real one, clear the flag.
-//       c. Otherwise INSERT a new account with the real domain.
+//          and upgrade it: set its domain to the real one, clear the flag,
+//          fill linkedin_company_url if provided.
+//       c. Otherwise INSERT a new account with the real domain and URL.
 //   - If no real domain resolves and companyName is present:
 //       a. Match by (org_id, LOWER(TRIM(name))) — return existing.
+//          Backfill linkedin_company_url if missing.
 //       b. Otherwise INSERT a new account with domain = catchall and
-//          needs_domain_review = TRUE.
+//          needs_domain_review = TRUE, including the URL.
 //   - If neither domain nor companyName is present → return null. Caller
 //     decides whether that's an error.
+//
+// Backfill rule for linkedin_company_url:
+//   If the writer provided a URL AND the existing account row has it
+//   empty/null, set it. We never overwrite a populated URL — that would
+//   risk replacing a user-corrected value with whatever the next scrape
+//   returned.
 //
 // Returns: { accountId: number | null, status: string }
 //   status is one of:
@@ -180,10 +217,26 @@ async function resolveAccountId({
   companyDomain,
   companyIndustry,
   companySize,
+  companyLinkedInUrl,
   email,
 }) {
-  // 1. Caller provided an account id directly — trust them.
+  // Helper: backfill linkedin_company_url on an existing row when missing.
+  // No-op if writer didn't provide one. Never overwrites a populated value.
+  async function maybeBackfillLinkedInUrl(existingAccountId) {
+    if (!companyLinkedInUrl) return;
+    await client.query(
+      `UPDATE accounts
+          SET linkedin_company_url = $2,
+              updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+          AND (linkedin_company_url IS NULL OR linkedin_company_url = '')`,
+      [existingAccountId, companyLinkedInUrl]
+    );
+  }
+
+  // 1. Caller provided an account id directly — trust them, but fill URL if missing.
   if (accountId) {
+    await maybeBackfillLinkedInUrl(Number(accountId));
     return { accountId: Number(accountId), status: 'caller_provided' };
   }
 
@@ -205,6 +258,7 @@ async function resolveAccountId({
       [orgId, realDomain]
     );
     if (byDomain.rows.length > 0) {
+      await maybeBackfillLinkedInUrl(byDomain.rows[0].id);
       return { accountId: byDomain.rows[0].id, status: 'matched_by_domain' };
     }
 
@@ -212,7 +266,7 @@ async function resolveAccountId({
     //    upgrade it with the real domain rather than creating a duplicate.
     if (trimmedName) {
       const byName = await client.query(
-        `SELECT id, domain, needs_domain_review FROM accounts
+        `SELECT id, domain, needs_domain_review, linkedin_company_url FROM accounts
           WHERE org_id = $1 AND LOWER(TRIM(name)) = LOWER($2) AND deleted_at IS NULL
           LIMIT 1`,
         [orgId, trimmedName.toLowerCase()]
@@ -223,18 +277,26 @@ async function resolveAccountId({
         // A user-curated row with a real domain we don't match on shouldn't
         // be silently overwritten — leave it and use it.
         if (existing.needs_domain_review === true) {
+          // Fold the LinkedIn URL backfill into this same UPDATE so we
+          // don't issue two writes for the same row.
+          const shouldFillUrl = companyLinkedInUrl &&
+            (existing.linkedin_company_url == null ||
+             existing.linkedin_company_url === '');
           await client.query(
             `UPDATE accounts
                 SET domain = $2,
                     needs_domain_review = FALSE,
                     industry = COALESCE(industry, $3),
                     size     = COALESCE(size, $4),
+                    linkedin_company_url = CASE WHEN $5 THEN $6 ELSE linkedin_company_url END,
                     updated_at = CURRENT_TIMESTAMP
               WHERE id = $1`,
-            [existing.id, realDomain, companyIndustry || null, companySize || null]
+            [existing.id, realDomain, companyIndustry || null, companySize || null,
+             shouldFillUrl, companyLinkedInUrl || null]
           );
           return { accountId: existing.id, status: 'upgraded_catchall' };
         }
+        await maybeBackfillLinkedInUrl(existing.id);
         return { accountId: existing.id, status: 'matched_by_name' };
       }
     }
@@ -242,11 +304,13 @@ async function resolveAccountId({
     // c. Create with real domain.
     const ins = await client.query(
       `INSERT INTO accounts
-         (org_id, owner_id, name, domain, industry, size, needs_domain_review)
-       VALUES ($1, $2, $3, $4, $5, $6, FALSE)
+         (org_id, owner_id, name, domain, industry, size,
+          needs_domain_review, linkedin_company_url)
+       VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7)
        RETURNING id`,
       [orgId, ownerId, trimmedName || realDomain, realDomain,
-       companyIndustry || null, companySize || null]
+       companyIndustry || null, companySize || null,
+       companyLinkedInUrl || null]
     );
     return { accountId: ins.rows[0].id, status: 'created_real_domain' };
   }
@@ -265,17 +329,20 @@ async function resolveAccountId({
     [orgId, trimmedName.toLowerCase()]
   );
   if (byNameOnly.rows.length > 0) {
+    await maybeBackfillLinkedInUrl(byNameOnly.rows[0].id);
     return { accountId: byNameOnly.rows[0].id, status: 'matched_by_name' };
   }
 
   // b. Create catchall account.
   const insCatch = await client.query(
     `INSERT INTO accounts
-       (org_id, owner_id, name, domain, industry, size, needs_domain_review)
-     VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+       (org_id, owner_id, name, domain, industry, size,
+        needs_domain_review, linkedin_company_url)
+     VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7)
      RETURNING id`,
     [orgId, ownerId, trimmedName, CATCHALL_DOMAIN,
-     companyIndustry || null, companySize || null]
+     companyIndustry || null, companySize || null,
+     companyLinkedInUrl || null]
   );
   return { accountId: insCatch.rows[0].id, status: 'created_catchall' };
 }
@@ -283,6 +350,7 @@ async function resolveAccountId({
 module.exports = {
   CATCHALL_DOMAIN,
   normalizeDomain,
+  normalizeLinkedInCompanyUrl,
   extractDomainFromEmail,
   deriveDomain,
   resolveAccountId,
