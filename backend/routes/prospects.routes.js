@@ -7,6 +7,7 @@ const requireModule = require('../middleware/requireModule.middleware');
 const ProspectContextBuilder  = require('../services/ProspectContextBuilder');
 const PlaybookActionGenerator = require('../services/PlaybookActionGenerator');
 const ActionWriter            = require('../services/ActionWriter');
+const { resolveAccountId }    = require('../services/domainResolver');
 
 
 router.use(authenticateToken);
@@ -264,16 +265,36 @@ router.post('/bulk', async (req, res) => {
           }
         }
 
-        // Auto-match account by domain
-        let resolvedAccountId = null;
-        if (row.companyDomain) {
-          const accMatch = await db.query(
-            `SELECT id FROM accounts WHERE org_id = $1 AND LOWER(domain) = LOWER($2) LIMIT 1`,
-            [req.orgId, row.companyDomain]
+        // Auto-match or create account, with domain normalization.
+        // resolveAccountId handles:
+        //   - normalizing the domain (rejects linkedin.com, personal hosts, junk)
+        //   - falling back to email host if companyDomain is missing/junk
+        //   - matching by domain, then by name
+        //   - creating a catchall account when no real domain resolves
+        const accountResolution = await resolveAccountId({
+          client:          db,
+          orgId:           req.orgId,
+          ownerId:         req.user.userId,
+          accountId:       null,                // CSV doesn't pass an account id
+          companyName:     row.companyName,
+          companyDomain:   row.companyDomain,
+          companyIndustry: row.companyIndustry,
+          companySize:     row.companySize,
+          email:           row.email,
+        });
+        const resolvedAccountId = accountResolution.accountId;
+
+        // Whatever the writer sent for companyDomain, the resolver may have
+        // normalized it (or rejected it). Mirror what's actually on the
+        // resolved account back onto the prospect's company_domain column,
+        // so they stay in sync. NULL when the resolver couldn't get an id.
+        let prospectCompanyDomain = null;
+        if (resolvedAccountId) {
+          const accLookup = await db.query(
+            `SELECT domain FROM accounts WHERE id = $1`,
+            [resolvedAccountId]
           );
-          if (accMatch.rows.length > 0) {
-            resolvedAccountId = accMatch.rows[0].id;
-          }
+          prospectCompanyDomain = accLookup.rows[0]?.domain || null;
         }
 
         await db.query(
@@ -298,7 +319,7 @@ router.post('/bulk', async (req, res) => {
             row.title            || null,
             row.location         || null,
             row.companyName      || null,
-            row.companyDomain    || null,
+            prospectCompanyDomain,
             row.companySize      || null,
             row.companyIndustry  || null,
             resolvedAccountId,
@@ -901,13 +922,35 @@ router.post('/', async (req, res) => {
     }
 
     let resolvedAccountId = accountId || null;
-    if (!resolvedAccountId && companyDomain) {
-      const accMatch = await db.query(
-        `SELECT id FROM accounts WHERE org_id = $1 AND LOWER(domain) = LOWER($2) LIMIT 1`,
-        [req.orgId, companyDomain]
-      );
-      if (accMatch.rows.length > 0) {
-        resolvedAccountId = accMatch.rows[0].id;
+    let prospectCompanyDomain = companyDomain || null;
+    if (!resolvedAccountId) {
+      // Auto-match or create account, with domain normalization.
+      // See services/domainResolver.js for the logic.
+      const accountResolution = await resolveAccountId({
+        client:          db,
+        orgId:           req.orgId,
+        ownerId:         req.user.userId,
+        accountId:       null,
+        companyName:     companyName,
+        companyDomain:   companyDomain,
+        companyIndustry: companyIndustry,
+        companySize:     companySize,
+        email:           email,
+      });
+      resolvedAccountId = accountResolution.accountId;
+
+      // Mirror the resolved account's domain onto the prospect row so the
+      // two stay in sync (the resolver may have normalized or replaced what
+      // the writer sent). When no account resolved (e.g. no companyName at
+      // all), leave prospect.company_domain null too.
+      if (resolvedAccountId) {
+        const accLookup = await db.query(
+          `SELECT domain FROM accounts WHERE id = $1`,
+          [resolvedAccountId]
+        );
+        prospectCompanyDomain = accLookup.rows[0]?.domain || null;
+      } else {
+        prospectCompanyDomain = null;
       }
     }
 
@@ -937,7 +980,7 @@ router.post('/', async (req, res) => {
        ) RETURNING *`,
       [
         req.orgId, req.user.userId, firstName, lastName, email, phone, linkedinUrl,
-        title, linkedinHeadline || null, location, companyName, companyDomain, companySize,
+        title, linkedinHeadline || null, location, companyName, prospectCompanyDomain, companySize,
         companyIndustry, resolvedAccountId, source || 'manual', resolvedPlaybookId,
         JSON.stringify(tags || []),
       ]

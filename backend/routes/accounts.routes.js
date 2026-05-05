@@ -4,6 +4,7 @@ const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
 const { workflowRulesMiddleware } = require('../middleware/workflowRules.middleware');
+const { normalizeDomain, CATCHALL_DOMAIN } = require('../services/domainResolver');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -387,6 +388,27 @@ router.put('/:id', workflowRulesMiddleware('account', 'update'), async (req, res
     const p = req.mutatedPayload || req.body;
     const { name, domain, industry, size, location, description } = p;
 
+    // Normalize the domain. If the writer sent a real domain, this trims
+    // protocol/path/etc. If they sent linkedin.com or a personal-email host,
+    // normalizeDomain returns null and we don't overwrite the existing value.
+    // To support the user explicitly clearing the field, we treat the literal
+    // empty string as "clear it" while undefined leaves it alone.
+    let domainForUpdate;
+    if (domain === undefined) {
+      domainForUpdate = undefined;        // leave unchanged
+    } else if (domain === '' || domain === null) {
+      domainForUpdate = null;              // explicit clear
+    } else {
+      const normalized = normalizeDomain(domain);
+      domainForUpdate = normalized || undefined;  // junk → leave unchanged
+    }
+
+    // If a real (non-catchall) domain is being set, also clear the review flag.
+    const clearReviewFlag =
+      typeof domainForUpdate === 'string' &&
+      domainForUpdate.length > 0 &&
+      domainForUpdate !== CATCHALL_DOMAIN;
+
     const result = await db.query(
       `UPDATE accounts
        SET name        = COALESCE($1, name),
@@ -395,10 +417,12 @@ router.put('/:id', workflowRulesMiddleware('account', 'update'), async (req, res
            size        = COALESCE($4, size),
            location    = COALESCE($5, location),
            description = COALESCE($6, description),
+           needs_domain_review = CASE WHEN $7 THEN FALSE ELSE needs_domain_review END,
            updated_at  = CURRENT_TIMESTAMP
-       WHERE id = $7 AND org_id = $8 AND owner_id = $9
+       WHERE id = $8 AND org_id = $9 AND owner_id = $10
        RETURNING *`,
-      [name, domain, industry, size, location, description, req.params.id, req.orgId, req.user.userId]
+      [name, domainForUpdate, industry, size, location, description,
+       clearReviewFlag, req.params.id, req.orgId, req.user.userId]
     );
 
     if (result.rows.length === 0) {
