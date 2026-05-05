@@ -19,8 +19,58 @@
 // Cost: 2 credits per successful enrichment. Failed lookups (404) cost 0.
 // ============================================================================
 
-const CORESIGNAL_BASE_URL = 'https://api.coresignal.com/cdapi/v2/company_multi_source/enrich';
+const CORESIGNAL_BASE = 'https://api.coresignal.com/cdapi/v2/company_multi_source';
 const REQUEST_TIMEOUT_MS  = 10000;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Endpoint selection
+//
+// CoreSignal's multi-source company API has two distinct endpoints:
+//
+//   /enrich?website={domain}             — domain-based enrichment
+//   /collect/{shorthand_or_id}            — LinkedIn shorthand or numeric ID
+//
+// They each accept exactly ONE input. Sending both is a 400 ("Please use
+// only one query parameter"). So we must pick the right endpoint based
+// on what we have, not concatenate them.
+//
+// Returns { url, identifier_type, identifier_value } or null.
+// ─────────────────────────────────────────────────────────────────────────────
+function buildEndpoint({ linkedinCompanyUrl, domain }) {
+  // LinkedIn URL takes precedence — it's a stable, canonical reference.
+  // Extract either the numeric company ID or the shorthand slug from the URL.
+  // Examples:
+  //   https://www.linkedin.com/company/10454372    -> id "10454372"
+  //   https://www.linkedin.com/company/gong-io     -> shorthand "gong-io"
+  //   https://www.linkedin.com/company/sa.global   -> shorthand "sa.global"
+  if (linkedinCompanyUrl) {
+    const m = String(linkedinCompanyUrl).match(/\/company\/([A-Za-z0-9._-]+)/i);
+    if (m) {
+      const segment = m[1];
+      // Numeric segments are LinkedIn company IDs; everything else is a
+      // shorthand. CoreSignal's /collect endpoint accepts both forms in
+      // the same path slot, so this distinction is informational only.
+      const isNumeric = /^\d+$/.test(segment);
+      return {
+        url: `${CORESIGNAL_BASE}/collect/${encodeURIComponent(segment)}`,
+        identifier_type:  isNumeric ? 'linkedin_id' : 'linkedin_shorthand',
+        identifier_value: segment,
+      };
+    }
+    // URL didn't match the expected /company/<slug> pattern — fall through
+    // to domain.
+  }
+
+  if (domain) {
+    return {
+      url: `${CORESIGNAL_BASE}/enrich?website=${encodeURIComponent(domain)}`,
+      identifier_type:  'domain',
+      identifier_value: domain,
+    };
+  }
+
+  return null;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bucket employees_count into the standard size ranges. We prefer
@@ -176,20 +226,14 @@ async function enrich({ linkedinCompanyUrl, domain }) {
     return { ok: false, reason: 'no_api_key' };
   }
 
-  // Pick the identifier. Prefer the LinkedIn URL because it's a stable
-  // canonical reference; fall back to domain otherwise.
-  let url;
-  if (linkedinCompanyUrl) {
-    url = `${CORESIGNAL_BASE_URL}?professional_network_url=${encodeURIComponent(linkedinCompanyUrl)}`;
-  } else if (domain) {
-    url = `${CORESIGNAL_BASE_URL}?website=${encodeURIComponent(domain)}`;
-  } else {
+  const endpoint = buildEndpoint({ linkedinCompanyUrl, domain });
+  if (!endpoint) {
     return { ok: false, reason: 'no_identifier' };
   }
 
   let resp;
   try {
-    resp = await fetchWithTimeout(url, {
+    resp = await fetchWithTimeout(endpoint.url, {
       method: 'GET',
       headers: {
         'apikey': apiKey,
@@ -205,22 +249,18 @@ async function enrich({ linkedinCompanyUrl, domain }) {
   }
 
   if (resp.status === 401 || resp.status === 403) {
-    return { ok: false, reason: 'auth_failed', status: resp.status };
+    return { ok: false, reason: 'auth_failed', status: resp.status, identifier_used: endpoint.identifier_type };
   }
   if (resp.status === 402) {
-    return { ok: false, reason: 'no_credits', status: 402 };
+    return { ok: false, reason: 'no_credits', status: 402, identifier_used: endpoint.identifier_type };
   }
   if (resp.status === 404) {
-    return { ok: false, reason: 'not_found', status: 404 };
+    return { ok: false, reason: 'not_found', status: 404, identifier_used: endpoint.identifier_type };
   }
   if (resp.status === 429) {
-    return { ok: false, reason: 'rate_limited', status: 429 };
+    return { ok: false, reason: 'rate_limited', status: 429, identifier_used: endpoint.identifier_type };
   }
   if (!resp.ok) {
-    // Surface the upstream status and a snippet of the body so the caller
-    // can tell the difference between a 400 (malformed input), 5xx (their
-    // server problem), and other unexpected codes. We cap the body at
-    // 500 chars so a runaway HTML error page doesn't bloat the response.
     let upstreamBody = null;
     try {
       const text = await resp.text();
@@ -231,6 +271,7 @@ async function enrich({ linkedinCompanyUrl, domain }) {
       reason: 'http_error',
       status: resp.status,
       upstream_body: upstreamBody,
+      identifier_used: endpoint.identifier_type,
     };
   }
 
@@ -249,7 +290,7 @@ async function enrich({ linkedinCompanyUrl, domain }) {
     return { ok: false, reason: 'invalid_response' };
   }
 
-  return { ok: true, data, raw: obj };
+  return { ok: true, data, raw: obj, identifier_used: endpoint.identifier_type };
 }
 
 module.exports = {
@@ -258,4 +299,5 @@ module.exports = {
   _normalize: normalize,
   _bucketHeadcount: bucketHeadcount,
   _cleanWebsiteToDomain: cleanWebsiteToDomain,
+  _buildEndpoint: buildEndpoint,
 };
