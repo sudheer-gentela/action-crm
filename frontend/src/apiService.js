@@ -36,7 +36,17 @@ api.interceptors.request.use((config) => {
 
 export const apiService = {
   accounts: {
-    getAll: (scope = 'mine') => api.get(`/accounts?scope=${scope}`),
+    // getAll accepts either the legacy single-string scope, or an options
+    // object: { scope, needsReview }. Backwards-compatible for existing callers.
+    getAll: (scopeOrOpts = 'mine', maybeOpts = {}) => {
+      const opts = typeof scopeOrOpts === 'string'
+        ? { scope: scopeOrOpts, ...maybeOpts }
+        : (scopeOrOpts || {});
+      const params = new URLSearchParams();
+      if (opts.scope) params.set('scope', opts.scope);
+      if (opts.needsReview) params.set('needs_review', 'true');
+      return api.get(`/accounts?${params.toString()}`);
+    },
     getById: (id) => api.get(`/accounts/${id}`),
     create: (data) => api.post('/accounts', data),
     update: (id, data) => api.put(`/accounts/${id}`, data),
@@ -44,6 +54,7 @@ export const apiService = {
     getDuplicates: () => api.get('/accounts/duplicates'),
     merge: (keepId, removeId, fieldOverrides = {}) => api.post('/accounts/merge', { keepId, removeId, fieldOverrides }),
     bulk: (rows) => api.post('/accounts/bulk', { rows }),
+    enrichFromCoresignal: (id) => api.post(`/accounts/${id}/enrich-from-coresignal`),
   },
 
   contacts: {

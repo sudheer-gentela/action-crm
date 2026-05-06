@@ -33,15 +33,11 @@ const enrichmentProvider = require('./enrichment');
 const { CATCHALL_DOMAIN } = require('./domainResolver');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// enrichAccountForProspect
+// enrichAccountForProspect — prospect-anchored entry point
 //
-// Inputs:
-//   prospectId (int) - required. The account is looked up via this prospect.
-//   orgId      (int) - required. RLS scope; also a defensive cross-check.
-//
-// Returns:
-//   { ok: true,  accountId, status, enriched: { fields applied }, provider }
-//   { ok: false, accountId?, reason, provider }
+// The extension calls this via /prospects/:id/enrich-from-coresignal: it
+// only knows prospect IDs at the time it dispatches. We resolve the
+// account from the prospect, then delegate to enrichAccountById.
 // ─────────────────────────────────────────────────────────────────────────────
 async function enrichAccountForProspect({ prospectId, orgId }) {
   let client;
@@ -68,36 +64,72 @@ async function enrichAccountForProspect({ prospectId, orgId }) {
       return { ok: false, reason: 'prospect_has_no_account' };
     }
 
-    const ac = await client.query(
-      `SELECT id, name, domain, industry, size, location, description,
-              needs_domain_review, linkedin_company_url, research_meta
-         FROM accounts
-        WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
-      [prospect.account_id, orgId]
+    return await enrichAccountByIdInternal(client, prospect.account_id, orgId);
+  } finally {
+    if (client) client.release();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// enrichAccountById — account-anchored entry point
+//
+// The frontend's "Needs Review" tab calls this directly via
+// /accounts/:id/enrich-from-coresignal. No prospect lookup needed.
+// ─────────────────────────────────────────────────────────────────────────────
+async function enrichAccountById({ accountId, orgId }) {
+  let client;
+  try {
+    client = await pool.connect();
+
+    await client.query(
+      `SELECT set_config('app.current_org_id', $1::text, true)`,
+      [String(orgId)]
     );
-    if (ac.rows.length === 0) {
-      return { ok: false, reason: 'account_not_found' };
-    }
-    const account = ac.rows[0];
 
-    // Pick identifier. Prefer LinkedIn URL; fall back to domain (only if
-    // it's a real one, not catchall).
-    const linkedinCompanyUrl = account.linkedin_company_url || null;
-    const realDomain = (account.domain && account.domain !== CATCHALL_DOMAIN)
-      ? account.domain
-      : null;
+    return await enrichAccountByIdInternal(client, accountId, orgId);
+  } finally {
+    if (client) client.release();
+  }
+}
 
-    if (!linkedinCompanyUrl && !realDomain) {
-      return {
-        ok: false,
-        accountId: account.id,
-        reason: 'no_identifier_on_account',
-      };
-    }
+// ─────────────────────────────────────────────────────────────────────────────
+// enrichAccountByIdInternal — shared core, uses the caller's pg client
+//
+// All the heavy lifting lives here: identifier selection, provider call,
+// failure persistence, success apply rules. Both public entry points
+// delegate here so the behavior stays consistent.
+// ─────────────────────────────────────────────────────────────────────────────
+async function enrichAccountByIdInternal(client, accountId, orgId) {
+  const ac = await client.query(
+    `SELECT id, name, domain, industry, size, location, description,
+            needs_domain_review, linkedin_company_url, research_meta
+       FROM accounts
+      WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+    [accountId, orgId]
+  );
+  if (ac.rows.length === 0) {
+    return { ok: false, reason: 'account_not_found' };
+  }
+  const account = ac.rows[0];
 
-    // Call the provider.
-    const result = await enrichmentProvider.enrich({
-      linkedinCompanyUrl,
+  // Pick identifier. Prefer LinkedIn URL; fall back to domain (only if
+  // it's a real one, not catchall).
+  const linkedinCompanyUrl = account.linkedin_company_url || null;
+  const realDomain = (account.domain && account.domain !== CATCHALL_DOMAIN)
+    ? account.domain
+    : null;
+
+  if (!linkedinCompanyUrl && !realDomain) {
+    return {
+      ok: false,
+      accountId: account.id,
+      reason: 'no_identifier_on_account',
+    };
+  }
+
+  // Call the provider.
+  const result = await enrichmentProvider.enrich({
+    linkedinCompanyUrl,
       domain: realDomain,
     });
 
@@ -211,11 +243,9 @@ async function enrichAccountForProspect({ prospectId, orgId }) {
       enriched: applied,
       provider: result.provider,
     };
-  } finally {
-    if (client) client.release();
-  }
 }
 
 module.exports = {
   enrichAccountForProspect,
+  enrichAccountById,
 };

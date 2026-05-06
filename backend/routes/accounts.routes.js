@@ -5,33 +5,71 @@ const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
 const { workflowRulesMiddleware } = require('../middleware/workflowRules.middleware');
 const { normalizeDomain, CATCHALL_DOMAIN } = require('../services/domainResolver');
+const { enrichAccountById } = require('../services/enrichmentService');
 
 router.use(authenticateToken);
 router.use(orgContext);
 
 // ── GET / — list accounts ────────────────────────────────────────────────────
-// Supports ?scope=mine|team|org (default: mine)
+// Supports:
+//   ?scope=mine|team|org   — owner scope (default: mine)
+//   ?needs_review=true     — only accounts with needs_domain_review = TRUE
+// Response always includes counts so the frontend can render filter tabs
+// without a second roundtrip:
+//   { accounts: [...], counts: { all: N, needs_review: M } }
 router.get('/', async (req, res) => {
   try {
-    const { scope = 'mine' } = req.query;
-    let query = 'SELECT * FROM accounts WHERE org_id = $1';
-    const params = [req.orgId];
+    const { scope = 'mine', needs_review } = req.query;
+    const wantsNeedsReview = needs_review === 'true' || needs_review === '1';
+
+    // Build the scope clause once; both the list query and the count
+    // queries use the same scope so the totals match what the user sees.
+    const scopeParts = [];
+    const scopeParams = [req.orgId];
+    scopeParts.push(`org_id = $1`);
 
     if (scope === 'team' && req.subordinateIds?.length > 0) {
       const teamIds = [req.user.userId, ...req.subordinateIds];
-      query += ` AND owner_id = ANY($${params.length + 1}::int[])`;
-      params.push(teamIds);
+      scopeParts.push(`owner_id = ANY($${scopeParams.length + 1}::int[])`);
+      scopeParams.push(teamIds);
     } else if (scope === 'org') {
       // No owner filter — all org accounts
     } else {
-      query += ` AND owner_id = $${params.length + 1}`;
-      params.push(req.user.userId);
+      scopeParts.push(`owner_id = $${scopeParams.length + 1}`);
+      scopeParams.push(req.user.userId);
     }
+    const scopeClause = scopeParts.join(' AND ');
 
-    query += ' ORDER BY name';
-    const result = await db.query(query, params);
-    res.json({ accounts: result.rows });
+    // List query — adds the needs_review filter when requested.
+    let listQuery = `SELECT * FROM accounts WHERE ${scopeClause}`;
+    if (wantsNeedsReview) {
+      listQuery += ` AND needs_domain_review = TRUE`;
+    }
+    listQuery += ' ORDER BY name';
+
+    // Count queries — same scope, both buckets. Run in parallel with the list.
+    const [listResult, countAll, countReview] = await Promise.all([
+      db.query(listQuery, scopeParams),
+      db.query(
+        `SELECT COUNT(*)::int AS n FROM accounts WHERE ${scopeClause}`,
+        scopeParams
+      ),
+      db.query(
+        `SELECT COUNT(*)::int AS n FROM accounts
+          WHERE ${scopeClause} AND needs_domain_review = TRUE`,
+        scopeParams
+      ),
+    ]);
+
+    res.json({
+      accounts: listResult.rows,
+      counts: {
+        all:           countAll.rows[0].n,
+        needs_review:  countReview.rows[0].n,
+      },
+    });
   } catch (error) {
+    console.error('GET /accounts error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch accounts' } });
   }
 });
@@ -462,6 +500,59 @@ router.delete('/:id', async (req, res) => {
   } catch (error) {
     console.error('Delete account error:', error);
     res.status(500).json({ error: { message: 'Failed to delete account' } });
+  }
+});
+
+// ── POST /:id/enrich-from-coresignal — enrich a specific account ─────────────
+//
+// Account-anchored entry point for the "Needs Review" tab. Calls the same
+// enrichment service the prospect-side route uses (via enrichAccountById
+// which shares the core logic). Apply rules: never overwrite real values,
+// only fill blanks; clear needs_domain_review when a real domain lands.
+//
+// 200 on success: { ok, accountId, status, enriched: {...}, provider }
+// 4xx on user-fixable failure (404 not found, 422 provider error)
+// 500 on unexpected
+router.post('/:id/enrich-from-coresignal', async (req, res) => {
+  try {
+    const accountId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(accountId)) {
+      return res.status(400).json({ error: { message: 'invalid account id' } });
+    }
+
+    const result = await enrichAccountById({
+      accountId,
+      orgId: req.orgId,
+    });
+
+    if (!result.ok) {
+      const userVisible404 = ['account_not_found'];
+      const userVisible422 = [
+        'no_identifier_on_account',
+        'not_found', 'ambiguous',
+        'no_credits', 'auth_failed', 'rate_limited',
+        'timeout', 'network_error', 'invalid_response',
+        'http_error', 'no_api_key', 'no_identifier',
+        'unknown_provider',
+      ];
+      const code = userVisible404.includes(result.reason) ? 404
+                 : userVisible422.includes(result.reason) ? 422
+                 : 500;
+      return res.status(code).json({
+        ok: false,
+        reason:          result.reason,
+        accountId:       result.accountId,
+        provider:        result.provider,
+        upstream_status: result.upstream_status,
+        upstream_body:   result.upstream_body,
+        hit_count:       result.hit_count,
+      });
+    }
+
+    res.json(result);
+  } catch (err) {
+    console.error('account enrich-from-coresignal error:', err);
+    res.status(500).json({ error: { message: 'Enrichment failed: ' + err.message } });
   }
 });
 

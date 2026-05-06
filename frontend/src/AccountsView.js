@@ -39,13 +39,24 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
   const [scope, setScope] = useState('mine');
   const [hasTeam, setHasTeam] = useState(false);
 
+  // ── List filter tab ───────────────────────────────────────────
+  // 'all' = every account in current scope
+  // 'needs_review' = only accounts with needs_domain_review = TRUE
+  const [filterTab, setFilterTab] = useState('all');
+  const [counts, setCounts] = useState({ all: 0, needs_review: 0 });
+
+  // ── Per-account enrichment state ──────────────────────────────
+  // Map keyed by accountId with the most recent enrichment outcome.
+  // Shape: { [id]: { status: 'loading'|'ok'|'error', message: string, ts: ms } }
+  const [enrichState, setEnrichState] = useState({});
+
   useEffect(() => {
     apiService.orgAdmin.getMyTeam()
       .then(r => setHasTeam(r.data.hasTeam))
       .catch(() => setHasTeam(false));
   }, []);
 
-  useEffect(() => { loadAccounts(); }, [scope]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadAccounts(); }, [scope, filterTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!openAccountId || accounts.length === 0) return;
@@ -62,8 +73,13 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
     try {
       setLoading(true);
       setError('');
+      const accountsCall = apiService.accounts.getAll({
+        scope,
+        needsReview: filterTab === 'needs_review',
+      }).catch(() => ({ data: { accounts: mockData.accounts, counts: { all: 0, needs_review: 0 } } }));
+
       const [accountsRes, dealsRes, contactsRes] = await Promise.all([
-        apiService.accounts.getAll(scope).catch(() => ({ data: { accounts: mockData.accounts } })),
+        accountsCall,
         apiService.deals.getAll(scope).catch(() => ({ data: { deals: mockData.deals } })),
         apiService.contacts.getAll(scope).catch(() => ({ data: { contacts: mockData.contacts } }))
       ]);
@@ -76,6 +92,12 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
       setAccounts(enrichedData.accounts);
       setDeals(enrichedData.deals);
       setContacts(enrichedData.contacts);
+      // Counts come back from the same API call so the tab labels stay
+      // accurate without a second request. Defensive default keeps the
+      // app working against older backends that haven't shipped counts yet.
+      if (accountsRes.data.counts) {
+        setCounts(accountsRes.data.counts);
+      }
     } catch (err) {
       console.error('Error loading accounts:', err);
       setError('Failed to load accounts. Using sample data.');
@@ -174,6 +196,66 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
     const result = response.data;
     if (result.imported > 0) loadAccounts();
     return result;
+  };
+
+  // ── Per-account enrichment ───────────────────────────────────────────────
+  //
+  // Triggered from the "Enrich" button on cards in the Needs Review tab.
+  // Posts to /accounts/:id/enrich-from-coresignal, which never overwrites
+  // populated fields. On success the row's needs_domain_review flag is
+  // typically cleared by the backend (when a real domain landed), so we
+  // refresh the list to surface that state change.
+  //
+  // Failure reasons we surface as user-friendly text:
+  //   not_found            - CoreSignal had no record for this company
+  //   ambiguous            - multiple matches, can't safely pick
+  //   no_identifier_on_account - row has neither LinkedIn URL nor real domain
+  //   no_credits           - out of CoreSignal credits (operator concern)
+  //   auth_failed          - API key issue (operator concern)
+  //   *                    - generic transport/server error
+  const handleEnrichAccount = async (accountId) => {
+    setEnrichState(prev => ({ ...prev, [accountId]: { status: 'loading' } }));
+
+    try {
+      const response = await apiService.accounts.enrichFromCoresignal(accountId);
+      const data = response.data || {};
+      const fields = data.enriched ? Object.keys(data.enriched).filter(k => k !== 'needs_domain_review_cleared') : [];
+      const cleared = data.enriched?.needs_domain_review_cleared;
+
+      let message;
+      if (fields.length === 0 && !cleared) {
+        message = 'No new data — fields already populated.';
+      } else {
+        const fragments = [];
+        if (cleared) fragments.push('domain resolved');
+        if (fields.length > 0) fragments.push(`updated: ${fields.join(', ')}`);
+        message = fragments.join(' · ');
+      }
+
+      setEnrichState(prev => ({
+        ...prev,
+        [accountId]: { status: 'ok', message, ts: Date.now() },
+      }));
+      // Reload to reflect cleared flag / new firmographics in the list and counts.
+      loadAccounts();
+    } catch (err) {
+      const body = err?.response?.data || {};
+      const reason = body.reason || 'unknown';
+      const friendly = {
+        not_found:                'CoreSignal had no match for this company.',
+        ambiguous:                `Multiple candidates found${body.hit_count ? ` (${body.hit_count})` : ''}. Needs human review.`,
+        no_identifier_on_account: 'No LinkedIn URL or real domain on this account.',
+        no_credits:               'Out of CoreSignal credits.',
+        auth_failed:              'CoreSignal auth failed — check API key.',
+        rate_limited:             'CoreSignal rate-limited the request. Try again in a minute.',
+        timeout:                  'CoreSignal timed out.',
+        no_api_key:               'CoreSignal API key not configured.',
+      }[reason] || `Enrichment failed: ${reason}`;
+      setEnrichState(prev => ({
+        ...prev,
+        [accountId]: { status: 'error', message: friendly, ts: Date.now() },
+      }));
+    }
   };
 
   // ── Render editable field ───────────────────────────────────────────────
@@ -340,15 +422,70 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
       {/* Duplicate Accounts Banner */}
       <AccountMergeBanner onMergeComplete={loadAccounts} />
 
+      {/* Filter tabs — All vs Needs Review.
+          Counts come from the same API call as the list, so they stay
+          accurate as enrichment clears the flag and rows drop out of
+          the Needs Review bucket. */}
+      <div style={{
+        display: 'flex', gap: '0', marginBottom: '16px',
+        borderBottom: '1px solid #e5e7eb',
+      }}>
+        {[
+          { key: 'all',          label: 'All Accounts',  count: counts.all },
+          { key: 'needs_review', label: 'Needs Review',  count: counts.needs_review },
+        ].map(t => (
+          <button
+            key={t.key}
+            onClick={() => setFilterTab(t.key)}
+            style={{
+              padding: '10px 16px',
+              background: 'transparent',
+              border: 'none',
+              borderBottom: `2px solid ${filterTab === t.key ? '#6366f1' : 'transparent'}`,
+              color: filterTab === t.key ? '#6366f1' : '#64748b',
+              fontWeight: filterTab === t.key ? 600 : 500,
+              fontSize: '13px',
+              cursor: 'pointer',
+              marginBottom: '-1px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}
+          >
+            {t.label}
+            <span style={{
+              padding: '1px 8px',
+              borderRadius: '10px',
+              background: filterTab === t.key ? '#eef2ff' : '#f1f5f9',
+              color: filterTab === t.key ? '#6366f1' : '#64748b',
+              fontSize: '11px',
+              fontWeight: 600,
+            }}>
+              {t.count}
+            </span>
+          </button>
+        ))}
+      </div>
+
       {/* Accounts Container */}
       <div className="accounts-container">
         <div className="accounts-grid">
           {accounts.length === 0 ? (
             <div className="empty-state">
-              <div className="empty-state-icon">🏢</div>
-              <h3>No accounts yet</h3>
-              <p>Create your first account to start managing deals and contacts</p>
-              <button className="btn-primary" onClick={() => setShowForm(true)}>+ Create Account</button>
+              <div className="empty-state-icon">{filterTab === 'needs_review' ? '✅' : '🏢'}</div>
+              <h3>
+                {filterTab === 'needs_review'
+                  ? 'No accounts need review'
+                  : 'No accounts yet'}
+              </h3>
+              <p>
+                {filterTab === 'needs_review'
+                  ? 'Every account in this scope has a real domain or has been resolved.'
+                  : 'Create your first account to start managing deals and contacts'}
+              </p>
+              {filterTab !== 'needs_review' && (
+                <button className="btn-primary" onClick={() => setShowForm(true)}>+ Create Account</button>
+              )}
             </div>
           ) : (
             accounts.map(account => (
@@ -362,6 +499,9 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
                 onDelete={() => handleDeleteAccount(account.id)}
                 onSelect={() => setSelectedAccount(account)}
                 isSelected={selectedAccount?.id === account.id}
+                onEnrich={() => handleEnrichAccount(account.id)}
+                enrichState={enrichState[account.id]}
+                showEnrich={filterTab === 'needs_review'}
               />
             ))
           )}
@@ -570,8 +710,38 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
 
 // ── Account Card ──────────────────────────────────────────────────────────────
 
-function AccountCard({ account, deals, contacts, totalValue, onEdit, onDelete, onSelect, isSelected }) {
+function AccountCard({ account, deals, contacts, totalValue, onEdit, onDelete, onSelect, isSelected,
+                       onEnrich, enrichState, showEnrich }) {
   const activeDeals = deals.filter(d => d.stage !== 'closed_won' && d.stage !== 'closed_lost');
+  const isCatchall = account.domain === 'catchalldomain.com';
+
+  // Status pill rendering — three states: 'loading', 'ok', 'error'.
+  // Cleared after a successful reload (parent's loadAccounts) since the
+  // row will either drop out of the Needs Review filter or get rerendered
+  // with fresh data. We keep error states visible until the next attempt.
+  const renderStatus = () => {
+    if (!enrichState) return null;
+    const palette = {
+      loading: { bg: '#fef3c7', fg: '#92400e', text: 'Enriching…' },
+      ok:      { bg: '#dcfce7', fg: '#166534', text: enrichState.message || 'Enriched' },
+      error:   { bg: '#fee2e2', fg: '#991b1b', text: enrichState.message || 'Failed' },
+    }[enrichState.status] || null;
+    if (!palette) return null;
+    return (
+      <div style={{
+        marginTop: '8px',
+        padding: '6px 10px',
+        background: palette.bg,
+        color: palette.fg,
+        borderRadius: '6px',
+        fontSize: '11px',
+        fontWeight: 500,
+        lineHeight: 1.3,
+      }}>
+        {palette.text}
+      </div>
+    );
+  };
 
   return (
     <div className={`account-card ${isSelected ? 'selected' : ''}`} onClick={onSelect}>
@@ -601,6 +771,50 @@ function AccountCard({ account, deals, contacts, totalValue, onEdit, onDelete, o
         </div>
       </div>
       {account.location && <p className="account-location">📍 {account.location}</p>}
+
+      {/* Catchall domain badge — shown whenever the row is in placeholder
+          state, regardless of which tab the user is on. Quick visual
+          signal that this is unresolved data. */}
+      {isCatchall && (
+        <div style={{
+          marginTop: '8px',
+          padding: '4px 8px',
+          background: '#fef3c7',
+          color: '#92400e',
+          borderRadius: '4px',
+          fontSize: '11px',
+          fontWeight: 500,
+          display: 'inline-block',
+        }}>
+          ⚠ Domain unresolved
+        </div>
+      )}
+
+      {/* Enrich button — only on the Needs Review tab to keep the All
+          Accounts grid uncluttered. Once the row drops out of Needs
+          Review (flag cleared), it stops showing this affordance. */}
+      {showEnrich && onEnrich && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onEnrich(); }}
+          disabled={enrichState?.status === 'loading'}
+          style={{
+            marginTop: '10px',
+            width: '100%',
+            padding: '8px 12px',
+            background: enrichState?.status === 'loading' ? '#e5e7eb' : '#6366f1',
+            color: enrichState?.status === 'loading' ? '#6b7280' : '#fff',
+            border: 'none',
+            borderRadius: '6px',
+            fontSize: '12px',
+            fontWeight: 600,
+            cursor: enrichState?.status === 'loading' ? 'not-allowed' : 'pointer',
+          }}
+        >
+          {enrichState?.status === 'loading' ? 'Enriching…' : '✨ Enrich from CoreSignal'}
+        </button>
+      )}
+
+      {renderStatus()}
     </div>
   );
 }
