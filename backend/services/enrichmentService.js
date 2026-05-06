@@ -149,20 +149,20 @@ async function enrichAccountByIdInternal(client, accountId, orgId) {
         `UPDATE accounts
             SET research_meta = COALESCE(research_meta, '{}'::jsonb)
               || jsonb_build_object(
-                  $2::text,
+                  $3::text,
                   jsonb_build_object(
                     'status',        'failed',
-                    'reason',        $3::text,
-                    'http_status',   to_jsonb($4::int),
-                    'upstream_body', to_jsonb($5::text),
-                    'hit_count',     to_jsonb($6::int),
+                    'reason',        $4::text,
+                    'http_status',   to_jsonb($5::int),
+                    'upstream_body', to_jsonb($6::text),
+                    'hit_count',     to_jsonb($7::int),
                     'attempted_at',  to_jsonb(CURRENT_TIMESTAMP)
                   )
                 ),
-                needs_domain_review = CASE WHEN $7 THEN TRUE ELSE needs_domain_review END,
+                needs_domain_review = CASE WHEN $8 THEN TRUE ELSE needs_domain_review END,
                 updated_at = CURRENT_TIMESTAMP
-          WHERE id = $1`,
-        [account.id, result.provider, result.reason,
+          WHERE id = $1 AND org_id = $2`,
+        [account.id, orgId, result.provider, result.reason,
          result.status || null, result.upstream_body || null,
          result.hit_count || null, isAmbiguous]
       );
@@ -181,9 +181,14 @@ async function enrichAccountByIdInternal(client, accountId, orgId) {
 
     // Apply rules. Build the SET clause dynamically so we only touch
     // fields we're actually changing (and so the SQL is auditable in logs).
+    //
+    // Param numbering: $1 is account.id, $2 is orgId. Field params start at $3.
+    // The WHERE clause uses both to keep the UPDATE org-scoped (defense in
+    // depth — we already SELECTed by org_id above, but writes get the same
+    // explicit check so a future refactor can't accidentally drop it).
     const sets = [];
-    const params = [account.id];
-    let p = 2;
+    const params = [account.id, orgId];
+    let p = 3;
     const applied = {};
 
     // domain — fill only if currently catchall or empty
@@ -232,7 +237,7 @@ async function enrichAccountByIdInternal(client, accountId, orgId) {
     sets.push(`updated_at = CURRENT_TIMESTAMP`);
 
     await client.query(
-      `UPDATE accounts SET ${sets.join(', ')} WHERE id = $1`,
+      `UPDATE accounts SET ${sets.join(', ')} WHERE id = $1 AND org_id = $2`,
       params
     );
 
