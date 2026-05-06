@@ -743,6 +743,16 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
       sequence_state: sequenceState,
       reply_payload: null,  // populated only by reply-event-triggered skills
       org_context: orgContext,
+
+      // Out-of-band metadata for the runner. The leading underscore marks this
+      // as not part of the skill contract — skills MUST ignore it. Used by the
+      // runner to attribute skill_runs records back to the right org/prospect
+      // without re-querying.
+      _meta: {
+        org_id: orgId,
+        prospect_id: prospect.id,
+        rep_user_id: asUserId || prospect.owner_id || null,
+      },
     };
 
     return payload;

@@ -234,6 +234,7 @@ app.get('/health', (req, res) => {
 // API Routes
 // ─────────────────────────────────────────────────────────────
 app.use('/api/skill-context', require('./routes/skill-context.routes'));
+app.use('/api/skill-runs',    require('./routes/skill-runs.routes'));
 
 app.use('/api/auth',      require('./routes/auth.routes'));
 app.use('/api/actions',   require('./routes/actions.routes'));
