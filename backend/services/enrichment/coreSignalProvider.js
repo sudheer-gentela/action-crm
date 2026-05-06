@@ -152,9 +152,18 @@ function normalize(raw) {
   const name = raw.company_legal_name || raw.company_name || raw.name || null;
   if (!name) return null;
 
-  // Domain: prefer websites_main, fall back to company_domain (Jobs API
-  // sample shape used that key).
-  const domain = cleanWebsiteToDomain(raw.websites_main || raw.company_domain);
+  // Domain: CoreSignal's multi-source schema uses `website_domain` (bare,
+  // already lowercased and stripped) as the canonical field. `website`
+  // is the full URL — strip it down if the bare form isn't present.
+  // (`websites_main` and `company_domain` are field names from older docs
+  // that don't appear on actual Multi-source Company responses; left as
+  // belt-and-braces fallbacks for the unlikely case that schema varies.)
+  const domain = cleanWebsiteToDomain(
+    raw.website_domain ||
+    raw.website ||
+    raw.websites_main ||
+    raw.company_domain
+  );
 
   // Size: CoreSignal's pre-bucketed size_range looks like "501-1000 employees".
   // If absent, bucket the raw employees_count ourselves.
