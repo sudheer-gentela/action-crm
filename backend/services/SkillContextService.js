@@ -1,25 +1,47 @@
 // ============================================================================
 // services/SkillContextService.js
 //
-// Assembles the canonical prospect payload (per gowarm-prospect.json schema)
-// for the Skills Runner PoC. Owns the org+user override merge logic for
-// org_context.
+// Builds the canonical prospect payload for the Skills Runner PoC.
+// One file, one responsibility: turn (prospectId, orgId, asUserId?) into the
+// shape defined by skills/outreach-personalization/schema/gowarm-prospect.json.
 //
 // Called from routes/skill-context.routes.js.
 //
-// Inputs:
-//   prospectId (int) - required
-//   orgId      (int) - required (looked up before this is called)
-//   asUserId   (int) - optional. When provided, merges user-level config
-//                       overrides on top of org defaults.
+// ─── Canonical sources (no fallbacks, no dual-writes) ────────────────────────
 //
-// Output: the canonical payload shape consumed by skills.
+//   prospect.name       ← prospects.first_name + last_name
+//   prospect.title      ← linkedin_profiles current role; prospects.title only
+//                          if no profile capture exists yet
+//   prospect.company    ← linkedin_profiles current role; accounts.name only
+//                          if no profile capture exists yet
+//   prospect.headline   ← linkedin_profiles.headline
+//   prospect.about      ← linkedin_profiles.about
+//   prospect.experience ← linkedin_profiles.experience
+//   prospect.education  ← linkedin_profiles.education
+//   prospect.email      ← prospects.email (set on import / extension)
+//   prospect.linkedin_url ← prospects.linkedin_url
+//   prospect.tenure_in_role_months ← computed from experience[current].start_date
+//
+//   account.industry/size/website/one_line_description
+//                       ← accounts row (filled by enrichmentService apply rules)
+//   account.tech_stack  ← accounts.research_meta.<provider>.normalized.tech_stack
+//   account.growth_stage ← derived from research_meta.<provider>.normalized
+//                           (last_round.type and founded_year)
+//
+//   signals.account_events
+//                       ← synthesized from
+//                          accounts.research_meta.<provider>.normalized.last_round
+//   signals.linkedin_activity
+//                       ← linkedin_profiles.activity, split by kind
 // ============================================================================
 
 const { pool } = require('../config/database');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// safeQuery: tolerates missing tables/columns in dev environments.
+// safeQuery — only for queries against tables that may legitimately be absent
+// for a given prospect (specifically: linkedin_profiles, sequence_enrollments,
+// prospecting_activities). For required tables (prospects, accounts, users,
+// organizations) errors propagate.
 // ─────────────────────────────────────────────────────────────────────────────
 async function safeQuery(client, sql, params) {
   try {
@@ -36,7 +58,7 @@ async function safeQuery(client, sql, params) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Title-based seniority and function inference.
-// Naïve but good enough until we have real LinkedIn enrichment.
+// Naïve but stable — runs against the captured LinkedIn current-role title.
 // ─────────────────────────────────────────────────────────────────────────────
 function inferSeniority(title) {
   if (!title) return null;
@@ -65,37 +87,42 @@ function inferFunction(title) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Pick the prospect's current role from the captured experience array.
 //
-// The Chrome extension stores experience as an array of:
-//   { title, company, location, start_date, end_date, duration_months, description }
-//
-// "Current" = end_date is null, empty string, or the literal "Present"
-// (case-insensitive). LinkedIn lists current roles at the top of the
-// experience section, so taking the first match is reliable. Falls back
-// to experience[0] if nothing matches the current-role rule, and to
-// null if the array is empty.
-//
-// Returns { title, company } so the caller can use either or both.
+// "Current" = end_date is null/empty/"present" (case-insensitive). LinkedIn
+// lists current roles at the top, so the first match is reliable. Falls back
+// to experience[0] if nothing matches; returns null on an empty array.
 // ─────────────────────────────────────────────────────────────────────────────
 function pickCurrentRole(experience) {
   if (!Array.isArray(experience) || experience.length === 0) return null;
-
   const isCurrent = (e) => {
     const ed = e?.end_date;
     if (ed == null) return true;
     const s = String(ed).trim().toLowerCase();
     return s === '' || s === 'present';
   };
-
-  const current = experience.find(isCurrent) || experience[0];
-  return {
-    title:   current?.title   || null,
-    company: current?.company || null,
-  };
+  return experience.find(isCurrent) || experience[0];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Split the prospect.linkedin_activity array into the three buckets the
-// skill expects: posts, comments, reactions.
+// Compute tenure-in-role months from the current role's start_date.
+//
+// LinkedIn-captured start_date can be 'YYYY-MM-DD', 'YYYY-MM', or 'YYYY';
+// the JS Date constructor handles the first two; 'YYYY' alone parses to Jan 1.
+// Returns null if we can't get a positive integer answer.
+// ─────────────────────────────────────────────────────────────────────────────
+function computeTenureMonths(currentRole) {
+  if (!currentRole?.start_date) return null;
+  const start = new Date(currentRole.start_date);
+  if (Number.isNaN(start.getTime())) return null;
+  const now = new Date();
+  const months = (now.getUTCFullYear() - start.getUTCFullYear()) * 12
+               + (now.getUTCMonth() - start.getUTCMonth());
+  return months >= 0 ? months : null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Split linkedin_profiles.activity into the three buckets the skill expects.
+//
+// Each item in the activity array is {id, kind, occurred_at, text, ...}.
 // ─────────────────────────────────────────────────────────────────────────────
 function splitLinkedInActivity(activity) {
   const out = { posts: [], comments: [], reactions: [] };
@@ -131,7 +158,6 @@ function splitLinkedInActivity(activity) {
     }
   }
 
-  // Sort newest-first within each bucket
   out.posts.sort((a, b) => new Date(b.posted_at) - new Date(a.posted_at));
   out.comments.sort((a, b) => new Date(b.commented_at) - new Date(a.commented_at));
   out.reactions.sort((a, b) => new Date(b.reacted_at) - new Date(a.reacted_at));
@@ -140,26 +166,15 @@ function splitLinkedInActivity(activity) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unified merge helper: org defaults + user additions, minus user exclusions.
-//
-// keyFn: how to identify an item for dedup and exclusion matching.
-//        Returns a normalized string key (typically lowercased).
-// orgItems, userAdditions, userExclusions: arrays of items.
-//
-// Behavior:
-//   - Union: org items first (org wins on key conflict), then user additions
-//     whose keys aren't already present.
-//   - Exclude: any item whose key matches a user exclusion is dropped.
-//   - Exclusion list itself uses the same keyFn so user can write
-//     "GoWarmCRM" and it matches "gowarmcrm".
+// Org-config + user-config merge. Union with explicit exclusion across
+// products, value props, target personas, case studies, and competitors.
+// User additions can never re-add what user exclusions removed.
 // ─────────────────────────────────────────────────────────────────────────────
 function mergeAndExclude({ orgItems, userAdditions, userExclusions, keyFn }) {
   const orgArr = Array.isArray(orgItems) ? orgItems : [];
   const addArr = Array.isArray(userAdditions) ? userAdditions : [];
   const exclArr = Array.isArray(userExclusions) ? userExclusions : [];
 
-  // Normalize keyFn output: a key can be string, null, or {primary, all}.
-  // Returns {primary: string|null, all: string[]}.
   const normKey = (item) => {
     const k = keyFn(item);
     if (k == null) return { primary: null, all: [] };
@@ -167,60 +182,41 @@ function mergeAndExclude({ orgItems, userAdditions, userExclusions, keyFn }) {
     return { primary: k.primary, all: k.all || (k.primary ? [k.primary] : []) };
   };
 
-  // Build exclusion key set from all keys exclusions could match under.
   const excludedKeys = new Set();
   for (const e of exclArr) {
     const wrapped = typeof e === 'string' ? { _str: e } : e;
     const { all } = normKey(wrapped);
     for (const k of all) excludedKeys.add(k);
   }
-
-  // Test: does this item match an exclusion?
   const isExcluded = (allKeys) => allKeys.some(k => excludedKeys.has(k));
 
-  // Org first, then user additions whose primary keys aren't already taken.
   const merged = [];
   const seenPrimary = new Set();
 
   for (const item of orgArr) {
     const { primary, all } = normKey(item);
-    if (!primary) continue;
-    if (seenPrimary.has(primary)) continue;
-    if (isExcluded(all)) continue;
+    if (!primary || seenPrimary.has(primary) || isExcluded(all)) continue;
     merged.push(item);
     seenPrimary.add(primary);
   }
-
   for (const item of addArr) {
     const { primary, all } = normKey(item);
-    if (!primary) continue;
-    if (seenPrimary.has(primary)) continue;
-    if (isExcluded(all)) continue;
+    if (!primary || seenPrimary.has(primary) || isExcluded(all)) continue;
     merged.push(item);
     seenPrimary.add(primary);
   }
-
   return merged;
 }
 
-// Key functions for each category — all normalize to lowercased trimmed strings.
-// Each keyFn returns either a single key string, or an array of keys when the
-// item could match an exclusion under multiple identifiers (e.g. a case study
-// can be referenced by id or customer name).
-const stringKey  = (item) => {
+// Key functions — all normalize to lowercased trimmed strings.
+const stringKey = (item) => {
   if (typeof item === 'string') return item.trim().toLowerCase();
   if (item?._str)               return String(item._str).trim().toLowerCase();
   if (item?.name)               return String(item.name).trim().toLowerCase();
   return null;
 };
-const productKey = (item) => {
-  if (typeof item === 'string') return item.trim().toLowerCase();
-  if (item?._str)               return String(item._str).trim().toLowerCase();
-  if (item?.name)               return String(item.name).trim().toLowerCase();
-  return null;
-};
-// caseKey returns a {primary, all} pair — primary is the canonical dedup key,
-// `all` is every key the item should be excludable under.
+const productKey = stringKey;
+// Case studies can be excluded by id OR by customer name.
 const caseKey = (item) => {
   if (!item) return null;
   if (typeof item === 'string') {
@@ -238,35 +234,29 @@ const caseKey = (item) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Merge org-default + user-override prospecting config into final org_context.
+// buildOrgContext — assembles the rep-side context block.
 //
-// Resolution rules (consistent across categories — union with explicit exclusion):
-//   product          : array. union(org.products, user.custom_products) − user.excluded_products
-//   value_props      : union(org.default_value_props, user.custom_value_props) − user.excluded_value_props
-//   target_personas  : union(org.default_target_personas, user.custom_target_personas) − user.excluded_target_personas
-//   case_studies     : union(org.default_case_study_summaries, user.custom_case_studies) − user.excluded_case_studies
-//   competitors      : union(competitors-table, user.custom_competitors) − user.excluded_competitors
-//   rep              : user-supplied + users-table fallback (no merge — user wins)
-//   voice            : user only (org doesn't dictate voice)
-//   guardrails_extra : org banned phrasings ∪ user avoid phrases (additive only, no exclusion)
+// Resolution rules (applied uniformly):
+//   products         : org.products ∪ user.custom_products − user.excluded_products
+//   value_props      : org.default_value_props ∪ user.custom_value_props − user.excluded_value_props
+//   target_personas  : org.default_target_personas ∪ user.custom_target_personas − user.excluded_target_personas
+//   case_studies     : org.default_case_study_summaries ∪ user.custom_case_studies − user.excluded_case_studies
+//   competitors      : competitors-table ∪ user.custom_competitors − user.excluded_competitors
+//   rep              : user prospecting_config + users-table fallback
+//   voice            : user only
+//   guardrails_extra : org banned phrasings ∪ user avoid phrases (additive)
 // ─────────────────────────────────────────────────────────────────────────────
 function buildOrgContext({ orgConfig, userConfig, repUser, competitors }) {
   const oc = orgConfig || {};
   const uc = userConfig || {};
 
-  // ── product (array, merged) ─────────────────────────────────────────────
-  // Org config may carry either `product` (legacy single object) or `products` (array).
-  const orgProductsRaw = Array.isArray(oc.products)
-    ? oc.products
-    : (oc.product ? [oc.product] : []);
   const products = mergeAndExclude({
-    orgItems:       orgProductsRaw,
+    orgItems:       oc.products,
     userAdditions:  uc.custom_products,
     userExclusions: uc.excluded_products,
     keyFn:          productKey,
   });
 
-  // ── value props ─────────────────────────────────────────────────────────
   const valueProps = mergeAndExclude({
     orgItems:       oc.default_value_props,
     userAdditions:  uc.custom_value_props,
@@ -274,7 +264,6 @@ function buildOrgContext({ orgConfig, userConfig, repUser, competitors }) {
     keyFn:          stringKey,
   });
 
-  // ── target personas ─────────────────────────────────────────────────────
   const targetPersonas = mergeAndExclude({
     orgItems:       oc.default_target_personas,
     userAdditions:  uc.custom_target_personas,
@@ -282,7 +271,6 @@ function buildOrgContext({ orgConfig, userConfig, repUser, competitors }) {
     keyFn:          stringKey,
   });
 
-  // ── case studies ────────────────────────────────────────────────────────
   const caseStudies = mergeAndExclude({
     orgItems:       oc.default_case_study_summaries,
     userAdditions:  uc.custom_case_studies,
@@ -290,11 +278,8 @@ function buildOrgContext({ orgConfig, userConfig, repUser, competitors }) {
     keyFn:          caseKey,
   });
 
-  // ── competitors ─────────────────────────────────────────────────────────
-  // competitors arg comes from the competitors table as [{name}, ...].
-  // Normalize all sides to plain strings for the final list.
   const competitorObjs = mergeAndExclude({
-    orgItems:       competitors,        // [{name: "X"}, ...]
+    orgItems:       competitors,
     userAdditions:  (uc.custom_competitors || []).map(s =>
       typeof s === 'string' ? { name: s } : s
     ),
@@ -303,22 +288,16 @@ function buildOrgContext({ orgConfig, userConfig, repUser, competitors }) {
   });
   const competitorNames = competitorObjs.map(c => c.name).filter(Boolean);
 
-  // ── rep info ────────────────────────────────────────────────────────────
   const repFromUser = uc.rep || {};
   const fallbackName = repUser
     ? [repUser.first_name, repUser.last_name].filter(Boolean).join(' ')
     : '';
   const rep = {
     name: fallbackName || 'Sales rep',
-    // Title comes only from user-level prospecting_config (users table has no title column).
     title: repFromUser.title_for_signature || null,
     email_signature: repFromUser.email_signature_block || null,
   };
 
-  // ── voice (user-only) ───────────────────────────────────────────────────
-  const voice = uc.voice || null;
-
-  // ── guardrails additions (additive only) ────────────────────────────────
   const orgBanned = Array.isArray(oc.guardrails?.banned_phrasings)
     ? oc.guardrails.banned_phrasings : [];
   const userAvoid = Array.isArray(uc.voice?.avoid_phrases)
@@ -329,51 +308,182 @@ function buildOrgContext({ orgConfig, userConfig, repUser, competitors }) {
       ? oc.guardrails.required_disclaimers : [],
   };
 
-  // ── hook preferences (user-only) ────────────────────────────────────────
-  const hookPreferences = uc.hook_preferences || null;
-
   return {
     rep,
-    // Legacy single-product field (first product) for skill backward compat.
-    // The schema currently declares `product` as a required object;
-    // skills can also read the new `products` array.
-    product: products[0] || { name: '', one_liner: '', category: null },
     products,
     value_props: valueProps,
     target_personas: targetPersonas,
     case_study_summaries: caseStudies,
     competitors: competitorNames,
-    voice,
-    hook_preferences: hookPreferences,
+    voice: uc.voice || null,
+    hook_preferences: uc.hook_preferences || null,
     guardrails_extra: guardrailsExtra,
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Build account_events from the prospects table's research_meta JSONB if
-// available. This is a stub — real account_events come from a future
-// firmographic feed (Crunchbase, news, etc.).
+// pickEnrichmentNormalized — provider-agnostic reader of accounts.research_meta.
+//
+// research_meta is shaped like:
+//   { coresignal: { status: 'ok', enriched_at, normalized: {...}, raw: {...} },
+//     <other_provider>: { ... } }
+//
+// We pick the first entry with status='ok' and a normalized object. When
+// ENRICHMENT_PROVIDER changes in env, this reader keeps working unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
-function extractAccountEvents(prospect) {
-  const meta = prospect.research_meta || {};
-  if (Array.isArray(meta.account_events)) {
-    return meta.account_events;
+function pickEnrichmentNormalized(researchMeta) {
+  if (!researchMeta || typeof researchMeta !== 'object') return null;
+  for (const key of Object.keys(researchMeta)) {
+    const block = researchMeta[key];
+    if (
+      block &&
+      typeof block === 'object' &&
+      block.status === 'ok' &&
+      block.normalized &&
+      typeof block.normalized === 'object'
+    ) {
+      return { provider: key, normalized: block.normalized };
+    }
   }
-  return [];
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Build engagement_history from emails + prospecting_activities.
+// deriveGrowthStage — only emit a value when the signal is strong.
+//
+// Rules:
+//   - Series C+ or growth/late-stage/pre-IPO → 'mature'
+//   - Pre-seed / Seed / Series A / B → 'growth'
+//   - founded_year < 7 years ago AND no funding info → 'early'
+//   - otherwise → null  (the schema allows null and a guess is worse than absence)
+//
+// We do NOT infer 'public' — CoreSignal's normalized shape doesn't reliably
+// expose a public-company flag, and other inferences are too noisy.
+// ─────────────────────────────────────────────────────────────────────────────
+function deriveGrowthStage(normalized) {
+  if (!normalized) return null;
+
+  const round = normalized.last_round;
+  const roundType = round?.type ? String(round.type).toLowerCase() : null;
+
+  if (roundType) {
+    if (/series\s+(c|d|e|f|g|h)\b/.test(roundType) ||
+        /\b(growth|late stage|pre[- ]?ipo)\b/.test(roundType)) {
+      return 'mature';
+    }
+    if (/\b(pre[- ]?seed|seed|series\s+(a|b))\b/.test(roundType)) {
+      return 'growth';
+    }
+  }
+
+  const foundedYear = parseInt(normalized.founded_year, 10);
+  if (Number.isInteger(foundedYear)) {
+    const ageYears = new Date().getUTCFullYear() - foundedYear;
+    if (ageYears >= 0 && ageYears < 7 && !roundType) {
+      return 'early';
+    }
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// mapTechStack — flat string array → schema-required [{tool, category, source}]
+//
+// The skill's signal-use rule says: "Only reference tools that are IN the
+// tech_stack array with a source." Source is the load-bearing field.
+// Category isn't in the normalized shape; null is fine.
+// ─────────────────────────────────────────────────────────────────────────────
+function mapTechStack(normalized, providerName) {
+  if (!normalized || !Array.isArray(normalized.tech_stack)) return [];
+  return normalized.tech_stack
+    .map(t => (typeof t === 'string' ? t.trim() : null))
+    .filter(t => t && t.length > 0)
+    .map(tool => ({
+      tool,
+      category: null,
+      source: providerName || 'enrichment',
+    }));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// synthesizeFundingEvent — turn last_round into a schema-shaped account_event.
+//
+// The schema requires a real timestamp (date-time format). The skill ages
+// events ("events older than 90 days are stale"), so a fabricated date would
+// poison hook selection. If the round date is missing or unparseable we
+// return null rather than emit a half-event.
+// ─────────────────────────────────────────────────────────────────────────────
+function synthesizeFundingEvent(normalized, providerName) {
+  if (!normalized) return null;
+  const round = normalized.last_round;
+  if (!round || typeof round !== 'object') return null;
+
+  const dateRaw = round.date;
+  if (!dateRaw) return null;
+  const parsed = new Date(dateRaw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const timestamp = parsed.toISOString();
+
+  const type = round.type ? String(round.type).trim() : null;
+  const amount = round.amount;
+  const currency = round.currency || 'USD';
+
+  let amountStr = null;
+  if (typeof amount === 'number' && amount > 0) {
+    const isUsd = !currency || currency === 'USD';
+    const prefix = isUsd ? '$' : '';
+    let core;
+    if (amount >= 1_000_000_000) core = `${(amount / 1_000_000_000).toFixed(1)}B`;
+    else if (amount >= 1_000_000) core = `${Math.round(amount / 1_000_000)}M`;
+    else if (amount >= 1_000)     core = `${Math.round(amount / 1_000)}K`;
+    else                          core = String(amount);
+    amountStr = `${prefix}${core}${isUsd ? '' : ` ${currency}`}`;
+  }
+
+  let description;
+  if (type && amountStr)      description = `${type} raised (${amountStr})`;
+  else if (type)              description = `${type} round`;
+  else if (amountStr)         description = `Funding round (${amountStr})`;
+  else                        return null;  // date alone is too thin
+
+  return {
+    type: 'funding',
+    description,
+    source: providerName || 'enrichment',
+    source_url: null,
+    timestamp,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildAccountEvents — currently sourced exclusively from enrichment.
+//
+// In the future we'll layer additional sources (news APIs, manual notes from
+// the rep). When we add them, this function is the integration point — every
+// source converts to the canonical shape and merges into `events` here.
+// ─────────────────────────────────────────────────────────────────────────────
+function buildAccountEvents(account) {
+  const events = [];
+  const enrichment = pickEnrichmentNormalized(account?.research_meta);
+  if (enrichment) {
+    const fundingEvent = synthesizeFundingEvent(enrichment.normalized, enrichment.provider);
+    if (fundingEvent) events.push(fundingEvent);
+  }
+  events.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+  return events.slice(0, 10);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildEngagementHistory — emails + prospecting activities, newest-first.
 // ─────────────────────────────────────────────────────────────────────────────
 async function buildEngagementHistory(client, prospect, orgId) {
   if (!prospect) return [];
-
   const events = [];
 
-  // Emails (only if prospect has an email address)
   if (prospect.email) {
     const emails = await safeQuery(client,
-      `SELECT id, subject, direction, sent_at, deal_id
+      `SELECT id, subject, direction, sent_at
          FROM emails
         WHERE org_id = $1
           AND (LOWER(to_address) = LOWER($2) OR LOWER(from_address) = LOWER($2))
@@ -391,7 +501,6 @@ async function buildEngagementHistory(client, prospect, orgId) {
     }
   }
 
-  // Prospecting activities
   const activities = await safeQuery(client,
     `SELECT activity_type, description, created_at
        FROM prospecting_activities
@@ -400,18 +509,17 @@ async function buildEngagementHistory(client, prospect, orgId) {
       LIMIT 30`,
     [prospect.id]
   );
+  const typeMap = {
+    linkedin_connection_sent:     'linkedin_connection_sent',
+    linkedin_connection_accepted: 'linkedin_connection_accepted',
+    linkedin_message_sent:        'linkedin_message_sent',
+    linkedin_message_replied:     'linkedin_message_replied',
+    meeting_booked:               'meeting_booked',
+    meeting_held:                 'meeting_held',
+    meeting_no_show:              'meeting_no_show',
+  };
   for (const a of activities) {
-    // Map prospecting activity_types to engagement_history types where possible
-    const typeMap = {
-      linkedin_connection_sent: 'linkedin_connection_sent',
-      linkedin_connection_accepted: 'linkedin_connection_accepted',
-      linkedin_message_sent: 'linkedin_message_sent',
-      linkedin_message_replied: 'linkedin_message_replied',
-      meeting_booked: 'meeting_booked',
-      meeting_held: 'meeting_held',
-      meeting_no_show: 'meeting_no_show',
-    };
-    const type = typeMap[a.activity_type] || null;
+    const type = typeMap[a.activity_type];
     if (!type) continue;
     events.push({
       type,
@@ -421,13 +529,12 @@ async function buildEngagementHistory(client, prospect, orgId) {
     });
   }
 
-  // Sort all combined events newest-first
   events.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
   return events.slice(0, 50);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Build sequence_state from sequence_enrollments.
+// buildSequenceState — current sequence enrollment, if any.
 // ─────────────────────────────────────────────────────────────────────────────
 async function buildSequenceState(client, prospect) {
   if (!prospect) return null;
@@ -444,11 +551,9 @@ async function buildSequenceState(client, prospect) {
       LIMIT 1`,
     [prospect.id]
   );
-
   if (rows.length === 0) return null;
   const r = rows[0];
 
-  // Channel history (which channels have been used so far in this sequence)
   const channelRows = await safeQuery(client,
     `SELECT DISTINCT ss.channel
        FROM sequence_steps ss
@@ -456,7 +561,6 @@ async function buildSequenceState(client, prospect) {
         AND ss.step_order < $2`,
     [r.sequence_id, r.current_step]
   );
-  const channelsUsed = channelRows.map(c => c.channel).filter(Boolean);
 
   return {
     sequence_id: String(r.sequence_id),
@@ -465,31 +569,29 @@ async function buildSequenceState(client, prospect) {
     total_steps: parseInt(r.total_steps, 10) || 0,
     last_touched_at: prospect.last_outreach_at || null,
     next_scheduled_at: r.next_step_due || null,
-    channels_used: channelsUsed,
+    channels_used: channelRows.map(c => c.channel).filter(Boolean),
   };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main entry: build the canonical payload.
+// buildProspectSkillContext — main entry.
 // ─────────────────────────────────────────────────────────────────────────────
 async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
   let client;
   try {
     client = await pool.connect();
 
-    // RLS session var
     await client.query(
       `SELECT set_config('app.current_org_id', $1::text, true)`,
       [String(orgId)]
     );
 
-    // Prospect (RLS-scoped)
+    // ── Prospect ────────────────────────────────────────────────────────
     const prospectRes = await client.query(
       `SELECT * FROM prospects
         WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
       [prospectId, orgId]
     );
-
     if (prospectRes.rows.length === 0) {
       const e = new Error('Prospect not found');
       e.statusCode = 404;
@@ -497,7 +599,7 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
     }
     const prospect = prospectRes.rows[0];
 
-    // Account (optional join)
+    // ── Account (optional) ──────────────────────────────────────────────
     let account = null;
     if (prospect.account_id) {
       const accountRes = await client.query(
@@ -507,15 +609,31 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
       account = accountRes.rows[0] || null;
     }
 
-    // Org settings → prospecting_config
+    // ── LinkedIn profile (canonical source for headline/about/exp/edu/activity) ──
+    //
+    // Joined by slug, parsed from prospect.linkedin_url with the same regex
+    // the writer (linkedin-profiles.routes.js) uses.
+    const liProfileRows = await safeQuery(client,
+      `SELECT headline, about, experience, education, activity
+         FROM linkedin_profiles
+        WHERE org_id = $1
+          AND linkedin_slug = lower(substring($2 from '/in/([^/?#]+)'))
+        LIMIT 1`,
+      [orgId, prospect.linkedin_url || '']
+    );
+    const liProfile = liProfileRows[0] || null;
+    const liExperience = Array.isArray(liProfile?.experience) ? liProfile.experience : [];
+    const liEducation  = Array.isArray(liProfile?.education)  ? liProfile.education  : [];
+    const liActivity   = Array.isArray(liProfile?.activity)   ? liProfile.activity   : [];
+
+    // ── Org settings → prospecting_config ───────────────────────────────
     const orgRes = await client.query(
       `SELECT settings FROM organizations WHERE id = $1`,
       [orgId]
     );
-    const orgSettings = orgRes.rows[0]?.settings || {};
-    const orgConfig = orgSettings.prospecting_config || null;
+    const orgConfig = orgRes.rows[0]?.settings?.prospecting_config || null;
 
-    // User preferences → prospecting_config (only if asUserId provided)
+    // ── User preferences → prospecting_config (only if asUserId provided) ──
     let userConfig = null;
     let repUser = null;
     if (asUserId) {
@@ -533,7 +651,6 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
       );
       repUser = userRes.rows[0] || null;
     } else if (prospect.owner_id) {
-      // Fall back to prospect owner for rep info, even without per-user override
       const userRes = await client.query(
         `SELECT id, first_name, last_name, email, department
            FROM users WHERE id = $1`,
@@ -542,74 +659,42 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
       repUser = userRes.rows[0] || null;
     }
 
-    // Competitors (org-scoped)
+    // ── Competitors (org-scoped) ────────────────────────────────────────
     const competitors = await safeQuery(client,
       `SELECT name FROM competitors WHERE org_id = $1 ORDER BY name`,
       [orgId]
     );
 
-    // ICP signals from prospect.icp_signals JSONB
+    // ── ICP signals from prospect.icp_signals JSONB ─────────────────────
     const icpSignals = prospect.icp_signals || {};
 
-    // ── LinkedIn captured profile (experience + education) ─────────────────
+    // ── Derive prospect title / company from LinkedIn current role ─────
     //
-    // The Chrome extension writes the full captured profile into
-    // linkedin_profiles, but the legacy dual-write to prospects.linkedin_*
-    // only carries headline/about/activity. To get experience and education
-    // we join linkedin_profiles by the slug parsed from the prospect's
-    // linkedin_url. The regex here mirrors extractSlug() in
-    // linkedin-profiles.routes.js so the JOIN matches whatever the writer
-    // stored. (Writer rule: capture between '/in/' and the next '/' '?'
-    // or '#', then lowercase.)
-    //
-    // safeQuery wraps the call so the service still works in environments
-    // where linkedin_profiles hasn't been migrated in yet — empty arrays
-    // are a perfectly valid output for the skill (it has dedicated
-    // handling for sparse payloads).
-    const liExtra = await safeQuery(client,
-      `SELECT experience, education
-         FROM linkedin_profiles
-        WHERE org_id = $1
-          AND linkedin_slug = lower(substring($2 from '/in/([^/?#]+)'))
-        LIMIT 1`,
-      [orgId, prospect.linkedin_url || '']
-    );
-    const liExperience = Array.isArray(liExtra[0]?.experience) ? liExtra[0].experience : [];
-    const liEducation  = Array.isArray(liExtra[0]?.education)  ? liExtra[0].education  : [];
-
-    // ── Derive title and company with experience as a fallback ─────────────
-    //
-    // Priority order:
-    //   1. The value already on the prospects row (set at creation, e.g.
-    //      CSV import or manual add).
-    //   2. The current role from the captured LinkedIn experience array.
-    //   3. Empty string / null — let the skill handle the sparse case.
-    //
-    // The headline column is intentionally NOT a fallback for title.
-    // Senior-role headlines on LinkedIn are usually multi-clause
-    // positioning copy ("Head of X | Future-Focused CMO | PE Growth
-    // Operator"), which doesn't parse cleanly into a role label. The
-    // current role's title field is a much cleaner anchor for the skill
-    // and for the seniority/function inferences below.
+    // LinkedIn profile is the source of truth when captured. Without a
+    // capture (no row in linkedin_profiles), fall back to the prospect-row
+    // values that came from CSV import or manual creation. The headline
+    // column is intentionally NOT a fallback for title — senior-role
+    // headlines are usually positioning copy ("Head of X | Future-Focused
+    // CMO | PE Growth Operator") and don't parse cleanly into a role label.
     const currentRole = pickCurrentRole(liExperience);
-    const derivedTitle =
-      (prospect.title && prospect.title.trim()) ||
-      (currentRole?.title) ||
-      '';
-    const derivedCompany =
-      (prospect.company_name && prospect.company_name.trim()) ||
-      (account?.name) ||
-      (currentRole?.company) ||
-      '';
+    const title = currentRole?.title
+                  || (prospect.title?.trim() ? prospect.title.trim() : null);
+    const company = currentRole?.company
+                    || (prospect.company_name?.trim() ? prospect.company_name.trim() : null)
+                    || account?.name
+                    || null;
+    const tenureMonths = computeTenureMonths(currentRole);
 
-    // LinkedIn activity split
-    const linkedInActivity = splitLinkedInActivity(prospect.linkedin_activity);
+    // ── Account enrichment (provider-agnostic) ──────────────────────────
+    const accountEnrichment = pickEnrichmentNormalized(account?.research_meta);
+    const enrichedNormalized = accountEnrichment?.normalized || null;
+    const enrichmentProvider = accountEnrichment?.provider || null;
 
-    // Engagement + sequence state
+    // ── Engagement + sequence state ─────────────────────────────────────
     const engagementHistory = await buildEngagementHistory(client, prospect, orgId);
     const sequenceState = await buildSequenceState(client, prospect);
 
-    // Org context (the merged result)
+    // ── Org context ─────────────────────────────────────────────────────
     const orgContext = buildOrgContext({
       orgConfig,
       userConfig,
@@ -617,35 +702,29 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
       competitors,
     });
 
-    // ── Compose the canonical payload ───────────────────────────────────
+    // ── Compose ─────────────────────────────────────────────────────────
     const payload = {
       prospect: {
         name: [prospect.first_name, prospect.last_name].filter(Boolean).join(' '),
-        title: derivedTitle,
-        company: derivedCompany,
+        title,
+        company,
         linkedin_url: prospect.linkedin_url || null,
         email: prospect.email || null,
-        seniority_level: inferSeniority(derivedTitle),
-        function: inferFunction(derivedTitle),
-        tenure_in_role_months: null,    // not yet tracked
-        seat_count_under: null,         // not yet tracked
-        headline: prospect.linkedin_headline || null,
-        about: prospect.linkedin_about || null,
-        experience: liExperience,        // joined from linkedin_profiles (extension capture)
-        education:  liEducation,         // joined from linkedin_profiles (extension capture)
-        skills_listed: [],              // future
+        seniority_level: inferSeniority(title),
+        function: inferFunction(title),
+        tenure_in_role_months: tenureMonths,
+        headline: liProfile?.headline || null,
+        about: liProfile?.about || null,
+        experience: liExperience,
+        education: liEducation,
       },
       account: {
-        name: derivedCompany,
-        industry: prospect.company_industry || account?.industry || '',
-        sub_industry: null,
-        size: prospect.company_size || account?.size || '',
-        revenue_band: null,
-        growth_stage: null,
-        tech_stack: [],
-        website: prospect.company_domain
-          ? `https://${prospect.company_domain}`
-          : (account?.domain ? `https://${account.domain}` : null),
+        name: company,
+        industry: account?.industry || null,
+        size: account?.size || null,
+        growth_stage: deriveGrowthStage(enrichedNormalized),
+        tech_stack: mapTechStack(enrichedNormalized, enrichmentProvider),
+        website: account?.domain ? `https://${account.domain}` : null,
         one_line_description: account?.description || null,
       },
       icp: {
@@ -657,8 +736,8 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
         persona_match: icpSignals.persona_match || null,
       },
       signals: {
-        account_events: extractAccountEvents(prospect),
-        linkedin_activity: linkedInActivity,
+        account_events: buildAccountEvents(account),
+        linkedin_activity: splitLinkedInActivity(liActivity),
       },
       engagement_history: engagementHistory,
       sequence_state: sequenceState,
