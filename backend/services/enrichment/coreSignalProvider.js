@@ -1,7 +1,7 @@
 // ============================================================================
 // services/enrichment/coreSignalProvider.js
 //
-// Thin wrapper around CoreSignal's Multi-source Company Enrichment API.
+// Thin wrapper around CoreSignal's Multi-source Company API.
 //
 // Single responsibility: take a LinkedIn company URL or a domain, call
 // CoreSignal, return either { ok: true, data, raw } or { ok: false, reason }.
@@ -9,64 +9,71 @@
 // caller (services/enrichmentService.js) is responsible for mapping the
 // result onto the accounts table.
 //
-// API reference (multi-source enrich endpoint):
-//   GET https://api.coresignal.com/cdapi/v2/company_multi_source/enrich
-//       ?website={domain}
-//       OR
-//       ?professional_network_url={linkedin_url}
-//   Header: apikey: {CORESIGNAL_API_KEY}
+// Three paths through the API depending on what input we have:
 //
-// Cost: 2 credits per successful enrichment. Failed lookups (404) cost 0.
+//   1. LinkedIn URL with numeric company ID (e.g. /company/10454372):
+//      - POST /search/es_dsl  with { term: { source_id: "10454372" } }
+//      - Expect 1 hit (CoreSignal internal ID).
+//      - GET  /collect/{coresignal_id}
+//      - 0 hits  -> not_found
+//      - 2+ hits -> ambiguous (terminal; needs human resolution)
+//      - 1 hit   -> proceed to collect
+//      Total: 1 search + 1 collect = ~3 credits (search costs vary)
+//
+//   2. LinkedIn URL with slug (e.g. /company/gong-io):
+//      - GET /collect/{slug}
+//      - 1 collect call. ~2 credits.
+//      - Note: ambiguous slugs (e.g. /company/gong matches multiple
+//        companies) are NOT detected here; we trust the slug. If wrong
+//        company comes back, that's surfaced to the user later by the
+//        existing field-fill rules (we never overwrite real values).
+//
+//   3. Domain (e.g. gong.io):
+//      - GET /enrich?website={domain}
+//      - 1 call. ~2 credits.
+//
+// Header for all paths: apikey: {CORESIGNAL_API_KEY}
 // ============================================================================
 
 const CORESIGNAL_BASE = 'https://api.coresignal.com/cdapi/v2/company_multi_source';
 const REQUEST_TIMEOUT_MS  = 10000;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Endpoint selection
+// Plan the call path based on what we have.
 //
-// CoreSignal's multi-source company API has two distinct endpoints:
+// Returns one of:
+//   { strategy: 'search_then_collect', source_id: '10454372' }
+//     -> Use POST /search/es_dsl with term: { source_id }, then collect.
+//   { strategy: 'direct_collect',      slug:      'gong-io'  }
+//     -> Use GET /collect/{slug}.
+//   { strategy: 'direct_enrich',       domain:    'gong.io'  }
+//     -> Use GET /enrich?website={domain}.
+//   null
+//     -> No usable identifier.
 //
-//   /enrich?website={domain}             — domain-based enrichment
-//   /collect/{shorthand_or_id}            — LinkedIn shorthand or numeric ID
-//
-// They each accept exactly ONE input. Sending both is a 400 ("Please use
-// only one query parameter"). So we must pick the right endpoint based
-// on what we have, not concatenate them.
-//
-// Returns { url, identifier_type, identifier_value } or null.
+// LinkedIn URL takes precedence over domain. Within LinkedIn URLs, numeric
+// IDs go through search (CoreSignal's /collect endpoint doesn't accept
+// numeric IDs as path segments — confirmed empirically) and slugs go direct.
 // ─────────────────────────────────────────────────────────────────────────────
-function buildEndpoint({ linkedinCompanyUrl, domain }) {
-  // LinkedIn URL takes precedence — it's a stable, canonical reference.
-  // Extract either the numeric company ID or the shorthand slug from the URL.
-  // Examples:
-  //   https://www.linkedin.com/company/10454372    -> id "10454372"
-  //   https://www.linkedin.com/company/gong-io     -> shorthand "gong-io"
-  //   https://www.linkedin.com/company/sa.global   -> shorthand "sa.global"
+function planCall({ linkedinCompanyUrl, domain }) {
   if (linkedinCompanyUrl) {
     const m = String(linkedinCompanyUrl).match(/\/company\/([A-Za-z0-9._-]+)/i);
     if (m) {
       const segment = m[1];
-      // Numeric segments are LinkedIn company IDs; everything else is a
-      // shorthand. CoreSignal's /collect endpoint accepts both forms in
-      // the same path slot, so this distinction is informational only.
-      const isNumeric = /^\d+$/.test(segment);
-      return {
-        url: `${CORESIGNAL_BASE}/collect/${encodeURIComponent(segment)}`,
-        identifier_type:  isNumeric ? 'linkedin_id' : 'linkedin_shorthand',
-        identifier_value: segment,
-      };
+      if (/^\d+$/.test(segment)) {
+        return { strategy: 'search_then_collect', source_id: segment };
+      }
+      // Reject obvious non-companies (e.g. /company/setup/new captured by
+      // accident). Real shorthands are at least 2 chars.
+      if (segment.length >= 2 && segment !== 'setup' && segment !== 'new' && segment !== 'admin') {
+        return { strategy: 'direct_collect', slug: segment.toLowerCase() };
+      }
     }
-    // URL didn't match the expected /company/<slug> pattern — fall through
-    // to domain.
+    // URL didn't match — fall through to domain.
   }
 
   if (domain) {
-    return {
-      url: `${CORESIGNAL_BASE}/enrich?website=${encodeURIComponent(domain)}`,
-      identifier_type:  'domain',
-      identifier_value: domain,
-    };
+    return { strategy: 'direct_enrich', domain };
   }
 
   return null;
@@ -200,97 +207,183 @@ async function fetchWithTimeout(url, options, ms) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// enrich
+// performHttpCall
 //
-// Public API of this module.
-//
-// Inputs (at least one of these must be a usable identifier):
-//   - linkedinCompanyUrl: string (preferred when available)
-//   - domain: string (used as fallback)
-//
-// Returns:
-//   { ok: true, data, raw }      on success — `data` is the normalized shape,
-//                                 `raw` is the full CoreSignal response for
-//                                 storage in research_meta.coresignal.
-//   { ok: false, reason: string,
-//     status?: number }          on any failure. Reason values:
-//                                 'no_api_key', 'no_identifier',
-//                                 'not_found', 'rate_limited',
-//                                 'no_credits', 'auth_failed',
-//                                 'timeout', 'network_error',
-//                                 'invalid_response', 'http_error'
+// Shared HTTP transport for all three call paths. Maps CoreSignal status
+// codes to our internal reason values. On success returns { ok: true, json }.
+// On any failure returns { ok: false, reason, status?, upstream_body? }.
 // ─────────────────────────────────────────────────────────────────────────────
-async function enrich({ linkedinCompanyUrl, domain }) {
-  const apiKey = process.env.CORESIGNAL_API_KEY;
-  if (!apiKey) {
-    return { ok: false, reason: 'no_api_key' };
-  }
-
-  const endpoint = buildEndpoint({ linkedinCompanyUrl, domain });
-  if (!endpoint) {
-    return { ok: false, reason: 'no_identifier' };
-  }
-
+async function performHttpCall(apiKey, url, opts = {}) {
+  const { method = 'GET', body } = opts;
   let resp;
   try {
-    resp = await fetchWithTimeout(endpoint.url, {
-      method: 'GET',
+    resp = await fetchWithTimeout(url, {
+      method,
       headers: {
-        'apikey': apiKey,
-        'accept': 'application/json',
+        'apikey':       apiKey,
+        'accept':       'application/json',
+        ...(body ? { 'content-type': 'application/json' } : {}),
       },
+      ...(body ? { body: typeof body === 'string' ? body : JSON.stringify(body) } : {}),
     }, REQUEST_TIMEOUT_MS);
   } catch (err) {
-    if (err.name === 'AbortError') {
-      return { ok: false, reason: 'timeout' };
-    }
+    if (err.name === 'AbortError') return { ok: false, reason: 'timeout' };
     console.error('[coreSignal] network error:', err.message);
     return { ok: false, reason: 'network_error' };
   }
 
-  if (resp.status === 401 || resp.status === 403) {
-    return { ok: false, reason: 'auth_failed', status: resp.status, identifier_used: endpoint.identifier_type };
-  }
-  if (resp.status === 402) {
-    return { ok: false, reason: 'no_credits', status: 402, identifier_used: endpoint.identifier_type };
-  }
-  if (resp.status === 404) {
-    return { ok: false, reason: 'not_found', status: 404, identifier_used: endpoint.identifier_type };
-  }
-  if (resp.status === 429) {
-    return { ok: false, reason: 'rate_limited', status: 429, identifier_used: endpoint.identifier_type };
-  }
+  if (resp.status === 401 || resp.status === 403) return { ok: false, reason: 'auth_failed',  status: resp.status };
+  if (resp.status === 402)                        return { ok: false, reason: 'no_credits',   status: 402 };
+  if (resp.status === 404)                        return { ok: false, reason: 'not_found',    status: 404 };
+  if (resp.status === 429)                        return { ok: false, reason: 'rate_limited', status: 429 };
   if (!resp.ok) {
     let upstreamBody = null;
     try {
       const text = await resp.text();
       upstreamBody = text ? text.slice(0, 500) : null;
-    } catch (_) { /* ignore body-read failures */ }
-    return {
-      ok: false,
-      reason: 'http_error',
-      status: resp.status,
-      upstream_body: upstreamBody,
-      identifier_used: endpoint.identifier_type,
-    };
+    } catch (_) { /* ignore */ }
+    return { ok: false, reason: 'http_error', status: resp.status, upstream_body: upstreamBody };
   }
 
-  let raw;
+  let json;
   try {
-    raw = await resp.json();
+    json = await resp.json();
   } catch (_) {
     return { ok: false, reason: 'invalid_response' };
   }
+  return { ok: true, json };
+}
 
-  // CoreSignal returns either an object or an array depending on the
-  // endpoint. The /enrich endpoint returns a single object directly.
+// ─────────────────────────────────────────────────────────────────────────────
+// searchBySourceId
+//
+// Look up a CoreSignal company record by LinkedIn numeric ID. Returns:
+//   { ok: true,  coresignal_id }    on a single hit
+//   { ok: false, reason: 'not_found' }   on zero hits
+//   { ok: false, reason: 'ambiguous',
+//     hit_count }                          on 2+ hits — terminal, needs human
+//   { ok: false, reason: <other>,
+//     ... }                                on transport / API errors
+// ─────────────────────────────────────────────────────────────────────────────
+async function searchBySourceId(apiKey, sourceId) {
+  const url = `${CORESIGNAL_BASE}/search/es_dsl`;
+  const body = {
+    query: { term: { source_id: String(sourceId) } },
+  };
+  const result = await performHttpCall(apiKey, url, { method: 'POST', body });
+  if (!result.ok) return result;
+
+  // Search returns an array of CoreSignal numeric IDs.
+  const hits = Array.isArray(result.json) ? result.json : [];
+  if (hits.length === 0) return { ok: false, reason: 'not_found' };
+  if (hits.length > 1) {
+    return { ok: false, reason: 'ambiguous', hit_count: hits.length };
+  }
+  return { ok: true, coresignal_id: hits[0] };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// collectByCoreSignalId
+// ─────────────────────────────────────────────────────────────────────────────
+async function collectByCoreSignalId(apiKey, coresignalId) {
+  const url = `${CORESIGNAL_BASE}/collect/${encodeURIComponent(coresignalId)}`;
+  return performHttpCall(apiKey, url);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// collectBySlug — direct collect by LinkedIn shorthand
+// ─────────────────────────────────────────────────────────────────────────────
+async function collectBySlug(apiKey, slug) {
+  const url = `${CORESIGNAL_BASE}/collect/${encodeURIComponent(slug)}`;
+  return performHttpCall(apiKey, url);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// enrichByDomain — direct /enrich?website=...
+// ─────────────────────────────────────────────────────────────────────────────
+async function enrichByDomain(apiKey, domain) {
+  const url = `${CORESIGNAL_BASE}/enrich?website=${encodeURIComponent(domain)}`;
+  return performHttpCall(apiKey, url);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// enrich — public API
+//
+// Inputs (at least one of these must be a usable identifier):
+//   - linkedinCompanyUrl: string  (preferred — see strategy table at top)
+//   - domain:             string  (used when no LinkedIn URL)
+//
+// Returns:
+//   { ok: true,  data, raw, identifier_used }   on success
+//   { ok: false, reason, ... }                  on failure
+//
+// Failure reasons (most common first):
+//   'no_api_key'        — env var not set
+//   'no_identifier'     — caller provided neither URL nor domain
+//   'not_found'         — CoreSignal has no record for this identifier
+//   'ambiguous'         — search returned multiple candidates; needs human
+//                         resolution (catchall queue + needs_domain_review)
+//   'no_credits'        — out of CoreSignal credits
+//   'auth_failed'       — API key rejected
+//   'rate_limited'      — 429 from CoreSignal
+//   'timeout'           — request didn't return in REQUEST_TIMEOUT_MS
+//   'network_error'     — TCP/DNS/etc. failure
+//   'http_error'        — unexpected non-success status (also includes
+//                         upstream_body)
+//   'invalid_response'  — body wasn't parseable JSON or normalize failed
+// ─────────────────────────────────────────────────────────────────────────────
+async function enrich({ linkedinCompanyUrl, domain }) {
+  const apiKey = process.env.CORESIGNAL_API_KEY;
+  if (!apiKey) return { ok: false, reason: 'no_api_key' };
+
+  const plan = planCall({ linkedinCompanyUrl, domain });
+  if (!plan) return { ok: false, reason: 'no_identifier' };
+
+  // ── Path 1: numeric LinkedIn ID — search then collect ─────────────────
+  if (plan.strategy === 'search_then_collect') {
+    const search = await searchBySourceId(apiKey, plan.source_id);
+    if (!search.ok) {
+      return { ...search, identifier_used: 'linkedin_id' };
+    }
+    const coll = await collectByCoreSignalId(apiKey, search.coresignal_id);
+    if (!coll.ok) {
+      return { ...coll, identifier_used: 'linkedin_id' };
+    }
+    return finalizeRaw(coll.json, 'linkedin_id', { coresignal_id: search.coresignal_id });
+  }
+
+  // ── Path 2: slug — direct /collect ────────────────────────────────────
+  if (plan.strategy === 'direct_collect') {
+    const coll = await collectBySlug(apiKey, plan.slug);
+    if (!coll.ok) return { ...coll, identifier_used: 'linkedin_shorthand' };
+    return finalizeRaw(coll.json, 'linkedin_shorthand');
+  }
+
+  // ── Path 3: domain — direct /enrich ───────────────────────────────────
+  if (plan.strategy === 'direct_enrich') {
+    const coll = await enrichByDomain(apiKey, plan.domain);
+    if (!coll.ok) return { ...coll, identifier_used: 'domain' };
+    return finalizeRaw(coll.json, 'domain');
+  }
+
+  // Defensive — planCall should never produce an unknown strategy.
+  return { ok: false, reason: 'invalid_response' };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// finalizeRaw — common tail for all three paths.
+//
+// CoreSignal sometimes returns an object directly (collect endpoints) and
+// sometimes an array (search endpoints, but those are intercepted earlier).
+// We pick the first object and normalize it.
+// ─────────────────────────────────────────────────────────────────────────────
+function finalizeRaw(raw, identifierUsed, extra = {}) {
   const obj = Array.isArray(raw) ? raw[0] : raw;
   const data = normalize(obj);
   if (!data) {
-    return { ok: false, reason: 'invalid_response' };
+    return { ok: false, reason: 'invalid_response', identifier_used: identifierUsed, ...extra };
   }
-
-  return { ok: true, data, raw: obj, identifier_used: endpoint.identifier_type };
+  return { ok: true, data, raw: obj, identifier_used: identifierUsed, ...extra };
 }
 
 module.exports = {
@@ -299,5 +392,5 @@ module.exports = {
   _normalize: normalize,
   _bucketHeadcount: bucketHeadcount,
   _cleanWebsiteToDomain: cleanWebsiteToDomain,
-  _buildEndpoint: buildEndpoint,
+  _planCall: planCall,
 };

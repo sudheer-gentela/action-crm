@@ -104,31 +104,44 @@ async function enrichAccountForProspect({ prospectId, orgId }) {
     if (!result.ok) {
       // Persist a failed-attempt record so we don't keep retrying the same
       // dead lookup, and so the UI can show "we tried and got X."
+      //
+      // For 'ambiguous' specifically: also set needs_domain_review = TRUE.
+      // Ambiguous means CoreSignal's search returned multiple candidates and
+      // we couldn't safely pick one; the user must resolve it. The flag is
+      // how this account stays visible in the catchall queue. (For new
+      // catchall accounts the flag is already TRUE; this matters when we
+      // re-enrich an account that previously had a real domain and now hits
+      // ambiguous on a refresh.)
+      const isAmbiguous = result.reason === 'ambiguous';
       await client.query(
         `UPDATE accounts
             SET research_meta = COALESCE(research_meta, '{}'::jsonb)
               || jsonb_build_object(
                   $2::text,
                   jsonb_build_object(
-                    'status',     'failed',
-                    'reason',     $3::text,
-                    'http_status',  to_jsonb($4::int),
+                    'status',        'failed',
+                    'reason',        $3::text,
+                    'http_status',   to_jsonb($4::int),
                     'upstream_body', to_jsonb($5::text),
-                    'attempted_at', to_jsonb(CURRENT_TIMESTAMP)
+                    'hit_count',     to_jsonb($6::int),
+                    'attempted_at',  to_jsonb(CURRENT_TIMESTAMP)
                   )
                 ),
-            updated_at = CURRENT_TIMESTAMP
+                needs_domain_review = CASE WHEN $7 THEN TRUE ELSE needs_domain_review END,
+                updated_at = CURRENT_TIMESTAMP
           WHERE id = $1`,
         [account.id, result.provider, result.reason,
-         result.status || null, result.upstream_body || null]
+         result.status || null, result.upstream_body || null,
+         result.hit_count || null, isAmbiguous]
       );
       return {
         ok: false,
-        accountId: account.id,
-        reason: result.reason,
-        provider: result.provider,
+        accountId:       account.id,
+        reason:          result.reason,
+        provider:        result.provider,
         upstream_status: result.status || null,
         upstream_body:   result.upstream_body || null,
+        hit_count:       result.hit_count || null,
       };
     }
 

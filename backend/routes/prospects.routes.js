@@ -1515,7 +1515,8 @@ router.post('/:id/enrich-from-coresignal', async (req, res) => {
       const userVisible404 = ['prospect_not_found', 'account_not_found'];
       const userVisible422 = [
         'prospect_has_no_account', 'no_identifier_on_account',
-        'not_found', 'no_credits', 'auth_failed', 'rate_limited',
+        'not_found', 'ambiguous',
+        'no_credits', 'auth_failed', 'rate_limited',
         'timeout', 'network_error', 'invalid_response',
         'http_error', 'no_api_key', 'no_identifier',
         'unknown_provider',
@@ -1525,11 +1526,12 @@ router.post('/:id/enrich-from-coresignal', async (req, res) => {
                  : 500;
       return res.status(code).json({
         ok: false,
-        reason:    result.reason,
-        accountId: result.accountId,
-        provider:  result.provider,
+        reason:          result.reason,
+        accountId:       result.accountId,
+        provider:        result.provider,
         upstream_status: result.upstream_status,
         upstream_body:   result.upstream_body,
+        hit_count:       result.hit_count,
       });
     }
 
