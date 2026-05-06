@@ -149,25 +149,18 @@ function pickFirstString(v) {
 function normalize(raw) {
   if (!raw || typeof raw !== 'object') return null;
 
-  const name = raw.company_legal_name || raw.company_name || raw.name || null;
+  const name = raw.company_legal_name || raw.company_name || null;
   if (!name) return null;
 
-  // Domain: CoreSignal's multi-source schema uses `website_domain` (bare,
-  // already lowercased and stripped) as the canonical field. `website`
-  // is the full URL — strip it down if the bare form isn't present.
-  // (`websites_main` and `company_domain` are field names from older docs
-  // that don't appear on actual Multi-source Company responses; left as
-  // belt-and-braces fallbacks for the unlikely case that schema varies.)
-  const domain = cleanWebsiteToDomain(
-    raw.website_domain ||
-    raw.website ||
-    raw.websites_main ||
-    raw.company_domain
-  );
+  // Domain: CoreSignal's multi-source schema gives us `website_domain` (bare,
+  // already lowercased and stripped) as the canonical field. `website` is
+  // the full URL — we strip protocol/path off it as a fallback in case the
+  // bare form is missing on some records.
+  const domain = cleanWebsiteToDomain(raw.website_domain || raw.website);
 
-  // Size: CoreSignal's pre-bucketed size_range looks like "501-1000 employees".
-  // If absent, bucket the raw employees_count ourselves.
-  const size = raw.size_range || raw.size || bucketHeadcount(raw.employees_count);
+  // Size: CoreSignal's pre-bucketed `size_range` looks like "1001-5000 employees".
+  // If absent (rare), bucket the raw `employees_count` ourselves.
+  const size = raw.size_range || bucketHeadcount(raw.employees_count);
 
   // Description: prefer the AI-enriched version; fall back to the raw.
   const description = raw.description_enriched || raw.description || null;
@@ -181,11 +174,24 @@ function normalize(raw) {
       .slice(0, 50);
   }
 
-  // Funding: most recent round. CoreSignal returns these as top-level keys.
-  const lastRound = (raw.last_round_type || raw.last_round_money_raised) ? {
-    type:   raw.last_round_type || null,
-    amount: raw.last_round_money_raised || null,
-  } : null;
+  // Funding: most recent round comes back as a dict on `last_funding_round`,
+  // not as flat top-level keys. The real shape we've observed:
+  //   { type: 'Series A', announced_date: '...', amount_raised: 1234,
+  //     amount_raised_currency: 'USD', investors: [...] }
+  // We tolerate alternate field names defensively in case CoreSignal
+  // returns the older 'money_raised'/'date' shape on some product tiers.
+  let lastRound = null;
+  if (raw.last_funding_round && typeof raw.last_funding_round === 'object') {
+    const lr = raw.last_funding_round;
+    const type     = lr.type || lr.round_type || null;
+    const amount   = (lr.amount_raised != null ? lr.amount_raised : null)
+                  || lr.money_raised || lr.amount || null;
+    const date     = lr.announced_date || lr.date || null;
+    const currency = lr.amount_raised_currency || lr.currency || null;
+    if (type || amount || date) {
+      lastRound = { type, amount, date, currency };
+    }
+  }
 
   return {
     name,
@@ -194,7 +200,7 @@ function normalize(raw) {
     size,                      // already in "501-1000 employees" shape
     location:    pickLocation(raw),
     description,
-    linkedin_url: pickFirstString(raw.linkedin_url) || pickFirstString(raw.professional_network_url),
+    linkedin_url: pickFirstString(raw.linkedin_url),
     founded_year: raw.founded_year || null,
     employees_count: raw.employees_count || null,
     last_round: lastRound,
