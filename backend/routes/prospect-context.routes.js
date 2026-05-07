@@ -35,10 +35,19 @@ router.get('/:prospectId', async (req, res) => {
     res.json({
       prospect: context.prospect,
       account: context.account ? {
-        id: context.account.id,
-        name: context.account.name,
-        domain: context.account.domain,
-        industry: context.account.industry,
+        id:                 context.account.id,
+        name:               context.account.name,
+        domain:             context.account.domain,
+        industry:           context.account.industry,
+        size:               context.account.size,
+        location:           context.account.location,
+        description:        context.account.description,
+        linkedinCompanyUrl: context.account.linkedin_company_url,
+        // Surface enrichment freshness so the Intel tab can show
+        // "enriched on X" and decide whether re-enriching is useful.
+        // research_meta is a JSONB blob with a per-provider key.
+        enrichedAt: context.account.research_meta?.coresignal?.enriched_at || null,
+        enrichmentProvider: context.account.research_meta?.coresignal ? 'coresignal' : null,
       } : null,
       accountDeals: context.accountDeals.map(d => ({
         id: d.id, name: d.name, value: d.value,

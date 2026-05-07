@@ -2930,8 +2930,66 @@ function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
           {account ? account.name : (prospect.company_name || 'No account linked')}
           {' · '}{d.knownContactCount || 0} contacts · {d.teamMembersEngaged || 0} team engaged
         </div>
+        {/* Compact firmographics row — always visible when we have any.
+            Each chip is its own conditional so we don't render empty separators. */}
+        {account && (account.industry || account.size || account.location || (account.domain && account.domain !== 'catchalldomain.com')) && (
+          <div style={{
+            marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6,
+            fontSize: 11, color: '#4b5563',
+          }}>
+            {account.industry && (
+              <span style={{ background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>{account.industry}</span>
+            )}
+            {account.size && (
+              <span style={{ background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>{account.size}</span>
+            )}
+            {account.location && (
+              <span style={{ background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>📍 {account.location}</span>
+            )}
+            {account.domain && account.domain !== 'catchalldomain.com' && (
+              <a
+                href={`https://${account.domain}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ background: '#eff6ff', color: '#1d4ed8', padding: '2px 8px', borderRadius: 10, textDecoration: 'none' }}
+              >
+                {account.domain} ↗
+              </a>
+            )}
+          </div>
+        )}
         {expanded.account && (
           <div style={{ paddingTop: 10 }}>
+            {/* Description from enrichment, if present */}
+            {account?.description && (
+              <div style={{
+                fontSize: 12, color: '#374151', lineHeight: 1.5,
+                padding: '8px 10px', background: '#f9fafb', borderRadius: 6,
+                marginBottom: 10,
+              }}>
+                {account.description}
+              </div>
+            )}
+            {/* LinkedIn company link, if known */}
+            {account?.linkedinCompanyUrl && (
+              <div style={{ fontSize: 11, marginBottom: 8 }}>
+                <a
+                  href={account.linkedinCompanyUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: '#0a66c2', textDecoration: 'none' }}
+                >
+                  in Company on LinkedIn ↗
+                </a>
+              </div>
+            )}
+            {/* Enrichment freshness footer */}
+            {account?.enrichedAt && (
+              <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 8 }}>
+                Enriched {new Date(account.enrichedAt).toLocaleDateString()}
+                {account.enrichmentProvider ? ` · ${account.enrichmentProvider}` : ''}
+              </div>
+            )}
             {(d.pastDealsWon || []).map((deal, i) => (
               <div key={i} style={{ fontSize: 11, color: '#059669', paddingLeft: 10, lineHeight: 1.7 }}>
                 ✓ Won: {deal.name} — ${(parseFloat(deal.value || 0) / 1000).toFixed(0)}K
