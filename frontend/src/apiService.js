@@ -305,6 +305,10 @@ export const apiService = {
     research: (id) => api.post(`/prospects/${id}/research`),
     getEmails: (id) => api.get(`/prospects/${id}/emails`),
     generateActions: (id, data) => api.post(`/prospects/${id}/generate-actions`, data),
+    // Enrich the prospect's account via the configured firmographic provider
+    // (CoreSignal today). Backend route never overwrites existing real values
+    // — only fills blanks. See backend/services/enrichmentService.js for rules.
+    enrichFromCoresignal: (id) => api.post(`/prospects/${id}/enrich-from-coresignal`),
   },
 
   prospectingActions: {

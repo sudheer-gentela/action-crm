@@ -1406,8 +1406,8 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
     fetchDetail();
   }, [prospectId]);
 
-  const fetchContext = useCallback(async () => {
-    if (contextData || contextLoading) return;
+  const fetchContext = useCallback(async ({ force = false } = {}) => {
+    if (!force && (contextData || contextLoading)) return;
     setContextLoading(true);
     try {
       const res = await apiFetch(`/prospect-context/${prospectId}`);
@@ -1550,6 +1550,80 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
       setResearchError(err.message || 'Research failed');
     } finally {
       setResearching(false);
+    }
+  };
+
+  // ── Enrich-account state ──────────────────────────────────────────────────
+  // Calls POST /prospects/:id/enrich-from-coresignal. The backend resolves
+  // the prospect's account, calls the configured firmographic provider, and
+  // applies the result with strict "fill blanks only" rules. Two prospects
+  // at the same account share the same enrichment — the destination is the
+  // account row, not the prospect.
+  //
+  // After success we force-refetch contextData so the Account &
+  // Relationships section reflects the new firmographics. The cached
+  // guard in fetchContext would otherwise leave stale data on screen.
+  const [enriching,     setEnriching]     = useState(false);
+  const [enrichResult,  setEnrichResult]  = useState(null);   // { kind: 'ok'|'error', message }
+  const handleEnrichAccount = async () => {
+    setEnriching(true);
+    setEnrichResult(null);
+    try {
+      // Direct fetch (not apiFetch) because we need the structured body
+      // on non-2xx responses — apiFetch only surfaces error.message and
+      // drops the rest, which would lose `reason` for the friendly map.
+      const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+      const r = await fetch(`${API}/prospects/${prospectId}/enrich-from-coresignal`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({}),
+      });
+      let body = {};
+      try { body = await r.json(); } catch (_) {}
+
+      if (!r.ok || body.ok === false) {
+        const reason = body.reason || 'unknown';
+        const friendly = {
+          prospect_has_no_account:  'This prospect has no account linked yet.',
+          no_identifier_on_account: 'No LinkedIn URL or real domain on the account — nothing to look up.',
+          not_found:                'CoreSignal had no match for this company.',
+          ambiguous:                `Multiple candidates found${body.hit_count ? ` (${body.hit_count})` : ''}. Needs human review.`,
+          no_credits:               'Out of CoreSignal credits.',
+          auth_failed:              'CoreSignal auth failed — check API key.',
+          rate_limited:             'CoreSignal rate-limited the request. Try again in a minute.',
+          timeout:                  'CoreSignal timed out.',
+          no_api_key:               'CoreSignal API key not configured.',
+        }[reason] || `Enrichment failed: ${reason}`;
+        setEnrichResult({ kind: 'error', message: friendly });
+        return;
+      }
+
+      // Success shape: { ok, accountId, status, enriched: {...}, provider }
+      const fields = body.enriched
+        ? Object.keys(body.enriched).filter(k => k !== 'needs_domain_review_cleared')
+        : [];
+      const cleared = body.enriched?.needs_domain_review_cleared;
+      let message;
+      if (fields.length === 0 && !cleared) {
+        message = 'No new data — fields were already populated.';
+      } else {
+        const fragments = [];
+        if (cleared) fragments.push('domain resolved');
+        if (fields.length > 0) fragments.push(`updated: ${fields.join(', ')}`);
+        message = fragments.join(' · ');
+      }
+      setEnrichResult({ kind: 'ok', message });
+      // Refresh account-derived context so Account & Relationships reflects
+      // the new firmographics. Force=true bypasses the once-per-mount guard.
+      await fetchContext({ force: true });
+      onUpdate();
+    } catch (err) {
+      setEnrichResult({ kind: 'error', message: err.message || 'Enrichment failed' });
+    } finally {
+      setEnriching(false);
     }
   };
 
@@ -1805,7 +1879,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
           {activeTab === 'intel' && (
             <div>
               <div style={{ marginBottom: 20 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
                   <button
                     onClick={handleResearch}
                     disabled={researching}
@@ -1817,9 +1891,27 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                   >
                     {researching ? '⏳ Researching…' : prospect.research_notes ? '🔄 Re-research' : '🔍 Research Prospect'}
                   </button>
+                  {/* Enrich Account — fills account firmographics from CoreSignal.
+                      Operates on the account, not the prospect, so two prospects
+                      at the same company share one enrichment. Backend never
+                      overwrites real values — only fills blanks. */}
+                  <button
+                    onClick={handleEnrichAccount}
+                    disabled={enriching}
+                    title="Fill account firmographics (industry, size, location, domain) from CoreSignal"
+                    style={{
+                      padding: '8px 18px', background: enriching ? '#e5e7eb' : '#fff',
+                      color: enriching ? '#6b7280' : '#1A3A5C',
+                      border: '1px solid ' + (enriching ? '#e5e7eb' : '#1A3A5C'),
+                      borderRadius: 7,
+                      fontSize: 13, fontWeight: 600, cursor: enriching ? 'wait' : 'pointer',
+                    }}
+                  >
+                    {enriching ? '⏳ Enriching…' : '🏢 Enrich Account'}
+                  </button>
                   {prospect.research_meta?.generated_at && (
                     <span style={{ fontSize: 11, color: '#9ca3af' }}>
-                      Last run {new Date(prospect.research_meta.generated_at).toLocaleDateString()}
+                      Last research {new Date(prospect.research_meta.generated_at).toLocaleDateString()}
                       {' · '}{prospect.research_meta.model || prospect.research_meta.provider || 'AI'}
                       {prospect.research_meta.account_research_cached ? ' · account cached ✓' : ''}
                     </span>
@@ -1829,6 +1921,19 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                 {researchError && (
                   <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 13, color: '#dc2626', marginBottom: 12 }}>
                     ⚠️ {researchError}
+                  </div>
+                )}
+
+                {enrichResult && (
+                  <div style={{
+                    padding: '8px 12px',
+                    background:   enrichResult.kind === 'ok' ? '#f0fdf4' : '#fef2f2',
+                    border: '1px solid ' + (enrichResult.kind === 'ok' ? '#bbf7d0' : '#fecaca'),
+                    borderRadius: 6, fontSize: 13,
+                    color:        enrichResult.kind === 'ok' ? '#065f46' : '#dc2626',
+                    marginBottom: 12,
+                  }}>
+                    {enrichResult.kind === 'ok' ? '✅' : '⚠️'} {enrichResult.message}
                   </div>
                 )}
 
