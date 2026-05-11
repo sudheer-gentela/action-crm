@@ -2766,7 +2766,7 @@ function LinkedInProfileSection({ prospect }) {
 function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
   const [expanded, setExpanded] = useState({});
   const toggle = (k) => setExpanded(prev => ({ ...prev, [k]: !prev[k] }));
-  const [techModalOpen, setTechModalOpen] = useState(false);
+  const [techExpanded, setTechExpanded] = useState(false);
 
   if (loading) {
     return <div className="pv-empty-state" style={{ textAlign: 'center', padding: 32 }}>⏳ Loading intelligence...</div>;
@@ -2991,41 +2991,6 @@ function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
                 {account.enrichmentProvider ? ` · ${account.enrichmentProvider}` : ''}
               </div>
             )}
-            {/* Technographics — tech stack from CoreSignal.
-                Shows first 5 chips inline; "View full stack" opens a modal
-                listing everything. Hidden if the account has no tech data. */}
-            {(account?.techStack || []).length > 0 && (
-              <div style={{ marginBottom: 12 }}>
-                <div style={{
-                  fontSize: 10, color: '#9ca3af', fontWeight: 600,
-                  textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6,
-                }}>
-                  Technographics
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
-                  {account.techStack.slice(0, 5).map((tech, i) => (
-                    <span key={i} style={{
-                      fontSize: 11, padding: '2px 8px', borderRadius: 10,
-                      background: '#f3f4f6', color: '#374151',
-                    }}>
-                      {tech}
-                    </span>
-                  ))}
-                  {account.techStack.length > 5 && (
-                    <button
-                      onClick={() => setTechModalOpen(true)}
-                      style={{
-                        fontSize: 11, padding: '2px 8px', borderRadius: 10,
-                        background: 'transparent', color: '#1A3A5C', border: 'none',
-                        cursor: 'pointer', fontWeight: 600, textDecoration: 'underline',
-                      }}
-                    >
-                      +{account.techStack.length - 5} more · View full stack
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
             {(d.pastDealsWon || []).map((deal, i) => (
               <div key={i} style={{ fontSize: 11, color: '#059669', paddingLeft: 10, lineHeight: 1.7 }}>
                 ✓ Won: {deal.name} — ${(parseFloat(deal.value || 0) / 1000).toFixed(0)}K
@@ -3071,6 +3036,49 @@ function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
           </div>
         )}
       </div>
+
+      {/* Technographics — tech stack from CoreSignal (research_meta.coresignal.normalized.tech_stack).
+          Top-level section so it's visible whenever Intel is open, without
+          needing to expand Account & Relationships. Shows the first 5 chips by
+          default; "View full stack" toggles into "Show less" and reveals all
+          chips inline below. Hidden entirely if no tech data. */}
+      {(account?.techStack || []).length > 0 && (
+        <div style={{ borderTop: '1px solid #f3f4f6', paddingTop: 12, marginBottom: 16 }}>
+          <div style={{
+            fontSize: 11, fontWeight: 600, color: '#6b7280',
+            textTransform: 'uppercase', letterSpacing: 0.8,
+            padding: '4px 0 8px',
+          }}>
+            Technographics
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+            {(techExpanded ? account.techStack : account.techStack.slice(0, 5)).map((tech, i) => (
+              <span key={i} style={{
+                fontSize: 11, padding: '2px 8px', borderRadius: 10,
+                background: '#f3f4f6', color: '#374151',
+                marginRight: 2, marginBottom: 2,
+              }}>
+                {tech}
+              </span>
+            ))}
+            {account.techStack.length > 5 && (
+              <button
+                onClick={() => setTechExpanded(prev => !prev)}
+                style={{
+                  fontSize: 11, padding: '2px 8px', borderRadius: 10,
+                  background: 'transparent', color: '#1A3A5C', border: 'none',
+                  cursor: 'pointer', fontWeight: 600, textDecoration: 'underline',
+                  marginLeft: 2,
+                }}
+              >
+                {techExpanded
+                  ? 'Show less'
+                  : `+${account.techStack.length - 5} more · View full stack`}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Engagement stats */}
       <div style={{ borderTop: '1px solid #f3f4f6', paddingTop: 12, marginBottom: 16 }}>
@@ -3120,62 +3128,6 @@ function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
       >
         ✨ Generate AI Outreach
       </button>
-
-      {/* Tech stack modal — opens from the Technographics "View full stack" link.
-          Lists every technology CoreSignal returned. Click outside or × to close. */}
-      {techModalOpen && (
-        <div
-          onClick={() => setTechModalOpen(false)}
-          style={{
-            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(0, 0, 0, 0.4)', zIndex: 1000,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: 20,
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: 'white', borderRadius: 8, padding: 20,
-              maxWidth: 560, width: '100%', maxHeight: '80vh', overflowY: 'auto',
-              boxShadow: '0 20px 40px rgba(0, 0, 0, 0.2)',
-            }}
-          >
-            <div style={{
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              marginBottom: 4,
-            }}>
-              <div style={{ fontSize: 16, fontWeight: 600, color: '#1A3A5C' }}>
-                Tech Stack — {account?.name}
-              </div>
-              <button
-                onClick={() => setTechModalOpen(false)}
-                style={{
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  fontSize: 20, color: '#9ca3af', lineHeight: 1, padding: 0,
-                }}
-                aria-label="Close"
-              >
-                ×
-              </button>
-            </div>
-            <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 14 }}>
-              {(account?.techStack || []).length} technologies detected
-              {account?.enrichedAt && ` · enriched ${new Date(account.enrichedAt).toLocaleDateString()}`}
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {(account?.techStack || []).map((tech, i) => (
-                <span key={i} style={{
-                  fontSize: 12, padding: '4px 10px', borderRadius: 12,
-                  background: '#f3f4f6', color: '#374151',
-                }}>
-                  {tech}
-                </span>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
