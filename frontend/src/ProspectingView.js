@@ -155,6 +155,17 @@ function stripHtml(str) {
 
 // ── ProspectingView ──────────────────────────────────────────────────────────
 
+// Read the gowarm_debug flag from localStorage. Returns true if set to
+// '1' or 'true', else false. Used by ProspectingView (for the keyboard
+// shortcut + toast) and ProspectDetailPanel (for the IDs strip). Both
+// stay in sync via the 'gowarm-debug-changed' custom event.
+function readDebugFlag() {
+  try {
+    const v = window.localStorage?.getItem('gowarm_debug');
+    return v === '1' || v === 'true';
+  } catch (_) { return false; }
+}
+
 export default function ProspectingView() {
   const [prospects, setProspects] = useState([]);
   const [pipelineSummary, setPipelineSummary] = useState({ pipeline: [], metrics: {} });
@@ -177,6 +188,42 @@ export default function ProspectingView() {
   // Single-prospect discard (from a card/row ⋯ menu). Holds the prospect
   // whose menu was used; modal opens when non-null.
   const [discardTargetProspect, setDiscardTargetProspect] = useState(null);
+
+  // ── Debug mode keyboard shortcut ─────────────────────────────────────────
+  // Ctrl+Shift+D (Cmd+Shift+D on Mac) toggles the gowarm_debug flag in
+  // localStorage, which controls visibility of the DB-IDs strip in the
+  // ProspectDetailPanel. We listen at the top level so the shortcut works
+  // whether or not a drawer is open. State is broadcast to children via a
+  // 'gowarm-debug-changed' window event.
+  const [debugToast, setDebugToast] = useState(null);
+  useEffect(() => {
+    function onKeyDown(e) {
+      const isMod = e.ctrlKey || e.metaKey;
+      if (!isMod || !e.shiftKey) return;
+      if (e.key !== 'D' && e.key !== 'd') return;
+      // Skip when typing in editable fields.
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      e.preventDefault();
+      const next = !readDebugFlag();
+      try {
+        if (next) window.localStorage.setItem('gowarm_debug', '1');
+        else      window.localStorage.removeItem('gowarm_debug');
+      } catch (_) { /* swallow */ }
+      // Broadcast so any open ProspectDetailPanel re-renders its strip.
+      try {
+        window.dispatchEvent(new CustomEvent('gowarm-debug-changed', { detail: next }));
+      } catch (_) { /* swallow */ }
+      setDebugToast(next ? 'Debug mode ON' : 'Debug mode OFF');
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
+  useEffect(() => {
+    if (!debugToast) return;
+    const t = setTimeout(() => setDebugToast(null), 1400);
+    return () => clearTimeout(t);
+  }, [debugToast]);
 
   const isSelected = (id) => selectedIds.has(id);
   const clearSelection = () => setSelectedIds(new Set());
@@ -367,6 +414,22 @@ export default function ProspectingView() {
   return (
     <StagesContext.Provider value={stagesCtx}>
     <div className="pv-container">
+      {/* Debug-mode toast — appears briefly when Ctrl+Shift+D toggles the
+          flag. Position: fixed so it's pinned to the viewport regardless
+          of scroll or drawer state. */}
+      {debugToast && (
+        <div style={{
+          position: 'fixed', top: 16, left: '50%',
+          transform: 'translateX(-50%)',
+          background: '#1F2937', color: '#FEF3C7',
+          fontSize: 12, padding: '6px 14px', borderRadius: 14,
+          fontWeight: 600, letterSpacing: 0.4,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+          pointerEvents: 'none', zIndex: 9999,
+        }}>
+          {debugToast}
+        </div>
+      )}
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="pv-header">
         <div className="pv-header-left">
@@ -1270,6 +1333,22 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   const [contextLoading, setContextLoading] = useState(false);
   const [showDiscardModal, setShowDiscardModal] = useState(false);
 
+  // Debug mode for showing DB IDs. Read directly from localStorage so the
+  // drawer picks up the current value at render time. The keyboard
+  // shortcut (Ctrl+Shift+D / Cmd+Shift+D) and toast feedback are owned
+  // by the top-level ProspectingView component — see useEffect there.
+  // We re-read on every render via a window-storage subscription below.
+  const [debugMode, setDebugMode] = useState(() => readDebugFlag());
+  useEffect(() => {
+    // The toggle is dispatched as a custom 'gowarm-debug-changed' event by
+    // the top-level handler. We listen here so an open drawer updates
+    // immediately on toggle without waiting for a re-render trigger.
+    function onChanged(e) { setDebugMode(!!e.detail); }
+    window.addEventListener('gowarm-debug-changed', onChanged);
+    return () => window.removeEventListener('gowarm-debug-changed', onChanged);
+  }, []);
+
+
   // Drafts for this prospect (pinned in Activity tab)
   const [prospectDrafts,        setProspectDrafts]        = useState([]);
   const [prospectDraftEdits,    setProspectDraftEdits]    = useState({});
@@ -1674,16 +1753,12 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
             {(prospect.company_name || prospect.account?.name) && (
               <span className="pv-detail-company">at {prospect.account?.name || prospect.company_name}</span>
             )}
-            {/* Debug IDs strip — visible only when the gowarm_debug flag is
-                set in localStorage. Used during testing to copy prospect_id
-                and account_id without having to look them up in the DB.
-                To enable, open the browser console and run:
-                  localStorage.setItem('gowarm_debug', '1')
-                Reload the page. To disable:
-                  localStorage.removeItem('gowarm_debug') */}
-            {(typeof window !== 'undefined' &&
-              (window.localStorage?.getItem('gowarm_debug') === '1' ||
-               window.localStorage?.getItem('gowarm_debug') === 'true')) && (
+            {/* Debug IDs strip — visible only when debug mode is on.
+                Toggle with Ctrl+Shift+D (Cmd+Shift+D on Mac) anywhere in
+                the app. State is persisted to localStorage['gowarm_debug']
+                so it survives reloads. Used during testing to copy
+                prospect_id and account_id without DB lookups. */}
+            {debugMode && (
               <span style={{
                 display: 'inline-block', marginTop: 4,
                 padding: '2px 8px', borderRadius: 4,
