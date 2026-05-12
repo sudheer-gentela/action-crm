@@ -1,13 +1,13 @@
 /**
  * CallOutcomeMirrorService
  *
- * Cross-table writes that happen alongside every prospect_calls insert:
+ * Cross-table writes that happen alongside every calls insert:
  *
  *   1. Mirror row in prospecting_activities  — activity_type='call_logged'
  *      with a formatted description. This keeps the unified activity
  *      timeline working (SkillContextService, ProspectContextBuilder etc.
  *      all read prospecting_activities) without each consumer having to
- *      know about prospect_calls.
+ *      know about calls.
  *
  *   2. Update prospects.channel_data.call    — JSONB merge holding the
  *      latest call status. Drives the CALL line in the prospect drawer's
@@ -17,7 +17,7 @@
  *      every call is an outreach; connected calls also count as a response.
  *
  * The functions take a db client (transaction-aware) so the caller can wrap
- * the prospect_calls insert AND the mirror writes in a single transaction.
+ * the calls insert AND the mirror writes in a single transaction.
  */
 
 const db = require('../config/database');

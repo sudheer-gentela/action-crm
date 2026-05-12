@@ -152,7 +152,7 @@ router.post('/', async (req, res) => {
     await client.query('BEGIN');
 
     const insertRes = await client.query(
-      `INSERT INTO prospect_calls
+      `INSERT INTO calls
          (org_id, prospect_id, user_id,
           occurred_at, direction, outcome,
           duration_seconds, notes, phone_used,
@@ -217,7 +217,7 @@ router.get('/', async (req, res) => {
       `SELECT pc.*,
               u.first_name || ' ' || u.last_name AS logged_by_name,
               u.email                            AS logged_by_email
-         FROM prospect_calls pc
+         FROM calls pc
          LEFT JOIN users u ON u.id = pc.user_id
         WHERE pc.org_id = $1
           AND pc.prospect_id = $2
@@ -254,7 +254,7 @@ router.get('/:id', async (req, res) => {
       `SELECT pc.*,
               u.first_name || ' ' || u.last_name AS logged_by_name,
               u.email                            AS logged_by_email
-         FROM prospect_calls pc
+         FROM calls pc
          LEFT JOIN users u ON u.id = pc.user_id
         WHERE pc.id = $1 AND pc.org_id = $2`,
       [id, req.orgId]
@@ -289,7 +289,7 @@ router.patch('/:id', async (req, res) => {
   try {
     // Load the existing call.
     const existRes = await db.query(
-      'SELECT * FROM prospect_calls WHERE id = $1 AND org_id = $2',
+      'SELECT * FROM calls WHERE id = $1 AND org_id = $2',
       [id, req.orgId]
     );
     if (existRes.rows.length === 0) {
@@ -377,7 +377,7 @@ router.patch('/:id', async (req, res) => {
       await client.query('BEGIN');
 
       const updRes = await client.query(
-        `UPDATE prospect_calls
+        `UPDATE calls
             SET ${setClauses.join(', ')}
           WHERE id = $${idIdx + 1} AND org_id = $${orgIdx + 1}
           RETURNING *`,

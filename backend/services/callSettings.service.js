@@ -8,7 +8,7 @@
  *   - outcomes:           array of { key, label, group, order } — the
  *                         outcome values that show in the "Log call" form
  *                         dropdown. Orgs can rename labels and reorder;
- *                         they CANNOT remove a key if any prospect_calls
+ *                         they CANNOT remove a key if any calls
  *                         row uses it (referential integrity at app layer).
  *   - edit_window_hours:  how long after logging a rep can edit their own
  *                         call entry. Defaults to 24.
@@ -76,7 +76,7 @@ class CallSettingsService {
   // ── Public: update the org's settings ────────────────────────────────────
   // Validates the patch before writing. Allowed fields:
   //   - outcomes: full array replacement. Each entry validated (see below).
-  //               Cannot remove a key in use by any prospect_calls row.
+  //               Cannot remove a key in use by any calls row.
   //   - edit_window_hours: integer between 0 and 720 (one month).
   // Throws on validation failure with a descriptive message.
   //
@@ -209,7 +209,7 @@ class CallSettingsService {
       const removed = oldKeys.filter(k => !newKeys.has(k));
       if (removed.length > 0) {
         const usage = await db.query(
-          `SELECT DISTINCT outcome FROM prospect_calls
+          `SELECT DISTINCT outcome FROM calls
            WHERE org_id = $1 AND outcome = ANY($2)`,
           [orgId, removed]
         );
