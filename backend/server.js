@@ -237,27 +237,27 @@ app.get('/health', (req, res) => {
 // ─── TEMPORARY: Twilio click-to-call validation route (NO AUTH) ───
 // Registered first so it matches before any auth-protected catch-all
 // Remove after first successful test call
-const twilio = require('twilio');
-const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+// const twilio = require('twilio');
+// const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
-app.post('/api/test/twilio-call', async (req, res) => {
-  try {
-    const { to } = req.body;
-    if (!to) {
-      return res.status(400).json({ error: 'Missing "to" in body (E.164 format, e.g. +14155551234)' });
-    }
-    const call = await twilioClient.calls.create({
-      url: 'http://demo.twilio.com/docs/voice.xml',
-      to,
-      from: process.env.TWILIO_PHONE_NUMBER,
-    });
-    console.log('[Twilio test] Call created:', call.sid, '→', to);
-    res.json({ success: true, callSid: call.sid, status: call.status, to, from: process.env.TWILIO_PHONE_NUMBER });
-  } catch (err) {
-    console.error('[Twilio test] Error:', err.message, err.code, err.moreInfo);
-    res.status(500).json({ error: err.message, code: err.code, moreInfo: err.moreInfo });
-  }
-});
+// app.post('/api/test/twilio-call', async (req, res) => {
+//   try {
+//     const { to } = req.body;
+//     if (!to) {
+//       return res.status(400).json({ error: 'Missing "to" in body (E.164 format, e.g. +14155551234)' });
+//     }
+//     const call = await twilioClient.calls.create({
+//       url: 'http://demo.twilio.com/docs/voice.xml',
+//       to,
+//       from: process.env.TWILIO_PHONE_NUMBER,
+//     });
+//     console.log('[Twilio test] Call created:', call.sid, '→', to);
+//     res.json({ success: true, callSid: call.sid, status: call.status, to, from: process.env.TWILIO_PHONE_NUMBER });
+//   } catch (err) {
+//     console.error('[Twilio test] Error:', err.message, err.code, err.moreInfo);
+//     res.status(500).json({ error: err.message, code: err.code, moreInfo: err.moreInfo });
+//   }
+// });
 
 app.use('/api/skill-context', require('./routes/skill-context.routes'));
 app.use('/api/skill-runs',    require('./routes/skill-runs.routes'));
