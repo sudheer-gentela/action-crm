@@ -290,6 +290,9 @@ app.use('/api/org-hierarchy',       orgHierarchyRoutes);
 app.use('/api/team-notifications',  teamNotificationsRoutes);
 app.use('/api/users/me',            userPreferencesRoutes);
 app.use('/api/linkedin-profiles',   require('./routes/linkedin-profiles.routes'));
+app.use('/api/prospect-calls',      require('./routes/prospect-calls.routes'));   
+app.use('/api/org/call-settings',   require('./routes/org-call-settings.routes'));
+
 
 // ── Prospecting Phase 2 ───────────────────────────────────────
 app.use('/api/prospecting-senders', prospectingSendersRoutes);
