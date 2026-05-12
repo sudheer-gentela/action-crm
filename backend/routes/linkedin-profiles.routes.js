@@ -116,6 +116,19 @@ function sanitizeActivity(arr) {
       source_url:          clampStr(x.source_url, 500),
       parent_post_summary: clampStr(x.parent_post_summary, 1000),
       parent_author:       clampStr(x.parent_author, 255),
+      // ── Repost-detection fields (v2 extension) ─────────────────────────
+      // Extension v2 distinguishes original posts, plain reposts, and
+      // quoted reposts (the prospect's commentary on top of someone else's
+      // post). For quoted reposts these three fields capture the structure:
+      //   commentary    — the prospect's own words above the embedded card
+      //   quoted_text   — the body of the embedded original post
+      //   quoted_author — the original author's name from the card
+      // For plain reposts and originals these are typically null.
+      // For legacy captures (pre-v2 extension) they will be undefined,
+      // which clampStr safely converts to null.
+      commentary:    clampStr(x.commentary, 8000),
+      quoted_text:   clampStr(x.quoted_text, 8000),
+      quoted_author: clampStr(x.quoted_author, 255),
     }));
 }
 

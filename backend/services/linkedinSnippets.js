@@ -61,6 +61,32 @@ function buildEduSnippet(ed) {
 
 function buildActivitySnippet(item) {
   const rel = cleanRelativeTime(item.relative_time) || 'recently';
+  const action = (item.action || '').toLowerCase();
+
+  // Quoted repost — they wrote commentary on top of someone else's post.
+  // The honest hook is their commentary, NOT the quoted body. Attribute
+  // the quoted body to its real author so the prompt doesn't conflate them.
+  if (item.kind === 'post' && action === 'quoted_repost' && item.commentary) {
+    const commentary = item.commentary.slice(0, 220).trim();
+    const author = item.quoted_author ? ` ${item.quoted_author}'s` : ' another';
+    const quotedBody = item.quoted_text ? item.quoted_text.slice(0, 160).trim() : '';
+    const quotedTail = quotedBody ? ` — quoted post:${author ? '' : ''} "${quotedBody}${item.quoted_text.length > 160 ? '…' : ''}"` : '';
+    return `Their commentary on${author} post ${rel}: "${commentary}${item.commentary.length > 220 ? '…' : ''}"${quotedTail}`;
+  }
+
+  // Plain repost — no commentary. Frame as amplification, not authorship.
+  if (item.kind === 'post' && action === 'reposted') {
+    const text = item.text ? item.text.slice(0, 220).trim() : '';
+    const author = item.quoted_author ? ` ${item.quoted_author}'s` : '';
+    if (!text) return `They reposted${author ? author : ' a'} post ${rel}`;
+    return `They reposted${author} post ${rel}: "${text}${item.text.length > 220 ? '…' : ''}"`;
+  }
+
+  // Original post — their own words. Same framing as v1.
+  // (Includes the legacy path where action is null/unset: we conservatively
+  // assume original since that's what most profile posts are. The risk is
+  // a legacy null-action quoted repost being framed as authored; live with
+  // it for legacy data, fresh captures get the precise framing above.)
   const text = item.text ? item.text.slice(0, 220).trim() : '';
   const kindWord = item.kind === 'reaction' ? 'reacted to' : (item.kind === 'comment' ? 'commented' : 'posted');
   if (!text) return `They ${kindWord} ${rel}`;

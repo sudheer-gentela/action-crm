@@ -138,6 +138,23 @@ function splitLinkedInActivity(activity) {
         text: item.text,
         engagement_count: item.engagement_count ?? null,
         topic_tags: item.topic_tags || [],
+        // ── Repost-detection fields (extension v2) ───────────────────────
+        // action distinguishes 'posted' (original), 'reposted' (plain),
+        // and 'quoted_repost' (commentary on someone else's post). Older
+        // captures may have action=null — downstream consumers should
+        // treat null as "unknown / assume original" given the bias of
+        // most profile activity items.
+        action: item.action ?? null,
+        // For quoted reposts: the prospect's own commentary above the
+        // embedded original. Use this as the personalization hook —
+        // it's their actual words, not the original post's body.
+        commentary: item.commentary ?? null,
+        // The body of the embedded original post being amplified. Do
+        // NOT cite this as the prospect's own words.
+        quoted_text: item.quoted_text ?? null,
+        // The author of the embedded original post. Lets the skill
+        // attribute correctly ("saw you share Satyajeet's take on...").
+        quoted_author: item.quoted_author ?? null,
       });
     } else if (item.kind === 'comment') {
       out.comments.push({
