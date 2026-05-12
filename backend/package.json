@@ -43,7 +43,8 @@
     "nodemailer": "^6.9.9",
     "pdf-parse": "^1.1.1",
     "pg": "^8.11.3",
-    "redis": "^4.6.12"
+    "redis": "^4.6.12",
+    "twilio": "^5.3.5"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",
