@@ -177,6 +177,25 @@ export default function ProspectingView() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
 
+  // Phase 2: set of prospect_ids that have an overdue call task (either a
+  // sequence step past scheduled_send_at, or a callback_requested past its
+  // callback_requested_at). Fetched separately so the prospects list query
+  // doesn't have to do correlated subqueries. Refreshed on scope change.
+  const [overdueCallProspectIds, setOverdueCallProspectIds] = useState(() => new Set());
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiFetch(`/prospect-calls/inbox?scope=${scope}&filter=overdue&limit=200`);
+        if (cancelled) return;
+        const ids = new Set((r.items || []).map(i => i.prospect_id).filter(Boolean));
+        setOverdueCallProspectIds(ids);
+      } catch (_) { /* non-fatal */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope]);
+
   // ── Bulk selection state ──────────────────────────────────────────────────
   // A set of prospect IDs the user has checked for bulk actions (currently
   // only "Enroll in sequence"). Capped at BULK_ENROLL_CAP because the enroll
@@ -470,6 +489,7 @@ export default function ProspectingView() {
               { key: 'account',   icon: '🏢', label: 'Accounts' },
               { key: 'inbox',     icon: '📥', label: 'Inbox' },
               { key: 'sequences', icon: '📨', label: 'Sequences' },
+              { key: 'calls',     icon: '📞', label: 'Calls' },
             ].map(v => (
               <button
                 key={v.key}
@@ -578,6 +598,7 @@ export default function ProspectingView() {
           selectionActive={selectedIds.size > 0}
           atCap={selectedIds.size >= BULK_ENROLL_CAP}
           onDiscard={setDiscardTargetProspect}
+          overdueCallProspectIds={overdueCallProspectIds}
         />
       ) : viewMode === 'list' ? (
         <ListView
@@ -591,6 +612,7 @@ export default function ProspectingView() {
           atCap={selectedIds.size >= BULK_ENROLL_CAP}
           bulkCap={BULK_ENROLL_CAP}
           onDiscard={setDiscardTargetProspect}
+          overdueCallProspectIds={overdueCallProspectIds}
         />
       ) : viewMode === 'account' ? (
         <AccountView
@@ -605,6 +627,15 @@ export default function ProspectingView() {
         />
       ) : viewMode === 'sequences' ? (
         <SequencesView prospects={prospects} />
+      ) : viewMode === 'calls' ? (
+        <CallsInboxView
+          scope={scope}
+          onSelectProspect={(prospectId) => {
+            // Open the prospect drawer at the Calls tab
+            const p = prospects.find(x => x.id === prospectId);
+            if (p) setSelectedProspect({ ...p, _openTab: 'calls' });
+          }}
+        />
       ) : (
         <ProspectingInbox scope={scope} />
       )}
@@ -729,6 +760,7 @@ export default function ProspectingView() {
       {selectedProspect && (
         <ProspectDetailPanel
           prospectId={selectedProspect.id || selectedProspect}
+          initialTab={selectedProspect._openTab || 'overview'}
           onClose={() => setSelectedProspect(null)}
           onUpdate={fetchProspects}
         />
@@ -743,7 +775,7 @@ export default function ProspectingView() {
 // PIPELINE BOARD
 // ═════════════════════════════════════════════════════════════════════════════
 
-function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, terminalCounts, isSelected, onToggleSelect, selectionActive, atCap, onDiscard }) {
+function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, terminalCounts, isSelected, onToggleSelect, selectionActive, atCap, onDiscard, overdueCallProspectIds }) {
   const { terminalStages } = useStages();
   return (
     <div className="pv-pipeline">
@@ -766,6 +798,7 @@ function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, termin
                   selectionActive={selectionActive}
                   atCap={atCap}
                   onDiscard={onDiscard}
+                  hasOverdueCall={overdueCallProspectIds && overdueCallProspectIds.has(p.id)}
                 />
               ))}
               {(groupedByStage[stage.key] || []).length === 0 && (
@@ -792,7 +825,7 @@ function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, termin
 // PROSPECT CARD (used in pipeline)
 // ═════════════════════════════════════════════════════════════════════════════
 
-function ProspectCard({ prospect: p, onClick, isSelected = false, onToggleSelect, selectionActive = false, atCap = false, onDiscard }) {
+function ProspectCard({ prospect: p, onClick, isSelected = false, onToggleSelect, selectionActive = false, atCap = false, onDiscard, hasOverdueCall = false }) {
   // The checkbox is fully visible when:
   //   - the card is selected, OR
   //   - the user already has a selection in progress (so additions are easy)
@@ -849,7 +882,19 @@ function ProspectCard({ prospect: p, onClick, isSelected = false, onToggleSelect
         </div>
       )}
       <div className="pv-card-top">
-        <span className="pv-card-name">{p.first_name} {p.last_name}</span>
+        <span className="pv-card-name">
+          {hasOverdueCall && (
+            <span
+              title="Has overdue call task"
+              style={{
+                display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+                background: '#dc2626', marginRight: 6, verticalAlign: 'middle',
+                boxShadow: '0 0 0 2px #fee2e2',
+              }}
+            />
+          )}
+          {p.first_name} {p.last_name}
+        </span>
         {p.icp_score != null && (
           <span className="pv-card-icp" title="ICP Score">
             {p.icp_score}
@@ -904,6 +949,7 @@ function ListView({
   atCap = false,
   bulkCap = 20,
   onDiscard,
+  overdueCallProspectIds,
 }) {
   const { allStages } = useStages();
   const showMenu = !!onDiscard;
@@ -986,6 +1032,16 @@ function ListView({
                   </td>
                 )}
                 <td className="pv-table-name">
+                  {overdueCallProspectIds && overdueCallProspectIds.has(p.id) && (
+                    <span
+                      title="Has overdue call task"
+                      style={{
+                        display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+                        background: '#dc2626', marginRight: 6, verticalAlign: 'middle',
+                        boxShadow: '0 0 0 2px #fee2e2',
+                      }}
+                    />
+                  )}
                   {p.first_name} {p.last_name}
                   {p.email && <span className="pv-table-email">{p.email}</span>}
                 </td>
@@ -1311,13 +1367,13 @@ function ProspectCreateModal({ onSave, onClose }) {
 // PROSPECT DETAIL PANEL (slide-out)
 // ═════════════════════════════════════════════════════════════════════════════
 
-function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
+function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   const { allStages, prospectStages } = useStages();
   const [prospect, setProspect] = useState(null);
   const [actions, setActions] = useState([]);
   const [activities, setActivities] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState(initialTab || 'overview');
   const [editMode, setEditMode]   = useState(false);
   const [editForm, setEditForm]   = useState({});
   const [editSaving, setEditSaving] = useState(false);
@@ -1339,6 +1395,11 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   // outcomes-list config is loaded once into `callSettings` so the modal
   // can render the dropdown with the org's customized labels.
   const [showLogCallModal, setShowLogCallModal] = useState(false);
+  // Phase 2: when the LogCallModal is opened from a sequence step (via
+  // "Log call & complete" on a draft card), we pass through the step log id
+  // and task note so the modal can pre-fill and the backend can advance
+  // the sequence on save. null means "manual log call" — no sequence context.
+  const [callModalSequenceContext, setCallModalSequenceContext] = useState(null);
   const [calls,            setCalls]            = useState([]);
   const [callSettings,     setCallSettings]     = useState(null);
   const refreshCalls = async () => {
@@ -1480,6 +1541,24 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   };
 
   const handleMarkDoneProspectDraft = async (draftId) => {
+    // Phase 2: for call-channel drafts, open the LogCallModal instead of
+    // hitting /complete directly. The modal's save handler will POST to
+    // /prospect-calls with sequence_step_log_id which advances the step
+    // and writes the call log in one transaction.
+    const draft = prospectDrafts.find(d => d.id === draftId);
+    if (draft?.channel === 'call' && prospect) {
+      setShowLogCallModal(true);
+      setCallModalSequenceContext({
+        sequenceStepLogId: draft.id,
+        taskNote: draft.task_note || draft.body || '',
+        sequenceContext: {
+          sequence_name: draft.sequence_name || draft.sequence?.name,
+          step_order:    draft.step_order,
+        },
+      });
+      return;
+    }
+
     setProspectDraftEdits(prev => ({ ...prev, [draftId]: { ...prev[draftId], sending: true, error: null } }));
     try {
       await apiFetch(`/sequences/drafts/${draftId}/complete`, { method: 'POST', body: JSON.stringify({}) });
@@ -2041,7 +2120,19 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
             <CallsPanel
               prospect={prospect}
               calls={calls}
+              pendingCallTasks={prospectDrafts.filter(d => d.channel === 'call')}
               onLogCall={() => setShowLogCallModal(true)}
+              onLogCallFromTask={(draft) => {
+                setShowLogCallModal(true);
+                setCallModalSequenceContext({
+                  sequenceStepLogId: draft.id,
+                  taskNote: draft.task_note || draft.body || '',
+                  sequenceContext: {
+                    sequence_name: draft.sequence_name || draft.sequence?.name,
+                    step_order:    draft.step_order,
+                  },
+                });
+              }}
             />
           )}
 
@@ -2370,8 +2461,13 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
           <LogCallModal
             prospect={prospect}
             settings={callSettings}
+            sequenceStepLogId={callModalSequenceContext?.sequenceStepLogId || null}
+            taskNote={callModalSequenceContext?.taskNote || ''}
+            sequenceContext={callModalSequenceContext?.sequenceContext || null}
             onSaved={async () => {
+              const wasSequenceCall = !!callModalSequenceContext?.sequenceStepLogId;
               setShowLogCallModal(false);
+              setCallModalSequenceContext(null);
               await refreshCalls();
               // Refresh prospect so updated channel_data.call drives the
               // timeline CALL line; also refreshes activities for the
@@ -2383,8 +2479,19 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
               } catch (err) {
                 console.error('Refresh after call log:', err);
               }
+              // If this was a sequence-driven call, the step is now completed
+              // and the draft should disappear from the list. Refresh drafts.
+              if (wasSequenceCall) {
+                try {
+                  const dr = await apiFetch(`/sequences/drafts?prospectId=${prospectId}`);
+                  setProspectDrafts(dr.drafts || []);
+                } catch (_) {}
+              }
             }}
-            onClose={() => setShowLogCallModal(false)}
+            onClose={() => {
+              setShowLogCallModal(false);
+              setCallModalSequenceContext(null);
+            }}
           />
         )}
 
@@ -3683,11 +3790,15 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
                 disabled={sending}
                 style={{
                   padding: '7px 18px', borderRadius: 7, border: 'none',
-                  background: sending ? '#9ca3af' : '#0F9D8E', color: '#fff',
+                  background: sending ? '#9ca3af' : (channel === 'call' ? '#9a3412' : '#0F9D8E'), color: '#fff',
                   fontSize: 12, fontWeight: 600, cursor: sending ? 'not-allowed' : 'pointer',
                 }}
               >
-                {sending ? '⏳ Saving…' : '✅ Mark as Done'}
+                {sending
+                  ? '⏳ Saving…'
+                  : channel === 'call'
+                    ? '📞 Log call & complete'
+                    : '✅ Mark as Done'}
               </button>
             )}
           </div>
@@ -3732,7 +3843,7 @@ function InfoRow({ label, value, optional = false, editMode = false, editValue, 
 // owned by ProspectDetailPanel.
 // ═════════════════════════════════════════════════════════════════════════════
 
-function CallsPanel({ prospect, calls, onLogCall }) {
+function CallsPanel({ prospect, calls, pendingCallTasks = [], onLogCall, onLogCallFromTask }) {
   // Aggregates for the summary strip at the top.
   const total      = calls.length;
   const connected  = calls.filter(c =>
@@ -3817,8 +3928,71 @@ function CallsPanel({ prospect, calls, onLogCall }) {
         </div>
       )}
 
+      {/* Pending call tasks — Phase 2. Shown above completed calls when
+          this prospect has open sequence call drafts. */}
+      {pendingCallTasks.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{
+            fontSize: 11, fontWeight: 700, color: '#3730a3', textTransform: 'uppercase',
+            letterSpacing: 0.5, marginBottom: 8,
+          }}>
+            Pending call tasks ({pendingCallTasks.length})
+          </div>
+          {pendingCallTasks.map(draft => {
+            const isOverdue = draft.scheduled_send_at && new Date(draft.scheduled_send_at) < new Date();
+            return (
+              <div
+                key={draft.id}
+                style={{
+                  padding: '10px 12px', marginBottom: 8, borderRadius: 8,
+                  background: '#eff6ff', border: `1px solid ${isOverdue ? '#fca5a5' : '#bfdbfe'}`,
+                  display: 'flex', alignItems: 'flex-start', gap: 10,
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, color: isOverdue ? '#991b1b' : '#3730a3',
+                      padding: '2px 6px', borderRadius: 4,
+                      background: isOverdue ? '#fee2e2' : '#dbeafe',
+                    }}>
+                      {isOverdue ? '⚠ Overdue' : '📨 Sequence'}
+                    </span>
+                    {draft.sequence_name && (
+                      <span style={{ fontSize: 11, color: '#1e40af' }}>
+                        {draft.sequence_name} · step {draft.step_order}
+                      </span>
+                    )}
+                  </div>
+                  {(draft.task_note || draft.body) && (
+                    <div style={{ fontSize: 12, color: '#1e3a8a', lineHeight: 1.4, whiteSpace: 'pre-wrap' }}>
+                      {draft.task_note || draft.body}
+                    </div>
+                  )}
+                  {draft.scheduled_send_at && (
+                    <div style={{ fontSize: 10, color: '#6b7280', marginTop: 4 }}>
+                      Due {relTime(draft.scheduled_send_at)}
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={() => onLogCallFromTask && onLogCallFromTask(draft)}
+                  style={{
+                    padding: '6px 12px', background: '#9a3412', color: '#fff',
+                    border: 'none', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                    cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+                  }}
+                >
+                  📞 Log call
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* Empty state */}
-      {total === 0 && (
+      {total === 0 && pendingCallTasks.length === 0 && (
         <div style={{
           padding: '24px 16px', textAlign: 'center',
           background: '#f9fafb', borderRadius: 8, border: '1px dashed #e5e7eb',
@@ -3890,27 +4064,42 @@ function CallsPanel({ prospect, calls, onLogCall }) {
 //   onClose   — close the modal without saving
 // ═════════════════════════════════════════════════════════════════════════════
 
-function LogCallModal({ prospect, settings, onSaved, onClose }) {
+function LogCallModal({ prospect, settings, onSaved, onClose, sequenceStepLogId, taskNote, sequenceContext }) {
   // Form state. occurred_at defaults to "now" in datetime-local format.
   const localNow = () => {
     const d = new Date();
     d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); // shift for local input
     return d.toISOString().slice(0, 16);  // YYYY-MM-DDTHH:MM
   };
+  // Default callback date — 1 business day from now at 10am local
+  const defaultCallbackAt = () => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(10, 0, 0, 0);
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    return d.toISOString().slice(0, 16);
+  };
   const [occurredAt, setOccurredAt] = useState(localNow());
   const [outcomeKey, setOutcomeKey] = useState('');
   const [durationMin, setDurationMin] = useState('');   // input as minutes; converted to seconds on save
   const [phoneUsed, setPhoneUsed] = useState(prospect?.phone || '');
-  const [notes, setNotes] = useState('');
+  // Phase 2: pre-fill notes with the sequence step's task_note when this
+  // modal opens from a sequence call task. The rep can edit before saving.
+  const [notes, setNotes] = useState(taskNote || '');
+  // Phase 2: callback_requested_at — shown only when outcome is
+  // 'callback_requested'. Defaults to next business day at 10am.
+  const [callbackAt, setCallbackAt] = useState(defaultCallbackAt());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
   // Outcome metadata derived from the selected key. Drives:
   //   - whether the duration field is shown (no_answer / wrong_number /
   //     gatekeeper hide it because there's no connection to measure)
+  //   - whether the callback date field is shown
   //   - placeholder text in the notes field
   const OUTCOMES_NO_DURATION = new Set(['no_answer', 'wrong_number', 'gatekeeper']);
   const showDuration = outcomeKey && !OUTCOMES_NO_DURATION.has(outcomeKey);
+  const showCallbackAt = outcomeKey === 'callback_requested';
 
   const notesPlaceholder = (() => {
     if (!outcomeKey) return 'What happened on the call?';
@@ -3918,7 +4107,7 @@ function LogCallModal({ prospect, settings, onSaved, onClose }) {
       return 'What did you discuss? Any specific next steps the prospect mentioned?';
     }
     if (outcomeKey === 'voicemail_left') return 'Brief context for the voicemail you left';
-    if (outcomeKey === 'callback_requested') return 'When and why did they ask for a callback?';
+    if (outcomeKey === 'callback_requested') return 'Why did they ask for a callback? What should you cover when you call back?';
     if (outcomeKey === 'do_not_call') return 'Any context worth recording for compliance?';
     return 'Optional notes';
   })();
@@ -3938,6 +4127,16 @@ function LogCallModal({ prospect, settings, onSaved, onClose }) {
       };
       if (showDuration && durationMin && Number(durationMin) > 0) {
         body.duration_seconds = Math.round(Number(durationMin) * 60);
+      }
+      // Phase 2: when outcome is callback_requested, capture the timestamp
+      // the prospect asked us to call back at.
+      if (showCallbackAt && callbackAt) {
+        body.callback_requested_at = new Date(callbackAt).toISOString();
+      }
+      // Phase 2: link to the sequence step log so the backend advances
+      // the sequence in the same transaction.
+      if (sequenceStepLogId) {
+        body.sequence_step_log_id = sequenceStepLogId;
       }
       await apiFetch('/prospect-calls', {
         method: 'POST',
@@ -4004,6 +4203,25 @@ function LogCallModal({ prospect, settings, onSaved, onClose }) {
         {/* Body */}
         <div style={{ padding: '14px 18px' }}>
 
+          {/* Sequence context banner — shown when modal opens from a sequence task.
+              Tells the rep this call is part of a sequence step so they know the
+              sequence will advance on save. */}
+          {sequenceStepLogId && sequenceContext && (
+            <div style={{
+              marginBottom: 14, padding: '8px 10px',
+              background: '#eff6ff', border: '1px solid #bfdbfe',
+              borderRadius: 6, fontSize: 12, color: '#1e40af',
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>
+                📨 Sequence step
+              </div>
+              <div>
+                {sequenceContext.sequence_name} — step {sequenceContext.step_order}.
+                Saving this call will mark the step done and advance the sequence.
+              </div>
+            </div>
+          )}
+
           {/* When */}
           <div style={{ marginBottom: 12 }}>
             <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>
@@ -4065,6 +4283,27 @@ function LogCallModal({ prospect, settings, onSaved, onClose }) {
                   outcomeKey === 'voicemail_left' ? '1' :
                   outcomeKey === 'connected_meaningful' ? '10' : ''
                 }
+                style={{
+                  width: '100%', padding: '7px 10px', fontSize: 13,
+                  border: '1px solid #d1d5db', borderRadius: 6, color: '#1a202c',
+                }}
+              />
+            </div>
+          )}
+
+          {/* Callback date — only shown for outcome=callback_requested */}
+          {showCallbackAt && (
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>
+                Call back at <span style={{ color: '#9a3412' }}>*</span>
+              </label>
+              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4 }}>
+                When did the prospect ask you to call back? This shows up in your Calls inbox so you don't miss it.
+              </div>
+              <input
+                type="datetime-local"
+                value={callbackAt}
+                onChange={e => setCallbackAt(e.target.value)}
                 style={{
                   width: '100%', padding: '7px 10px', fontSize: 13,
                   border: '1px solid #d1d5db', borderRadius: 6, color: '#1a202c',
@@ -5498,6 +5737,385 @@ function SequencesView({ prospects }) {
             setSubTab('enrollments');
           }}
           onClose={() => setShowEnroll(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CALLS INBOX VIEW
+// Top-level Calls view. Unified stream of:
+//   - Completed calls (logged via LogCallModal)
+//   - Pending sequence call tasks (sequence_step_logs WHERE channel='call' AND status='draft')
+//   - Pending callback requests (calls WHERE outcome='callback_requested' AND no newer call)
+//
+// Tabs: All / Pending / Overdue / Completed
+// Row click → opens prospect drawer at the Calls tab
+// Pending rows have a "Log call" button that opens LogCallModal pre-filled
+// ═════════════════════════════════════════════════════════════════════════════
+
+function CallsInboxView({ scope, onSelectProspect }) {
+  const [items, setItems]         = useState([]);
+  const [counts, setCounts]       = useState({ all: 0, pending: 0, overdue: 0, completed: 0 });
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState('');
+  const [filter, setFilter]       = useState('all');   // all | pending | overdue | completed
+  const [dateRange, setDateRange] = useState('30');    // days
+  const [expandedId, setExpandedId] = useState(null);  // composite key: `${kind}-${id}`
+
+  // Modal state — Phase 2 lets the rep click "Log call" on a pending row
+  // and have the modal open pre-filled with the sequence step context.
+  const [logModalState, setLogModalState] = useState(null);
+  // logModalState shape: { prospect, sequenceStepLogId, taskNote, sequenceContext }
+  const [callSettings, setCallSettings] = useState(null);
+
+  // Load org-wide call settings once (same as drawer does).
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await apiFetch('/org/call-settings');
+        setCallSettings(r.settings || null);
+      } catch (_) { /* non-fatal */ }
+    })();
+  }, []);
+
+  const fromDate = () => {
+    if (!dateRange) return undefined;
+    const d = new Date();
+    d.setDate(d.getDate() - parseInt(dateRange, 10));
+    return d.toISOString();
+  };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = {
+        scope,
+        filter,
+        limit: 100,
+        ...(dateRange && { from: fromDate() }),
+      };
+      const res = await apiFetch(`/prospect-calls/inbox?${new URLSearchParams(params)}`);
+      setItems(res.items || []);
+      setCounts(res.counts || { all: 0, pending: 0, overdue: 0, completed: 0 });
+    } catch (err) {
+      setError(err.message || 'Failed to load calls inbox');
+    } finally {
+      setLoading(false);
+    }
+  }, [scope, filter, dateRange]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { load(); }, [load]);
+
+  // Fire the stale-call scan once on mount so the rep gets the notification.
+  // Non-fatal — silently swallow errors so the inbox renders regardless.
+  useEffect(() => {
+    apiFetch('/prospect-calls/scan-stale').catch(() => {});
+  }, []);
+
+  // Color map mirroring CallsPanel
+  const groupColor = (group) => {
+    if (group === 'connected')  return { bg: '#dcfce7', border: '#86efac', fg: '#14532d' };
+    if (group === 'no_contact') return { bg: '#fef3c7', border: '#fcd34d', fg: '#78350f' };
+    if (group === 'blocker')    return { bg: '#fee2e2', border: '#fca5a5', fg: '#7f1d1d' };
+    return                              { bg: '#f3f4f6', border: '#e5e7eb', fg: '#374151' };
+  };
+
+  const relTime = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+    const future = diff < 0;
+    const absDiff = Math.abs(diff);
+    let str = '';
+    if (absDiff < 60)        str = 'just now';
+    else if (absDiff < 3600) str = `${Math.floor(absDiff / 60)}m`;
+    else if (absDiff < 86400) str = `${Math.floor(absDiff / 3600)}h`;
+    else if (absDiff < 86400*30) str = `${Math.floor(absDiff / 86400)}d`;
+    else                     str = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    if (str === 'just now') return str;
+    return future ? `in ${str}` : `${str} ago`;
+  };
+
+  const fmtDuration = (sec) => {
+    if (!sec || sec <= 0) return '';
+    const min = Math.round(sec / 60);
+    return min === 0 ? `${sec}s` : `${min} min`;
+  };
+
+  // Open the LogCallModal for a pending row. We need to fetch the full
+  // prospect record so the modal can pre-fill phone, name, etc.
+  const openLogModal = async (item) => {
+    try {
+      const r = await apiFetch(`/prospects/${item.prospect_id}`);
+      setLogModalState({
+        prospect: r.prospect,
+        sequenceStepLogId: item.kind === 'pending_sequence' ? item.sequence_step_log_id : null,
+        taskNote: item.task_note || '',
+        sequenceContext: item.kind === 'pending_sequence' ? {
+          sequence_name: item.sequence_name,
+          step_order:    item.sequence_step_order,
+        } : null,
+      });
+    } catch (err) {
+      alert('Could not load prospect: ' + (err.message || 'unknown error'));
+    }
+  };
+
+  // After a successful save in the modal, refresh the inbox list.
+  const onCallSaved = async () => {
+    setLogModalState(null);
+    await load();
+  };
+
+  // ── Render ──────────────────────────────────────────────────────────────
+  const tabs = [
+    { key: 'all',       label: 'All',       count: counts.all },
+    { key: 'pending',   label: 'Pending',   count: counts.pending },
+    { key: 'overdue',   label: 'Overdue',   count: counts.overdue },
+    { key: 'completed', label: 'Completed', count: counts.completed },
+  ];
+
+  return (
+    <div>
+      {/* Filter row — tabs + date range */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16,
+        flexWrap: 'wrap',
+      }}>
+        <div style={{ display: 'flex', gap: 4, padding: 3, background: '#f3f4f6', borderRadius: 8 }}>
+          {tabs.map(t => (
+            <button
+              key={t.key}
+              onClick={() => setFilter(t.key)}
+              style={{
+                padding: '5px 12px', fontSize: 12,
+                background: filter === t.key ? '#fff' : 'transparent',
+                color: filter === t.key ? '#111827' : '#6b7280',
+                border: 'none', borderRadius: 6, cursor: 'pointer',
+                fontWeight: filter === t.key ? 600 : 500,
+                display: 'flex', alignItems: 'center', gap: 6,
+                boxShadow: filter === t.key ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
+              }}
+            >
+              {t.label}
+              {t.count > 0 && (
+                <span style={{
+                  fontSize: 10, padding: '0px 6px', borderRadius: 8,
+                  background: t.key === 'overdue' && t.count > 0 ? '#fee2e2' : '#e5e7eb',
+                  color:      t.key === 'overdue' && t.count > 0 ? '#991b1b' : '#374151',
+                  fontWeight: 600,
+                }}>{t.count}</span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        <select
+          value={dateRange}
+          onChange={e => setDateRange(e.target.value)}
+          style={{
+            padding: '5px 8px', fontSize: 12, color: '#374151',
+            border: '1px solid #d1d5db', borderRadius: 6, background: '#fff',
+          }}
+        >
+          <option value="7">7 days</option>
+          <option value="30">30 days</option>
+          <option value="90">90 days</option>
+          <option value="">All time</option>
+        </select>
+
+        {loading && (
+          <span style={{ fontSize: 12, color: '#9ca3af', marginLeft: 'auto' }}>
+            Loading…
+          </span>
+        )}
+      </div>
+
+      {error && (
+        <div style={{
+          padding: '10px 14px', marginBottom: 12, background: '#fef2f2',
+          border: '1px solid #fecaca', borderRadius: 6, color: '#991b1b', fontSize: 12,
+        }}>
+          {error}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!loading && items.length === 0 && (
+        <div style={{
+          padding: '40px 20px', textAlign: 'center',
+          background: '#fff', borderRadius: 10, border: '1px dashed #e5e7eb',
+        }}>
+          <div style={{ fontSize: 36, marginBottom: 8, opacity: 0.5 }}>📞</div>
+          <div style={{ fontSize: 14, color: '#374151', fontWeight: 600, marginBottom: 4 }}>
+            {filter === 'all'       ? 'No calls in this window' :
+             filter === 'pending'   ? 'No pending call tasks' :
+             filter === 'overdue'   ? 'Nothing overdue' :
+             'No calls logged'}
+          </div>
+          <div style={{ fontSize: 12, color: '#9ca3af' }}>
+            {filter === 'pending' || filter === 'overdue'
+              ? 'Sequence call steps and callback requests will appear here.'
+              : 'Calls logged from any prospect drawer show up here.'}
+          </div>
+        </div>
+      )}
+
+      {/* Items list */}
+      {items.map(item => {
+        const key = `${item.kind}-${item.id}`;
+        const isPending = item.kind === 'pending_sequence' || item.kind === 'pending_callback';
+        const isExpanded = expandedId === key;
+        const colors = item.outcome_group ? groupColor(item.outcome_group) : null;
+        const dur    = fmtDuration(item.duration_seconds);
+        const prospectName = `${item.prospect_first_name || ''} ${item.prospect_last_name || ''}`.trim() || `Prospect #${item.prospect_id}`;
+        const staleBadge = item.stale_days >= 5;
+
+        return (
+          <div
+            key={key}
+            style={{
+              padding: '12px 14px', marginBottom: 8, borderRadius: 8,
+              background: '#fff',
+              border: item.is_overdue
+                ? '1px solid #fca5a5'
+                : '1px solid #e5e7eb',
+              boxShadow: item.is_overdue ? '0 0 0 1px #fee2e2' : 'none',
+              cursor: 'pointer',
+            }}
+            onClick={() => onSelectProspect && onSelectProspect(item.prospect_id)}
+          >
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+              {/* Left content */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {/* Row 1: prospect + outcome/status + relative time */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#1a202c' }}>
+                    {prospectName}
+                  </div>
+                  {item.prospect_company && (
+                    <div style={{ fontSize: 11, color: '#6b7280' }}>
+                      · {item.prospect_company}
+                    </div>
+                  )}
+
+                  {/* Status pill */}
+                  {item.kind === 'completed' && colors && (
+                    <span style={{
+                      padding: '2px 8px', borderRadius: 4,
+                      background: colors.bg, border: `1px solid ${colors.border}`, color: colors.fg,
+                      fontSize: 10, fontWeight: 600, whiteSpace: 'nowrap',
+                    }}>
+                      {item.outcome_label || item.outcome}
+                    </span>
+                  )}
+                  {item.kind === 'pending_sequence' && (
+                    <span style={{
+                      padding: '2px 8px', borderRadius: 4,
+                      background: item.is_overdue ? '#fee2e2' : '#e0e7ff',
+                      border: `1px solid ${item.is_overdue ? '#fca5a5' : '#a5b4fc'}`,
+                      color:  item.is_overdue ? '#991b1b' : '#3730a3',
+                      fontSize: 10, fontWeight: 600,
+                    }}>
+                      {item.is_overdue ? '⚠ Overdue · Sequence' : '📨 Sequence'}
+                    </span>
+                  )}
+                  {item.kind === 'pending_callback' && (
+                    <span style={{
+                      padding: '2px 8px', borderRadius: 4,
+                      background: item.is_overdue ? '#fee2e2' : '#fff7ed',
+                      border: `1px solid ${item.is_overdue ? '#fca5a5' : '#fed7aa'}`,
+                      color:  item.is_overdue ? '#991b1b' : '#9a3412',
+                      fontSize: 10, fontWeight: 600,
+                    }}>
+                      {item.is_overdue ? '⚠ Overdue · Callback' : '🔄 Callback'}
+                    </span>
+                  )}
+                  {staleBadge && (
+                    <span style={{
+                      padding: '2px 6px', borderRadius: 4,
+                      background: '#fef2f2', color: '#991b1b',
+                      fontSize: 10, fontWeight: 600,
+                    }}>
+                      {item.stale_days}d stale
+                    </span>
+                  )}
+
+                  {dur && (
+                    <span style={{ fontSize: 11, color: '#6b7280' }}>· {dur}</span>
+                  )}
+
+                  <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 'auto' }}>
+                    {relTime(item.event_at)}
+                  </span>
+                </div>
+
+                {/* Row 2: sequence info for pending sequence rows */}
+                {item.kind === 'pending_sequence' && item.sequence_name && (
+                  <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4 }}>
+                    {item.sequence_name} · step {item.sequence_step_order}
+                  </div>
+                )}
+
+                {/* Row 3: notes preview, click to expand */}
+                {(item.notes || item.task_note) && (
+                  <div
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setExpandedId(isExpanded ? null : key);
+                    }}
+                    style={{
+                      fontSize: 12, color: '#374151', cursor: 'pointer',
+                      lineHeight: 1.4,
+                      whiteSpace: isExpanded ? 'pre-wrap' : 'nowrap',
+                      overflow: isExpanded ? 'visible' : 'hidden',
+                      textOverflow: isExpanded ? 'unset' : 'ellipsis',
+                      marginBottom: 4,
+                    }}
+                  >
+                    {item.notes || item.task_note}
+                  </div>
+                )}
+
+                {/* Row 4: meta — logger, phone */}
+                <div style={{ fontSize: 10, color: '#9ca3af', display: 'flex', gap: 8 }}>
+                  {item.logged_by_name && <span>by {item.logged_by_name}</span>}
+                  {item.phone_used && <span>· {item.phone_used}</span>}
+                </div>
+              </div>
+
+              {/* Right action button — only for pending rows */}
+              {isPending && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); openLogModal(item); }}
+                  style={{
+                    padding: '6px 12px', background: '#9a3412', color: '#fff',
+                    border: 'none', borderRadius: 6, fontSize: 11, fontWeight: 600,
+                    cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+                  }}
+                >
+                  📞 Log call
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Log call modal — opened by clicking Log call on a pending row */}
+      {logModalState && (
+        <LogCallModal
+          prospect={logModalState.prospect}
+          settings={callSettings}
+          sequenceStepLogId={logModalState.sequenceStepLogId}
+          taskNote={logModalState.taskNote}
+          sequenceContext={logModalState.sequenceContext}
+          onSaved={onCallSaved}
+          onClose={() => setLogModalState(null)}
         />
       )}
     </div>

@@ -314,7 +314,21 @@ const SequenceStepFirer = {
               ]
             );
 
-            // Activity: draft created
+            // Activity: draft created. Description is channel-aware so the
+            // activity feed reads naturally — "Email draft ready" vs
+            // "Call task pending" vs "LinkedIn task pending".
+            const draftActivityDesc = (() => {
+              if (step.channel === 'call') {
+                return `Call task pending — ${enrollment.seq_name} step ${enrollment.current_step}`;
+              }
+              if (step.channel === 'linkedin') {
+                return `LinkedIn task ready — ${enrollment.seq_name} step ${enrollment.current_step}`;
+              }
+              if (step.channel === 'task') {
+                return `Task pending — ${enrollment.seq_name} step ${enrollment.current_step}`;
+              }
+              return `Draft ready for review — ${enrollment.seq_name} step ${enrollment.current_step}: ${subject || '(no subject)'}`;
+            })();
             try {
               await client.query(
                 `INSERT INTO prospecting_activities
@@ -323,13 +337,14 @@ const SequenceStepFirer = {
                 [
                   enrollment.prospect_id,
                   enrollment.enrolled_by,
-                  `Draft ready for review — ${enrollment.seq_name} step ${enrollment.current_step}: ${subject || '(no subject)'}`,
+                  draftActivityDesc,
                   JSON.stringify({
                     enrollmentId:  enrollment.id,
                     sequenceId:    enrollment.seq_id,
                     sequenceName:  enrollment.seq_name,
                     stepOrder:     enrollment.current_step,
                     stepId:        step.id,
+                    channel:       step.channel,
                     subject:       subject       || null,
                     senderId:      sender?.id          || null,
                     displayName:   sender?.display_name || null,
