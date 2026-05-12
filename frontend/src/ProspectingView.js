@@ -1333,6 +1333,42 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
   const [contextLoading, setContextLoading] = useState(false);
   const [showDiscardModal, setShowDiscardModal] = useState(false);
 
+  // ── Call logging state ───────────────────────────────────────────────────
+  // showLogCallModal toggles the modal. `calls` is the list of past calls
+  // for this prospect, loaded on mount and refreshed after each save. The
+  // outcomes-list config is loaded once into `callSettings` so the modal
+  // can render the dropdown with the org's customized labels.
+  const [showLogCallModal, setShowLogCallModal] = useState(false);
+  const [calls,            setCalls]            = useState([]);
+  const [callSettings,     setCallSettings]     = useState(null);
+  const refreshCalls = async () => {
+    if (!prospect?.id) return;
+    try {
+      const r = await apiFetch(`/prospect-calls?prospect_id=${prospect.id}`);
+      setCalls(r.calls || []);
+    } catch (err) {
+      // Non-fatal: the rest of the drawer still works
+      console.warn('Refresh calls failed:', err.message);
+    }
+  };
+  useEffect(() => {
+    if (!prospect?.id) return;
+    refreshCalls();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prospect?.id]);
+  useEffect(() => {
+    // Settings are org-wide so load once. Falling back to null leaves the
+    // modal in a loading state until this resolves.
+    (async () => {
+      try {
+        const r = await apiFetch('/org/call-settings');
+        setCallSettings(r.settings || null);
+      } catch (err) {
+        console.warn('Load call settings failed:', err.message);
+      }
+    })();
+  }, []);
+
   // Debug mode for showing DB IDs. Read directly from localStorage so the
   // drawer picks up the current value at render time. The keyboard
   // shortcut (Ctrl+Shift+D / Cmd+Shift+D) and toast feedback are owned
@@ -1784,6 +1820,21 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
           </div>
 
           <div className="pv-detail-stage-actions">
+            <button
+              style={{
+                fontSize: '12px', padding: '5px 12px',
+                background: '#fff7ed',
+                border: '1px solid #fdba74',
+                color: '#9a3412',
+                borderRadius: 6,
+                cursor: 'pointer',
+                fontWeight: 600,
+              }}
+              onClick={() => setShowLogCallModal(true)}
+              title={prospect.phone ? `Log a call to ${prospect.phone}` : 'Log a call (no phone on file yet)'}
+            >
+              📞 Log call
+            </button>
             <button className="pv-btn-primary" style={{ fontSize: '12px', padding: '5px 12px' }} onClick={() => openOutreach()}>
               📤 New Outreach
             </button>
@@ -1841,7 +1892,7 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
 
         {/* Tabs */}
         <div className="pv-detail-tabs">
-          {['overview', 'linkedin', 'intel', 'actions', 'activity'].map(t => (
+          {['overview', 'linkedin', 'calls', 'intel', 'actions', 'activity'].map(t => (
             <button
               key={t}
               className={`pv-detail-tab ${activeTab === t ? 'active' : ''}`}
@@ -1854,6 +1905,17 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                     LinkedIn
                     {getLiStatus(prospect) && (
                       <span style={{ width: 6, height: 6, borderRadius: '50%', background: getLiDotColor(getLiStatus(prospect)), marginLeft: 2 }} />
+                    )}
+                  </span>
+                )
+                : t === 'calls' ? (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    📞 Calls
+                    {calls.length > 0 && (
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, color: '#9a3412',
+                        background: '#fff7ed', padding: '0px 5px', borderRadius: 8,
+                      }}>{calls.length}</span>
                     )}
                   </span>
                 )
@@ -1972,6 +2034,14 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
                   onUpdate();
                 } catch (_) {}
               }}
+            />
+          )}
+
+          {activeTab === 'calls' && (
+            <CallsPanel
+              prospect={prospect}
+              calls={calls}
+              onLogCall={() => setShowLogCallModal(true)}
             />
           )}
 
@@ -2292,6 +2362,29 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
               } catch (_) {}
             }}
             onClose={() => setShowEnrollModal(false)}
+          />
+        )}
+
+        {/* LogCallModal */}
+        {showLogCallModal && prospect && (
+          <LogCallModal
+            prospect={prospect}
+            settings={callSettings}
+            onSaved={async () => {
+              setShowLogCallModal(false);
+              await refreshCalls();
+              // Refresh prospect so updated channel_data.call drives the
+              // timeline CALL line; also refreshes activities for the
+              // mirror call_logged entry.
+              try {
+                const res = await apiFetch(`/prospects/${prospectId}`);
+                setProspect(res.prospect);
+                setActivities(res.activities || []);
+              } catch (err) {
+                console.error('Refresh after call log:', err);
+              }
+            }}
+            onClose={() => setShowLogCallModal(false)}
           />
         )}
 
@@ -3630,6 +3723,436 @@ function InfoRow({ label, value, optional = false, editMode = false, editValue, 
   );
 }
 
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CALLS PANEL
+// Renders the call history for a prospect inside the Calls tab. Pure
+// display + a "Log call" CTA — actual logging is handled by LogCallModal
+// owned by ProspectDetailPanel.
+// ═════════════════════════════════════════════════════════════════════════════
+
+function CallsPanel({ prospect, calls, onLogCall }) {
+  // Aggregates for the summary strip at the top.
+  const total      = calls.length;
+  const connected  = calls.filter(c =>
+    c.outcome === 'connected_meaningful' ||
+    c.outcome === 'connected_brief' ||
+    c.outcome === 'callback_requested'
+  ).length;
+  const voicemail  = calls.filter(c => c.outcome === 'voicemail_left').length;
+  const last       = calls[0]; // calls list is newest-first from the API
+
+  // Color map for outcome groups. Mirrors the system-default groups
+  // returned by /api/org/call-settings.
+  const groupColor = (group) => {
+    if (group === 'connected')  return { bg: '#dcfce7', border: '#86efac', fg: '#14532d' };
+    if (group === 'no_contact') return { bg: '#fef3c7', border: '#fcd34d', fg: '#78350f' };
+    if (group === 'blocker')    return { bg: '#fee2e2', border: '#fca5a5', fg: '#7f1d1d' };
+    return                              { bg: '#f3f4f6', border: '#e5e7eb', fg: '#374151' };
+  };
+
+  // Compact relative time. Falls back to date if older than 30 days.
+  const relTime = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+    if (diff < 60)        return 'just now';
+    if (diff < 3600)      return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400)     return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 86400*7)   return `${Math.floor(diff / 86400)}d ago`;
+    if (diff < 86400*30)  return `${Math.floor(diff / (86400 * 7))}w ago`;
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  };
+
+  const fmtDuration = (sec) => {
+    if (!sec || sec <= 0) return '';
+    const min = Math.round(sec / 60);
+    return min === 0 ? `${sec}s` : `${min} min`;
+  };
+
+  return (
+    <div style={{ padding: '4px 0' }}>
+
+      {/* CTA + phone row */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 12 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {prospect.phone ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 12, color: '#6b7280' }}>Phone on file:</span>
+              <a href={`tel:${prospect.phone}`}
+                 style={{ fontSize: 14, color: '#9a3412', fontWeight: 600, textDecoration: 'none' }}>
+                {prospect.phone}
+              </a>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: '#9ca3af', fontStyle: 'italic' }}>
+              No phone on file — add one when you log a call.
+            </div>
+          )}
+        </div>
+        <button
+          onClick={onLogCall}
+          style={{
+            padding: '7px 14px', background: '#9a3412', color: '#fff',
+            border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600,
+            cursor: 'pointer', whiteSpace: 'nowrap',
+          }}
+        >
+          📞 Log call
+        </button>
+      </div>
+
+      {/* Summary strip */}
+      {total > 0 && (
+        <div style={{
+          display: 'flex', gap: 12, padding: '10px 12px', marginBottom: 16,
+          background: '#fff7ed', borderRadius: 6, border: '1px solid #fed7aa',
+          fontSize: 12, color: '#7c2d12',
+        }}>
+          <div><strong>{total}</strong> total</div>
+          <div style={{ color: '#14532d' }}><strong>{connected}</strong> connected</div>
+          {voicemail > 0 && <div style={{ color: '#78350f' }}><strong>{voicemail}</strong> voicemail</div>}
+          {last && <div style={{ marginLeft: 'auto', color: '#9a3412' }}>last: {relTime(last.occurred_at)}</div>}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {total === 0 && (
+        <div style={{
+          padding: '24px 16px', textAlign: 'center',
+          background: '#f9fafb', borderRadius: 8, border: '1px dashed #e5e7eb',
+        }}>
+          <div style={{ fontSize: 28, marginBottom: 6, opacity: 0.5 }}>📞</div>
+          <div style={{ fontSize: 13, color: '#6b7280', fontWeight: 500, marginBottom: 4 }}>
+            No calls logged yet
+          </div>
+          <div style={{ fontSize: 11, color: '#9ca3af' }}>
+            Log your first call to start tracking outcomes for this prospect.
+          </div>
+        </div>
+      )}
+
+      {/* Call list — newest first */}
+      {calls.map(call => {
+        const colors = groupColor(call.outcome_group);
+        const dur    = fmtDuration(call.duration_seconds);
+        return (
+          <div key={call.id} style={{
+            padding: '12px 14px', marginBottom: 10, borderRadius: 8,
+            background: '#fff', border: '1px solid #e5e7eb',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <span style={{
+                  display: 'inline-block', padding: '2px 8px', borderRadius: 4,
+                  background: colors.bg, border: `1px solid ${colors.border}`, color: colors.fg,
+                  fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+                }}>
+                  {call.outcome_label || call.outcome}
+                </span>
+                {dur && (
+                  <span style={{ fontSize: 11, color: '#6b7280' }}>· {dur}</span>
+                )}
+              </div>
+              <span style={{ fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap' }}>
+                {relTime(call.occurred_at)}
+              </span>
+            </div>
+            {call.notes && (
+              <div style={{ fontSize: 12, color: '#374151', whiteSpace: 'pre-wrap', marginBottom: 6, lineHeight: 1.4 }}>
+                {call.notes}
+              </div>
+            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, color: '#9ca3af' }}>
+              <span>by {call.logged_by_name || call.logged_by_email || `User #${call.user_id}`}</span>
+              {call.phone_used && <span>· called {call.phone_used}</span>}
+              {call.direction === 'inbound' && <span style={{ color: '#1e40af' }}>· inbound</span>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LOG CALL MODAL
+// Modal form for capturing a new call log. Mounted from the drawer when
+// the rep clicks "Log call". Closes on save or cancel.
+//
+// Props:
+//   prospect  — the current prospect (for prefill: phone, name)
+//   settings  — call settings from /api/org/call-settings (with outcomes
+//               array). When null the form shows a brief loading state.
+//   onSaved   — async callback fired after a successful save
+//   onClose   — close the modal without saving
+// ═════════════════════════════════════════════════════════════════════════════
+
+function LogCallModal({ prospect, settings, onSaved, onClose }) {
+  // Form state. occurred_at defaults to "now" in datetime-local format.
+  const localNow = () => {
+    const d = new Date();
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); // shift for local input
+    return d.toISOString().slice(0, 16);  // YYYY-MM-DDTHH:MM
+  };
+  const [occurredAt, setOccurredAt] = useState(localNow());
+  const [outcomeKey, setOutcomeKey] = useState('');
+  const [durationMin, setDurationMin] = useState('');   // input as minutes; converted to seconds on save
+  const [phoneUsed, setPhoneUsed] = useState(prospect?.phone || '');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Outcome metadata derived from the selected key. Drives:
+  //   - whether the duration field is shown (no_answer / wrong_number /
+  //     gatekeeper hide it because there's no connection to measure)
+  //   - placeholder text in the notes field
+  const OUTCOMES_NO_DURATION = new Set(['no_answer', 'wrong_number', 'gatekeeper']);
+  const showDuration = outcomeKey && !OUTCOMES_NO_DURATION.has(outcomeKey);
+
+  const notesPlaceholder = (() => {
+    if (!outcomeKey) return 'What happened on the call?';
+    if (outcomeKey === 'connected_meaningful' || outcomeKey === 'connected_brief') {
+      return 'What did you discuss? Any specific next steps the prospect mentioned?';
+    }
+    if (outcomeKey === 'voicemail_left') return 'Brief context for the voicemail you left';
+    if (outcomeKey === 'callback_requested') return 'When and why did they ask for a callback?';
+    if (outcomeKey === 'do_not_call') return 'Any context worth recording for compliance?';
+    return 'Optional notes';
+  })();
+
+  const handleSave = async () => {
+    if (!outcomeKey) { setError('Pick an outcome'); return; }
+    if (!prospect?.id) { setError('No prospect loaded'); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      const body = {
+        prospect_id: prospect.id,
+        outcome: outcomeKey,
+        occurred_at: occurredAt ? new Date(occurredAt).toISOString() : undefined,
+        notes: notes.trim() || undefined,
+        phone_used: phoneUsed.trim() || undefined,
+      };
+      if (showDuration && durationMin && Number(durationMin) > 0) {
+        body.duration_seconds = Math.round(Number(durationMin) * 60);
+      }
+      await apiFetch('/prospect-calls', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      await onSaved();
+    } catch (err) {
+      setError(err.message || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Group outcomes by their `group` for visual separation in the dropdown.
+  // Defaults shown when settings is still loading.
+  const outcomes = settings?.outcomes || [];
+  const outcomesByGroup = {};
+  outcomes.forEach(o => {
+    const g = o.group || 'other';
+    if (!outcomesByGroup[g]) outcomesByGroup[g] = [];
+    outcomesByGroup[g].push(o);
+  });
+  const GROUP_LABELS = {
+    connected:  'Connected',
+    no_contact: 'No contact',
+    blocker:    'Blocker',
+    other:      'Other',
+  };
+  const groupOrder = ['connected', 'no_contact', 'blocker', 'other'].filter(g => outcomesByGroup[g]);
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: 1100,
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: 480, maxWidth: '92vw', maxHeight: '92vh', overflowY: 'auto',
+          background: '#fff', borderRadius: 10, boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+        }}
+      >
+        {/* Header */}
+        <div style={{ padding: '14px 18px', borderBottom: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#1a202c' }}>
+              📞 Log call
+            </div>
+            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+              {prospect.first_name} {prospect.last_name}
+              {prospect.title && ` · ${prospect.title}`}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ background: 'none', border: 'none', fontSize: 22, color: '#9ca3af', cursor: 'pointer', padding: 0, lineHeight: 1 }}
+          >×</button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: '14px 18px' }}>
+
+          {/* When */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>
+              When
+            </label>
+            <input
+              type="datetime-local"
+              value={occurredAt}
+              onChange={e => setOccurredAt(e.target.value)}
+              style={{
+                width: '100%', padding: '7px 10px', fontSize: 13,
+                border: '1px solid #d1d5db', borderRadius: 6, color: '#1a202c',
+              }}
+            />
+          </div>
+
+          {/* Outcome */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>
+              Outcome <span style={{ color: '#dc2626' }}>*</span>
+            </label>
+            {!settings ? (
+              <div style={{ fontSize: 12, color: '#9ca3af', padding: '7px 0' }}>Loading outcomes…</div>
+            ) : (
+              <select
+                value={outcomeKey}
+                onChange={e => setOutcomeKey(e.target.value)}
+                style={{
+                  width: '100%', padding: '7px 10px', fontSize: 13,
+                  border: '1px solid #d1d5db', borderRadius: 6, color: '#1a202c',
+                  background: '#fff',
+                }}
+              >
+                <option value="">— Select outcome —</option>
+                {groupOrder.map(g => (
+                  <optgroup key={g} label={GROUP_LABELS[g] || g}>
+                    {outcomesByGroup[g].map(o => (
+                      <option key={o.key} value={o.key}>{o.label}</option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            )}
+          </div>
+
+          {/* Duration — only shown for outcomes where a connection was made */}
+          {showDuration && (
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>
+                Duration (minutes)
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={durationMin}
+                onChange={e => setDurationMin(e.target.value)}
+                placeholder={
+                  outcomeKey === 'voicemail_left' ? '1' :
+                  outcomeKey === 'connected_meaningful' ? '10' : ''
+                }
+                style={{
+                  width: '100%', padding: '7px 10px', fontSize: 13,
+                  border: '1px solid #d1d5db', borderRadius: 6, color: '#1a202c',
+                }}
+              />
+            </div>
+          )}
+
+          {/* Phone */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>
+              Phone called {!prospect?.phone && <span style={{ color: '#9a3412', fontWeight: 500 }}>(no phone on file)</span>}
+            </label>
+            <input
+              type="tel"
+              value={phoneUsed}
+              onChange={e => setPhoneUsed(e.target.value)}
+              placeholder="+1 (415) 555-1234"
+              style={{
+                width: '100%', padding: '7px 10px', fontSize: 13,
+                border: '1px solid #d1d5db', borderRadius: 6, color: '#1a202c',
+              }}
+            />
+          </div>
+
+          {/* Notes */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4 }}>
+              Notes
+            </label>
+            <textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder={notesPlaceholder}
+              rows={4}
+              style={{
+                width: '100%', padding: '7px 10px', fontSize: 13,
+                border: '1px solid #d1d5db', borderRadius: 6, color: '#1a202c',
+                resize: 'vertical', fontFamily: 'inherit',
+              }}
+            />
+          </div>
+
+          {error && (
+            <div style={{
+              padding: '7px 10px', background: '#fef2f2', border: '1px solid #fecaca',
+              color: '#991b1b', borderRadius: 6, fontSize: 12, marginBottom: 12,
+            }}>
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          padding: '12px 18px', borderTop: '1px solid #e5e7eb',
+          display: 'flex', justifyContent: 'flex-end', gap: 8,
+          background: '#f9fafb', borderBottomLeftRadius: 10, borderBottomRightRadius: 10,
+        }}>
+          <button
+            onClick={onClose}
+            disabled={saving}
+            style={{
+              padding: '7px 14px', background: '#fff', color: '#374151',
+              border: '1px solid #d1d5db', borderRadius: 6,
+              fontSize: 13, fontWeight: 500,
+              cursor: saving ? 'not-allowed' : 'pointer',
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || !outcomeKey}
+            style={{
+              padding: '7px 14px', background: outcomeKey && !saving ? '#9a3412' : '#d1d5db',
+              color: '#fff', border: 'none', borderRadius: 6,
+              fontSize: 13, fontWeight: 600,
+              cursor: (saving || !outcomeKey) ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {saving ? 'Saving…' : 'Save call log'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 
 // ═════════════════════════════════════════════════════════════════════════════
