@@ -516,10 +516,23 @@ router.post('/upsert', async (req, res) => {
 
     await client.query('COMMIT');
 
+    // For prospect links, also surface the prospect's account_id so the
+    // extension can show it in debug mode. Cheap one-row lookup, kept
+    // outside the transaction since the COMMIT is already done.
+    let accountId = null;
+    if (linkProspectId) {
+      const accRes = await client.query(
+        'SELECT account_id FROM prospects WHERE id = $1 AND org_id = $2',
+        [linkProspectId, req.orgId]
+      );
+      accountId = accRes.rows[0]?.account_id || null;
+    }
+
     return res.json({
       profile_id: profile.id,
       profile,
       linked,
+      account_id: accountId,
     });
 
   } catch (err) {

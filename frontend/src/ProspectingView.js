@@ -1674,6 +1674,30 @@ function ProspectDetailPanel({ prospectId, onClose, onUpdate }) {
             {(prospect.company_name || prospect.account?.name) && (
               <span className="pv-detail-company">at {prospect.account?.name || prospect.company_name}</span>
             )}
+            {/* Debug IDs strip — visible only when the gowarm_debug flag is
+                set in localStorage. Used during testing to copy prospect_id
+                and account_id without having to look them up in the DB.
+                To enable, open the browser console and run:
+                  localStorage.setItem('gowarm_debug', '1')
+                Reload the page. To disable:
+                  localStorage.removeItem('gowarm_debug') */}
+            {(typeof window !== 'undefined' &&
+              (window.localStorage?.getItem('gowarm_debug') === '1' ||
+               window.localStorage?.getItem('gowarm_debug') === 'true')) && (
+              <span style={{
+                display: 'inline-block', marginTop: 4,
+                padding: '2px 8px', borderRadius: 4,
+                background: '#FEF3C7', border: '1px solid #FDE68A',
+                color: '#78350F', fontSize: 10,
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                letterSpacing: 0.4,
+              }}>
+                DEBUG · prospect: {prospect.id}
+                {(prospect.account?.id || prospect.account_id) && (
+                  <> · account: {prospect.account?.id || prospect.account_id}</>
+                )}
+              </span>
+            )}
           </div>
           <button className="pv-detail-close" onClick={onClose}>×</button>
         </div>
