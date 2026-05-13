@@ -754,34 +754,21 @@ router.patch('/:id', async (req, res) => {
       patch.occurred_at = ts.toISOString();
     }
 
-    // Phase 3: accept callback_requested_at on PATCH. Mirrors the POST
-    // validation. Only meaningful when the (current OR new) outcome is
-    // 'callback_requested'; silently dropped for any other outcome so the
-    // form can include it without strict mode failures.
-    if (req.body.callback_requested_at !== undefined) {
-      const outcomeKey = patch.outcome || existing.outcome;
-      if (outcomeKey === 'callback_requested') {
-        if (req.body.callback_requested_at === null || req.body.callback_requested_at === '') {
-          patch.callback_requested_at = null;
-        } else {
-          const cb = new Date(req.body.callback_requested_at);
-          if (isNaN(cb.getTime())) {
-            return res.status(400).json({ error: { message: 'callback_requested_at must be a valid timestamp' } });
-          }
-          if (cb.getTime() < Date.now() - 60_000) {
-            return res.status(400).json({ error: { message: 'callback_requested_at should be in the future' } });
-          }
-          patch.callback_requested_at = cb.toISOString();
-        }
-      }
-      // If outcome is not callback_requested, ignore the field silently.
-    }
-
     if (Object.keys(patch).length === 0) {
       return res.status(400).json({ error: { message: 'No editable fields in request' } });
     }
 
     // Build a dynamic UPDATE.
+    //
+    // Parameter numbering: SET-clause params occupy $1..$N (where N is the
+    // number of patched columns), then the WHERE params (id, org_id) follow
+    // as $(N+1) and $(N+2).
+    //
+    // (Phase 3 bugfix: an earlier version computed the WHERE placeholders as
+    // $(length) and $(length+1) AFTER pushing id+orgId, which made the second
+    // placeholder refer to a non-existent param and triggered Postgres 42P18
+    // "could not determine data type" when the patch had a specific field
+    // count. The corrected math below uses array indices consistently.)
     const setClauses = [];
     const values     = [];
     Object.entries(patch).forEach(([col, val]) => {
@@ -789,9 +776,9 @@ router.patch('/:id', async (req, res) => {
       setClauses.push(`${col} = $${values.length}`);
     });
     setClauses.push(`updated_at = CURRENT_TIMESTAMP`);
+    const idPlaceholder    = values.length + 1;
+    const orgIdPlaceholder = values.length + 2;
     values.push(id, req.orgId);
-    const idIdx    = values.length - 1;  // 1-based: $(idIdx+1)
-    const orgIdx   = values.length;
 
     // Transaction: update the row, then mirror the change in prospecting_activities.
     const client = await db.pool.connect();
@@ -801,7 +788,7 @@ router.patch('/:id', async (req, res) => {
       const updRes = await client.query(
         `UPDATE calls
             SET ${setClauses.join(', ')}
-          WHERE id = $${idIdx + 1} AND org_id = $${orgIdx + 1}
+          WHERE id = $${idPlaceholder} AND org_id = $${orgIdPlaceholder}
           RETURNING *`,
         values
       );
