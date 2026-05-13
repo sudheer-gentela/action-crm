@@ -1404,7 +1404,11 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   // activeTwilioCallId is the calls.id of an in-progress Twilio call. When
   // set, TwilioCallModal renders. When the call reaches status='completed',
   // it hands off to LogCallModal pre-filled with duration_seconds.
+  // editingTwilioCallId is set ONLY when LogCallModal opens to capture an
+  // outcome on a completed Twilio call — it tells the modal to PATCH the
+  // existing row instead of POSTing a new one.
   const [activeTwilioCallId,       setActiveTwilioCallId]       = useState(null);
+  const [editingTwilioCallId,      setEditingTwilioCallId]      = useState(null);
   const [prefilledCallDurationSec, setPrefilledCallDurationSec] = useState(null);
   const [isInitiatingTwilio,       setIsInitiatingTwilio]       = useState(false);
 
@@ -2545,9 +2549,12 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
             onCompleted={(callId, durationSec) => {
               // Call ended normally. Close the in-progress modal and open
               // LogCallModal so the rep can pick an outcome + add notes.
-              // duration_seconds was set by the status webhook on the calls
-              // row server-side; LogCallModal will pull it via refreshCalls.
+              // We thread the callId into LogCallModal so it PATCHes the
+              // existing row (created by /initiate) instead of POSTing a
+              // duplicate. duration_seconds is pre-filled so the rep doesn't
+              // have to re-enter it.
               setActiveTwilioCallId(null);
+              setEditingTwilioCallId(callId);
               setPrefilledCallDurationSec(durationSec);
               setShowLogCallModal(true);
             }}
@@ -2570,10 +2577,13 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
             sequenceStepLogId={callModalSequenceContext?.sequenceStepLogId || null}
             taskNote={callModalSequenceContext?.taskNote || ''}
             sequenceContext={callModalSequenceContext?.sequenceContext || null}
+            editingCallId={editingTwilioCallId}
+            prefilledDurationSec={prefilledCallDurationSec}
             onSaved={async () => {
               const wasSequenceCall = !!callModalSequenceContext?.sequenceStepLogId;
               setShowLogCallModal(false);
               setCallModalSequenceContext(null);
+              setEditingTwilioCallId(null);
               setPrefilledCallDurationSec(null);
               await refreshCalls();
               // Refresh prospect so updated channel_data.call drives the
@@ -2598,6 +2608,8 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
             onClose={() => {
               setShowLogCallModal(false);
               setCallModalSequenceContext(null);
+              setEditingTwilioCallId(null);
+              setPrefilledCallDurationSec(null);
             }}
           />
         )}
@@ -4171,7 +4183,22 @@ function CallsPanel({ prospect, calls, pendingCallTasks = [], onLogCall, onLogCa
 //   onClose   — close the modal without saving
 // ═════════════════════════════════════════════════════════════════════════════
 
-function LogCallModal({ prospect, settings, onSaved, onClose, sequenceStepLogId, taskNote, sequenceContext }) {
+function LogCallModal({
+  prospect,
+  settings,
+  onSaved,
+  onClose,
+  sequenceStepLogId,
+  taskNote,
+  sequenceContext,
+  // Phase 3: when present, the modal is capturing the outcome for an
+  // already-completed Twilio call (created via /initiate). It PATCHes that
+  // row instead of POSTing a new one. prefilledDurationSec lets the duration
+  // field seed from the Twilio status webhook's CallDuration so the rep
+  // doesn't have to retype it.
+  editingCallId        = null,
+  prefilledDurationSec = null,
+}) {
   // Form state. occurred_at defaults to "now" in datetime-local format.
   const localNow = () => {
     const d = new Date();
@@ -4188,7 +4215,15 @@ function LogCallModal({ prospect, settings, onSaved, onClose, sequenceStepLogId,
   };
   const [occurredAt, setOccurredAt] = useState(localNow());
   const [outcomeKey, setOutcomeKey] = useState('');
-  const [durationMin, setDurationMin] = useState('');   // input as minutes; converted to seconds on save
+  const [durationMin, setDurationMin] = useState(() => {
+    // Twilio handoff: server reports seconds, the input is in minutes.
+    // Round to one decimal (e.g. 87s → 1.5) so the rep sees a sensible
+    // value but can adjust freely.
+    if (prefilledDurationSec && prefilledDurationSec > 0) {
+      return String(Math.round((prefilledDurationSec / 60) * 10) / 10);
+    }
+    return '';
+  });
   const [phoneUsed, setPhoneUsed] = useState(prospect?.phone || '');
   // Phase 2: pre-fill notes with the sequence step's task_note when this
   // modal opens from a sequence call task. The rep can edit before saving.
@@ -4245,10 +4280,13 @@ function LogCallModal({ prospect, settings, onSaved, onClose, sequenceStepLogId,
       if (sequenceStepLogId) {
         body.sequence_step_log_id = sequenceStepLogId;
       }
-      await apiFetch('/prospect-calls', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
+      await apiFetch(
+        editingCallId ? `/prospect-calls/${editingCallId}` : '/prospect-calls',
+        {
+          method: editingCallId ? 'PATCH' : 'POST',
+          body: JSON.stringify(body),
+        }
+      );
       await onSaved();
     } catch (err) {
       setError(err.message || 'Save failed');

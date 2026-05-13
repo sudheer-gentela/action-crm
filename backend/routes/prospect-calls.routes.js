@@ -754,6 +754,29 @@ router.patch('/:id', async (req, res) => {
       patch.occurred_at = ts.toISOString();
     }
 
+    // Phase 3: accept callback_requested_at on PATCH. Mirrors the POST
+    // validation. Only meaningful when the (current OR new) outcome is
+    // 'callback_requested'; silently dropped for any other outcome so the
+    // form can include it without strict mode failures.
+    if (req.body.callback_requested_at !== undefined) {
+      const outcomeKey = patch.outcome || existing.outcome;
+      if (outcomeKey === 'callback_requested') {
+        if (req.body.callback_requested_at === null || req.body.callback_requested_at === '') {
+          patch.callback_requested_at = null;
+        } else {
+          const cb = new Date(req.body.callback_requested_at);
+          if (isNaN(cb.getTime())) {
+            return res.status(400).json({ error: { message: 'callback_requested_at must be a valid timestamp' } });
+          }
+          if (cb.getTime() < Date.now() - 60_000) {
+            return res.status(400).json({ error: { message: 'callback_requested_at should be in the future' } });
+          }
+          patch.callback_requested_at = cb.toISOString();
+        }
+      }
+      // If outcome is not callback_requested, ignore the field silently.
+    }
+
     if (Object.keys(patch).length === 0) {
       return res.status(400).json({ error: { message: 'No editable fields in request' } });
     }
