@@ -1,379 +1,266 @@
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
+// ─────────────────────────────────────────────────────────────────────────────
+// server.js — GoWarmCRM backend entry point
+//
+// Owns: process boot, middleware stack, route mounting, cron schedules.
+// Does NOT own: any business logic, validation, or persistence — those live
+// in routes/ and services/.
+//
+// Structure:
+//   1. Bootstrap (express, dotenv, app constants)
+//   2. Core middleware (security, CORS, ext-key guard, rate limits, body parser)
+//   3. Health + public routes
+//   4. API routes — grouped by domain
+//   5. Error handlers
+//   6. listen() + cron registration
+//
+// Phase 3 additions are isolated under "Twilio (Phase 3)" comments to keep
+// the diff easy to read.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const express   = require('express');
+const cors      = require('cors');
+const helmet    = require('helmet');
+const morgan    = require('morgan');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 3001;
 
-// ─────────────────────────────────────────────────────────────
-// Route imports
-// ─────────────────────────────────────────────────────────────
-const webhookTranscriptRoutes = require('./routes/webhooks.routes');
-const outlookRoutes    = require('./routes/outlook.routes');
-const googleRoutes     = require('./routes/google.routes');
-const syncRoutes       = require('./routes/sync.routes');
-const aiRoutes         = require('./routes/ai.routes');
-const promptsRoutes    = require('./routes/prompts.routes');
-const dealHealthRoutes = require('./routes/dealHealth.routes');
-const storageRoutes    = require('./routes/storage.routes');
-const superAdminRoutes  = require('./routes/superAdmin.routes');
-const orgAdminRoutes    = require('./routes/orgAdmin.routes');
-const playbooksRoutes   = require('./routes/playbooks.routes');
-const aiContextRoutes  = require('./routes/ai-context.routes');
-const orgRolesRoutes   = require('./routes/org-roles.routes');
-const dealTeamRoutes   = require('./routes/deal-team.routes');
-const dealContactsRoutes = require('./routes/deal-contacts.routes');
-// deal-stages and prospect-stages removed — consolidated into pipeline-stages
-
-// STRAP Framework
-const strapRoutes = require('./routes/strap.routes');
-
-// Playbook Plays (role-based)
-const playbookPlaysRoutes = require('./routes/playbook-plays.routes');
-const dealPlaysRoutes     = require('./routes/deal-plays.routes');
-
-// Org Hierarchy
-const orgHierarchyRoutes = require('./routes/orgHierarchy.routes');
-
-// Team Notifications
-const teamNotificationsRoutes = require('./routes/teamNotifications.routes');
-
-// Prospecting Module
-const prospectsRoutes           = require('./routes/prospects.routes');
-const prospectingActionsRoutes  = require('./routes/prospecting-actions.routes');
-const accountProspectingRoutes  = require('./routes/account-prospecting.routes');
-const unifiedActionsRoutes      = require('./routes/unified-actions.routes');
-const prospectContextRoutes     = require('./routes/prospect-context.routes');
-const teamsRoutes               = require('./routes/teams.routes');
-const userPreferencesRoutes     = require('./routes/user-preferences.routes');
-
-// ── Prospecting Phase 2 routes ────────────────────────────────
-const prospectingSendersRoutes  = require('./routes/prospecting-senders.routes');
-const outreachLimitsRoutes      = require('./routes/outreach-limits.routes');
-const prospectingInboxRoutes    = require('./routes/prospecting-inbox.routes');
-
-// Product Catalog + Deal Products
-const productsRoutes = require('./routes/products.routes');
-
-// CLM — Contract Lifecycle Management
-const contractsRoutes = require('./routes/contracts.routes');
-
-// ── Handover Module ───────────────────────────────────────────
-const teamDimensionsRoutes = require('./routes/team-dimensions.routes');
-const accountTeamsRoutes   = require('./routes/account-teams.routes');
-const handoversRoutes      = require('./routes/handovers.routes');
-
-// ── Service / Customer Support Module ────────────────────────
-const supportRoutes = require('./routes/support.routes');
-
-// ── Sequences (Prospecting Phase 3) ──────────────────────────
-const sequencesRoutes = require('./routes/sequences.routes');
-
-// ── Agency / Client Module ────────────────────────────────────
-const clientsRoutes      = require('./routes/clients.routes');
-const clientPortalRoutes = require('./routes/client-portal.routes');
-
-const playbookBuilderRoutes       = require('./routes/playbookBuilder.routes');
-const playbookRegistrationsRoutes = require('./routes/playbookRegistrations.routes');
-
-const actionConfigRoutes 	  = require('./routes/action-config.routes');
+app.set('trust proxy', 1);   // Railway / Cloudflare sit in front of us
 
 
-// ─────────────────────────────────────────────────────────────
-// Middleware imports
-// ─────────────────────────────────────────────────────────────
-require('./middleware/auth.middleware');
-require('./middleware/orgContext.middleware');
-require('./middleware/superAdmin.middleware');
-require('./middleware/requireModule.middleware');
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. CORE MIDDLEWARE
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Trust Railway proxy
-app.set('trust proxy', 1);
-
-
-// Security middleware
+// Security headers
 app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" },
-  crossOriginOpenerPolicy:   { policy: "same-origin-allow-popups" }
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  crossOriginOpenerPolicy:   { policy: 'same-origin-allow-popups' },
 }));
 
-// CORS configuration
-const corsOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(',').map(s => s.trim())
-  : [];
+// CORS — web origins + chrome extension allow-list
+const extraCorsOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
 
 const corsOptions = {
-  origin: (origin, callback) => {
-    // No origin = Postman / Railway health checks — allow
-    if (!origin) return callback(null, true);
-
-    // Known web origins
-    const webOrigins = [
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);   // Postman / Railway health checks
+    const allowed = [
       'http://localhost:3000',
       'https://action-crm.vercel.app',
       'https://app.gowarmcrm.com',
-      ...corsOrigins,
+      ...extraCorsOrigins,
     ];
-    if (webOrigins.includes(origin)) return callback(null, true);
-
-    // Any GoWarm Chrome extension — allowed at CORS level,
-    // but must also pass the X-GoWarm-Extension-Key check below
-    if (origin.startsWith('chrome-extension://')) return callback(null, true);
-
-    callback(new Error(`CORS blocked: ${origin}`));
+    if (allowed.includes(origin))                 return cb(null, true);
+    if (origin.startsWith('chrome-extension://')) return cb(null, true);
+    return cb(new Error(`CORS blocked: ${origin}`));
   },
-  credentials:     true,
-  methods:         ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders:  ['Content-Type', 'Authorization', 'X-GoWarm-Extension-Key'],
-  exposedHeaders:  ['Content-Range', 'X-Content-Range'],
-  maxAge: 600
+  credentials:    true,
+  methods:        ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-GoWarm-Extension-Key'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  maxAge: 600,
 };
-
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-// Extension secret key guard — chrome-extension origins must present
-// the correct X-GoWarm-Extension-Key header.
+// Extension secret-key guard. Chrome-extension origins must pass a header
+// check on top of the CORS allow. Preflights bypass — the actual request
+// hits this guard.
 app.use((req, res, next) => {
-  // CORS preflights cannot carry custom headers — let them through so the
-  // browser's actual request can include the key. The actual request hits
-  // the same guard and is checked properly.
   if (req.method === 'OPTIONS') return next();
-
   const origin = req.headers.origin || '';
+  if (!origin.startsWith('chrome-extension://')) return next();
 
-  if (origin.startsWith('chrome-extension://')) {
-    const key = req.headers['x-gowarm-extension-key'];
-    const expected = process.env.EXTENSION_API_KEY;
-
-    console.log('[ext-guard] origin=' + origin + ' keyLen=' + (key ? key.length : 0) + ' envLen=' + (expected ? expected.length : 0) + ' match=' + (key === expected));
-
-    if (!key || key !== expected) {
-      return res.status(403).json({ error: { message: 'Unauthorized extension' } });
-    }
+  const key      = req.headers['x-gowarm-extension-key'];
+  const expected = process.env.EXTENSION_API_KEY;
+  if (!key || key !== expected) {
+    return res.status(403).json({ error: { message: 'Unauthorized extension' } });
   }
-
   return next();
 });
 
-
-// ─────────────────────────────────────────────────────────────
 // Rate limiting
-// ─────────────────────────────────────────────────────────────
-const limiter = rateLimit({
+const apiLimiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
   max:      parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 2000,
   standardHeaders: true,
   legacyHeaders:   false,
-  handler: (req, res) => {
-    res.status(429).json({
-      success: false,
-      error: { message: 'Too many requests. Please try again later.', code: 'RATE_LIMIT_EXCEEDED' }
-    });
-  }
+  handler: (req, res) => res.status(429).json({
+    success: false,
+    error: { message: 'Too many requests. Please try again later.', code: 'RATE_LIMIT_EXCEEDED' },
+  }),
 });
-
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max:      20,
   standardHeaders: true,
   legacyHeaders:   false,
-  handler: (req, res) => {
-    res.status(429).json({
-      success: false,
-      error: { message: 'Too many login attempts. Please try again in 15 minutes.', code: 'AUTH_RATE_LIMIT_EXCEEDED' }
-    });
-  }
+  handler: (req, res) => res.status(429).json({
+    success: false,
+    error: { message: 'Too many login attempts. Please try again in 15 minutes.', code: 'AUTH_RATE_LIMIT_EXCEEDED' },
+  }),
 });
-
-app.use('/api/',      limiter);
+app.use('/api/',      apiLimiter);
 app.use('/api/auth/', authLimiter);
 
-// ─────────────────────────────────────────────────────────────
-// Body parsing & logging
-// ─────────────────────────────────────────────────────────────
-
-// Capture raw body for webhook signature verification (Zoom requires this)
+// Raw-body capture for /webhooks/* (Zoom/transcript webhooks need raw bytes
+// for signature verification). Twilio webhooks are at /api/twilio/webhooks/*
+// and do NOT match this prefix, so they pass through the normal urlencoded
+// parser below — which is what Twilio's signature validator expects.
 app.use((req, res, next) => {
-  if (req.path.startsWith('/webhooks/')) {
-    let data = '';
-    req.setEncoding('utf8');
-    req.on('data', chunk => { data += chunk; });
-    req.on('end', () => {
-      req.rawBody = data;
-      try {
-        req.body = JSON.parse(data);
-      } catch (e) {
-        req.body = {};
-      }
-      next();
-    });
-  } else {
+  if (!req.path.startsWith('/webhooks/')) return next();
+  let data = '';
+  req.setEncoding('utf8');
+  req.on('data',  chunk => { data += chunk; });
+  req.on('end',   ()    => {
+    req.rawBody = data;
+    try { req.body = JSON.parse(data); } catch { req.body = {}; }
     next();
-  }
+  });
 });
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-if (process.env.NODE_ENV === 'development') {
-  app.use(morgan('dev'));
-}
+if (process.env.NODE_ENV === 'development') app.use(morgan('dev'));
 
-// ─────────────────────────────────────────────────────────────
-// Health check
-// ─────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. HEALTH + PUBLIC ROUTES
+// ─────────────────────────────────────────────────────────────────────────────
+
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// ─────────────────────────────────────────────────────────────
-// API Routes
-// ─────────────────────────────────────────────────────────────
 
-// ─── TEMPORARY: Twilio click-to-call validation route (NO AUTH) ───
-// Registered first so it matches before any auth-protected catch-all
-// Remove after first successful test call
-// const twilio = require('twilio');
-// const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. API ROUTES — grouped by domain
+//
+// Mount order matters: more-specific paths first when prefixes overlap
+// (e.g. /api/salesforce before /api/* dealHealthRoutes).
+// ─────────────────────────────────────────────────────────────────────────────
 
-// app.post('/api/test/twilio-call', async (req, res) => {
-//   try {
-//     const { to } = req.body;
-//     if (!to) {
-//       return res.status(400).json({ error: 'Missing "to" in body (E.164 format, e.g. +14155551234)' });
-//     }
-//     const call = await twilioClient.calls.create({
-//       url: 'http://demo.twilio.com/docs/voice.xml',
-//       to,
-//       from: process.env.TWILIO_PHONE_NUMBER,
-//     });
-//     console.log('[Twilio test] Call created:', call.sid, '→', to);
-//     res.json({ success: true, callSid: call.sid, status: call.status, to, from: process.env.TWILIO_PHONE_NUMBER });
-//   } catch (err) {
-//     console.error('[Twilio test] Error:', err.message, err.code, err.moreInfo);
-//     res.status(500).json({ error: err.message, code: err.code, moreInfo: err.moreInfo });
-//   }
-// });
-
+// ── Skills & runs ────────────────────────────────────────────────────────
 app.use('/api/skill-context', require('./routes/skill-context.routes'));
 app.use('/api/skill-runs',    require('./routes/skill-runs.routes'));
 
-app.use('/api/auth',      require('./routes/auth.routes'));
-app.use('/api/actions',   require('./routes/actions.routes'));
-app.use('/api/deals',     require('./routes/deals.routes'));
-app.use('/api/contacts',  require('./routes/contacts.routes'));
-app.use('/api/accounts',  require('./routes/accounts.routes'));
-app.use('/api/emails',    require('./routes/emails.routes'));
-app.use('/api/meetings',  require('./routes/meetings.routes'));
-app.use('/api/proposals', require('./routes/proposals.routes'));
-app.use('/api/calendar',  require('./routes/calendar.routes'));
-app.use('/api/dashboard', require('./routes/dashboard.routes'));
-app.use('/api/agent',     require('./routes/agent.routes'));
-app.use('/api/outlook',   outlookRoutes);
-app.use('/api/google',    googleRoutes);
-app.use('/api/sync',      syncRoutes);
-app.use('/api/ai',        aiRoutes);
-app.use('/api/prompts',   promptsRoutes);
-// ─── Salesforce Integration — must be before dealHealthRoutes which catches all /api/* ──
-app.use('/api/salesforce', require('./routes/salesforce.routes'));
-app.use('/api/hubspot',    require('./routes/hubspot.routes'));
+// ── Core CRM ──────────────────────────────────────────────────────────────
+app.use('/api/auth',          require('./routes/auth.routes'));
+app.use('/api/actions',       require('./routes/actions.routes'));
+app.use('/api/deals',         require('./routes/deals.routes'));
+app.use('/api/contacts',      require('./routes/contacts.routes'));
+app.use('/api/accounts',      require('./routes/accounts.routes'));
+app.use('/api/emails',        require('./routes/emails.routes'));
+app.use('/api/meetings',      require('./routes/meetings.routes'));
+app.use('/api/proposals',     require('./routes/proposals.routes'));
+app.use('/api/calendar',      require('./routes/calendar.routes'));
+app.use('/api/dashboard',     require('./routes/dashboard.routes'));
+app.use('/api/agent',         require('./routes/agent.routes'));
 
-app.use('/api',           dealHealthRoutes);
-app.use('/api/storage',   storageRoutes);
-app.use('/api/super',      superAdminRoutes);
-app.use('/api/org/admin',  orgAdminRoutes);
-app.use('/api/org/admin',  teamsRoutes);
-app.use('/api/playbooks',              playbookBuilderRoutes);
-app.use('/api/playbook-registrations', playbookRegistrationsRoutes);
-// Legacy stage-guidance routes only — builder handles all other /api/playbooks/* routes
-app.use('/api/playbooks',              playbooksRoutes);
-app.use('/api/ai',         aiContextRoutes);
-app.use('/api/org-roles',  orgRolesRoutes);
-app.use('/api/deal-roles', orgRolesRoutes);
-app.use('/api/deal-team',  dealTeamRoutes);
-app.use('/api/deal-contacts', dealContactsRoutes);
-app.use('/api/straps',        strapRoutes);
-app.use('/api/products',      productsRoutes);
+// ── External integrations (must precede /api/* dealHealth catch-all) ─────
+app.use('/api/outlook',       require('./routes/outlook.routes'));
+app.use('/api/google',        require('./routes/google.routes'));
+app.use('/api/sync',          require('./routes/sync.routes'));
+app.use('/api/ai',            require('./routes/ai.routes'));
+app.use('/api/prompts',       require('./routes/prompts.routes'));
+app.use('/api/salesforce',    require('./routes/salesforce.routes'));
+app.use('/api/hubspot',       require('./routes/hubspot.routes'));
 
-const pipelineStagesRoutes = require('./routes/pipeline-stages.routes');
-app.use('/api/pipeline-stages', pipelineStagesRoutes);
+// Deal health uses a bare /api mount (legacy) — keep AFTER more-specific routes
+app.use('/api',               require('./routes/dealHealth.routes'));
 
-// ─── Playbook Plays ───────────────────────────────────────────
-app.use('/api/playbook-plays', playbookPlaysRoutes);
-app.use('/api/deal-plays',     dealPlaysRoutes);
+// ── Storage / Admin ───────────────────────────────────────────────────────
+app.use('/api/storage',       require('./routes/storage.routes'));
+app.use('/api/super',         require('./routes/superAdmin.routes'));
+app.use('/api/org/admin',     require('./routes/orgAdmin.routes'));
+app.use('/api/org/admin',     require('./routes/teams.routes'));
 
-// ─── Prospecting Module ───────────────────────────────────────
-app.use('/api/prospects',           prospectsRoutes);
-app.use('/api/prospecting-actions', prospectingActionsRoutes);
-app.use('/api/accounts',            accountProspectingRoutes);
-app.use('/api/actions',             unifiedActionsRoutes);
-app.use('/api/prospect-context',    prospectContextRoutes);
-app.use('/api/org-hierarchy',       orgHierarchyRoutes);
-app.use('/api/team-notifications',  teamNotificationsRoutes);
-app.use('/api/users/me',            userPreferencesRoutes);
+// ── Playbooks ─────────────────────────────────────────────────────────────
+app.use('/api/playbooks',              require('./routes/playbookBuilder.routes'));
+app.use('/api/playbook-registrations', require('./routes/playbookRegistrations.routes'));
+app.use('/api/playbooks',              require('./routes/playbooks.routes'));   // legacy stage-guidance
+app.use('/api/ai',                     require('./routes/ai-context.routes'));
+app.use('/api/org-roles',              require('./routes/org-roles.routes'));
+app.use('/api/deal-roles',             require('./routes/org-roles.routes'));
+app.use('/api/deal-team',              require('./routes/deal-team.routes'));
+app.use('/api/deal-contacts',          require('./routes/deal-contacts.routes'));
+app.use('/api/straps',                 require('./routes/strap.routes'));
+app.use('/api/products',               require('./routes/products.routes'));
+app.use('/api/pipeline-stages',        require('./routes/pipeline-stages.routes'));
+app.use('/api/playbook-plays',         require('./routes/playbook-plays.routes'));
+app.use('/api/deal-plays',             require('./routes/deal-plays.routes'));
+
+// ── Prospecting ───────────────────────────────────────────────────────────
+app.use('/api/prospects',           require('./routes/prospects.routes'));
+app.use('/api/prospecting-actions', require('./routes/prospecting-actions.routes'));
+app.use('/api/accounts',            require('./routes/account-prospecting.routes'));
+app.use('/api/actions',             require('./routes/unified-actions.routes'));
+app.use('/api/prospect-context',    require('./routes/prospect-context.routes'));
+app.use('/api/org-hierarchy',       require('./routes/orgHierarchy.routes'));
+app.use('/api/team-notifications',  require('./routes/teamNotifications.routes'));
+app.use('/api/users/me',            require('./routes/user-preferences.routes'));
 app.use('/api/linkedin-profiles',   require('./routes/linkedin-profiles.routes'));
-app.use('/api/prospect-calls',      require('./routes/prospect-calls.routes'));   
+
+// Calls.
+//   Phase 3 (Twilio: /initiate, /:id/status) mounted FIRST so its specific
+//   paths match before the Phase 1+2 catch-all GET /:id.
+//   Phase 1+2 (manual log POST /, GET list, GET /inbox, GET /scan-stale,
+//   GET /:id, PATCH /:id) handles everything else.
+app.use('/api/prospect-calls',      require('./routes/prospect-calls-twilio.routes'));
+app.use('/api/prospect-calls',      require('./routes/prospect-calls.routes'));
 app.use('/api/org/call-settings',   require('./routes/org-call-settings.routes'));
 
+// Prospecting Phase 2
+app.use('/api/prospecting-senders', require('./routes/prospecting-senders.routes'));
+app.use('/api/org/outreach-limits', require('./routes/outreach-limits.routes'));
+app.use('/api/prospecting/inbox',   require('./routes/prospecting-inbox.routes'));
 
-// ── Prospecting Phase 2 ───────────────────────────────────────
-app.use('/api/prospecting-senders', prospectingSendersRoutes);
-app.use('/api/org/outreach-limits', outreachLimitsRoutes);
-app.use('/api/prospecting/inbox',   prospectingInboxRoutes);
+// ── Twilio (Phase 3) ──────────────────────────────────────────────────────
+// Public webhook endpoints — NO auth middleware, signature-validated per-route.
+// Mounted under /api so the existing rate limiter still applies as a safety
+// brake against runaway Twilio retries.
+app.use('/api/twilio/webhooks', require('./routes/twilio-webhooks.routes'));
 
-// ─── CLM ──────────────────────────────────────────────────────
-app.use('/api/contracts', contractsRoutes);
+// ── CLM, Handover, Support, Sequences, Agency ────────────────────────────
+app.use('/api/contracts',       require('./routes/contracts.routes'));
+app.use('/api/team-dimensions', require('./routes/team-dimensions.routes'));
+app.use('/api/account-teams',   require('./routes/account-teams.routes'));
+app.use('/api/handovers',       require('./routes/handovers.routes'));
+app.use('/api/support',         require('./routes/support.routes'));
+app.use('/api/sequences',       require('./routes/sequences.routes'));
+app.use('/api/clients',         require('./routes/clients.routes'));
+app.use('/api/portal',          require('./routes/client-portal.routes'));
 
-// ─── Handover Module ──────────────────────────────────────────
-app.use('/api/team-dimensions', teamDimensionsRoutes);
-app.use('/api/account-teams',   accountTeamsRoutes);
-app.use('/api/handovers',       handoversRoutes);
-
-// ─── Service / Customer Support Module ───────────────────────
-app.use('/api/support', supportRoutes);
-
-// ─── Sequences (Prospecting Phase 3) ─────────────────────────
-app.use('/api/sequences', sequencesRoutes);
-
-// ─── Agency / Client Module ───────────────────────────────────
-app.use('/api/clients', clientsRoutes);
-app.use('/api/portal',  clientPortalRoutes);
-
-// ─── Workflow Module ───────────────────────────────────
+// ── Workflow ──────────────────────────────────────────────────────────────
 app.use('/api/super',     require('./routes/workflow.superAdmin.routes'));
 app.use('/api/org/admin', require('./routes/workflow.orgAdmin.routes'));
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CHANGE 3B — Register webhook route (in the API routes section)
-// ─────────────────────────────────────────────────────────────────────────────
-app.use('/webhooks/transcript', webhookTranscriptRoutes);
-app.use('/api/transcripts', require('./routes/transcripts.routes'));
+// ── External webhooks (Zoom transcripts, etc.) ────────────────────────────
+// Note: /webhooks/* (no /api/ prefix) — see raw-body capture above.
+app.use('/webhooks/transcript', require('./routes/webhooks.routes'));
+app.use('/api/transcripts',     require('./routes/transcripts.routes'));
 
+// ── Misc ──────────────────────────────────────────────────────────────────
+app.use('/api/action-config',   require('./routes/action-config.routes'));
 
-app.use('/api/action-config', actionConfigRoutes);
-
-
-
-
-
-// ─── Public org context ───────────────────────────────────────
-const authenticateToken   = require('./middleware/auth.middleware');
-const { orgContext }      = require('./middleware/orgContext.middleware');
-const { pool: ctxPool }   = require('./config/database');
+// ── Public org context ────────────────────────────────────────────────────
+const authenticateToken = require('./middleware/auth.middleware');
+const { orgContext }    = require('./middleware/orgContext.middleware');
+const { pool }          = require('./config/database');
 app.get('/api/org/context', authenticateToken, orgContext, async (req, res) => {
   try {
-    const r = await ctxPool.query(
+    const r = await pool.query(
       `SELECT settings->'modules' AS modules FROM organizations WHERE id = $1`,
       [req.orgId]
     );
     const raw = r.rows[0]?.modules || {};
+    // Normalize legacy scalar AND new {allowed, enabled} shapes onto a bool.
     const modules = Object.fromEntries(
       Object.entries(raw).map(([k, v]) => {
-        // Handle both legacy scalar (true/false) and new object ({ allowed, enabled }) format
         if (v !== null && typeof v === 'object') return [k, !!v.enabled];
         return [k, v === true || v === 'true' || v === 1 || v === '1'];
       })
@@ -384,9 +271,11 @@ app.get('/api/org/context', authenticateToken, orgContext, async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────────────────────────
-// Error handling
-// ─────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. ERROR HANDLERS — must be last
+// ─────────────────────────────────────────────────────────────────────────────
+
 app.use((req, res) => {
   res.status(404).json({ error: { message: 'Route not found' } });
 });
@@ -396,55 +285,67 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({
     error: {
       message: err.message || 'Internal server error',
-      ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
-    }
+      ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+    },
   });
 });
 
-// ─────────────────────────────────────────────────────────────
-// Start server
-// ─────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`
-╔═══════════════════════════════════════╗
-║     Action CRM API Server             ║
-║     Running on port ${PORT}             ║
-║     Environment: ${process.env.NODE_ENV || 'development'}      ║
-╚═══════════════════════════════════════╝
-  `);
 
-  console.log('🚨 DEPLOY CHECK v8 — agency module: clients + portal routes mounted');
-  console.log('🚀 Starting Bull queue worker...');
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. BOOT — listen + cron + Twilio config check
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.listen(PORT, () => {
+  console.log(`\n╔═══════════════════════════════════════╗`);
+  console.log(`║     GoWarm CRM API Server             ║`);
+  console.log(`║     Port: ${String(PORT).padEnd(28)}║`);
+  console.log(`║     Env:  ${(process.env.NODE_ENV || 'development').padEnd(28)}║`);
+  console.log(`╚═══════════════════════════════════════╝\n`);
+
+  // ── Bull queue worker ───────────────────────────────────────────────────
   try {
     require('./jobs/worker');
     console.log('✅ Bull queue worker initialized');
-  } catch (error) {
-    console.error('❌ Failed to start Bull worker:', error.message);
-    console.error('   Queue processing will not work!');
+  } catch (err) {
+    console.error('❌ Bull worker failed to start — queue processing disabled:', err.message);
   }
 
+  // ── Twilio (Phase 3) config check ───────────────────────────────────────
+  // Non-fatal. Phase 1+2 manual call logging keeps working without Twilio;
+  // only /api/prospect-calls/initiate returns 503 when missing.
+  try {
+    const TwilioProvider = require('./services/twilioProvider.service');
+    const cfg = TwilioProvider.validateConfig();
+    console.log('🔌 Twilio configured:', cfg);
+  } catch (err) {
+    console.warn('⚠️  Twilio NOT configured —', err.message);
+  }
+
+  // ── Cron jobs ───────────────────────────────────────────────────────────
   try {
     const cron = require('node-cron');
-    const AgentProposalService = require('./services/AgentProposalService');
 
+    // Hourly: expire stale agent proposals
     cron.schedule('0 * * * *', async () => {
       try {
-        const count = await AgentProposalService.expireStale();
+        const count = await require('./services/AgentProposalService').expireStale();
         if (count > 0) console.log(`🕐 Cron: expired ${count} stale agent proposals`);
       } catch (err) {
-        console.error('🕐 Cron: expireStale error:', err.message);
+        console.error('🕐 Cron expireStale error:', err.message);
       }
     });
 
+    // Hourly: expire CLM contracts
     cron.schedule('0 * * * *', async () => {
       try {
         const count = await require('./services/contractService').expireContracts();
         if (count > 0) console.log(`📄 CLM Cron: expired ${count} contracts`);
       } catch (err) {
-        console.error('📄 CLM Cron: expireContracts error:', err.message);
+        console.error('📄 CLM Cron expireContracts error:', err.message);
       }
     });
 
+    // Daily 09:00: CLM contract notifications (unsigned + expiring)
     cron.schedule('0 9 * * *', async () => {
       try {
         const NS = require('./services/contractNotificationService');
@@ -454,46 +355,38 @@ app.listen(PORT, () => {
         ]);
         console.log(`📄 CLM Cron: ${unsigned} unsigned follow-ups, ${expiring} expiry warnings sent`);
       } catch (err) {
-        console.error('📄 CLM Cron: notification error:', err.message);
+        console.error('📄 CLM Cron notification error:', err.message);
       }
     });
 
-
-    // ── Sequences: fire due steps every 15 minutes ────────────
+    // Every 15 min: fire due sequence steps
     cron.schedule('*/15 * * * *', async () => {
       try {
-        const SequenceStepFirer = require('./services/SequenceStepFirer');
-        const { fired, stopped, errors } = await SequenceStepFirer.fireDueSteps();
+        const { fired, stopped, errors } = await require('./services/SequenceStepFirer').fireDueSteps();
         if (fired > 0 || stopped > 0) {
-          console.log(`📨 Sequences Cron: ${fired} steps fired, ${stopped} auto-stopped on reply, ${errors} errors`);
+          console.log(`📨 Sequences Cron: ${fired} fired, ${stopped} auto-stopped, ${errors} errors`);
         }
       } catch (err) {
-        console.error('📨 Sequences Cron: error:', err.message);
+        console.error('📨 Sequences Cron error:', err.message);
       }
     });
 
-    // ── Salesforce write-back: nightly at 04:30 UTC ───────────
-    // Runs 30 min after inbound sync (04:00) so newly-completed actions
-    // from the prior day are all captured. Only pushes orgs with write_back_enabled=true.
+    // Nightly 04:30 UTC: Salesforce write-back (30 min after inbound sync)
     cron.schedule('30 4 * * *', async () => {
       try {
         const { runNightlyWriteBack } = require('./services/crm/writeBack');
         const result = await runNightlyWriteBack();
         if (result.pushed > 0 || result.errors > 0) {
-          console.log(`📤 WriteBack Cron: ${result.orgs} orgs, ${result.pushed} actions pushed, ${result.errors} errors`);
+          console.log(`📤 WriteBack Cron: ${result.orgs} orgs, ${result.pushed} pushed, ${result.errors} errors`);
         }
       } catch (err) {
-        console.error('📤 WriteBack Cron: error:', err.message);
+        console.error('📤 WriteBack Cron error:', err.message);
       }
     });
 
-    console.log('✅ Agentic framework cron jobs initialized (proposal expiry: hourly)');
-    console.log('✅ CLM cron jobs initialized (contract expiry: hourly, notifications: daily 9am)');
-    console.log('✅ Sequences cron initialized (fire due steps: every 15 min)');
-    console.log('✅ SF write-back cron initialized (nightly 04:30 UTC)');
-  } catch (error) {
-    console.error('⚠️  Failed to initialize cron jobs:', error.message);
-    console.error('   Install node-cron: npm install node-cron');
+    console.log('✅ Cron jobs initialized (proposals hourly, CLM hourly+daily, sequences 15m, SF write-back 04:30 UTC)');
+  } catch (err) {
+    console.error('⚠️  Failed to initialize cron jobs:', err.message);
   }
 });
 

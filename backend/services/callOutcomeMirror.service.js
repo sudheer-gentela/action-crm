@@ -18,6 +18,13 @@
  *
  * The functions take a db client (transaction-aware) so the caller can wrap
  * the calls insert AND the mirror writes in a single transaction.
+ *
+ * Phase 3 update: mirrorEditedCall now handles the case where no activity
+ * row exists yet — this happens when a Twilio-initiated call (created via
+ * POST /api/prospect-calls/initiate) finally has its outcome captured via
+ * PATCH /api/prospect-calls/:id. The initial INSERT didn't run mirrorNewCall
+ * because outcome was NULL. When mirrorEditedCall finds nothing to update,
+ * it falls back to mirrorNewCall.
  */
 
 const db = require('../config/database');
@@ -113,8 +120,14 @@ class CallOutcomeMirrorService {
   // do update the mirror activity row's description and metadata to reflect
   // the edit, so the activity feed shows the latest state.
   //
-  // Returns true if we updated the activity row, false if we couldn't find
-  // one (caller can decide how to handle — probably ignore).
+  // Phase 3: if no activity row exists yet (i.e., this PATCH is the first
+  // time an outcome was captured for a Twilio-initiated call), fall back to
+  // mirrorNewCall to write the full mirror state. This makes the PATCH route
+  // transparently handle both edit-after-log (Phase 1+2) and first-outcome
+  // capture (Phase 3) without the route needing to know which case it is.
+  //
+  // Returns true on success. Caller doesn't need to branch on this anymore;
+  // the fallback handles the "no activity row" case internally.
   static async mirrorEditedCall(client, call, outcome) {
     const description = this._formatDescription(call, outcome);
     const metadata = {
@@ -136,7 +149,26 @@ class CallOutcomeMirrorService {
         RETURNING id`,
       [description, JSON.stringify(metadata), call.prospect_id, call.id]
     );
-    return result.rows.length > 0;
+
+    if (result.rows.length > 0) {
+      return true;
+    }
+
+    // ── Fallback: no activity row exists ─────────────────────────────────
+    // This is the Phase 3 case — the call was created via /initiate with
+    // outcome=NULL (no mirror), and this PATCH is the rep capturing the
+    // outcome for the first time. Run the full mirrorNewCall path now so
+    // the activity feed, channel_data, and counts all get populated.
+    //
+    // Only do this if the call NOW has a real outcome (not still NULL).
+    // A PATCH that, say, updates just `notes` on a still-in-progress call
+    // shouldn't trigger the mirror — that's a separate edge case but
+    // worth guarding against.
+    if (call.outcome) {
+      await this.mirrorNewCall(client, call, outcome);
+      return true;
+    }
+    return false;
   }
 
   // ── Public: clean up the mirror when a call is deleted ───────────────────
