@@ -141,8 +141,7 @@ class CallOutcomeMirrorService {
     const result = await client.query(
       `UPDATE prospecting_activities
           SET description = $1,
-              metadata    = $2,
-              updated_at  = CURRENT_TIMESTAMP
+              metadata    = $2
         WHERE activity_type = 'call_logged'
           AND prospect_id   = $3
           AND (metadata ->> 'call_id')::int = $4
@@ -182,8 +181,7 @@ class CallOutcomeMirrorService {
     await client.query(
       `UPDATE prospecting_activities
           SET description = '[Call log deleted]',
-              metadata    = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('deleted', true),
-              updated_at  = CURRENT_TIMESTAMP
+              metadata    = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('deleted', true)
         WHERE activity_type = 'call_logged'
           AND prospect_id   = $1
           AND (metadata ->> 'call_id')::int = $2`,
