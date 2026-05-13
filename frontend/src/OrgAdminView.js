@@ -12,6 +12,7 @@ import OAEmailSettings from './OAEmailSettings';
 import OAMeetingSettings from './OAMeetingSettings';
 import SalesforceConnect from './SalesforceConnect';
 import HubSpotConnect    from './HubSpotConnect';
+import OATwilioSettings from './OATwilioSettings';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -5802,9 +5803,11 @@ function OAProspectingModule() {
       </div>
 
       <ModuleSubTabs
-        tabs={[['general', 'General'], ['ai', 'AI Settings'], ['calls', 'Call Settings'], ['playbook', 'Playbook']]}
+        tabs={[['general', 'General'], ['ai', 'AI Settings'], ['calls', 'Call Settings'], ['twilio', 'Twilio'], ['playbook', 'Playbook']]}
         active={subTab}
         onChange={setSubTab}
+
+      
       />
 
       {/* ── General sub-tab ── */}
@@ -5834,6 +5837,11 @@ function OAProspectingModule() {
       {/* ── Call Settings sub-tab ── */}
       {subTab === 'calls' && (
         <OACallSettings />
+      )}
+
+      {/* ── Twilio sub-tab ── */}
+      {subTab === 'twilio' && (
+        <OATwilioSettings />
       )}
 
       {/* ── AI Settings sub-tab ── */}

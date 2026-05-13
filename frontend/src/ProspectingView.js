@@ -11,6 +11,7 @@ import LinkedInDataDrawer from './LinkedInDataDrawer';
 import PersonalizeProvenanceFooter from './PersonalizeProvenanceFooter';
 import './ProspectingView.css';
 import './OutreachComposer.css';
+import TwilioCallModal from './TwilioCallModal';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -1399,6 +1400,14 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   // "Log call & complete" on a draft card), we pass through the step log id
   // and task note so the modal can pre-fill and the backend can advance
   // the sequence on save. null means "manual log call" — no sequence context.
+// ── Twilio click-to-dial state ───────────────────────────────────────────
+  // activeTwilioCallId is the calls.id of an in-progress Twilio call. When
+  // set, TwilioCallModal renders. When the call reaches status='completed',
+  // it hands off to LogCallModal pre-filled with duration_seconds.
+  const [activeTwilioCallId,       setActiveTwilioCallId]       = useState(null);
+  const [prefilledCallDurationSec, setPrefilledCallDurationSec] = useState(null);
+  const [isInitiatingTwilio,       setIsInitiatingTwilio]       = useState(false);
+
   const [callModalSequenceContext, setCallModalSequenceContext] = useState(null);
   const [calls,            setCalls]            = useState([]);
   const [callSettings,     setCallSettings]     = useState(null);
@@ -1410,6 +1419,59 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
     } catch (err) {
       // Non-fatal: the rest of the drawer still works
       console.warn('Refresh calls failed:', err.message);
+    }
+  };
+
+  // ── Initiate a Twilio call ───────────────────────────────────────────────
+  // Calls POST /prospect-calls/initiate. On success, sets activeTwilioCallId
+  // which causes TwilioCallModal to render and start polling.
+  //
+  // We use a raw fetch here (not apiFetch) so we can read both the error
+  // message AND the error.code from the backend — apiFetch flattens errors
+  // into Error(message). The code lets us render specific CTAs for each
+  // failure mode (REP_PHONE_MISSING → open prefs, REP_DID_MISSING → admin
+  // notified, etc.).
+  const initiateTwilioCall = async () => {
+    if (isInitiatingTwilio || !prospect?.id) return;
+    setIsInitiatingTwilio(true);
+    try {
+      const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+      const r = await fetch(`${API}/prospect-calls/initiate`, {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          Authorization:   `Bearer ${token}`,
+        },
+        body: JSON.stringify({ prospect_id: prospect.id }),
+      });
+      const body = await r.json().catch(() => ({}));
+
+      if (!r.ok) {
+        const code = body?.error?.code;
+        const msg  = body?.error?.message || 'Failed to start call';
+        if (code === 'REP_PHONE_MISSING') {
+          alert("Add your phone number in My Preferences before making calls.");
+        } else if (code === 'REP_DID_MISSING') {
+          alert("Your admin needs to provision a Twilio phone number for you. They've been notified.");
+        } else if (code === 'PROSPECT_PHONE_MISSING') {
+          alert("This prospect has no phone number on file.");
+        } else if (code === 'USER_RATE_LIMIT' || code === 'ORG_RATE_LIMIT') {
+          alert(msg);
+        } else if (code === 'TWILIO_NOT_CONFIGURED') {
+          alert("Twilio is not set up on this deployment. Contact support.");
+        } else if (code === 'TWILIO_21219') {
+          alert("Trial account: this prospect's phone must be verified in the Twilio console first.");
+        } else {
+          alert(msg);
+        }
+        return;
+      }
+
+      setActiveTwilioCallId(body.call.id);
+    } catch (err) {
+      alert(err.message || 'Failed to start call');
+    } finally {
+      setIsInitiatingTwilio(false);
     }
   };
   useEffect(() => {
@@ -1899,6 +1961,25 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
           </div>
 
           <div className="pv-detail-stage-actions">
+            <button
+              style={{
+                fontSize: '12px', padding: '5px 12px',
+                background: '#ecfdf5',
+                border: '1px solid #6ee7b7',
+                color: '#065f46',
+                borderRadius: 6,
+                cursor: prospect.phone ? 'pointer' : 'not-allowed',
+                fontWeight: 600,
+                opacity: prospect.phone ? 1 : 0.5,
+              }}
+              onClick={() => prospect.phone && initiateTwilioCall()}
+              disabled={!prospect.phone || isInitiatingTwilio}
+              title={prospect.phone
+                ? `Call ${prospect.phone} via Twilio`
+                : 'Add a phone number to enable calling'}
+            >
+              {isInitiatingTwilio ? '⏳ Starting…' : '📞 Call via Twilio'}
+            </button>
             <button
               style={{
                 fontSize: '12px', padding: '5px 12px',
@@ -2456,6 +2537,31 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
           />
         )}
 
+        {/* TwilioCallModal — shown while a Twilio call is in progress */}
+        {activeTwilioCallId && prospect && (
+          <TwilioCallModal
+            callId={activeTwilioCallId}
+            prospect={prospect}
+            onCompleted={(callId, durationSec) => {
+              // Call ended normally. Close the in-progress modal and open
+              // LogCallModal so the rep can pick an outcome + add notes.
+              // duration_seconds was set by the status webhook on the calls
+              // row server-side; LogCallModal will pull it via refreshCalls.
+              setActiveTwilioCallId(null);
+              setPrefilledCallDurationSec(durationSec);
+              setShowLogCallModal(true);
+            }}
+            onClosed={(reason) => {
+              setActiveTwilioCallId(null);
+              if (reason !== 'user_closed') {
+                // Call ended abnormally (no_answer / busy / failed / canceled)
+                // — refresh the calls list so the row shows up in the drawer.
+                refreshCalls();
+              }
+            }}
+          />
+        )}
+
         {/* LogCallModal */}
         {showLogCallModal && prospect && (
           <LogCallModal
@@ -2468,6 +2574,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
               const wasSequenceCall = !!callModalSequenceContext?.sequenceStepLogId;
               setShowLogCallModal(false);
               setCallModalSequenceContext(null);
+              setPrefilledCallDurationSec(null);
               await refreshCalls();
               // Refresh prospect so updated channel_data.call drives the
               // timeline CALL line; also refreshes activities for the

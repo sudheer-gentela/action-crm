@@ -131,6 +131,26 @@ export const apiService = {
     delete: (id) => api.delete(`/transcripts/${id}`)
   },
 
+
+twilio: {
+    // Org-admin endpoints
+    listReps:        ()                     => api.get(`/org/admin/twilio/reps`),
+    provisionDid:    (userId, areaCode)     => api.post(`/org/admin/twilio/provision-did/${userId}`, { area_code: areaCode }),
+    releaseDid:      (userId)               => api.post(`/org/admin/twilio/release-did/${userId}`),
+    patchSettings:   (patch)                => api.patch(`/org/admin/twilio/settings`, patch),
+
+    // Per-user phone
+    getMyPhone:      ()                     => api.get(`/users/me/phone`),
+    setMyPhone:      (phone)                => api.patch(`/users/me/phone`, { phone }),
+
+    // Call lifecycle
+    initiateCall:    (prospectId, sequenceStepLogId = null) => api.post(`/prospect-calls/initiate`, {
+      prospect_id: prospectId,
+      ...(sequenceStepLogId ? { sequence_step_log_id: sequenceStepLogId } : {}),
+    }),
+    getCallStatus:   (callId)               => api.get(`/prospect-calls/${callId}/status`),
+  },
+
   health: {
     scoreDeal: (id) => api.post(`/deals/${id}/score`),
     scoreAll: () => api.post('/deals/score-all'),

@@ -203,6 +203,7 @@ app.use('/api/prospect-context',    require('./routes/prospect-context.routes'))
 app.use('/api/org-hierarchy',       require('./routes/orgHierarchy.routes'));
 app.use('/api/team-notifications',  require('./routes/teamNotifications.routes'));
 app.use('/api/users/me',            require('./routes/user-preferences.routes'));
+app.use('/api/users/me',            require('./routes/user-phone.routes'));   // Phase 3 — rep phone
 app.use('/api/linkedin-profiles',   require('./routes/linkedin-profiles.routes'));
 
 // Calls.
@@ -224,6 +225,16 @@ app.use('/api/prospecting/inbox',   require('./routes/prospecting-inbox.routes')
 // Mounted under /api so the existing rate limiter still applies as a safety
 // brake against runaway Twilio retries.
 app.use('/api/twilio/webhooks', require('./routes/twilio-webhooks.routes'));
+
+// Admin endpoints — orgs admin/owner only (enforced inside the routes file).
+app.use('/api/org/admin/twilio', require('./routes/org-twilio.routes'));
+
+// Admin endpoints — DID provisioning per rep, org status, available numbers.
+// Requires owner/admin role (gated inside the routes file).
+app.use('/api/org/admin/twilio', require('./routes/org-twilio.routes'));
+
+// Rep self-serve: personal phone for the Twilio outbound flow.
+app.use('/api/users/me/phone',   require('./routes/user-phone.routes'));
 
 // ── CLM, Handover, Support, Sequences, Agency ────────────────────────────
 app.use('/api/contracts',       require('./routes/contracts.routes'));

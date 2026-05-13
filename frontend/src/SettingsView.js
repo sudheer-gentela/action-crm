@@ -789,6 +789,9 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
   const [connecting, setConnecting] = useState(null); // 'gmail'|'outlook'|null
   const [editingId, setEditingId]   = useState(null);
   const [editValues, setEditValues] = useState({});
+  const [phone,       setPhone]       = useState('');
+  const [phoneSaving, setPhoneSaving] = useState(false);
+  const [phoneError,  setPhoneError]  = useState('');
 
   // ── Prospecting AI preferences ────────────────────────────────────────────
   const [aiPrefs, setAiPrefs]         = useState({
@@ -815,16 +818,20 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
       const token = localStorage.getItem('token') || localStorage.getItem('authToken');
       const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
-      const [sendersRes, limitsRes, prefsRes, orgCfgRes, userPromptsRes] = await Promise.all([
+      const [sendersRes, limitsRes, prefsRes, orgCfgRes, userPromptsRes, phoneRes] = await Promise.all([
         apiService.prospectingSenders.getAll(),
         apiService.prospectingSenders.getOrgLimits(),
         fetch(`${API}/users/me/preferences/prospecting`, { headers }).then(r => r.json()),
         fetch(`${API}/org/admin/prospecting/ai-config`, { headers }).then(r => r.json()),
         fetch(`${API}/prompts/user/prospecting`, { headers }).then(r => r.json()),
+        fetch(`${API}/users/me/phone`, { headers }).then(r => r.json()),
       ]);
 
       setSenders(sendersRes.data?.senders || []);
       setOrgLimits(limitsRes.data?.limits || null);
+
+      // Phone (Phase 3 — Twilio click-to-dial)
+      setPhone(phoneRes?.phone || '');
 
       // AI preferences
       const prospPrefs = prefsRes?.preferences || {};
@@ -846,6 +853,37 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
       setError('Failed to load settings: ' + e.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // ── Save personal phone number (Phase 3 — Twilio click-to-dial) ────────────
+  // Stored on users.phone (column, not user_preferences JSONB). Twilio will
+  // dial this number first when the rep clicks "Call via Twilio" on a prospect.
+  // Backend validates E.164 format; on error we surface the message inline
+  // rather than via the global flash so it sits next to the input.
+  const savePhone = async () => {
+    setPhoneSaving(true);
+    setPhoneError('');
+    try {
+      const API     = process.env.REACT_APP_API_URL;
+      const token   = localStorage.getItem('token') || localStorage.getItem('authToken');
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+      const r = await fetch(`${API}/users/me/phone`, {
+        method:  'PATCH',
+        headers,
+        body: JSON.stringify({ phone: phone.trim() || null }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        throw new Error(body?.error?.message || 'Failed to save phone');
+      }
+      setPhone(body.phone || '');
+      showFlash('success', 'Phone number saved ✓');
+    } catch (err) {
+      setPhoneError(err.message);
+    } finally {
+      setPhoneSaving(false);
     }
   };
 
@@ -990,6 +1028,66 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
       {error && <div className="sv-error">⚠️ {error}</div>}
 
       <div className="sv-panel-body">
+
+        {/* ── Personal phone (Phase 3 — Twilio click-to-dial) ──────────────── */}
+        {/* Only shown in the default "full prefs" view. The component is also
+            mounted in showAIOnly / showSendersOnly modes from other panels — in
+            those modes the phone field doesn't belong. */}
+        {!showAIOnly && !showSendersOnly && (
+          <div className="sv-section">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <div>
+                <h3 className="sv-section-heading" style={{ margin: 0 }}>📞 Personal Phone</h3>
+                <p className="sv-hint" style={{ margin: '4px 0 0' }}>
+                  Your phone in E.164 format (e.g. <code>+14155551234</code>). When you click "Call via Twilio"
+                  on a prospect, Twilio dials this number first, then bridges to the prospect when you pick up.
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', maxWidth: 480 }}>
+              <input
+                type="tel"
+                placeholder="+14155551234"
+                value={phone}
+                onChange={e => { setPhone(e.target.value); if (phoneError) setPhoneError(''); }}
+                disabled={phoneSaving}
+                style={{
+                  flex: 1,
+                  padding: '8px 12px',
+                  border: `1px solid ${phoneError ? '#fca5a5' : '#d1d5db'}`,
+                  borderRadius: 6,
+                  fontSize: 13,
+                  fontFamily: 'monospace',
+                }}
+              />
+              <button
+                onClick={savePhone}
+                disabled={phoneSaving}
+                style={{
+                  padding: '8px 18px',
+                  background: phoneSaving ? '#9ca3af' : '#0F9D8E',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 6,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: phoneSaving ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {phoneSaving ? '⏳ Saving…' : 'Save'}
+              </button>
+            </div>
+            {phoneError && (
+              <div style={{ marginTop: 8, color: '#b91c1c', fontSize: 12 }}>{phoneError}</div>
+            )}
+            {!phone && !phoneError && (
+              <div style={{ marginTop: 8, color: '#9ca3af', fontSize: 12 }}>
+                No phone set. You won't be able to use Twilio click-to-dial until you add one here.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ── Outreach Sender Accounts ─────────────────────────────────────── */}
         {!showAIOnly && <div className="sv-section">
