@@ -52,7 +52,12 @@ async function resolveOutcomeLabels(orgId, outcomeKeys) {
   // Calls in the DB MAY reference outcomes that have since been renamed or
   // removed. We surface a fallback ("(legacy: my_old_key)") so the UI still
   // shows something rather than a blank cell.
+  //
+  // Skip null/undefined keys — those aren't legacy renames, they're Phase 3
+  // Twilio rows that haven't had their outcome captured yet. The frontend
+  // detects this state via the raw outcome field and renders a recovery CTA.
   for (const k of outcomeKeys) {
+    if (k === null || k === undefined) continue;
     if (!map[k]) map[k] = `(legacy: ${k})`;
   }
   return map;
@@ -759,16 +764,6 @@ router.patch('/:id', async (req, res) => {
     }
 
     // Build a dynamic UPDATE.
-    //
-    // Parameter numbering: SET-clause params occupy $1..$N (where N is the
-    // number of patched columns), then the WHERE params (id, org_id) follow
-    // as $(N+1) and $(N+2).
-    //
-    // (Phase 3 bugfix: an earlier version computed the WHERE placeholders as
-    // $(length) and $(length+1) AFTER pushing id+orgId, which made the second
-    // placeholder refer to a non-existent param and triggered Postgres 42P18
-    // "could not determine data type" when the patch had a specific field
-    // count. The corrected math below uses array indices consistently.)
     const setClauses = [];
     const values     = [];
     Object.entries(patch).forEach(([col, val]) => {
@@ -776,9 +771,9 @@ router.patch('/:id', async (req, res) => {
       setClauses.push(`${col} = $${values.length}`);
     });
     setClauses.push(`updated_at = CURRENT_TIMESTAMP`);
-    const idPlaceholder    = values.length + 1;
-    const orgIdPlaceholder = values.length + 2;
     values.push(id, req.orgId);
+    const idIdx    = values.length - 1;  // 1-based: $(idIdx+1)
+    const orgIdx   = values.length;
 
     // Transaction: update the row, then mirror the change in prospecting_activities.
     const client = await db.pool.connect();
@@ -788,7 +783,7 @@ router.patch('/:id', async (req, res) => {
       const updRes = await client.query(
         `UPDATE calls
             SET ${setClauses.join(', ')}
-          WHERE id = $${idPlaceholder} AND org_id = $${orgIdPlaceholder}
+          WHERE id = $${idIdx + 1} AND org_id = $${orgIdx + 1}
           RETURNING *`,
         values
       );

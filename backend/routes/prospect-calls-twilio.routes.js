@@ -19,6 +19,7 @@
  */
 
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
 
 const db                    = require('../config/database');
@@ -32,6 +33,34 @@ const NotificationService   = require('../services/notificationService');
 router.use(authenticateToken);
 router.use(orgContext);
 router.use(requireModule('prospecting'));
+
+
+// ── Per-IP rate limiter for /initiate ─────────────────────────────────────
+// Layered defence on top of the per-user / per-org caps that already check
+// against rows in the calls table. The DB-based caps protect Twilio billing;
+// THIS limiter protects against high-frequency attack patterns from a single
+// IP — e.g. a stolen JWT being used from one machine to hammer the endpoint.
+//
+// Numbers are deliberately tighter than per-user (10/min) because a single
+// human can't legitimately place more than 5 calls/min from one IP. Spread
+// across multiple reps in an office (same egress IP), 30/min/IP covers
+// realistic shared-IP scenarios. Hitting this limit returns 429 without
+// charging Twilio anything.
+const initiateIpLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max:      30,
+  standardHeaders: true,
+  legacyHeaders:   false,
+  // Don't fall back to req.ip alone — trust proxy is on, so req.ip is the
+  // real client IP (Cloudflare → Railway → us). The default keyGenerator
+  // does the right thing.
+  handler: (req, res) => res.status(429).json({
+    error: {
+      message: 'Too many call attempts from this network. Slow down.',
+      code:    'IP_RATE_LIMIT',
+    },
+  }),
+});
 
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -191,7 +220,7 @@ async function notifyAdminsOfMissingDid(orgId, repUserId) {
 // row to status='failed' and surface the error to the rep. The row stays
 // in the DB as an auditable record of the attempt.
 // =========================================================================
-router.post('/initiate', async (req, res) => {
+router.post('/initiate', initiateIpLimiter, async (req, res) => {
   const prospectId = parseInt(req.body.prospect_id, 10);
   if (!Number.isInteger(prospectId) || prospectId <= 0) {
     return res.status(400).json({ error: { message: 'prospect_id is required' } });
@@ -386,6 +415,110 @@ router.get('/:id/status', async (req, res) => {
     console.error('GET /:id/status error:', err);
     return res.status(500).json({ error: { message: 'Failed to fetch status' } });
   }
+});
+
+
+// =========================================================================
+// POST /:id/cancel — abort an in-flight Twilio call
+// =========================================================================
+// Two scenarios this handles:
+//   1. Pre-connect cancel: rep clicked "Call via Twilio" but realized wrong
+//      prospect; wants to abort BEFORE Twilio connects to the prospect.
+//      Status is 'initiated' or 'ringing'. Twilio API: status='canceled'.
+//      Final state: 'canceled'.
+//   2. Mid-call hangup: rep is on the call (status='in_progress') and wants
+//      to end it from the UI. Twilio API: status='completed'.
+//      Final state: 'completed' (and outcome stays NULL — by design, the
+//      rep can disposition later via the "Outcome not captured" recovery
+//      flow if they change their mind).
+//
+// Authorization: rep can only cancel their own calls (user_id match).
+// Org admins do NOT bypass this — call ownership is a per-rep concern.
+//
+// Idempotency: if the call is already in a terminal state, we just return
+// the current state without calling Twilio again.
+// =========================================================================
+router.post('/:id/cancel', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: { message: 'Invalid call id' } });
+  }
+
+  // Load the call row.
+  const { rows } = await db.pool.query(
+    `SELECT id, org_id, user_id, status, provider_call_id
+       FROM calls
+      WHERE id = $1 AND org_id = $2 AND provider = 'twilio'`,
+    [id, req.orgId]
+  );
+  if (!rows.length) {
+    return res.status(404).json({ error: { message: 'Call not found' } });
+  }
+  const call = rows[0];
+
+  // Ownership: only the rep who placed the call can cancel it.
+  if (call.user_id !== req.user.userId) {
+    return res.status(403).json({
+      error: { message: 'You can only cancel your own calls', code: 'NOT_CALL_OWNER' },
+    });
+  }
+
+  // Idempotency: already terminal → just return current state.
+  const TERMINAL = ['completed', 'no_answer', 'failed', 'busy', 'canceled'];
+  if (TERMINAL.includes(call.status)) {
+    return res.json({
+      id:     call.id,
+      status: call.status,
+      already_terminal: true,
+    });
+  }
+
+  if (!call.provider_call_id) {
+    // No SID means /initiate failed AFTER row insert but BEFORE Twilio
+    // call create. Twilio doesn't know about this row. Just mark it
+    // canceled locally.
+    await db.pool.query(
+      `UPDATE calls SET status='canceled', updated_at=NOW() WHERE id=$1`,
+      [id]
+    );
+    return res.json({ id, status: 'canceled', no_twilio_sid: true });
+  }
+
+  // Decide the Twilio API mode based on our current view of the call state.
+  // 'in_progress' → hangup (Twilio status='completed')
+  // anything else non-terminal ('initiated', 'ringing') → cancel
+  const mode = call.status === 'in_progress' ? 'hangup' : 'cancel';
+
+  try {
+    await TwilioProvider.cancelCall(call.provider_call_id, mode);
+  } catch (err) {
+    console.error('cancel: Twilio API error:', err.message, 'code=', err.code);
+    return res.status(502).json({
+      error: {
+        message: 'Twilio could not cancel the call. The call may still be active.',
+        code:    err.code ? `TWILIO_${err.code}` : 'TWILIO_ERROR',
+      },
+    });
+  }
+
+  // Update our DB. The status webhook will likely arrive shortly with the
+  // same final state — the existing webhook guard prevents double-writes.
+  // We update proactively so the frontend's status poll sees the change
+  // immediately rather than waiting for Twilio's webhook latency.
+  const finalStatus = mode === 'hangup' ? 'completed' : 'canceled';
+  await db.pool.query(
+    `UPDATE calls
+        SET status = $1, updated_at = NOW()
+      WHERE id = $2
+        AND status NOT IN ('completed','no_answer','failed','busy','canceled')`,
+    [finalStatus, id]
+  );
+
+  return res.json({
+    id,
+    status: finalStatus,
+    mode,
+  });
 });
 
 

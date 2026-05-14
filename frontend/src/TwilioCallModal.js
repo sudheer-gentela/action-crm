@@ -35,11 +35,41 @@ export default function TwilioCallModal({ callId, prospect, onCompleted, onClose
   const [durationSeconds, setDuration]    = useState(0);
   const [terminalMsg, setTerminalMsg]     = useState(null);
   const [error, setError]                 = useState(null);
+  const [cancelling, setCancelling]       = useState(false);
 
   // Refs so the polling loop sees latest values without re-creating itself.
   const pollTimer        = useRef(null);
   const liveStartedAtRef = useRef(null);   // ms timestamp when status hit in_progress
   const handledTerminal  = useRef(false);  // dedupe terminal callbacks
+
+  // ── Cancel/End the call ────────────────────────────────────────────────
+  // Called when the rep clicks the prominent red button. The backend figures
+  // out whether to send Twilio cancel (pre-connect) or hangup (in-progress)
+  // based on the current call state. After the call ends, modal closes
+  // without LogCallModal handoff — rep can recover via "Outcome not captured"
+  // later if they want.
+  const cancelCall = async () => {
+    if (cancelling) return;
+    setCancelling(true);
+    setError(null);
+    try {
+      const r = await fetch(`${API}/prospect-calls/${callId}/cancel`, {
+        method:  'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        throw new Error(body?.error?.message || 'Cancel failed');
+      }
+      // Mark as handled so the poll loop doesn't fire onCompleted when the
+      // status webhook arrives a moment later.
+      handledTerminal.current = true;
+      onClosed?.('user_canceled');
+    } catch (err) {
+      setError(err.message);
+      setCancelling(false);
+    }
+  };
 
   // ── Poll loop ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -151,8 +181,39 @@ export default function TwilioCallModal({ callId, prospect, onCompleted, onClose
         )}
 
         <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 16 }}>
-          Twilio is bridging your phone with the prospect's. Hang up your phone to end the call.
+          Twilio is bridging your phone with the prospect's. Hang up your phone, or use End call below to terminate from here.
         </div>
+
+        {/* Cancel/End call — the primary action. Label depends on whether
+            the call has connected yet. Hidden once the call hits a terminal
+            state (modal will auto-close anyway). */}
+        {!terminalMsg && (() => {
+          const isInProgress = status === 'in_progress';
+          const label = cancelling
+            ? '⏳ Ending…'
+            : isInProgress
+              ? '🔴 End call'
+              : '🚫 Cancel call';
+          return (
+            <button
+              onClick={cancelCall}
+              disabled={cancelling}
+              style={{
+                padding: '10px 20px',
+                background: cancelling ? '#9ca3af' : '#dc2626',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 6,
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: cancelling ? 'not-allowed' : 'pointer',
+                marginRight: 8,
+              }}
+            >
+              {label}
+            </button>
+          );
+        })()}
 
         <button
           onClick={() => onClosed?.('user_closed')}
@@ -164,7 +225,7 @@ export default function TwilioCallModal({ callId, prospect, onCompleted, onClose
           Hide modal
         </button>
         <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 8 }}>
-          Hiding doesn't end the call; only hanging up does.
+          Hiding doesn't end the call; only End call (or hanging up your phone) does.
         </div>
       </div>
     </div>

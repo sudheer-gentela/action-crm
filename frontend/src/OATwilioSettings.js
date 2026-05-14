@@ -35,6 +35,7 @@ export default function OATwilioSettings() {
   const [repsLoading, setRepsLoading] = useState(true);
   const [provisioning, setProvisioning] = useState({});  // userId → bool
   const [areaCodes, setAreaCodes]     = useState({});    // userId → "415"
+  const [claimSids, setClaimSids]     = useState({});    // userId → "PN..." (for claim flow)
 
   const [flash, setFlash] = useState(null);
   const showFlash = (type, msg) => { setFlash({ type, msg }); setTimeout(() => setFlash(null), 5000); };
@@ -115,6 +116,54 @@ export default function OATwilioSettings() {
       ));
       setAreaCodes(p => ({ ...p, [userId]: '' }));
       showFlash('success', `DID ${j.twilio_did} provisioned ✓`);
+    } catch (err) {
+      showFlash('error', err.message);
+    } finally {
+      setProvisioning(p => ({ ...p, [userId]: false }));
+    }
+  };
+
+  // ── Claim existing DID ─────────────────────────────────────────────────
+  // Used when an admin wants to attach a Twilio number that was created
+  // outside of GoWarmCRM (trial DID, manually provisioned number, ported
+  // number). Backend rewires the voice URL to our inbound webhook —
+  // overwrites any previous routing on that number.
+  const claimDid = async (userId) => {
+    const sid = (claimSids[userId] || '').trim();
+    if (!/^PN[a-f0-9]+$/i.test(sid)) {
+      showFlash('error', 'Enter a valid Twilio Phone Number SID (starts with PN, find it in Twilio console)');
+      return;
+    }
+    if (!window.confirm(`Claim Twilio phone number ${sid}?\n\nThis will rewire the number's voice routing to GoWarmCRM. Any previous routing configured on this number in your Twilio console will be REPLACED.`)) {
+      return;
+    }
+    setProvisioning(p => ({ ...p, [userId]: true }));
+    try {
+      const r = await fetch(`${API}/org/admin/twilio/claim-did/${userId}`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ did_sid: sid }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error?.message || 'Claim failed');
+
+      // Update the rep row inline.
+      setReps(prev => prev.map(rep =>
+        rep.id === userId
+          ? { ...rep,
+              twilio_did:                j.twilio_did,
+              twilio_did_sid:            j.twilio_did_sid,
+              twilio_did_provisioned_at: j.twilio_did_provisioned_at,
+              ready_to_call:             !!rep.phone,
+            }
+          : rep
+      ));
+      setClaimSids(p => ({ ...p, [userId]: '' }));
+
+      // Surface voice URL overwrite if applicable.
+      const overwriteMsg = j.voice_url_overwritten
+        ? ` (previous voice URL was overwritten)`
+        : '';
+      showFlash('success', `DID ${j.twilio_did} claimed ✓${overwriteMsg}`);
     } catch (err) {
       showFlash('error', err.message);
     } finally {
@@ -313,20 +362,47 @@ export default function OATwilioSettings() {
                           {provisioning[rep.id] ? '⏳' : 'Release'}
                         </button>
                       ) : (
-                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                          <input
-                            placeholder="Area code (e.g. 415)"
-                            value={areaCodes[rep.id] || ''}
-                            onChange={e => setAreaCodes(p => ({ ...p, [rep.id]: e.target.value.replace(/\D/g, '').slice(0, 3) }))}
-                            style={{ width: 110, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 4, fontSize: 12 }}
-                          />
-                          <button
-                            onClick={() => provisionDid(rep.id)}
-                            disabled={provisioning[rep.id]}
-                            style={btnPrimary}
-                          >
-                            {provisioning[rep.id] ? '⏳' : 'Provision'}
-                          </button>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {/* Provision new — buys a fresh DID from Twilio */}
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <input
+                              placeholder="Area code (415)"
+                              value={areaCodes[rep.id] || ''}
+                              onChange={e => setAreaCodes(p => ({ ...p, [rep.id]: e.target.value.replace(/\D/g, '').slice(0, 3) }))}
+                              style={inputSmall}
+                            />
+                            <button
+                              onClick={() => provisionDid(rep.id)}
+                              disabled={provisioning[rep.id]}
+                              style={btnPrimary}
+                              title="Buy a new Twilio phone number (~$1/month)"
+                            >
+                              {provisioning[rep.id] ? '⏳' : 'Provision new'}
+                            </button>
+                          </div>
+
+                          {/* OR divider — visual separator between two paths */}
+                          <div style={{ fontSize: 10, color: '#9ca3af', textAlign: 'center', margin: '2px 0' }}>
+                            — or —
+                          </div>
+
+                          {/* Claim existing — assigns a DID that's already in our Twilio account */}
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <input
+                              placeholder="Existing SID (PN...)"
+                              value={claimSids[rep.id] || ''}
+                              onChange={e => setClaimSids(p => ({ ...p, [rep.id]: e.target.value.trim() }))}
+                              style={{ ...inputSmall, width: 160, fontFamily: 'monospace' }}
+                            />
+                            <button
+                              onClick={() => claimDid(rep.id)}
+                              disabled={provisioning[rep.id]}
+                              style={btnSecondary}
+                              title="Assign an existing Twilio number (e.g. trial DID)"
+                            >
+                              {provisioning[rep.id] ? '⏳' : 'Claim existing'}
+                            </button>
+                          </div>
                         </div>
                       )}
                     </td>
@@ -344,5 +420,7 @@ export default function OATwilioSettings() {
 // ── Styles ────────────────────────────────────────────────────────────────
 const th = { textAlign: 'left', padding: '10px 12px', fontSize: 11, color: '#6b7280', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' };
 const td = { padding: '10px 12px', verticalAlign: 'top' };
-const btnPrimary = { padding: '5px 12px', background: '#0F9D8E', color: '#fff', border: 'none', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
-const btnDanger  = { padding: '5px 12px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
+const btnPrimary    = { padding: '5px 12px', background: '#0F9D8E', color: '#fff', border: 'none', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
+const btnSecondary  = { padding: '5px 12px', background: '#fff', color: '#0F9D8E', border: '1px solid #0F9D8E', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
+const btnDanger     = { padding: '5px 12px', background: '#fff', color: '#b91c1c', border: '1px solid #fecaca', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer' };
+const inputSmall    = { width: 110, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 4, fontSize: 12 };

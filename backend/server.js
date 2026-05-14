@@ -170,19 +170,6 @@ app.use('/api/prompts',       require('./routes/prompts.routes'));
 app.use('/api/salesforce',    require('./routes/salesforce.routes'));
 app.use('/api/hubspot',       require('./routes/hubspot.routes'));
 
-// ── Twilio webhooks (Phase 3) ─────────────────────────────────────────────
-// CRITICAL placement: mounted BEFORE the /api dealHealth catch-all below.
-// dealHealthRoutes does `router.use(authenticateToken)` internally, which
-// runs auth on EVERY request that enters the router — even requests for
-// paths the router itself doesn't define. Twilio webhooks have no JWT,
-// so if they hit dealHealth's auth first, they get 401'd and our webhook
-// handlers never run. Keeping the more-specific /api/twilio/webhooks mount
-// here ensures Express matches and dispatches before the catch-all.
-//
-// Public — NO auth middleware, signature-validated per-route. Rate limiter
-// still applies via the global /api/ mount.
-app.use('/api/twilio/webhooks', require('./routes/twilio-webhooks.routes'));
-
 // Deal health uses a bare /api mount (legacy) — keep AFTER more-specific routes
 app.use('/api',               require('./routes/dealHealth.routes'));
 
@@ -233,10 +220,21 @@ app.use('/api/prospecting-senders', require('./routes/prospecting-senders.routes
 app.use('/api/org/outreach-limits', require('./routes/outreach-limits.routes'));
 app.use('/api/prospecting/inbox',   require('./routes/prospecting-inbox.routes'));
 
-// ── Twilio admin routes (Phase 3) ─────────────────────────────────────────
-// Twilio WEBHOOK routes are mounted earlier (above the /api dealHealth
-// catch-all). These admin routes are auth-gated inside the routes file.
+// ── Twilio (Phase 3) ──────────────────────────────────────────────────────
+// Public webhook endpoints — NO auth middleware, signature-validated per-route.
+// Mounted under /api so the existing rate limiter still applies as a safety
+// brake against runaway Twilio retries.
+app.use('/api/twilio/webhooks', require('./routes/twilio-webhooks.routes'));
+
+// Admin endpoints — orgs admin/owner only (enforced inside the routes file).
 app.use('/api/org/admin/twilio', require('./routes/org-twilio.routes'));
+
+// Admin endpoints — DID provisioning per rep, org status, available numbers.
+// Requires owner/admin role (gated inside the routes file).
+app.use('/api/org/admin/twilio', require('./routes/org-twilio.routes'));
+
+// Rep self-serve: personal phone for the Twilio outbound flow.
+app.use('/api/users/me/phone',   require('./routes/user-phone.routes'));
 
 // ── CLM, Handover, Support, Sequences, Agency ────────────────────────────
 app.use('/api/contracts',       require('./routes/contracts.routes'));
@@ -397,7 +395,22 @@ app.listen(PORT, () => {
       }
     });
 
-    console.log('✅ Cron jobs initialized (proposals hourly, CLM hourly+daily, sequences 15m, SF write-back 04:30 UTC)');
+    // Every 30 min: flag Twilio calls stuck in non-terminal status
+    // (initiated/ringing/in_progress) past the org's stuck_call_window_hours
+    // (default 2h). Catches cases where Twilio status webhooks never fired.
+    cron.schedule('*/30 * * * *', async () => {
+      try {
+        const { scanAndFlag } = require('./services/stuckCallCleanup.service');
+        const result = await scanAndFlag();
+        if (result.flagged > 0 || result.errors > 0) {
+          console.log(`📞 StuckCall Cron: ${result.orgs} orgs scanned, ${result.flagged} flagged, ${result.errors} errors (${result.ms}ms)`);
+        }
+      } catch (err) {
+        console.error('📞 StuckCall Cron error:', err.message);
+      }
+    });
+
+    console.log('✅ Cron jobs initialized (proposals hourly, CLM hourly+daily, sequences 15m, SF write-back 04:30 UTC, stuck calls 30m)');
   } catch (err) {
     console.error('⚠️  Failed to initialize cron jobs:', err.message);
   }

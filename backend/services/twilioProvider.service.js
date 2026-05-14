@@ -255,6 +255,119 @@ async function releaseDid(didSid) {
 }
 
 
+// ── cancelCall ────────────────────────────────────────────────────────────
+/**
+ * Terminate an in-flight Twilio call. The Twilio API uses different status
+ * values depending on the call's current state:
+ *
+ *   queued | ringing | initiated  →  update({status: 'canceled'})
+ *                                    ↳ ends the call before connection
+ *                                    ↳ final state: 'canceled'
+ *   in-progress                   →  update({status: 'completed'})
+ *                                    ↳ hangs up an already-connected call
+ *                                    ↳ final state: 'completed'
+ *
+ * Sending the wrong value for the current state returns a Twilio 400. The
+ * caller must pass the right `mode` based on what they know about the
+ * current call state.
+ *
+ * @param {string} callSid — Twilio's CA... SID for the call (our provider_call_id)
+ * @param {string} mode    — 'cancel' (pre-connect) or 'hangup' (in-progress)
+ * @returns {Object} the Twilio call resource after the update
+ *
+ * If Twilio reports the call has already ended (e.g. webhook race), we
+ * swallow the resulting 20404 / 21220 errors and return null — the caller
+ * can treat that as success since the goal (call not ringing) is achieved.
+ */
+async function cancelCall(callSid, mode = 'cancel') {
+  if (!callSid) throw new Error('cancelCall: callSid is required');
+  if (mode !== 'cancel' && mode !== 'hangup') {
+    throw new Error(`cancelCall: mode must be 'cancel' or 'hangup', got '${mode}'`);
+  }
+  const client = getClient();
+  const targetStatus = mode === 'hangup' ? 'completed' : 'canceled';
+
+  try {
+    const call = await client.calls(callSid).update({ status: targetStatus });
+    return { sid: call.sid, status: call.status };
+  } catch (err) {
+    // Twilio error codes we want to treat as "already done":
+    //   20404 — call not found (already cleared from Twilio)
+    //   21220 — call has already ended (terminal state hit during race)
+    if (err.code === 20404 || err.code === 21220) {
+      return null;
+    }
+    const e = new Error(err.message || 'Twilio call cancel failed');
+    e.code        = err.code;
+    e.status      = err.status;
+    e.providerErr = true;
+    throw e;
+  }
+}
+
+
+// ── claimDid ──────────────────────────────────────────────────────────────
+/**
+ * Claim an existing DID that's already in our Twilio account. Unlike
+ * provisionDid which BUYS a new number, this just rewires the voice URL on
+ * an existing number to route inbound calls to GoWarmCRM.
+ *
+ * Used when an admin wants to assign a DID that was provisioned through the
+ * Twilio console (e.g. the trial DID, ported numbers, or numbers acquired
+ * outside our app).
+ *
+ * @param {string} didSid — the PN... SID of the existing Twilio number
+ * @returns {Object} { did, did_sid, capabilities }
+ *
+ * Throws:
+ *   'TWILIO_DID_NOT_FOUND' if the SID doesn't exist in our account
+ *   Pass-through Twilio errors otherwise
+ *
+ * NOTE: this OVERWRITES the existing voice URL on the number. If the DID
+ * was previously routing inbound calls somewhere else (e.g. a flex flow,
+ * a different application), that routing is replaced. The route caller
+ * surfaces this in the success message.
+ */
+async function claimDid(didSid) {
+  if (!didSid || typeof didSid !== 'string' || !/^PN[a-f0-9]+$/i.test(didSid)) {
+    const e = new Error('claimDid: didSid must be a Twilio phone-number SID (PN...)');
+    e.code = 'INVALID_DID_SID';
+    throw e;
+  }
+  const client = getClient();
+  const base   = _resolvePublicBaseUrl();
+
+  // Verify the SID exists in our account and fetch the number.
+  let phoneNumber;
+  try {
+    phoneNumber = await client.incomingPhoneNumbers(didSid).fetch();
+  } catch (err) {
+    if (err.code === 20404 || err.status === 404) {
+      const e = new Error(`No phone number with SID ${didSid} exists in this Twilio account`);
+      e.code = 'TWILIO_DID_NOT_FOUND';
+      throw e;
+    }
+    throw err;
+  }
+
+  // Rewire the voice URL to route inbound calls to our backend. Twilio
+  // includes the previous URL in the response so the caller can surface
+  // what was overwritten, but we don't read it here.
+  const newVoiceUrl = `${base}${WEBHOOK_PATHS.twimlInbound(didSid)}`;
+  await client.incomingPhoneNumbers(didSid).update({
+    voiceUrl:    newVoiceUrl,
+    voiceMethod: 'POST',
+  });
+
+  return {
+    did:               phoneNumber.phoneNumber,
+    did_sid:           phoneNumber.sid,
+    capabilities:      phoneNumber.capabilities,
+    previous_voice_url: phoneNumber.voiceUrl || null,
+  };
+}
+
+
 // ── validateSignature ─────────────────────────────────────────────────────
 /**
  * Verify that a webhook request actually came from Twilio. Without this,
@@ -336,6 +449,8 @@ module.exports = {
   initiateCall,
   provisionDid,
   releaseDid,
+  cancelCall,
+  claimDid,
   validateSignature,
   buildWebhookUrl,
   // Expose constants for the route/webhook layer to reuse without

@@ -1404,11 +1404,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   // activeTwilioCallId is the calls.id of an in-progress Twilio call. When
   // set, TwilioCallModal renders. When the call reaches status='completed',
   // it hands off to LogCallModal pre-filled with duration_seconds.
-  // editingTwilioCallId is set ONLY when LogCallModal opens to capture an
-  // outcome on a completed Twilio call — it tells the modal to PATCH the
-  // existing row instead of POSTing a new one.
   const [activeTwilioCallId,       setActiveTwilioCallId]       = useState(null);
-  const [editingTwilioCallId,      setEditingTwilioCallId]      = useState(null);
   const [prefilledCallDurationSec, setPrefilledCallDurationSec] = useState(null);
   const [isInitiatingTwilio,       setIsInitiatingTwilio]       = useState(false);
 
@@ -2218,6 +2214,15 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
                   },
                 });
               }}
+              onCaptureOutcome={(call) => {
+                // "Outcome not captured" recovery: open LogCallModal in
+                // editing mode for an existing Twilio call row that has
+                // status='completed' (or terminal but failed/no_answer
+                // where rep wants to record context) and outcome=NULL.
+                setEditingTwilioCallId(call.id);
+                setPrefilledCallDurationSec(call.duration_seconds || null);
+                setShowLogCallModal(true);
+              }}
             />
           )}
 
@@ -2549,12 +2554,9 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
             onCompleted={(callId, durationSec) => {
               // Call ended normally. Close the in-progress modal and open
               // LogCallModal so the rep can pick an outcome + add notes.
-              // We thread the callId into LogCallModal so it PATCHes the
-              // existing row (created by /initiate) instead of POSTing a
-              // duplicate. duration_seconds is pre-filled so the rep doesn't
-              // have to re-enter it.
+              // duration_seconds was set by the status webhook on the calls
+              // row server-side; LogCallModal will pull it via refreshCalls.
               setActiveTwilioCallId(null);
-              setEditingTwilioCallId(callId);
               setPrefilledCallDurationSec(durationSec);
               setShowLogCallModal(true);
             }}
@@ -2577,13 +2579,10 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
             sequenceStepLogId={callModalSequenceContext?.sequenceStepLogId || null}
             taskNote={callModalSequenceContext?.taskNote || ''}
             sequenceContext={callModalSequenceContext?.sequenceContext || null}
-            editingCallId={editingTwilioCallId}
-            prefilledDurationSec={prefilledCallDurationSec}
             onSaved={async () => {
               const wasSequenceCall = !!callModalSequenceContext?.sequenceStepLogId;
               setShowLogCallModal(false);
               setCallModalSequenceContext(null);
-              setEditingTwilioCallId(null);
               setPrefilledCallDurationSec(null);
               await refreshCalls();
               // Refresh prospect so updated channel_data.call drives the
@@ -2608,8 +2607,6 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
             onClose={() => {
               setShowLogCallModal(false);
               setCallModalSequenceContext(null);
-              setEditingTwilioCallId(null);
-              setPrefilledCallDurationSec(null);
             }}
           />
         )}
@@ -3962,7 +3959,7 @@ function InfoRow({ label, value, optional = false, editMode = false, editValue, 
 // owned by ProspectDetailPanel.
 // ═════════════════════════════════════════════════════════════════════════════
 
-function CallsPanel({ prospect, calls, pendingCallTasks = [], onLogCall, onLogCallFromTask }) {
+function CallsPanel({ prospect, calls, pendingCallTasks = [], onLogCall, onLogCallFromTask, onCaptureOutcome }) {
   // Aggregates for the summary strip at the top.
   const total      = calls.length;
   const connected  = calls.filter(c =>
@@ -4130,19 +4127,71 @@ function CallsPanel({ prospect, calls, pendingCallTasks = [], onLogCall, onLogCa
       {calls.map(call => {
         const colors = groupColor(call.outcome_group);
         const dur    = fmtDuration(call.duration_seconds);
+
+        // ── Phase 3 status-aware rendering ───────────────────────────────
+        // A row can be in three states:
+        //   1. outcome set                 → render normally (existing path)
+        //   2. outcome=NULL, status terminal completed → "Outcome not captured"
+        //      + Capture button → opens LogCallModal in editingCallId mode
+        //   3. outcome=NULL, status terminal abnormal (failed/no_answer/busy/
+        //      canceled) → show terminal status, offer optional capture
+        //   4. outcome=NULL, status non-terminal → call is still in flight
+        //      somewhere (e.g. rep closed tab); show transient state
+        const isOutcomeMissing = !call.outcome;
+        const TERMINAL_NORMAL   = ['completed'];
+        const TERMINAL_ABNORMAL = ['no_answer', 'failed', 'busy', 'canceled'];
+        const isCompletedNoOutcome = isOutcomeMissing && TERMINAL_NORMAL.includes(call.status);
+        const isAbnormalTerminal   = isOutcomeMissing && TERMINAL_ABNORMAL.includes(call.status);
+        const isInFlight           = isOutcomeMissing && !TERMINAL_NORMAL.includes(call.status) && !TERMINAL_ABNORMAL.includes(call.status);
+
+        // Recovery button is offered for both completed-no-outcome and
+        // abnormal-terminal states — in both cases the rep may want to add
+        // context (e.g. "no answer, will retry tomorrow").
+        const canCapture = (isCompletedNoOutcome || isAbnormalTerminal) && !!onCaptureOutcome;
+
+        // Label & color override for missing-outcome rows.
+        const statusLabel = isCompletedNoOutcome ? '⏳ Outcome not captured'
+                          : call.status === 'no_answer' ? '📵 No answer'
+                          : call.status === 'busy'      ? '☎️ Busy'
+                          : call.status === 'failed'    ? '⚠️ Failed'
+                          : call.status === 'canceled'  ? '🚫 Canceled'
+                          : isInFlight                  ? `🔄 ${call.status || 'in progress'}`
+                          : (call.outcome_label || call.outcome);
+        const missingOutcomeColors = isCompletedNoOutcome ? { bg: '#fef3c7', border: '#fde68a', fg: '#92400e' }
+                                    : isAbnormalTerminal  ? { bg: '#f3f4f6', border: '#d1d5db', fg: '#374151' }
+                                    : isInFlight          ? { bg: '#dbeafe', border: '#93c5fd', fg: '#1e40af' }
+                                    : null;
+        const finalColors = missingOutcomeColors || colors;
+
         return (
           <div key={call.id} style={{
             padding: '12px 14px', marginBottom: 10, borderRadius: 8,
-            background: '#fff', border: '1px solid #e5e7eb',
+            background: '#fff',
+            border: `1px solid ${isCompletedNoOutcome ? '#fde68a' : '#e5e7eb'}`,
           }}>
+            {/* Inbound badge — its own line at the top, more prominent than
+                the small grey dot it was before. Outbound calls show nothing
+                here (no badge needed for the default direction). */}
+            {call.direction === 'inbound' && (
+              <div style={{
+                display: 'inline-block', marginBottom: 6,
+                padding: '2px 8px', borderRadius: 4,
+                background: '#eff6ff', border: '1px solid #bfdbfe',
+                color: '#1e40af', fontSize: 10, fontWeight: 600,
+                letterSpacing: '0.04em', textTransform: 'uppercase',
+              }}>
+                📥 Inbound
+              </div>
+            )}
+
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                 <span style={{
                   display: 'inline-block', padding: '2px 8px', borderRadius: 4,
-                  background: colors.bg, border: `1px solid ${colors.border}`, color: colors.fg,
+                  background: finalColors.bg, border: `1px solid ${finalColors.border}`, color: finalColors.fg,
                   fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
                 }}>
-                  {call.outcome_label || call.outcome}
+                  {statusLabel}
                 </span>
                 {dur && (
                   <span style={{ fontSize: 11, color: '#6b7280' }}>· {dur}</span>
@@ -4152,15 +4201,57 @@ function CallsPanel({ prospect, calls, pendingCallTasks = [], onLogCall, onLogCa
                 {relTime(call.occurred_at)}
               </span>
             </div>
+
             {call.notes && (
               <div style={{ fontSize: 12, color: '#374151', whiteSpace: 'pre-wrap', marginBottom: 6, lineHeight: 1.4 }}>
                 {call.notes}
               </div>
             )}
+
+            {/* Recording playback — Twilio audio is hosted by Twilio and
+                served at recording_url. The .mp3 is playable directly via
+                <audio>. The URL is unauthenticated (URL-as-secret); links
+                are valid until the recording is deleted from Twilio. */}
+            {call.recording_url && (
+              <div style={{ marginBottom: 6 }}>
+                <audio
+                  controls
+                  preload="none"
+                  src={call.recording_url}
+                  style={{ width: '100%', height: 28 }}
+                />
+              </div>
+            )}
+
+            {/* Capture-outcome recovery CTA — appears whenever outcome is
+                NULL on a terminal row. Click opens LogCallModal in
+                editingCallId mode so the rep can disposition the call now. */}
+            {canCapture && (
+              <button
+                onClick={() => onCaptureOutcome(call)}
+                style={{
+                  marginTop: 4, marginBottom: 4,
+                  padding: '6px 12px',
+                  background: '#0F9D8E', color: '#fff',
+                  border: 'none', borderRadius: 6,
+                  fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                }}
+              >
+                {call.direction === 'inbound'
+                  ? '📝 Log details'
+                  : (isCompletedNoOutcome ? '📝 Capture outcome' : '📝 Add notes')}
+              </button>
+            )}
+
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10, color: '#9ca3af' }}>
               <span>by {call.logged_by_name || call.logged_by_email || `User #${call.user_id}`}</span>
-              {call.phone_used && <span>· called {call.phone_used}</span>}
-              {call.direction === 'inbound' && <span style={{ color: '#1e40af' }}>· inbound</span>}
+              {call.phone_used && (
+                <span>
+                  {call.direction === 'inbound'
+                    ? `· from ${call.phone_used}`
+                    : `· called ${call.phone_used}`}
+                </span>
+              )}
             </div>
           </div>
         );
@@ -4183,22 +4274,7 @@ function CallsPanel({ prospect, calls, pendingCallTasks = [], onLogCall, onLogCa
 //   onClose   — close the modal without saving
 // ═════════════════════════════════════════════════════════════════════════════
 
-function LogCallModal({
-  prospect,
-  settings,
-  onSaved,
-  onClose,
-  sequenceStepLogId,
-  taskNote,
-  sequenceContext,
-  // Phase 3: when present, the modal is capturing the outcome for an
-  // already-completed Twilio call (created via /initiate). It PATCHes that
-  // row instead of POSTing a new one. prefilledDurationSec lets the duration
-  // field seed from the Twilio status webhook's CallDuration so the rep
-  // doesn't have to retype it.
-  editingCallId        = null,
-  prefilledDurationSec = null,
-}) {
+function LogCallModal({ prospect, settings, onSaved, onClose, sequenceStepLogId, taskNote, sequenceContext }) {
   // Form state. occurred_at defaults to "now" in datetime-local format.
   const localNow = () => {
     const d = new Date();
@@ -4215,15 +4291,7 @@ function LogCallModal({
   };
   const [occurredAt, setOccurredAt] = useState(localNow());
   const [outcomeKey, setOutcomeKey] = useState('');
-  const [durationMin, setDurationMin] = useState(() => {
-    // Twilio handoff: server reports seconds, the input is in minutes.
-    // Round to one decimal (e.g. 87s → 1.5) so the rep sees a sensible
-    // value but can adjust freely.
-    if (prefilledDurationSec && prefilledDurationSec > 0) {
-      return String(Math.round((prefilledDurationSec / 60) * 10) / 10);
-    }
-    return '';
-  });
+  const [durationMin, setDurationMin] = useState('');   // input as minutes; converted to seconds on save
   const [phoneUsed, setPhoneUsed] = useState(prospect?.phone || '');
   // Phase 2: pre-fill notes with the sequence step's task_note when this
   // modal opens from a sequence call task. The rep can edit before saving.
@@ -4280,13 +4348,10 @@ function LogCallModal({
       if (sequenceStepLogId) {
         body.sequence_step_log_id = sequenceStepLogId;
       }
-      await apiFetch(
-        editingCallId ? `/prospect-calls/${editingCallId}` : '/prospect-calls',
-        {
-          method: editingCallId ? 'PATCH' : 'POST',
-          body: JSON.stringify(body),
-        }
-      );
+      await apiFetch('/prospect-calls', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
       await onSaved();
     } catch (err) {
       setError(err.message || 'Save failed');

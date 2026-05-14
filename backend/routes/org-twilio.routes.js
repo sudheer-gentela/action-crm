@@ -212,6 +212,146 @@ router.post('/release-did/:userId', adminOnly, async (req, res) => {
 
 
 // =========================================================================
+// POST /claim-did/:userId — assign an existing Twilio DID to a rep
+// =========================================================================
+// Body: { did_sid: "PN..." }
+//
+// Used when an admin wants to assign a DID that was provisioned through the
+// Twilio console (e.g. the trial DID, a ported number) rather than buying a
+// new one through provisionDid. The DID must already exist in our Twilio
+// account.
+//
+// Side-effects:
+//   1. Verify the rep exists in this org and doesn't already have a DID
+//   2. Verify no other user (in any org) already has this DID — DIDs are
+//      globally unique within our Twilio account, so two reps can't share
+//   3. Call Twilio API to fetch the number details and update its voice URL
+//      to route inbound calls to our backend
+//   4. Persist the DID + SID on the rep's user row
+//
+// Important: step 3 OVERWRITES whatever voice routing was previously
+// configured on the Twilio number. The success response surfaces this so
+// the admin knows.
+// =========================================================================
+router.post('/claim-did/:userId', adminOnly, async (req, res) => {
+  const userId = parseInt(req.params.userId, 10);
+  const didSid = String(req.body.did_sid || '').trim();
+
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ error: { message: 'Invalid user id' } });
+  }
+  if (!/^PN[a-f0-9]+$/i.test(didSid)) {
+    return res.status(400).json({
+      error: {
+        message: 'did_sid must be a Twilio phone-number SID starting with PN (find it in the Twilio console)',
+        code:    'INVALID_DID_SID',
+      },
+    });
+  }
+
+  // Pre-flight: rep exists in this org, no DID yet.
+  const repRes = await db.pool.query(
+    `SELECT id, twilio_did FROM users WHERE id = $1 AND org_id = $2`,
+    [userId, req.orgId]
+  );
+  if (!repRes.rows.length) {
+    return res.status(404).json({ error: { message: 'User not found in this org' } });
+  }
+  if (repRes.rows[0].twilio_did) {
+    return res.status(409).json({
+      error: { message: 'This user already has a DID assigned. Release it first.', code: 'DID_ALREADY_ASSIGNED' },
+    });
+  }
+
+  // Uniqueness: no other user (in ANY org) can be holding this SID. The
+  // partial unique index on users.twilio_did would catch this at write
+  // time, but the up-front check returns a friendlier error and prevents
+  // wasting a Twilio API call.
+  const existingRes = await db.pool.query(
+    `SELECT id, email, org_id FROM users WHERE twilio_did_sid = $1 LIMIT 1`,
+    [didSid]
+  );
+  if (existingRes.rows.length) {
+    const other = existingRes.rows[0];
+    const sameOrg = other.org_id === req.orgId;
+    return res.status(409).json({
+      error: {
+        message: sameOrg
+          ? `This DID is already assigned to ${other.email}. Release it from that user first.`
+          : 'This DID is already in use by another GoWarmCRM organization.',
+        code: sameOrg ? 'DID_ASSIGNED_SAME_ORG' : 'DID_ASSIGNED_OTHER_ORG',
+      },
+    });
+  }
+
+  // Twilio config check.
+  try { TwilioProvider.validateConfig(); }
+  catch (cfgErr) {
+    return res.status(503).json({ error: { message: 'Twilio is not configured for this deployment.' } });
+  }
+
+  // Claim on Twilio side — verifies SID exists in our account, rewires the
+  // voice URL to our inbound webhook.
+  let claimed;
+  try {
+    claimed = await TwilioProvider.claimDid(didSid);
+  } catch (err) {
+    if (err.code === 'TWILIO_DID_NOT_FOUND') {
+      return res.status(404).json({
+        error: { message: err.message, code: 'TWILIO_DID_NOT_FOUND' },
+      });
+    }
+    console.error('claimDid error:', err);
+    return res.status(502).json({
+      error: {
+        message: err.message || 'Twilio could not claim the DID',
+        code:    err.code ? `TWILIO_${err.code}` : 'TWILIO_ERROR',
+      },
+    });
+  }
+
+  // Persist on the user row.
+  try {
+    await db.pool.query(
+      `UPDATE users
+          SET twilio_did                = $1,
+              twilio_did_sid            = $2,
+              twilio_did_provisioned_at = NOW(),
+              updated_at                = NOW()
+        WHERE id = $3 AND org_id = $4`,
+      [claimed.did, claimed.did_sid, userId, req.orgId]
+    );
+  } catch (err) {
+    // Failure here is unrecoverable — we already overwrote the voice URL
+    // on Twilio's side, so the previous routing is gone. Log loudly so the
+    // admin sees this in Railway and can manually restore via Twilio
+    // console if needed.
+    console.error('claim-did: DB write failed after Twilio voice URL update:', {
+      did: claimed.did, did_sid: claimed.did_sid, user_id: userId, error: err.message,
+    });
+    return res.status(500).json({
+      error: {
+        message: 'Twilio voice URL was updated but the GoWarm DB write failed. Contact support.',
+        code:    'DB_WRITE_FAILED_AFTER_CLAIM',
+      },
+    });
+  }
+
+  return res.status(201).json({
+    rep_id:                    userId,
+    twilio_did:                claimed.did,
+    twilio_did_sid:            claimed.did_sid,
+    twilio_did_provisioned_at: new Date().toISOString(),
+    capabilities:              claimed.capabilities,
+    // Surface the overwrite so the UI can show a "previous routing replaced"
+    // message. previous_voice_url may be empty/null for never-configured DIDs.
+    previous_voice_url:        claimed.previous_voice_url,
+    voice_url_overwritten:     !!claimed.previous_voice_url,
+  });
+});
+
+
+// =========================================================================
 // PATCH /settings — org-level Twilio toggles + rate limits
 // =========================================================================
 router.patch('/settings', adminOnly, async (req, res) => {
