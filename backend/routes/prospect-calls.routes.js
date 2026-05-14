@@ -771,9 +771,14 @@ router.patch('/:id', async (req, res) => {
       setClauses.push(`${col} = $${values.length}`);
     });
     setClauses.push(`updated_at = CURRENT_TIMESTAMP`);
+    // Parameter numbering: SET-clause params occupy $1..$N (N = number of
+    // patched columns). The WHERE params (id, org_id) follow as $(N+1) and
+    // $(N+2). A previous version computed these AFTER pushing id+orgId and
+    // mis-derived the placeholders, producing an unused $N param and the
+    // Postgres 42P18 "could not determine data type of parameter" error.
+    const idPlaceholder    = values.length + 1;
+    const orgIdPlaceholder = values.length + 2;
     values.push(id, req.orgId);
-    const idIdx    = values.length - 1;  // 1-based: $(idIdx+1)
-    const orgIdx   = values.length;
 
     // Transaction: update the row, then mirror the change in prospecting_activities.
     const client = await db.pool.connect();
@@ -783,7 +788,7 @@ router.patch('/:id', async (req, res) => {
       const updRes = await client.query(
         `UPDATE calls
             SET ${setClauses.join(', ')}
-          WHERE id = $${idIdx + 1} AND org_id = $${orgIdx + 1}
+          WHERE id = $${idPlaceholder} AND org_id = $${orgIdPlaceholder}
           RETURNING *`,
         values
       );

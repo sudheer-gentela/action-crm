@@ -170,6 +170,21 @@ app.use('/api/prompts',       require('./routes/prompts.routes'));
 app.use('/api/salesforce',    require('./routes/salesforce.routes'));
 app.use('/api/hubspot',       require('./routes/hubspot.routes'));
 
+// ── Twilio webhooks (Phase 3) ─────────────────────────────────────────────
+// CRITICAL placement: this MUST come before the `/api` dealHealth catch-all
+// below. dealHealth.routes does `router.use(authenticateToken)` internally,
+// which runs JWT auth on EVERY request that enters the router — including
+// requests for paths the router doesn't even define. Twilio webhooks carry
+// no JWT (they're signature-validated instead), so if they reach dealHealth
+// first they get 401'd and the webhook handler never runs. That manifests
+// as: outbound calls play "an application error has occurred" (twiml webhook
+// 401'd) and call status never updates past 'initiated' (status webhook
+// 401'd). Mounting the specific /api/twilio/webhooks prefix here ensures
+// Express dispatches it before falling through to the catch-all.
+//
+// Public — NO auth middleware. Each route validates the Twilio signature.
+app.use('/api/twilio/webhooks', require('./routes/twilio-webhooks.routes'));
+
 // Deal health uses a bare /api mount (legacy) — keep AFTER more-specific routes
 app.use('/api',               require('./routes/dealHealth.routes'));
 
@@ -221,11 +236,6 @@ app.use('/api/org/outreach-limits', require('./routes/outreach-limits.routes'));
 app.use('/api/prospecting/inbox',   require('./routes/prospecting-inbox.routes'));
 
 // ── Twilio (Phase 3) ──────────────────────────────────────────────────────
-// Public webhook endpoints — NO auth middleware, signature-validated per-route.
-// Mounted under /api so the existing rate limiter still applies as a safety
-// brake against runaway Twilio retries.
-app.use('/api/twilio/webhooks', require('./routes/twilio-webhooks.routes'));
-
 // Admin endpoints — orgs admin/owner only (enforced inside the routes file).
 app.use('/api/org/admin/twilio', require('./routes/org-twilio.routes'));
 
