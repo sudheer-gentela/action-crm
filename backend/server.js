@@ -140,8 +140,11 @@ app.get('/health', (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. API ROUTES — grouped by domain
 //
-// Mount order matters: more-specific paths first when prefixes overlap
-// (e.g. /api/salesforce before /api/* dealHealthRoutes).
+// Every router is mounted at a SPECIFIC prefix. There is intentionally NO
+// bare `/api` catch-all mount: a previous one (dealHealth) silently swallowed
+// every unmatched /api/* request into its auth-gated router, repeatedly
+// breaking public webhook routes. Keep it this way — every new router gets
+// its own specific prefix, and mount order is not load-bearing.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Skills & runs ────────────────────────────────────────────────────────
@@ -161,7 +164,7 @@ app.use('/api/calendar',      require('./routes/calendar.routes'));
 app.use('/api/dashboard',     require('./routes/dashboard.routes'));
 app.use('/api/agent',         require('./routes/agent.routes'));
 
-// ── External integrations (must precede /api/* dealHealth catch-all) ─────
+// ── External integrations ────────────────────────────────────────────────
 app.use('/api/outlook',       require('./routes/outlook.routes'));
 app.use('/api/google',        require('./routes/google.routes'));
 app.use('/api/sync',          require('./routes/sync.routes'));
@@ -171,22 +174,21 @@ app.use('/api/salesforce',    require('./routes/salesforce.routes'));
 app.use('/api/hubspot',       require('./routes/hubspot.routes'));
 
 // ── Twilio webhooks (Phase 3) ─────────────────────────────────────────────
-// CRITICAL placement: this MUST come before the `/api` dealHealth catch-all
-// below. dealHealth.routes does `router.use(authenticateToken)` internally,
-// which runs JWT auth on EVERY request that enters the router — including
-// requests for paths the router doesn't even define. Twilio webhooks carry
-// no JWT (they're signature-validated instead), so if they reach dealHealth
-// first they get 401'd and the webhook handler never runs. That manifests
-// as: outbound calls play "an application error has occurred" (twiml webhook
-// 401'd) and call status never updates past 'initiated' (status webhook
-// 401'd). Mounting the specific /api/twilio/webhooks prefix here ensures
-// Express dispatches it before falling through to the catch-all.
-//
 // Public — NO auth middleware. Each route validates the Twilio signature.
+//
+// Historical note: dealHealth.routes used to be mounted at a bare `/api`,
+// which made it a catch-all — ANY /api/* request not matched by a more
+// specific mount fell into dealHealth's router, hit its `router.use(auth)`,
+// and got 401'd. That repeatedly broke these webhooks (Twilio sends no JWT).
+// dealHealth is now mounted at the specific /api/deal-health prefix below,
+// so the catch-all hazard is gone. Mount order here is no longer load-
+// bearing — but keeping webhooks grouped with the other integrations is
+// still tidy.
 app.use('/api/twilio/webhooks', require('./routes/twilio-webhooks.routes'));
 
-// Deal health uses a bare /api mount (legacy) — keep AFTER more-specific routes
-app.use('/api',               require('./routes/dealHealth.routes'));
+// Deal health — mounted at a SPECIFIC prefix (was a bare `/api` catch-all,
+// which silently swallowed unmatched /api/* requests; see note above).
+app.use('/api/deal-health',   require('./routes/dealHealth.routes'));
 
 // ── Storage / Admin ───────────────────────────────────────────────────────
 app.use('/api/storage',       require('./routes/storage.routes'));

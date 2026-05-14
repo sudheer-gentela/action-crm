@@ -1,9 +1,21 @@
 /**
  * Deal Health Config & Competitors Routes
- * GET/PUT /api/health-config
- * GET/POST/PUT/DELETE /api/competitors
- * POST /api/deals/:id/score
- * PATCH /api/deals/:id/signals
+ *
+ * Mounted at /api/deal-health (changed from a bare /api mount — see server.js).
+ * The bare /api mount was a footgun: because this router does
+ * `router.use(auth)`, ANY request under /api/* that didn't match a more
+ * specific mount fell through to here and got 401'd — including public
+ * webhooks. Mounting under a specific prefix removes that hazard.
+ *
+ * Resulting endpoints:
+ *   GET/PUT        /api/deal-health/health-config
+ *   GET/POST       /api/deal-health/competitors
+ *   PUT/DELETE     /api/deal-health/competitors/:id
+ *   POST           /api/deal-health/deals/:id/score
+ *   POST           /api/deal-health/deals/score-all
+ *   PATCH          /api/deal-health/deals/:id/signals
+ *
+ * Internal route paths below are UNCHANGED — only the mount prefix moved.
  */
 
 const express = require('express');

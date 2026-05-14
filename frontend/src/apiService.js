@@ -152,22 +152,26 @@ twilio: {
   },
 
   health: {
-    scoreDeal: (id) => api.post(`/deals/${id}/score`),
-    scoreAll: () => api.post('/deals/score-all'),
-    updateSignals: (id, signals) => api.patch(`/deals/${id}/signals`, signals),
+    // dealHealth routes moved from a bare /api mount to /api/deal-health
+    // (the bare mount was an auth-gated catch-all that broke public webhooks).
+    scoreDeal: (id) => api.post(`/deal-health/deals/${id}/score`),
+    scoreAll: () => api.post('/deal-health/deals/score-all'),
+    updateSignals: (id, signals) => api.patch(`/deal-health/deals/${id}/signals`, signals),
+    // NOTE: signalOverride is NOT a dealHealth route — it lives in
+    // deals.routes.js at /api/deals/:id/signal-override. Left unchanged.
     signalOverride: (id, signalKey, value, managerOverride = false) => api.patch(`/deals/${id}/signal-override`, { signalKey, value, managerOverride }),
   },
 
   healthConfig: {
-    get: () => api.get('/health-config'),
-    save: (data) => api.put('/health-config', data),
+    get: () => api.get('/deal-health/health-config'),
+    save: (data) => api.put('/deal-health/health-config', data),
   },
 
   competitors: {
-    getAll: () => api.get('/competitors'),
-    create: (data) => api.post('/competitors', data),
-    update: (id, data) => api.put(`/competitors/${id}`, data),
-    delete: (id) => api.delete(`/competitors/${id}`),
+    getAll: () => api.get('/deal-health/competitors'),
+    create: (data) => api.post('/deal-health/competitors', data),
+    update: (id, data) => api.put(`/deal-health/competitors/${id}`, data),
+    delete: (id) => api.delete(`/deal-health/competitors/${id}`),
   },
 
   playbook: {
