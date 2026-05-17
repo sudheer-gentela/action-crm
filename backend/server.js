@@ -274,6 +274,7 @@ app.use('/api/transcripts',     require('./routes/transcripts.routes'));
 
 // ── Misc ──────────────────────────────────────────────────────────────────
 app.use('/api/action-config',   require('./routes/action-config.routes'));
+app.use('/api/extension', require('./routes/extension.routes'));
 
 // ── Public org context ────────────────────────────────────────────────────
 const authenticateToken = require('./middleware/auth.middleware');
