@@ -137,7 +137,7 @@ export default function UserAIProviderSettings() {
     return <div style={{ padding: 32, color: '#6b7280' }}>Loading…</div>;
   }
 
-  const { policy, user_settings, providers, call_types } = data;
+  const { policy, user_settings, providers } = data;
 
   // The effective provider/model — what the user is actually getting
   const effectiveProvider = user_settings.ai_provider || policy.org_provider;
