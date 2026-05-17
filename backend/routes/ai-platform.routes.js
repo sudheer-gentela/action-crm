@@ -18,7 +18,7 @@
  */
 
 const express = require('express');
-const { authenticateToken } = require('../middleware/auth.middleware');
+const authenticateToken = require('../middleware/auth.middleware');
 const { requireSuperAdmin } = require('../middleware/superAdmin.middleware');
 const db = require('../config/database');
 

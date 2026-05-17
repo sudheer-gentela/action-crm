@@ -1405,6 +1405,10 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   // set, TwilioCallModal renders. When the call reaches status='completed',
   // it hands off to LogCallModal pre-filled with duration_seconds.
   const [activeTwilioCallId,       setActiveTwilioCallId]       = useState(null);
+  // editingTwilioCallId is the calls.id of an EXISTING (terminal) call row
+  // whose outcome was never captured. When set, LogCallModal opens in edit
+  // mode and PATCHes that row instead of POSTing a new call.
+  const [editingTwilioCallId,      setEditingTwilioCallId]      = useState(null);
   const [prefilledCallDurationSec, setPrefilledCallDurationSec] = useState(null);
   const [isInitiatingTwilio,       setIsInitiatingTwilio]       = useState(false);
 
@@ -2576,6 +2580,8 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
           <LogCallModal
             prospect={prospect}
             settings={callSettings}
+            editingCallId={editingTwilioCallId}
+            prefilledDurationSec={prefilledCallDurationSec}
             sequenceStepLogId={callModalSequenceContext?.sequenceStepLogId || null}
             taskNote={callModalSequenceContext?.taskNote || ''}
             sequenceContext={callModalSequenceContext?.sequenceContext || null}
@@ -2584,6 +2590,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
               setShowLogCallModal(false);
               setCallModalSequenceContext(null);
               setPrefilledCallDurationSec(null);
+              setEditingTwilioCallId(null);
               await refreshCalls();
               // Refresh prospect so updated channel_data.call drives the
               // timeline CALL line; also refreshes activities for the
@@ -2607,6 +2614,8 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
             onClose={() => {
               setShowLogCallModal(false);
               setCallModalSequenceContext(null);
+              setPrefilledCallDurationSec(null);
+              setEditingTwilioCallId(null);
             }}
           />
         )}
@@ -4274,7 +4283,7 @@ function CallsPanel({ prospect, calls, pendingCallTasks = [], onLogCall, onLogCa
 //   onClose   — close the modal without saving
 // ═════════════════════════════════════════════════════════════════════════════
 
-function LogCallModal({ prospect, settings, onSaved, onClose, sequenceStepLogId, taskNote, sequenceContext }) {
+function LogCallModal({ prospect, settings, onSaved, onClose, sequenceStepLogId, taskNote, sequenceContext, editingCallId = null, prefilledDurationSec = null }) {
   // Form state. occurred_at defaults to "now" in datetime-local format.
   const localNow = () => {
     const d = new Date();
@@ -4291,7 +4300,9 @@ function LogCallModal({ prospect, settings, onSaved, onClose, sequenceStepLogId,
   };
   const [occurredAt, setOccurredAt] = useState(localNow());
   const [outcomeKey, setOutcomeKey] = useState('');
-  const [durationMin, setDurationMin] = useState('');   // input as minutes; converted to seconds on save
+  const [durationMin, setDurationMin] = useState(
+    prefilledDurationSec ? String(Math.round((prefilledDurationSec / 60) * 10) / 10) : ''
+  );   // input as minutes; converted to seconds on save
   const [phoneUsed, setPhoneUsed] = useState(prospect?.phone || '');
   // Phase 2: pre-fill notes with the sequence step's task_note when this
   // modal opens from a sequence call task. The rep can edit before saving.
@@ -4348,10 +4359,19 @@ function LogCallModal({ prospect, settings, onSaved, onClose, sequenceStepLogId,
       if (sequenceStepLogId) {
         body.sequence_step_log_id = sequenceStepLogId;
       }
-      await apiFetch('/prospect-calls', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
+      if (editingCallId) {
+        // Editing an existing terminal call row whose outcome was never
+        // captured — PATCH that row instead of creating a new call.
+        await apiFetch(`/prospect-calls/${editingCallId}`, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        });
+      } else {
+        await apiFetch('/prospect-calls', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+      }
       await onSaved();
     } catch (err) {
       setError(err.message || 'Save failed');

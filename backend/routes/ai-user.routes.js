@@ -9,7 +9,7 @@
  */
 
 const express = require('express');
-const { authenticateToken } = require('../middleware/auth.middleware');
+const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }        = require('../middleware/orgContext.middleware');
 const db                    = require('../config/database');
 
