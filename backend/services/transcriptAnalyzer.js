@@ -3,12 +3,9 @@
  * Uses Claude API to extract insights from meeting transcripts
  */
 
-const Anthropic = require('@anthropic-ai/sdk');
+const AIClientResolver = require('./ai/AIClientResolver');
+const TokenTrackingService = require('./TokenTrackingService');
 const { pool } = require('../config/database');
-
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY
-});
 
 /**
  * Analyze meeting transcript and extract insights
@@ -33,6 +30,7 @@ async function analyzeTranscript(transcriptId, userId) {
         d.stage as deal_stage,
         d.value as deal_value,
         d.health as deal_health,
+        d.org_id as deal_org_id,
         acc.name as account_name,
         m.title as meeting_title
        FROM meeting_transcripts mt
@@ -52,18 +50,34 @@ async function analyzeTranscript(transcriptId, userId) {
     // Build context-aware prompt
     const prompt = buildAnalysisPrompt(transcript);
     
-    // Call Claude API
-    const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 4096,
-      messages: [{
-        role: 'user',
-        content: prompt
-      }]
+    // Call AI via resolver — org_id comes from the linked deal, or the
+    // transcript's own org_id column if present (mt.* includes it)
+    const orgId = transcript.org_id || transcript.deal_org_id || null;
+
+    const { adapter, model, provider, keySource } =
+      await AIClientResolver.resolve(orgId, userId, 'transcript_analysis');
+
+    const { text: analysisText, usage } = await adapter.complete({
+      model,
+      prompt,
+      maxTokens: 4096,
     });
-    
+
+    // Token tracking (non-blocking)
+    if (usage) {
+      TokenTrackingService.log({
+        orgId,
+        userId,
+        callType: 'transcript_analysis',
+        model,
+        provider,
+        keySource,
+        usage,
+        dealId: transcript.deal_id || null,
+      }).catch(() => {});
+    }
+
     // Parse Claude's response
-    const analysisText = message.content[0].text;
     const analysis = parseAnalysisResponse(analysisText);
     
     console.log(`✅ AI analysis completed for transcript ${transcriptId}`);

@@ -12,8 +12,7 @@
  * `prospecting_actions` depending on strap.entity_type.
  */
 
-const { Anthropic } = require('@anthropic-ai/sdk');
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const AIClientResolver = require('./ai/AIClientResolver');
 const db = require('../config/database');
 const TokenTrackingService = require('./TokenTrackingService');
 
@@ -71,24 +70,29 @@ If no additional actions are needed, return [].`;
   }
 
   static async _callClaude(prompt, strap, orgId, userId) {
-    const message = await anthropic.messages.create({
-      model:      'claude-haiku-4-5-20251001',
-      max_tokens: 800,
-      messages:   [{ role: 'user', content: prompt }],
+    const { adapter, model, provider, keySource } =
+      await AIClientResolver.resolve(orgId, userId, 'strap_ai_enhancement');
+
+    const { text, usage } = await adapter.complete({
+      model,
+      prompt,
+      maxTokens: 800,
     });
 
     // Token tracking (non-blocking)
-    if (message.usage) {
+    if (usage) {
       TokenTrackingService.log({
         orgId,
         userId,
         callType: 'strap_ai_enhancement',
-        model:    'claude-haiku-4-5-20251001',
-        usage:    { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens },
+        model,
+        provider,
+        keySource,
+        usage,
       }).catch(() => {});
     }
 
-    return message.content[0]?.text || '[]';
+    return text || '[]';
   }
 
   static async _parseAndInsert(rawText, strap, orgId, userId) {

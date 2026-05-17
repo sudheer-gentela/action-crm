@@ -404,11 +404,12 @@ class StrapNightlySweep {
    * @param {object} context       — entity-specific context
    */
   static async _autoGenerateStrap(entityType, entityId, actingUserId, orgId, hurdle, context) {
-    // Resolve AI mode + provider from user's config (non-blocking, falls back)
-    const { mode, provider } = await this._loadStrapConfig(actingUserId, orgId);
+    // Resolve AI mode from user's config (provider/model now resolved
+    // centrally by AIClientResolver inside StrapStrategyBuilder)
+    const { mode } = await this._loadStrapConfig(actingUserId, orgId);
 
     // Build strategy — falls back to template internally if AI fails
-    const strategy = await StrapStrategyBuilder.build(entityType, hurdle, context, mode, provider);
+    const strategy = await StrapStrategyBuilder.build(entityType, hurdle, context, mode, orgId, actingUserId);
 
     // Supersede any active STRAP that might have appeared since we last checked
     // (race condition guard — the DB partial unique index enforces the invariant

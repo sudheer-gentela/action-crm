@@ -116,7 +116,7 @@ class StrapEngine {
       };
     }
 
-    const { mode, provider } = await loadStrapConfig(userId, orgId);
+    const { mode } = await loadStrapConfig(userId, orgId);
 
     // Check AI provider availability upfront
     let aiUnavailable     = false;
@@ -124,7 +124,7 @@ class StrapEngine {
 
     const needsAI = mode === 'ai' || mode === 'both';
     if (needsAI) {
-      const availability = StrapStrategyBuilder.checkProviderAvailability(provider);
+      const availability = await StrapStrategyBuilder.checkProviderAvailability(orgId, userId);
       if (!availability.available) {
         aiUnavailable       = true;
         aiUnavailableReason = availability.reason;
@@ -150,7 +150,7 @@ class StrapEngine {
 
     if ((effectiveMode === 'ai' || effectiveMode === 'both') && !aiUnavailable) {
       try {
-        aiDraft = await StrapStrategyBuilder.build(entityType, hurdle, context, 'ai', provider);
+        aiDraft = await StrapStrategyBuilder.build(entityType, hurdle, context, 'ai', orgId, userId);
         // If AI itself fell back to template internally (key check passed but call failed),
         // mark it clearly so the UI can show a degraded badge.
         if (aiDraft.fallbackUsed) {
@@ -212,14 +212,14 @@ class StrapEngine {
     }
 
     // Resolve AI model name for audit (only relevant when chosenSource='ai')
-    const { provider } = await loadStrapConfig(userId, orgId);
-    const aiModel = chosenSource === 'ai'
-      ? (require('./StrapStrategyBuilder') && (() => {
-          // Access the AI_MODELS map via a small helper — avoids circular require issues
-          const MODELS = { anthropic: 'claude-haiku-4-5-20251001', openai: 'gpt-4o-mini', grok: 'grok-beta' };
-          return MODELS[provider] || MODELS.anthropic;
-        })())
-      : null;
+    let aiModel = null;
+    if (chosenSource === 'ai') {
+      const AIClientResolver = require('./ai/AIClientResolver');
+      const resolved = await AIClientResolver._resolveProviderAndModel(
+        orgId, userId, 'strap_generation'
+      );
+      aiModel = resolved.model;
+    }
 
     // Supersede any existing active STRAP
     await this._supersedeActive(entityType, entityId, orgId);
@@ -290,19 +290,17 @@ class StrapEngine {
     }
 
     // Determine mode: explicit useAI param → config → default
-    let mode     = 'ai';
-    let provider = 'anthropic';
+    let mode = 'ai';
 
     if (useAI === false) {
       mode = 'playbook';
     } else {
       const cfg = await loadStrapConfig(userId, orgId);
-      provider = cfg.provider;
       // For auto-regen, resolve 'both' as 'ai' (pick the better path automatically)
       mode = cfg.mode === 'playbook' ? 'playbook' : 'ai';
     }
 
-    const strategy = await StrapStrategyBuilder.build(entityType, hurdle, context, mode, provider);
+    const strategy = await StrapStrategyBuilder.build(entityType, hurdle, context, mode, orgId, userId);
 
     await this._supersedeActive(entityType, entityId, orgId);
 

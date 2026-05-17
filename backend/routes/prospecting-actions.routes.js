@@ -604,15 +604,12 @@ router.post('/outreach/draft-email', async (req, res) => {
     const userPrefs = userPrefRes.rows[0]?.prospecting || {};
     const orgConfig = orgCfgRes.rows[0]?.config || {};
 
-    const aiProvider = userPrefs.ai_provider || orgConfig.ai_provider || 'anthropic';
-    const sanitiseModel = (m) => {
-      if (!m) return m;
-      return m
-        .replace('claude-sonnet-4-5-20251022', 'claude-sonnet-4-6')
-        .replace('claude-haiku-4-5-20251001', 'claude-haiku-4-5')
-        .replace('claude-sonnet-4-20250514',  'claude-sonnet-4-6');
-    };
-    const aiModel = sanitiseModel(userPrefs.ai_model || orgConfig.ai_model) || 'claude-haiku-4-5';
+    const AIClientResolver = require('../services/ai/AIClientResolver');
+    const _resolved  = await AIClientResolver._resolveProviderAndModel(
+      req.orgId, req.user.userId, 'prospecting_draft'
+    );
+    const aiProvider = _resolved.provider;
+    const aiModel    = _resolved.model;
     const productCtx = userPrefs.product_context !== undefined
       ? userPrefs.product_context
       : (orgConfig.product_context || '');
@@ -646,35 +643,24 @@ Write a short personalised outreach email. Return ONLY valid JSON:
 
     let rawText = '{}';
 
-    if (aiProvider === 'openai') {
-      const { OpenAI } = require('openai');
-      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const completion = await openai.chat.completions.create({
-        model: aiModel || 'gpt-4o-mini', max_tokens: 800,
-        messages: [{ role: 'user', content: prompt }],
-        response_format: { type: 'json_object' },
+    {
+      const { adapter, model, provider, keySource } =
+        await AIClientResolver.resolve(req.orgId, req.user.userId, 'prospecting_draft');
+
+      const { text, usage } = await adapter.complete({
+        model,
+        prompt,
+        maxTokens: 800,
       });
-      rawText = completion.choices[0]?.message?.content || '{}';
-    } else if (aiProvider === 'gemini') {
-      const { GoogleGenerativeAI } = require('@google/generative-ai');
-      const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
-      const result = await genAI.getGenerativeModel({ model: aiModel || 'gemini-1.5-flash' })
-                                .generateContent(prompt);
-      rawText = result.response.text() || '{}';
-    } else {
-      const Anthropic = require('@anthropic-ai/sdk');
-      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-      const message = await anthropic.messages.create({
-        model: aiModel, max_tokens: 800,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      rawText = message.content[0]?.text || '{}';
-      if (message.usage) {
+      rawText = text || '{}';
+
+      if (usage) {
         const TokenTrackingService = require('../services/TokenTrackingService');
         TokenTrackingService.log({
           orgId: req.orgId, userId: req.user.userId,
-          callType: 'prospecting_draft', model: aiModel,
-          usage: { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens },
+          callType: 'prospecting_draft',
+          model, provider, keySource,
+          usage,
         }).catch(() => {});
       }
     }

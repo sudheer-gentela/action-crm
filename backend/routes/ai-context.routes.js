@@ -15,11 +15,9 @@
 const express    = require('express');
 const router     = express.Router();
 const db         = require('../config/database');
-const { Anthropic } = require('@anthropic-ai/sdk');
+const AIClientResolver  = require('../services/ai/AIClientResolver');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const TokenTrackingService = require('../services/TokenTrackingService');
 
@@ -310,30 +308,34 @@ router.post('/context-suggest', async (req, res) => {
     const ctx    = await gatherDealContext(dealId, req.orgId);
     const prompt = buildPrompt(action, ctx);
 
-    // Call Claude
-    const message = await anthropic.messages.create({
-      model:      'claude-haiku-4-5-20251001',  // Fast + cheap for real-time UX
-      max_tokens: 1200,
-      messages:   [{ role: 'user', content: prompt }],
+    // Call AI via resolver
+    const { adapter, model, provider, keySource } =
+      await AIClientResolver.resolve(req.orgId, req.user.userId, 'context_suggest');
+
+    const { text: rawText, usage } = await adapter.complete({
+      model,
+      prompt,
+      maxTokens: 1200,
     });
 
     // ── Token tracking (non-blocking) ────────────────────────
-    if (message.usage) {
+    if (usage) {
       TokenTrackingService.log({
         orgId:    req.orgId,
         userId:   req.user.userId,
         callType: 'context_suggest',
-        model:    'claude-haiku-4-5-20251001',
-        usage:    { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens },
+        model,
+        provider,
+        keySource,
+        usage,
         dealId:   dealId || null,
       }).catch(() => {});
     }
 
-    const rawText = message.content[0]?.text || '{}';
     let parsed;
 
     try {
-      const cleaned = rawText.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim();
+      const cleaned = (rawText || '{}').replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim();
       const start   = cleaned.indexOf('{');
       const end     = cleaned.lastIndexOf('}');
       parsed = JSON.parse(cleaned.substring(start, end + 1));

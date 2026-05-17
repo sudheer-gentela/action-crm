@@ -9,8 +9,7 @@
  * AI is most useful for unusual contract situations (risky terms, edge cases).
  */
 
-const { Anthropic } = require('@anthropic-ai/sdk');
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const AIClientResolver = require('./ai/AIClientResolver');
 const db = require('../config/database');
 const TokenTrackingService = require('./TokenTrackingService');
 
@@ -57,22 +56,27 @@ Respond ONLY with a JSON array:
   }
 
   static async _callClaude(prompt, contract, orgId, userId) {
-    const message = await anthropic.messages.create({
-      model:      'claude-haiku-4-5-20251001',
-      max_tokens: 600,
-      messages:   [{ role: 'user', content: prompt }],
+    const { adapter, model, provider, keySource } =
+      await AIClientResolver.resolve(orgId, userId, 'clm_ai_enhancement');
+
+    const { text, usage } = await adapter.complete({
+      model,
+      prompt,
+      maxTokens: 600,
     });
 
-    if (message.usage) {
+    if (usage) {
       TokenTrackingService.log({
         orgId, userId,
         callType: 'clm_ai_enhancement',
-        model:    'claude-haiku-4-5-20251001',
-        usage:    { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens },
+        model,
+        provider,
+        keySource,
+        usage,
       }).catch(() => {});
     }
 
-    return message.content[0]?.text || '[]';
+    return text || '[]';
   }
 
   static _parse(rawText) {

@@ -13,9 +13,7 @@
  *   - AI can override the fixed rule next_step with a context-aware channel.
  */
 
-const { Anthropic } = require('@anthropic-ai/sdk');
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const AIClientResolver = require('./ai/AIClientResolver');
 
 const TokenTrackingService = require('./TokenTrackingService');
 
@@ -171,25 +169,33 @@ Return ONLY a JSON array. No markdown. No preamble. Each item:
   }
 
   static async _callClaude(prompt, context) {
-    const message = await anthropic.messages.create({
-      model:      'claude-haiku-4-5-20251001',
-      max_tokens: 1500,
-      messages:   [{ role: 'user', content: prompt }],
+    const orgId  = context?.deal?.org_id   || null;
+    const userId = context?.deal?.owner_id || null;
+
+    const { adapter, model, provider, keySource } =
+      await AIClientResolver.resolve(orgId, userId, 'ai_enhancement');
+
+    const { text, usage } = await adapter.complete({
+      model,
+      prompt,
+      maxTokens: 1500,
     });
 
     // ── Token tracking (non-blocking) ────────────────────────
-    if (message.usage && context?.deal) {
+    if (usage && context?.deal) {
       TokenTrackingService.log({
         orgId:    context.deal.org_id || null,
         userId:   context.deal.owner_id || null,
         callType: 'ai_enhancement',
-        model:    'claude-haiku-4-5-20251001',
-        usage:    { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens },
+        model,
+        provider,
+        keySource,
+        usage,
         dealId:   context.deal.id || null,
       }).catch(() => {});
     }
 
-    return message.content[0]?.text || '[]';
+    return text || '[]';
   }
 
   static _parseResponse(rawText, context) {

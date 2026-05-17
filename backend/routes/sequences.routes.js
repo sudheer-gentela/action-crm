@@ -42,8 +42,7 @@ const { resolvePersonalizeConfig } = require('../services/personalizeConfig');
 const { buildLinkedInArtifacts }   = require('../services/linkedinSnippets');
 
 // ── AI provider chain (same pattern as ProspectingAIEnhancer) ─────────────────
-const Anthropic = require('@anthropic-ai/sdk');
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const AIClientResolver = require('../services/ai/AIClientResolver');
 
 // ── Auth middleware on all routes ─────────────────────────────────────────────
 router.use(authenticateToken, orgContext);
@@ -339,11 +338,14 @@ Return JSON:
   ]
 }`;
 
-    const aiRes = await anthropic.messages.create({
-      model:      'claude-sonnet-4-20250514',
-      max_tokens: 3000,
-      system:     systemPrompt,
-      messages:   [{ role: 'user', content: userPrompt }],
+    const { adapter, model, provider, keySource } =
+      await AIClientResolver.resolve(req.orgId, req.user.userId, 'prospecting_sequence_generate');
+
+    const aiRes = await adapter.complete({
+      model,
+      maxTokens: 3000,
+      system:    systemPrompt,
+      messages:  [{ role: 'user', content: userPrompt }],
     });
 
     try {
@@ -351,12 +353,14 @@ Return JSON:
         orgId:    req.orgId,
         userId:   req.user.userId,
         callType: 'prospecting_sequence_generate',
-        model:    'claude-sonnet-4-20250514',
+        model,
+        provider,
+        keySource,
         usage:    aiRes.usage,
       });
     } catch (_) {}
 
-    const raw    = aiRes.content.find(b => b.type === 'text')?.text || '{}';
+    const raw    = aiRes.text || '{}';
     const clean  = raw.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
 
@@ -1685,11 +1689,14 @@ ${stepsRes.rows.map((s, i) => `Step ${i+1} (${s.channel}): subject="${s.subject_
 
 Return JSON: { "steps": [{ "step_order": 1, "subject": "...", "body": "...", "task_note": "" }] }`;
 
-    const aiRes = await anthropic.messages.create({
-      model:      'claude-sonnet-4-20250514',
-      max_tokens: 2000,
-      system:     systemPrompt,
-      messages:   [{ role: 'user', content: userPrompt }],
+    const { adapter, model, provider, keySource } =
+      await AIClientResolver.resolve(req.orgId, req.user.userId, 'prospecting_sequence_generate');
+
+    const aiRes = await adapter.complete({
+      model,
+      maxTokens: 2000,
+      system:    systemPrompt,
+      messages:  [{ role: 'user', content: userPrompt }],
     });
 
     try {
@@ -1697,12 +1704,14 @@ Return JSON: { "steps": [{ "step_order": 1, "subject": "...", "body": "...", "ta
         orgId:    req.orgId,
         userId:   req.user.userId,
         callType: 'prospecting_sequence_generate',
-        model:    'claude-sonnet-4-20250514',
+        model,
+        provider,
+        keySource,
         usage:    aiRes.usage,
       });
     } catch (_) {}
 
-    const raw   = aiRes.content.find(b => b.type === 'text')?.text || '{}';
+    const raw   = aiRes.text || '{}';
     const clean = raw.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
 
@@ -1758,11 +1767,14 @@ Return JSON:
   ]
 }`;
 
-    const aiRes = await anthropic.messages.create({
-      model:      'claude-sonnet-4-20250514',
-      max_tokens: 3000,
-      system:     systemPrompt,
-      messages:   [{ role: 'user', content: userPrompt }],
+    const { adapter, model, provider, keySource } =
+      await AIClientResolver.resolve(req.orgId, req.user.userId, 'prospecting_sequence_generate');
+
+    const aiRes = await adapter.complete({
+      model,
+      maxTokens: 3000,
+      system:    systemPrompt,
+      messages:  [{ role: 'user', content: userPrompt }],
     });
 
     try {
@@ -1770,12 +1782,14 @@ Return JSON:
         orgId:    req.orgId,
         userId:   req.user.userId,
         callType: 'prospecting_sequence_generate',
-        model:    'claude-sonnet-4-20250514',
+        model,
+        provider,
+        keySource,
         usage:    aiRes.usage,
       });
     } catch (_) {}
 
-    const raw   = aiRes.content.find(b => b.type === 'text')?.text || '{}';
+    const raw   = aiRes.text || '{}';
     const clean = raw.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
 
@@ -1814,11 +1828,14 @@ router.post('/ai-write-step', async (req, res) => {
   : '- This is a call/task step — return a brief task_note describing what to do; leave subject_template and body_template as empty strings'
 }\n\nReturn JSON:\n{\n  "subject_template": "...",\n  "body_template": "...",\n  "task_note": ""\n}`;
 
-    const aiRes = await anthropic.messages.create({
-      model:      'claude-sonnet-4-20250514',
-      max_tokens: 800,
-      system:     systemPrompt,
-      messages:   [{ role: 'user', content: userPrompt }],
+    const { adapter, model, provider, keySource } =
+      await AIClientResolver.resolve(req.orgId, req.user.userId, 'prospecting_sequence_generate');
+
+    const aiRes = await adapter.complete({
+      model,
+      maxTokens: 800,
+      system:    systemPrompt,
+      messages:  [{ role: 'user', content: userPrompt }],
     });
 
     try {
@@ -1826,12 +1843,14 @@ router.post('/ai-write-step', async (req, res) => {
         orgId:    req.orgId,
         userId:   req.user.userId,
         callType: 'prospecting_sequence_generate',
-        model:    'claude-sonnet-4-20250514',
+        model,
+        provider,
+        keySource,
         usage:    aiRes.usage,
       });
     } catch (_) {}
 
-    const raw   = aiRes.content.find(b => b.type === 'text')?.text || '{}';
+    const raw   = aiRes.text || '{}';
     const clean = raw.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
 

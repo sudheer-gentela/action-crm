@@ -2,54 +2,45 @@
  * StrapStrategyBuilder.js
  *
  * Generates the full STRAP (Situation → Target → Response → Action Plan)
- * using the configured provider (Anthropic / OpenAI / Grok) with a
+ * using the org/user-configured AI provider (via AIClientResolver) with a
  * rule-based template fallback.
  *
  * Public API:
- *   build(entityType, hurdle, context, mode, provider)
- *     mode     — 'ai' | 'playbook'
- *     provider — 'anthropic' | 'openai' | 'grok'  (only used when mode='ai')
+ *   build(entityType, hurdle, context, mode, orgId, userId)
+ *     mode — 'ai' | 'playbook'
+ *     orgId / userId — used to resolve provider + model when mode='ai'
  *
- *   checkProviderAvailability(provider)
+ *   checkProviderAvailability(orgId, userId)
  *     Returns { available: bool, reason: string|null }
+ *     Kept for backward compatibility with StrapEngine. Provider/model and
+ *     key resolution now happen centrally in AIClientResolver; this just
+ *     does a lightweight pre-check so the engine can decide on fallback.
  */
 
-const AI_MODELS = {
-  anthropic: 'claude-haiku-4-5-20251001',
-  openai:    'gpt-4o-mini',
-  grok:      'grok-beta',
-};
-
-// ── Provider availability ─────────────────────────────────────────────────────
-
-const PROVIDER_ENV_KEYS = {
-  anthropic: 'ANTHROPIC_API_KEY',
-  openai:    'OPENAI_API_KEY',
-  grok:      'XAI_API_KEY',
-};
+const AIClientResolver = require('./ai/AIClientResolver');
 
 class StrapStrategyBuilder {
 
   /**
-   * Check whether a given AI provider has its API key configured.
+   * Lightweight pre-check that an AI provider/key is resolvable for this
+   * org/user. The resolver itself throws a clear error at call time if no
+   * key is available; this just lets StrapEngine pick template mode upfront.
    *
-   * @param {string} provider — 'anthropic' | 'openai' | 'grok'
-   * @returns {{ available: boolean, reason: string|null }}
+   * @param {number|null} orgId
+   * @param {number|null} userId
+   * @returns {Promise<{ available: boolean, reason: string|null }>}
    */
-  static checkProviderAvailability(provider) {
-    const envKey = PROVIDER_ENV_KEYS[provider];
-    if (!envKey) {
-      return { available: false, reason: `Unknown provider: "${provider}"` };
-    }
-    const keyValue = process.env[envKey];
-    if (!keyValue || keyValue.trim() === '') {
-      const providerLabel = { anthropic: 'Anthropic', openai: 'OpenAI', grok: 'Grok (xAI)' }[provider] || provider;
+  static async checkProviderAvailability(orgId, userId) {
+    try {
+      // resolve() throws if no usable key exists anywhere in the chain
+      await AIClientResolver.resolve(orgId, userId, 'strap_generation');
+      return { available: true, reason: null };
+    } catch (err) {
       return {
         available: false,
-        reason: `${providerLabel} API key not configured. Ask your admin to add ${envKey} to environment variables.`,
+        reason: err.message || 'AI provider not available — check API key configuration.',
       };
     }
-    return { available: true, reason: null };
   }
 
   /**
@@ -59,33 +50,23 @@ class StrapStrategyBuilder {
    * @param {object} hurdle     - { hurdleType, title, priority, evidence }
    * @param {object} context    - entity-specific context
    * @param {string} mode       - 'ai' | 'playbook'
-   * @param {string} provider   - 'anthropic' | 'openai' | 'grok' (only when mode='ai')
+   * @param {number} orgId      - resolves provider/model when mode='ai'
+   * @param {number} userId     - resolves provider/model when mode='ai'
    * @returns {Promise<{
    *   situation, target, response, actionPlan,
    *   aiModel?, aiTokensUsed?,
    *   fallbackUsed?: boolean, fallbackReason?: string
    * }>}
    */
-  static async build(entityType, hurdle, context, mode = 'ai', provider = 'anthropic') {
+  static async build(entityType, hurdle, context, mode = 'ai', orgId = null, userId = null) {
     if (mode === 'playbook') {
       return this._buildFromTemplate(entityType, hurdle, context);
     }
 
-    // mode === 'ai' — check key first
-    const availability = this.checkProviderAvailability(provider);
-    if (!availability.available) {
-      console.warn(`⚠️ StrapStrategyBuilder: ${availability.reason} — falling back to template`);
-      return {
-        ...this._buildFromTemplate(entityType, hurdle, context),
-        fallbackUsed: true,
-        fallbackReason: availability.reason,
-      };
-    }
-
     try {
-      return await this._buildWithAI(entityType, hurdle, context, provider);
+      return await this._buildWithAI(entityType, hurdle, context, orgId, userId);
     } catch (err) {
-      console.error(`⚠️ StrapStrategyBuilder AI (${provider}) failed, falling back to template:`, err.message);
+      console.error(`⚠️ StrapStrategyBuilder AI failed, falling back to template:`, err.message);
       return {
         ...this._buildFromTemplate(entityType, hurdle, context),
         fallbackUsed: true,
@@ -96,51 +77,19 @@ class StrapStrategyBuilder {
 
   // ── AI Generation ─────────────────────────────────────────────────────────
 
-  static async _buildWithAI(entityType, hurdle, context, provider) {
+  static async _buildWithAI(entityType, hurdle, context, orgId, userId) {
     const prompt = this._buildPrompt(entityType, hurdle, context);
-    const model  = AI_MODELS[provider] || AI_MODELS.anthropic;
 
-    let text = '';
-    let tokensUsed = 0;
+    const { adapter, model } =
+      await AIClientResolver.resolve(orgId, userId, 'strap_generation');
 
-    if (provider === 'openai') {
-      const { OpenAI } = require('openai');
-      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const completion = await client.chat.completions.create({
-        model,
-        max_tokens: 1200,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      text = completion.choices[0]?.message?.content || '';
-      tokensUsed = (completion.usage?.prompt_tokens || 0) + (completion.usage?.completion_tokens || 0);
+    const { text, usage } = await adapter.complete({
+      model,
+      prompt,
+      maxTokens: 1200,
+    });
 
-    } else if (provider === 'grok') {
-      // Grok uses an OpenAI-compatible API endpoint
-      const { OpenAI } = require('openai');
-      const client = new OpenAI({
-        apiKey:  process.env.XAI_API_KEY,
-        baseURL: 'https://api.x.ai/v1',
-      });
-      const completion = await client.chat.completions.create({
-        model,
-        max_tokens: 1200,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      text = completion.choices[0]?.message?.content || '';
-      tokensUsed = (completion.usage?.prompt_tokens || 0) + (completion.usage?.completion_tokens || 0);
-
-    } else {
-      // Anthropic (default)
-      const Anthropic = require('@anthropic-ai/sdk');
-      const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-      const response = await client.messages.create({
-        model,
-        max_tokens: 1200,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      text = response.content[0]?.text || '';
-      tokensUsed = (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0);
-    }
+    const tokensUsed = (usage?.input_tokens || 0) + (usage?.output_tokens || 0);
 
     const situation    = this._extractSection(text, 'SITUATION');
     const target       = this._extractSection(text, 'TARGET');

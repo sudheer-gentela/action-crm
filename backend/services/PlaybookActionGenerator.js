@@ -40,8 +40,7 @@ const VALID_NEXT_STEPS = new Set(['email', 'call', 'whatsapp', 'linkedin', 'slac
 // ── Valid channel values for prospecting_actions ──────────────────────────────
 const VALID_PROSPECT_CHANNELS = new Set(['email', 'linkedin', 'phone', 'sms', 'whatsapp']);
 
-// ── AI model config ───────────────────────────────────────────────────────────
-const AI_MODEL = 'claude-haiku-4-5-20251001';
+// ── AI model config — now resolved per org/user via AIClientResolver ──────────
 
 // ── Module-specific prompt context builders ───────────────────────────────────
 
@@ -414,29 +413,33 @@ Return ONLY a JSON array. No markdown. No preamble. Each item:
 }`;
   }
   static async _callClaude(prompt, orgId, userId, entityType) {
-    const { Anthropic } = require('@anthropic-ai/sdk');
     const TokenTrackingService = require('./TokenTrackingService');
+    const AIClientResolver     = require('./ai/AIClientResolver');
 
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const response = await client.messages.create({
-      model:      AI_MODEL,
-      max_tokens: 2000,
-      messages:   [{ role: 'user', content: prompt }],
+    const { adapter, model, provider, keySource } =
+      await AIClientResolver.resolve(orgId, userId, 'playbook_action_generation');
+
+    const { text, usage } = await adapter.complete({
+      model,
+      prompt,
+      maxTokens: 2000,
     });
 
     // Track token usage (non-blocking)
-    if (response.usage) {
+    if (usage) {
       TokenTrackingService.log({
         orgId,
         userId,
         callType: 'playbook_action_generation',
-        model:    AI_MODEL,
-        usage:    { input_tokens: response.usage.input_tokens, output_tokens: response.usage.output_tokens },
+        model,
+        provider,
+        keySource,
+        usage,
         metadata: { entityType },
       }).catch(() => {});
     }
 
-    return response.content[0]?.text || '[]';
+    return text || '[]';
   }
 
   static _parseAIResponse(rawText, entityType, context, plays, stageKey, userId) {

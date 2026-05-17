@@ -10,8 +10,7 @@
  * Inserts up to 2 additional prospecting_actions with source = 'ai_generated'.
  */
 
-const { Anthropic } = require('@anthropic-ai/sdk');
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const AIClientResolver = require('./ai/AIClientResolver');
 const db = require('../config/database');
 const TokenTrackingService = require('./TokenTrackingService');
 
@@ -53,68 +52,32 @@ Respond ONLY with a JSON array:
 }]`;
   }
 
-  // ── Load AI settings with fallback chain ─────────────────────────────────
-  // Priority: user_preferences -> org_integrations config -> system default
-  static async _resolveAISettings(orgId, userId) {
-    try {
-      const [userPrefRes, orgCfgRes] = await Promise.all([
-        db.query(
-          `SELECT preferences->'prospecting' AS prospecting
-           FROM user_preferences WHERE user_id = $1 AND org_id = $2`,
-          [userId, orgId]
-        ),
-        db.query(
-          `SELECT config FROM org_integrations
-           WHERE org_id = $1 AND integration_type = 'prospecting'`,
-          [orgId]
-        ),
-      ]);
-      const userProspecting = userPrefRes.rows[0]?.prospecting || {};
-      const orgConfig       = orgCfgRes.rows[0]?.config || {};
-      return {
-        provider: userProspecting.ai_provider || orgConfig.ai_provider || 'anthropic',
-        model:    userProspecting.ai_model    || orgConfig.ai_model    || 'claude-haiku-4-5',
-      };
-    } catch {
-      return { provider: 'anthropic', model: 'claude-haiku-4-5' };
-    }
-  }
+  // ── AI settings now resolved centrally via AIClientResolver ──────────────
+  // (the old _resolveAISettings merge logic is superseded — the resolver
+  //  handles user -> org -> system fallback and provider/model selection)
 
   static async _callClaude(prompt, prospect, orgId, userId) {
-    const { provider, model } = await this._resolveAISettings(orgId, userId);
-    let responseText = '[]';
+    const { adapter, model, provider, keySource } =
+      await AIClientResolver.resolve(orgId, userId, 'prospecting_ai_enhancement');
 
-    if (provider === 'openai') {
-      const { OpenAI } = require('openai');
-      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const completion = await openai.chat.completions.create({
-        model: model || 'gpt-4o-mini', max_tokens: 600,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      responseText = completion.choices[0]?.message?.content || '[]';
-    } else if (provider === 'gemini') {
-      const { GoogleGenerativeAI } = require('@google/generative-ai');
-      const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
-      const result = await genAI.getGenerativeModel({ model: model || 'gemini-1.5-flash' })
-                               .generateContent(prompt);
-      responseText = result.response.text() || '[]';
-    } else {
-      // Anthropic (default)
-      const message = await anthropic.messages.create({
-        model: model, max_tokens: 600,
-        messages: [{ role: 'user', content: prompt }],
-      });
-      if (message.usage) {
-        TokenTrackingService.log({
-          orgId, userId,
-          callType: 'prospecting_ai_enhancement',
-          model,
-          usage: { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens },
-        }).catch(() => {});
-      }
-      responseText = message.content[0]?.text || '[]';
+    const { text, usage } = await adapter.complete({
+      model,
+      prompt,
+      maxTokens: 600,
+    });
+
+    if (usage) {
+      TokenTrackingService.log({
+        orgId, userId,
+        callType: 'prospecting_ai_enhancement',
+        model,
+        provider,
+        keySource,
+        usage,
+      }).catch(() => {});
     }
-    return responseText;
+
+    return text || '[]';
   }
 
   static async _parseAndInsert(rawText, prospect, orgId, userId) {

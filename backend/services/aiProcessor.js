@@ -19,14 +19,11 @@
  * gatherDealContext are all unchanged.
  */
 
-const { Anthropic } = require('@anthropic-ai/sdk');
 const db = require('../config/database');
 const SALES_PLAYBOOK = require('../config/salesPlaybook');
 const AI_PROMPTS = require('../config/aiPrompts');
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY
-});
+const AIClientResolver = require('./ai/AIClientResolver');
 
 const AgentObserver       = require('./AgentObserver');
 const TokenTrackingService = require('./TokenTrackingService');
@@ -92,14 +89,16 @@ Important:
 - Return valid JSON only, no other text`;
 
     try {
-      const message = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 2000,
+      const { adapter, model } =
+        await AIClientResolver.resolve(null, null, 'email_analysis');
+
+      const { text: responseText } = await adapter.complete({
+        model,
+        prompt,
+        maxTokens: 2000,
         temperature: 0.3,
-        messages: [{ role: 'user', content: prompt }]
       });
 
-      const responseText = message.content[0].text;
       const cleanedText = responseText
         .replace(/```json\n?/g, '')
         .replace(/```\n?/g, '')
@@ -144,7 +143,7 @@ Important:
       const promptTemplate  = await this.getPromptTemplate(userId, orgId, 'email_analysis');
       const playbook        = await this.getPlaybook(userId, orgId);
       const prompt          = this.renderTemplate(promptTemplate, { email, context, playbook });
-      const { actions, usage } = await this.callClaude(prompt);
+      const { actions, usage, model, provider, keySource } = await this.callClaude(prompt, orgId, userId, 'email_analysis');
       const saved           = await this.saveActions(actions, userId, orgId, email, context);
 
       // ── Token tracking at caller level (has org/user context) ──
@@ -153,7 +152,9 @@ Important:
           orgId,
           userId,
           callType: 'email_analysis',
-          model:    AI_PROMPTS.system_instructions.model,
+          model,
+          provider,
+          keySource,
           usage:    { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens },
           emailId:  parseInt(emailId) || null,
           dealId:   email?.deal_id || null,
@@ -198,7 +199,7 @@ Important:
       const promptTemplate = await this.getPromptTemplate(userId, orgId, 'deal_health_check');
       const playbook       = await this.getPlaybook(userId, orgId);
       const prompt         = this.renderTemplate(promptTemplate, { deal, context, playbook });
-      const { actions, usage } = await this.callClaude(prompt);
+      const { actions, usage, model, provider, keySource } = await this.callClaude(prompt, orgId, userId, 'deal_health_check');
       const saved          = await this.saveActions(actions, userId, orgId, { id: `deal-${dealId}` }, context);
 
       // ── Token tracking at caller level (has org/user context) ──
@@ -207,7 +208,9 @@ Important:
           orgId,
           userId,
           callType: 'deal_health_check',
-          model:    AI_PROMPTS.system_instructions.model,
+          model,
+          provider,
+          keySource,
           usage:    { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens },
           dealId:   parseInt(dealId) || null,
         }).catch(() => {});
@@ -362,20 +365,20 @@ Important:
   }
 
   /**
-   * Call Claude and return both parsed actions AND raw usage for caller-level tracking.
-   * @returns {{ actions: Array, usage: object|null }}
+   * Call the AI provider and return both parsed actions AND raw usage for
+   * caller-level tracking. Provider/model resolved per org/user.
+   * @returns {{ actions: Array, usage: object|null, model: string, provider: string, keySource: string }}
    */
-  static async callClaude(prompt) {
-    const message = await anthropic.messages.create({
-      model:      AI_PROMPTS.system_instructions.model,
-      max_tokens: AI_PROMPTS.system_instructions.max_tokens,
-      messages:   [{ role: 'user', content: prompt }]
+  static async callClaude(prompt, orgId = null, userId = null, callType = 'action_generation') {
+    const { adapter, model, provider, keySource } =
+      await AIClientResolver.resolve(orgId, userId, callType);
+
+    const { text: response, usage } = await adapter.complete({
+      model,
+      prompt,
+      maxTokens: AI_PROMPTS.system_instructions.max_tokens,
     });
 
-    // Capture usage for caller-level token tracking (no longer tracked here)
-    const usage = message.usage || null;
-
-    const response = message.content[0].text;
     let cleaned = response.trim()
       .replace(/```json\n?/gi, '')
       .replace(/```\n?/g, '');
@@ -395,12 +398,12 @@ Important:
 
     try {
       const parsed = JSON.parse(cleaned);
-      return { actions: Array.isArray(parsed) ? parsed : [], usage };
+      return { actions: Array.isArray(parsed) ? parsed : [], usage, model, provider, keySource };
     } catch (error) {
       console.error('Failed to parse AI response:', error);
       console.error('Cleaned response:', cleaned);
       console.error('Original response:', response);
-      return { actions: [], usage };
+      return { actions: [], usage, model, provider, keySource };
     }
   }
 

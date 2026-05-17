@@ -9,15 +9,8 @@
 const db = require('../config/database');
 const ActionConfigService = require('./actionConfig.service');
 const PlayCompletionService = require('./PlayCompletionService');  // Phase 6
-
-let anthropic = null;
-function getAnthropic() {
-  if (!anthropic) {
-    const { Anthropic } = require('@anthropic-ai/sdk');
-    anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  }
-  return anthropic;
-}
+const AIClientResolver = require('./ai/AIClientResolver');
+const TokenTrackingService = require('./TokenTrackingService');
 
 class ActionCompletionDetector {
 
@@ -81,7 +74,7 @@ class ActionCompletionDetector {
         return;
       }
 
-      const result = await this._checkEmailContentMatchesAction(email, action);
+      const result = await this._checkEmailContentMatchesAction(email, action, orgId, userId);
 
       if (result.confidence >= 75) {
         await this.completeAction(actionId, orgId, {
@@ -106,13 +99,12 @@ class ActionCompletionDetector {
   // PRIVATE: AI semantic content check
   // ─────────────────────────────────────────────────────────────────────────
 
-  static async _checkEmailContentMatchesAction(email, action) {
+  static async _checkEmailContentMatchesAction(email, action, orgId = null, userId = null) {
     if (!action.suggested_action) {
       return { confidence: 80, reasoning: 'No specific content requirement — email sent is sufficient.', evidence: email.subject };
     }
 
     try {
-      const client = getAnthropic();
       const prompt = `You are evaluating whether a sent email fulfils a specific sales action.
 
 ACTION TITLE: ${action.title}
@@ -140,13 +132,27 @@ Scoring guide:
 - 40-69:  Email is related but doesn't clearly fulfil the action
 - 0-39:   Email does not address the action intent`;
 
-      const message = await client.messages.create({
-        model:      'claude-haiku-4-5-20251001',
-        max_tokens: 200,
-        messages:   [{ role: 'user', content: prompt }],
+      const { adapter, model, provider, keySource } =
+        await AIClientResolver.resolve(orgId, userId, 'action_completion_detect');
+
+      const { text: rawAi, usage } = await adapter.complete({
+        model,
+        prompt,
+        maxTokens: 200,
       });
 
-      const text    = message.content[0]?.text || '{}';
+      if (usage) {
+        TokenTrackingService.log({
+          orgId, userId,
+          callType: 'action_completion_detect',
+          model,
+          provider,
+          keySource,
+          usage,
+        }).catch(() => {});
+      }
+
+      const text    = rawAi || '{}';
       const cleaned = text.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim();
       const parsed  = JSON.parse(cleaned);
 

@@ -634,55 +634,38 @@ router.post('/:id/research', async (req, res) => {
     const orgConfig  = orgIntRes.rows[0]?.config || {};
     const prospPrefs = userPrefs.prospecting || {};
 
-    const sanitiseModel = (m) => {
-      if (!m) return m;
-      return m
-        .replace('claude-sonnet-4-5-20251022', 'claude-sonnet-4-6')
-        .replace('claude-haiku-4-5-20251001', 'claude-haiku-4-5')
-        .replace('claude-sonnet-4-20250514',  'claude-sonnet-4-6');
-    };
-    const aiModel    = sanitiseModel(prospPrefs.ai_model || orgConfig.ai_model) || 'claude-sonnet-4-6';
-    const aiProvider = prospPrefs.ai_provider || orgConfig.ai_provider || 'anthropic';
     const productCtx = prospPrefs.product_context !== undefined
                          ? prospPrefs.product_context
                          : (orgConfig.product_context || '');
 
     const AI_PROMPTS = require('../config/aiPrompts');
     const TokenTrackingService = require('../services/TokenTrackingService');
+    const AIClientResolver     = require('../services/ai/AIClientResolver');
+
+    // Resolve provider/model once for this request — used by callAI below and
+    // also stamped onto prospect/account records further down.
+    const _resolved  = await AIClientResolver._resolveProviderAndModel(
+      req.orgId, req.user.userId, 'prospecting_research'
+    );
+    const aiProvider = _resolved.provider;
+    const aiModel    = _resolved.model;
 
     async function callAI(prompt, maxTokens = 800, callType = 'prospecting_research') {
-      if (aiProvider === 'openai') {
-        const { OpenAI } = require('openai');
-        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-        const completion = await openai.chat.completions.create({
-          model: aiModel || 'gpt-4o-mini', max_tokens: maxTokens,
-          messages: [{ role: 'user', content: prompt }],
-        });
-        const usage = completion.usage
-          ? { input_tokens: completion.usage.prompt_tokens, output_tokens: completion.usage.completion_tokens }
-          : {};
-        TokenTrackingService.log({ orgId: req.orgId, userId: req.user.userId, callType, provider: 'openai', model: aiModel, usage }).catch(() => {});
-        return { text: completion.choices[0]?.message?.content || '', usage };
-      } else if (aiProvider === 'gemini') {
-        const { GoogleGenerativeAI } = require('@google/generative-ai');
-        const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY);
-        const result = await genAI.getGenerativeModel({ model: aiModel || 'gemini-1.5-flash' })
-                                  .generateContent(prompt);
-        TokenTrackingService.log({ orgId: req.orgId, userId: req.user.userId, callType, provider: 'gemini', model: aiModel, usage: {} }).catch(() => {});
-        return { text: result.response.text() || '', usage: {} };
-      } else {
-        const Anthropic = require('@anthropic-ai/sdk');
-        const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-        const message = await anthropic.messages.create({
-          model: aiModel, max_tokens: maxTokens,
-          messages: [{ role: 'user', content: prompt }],
-        });
-        const usage = message.usage
-          ? { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }
-          : {};
-        TokenTrackingService.log({ orgId: req.orgId, userId: req.user.userId, callType, provider: 'anthropic', model: aiModel, usage }).catch(() => {});
-        return { text: message.content[0]?.text || '', usage };
-      }
+      const { adapter, model, provider, keySource } =
+        await AIClientResolver.resolve(req.orgId, req.user.userId, callType);
+
+      const { text, usage } = await adapter.complete({
+        model,
+        prompt,
+        maxTokens,
+      });
+
+      TokenTrackingService.log({
+        orgId: req.orgId, userId: req.user.userId,
+        callType, provider, keySource, model, usage,
+      }).catch(() => {});
+
+      return { text: text || '', usage };
     }
 
     let accountResearchText = '';
