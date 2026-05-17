@@ -13,6 +13,7 @@ import OAMeetingSettings from './OAMeetingSettings';
 import SalesforceConnect from './SalesforceConnect';
 import HubSpotConnect    from './HubSpotConnect';
 import OATwilioSettings from './OATwilioSettings';
+import OAAIProviderSettings from './OAAIProviderSettings';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -55,6 +56,7 @@ const STATIC_NAV_GROUPS = [
     label: 'Auto Action Execution',
     items: [
       { id: 'ai-agent',  icon: '🤖', label: 'AI Agent' },
+      { id: 'ai-providers', icon: '🧠', label: 'AI Providers' },
       { id: 'action-ai', icon: '✨', label: 'Actions AI' },
       { id: 'ai-usage',  icon: '📊', label: 'AI Usage' },
     ],
@@ -129,6 +131,7 @@ const TAB_META = {
   'email-settings': { title: 'Email Settings', desc: 'Configure which emails are synced and matched to deals, prospects, and accounts' },
   'wf-log':      { title: 'Execution Log', desc: 'Workflow execution history and open violations' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
+  'ai-providers': { title: 'AI Providers', desc: 'Choose AI provider and model, manage API keys, and set user policy for your organisation' },
   modules:             { title: 'Modules',                           desc: 'Enable or disable product modules for your organisation' },
   'mod-prospecting':   { title: 'Prospecting',                       desc: 'Prospecting module settings' },
   'mod-contracts':     { title: 'Contract Lifecycle Management',      desc: 'CLM module settings — eSign configuration and contract templates' },
@@ -538,6 +541,7 @@ export default function OrgAdminView() {
             {tab === 'org-roles'        && <OADealRoles />}
             {tab === 'products'         && <OAProducts />}
             {tab === 'ai-agent'         && <OAAgentSettings />}
+            {tab === 'ai-providers'     && <OAAIProviderSettings />}
             {tab === 'action-ai'        && <OAActionsAI />}
             {tab === 'duplicates'       && <OADuplicateSettings />}
             {tab === 'workflows'        && <OAWorkflows />}

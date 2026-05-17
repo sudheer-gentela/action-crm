@@ -8,6 +8,7 @@ import DealHealthSettings from './DealHealthSettings';
 import NotificationSettings from './NotificationSettings';
 import UserTranscriptSettings from './UserTranscriptSettings';
 import ActionAISettings from './ActionAISettings';
+import UserAIProviderSettings from './UserAIProviderSettings';
 import PersonalizeConfigBlock from './PersonalizeConfigBlock';
 
 // ── Sidebar nav structure ────────────────────────────────────────────────────
@@ -38,6 +39,7 @@ const NAV_GROUPS = [
       {
         id: 'ai', label: 'AI Settings', icon: '🤖',
         children: [
+          { id: 'ai-providers', label: 'Providers & Keys' },
           { id: 'ai-prefs',   label: 'Preferences'  },
           { id: 'ai-prompts', label: 'Prompts', adminOnly: true },
           { id: 'ai-agent',   label: 'AI Agent'     },
@@ -205,6 +207,7 @@ export default function SettingsView({ initialTab }) {
           {activeId === 'preferences'          && <UserPreferencesSettings />}
           {activeId === 'personalize-linkedin' && <PersonalizeLinkedInSettings />}
           {/* AI */}
+          {activeId === 'ai-providers'     && <UserAIProviderSettings />}
           {activeId === 'ai-prefs'         && <AIPreferencesPanel />}
           {activeId === 'ai-prompts'       && <PromptsSettings readOnly={readOnly} />}
           {activeId === 'ai-agent'         && <AgentUserSettings />}

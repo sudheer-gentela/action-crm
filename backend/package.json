@@ -21,6 +21,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.0",
     "@azure/msal-node": "^2.6.0",
+    "@google/generative-ai": "^0.21.0",
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "axios": "^1.13.5",
     "bcrypt": "^5.1.1",
@@ -41,6 +42,7 @@
     "multer": "^1.4.5-lts.1",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.9",
+    "openai": "^4.71.0",
     "pdf-parse": "^1.1.1",
     "pg": "^8.11.3",
     "redis": "^4.6.12",

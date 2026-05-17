@@ -3,6 +3,7 @@ import { apiService } from './apiService';
 import './SuperAdminView.css';
 import WorkflowCanvas from './WorkflowCanvas';
 import ExecutionLog from './ExecutionLog';
+import SAAIPlatformSettings from './SAAIPlatformSettings';
 
 // ═══════════════════════════════════════════════════════════════════
 // SUPER ADMIN VIEW — ActionCRM Platform Administration
@@ -1396,6 +1397,7 @@ function SAPlatformSettings() {
         {[
           { id: 'email-filter', label: '📧 Email Filter Defaults' },
           { id: 'integrations', label: '🔌 CRM Integrations' },
+          { id: 'ai',           label: '🧠 AI Providers' },
         ].map(t => (
           <button
             key={t.id}
@@ -1422,6 +1424,7 @@ function SAPlatformSettings() {
 
       {subTab === 'email-filter' && <SAEmailFilterSettings />}
       {subTab === 'integrations' && <SAPlatformIntegrations />}
+      {subTab === 'ai'           && <SAAIPlatformSettings />}
     </div>
   );
 }
