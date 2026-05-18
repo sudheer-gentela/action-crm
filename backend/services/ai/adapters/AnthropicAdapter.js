@@ -1,9 +1,24 @@
 /**
  * services/ai/adapters/AnthropicAdapter.js
+ *
+ * Note on `temperature`:
+ *   The Claude Opus 4.7 family (and some newer models) deprecated the
+ *   `temperature` parameter — the API returns a 400 invalid_request_error
+ *   if it is present at all. To stay forward-compatible without hardcoding
+ *   a per-model list:
+ *     1. We only send `temperature` when the caller explicitly passed one.
+ *     2. If the API still rejects it (`temperature is deprecated`), we
+ *        transparently retry once with the parameter stripped.
+ *   This auto-heals for current and future models that drop the parameter.
  */
 
 const BaseAdapter = require('./BaseAdapter');
 const { Anthropic } = require('@anthropic-ai/sdk');
+
+function isTemperatureDeprecatedError(err) {
+  const msg = (err && (err.message || String(err))) || '';
+  return /temperature/i.test(msg) && /deprecat|not supported|unsupported|invalid/i.test(msg);
+}
 
 class AnthropicAdapter extends BaseAdapter {
   constructor({ apiKey, endpoint }) {
@@ -14,15 +29,33 @@ class AnthropicAdapter extends BaseAdapter {
     });
   }
 
-  async complete({ model, prompt, messages, system, maxTokens = 1024, temperature = 0.3 }) {
+  async complete({ model, prompt, messages, system, maxTokens = 1024, temperature }) {
     const msgs = messages || [{ role: 'user', content: prompt }];
-    const resp = await this.client.messages.create({
+
+    const baseParams = {
       model,
       max_tokens: maxTokens,
-      temperature,
       ...(system ? { system } : {}),
       messages: msgs,
-    });
+    };
+
+    // Only include temperature if the caller explicitly supplied one.
+    const params = (temperature === undefined || temperature === null)
+      ? baseParams
+      : { ...baseParams, temperature };
+
+    let resp;
+    try {
+      resp = await this.client.messages.create(params);
+    } catch (err) {
+      // Opus 4.7-family models reject `temperature` outright. Retry once
+      // with it stripped so the call still succeeds.
+      if (params.temperature !== undefined && isTemperatureDeprecatedError(err)) {
+        resp = await this.client.messages.create(baseParams);
+      } else {
+        throw err;
+      }
+    }
 
     const text = (resp.content || [])
       .filter(b => b.type === 'text')

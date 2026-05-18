@@ -205,7 +205,16 @@ class AIClientResolver {
     const def = getProvider(provider);
     if (!def) return { ok: false, error: `Unknown provider: ${provider}` };
 
-    const useModel = model || def.models?.[0]?.id;
+    // Pick the model to test with. Prefer an explicitly-passed model, then
+    // the cheapest 'fast' tier model (Haiku / gpt-4o-mini / etc.), and only
+    // fall back to models[0] if nothing is tagged.
+    //
+    // Why: models[0] is the flagship (e.g. Opus 4.7). Newer or low-spend
+    // accounts often can't call the flagship yet, so a liveness check
+    // against it returns 404/403 even with a perfectly valid key. The
+    // 'fast' tier model is the cheapest and most universally accessible.
+    const fastModel = def.models?.find(m => m.tier === 'fast')?.id;
+    const useModel  = model || fastModel || def.models?.[0]?.id;
     if (!useModel) return { ok: false, error: 'No model available to test with' };
 
     try {

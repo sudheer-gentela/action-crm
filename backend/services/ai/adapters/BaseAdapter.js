@@ -41,11 +41,13 @@ class BaseAdapter {
    * Most providers can do this by sending a 1-token prompt.
    */
   async ping(model) {
+    // Deliberately omit `temperature` — newer models (Opus 4.7 family,
+    // OpenAI reasoning models) reject it outright. A liveness check has
+    // no need for it anyway.
     const { text } = await this.complete({
       model,
       prompt: 'ping',
       maxTokens: 5,
-      temperature: 0,
     });
     return typeof text === 'string';
   }

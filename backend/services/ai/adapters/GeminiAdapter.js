@@ -25,8 +25,11 @@ class GeminiAdapter extends BaseAdapter {
     this.client = new SDK(apiKey);
   }
 
-  async complete({ model, prompt, messages, system, maxTokens = 1024, temperature = 0.3 }) {
-    const generationConfig = { maxOutputTokens: maxTokens, temperature };
+  async complete({ model, prompt, messages, system, maxTokens = 1024, temperature }) {
+    const generationConfig = { maxOutputTokens: maxTokens };
+    if (temperature !== undefined && temperature !== null) {
+      generationConfig.temperature = temperature;
+    }
 
     const genModel = this.client.getGenerativeModel({
       model,
