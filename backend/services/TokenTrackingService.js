@@ -61,6 +61,7 @@ class TokenTrackingService {
   static async log(params) {
     const {
       orgId, userId, callType, model,
+      provider, keySource,
       usage = {},
       dealId, actionId, proposalId, emailId,
     } = params;
@@ -75,13 +76,14 @@ class TokenTrackingService {
     try {
       await db.query(
         `INSERT INTO ai_token_usage
-           (org_id, user_id, call_type, model,
+           (org_id, user_id, call_type, model, provider, key_source,
             prompt_tokens, completion_tokens, total_tokens,
             deal_id, action_id, proposal_id, email_id,
             estimated_cost_usd, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())`,
         [
           orgId, userId, callType, model || null,
+          provider || null, keySource || null,
           promptTokens, completionTokens, totalTokens,
           dealId || null, actionId || null, proposalId || null, emailId || null,
           estimatedCost,
