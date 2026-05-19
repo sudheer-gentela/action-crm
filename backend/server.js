@@ -153,6 +153,7 @@ app.get('/health', (req, res) => {
 // SkillRunnerService. No HTTP hop, no shared-secret auth.
 app.use('/api/skills',     require('./routes/skills.routes'));
 app.use('/api/skill-runs', require('./routes/skill-runs.routes'));
+app.use('/api/prospecting-config', require('./routes/prospecting-config.routes'));
 
 // ── Core CRM ──────────────────────────────────────────────────────────────
 app.use('/api/auth',          require('./routes/auth.routes'));

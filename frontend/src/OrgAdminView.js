@@ -14,6 +14,7 @@ import SalesforceConnect from './SalesforceConnect';
 import HubSpotConnect    from './HubSpotConnect';
 import OATwilioSettings from './OATwilioSettings';
 import OAAIProviderSettings from './OAAIProviderSettings';
+import OAProspectingSkillConfig from './OAProspectingSkillConfig';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -5807,7 +5808,7 @@ function OAProspectingModule() {
       </div>
 
       <ModuleSubTabs
-        tabs={[['general', 'General'], ['ai', 'AI Settings'], ['calls', 'Call Settings'], ['twilio', 'Twilio'], ['playbook', 'Playbook']]}
+        tabs={[['general', 'General'], ['ai', 'AI Settings'], ['skill-inputs', 'Skill inputs'], ['calls', 'Call Settings'], ['twilio', 'Twilio'], ['playbook', 'Playbook']]}
         active={subTab}
         onChange={setSubTab}
 
@@ -5824,6 +5825,9 @@ function OAProspectingModule() {
           toggleFn={(enabled) => apiService.prospects.toggleModule(enabled)}
         />
       )}
+
+      {/* ── Skill inputs sub-tab ── */}
+      {subTab === 'skill-inputs' && <OAProspectingSkillConfig />}
 
       {/* ── Playbook seed sub-tab ── */}
       {subTab === 'playbook' && (

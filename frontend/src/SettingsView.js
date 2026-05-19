@@ -10,6 +10,7 @@ import UserTranscriptSettings from './UserTranscriptSettings';
 import ActionAISettings from './ActionAISettings';
 import UserAIProviderSettings from './UserAIProviderSettings';
 import PersonalizeConfigBlock from './PersonalizeConfigBlock';
+import MyOutreachStyleSettings from './MyOutreachStyleSettings';
 
 // ── Sidebar nav structure ────────────────────────────────────────────────────
 // Each group has a label and items. Items with `children` expand inline.
@@ -31,6 +32,7 @@ const NAV_GROUPS = [
       { id: 'usage',                 label: 'Usage & Billing',           icon: '📊' },
       { id: 'preferences',           label: 'My Preferences',            icon: '🎛️' },
       { id: 'personalize-linkedin',  label: 'LinkedIn Personalization',  icon: '✨' },
+      { id: 'outreach-style',        label: 'My Outreach Style',         icon: '🎯' },
     ],
   },
   {
@@ -206,6 +208,7 @@ export default function SettingsView({ initialTab }) {
           {activeId === 'usage'                && <UserAIUsageSettings />}
           {activeId === 'preferences'          && <UserPreferencesSettings />}
           {activeId === 'personalize-linkedin' && <PersonalizeLinkedInSettings />}
+          {activeId === 'outreach-style'       && <MyOutreachStyleSettings />}
           {/* AI */}
           {activeId === 'ai-providers'     && <UserAIProviderSettings />}
           {activeId === 'ai-prefs'         && <AIPreferencesPanel />}
