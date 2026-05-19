@@ -59,6 +59,27 @@ class GeminiAdapter extends BaseAdapter {
       },
     };
   }
+
+  /**
+   * Gemini's models endpoint is GET /v1beta/models?key=API_KEY.
+   * The @google/generative-ai SDK doesn't surface it cleanly, so we hit
+   * the REST endpoint directly. Model names come back like
+   * "models/gemini-2.0-flash" — we strip the "models/" prefix.
+   */
+  async listModels() {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(this.apiKey)}&pageSize=200`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      throw new Error(`Gemini listModels failed: ${resp.status} ${await resp.text().catch(() => '')}`);
+    }
+    const data = await resp.json();
+    return (data.models || [])
+      .filter(m => m && m.name)
+      .map(m => ({
+        id: m.name.replace(/^models\//, ''),
+        raw: m,
+      }));
+  }
 }
 
 module.exports = GeminiAdapter;

@@ -210,6 +210,24 @@ class CredentialsStore {
   static isConfigured() {
     return _masterKey() !== null;
   }
+
+  /**
+   * Decrypt a raw ai_credentials row that was fetched elsewhere.
+   * Used by ModelDiscoveryService, which needs a provider key for discovery
+   * but has no orgId/userId to call getActive() with.
+   *
+   * @param {object} row — must have key_ciphertext, key_iv, key_tag
+   * @returns {string|null} plaintext API key, or null on failure
+   */
+  static decryptRow(row) {
+    if (!row || !row.key_ciphertext || !row.key_iv || !row.key_tag) return null;
+    try {
+      return _decrypt(row.key_ciphertext, row.key_iv, row.key_tag);
+    } catch (err) {
+      console.error('[CredentialsStore] decryptRow failed:', err.message);
+      return null;
+    }
+  }
 }
 
 module.exports = CredentialsStore;

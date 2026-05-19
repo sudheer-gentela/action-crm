@@ -69,6 +69,19 @@ class OpenAIAdapter extends BaseAdapter {
       },
     };
   }
+
+  /**
+   * GET /v1/models — works for OpenAI and every OpenAI-compatible provider
+   * (Groq, DeepSeek, Mistral, xAI, Together, vLLM, Ollama, …).
+   */
+  async listModels() {
+    const resp = await this.client.models.list();
+    // The SDK returns either an async-iterable page or { data: [...] }.
+    const data = resp?.data || (Array.isArray(resp) ? resp : []);
+    return data
+      .filter(m => m && m.id)
+      .map(m => ({ id: m.id, raw: m }));
+  }
 }
 
 module.exports = OpenAIAdapter;

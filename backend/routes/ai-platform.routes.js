@@ -24,6 +24,7 @@ const db = require('../config/database');
 
 const { listProviders, getProvider, isValidProvider } = require('../config/aiProviders');
 const CredentialsStore = require('../services/ai/CredentialsStore');
+const ModelDiscoveryService = require('../services/ai/ModelDiscoveryService');
 
 const router = express.Router();
 router.use(authenticateToken, requireSuperAdmin);
@@ -106,6 +107,64 @@ router.patch('/allowlist', async (req, res) => {
   } catch (err) {
     console.error('PATCH /super-admin/ai/allowlist error:', err);
     res.status(500).json({ error: { message: 'Failed to update allowlist' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// GET /api/super-admin/ai/discovery
+// Returns the model-discovery config + last-run state.
+// ─────────────────────────────────────────────────────────────────────────
+router.get('/discovery', async (req, res) => {
+  try {
+    const [config, state] = await Promise.all([
+      ModelDiscoveryService.getConfig(),
+      ModelDiscoveryService.getState(),
+    ]);
+    res.json({ config, state });
+  } catch (err) {
+    console.error('GET /super-admin/ai/discovery error:', err);
+    res.status(500).json({ error: { message: 'Failed to load discovery settings' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// PATCH /api/super-admin/ai/discovery
+// Body: any subset of:
+//   { cron_enabled, cron_frequency, ondemand_enabled, ondemand_debounce_minutes }
+// ─────────────────────────────────────────────────────────────────────────
+router.patch('/discovery', async (req, res) => {
+  const allowed = ['cron_enabled', 'cron_frequency', 'ondemand_enabled', 'ondemand_debounce_minutes'];
+  const patch = {};
+  for (const k of allowed) {
+    if (req.body[k] !== undefined) patch[k] = req.body[k];
+  }
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ error: { message: 'No valid fields supplied' } });
+  }
+  if (patch.cron_frequency !== undefined &&
+      !['daily', 'weekly'].includes(patch.cron_frequency)) {
+    return res.status(400).json({ error: { message: "cron_frequency must be 'daily' or 'weekly'" } });
+  }
+  try {
+    const next = await ModelDiscoveryService.setConfig(patch, req.userId);
+    res.json({ ok: true, config: next });
+  } catch (err) {
+    console.error('PATCH /super-admin/ai/discovery error:', err);
+    res.status(500).json({ error: { message: 'Failed to update discovery settings' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// POST /api/super-admin/ai/discovery/run
+// SuperAdmin force-run — bypasses the on-demand debounce entirely.
+// ─────────────────────────────────────────────────────────────────────────
+router.post('/discovery/run', async (req, res) => {
+  try {
+    const state = await ModelDiscoveryService.runDiscovery('ondemand');
+    res.json({ ok: true, ran: true, state });
+  } catch (err) {
+    console.error('POST /super-admin/ai/discovery/run error:', err);
+    res.status(500).json({ error: { message: 'Discovery run failed' } });
   }
 });
 

@@ -70,6 +70,24 @@ class AnthropicAdapter extends BaseAdapter {
       },
     };
   }
+
+  /**
+   * GET /v1/models on the Anthropic API. The SDK exposes this as
+   * client.models.list(). Falls back gracefully if the installed SDK
+   * version predates the models endpoint.
+   */
+  async listModels() {
+    if (!this.client.models || typeof this.client.models.list !== 'function') {
+      // Older @anthropic-ai/sdk without the models endpoint — nothing to
+      // discover; the static registry remains the source of truth.
+      return [];
+    }
+    const resp = await this.client.models.list();
+    const data = resp?.data || (Array.isArray(resp) ? resp : []);
+    return data
+      .filter(m => m && m.id)
+      .map(m => ({ id: m.id, raw: m }));
+  }
 }
 
 module.exports = AnthropicAdapter;

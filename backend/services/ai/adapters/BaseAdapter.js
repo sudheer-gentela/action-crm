@@ -51,6 +51,21 @@ class BaseAdapter {
     });
     return typeof text === 'string';
   }
+
+  /**
+   * List the models this provider currently exposes.
+   * Used by ModelDiscoveryService for the weekly cron + on-demand refresh.
+   *
+   * @returns {Promise<Array<{ id: string, raw?: object }>>}
+   *   Each entry is at minimum { id }. `raw` is the provider's original
+   *   model object, stored for reference.
+   *
+   * Adapters that cannot enumerate models (e.g. a custom self-hosted
+   * endpoint) should return [] rather than throw.
+   */
+  async listModels() {
+    return [];
+  }
 }
 
 module.exports = BaseAdapter;

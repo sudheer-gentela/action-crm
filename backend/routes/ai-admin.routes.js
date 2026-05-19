@@ -17,6 +17,7 @@ const {
 } = require('../config/aiProviders');
 const CredentialsStore  = require('../services/ai/CredentialsStore');
 const AIClientResolver  = require('../services/ai/AIClientResolver');
+const ModelDiscoveryService = require('../services/ai/ModelDiscoveryService');
 
 const router = express.Router();
 router.use(authenticateToken, orgContext);
@@ -24,14 +25,87 @@ const adminOnly = requireRole('owner', 'admin');
 
 // ─────────────────────────────────────────────────────────────────────────
 // GET /api/org/admin/ai/providers
-// Public catalog of providers/models — drives admin UI dropdowns.
+// Catalog of providers/models — drives admin UI dropdowns.
+// Model lists are MERGED: static registry + live-discovered models.
 // ─────────────────────────────────────────────────────────────────────────
-router.get('/providers', adminOnly, (req, res) => {
-  res.json({
-    providers: listProviders(),
-    call_types: CALL_TYPES,
-    credentials_configured: CredentialsStore.isConfigured(),
-  });
+router.get('/providers', adminOnly, async (req, res) => {
+  try {
+    const providers = listProviders();
+    const merged    = await ModelDiscoveryService.getAllMergedModels();
+
+    // Overlay the merged model list onto each provider entry. Registry
+    // models keep their metadata; discovered-only models appear flagged
+    // with pricing_pending so the UI can mark them "new".
+    const withDiscovered = providers.map(p => ({
+      ...p,
+      models: merged[p.id] || p.models,
+    }));
+
+    const discoveryState = await ModelDiscoveryService.getState();
+
+    res.json({
+      providers: withDiscovered,
+      call_types: CALL_TYPES,
+      credentials_configured: CredentialsStore.isConfigured(),
+      discovery: {
+        last_run_at: discoveryState?.last_run_at || null,
+        last_run_status: discoveryState?.last_run_status || null,
+      },
+    });
+  } catch (err) {
+    console.error('GET /org/admin/ai/providers error:', err);
+    // Degrade gracefully — fall back to registry-only catalog
+    res.json({
+      providers: listProviders(),
+      call_types: CALL_TYPES,
+      credentials_configured: CredentialsStore.isConfigured(),
+      discovery: { last_run_at: null, last_run_status: null },
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// POST /api/org/admin/ai/refresh-models
+// On-demand model discovery. Any org admin may trigger it; the run itself
+// is a single SHARED platform-level operation, globally debounced. If a run
+// happened within the SuperAdmin-configured window, returns the cached
+// result instead of re-calling providers.
+// ─────────────────────────────────────────────────────────────────────────
+router.post('/refresh-models', adminOnly, async (req, res) => {
+  try {
+    const result = await ModelDiscoveryService.refreshOnDemand();
+
+    if (!result.ran && result.reason === 'ondemand_disabled') {
+      return res.status(200).json({
+        ok: true,
+        ran: false,
+        reason: 'disabled',
+        message: 'On-demand refresh is disabled by the platform admin. Model lists update automatically on a schedule.',
+        last_run_at: result.state?.last_run_at || null,
+      });
+    }
+
+    if (!result.ran && result.reason === 'debounced') {
+      return res.status(200).json({
+        ok: true,
+        ran: false,
+        reason: 'debounced',
+        message: `Models were refreshed ${result.age_minutes} minute(s) ago — already current.`,
+        last_run_at: result.state?.last_run_at || null,
+      });
+    }
+
+    res.json({
+      ok: true,
+      ran: true,
+      message: 'Model list refreshed.',
+      last_run_at: result.state?.last_run_at || null,
+      providers: result.state?.providers || {},
+    });
+  } catch (err) {
+    console.error('POST /org/admin/ai/refresh-models error:', err);
+    res.status(500).json({ error: { message: 'Model refresh failed' } });
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────
