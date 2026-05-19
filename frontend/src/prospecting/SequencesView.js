@@ -1,0 +1,1082 @@
+// SequencesView.js — extracted from ProspectingView.js (2026 module split).
+// Verbatim component bodies; only imports added. No behavior changes.
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { apiFetch, stripHtml } from './prospectingShared';
+import DraftCard from './DraftCard';
+import SequenceBuilder from '../SequenceBuilder';
+import SequenceEnrollModal from '../SequenceEnrollModal';
+
+function SequencesView({ prospects }) {
+  const [subTab,       setSubTab]       = useState('library');   // library | drafts | enrollments | stats
+  const [sequences,    setSequences]    = useState([]);
+  const [enrollments,  setEnrollments]  = useState([]);
+  const [drafts,       setDrafts]       = useState([]);
+  const [loadingSeq,   setLoadingSeq]   = useState(true);
+  const [loadingEnr,   setLoadingEnr]   = useState(false);
+  const [loadingDrafts,setLoadingDrafts]= useState(false);
+  const [showBuilder,  setShowBuilder]  = useState(false);
+  const [editingSeq,   setEditingSeq]   = useState(null);
+  const [viewingSeq,   setViewingSeq]   = useState(null); // full sequence for read-only view
+  const [showEnroll,   setShowEnroll]   = useState(false);
+  const [enrollSeqId,  setEnrollSeqId]  = useState(null);
+  const [selectedProspects, setSelectedProspects] = useState([]);
+  const [error,        setError]        = useState('');
+
+  // Enrollment drill-down
+  const [expandedEnrollId,   setExpandedEnrollId]   = useState(null);
+  const [expandedLogs,       setExpandedLogs]       = useState([]);
+  const [loadingLogs,        setLoadingLogs]        = useState(false);
+  const [expandedStepBody,   setExpandedStepBody]   = useState({}); // { [step_order]: bool }
+
+  // Draft inline-edit state: { [draftId]: { subject, body, editing, sending, error } }
+  const [draftEdits,   setDraftEdits]   = useState({});
+
+  // Open builder in edit mode — fetches full sequence (with steps) before opening.
+  // The list endpoint only returns step_count, not the steps array.
+  const openBuilderForEdit = async (seq) => {
+    try {
+      const r = await apiFetch(`/sequences/${seq.id}`);
+      setEditingSeq(r.sequence);
+      setShowBuilder(true);
+    } catch (err) {
+      setError('Failed to load sequence: ' + (err.message || 'unknown error'));
+    }
+  };
+
+  // Open read-only view panel — fetches full sequence with steps.
+  const openViewPanel = async (seq) => {
+    try {
+      const r = await apiFetch(`/sequences/${seq.id}`);
+      setViewingSeq(r.sequence);
+    } catch (err) {
+      setError('Failed to load sequence: ' + (err.message || 'unknown error'));
+    }
+  };
+
+  const toggleEnrollLogs = async (enrollId) => {
+    if (expandedEnrollId === enrollId) {
+      setExpandedEnrollId(null);
+      setExpandedLogs([]);
+      setExpandedStepBody({});
+      return;
+    }
+    setExpandedEnrollId(enrollId);
+    setExpandedLogs([]);
+    setExpandedStepBody({});
+    setLoadingLogs(true);
+    try {
+      const r = await apiFetch(`/sequences/enrollments/${enrollId}`);
+      setExpandedLogs(r.logs || []);
+    } catch (err) {
+      setError('Failed to load step history: ' + err.message);
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
+
+  const loadDrafts = useCallback(async () => {
+    setLoadingDrafts(true);
+    try {
+      const r = await apiFetch('/sequences/drafts');
+      setDrafts(r.drafts || []);
+    } catch (err) {
+      setError('Failed to load drafts: ' + err.message);
+    } finally {
+      setLoadingDrafts(false);
+    }
+  }, []);
+
+  const handleConvertAndSendDraft = async (draft) => {
+    const edit = draftEdits[draft.id] || {};
+    const subject = edit.subject !== undefined ? edit.subject : draft.subject;
+    if (!subject) {
+      setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], error: 'Please enter a subject line before sending.' } }));
+      return;
+    }
+    setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
+    try {
+      // Patch channel to email and ensure subject is saved, then send
+      await apiFetch(`/sequences/drafts/${draft.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ channel: 'email', subject }),
+      });
+      await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
+      setDrafts(prev => prev.filter(d => d.id !== draft.id));
+      setDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
+    } catch (err) {
+      setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: false, error: err.message } }));
+    }
+  };
+
+  const handleSendDraft = async (draft) => {
+    if (draft.channel && draft.channel !== 'email') { console.error(`handleSendDraft called on ${draft.channel} draft — blocked`); return; }
+    const edit = draftEdits[draft.id] || {};
+    setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: true, error: null } }));
+    try {
+      // Save edits first if any
+      if (edit.subject !== undefined || edit.body !== undefined) {
+        await apiFetch(`/sequences/drafts/${draft.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            subject: edit.subject !== undefined ? edit.subject : draft.subject,
+            body:    edit.body    !== undefined ? edit.body    : draft.body,
+          }),
+        });
+      }
+      const sendRes = await apiFetch(`/sequences/drafts/${draft.id}/send`, { method: 'POST', body: JSON.stringify({}) });
+      // Backend returns { ok, emailSent, sendError } — if emailSent is false the
+      // draft was marked sent in DB but the email never left. With the new fail-fast
+      // backend this shouldn't happen, but guard here too.
+      if (sendRes && sendRes.emailSent === false && sendRes.sendError) {
+        setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: false, error: sendRes.sendError } }));
+        return;
+      }
+      setDrafts(prev => prev.filter(d => d.id !== draft.id));
+      setDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
+    } catch (err) {
+      setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], sending: false, error: err.message } }));
+    }
+  };
+
+  const handleDiscardDraft = async (draftId) => {
+    if (!window.confirm('Discard this draft? The step will be skipped and the sequence will advance.')) return;
+    try {
+      await apiFetch(`/sequences/drafts/${draftId}`, { method: 'DELETE' });
+      setDrafts(prev => prev.filter(d => d.id !== draftId));
+      setDraftEdits(prev => { const n = { ...prev }; delete n[draftId]; return n; });
+    } catch (err) {
+      setError('Failed to discard draft: ' + err.message);
+    }
+  };
+
+  const handleMarkDoneDraft = async (draftId) => {
+    setDraftEdits(prev => ({ ...prev, [draftId]: { ...prev[draftId], sending: true, error: null } }));
+    try {
+      await apiFetch(`/sequences/drafts/${draftId}/complete`, { method: 'POST', body: JSON.stringify({}) });
+      setDrafts(prev => prev.filter(d => d.id !== draftId));
+      setDraftEdits(prev => { const n = { ...prev }; delete n[draftId]; return n; });
+    } catch (err) {
+      setDraftEdits(prev => ({ ...prev, [draftId]: { ...prev[draftId], sending: false, error: err.message } }));
+    }
+  };
+
+  // Stats
+  const [statsSeqId,   setStatsSeqId]   = useState(null);
+  const [stats,        setStats]        = useState(null);
+  const [loadingStats, setLoadingStats] = useState(false);
+
+  const loadStats = useCallback(async (seqId) => {
+    setLoadingStats(true);
+    setStats(null);
+    setError('');
+    try {
+      const r = await apiFetch(`/sequences/${seqId}/stats`);
+      setStats(r);
+    } catch (err) {
+      setError('Failed to load stats: ' + err.message);
+    } finally {
+      setLoadingStats(false);
+    }
+  }, []);
+
+  const openStats = (seqId) => {
+    setStatsSeqId(seqId);
+    setSubTab('stats');
+    loadStats(seqId);
+  };
+
+  const loadSequences = useCallback(async () => {
+    setLoadingSeq(true);
+    setError('');
+    try {
+      const r = await apiFetch('/sequences');
+      setSequences(r.sequences || []);
+    } catch (err) {
+      setError('Failed to load sequences: ' + err.message);
+    } finally {
+      setLoadingSeq(false);
+    }
+  }, []);
+
+  const loadEnrollments = useCallback(async () => {
+    setLoadingEnr(true);
+    try {
+      const r = await apiFetch('/sequences/enrollments');
+      setEnrollments(r.enrollments || []);
+    } catch (err) {
+      setError('Failed to load enrollments: ' + err.message);
+    } finally {
+      setLoadingEnr(false);
+    }
+  }, []);
+
+  useEffect(() => { loadSequences(); }, [loadSequences]);
+  useEffect(() => {
+    if (subTab === 'enrollments') loadEnrollments();
+    if (subTab === 'drafts')      loadDrafts();
+  }, [subTab, loadEnrollments, loadDrafts]);
+
+  const handleArchive = async (seqId) => {
+    if (!window.confirm('Archive this sequence? Existing enrollments will not be affected.')) return;
+    try {
+      await apiFetch(`/sequences/${seqId}`, { method: 'DELETE' });
+      loadSequences();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleStopEnrollment = async (enrollId) => {
+    if (!window.confirm('Stop this enrollment? No further steps will fire.')) return;
+    try {
+      await apiFetch(`/sequences/enrollments/${enrollId}/stop`, { method: 'POST', body: JSON.stringify({ reason: 'manual' }) });
+      loadEnrollments();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const openEnroll = (seqId) => {
+    setEnrollSeqId(seqId);
+    // Use all prospects or let user pick — for now open modal with full list
+    setSelectedProspects(prospects.slice(0, 1)); // default: first prospect; bulk via checkboxes TBD
+    setShowEnroll(true);
+  };
+
+  const STATUS_COLORS = {
+    active:    { bg: '#d1fae5', color: '#065f46' },
+    paused:    { bg: '#fef3c7', color: '#92400e' },
+    completed: { bg: '#eff6ff', color: '#1d4ed8' },
+    stopped:   { bg: '#fee2e2', color: '#991b1b' },
+    replied:   { bg: '#f0fdf4', color: '#166534' },
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+
+      {/* ── Sub-tab bar ─────────────────────────────────────────────────── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '10px 16px', borderBottom: '1px solid #e5e7eb', background: '#fff', flexShrink: 0,
+      }}>
+        <div style={{ display: 'flex', gap: 0 }}>
+          {[
+            { key: 'library',     label: `📚 Library (${sequences.length})` },
+            { key: 'drafts',      label: `📋 Drafts${drafts.length > 0 ? ` (${drafts.length})` : ''}` },
+            { key: 'enrollments', label: '🗓 Enrollments' },
+            { key: 'stats',       label: '📊 Stats' },
+          ].map(t => (
+            <button
+              key={t.key}
+              onClick={() => setSubTab(t.key)}
+              style={{
+                padding: '6px 16px', border: 'none', borderRadius: 7,
+                background: subTab === t.key ? '#0F9D8E' : 'transparent',
+                color: subTab === t.key ? '#fff' : '#6b7280',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                marginRight: 2,
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {subTab === 'library' && (
+          <button
+            onClick={() => { setEditingSeq(null); setShowBuilder(true); }}
+            style={{
+              padding: '7px 16px', borderRadius: 7, border: 'none',
+              background: '#0F9D8E', color: '#fff',
+              fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            + New Sequence
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <div style={{ margin: '10px 16px 0', padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 7, fontSize: 12, color: '#dc2626' }}>
+          ⚠️ {error}
+        </div>
+      )}
+
+      {/* ── Library tab ─────────────────────────────────────────────────── */}
+      {subTab === 'library' && (
+        <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+          {loadingSeq ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading sequences…</div>
+          ) : sequences.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 60 }}>
+              <div style={{ fontSize: 36, marginBottom: 10 }}>📨</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#374151', marginBottom: 6 }}>No sequences yet</div>
+              <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 18 }}>
+                Build a multi-step outreach sequence, then enroll prospects to automate follow-ups.
+              </div>
+              <button
+                onClick={() => { setEditingSeq(null); setShowBuilder(true); }}
+                style={{
+                  padding: '9px 22px', borderRadius: 8, border: 'none',
+                  background: '#0F9D8E', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                }}
+              >
+                Create First Sequence
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+              {sequences.map(seq => (
+                <div key={seq.id} style={{
+                  border: '1px solid #e5e7eb', borderRadius: 12, background: '#fff',
+                  overflow: 'hidden',
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.04)',
+                }}>
+                  <div style={{ padding: '14px 16px 10px', borderBottom: '1px solid #f3f4f6' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+                      <div style={{ fontWeight: 700, fontSize: 14, color: '#111827', lineHeight: 1.3 }}>
+                        {seq.name}
+                      </div>
+                      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+                        <button
+                          onClick={() => openViewPanel(seq)}
+                          title="View steps"
+                          style={{ padding: '3px 8px', borderRadius: 5, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', fontSize: 11, cursor: 'pointer' }}
+                        >
+                          👁
+                        </button>
+                        <button
+                          onClick={() => openBuilderForEdit(seq)}
+                          title="Edit"
+                          style={{ padding: '3px 8px', borderRadius: 5, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', fontSize: 11, cursor: 'pointer' }}
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={() => handleArchive(seq.id)}
+                          title="Archive"
+                          style={{ padding: '3px 8px', borderRadius: 5, border: '1px solid #e5e7eb', background: '#fff', color: '#9ca3af', fontSize: 11, cursor: 'pointer' }}
+                        >
+                          🗃
+                        </button>
+                      </div>
+                    </div>
+                    {seq.description && (
+                      <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>{seq.description}</div>
+                    )}
+                  </div>
+
+                  <div style={{ padding: '10px 16px', display: 'flex', gap: 16, fontSize: 12 }}>
+                    <span style={{ color: '#374151', fontWeight: 600 }}>{seq.step_count || 0} steps</span>
+                    {seq.enrollment_count > 0 && (
+                      <span style={{ color: '#0F9D8E', fontWeight: 600 }}>{seq.enrollment_count} active</span>
+                    )}
+                    <span style={{ color: '#9ca3af', fontSize: 11 }}>
+                      {seq.created_at ? new Date(seq.created_at).toLocaleDateString() : ''}
+                    </span>
+                  </div>
+
+                  <div style={{ padding: '0 16px 14px', display: 'flex', gap: 8 }}>
+                    <button
+                      onClick={() => openEnroll(seq.id)}
+                      style={{
+                        flex: 1, padding: '7px', borderRadius: 7,
+                        background: '#f0fdf4', border: '1px solid #bbf7d0',
+                        color: '#065f46', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                      }}
+                    >
+                      🚀 Enroll Prospect
+                    </button>
+                    <button
+                      onClick={() => { setSubTab('enrollments'); loadEnrollments(); }}
+                      style={{
+                        padding: '7px 10px', borderRadius: 7,
+                        border: '1px solid #e5e7eb', background: '#fff',
+                        color: '#6b7280', fontSize: 12, cursor: 'pointer',
+                      }}
+                    >
+                      🗓
+                    </button>
+                    <button
+                      onClick={() => openStats(seq.id)}
+                      style={{
+                        padding: '7px 10px', borderRadius: 7,
+                        border: '1px solid #e5e7eb', background: '#fff',
+                        color: '#6b7280', fontSize: 12, cursor: 'pointer',
+                      }}
+                    >
+                      📊
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Drafts tab ──────────────────────────────────────────────────── */}
+      {subTab === 'drafts' && (
+        <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+          {loadingDrafts ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading drafts…</div>
+          ) : drafts.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 60 }}>
+              <div style={{ fontSize: 32, marginBottom: 10 }}>✅</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#374151', marginBottom: 6 }}>No drafts waiting</div>
+              <div style={{ fontSize: 13, color: '#9ca3af' }}>
+                Drafted emails will appear here when sequences fire steps that require review.
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {drafts.map(draft => {
+                const edit    = draftEdits[draft.id] || {};
+                const subject = edit.subject !== undefined ? edit.subject : draft.subject;
+                const body    = edit.body    !== undefined ? edit.body    : draft.body;
+                const isOpen  = !!edit.open;
+                return (
+                  <DraftCard
+                    key={draft.id}
+                    draft={draft}
+                    subject={subject}
+                    body={body}
+                    isOpen={isOpen}
+                    sending={!!edit.sending}
+                    sendError={edit.error || null}
+                    onToggle={() => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], open: !isOpen } }))}
+                    onSubjectChange={v => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], subject: v } }))}
+                    onBodyChange={v => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], body: v } }))}
+                    onSend={() => handleSendDraft(draft)}
+                    onComplete={() => handleMarkDoneDraft(draft.id)}
+                    onDiscard={() => handleDiscardDraft(draft.id)}
+                    onConvertAndSend={() => handleConvertAndSendDraft(draft)}
+                  />
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Enrollments tab ─────────────────────────────────────────────── */}
+      {subTab === 'enrollments' && (
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {loadingEnr ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading…</div>
+          ) : enrollments.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 60, color: '#9ca3af' }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>📭</div>
+              No enrollments yet. Enroll prospects from the Library tab.
+            </div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
+                  {['Prospect', 'Sequence', 'Status', 'Step', 'Next Due', 'Enrolled', ''].map(h => (
+                    <th key={h} style={{
+                      padding: '9px 14px', textAlign: 'left', fontSize: 11,
+                      fontWeight: 700, color: '#6b7280', textTransform: 'uppercase',
+                      letterSpacing: 0.5, whiteSpace: 'nowrap',
+                    }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {enrollments.map(e => {
+                  const sc = STATUS_COLORS[e.status] || { bg: '#f3f4f6', color: '#6b7280' };
+                  const isExpanded = expandedEnrollId === e.id;
+                  return (
+                    <React.Fragment key={e.id}>
+                      <tr
+                        style={{ borderBottom: isExpanded ? 'none' : '1px solid #f3f4f6', cursor: 'pointer' }}
+                        onClick={() => toggleEnrollLogs(e.id)}
+                      >
+                        <td style={{ padding: '9px 14px' }}>
+                          <div style={{ fontWeight: 600, color: '#1a202c' }}>{e.first_name} {e.last_name}</div>
+                          {e.email && <div style={{ fontSize: 11, color: '#94a3b8' }}>{e.email}</div>}
+                        </td>
+                        <td style={{ padding: '9px 14px', color: '#374151' }}>{e.sequence_name}</td>
+                        <td style={{ padding: '9px 14px' }}>
+                          <span style={{
+                            padding: '2px 9px', borderRadius: 10, fontSize: 11, fontWeight: 600,
+                            background: sc.bg, color: sc.color,
+                          }}>
+                            {e.status}
+                          </span>
+                          {e.stop_reason && (
+                            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 1 }}>{e.stop_reason}</div>
+                          )}
+                        </td>
+                        <td style={{ padding: '9px 14px', color: '#374151', textAlign: 'center' }}>
+                          {e.status === 'active' ? e.current_step : '—'}
+                        </td>
+                        <td style={{ padding: '9px 14px', color: '#6b7280', fontSize: 12, whiteSpace: 'nowrap' }}>
+                          {e.next_step_due && e.status === 'active'
+                            ? new Date(e.next_step_due).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+                            : '—'}
+                        </td>
+                        <td style={{ padding: '9px 14px', color: '#9ca3af', fontSize: 11, whiteSpace: 'nowrap' }}>
+                          {new Date(e.enrolled_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                        </td>
+                        <td style={{ padding: '9px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                          {e.status === 'active' && (
+                            <button
+                              onClick={(ev) => { ev.stopPropagation(); handleStopEnrollment(e.id); }}
+                              style={{
+                                padding: '3px 10px', borderRadius: 6, fontSize: 11,
+                                border: '1px solid #fecaca', background: '#fef2f2',
+                                color: '#dc2626', cursor: 'pointer', fontWeight: 500,
+                              }}
+                            >
+                              Stop
+                            </button>
+                          )}
+                          <span style={{ fontSize: 11, color: '#9ca3af' }}>{isExpanded ? '▲' : '▼'}</span>
+                        </td>
+                      </tr>
+
+                      {/* ── Step timeline drill-down ──────────────────────── */}
+                      {isExpanded && (
+                        <tr style={{ borderBottom: '1px solid #f3f4f6' }}>
+                          <td colSpan={7} style={{ padding: '0 14px 14px 40px', background: '#f9fafb' }}>
+                            {loadingLogs ? (
+                              <div style={{ padding: '12px 0', fontSize: 12, color: '#9ca3af' }}>Loading timeline…</div>
+                            ) : expandedLogs.length === 0 ? (
+                              <div style={{ padding: '12px 0', fontSize: 12, color: '#9ca3af' }}>No steps yet.</div>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 0, paddingTop: 12 }}>
+                                {expandedLogs.map((step, idx) => {
+                                  const STEP_CHANNEL_ICONS = { email: '✉️', linkedin: '🔗', call: '📞', task: '📋', manual: '📋' };
+                                  const icon = STEP_CHANNEL_ICONS[step.channel] || '📋';
+                                  const isFuture  = step.is_future;
+                                  const isDraft   = step.status === 'draft';
+                                  const isSent    = step.status === 'sent';
+                                  const isSkipped = step.status === 'skipped';
+                                  const isFailed  = step.status === 'failed';
+                                  const isLast    = idx === expandedLogs.length - 1;
+
+                                  // Status pill config
+                                  const pillCfg = isSent    ? { bg: '#d1fae5', color: '#065f46', label: 'Sent' }
+                                    : isDraft   ? { bg: '#fef3c7', color: '#92400e', label: 'Draft – awaiting send' }
+                                    : isSkipped ? { bg: '#f3f4f6', color: '#6b7280', label: 'Skipped' }
+                                    : isFailed  ? { bg: '#fee2e2', color: '#dc2626', label: 'Failed' }
+                                    : isFuture  ? { bg: '#eff6ff', color: '#3b82f6', label: 'Planned' }
+                                    :             { bg: '#f3f4f6', color: '#6b7280', label: step.status };
+
+                                  // Timestamp to show
+                                  const timestamp = isSent || isDraft
+                                    ? (step.fired_at || step.scheduled_send_at)
+                                    : step.scheduled_send_at;
+
+                                  const formattedDate = timestamp
+                                    ? new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                                    : null;
+
+                                  // Content to show: actual subject for sent, template for planned
+                                  const displaySubject = step.subject || step.subject_template || null;
+                                  const displayNote    = step.task_note || null;
+
+                                  return (
+                                    <div key={step.step_order} style={{ display: 'flex', gap: 0 }}>
+                                      {/* Timeline spine */}
+                                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 32, flexShrink: 0 }}>
+                                        <div style={{
+                                          width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
+                                          background: isSent ? '#0F9D8E' : isFuture ? '#e5e7eb' : isDraft ? '#f59e0b' : '#6b7280',
+                                          color: isSent ? '#fff' : isFuture ? '#9ca3af' : '#fff',
+                                          fontSize: 11, fontWeight: 700,
+                                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                          border: isFuture ? '2px dashed #d1d5db' : 'none',
+                                        }}>
+                                          {isSent ? '✓' : step.step_order}
+                                        </div>
+                                        {!isLast && (
+                                          <div style={{
+                                            width: 2, flex: 1, minHeight: 16,
+                                            background: isFuture ? '#e5e7eb' : '#0F9D8E',
+                                            margin: '2px 0',
+                                          }} />
+                                        )}
+                                      </div>
+
+                                      {/* Step content */}
+                                      <div style={{
+                                        flex: 1, marginLeft: 10, marginBottom: isLast ? 0 : 12,
+                                        padding: '8px 12px',
+                                        background: isFuture ? '#f9fafb' : '#fff',
+                                        border: `1px solid ${isDraft ? '#fde68a' : isFuture ? '#e5e7eb' : '#e5e7eb'}`,
+                                        borderRadius: 8,
+                                        opacity: isSkipped ? 0.5 : 1,
+                                      }}>
+                                        {/* Top row: channel + status + date */}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                          <span style={{ fontSize: 13 }}>{icon}</span>
+                                          <span style={{ fontSize: 12, fontWeight: 600, color: '#374151', textTransform: 'capitalize' }}>
+                                            {step.channel}
+                                          </span>
+                                          {step.delay_days > 0 && (
+                                            <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                                              +{step.delay_days}d
+                                            </span>
+                                          )}
+                                          <span style={{
+                                            fontSize: 10, fontWeight: 700, padding: '2px 8px',
+                                            borderRadius: 10, background: pillCfg.bg, color: pillCfg.color,
+                                          }}>
+                                            {pillCfg.label}
+                                          </span>
+                                          {formattedDate && (
+                                            <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 'auto' }}>
+                                              {isSent ? '✉ Sent ' : isFuture ? '📅 Due ' : ''}{formattedDate}
+                                            </span>
+                                          )}
+                                        </div>
+
+                                        {/* Subject / task note */}
+                                        {displaySubject && (
+                                          <div style={{
+                                            fontSize: 12, color: isFuture ? '#9ca3af' : '#1a202c',
+                                            fontWeight: isFuture ? 400 : 500,
+                                            marginTop: 5,
+                                            fontStyle: isFuture && !step.subject ? 'italic' : 'normal',
+                                          }}>
+                                            {displaySubject}
+                                            {isFuture && !step.subject && (
+                                              <span style={{ fontSize: 10, color: '#9ca3af', marginLeft: 6 }}>(template)</span>
+                                            )}
+                                          </div>
+                                        )}
+                                        {!displaySubject && displayNote && (
+                                          <div style={{ fontSize: 12, color: isFuture ? '#9ca3af' : '#374151', marginTop: 5 }}>
+                                            {displayNote}
+                                          </div>
+                                        )}
+
+                                        {/* Body preview — sent emails only */}
+                                        {isSent && step.body && (
+                                          <div style={{ marginTop: 4 }}>
+                                            <div style={{
+                                              fontSize: 11, color: '#6b7280', lineHeight: 1.6,
+                                              whiteSpace: 'pre-wrap',
+                                              maxHeight: expandedStepBody[step.step_order] ? 'none' : 48,
+                                              overflow: 'hidden',
+                                              ...(!expandedStepBody[step.step_order] ? {
+                                                maskImage: 'linear-gradient(to bottom, black 40%, transparent)',
+                                                WebkitMaskImage: 'linear-gradient(to bottom, black 40%, transparent)',
+                                              } : {}),
+                                            }}>
+                                              {stripHtml(step.body)}
+                                            </div>
+                                            <button
+                                              onClick={() => setExpandedStepBody(prev => ({ ...prev, [step.step_order]: !prev[step.step_order] }))}
+                                              style={{
+                                                marginTop: 4, padding: '2px 8px',
+                                                fontSize: 11, fontWeight: 600,
+                                                color: '#0F9D8E', background: 'none',
+                                                border: '1px solid #0F9D8E',
+                                                borderRadius: 5, cursor: 'pointer',
+                                              }}
+                                            >
+                                              {expandedStepBody[step.step_order] ? '▲ Collapse' : '▼ View full email'}
+                                            </button>
+                                          </div>
+                                        )}
+
+                                        {/* Body template — future email steps */}
+                                        {isFuture && step.channel === 'email' && step.body_template && (
+                                          <div style={{ marginTop: 4 }}>
+                                            {expandedStepBody[step.step_order] && (
+                                              <div style={{
+                                                fontSize: 11, color: '#9ca3af', lineHeight: 1.6,
+                                                whiteSpace: 'pre-wrap',
+                                                padding: '8px 10px',
+                                                background: '#f9fafb',
+                                                border: '1px dashed #e5e7eb',
+                                                borderRadius: 6,
+                                                marginBottom: 4,
+                                              }}>
+                                                {step.body_template}
+                                                {!step.is_personalised && (
+                                                  <div style={{ marginTop: 6, fontSize: 10, color: '#d1d5db', fontStyle: 'italic' }}>
+                                                    Template — tokens like {'{{first_name}}'} will be replaced when sent
+                                                  </div>
+                                                )}
+                                              </div>
+                                            )}
+                                            <button
+                                              onClick={() => setExpandedStepBody(prev => ({ ...prev, [step.step_order]: !prev[step.step_order] }))}
+                                              style={{
+                                                marginTop: 2, padding: '2px 8px',
+                                                fontSize: 11, fontWeight: 600,
+                                                color: '#6b7280', background: 'none',
+                                                border: '1px solid #d1d5db',
+                                                borderRadius: 5, cursor: 'pointer',
+                                              }}
+                                            >
+                                              {expandedStepBody[step.step_order] ? '▲ Hide template' : '▼ Preview template'}
+                                            </button>
+                                          </div>
+                                        )}
+
+                                        {/* Error message */}
+                                        {isFailed && step.error_message && (
+                                          <div style={{ fontSize: 11, color: '#dc2626', marginTop: 4 }}>
+                                            ⚠️ {step.error_message}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* ── Stats tab ───────────────────────────────────────────────────── */}
+      {subTab === 'stats' && (
+        <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+          {/* Sequence picker */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', display: 'block', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.3 }}>
+              Select Sequence
+            </label>
+            <select
+              value={statsSeqId || ''}
+              onChange={e => { const v = parseInt(e.target.value); setStatsSeqId(v); loadStats(v); }}
+              style={{ padding: '7px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, background: '#fff', minWidth: 260 }}
+            >
+              <option value="">— choose a sequence —</option>
+              {sequences.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+
+          {loadingStats && (
+            <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading stats…</div>
+          )}
+
+          {!loadingStats && !stats && !statsSeqId && (
+            <div style={{ textAlign: 'center', padding: 60, color: '#9ca3af' }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>📊</div>
+              Select a sequence above to view its performance stats.
+            </div>
+          )}
+
+          {!loadingStats && stats && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+              {/* Top-line numbers */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                {[
+                  { label: 'Enrolled',    value: stats.totalEnrolled,              color: '#374151' },
+                  { label: 'Replied',     value: stats.totalReplied,               color: '#0F9D8E' },
+                  { label: 'Reply Rate',  value: `${stats.replyRate}%`,            color: '#0F9D8E' },
+                  { label: 'Avg Reply At',value: stats.avgReplyStep ? `Step ${stats.avgReplyStep}` : '—', color: '#6b7280' },
+                ].map(({ label, value, color }) => (
+                  <div key={label} style={{
+                    padding: '14px 16px', background: '#fff',
+                    border: '1px solid #e5e7eb', borderRadius: 10,
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                  }}>
+                    <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>{label}</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Status breakdown */}
+              <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '14px 16px' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 12 }}>Enrollment Status</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {[
+                    { key: 'active',    label: 'Active',    bg: '#d1fae5', color: '#065f46' },
+                    { key: 'replied',   label: 'Replied',   bg: '#ccfbf1', color: '#0d9488' },
+                    { key: 'completed', label: 'Completed', bg: '#eff6ff', color: '#1d4ed8' },
+                    { key: 'paused',    label: 'Paused',    bg: '#fef3c7', color: '#92400e' },
+                    { key: 'stopped',   label: 'Stopped',   bg: '#fee2e2', color: '#991b1b' },
+                  ].map(({ key, label, bg, color }) => (
+                    <div key={key} style={{
+                      padding: '6px 14px', borderRadius: 20, background: bg,
+                      fontSize: 12, fontWeight: 600, color,
+                    }}>
+                      {label}: {stats.statusBreakdown[key] || 0}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Step funnel */}
+              {stats.stepFunnel && stats.stepFunnel.length > 0 && (
+                <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '14px 16px' }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 14 }}>Step Funnel</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {stats.stepFunnel.map((s) => {
+                      const barMax   = stats.totalEnrolled || 1;
+                      const barPct   = Math.round((s.sent / barMax) * 100);
+                      const replyPct = s.sent > 0 ? Math.round((s.replied_here / s.sent) * 100) : 0;
+                      return (
+                        <div key={s.step_order}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                            <div style={{
+                              width: 22, height: 22, borderRadius: '50%',
+                              background: '#0F9D8E', color: '#fff',
+                              fontSize: 11, fontWeight: 700,
+                              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                            }}>
+                              {s.step_order}
+                            </div>
+                            <div style={{ flex: 1 }}>
+                              <div style={{
+                                height: 10, borderRadius: 5, background: '#f3f4f6', overflow: 'hidden',
+                              }}>
+                                <div style={{
+                                  width: `${barPct}%`, height: '100%',
+                                  background: 'linear-gradient(90deg, #0F9D8E, #0d8a7c)',
+                                  borderRadius: 5, transition: 'width 0.4s ease',
+                                }} />
+                              </div>
+                            </div>
+                            <div style={{ fontSize: 12, color: '#374151', minWidth: 70, textAlign: 'right' }}>
+                              <strong>{s.sent}</strong> <span style={{ color: '#9ca3af' }}>sent</span>
+                            </div>
+                            {s.replied_here > 0 && (
+                              <div style={{
+                                fontSize: 11, color: '#0d9488', fontWeight: 600,
+                                background: '#ccfbf1', padding: '2px 8px', borderRadius: 10,
+                                minWidth: 80, textAlign: 'center',
+                              }}>
+                                {s.replied_here} replied ({replyPct}%)
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {stats.totalEnrolled === 0 && (
+                    <div style={{ textAlign: 'center', padding: '20px 0', color: '#9ca3af', fontSize: 13 }}>
+                      No steps fired yet — enroll some prospects to start seeing data.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Sequence View Panel ─────────────────────────────────────────── */}
+      {viewingSeq && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 1000,
+          background: 'rgba(0,0,0,0.35)',
+          display: 'flex', justifyContent: 'flex-end',
+        }}
+          onClick={e => { if (e.target === e.currentTarget) setViewingSeq(null); }}
+        >
+          <div style={{
+            width: 520, maxWidth: '95vw', height: '100%',
+            background: '#fff', overflowY: 'auto',
+            boxShadow: '-4px 0 24px rgba(0,0,0,0.12)',
+            display: 'flex', flexDirection: 'column',
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: '20px 24px 16px', borderBottom: '1px solid #e5e7eb',
+              display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12,
+            }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: '#0F9D8E', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>
+                  SEQUENCE
+                </div>
+                <div style={{ fontWeight: 700, fontSize: 16, color: '#111827', lineHeight: 1.3 }}>
+                  {viewingSeq.name}
+                </div>
+                {viewingSeq.description && (
+                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6, lineHeight: 1.5 }}>
+                    {viewingSeq.description}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: 12, color: '#9ca3af' }}>
+                  <span>{(viewingSeq.steps || []).length} steps</span>
+                  <span>Draft before sending: {viewingSeq.require_approval ? 'Yes' : 'No'}</span>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                <button
+                  onClick={() => { setViewingSeq(null); openBuilderForEdit(viewingSeq); }}
+                  style={{
+                    padding: '6px 14px', borderRadius: 7, fontSize: 12, fontWeight: 600,
+                    background: '#1A3A5C', color: '#fff', border: 'none', cursor: 'pointer',
+                  }}
+                >
+                  ✏️ Edit
+                </button>
+                <button
+                  onClick={() => setViewingSeq(null)}
+                  style={{
+                    padding: '6px 10px', borderRadius: 7, fontSize: 16,
+                    background: 'none', border: '1px solid #e5e7eb', color: '#6b7280', cursor: 'pointer',
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Steps */}
+            <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {(viewingSeq.steps || []).length === 0 ? (
+                <div style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>No steps yet</div>
+              ) : (
+                (viewingSeq.steps || []).map((step, idx) => {
+                  const channelEmoji = { email: '✉️', linkedin: '🔗', call: '📞', task: '📋' }[step.channel] || '📋';
+                  const hasContent   = step.subject_template || step.body_template || step.task_note;
+                  return (
+                    <div key={step.id || idx} style={{
+                      border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden',
+                    }}>
+                      {/* Step header */}
+                      <div style={{
+                        padding: '10px 14px',
+                        background: '#f8fafc',
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        borderBottom: hasContent ? '1px solid #e5e7eb' : 'none',
+                      }}>
+                        <div style={{
+                          width: 24, height: 24, borderRadius: '50%',
+                          background: '#0F9D8E', color: '#fff',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 11, fontWeight: 700, flexShrink: 0,
+                        }}>
+                          {idx + 1}
+                        </div>
+                        <span style={{ fontSize: 14 }}>{channelEmoji}</span>
+                        <span style={{ fontWeight: 600, fontSize: 13, color: '#111827', textTransform: 'capitalize' }}>
+                          {step.channel}
+                        </span>
+                        <span style={{ fontSize: 12, color: '#9ca3af' }}>
+                          {step.delay_days === 0 ? 'Day 0 (on enroll)' : `Day +${step.delay_days}`}
+                        </span>
+                        {step.require_approval === true && (
+                          <span style={{ marginLeft: 'auto', fontSize: 10, padding: '2px 6px', borderRadius: 4, background: '#fef3c7', color: '#92400e', fontWeight: 600 }}>
+                            Draft
+                          </span>
+                        )}
+                        {step.require_approval === false && (
+                          <span style={{ marginLeft: 'auto', fontSize: 10, padding: '2px 6px', borderRadius: 4, background: '#dcfce7', color: '#166534', fontWeight: 600 }}>
+                            Auto-send
+                          </span>
+                        )}
+                      </div>
+                      {/* Step content */}
+                      {hasContent && (
+                        <div style={{ padding: '12px 14px' }}>
+                          {step.subject_template && (
+                            <div style={{ marginBottom: 8 }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>Subject</div>
+                              <div style={{ fontSize: 13, color: '#111827', fontWeight: 500 }}>{step.subject_template}</div>
+                            </div>
+                          )}
+                          {step.body_template && (
+                            <div>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>Body</div>
+                              <div style={{
+                                fontSize: 12, color: '#374151', lineHeight: 1.6,
+                                whiteSpace: 'pre-wrap', maxHeight: 200, overflowY: 'auto',
+                                background: '#f9fafb', borderRadius: 6, padding: '8px 10px',
+                              }}>
+                                {step.body_template}
+                              </div>
+                            </div>
+                          )}
+                          {step.task_note && (
+                            <div>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 3 }}>Note</div>
+                              <div style={{ fontSize: 12, color: '#374151', lineHeight: 1.6 }}>{step.task_note}</div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── SequenceBuilder slide-over ───────────────────────────────────── */}
+      {showBuilder && (
+        <div
+          onClick={() => setShowBuilder(false)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)',
+            zIndex: 900, display: 'flex', justifyContent: 'flex-end',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: 620, maxWidth: '95vw', height: '100%',
+              background: '#fff', boxShadow: '-8px 0 32px rgba(0,0,0,0.12)',
+              display: 'flex', flexDirection: 'column', overflowY: 'auto',
+            }}
+          >
+            <SequenceBuilder
+              sequence={editingSeq}
+              onSave={(saved) => {
+                loadSequences();
+                // Fetch full sequence (with steps) then re-open in edit mode
+                openBuilderForEdit(saved);
+              }}
+              onClose={() => { setShowBuilder(false); setEditingSeq(null); }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ── SequenceEnrollModal ──────────────────────────────────────────── */}
+      {showEnroll && selectedProspects.length > 0 && (
+        <SequenceEnrollModal
+          prospects={selectedProspects}
+          preSequenceId={enrollSeqId}
+          onEnrolled={(result) => {
+            setShowEnroll(false);
+            loadEnrollments();
+            setSubTab('enrollments');
+          }}
+          onClose={() => setShowEnroll(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CALLS INBOX VIEW
+// Top-level Calls view. Unified stream of:
+//   - Completed calls (logged via LogCallModal)
+//   - Pending sequence call tasks (sequence_step_logs WHERE channel='call' AND status='draft')
+//   - Pending callback requests (calls WHERE outcome='callback_requested' AND no newer call)
+//
+// Tabs: All / Pending / Overdue / Completed
+// Row click → opens prospect drawer at the Calls tab
+// Pending rows have a "Log call" button that opens LogCallModal pre-filled
+// ═════════════════════════════════════════════════════════════════════════════
+
+
+export default SequencesView;
