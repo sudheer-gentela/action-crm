@@ -45,7 +45,7 @@ const STAGE_TRANSITIONS = {
 // ── GET / — list prospects ───────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    const { scope = 'mine', stage, accountId, companyDomain, search } = req.query;
+    const { scope = 'mine', stage, accountId, campaignId, companyDomain, search } = req.query;
 
     let query = `
       SELECT p.*,
@@ -79,6 +79,13 @@ router.get('/', async (req, res) => {
     if (accountId) {
       query += ` AND p.account_id = $${params.length + 1}`;
       params.push(parseInt(accountId));
+    }
+
+    // Campaign filter — used by the Campaigns view's "View in Pipeline" action
+    // and the campaign-scoped filter banner over the Pipeline/List/Account boards.
+    if (campaignId) {
+      query += ` AND p.campaign_id = $${params.length + 1}`;
+      params.push(parseInt(campaignId));
     }
 
     if (companyDomain) {
@@ -217,7 +224,7 @@ router.get('/pipeline/summary', async (req, res) => {
 // Returns: { imported, skipped, errors: [{ row, reason }] }
 router.post('/bulk', async (req, res) => {
   try {
-    const { prospects: rows, source = 'csv_import' } = req.body;
+    const { prospects: rows, source = 'csv_import', campaignId = null } = req.body;
 
     if (!Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({ error: { message: 'prospects array is required and must not be empty' } });
@@ -239,6 +246,20 @@ router.post('/bulk', async (req, res) => {
       [req.orgId]
     );
     const defaultPlaybookId = defaultPbResult.rows[0]?.id || null;
+
+    // If importing into a campaign, validate it belongs to this org once.
+    // resolvedCampaignId is written onto every imported prospect.
+    let resolvedCampaignId = null;
+    if (campaignId) {
+      const campRes = await db.query(
+        `SELECT id FROM prospecting_campaigns WHERE id = $1 AND org_id = $2`,
+        [campaignId, req.orgId]
+      );
+      if (!campRes.rows.length) {
+        return res.status(400).json({ error: { message: 'Campaign not found in this org' } });
+      }
+      resolvedCampaignId = campRes.rows[0].id;
+    }
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
@@ -304,11 +325,12 @@ router.post('/bulk', async (req, res) => {
           `INSERT INTO prospects (
              org_id, owner_id, first_name, last_name, email, phone, linkedin_url,
              title, location, company_name, company_domain, company_size,
-             company_industry, account_id, source, playbook_id, tags, stage, stage_changed_at
+             company_industry, account_id, source, playbook_id, tags, campaign_id,
+             stage, stage_changed_at
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $7,
              $8, $9, $10, $11, $12,
-             $13, $14, $15, $16, $17,
+             $13, $14, $15, $16, $17, $18,
              'target', CURRENT_TIMESTAMP
            )`,
           [
@@ -329,6 +351,7 @@ router.post('/bulk', async (req, res) => {
             source,
             row.playbookId       || defaultPlaybookId,
             JSON.stringify(row.tags || []),
+            resolvedCampaignId,
           ]
         );
 

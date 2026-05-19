@@ -24,6 +24,7 @@ import ProspectCreateModal  from './prospecting/ProspectCreateModal';
 import ProspectDetailPanel  from './prospecting/ProspectDetailPanel';
 import DiscardProspectModal from './prospecting/DiscardProspectModal';
 import SequencesView        from './prospecting/SequencesView';
+import CampaignsView        from './prospecting/CampaignsView';
 import CallsInboxView       from './prospecting/CallsInboxView';
 import ProspectingInbox     from './prospecting/ProspectingInbox';
 
@@ -43,6 +44,12 @@ export default function ProspectingView() {
   const [selectedProspect, setSelectedProspect] = useState(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
+
+  // Campaign filter — set when the user clicks "View in Pipeline" from a
+  // campaign in the Campaigns tab. Holds { campaignId, campaignName } or null.
+  // When active, the Pipeline/List/Account boards are scoped to that campaign
+  // and a dismissible banner is shown.
+  const [campaignFilter, setCampaignFilter] = useState(null);
 
   // Phase 2: set of prospect_ids that have an overdue call task (either a
   // sequence step past scheduled_send_at, or a callback_requested past its
@@ -110,6 +117,20 @@ export default function ProspectingView() {
     const t = setTimeout(() => setDebugToast(null), 1400);
     return () => clearTimeout(t);
   }, [debugToast]);
+
+  // Campaign-filter bridge: CampaignsView's "View in Pipeline" dispatches a
+  // 'campaign-filter' window event. We catch it, store the filter, and switch
+  // to the Pipeline board so the user lands on the scoped view.
+  useEffect(() => {
+    function onCampaignFilter(e) {
+      const detail = e.detail || {};
+      if (!detail.campaignId) return;
+      setCampaignFilter({ campaignId: detail.campaignId, campaignName: detail.campaignName });
+      setViewMode('pipeline');
+    }
+    window.addEventListener('campaign-filter', onCampaignFilter);
+    return () => window.removeEventListener('campaign-filter', onCampaignFilter);
+  }, []);
 
   const isSelected = (id) => selectedIds.has(id);
   const clearSelection = () => setSelectedIds(new Set());
@@ -200,11 +221,11 @@ export default function ProspectingView() {
   const fetchProspects = useCallback(async () => {
     try {
       setLoading(true);
-      const params = {};
-      if (searchQuery) params.search = searchQuery;
+
+      const campaignQS = campaignFilter ? `&campaignId=${campaignFilter.campaignId}` : '';
 
       const [prospectsRes, summaryRes] = await Promise.all([
-        apiFetch(`/prospects?scope=${scope}${searchQuery ? `&search=${encodeURIComponent(searchQuery)}` : ''}`),
+        apiFetch(`/prospects?scope=${scope}${searchQuery ? `&search=${encodeURIComponent(searchQuery)}` : ''}${campaignQS}`),
         apiFetch(`/prospects/pipeline/summary?scope=${scope}`),
       ]);
 
@@ -215,7 +236,7 @@ export default function ProspectingView() {
     } finally {
       setLoading(false);
     }
-  }, [scope, searchQuery]);
+  }, [scope, searchQuery, campaignFilter]);
 
   useEffect(() => { fetchProspects(); }, [fetchProspects]);
 
@@ -354,6 +375,7 @@ export default function ProspectingView() {
               { key: 'pipeline',  icon: '▦',  label: 'Pipeline' },
               { key: 'list',      icon: '≡',  label: 'List' },
               { key: 'account',   icon: '🏢', label: 'Accounts' },
+              { key: 'campaigns', icon: '🚀', label: 'Campaigns' },
               { key: 'inbox',     icon: '📥', label: 'Inbox' },
               { key: 'sequences', icon: '📨', label: 'Sequences' },
               { key: 'calls',     icon: '📞', label: 'Calls' },
@@ -450,6 +472,27 @@ export default function ProspectingView() {
         </div>
       )}
 
+      {/* ── Campaign Filter Banner ─────────────────────────────────────────── */}
+      {campaignFilter && ['pipeline', 'list', 'account'].includes(viewMode) && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          background: '#fff8f0', border: '1px solid #FBCF9D', borderRadius: 8,
+          padding: '8px 14px', marginBottom: 12, fontSize: 13,
+        }}>
+          <span style={{ color: '#92400e' }}>
+            🚀 Showing prospects in campaign:{' '}
+            <strong>{campaignFilter.campaignName}</strong>
+          </span>
+          <button
+            onClick={() => setCampaignFilter(null)}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: '#92400e', fontSize: 13, fontWeight: 600,
+            }}
+          >✕ Clear filter</button>
+        </div>
+      )}
+
       {/* ── Content Area ───────────────────────────────────────────────────── */}
       {loading ? (
         <div className="pv-loading">Loading prospects...</div>
@@ -494,6 +537,8 @@ export default function ProspectingView() {
         />
       ) : viewMode === 'sequences' ? (
         <SequencesView prospects={prospects} />
+      ) : viewMode === 'campaigns' ? (
+        <CampaignsView />
       ) : viewMode === 'calls' ? (
         <CallsInboxView
           scope={scope}

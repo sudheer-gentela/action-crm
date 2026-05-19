@@ -217,8 +217,9 @@ app.use('/api/playbook-plays',         require('./routes/playbook-plays.routes')
 app.use('/api/deal-plays',             require('./routes/deal-plays.routes'));
 
 // ── Prospecting ───────────────────────────────────────────────────────────
-app.use('/api/prospects',           require('./routes/prospects.routes'));
-app.use('/api/prospecting-actions', require('./routes/prospecting-actions.routes'));
+app.use('/api/prospects',             require('./routes/prospects.routes'));
+app.use('/api/prospecting-campaigns', require('./routes/prospecting-campaigns.routes'));
+app.use('/api/prospecting-actions',   require('./routes/prospecting-actions.routes'));
 app.use('/api/accounts',            require('./routes/account-prospecting.routes'));
 app.use('/api/actions',             require('./routes/unified-actions.routes'));
 app.use('/api/prospect-context',    require('./routes/prospect-context.routes'));
