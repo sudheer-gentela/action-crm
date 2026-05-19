@@ -9,6 +9,7 @@ import DraftCard from './DraftCard';
 import InfoRow from './InfoRow';
 import LogCallModal from './LogCallModal';
 import OutreachComposer from '../OutreachComposer';
+import OutreachSkillPanel from './OutreachSkillPanel';
 import StrapPanel from '../StrapPanel';
 import SequenceEnrollModal from '../SequenceEnrollModal';
 import TwilioCallModal from '../TwilioCallModal';
@@ -1017,6 +1018,20 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
                 loading={contextLoading}
                 prospect={prospect}
                 onOpenOutreach={(channel) => openOutreach(channel)}
+              />
+
+              {/* Outreach skill — generate first-touch email + LinkedIn note.
+                  onUseDraft opens the OutreachComposer pre-filled (the bridge);
+                  openOutreach already accepts an actionToExecute payload. */}
+              <OutreachSkillPanel
+                prospectId={prospectId}
+                onUseDraft={({ messageSubject, messageBody }) =>
+                  openOutreach('email', {
+                    channel: 'email',
+                    messageSubject,
+                    messageBody,
+                  })
+                }
               />
             </div>
           )}

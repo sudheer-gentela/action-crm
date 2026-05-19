@@ -55,6 +55,7 @@ router.get('/', async (req, res) => {
     const orgId    = req.orgId;
     const skill    = req.query.skill_name ? String(req.query.skill_name).trim() : null;
     const hook     = req.query.hook ? String(req.query.hook).trim() : null;
+    const prospectId = optionalInt(req.query.prospect_id, 'prospect_id');
     const beforeId = optionalInt(req.query.before_id, 'before_id');
     let   limit    = parseInt(req.query.limit, 10) || 50;
     if (limit < 1) limit = 50;
@@ -69,9 +70,10 @@ router.get('/', async (req, res) => {
     const where = ['org_id = $1'];
     const params = [orgId];
     let p = 2;
-    if (skill)    { where.push(`skill_name = $${p}`);    params.push(skill);    p++; }
-    if (hook)     { where.push(`hook_category = $${p}`); params.push(hook);     p++; }
-    if (beforeId) { where.push(`id < $${p}`);            params.push(beforeId); p++; }
+    if (skill)      { where.push(`skill_name = $${p}`);    params.push(skill);      p++; }
+    if (hook)       { where.push(`hook_category = $${p}`); params.push(hook);       p++; }
+    if (prospectId) { where.push(`prospect_id = $${p}`);   params.push(prospectId); p++; }
+    if (beforeId)   { where.push(`id < $${p}`);            params.push(beforeId);   p++; }
 
     const sql = `
       SELECT id, org_id, user_id, skill_name, prospect_id, deal_id,
