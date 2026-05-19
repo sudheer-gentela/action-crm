@@ -18,6 +18,7 @@ const {
 } = require('../config/aiProviders');
 const CredentialsStore  = require('../services/ai/CredentialsStore');
 const AIClientResolver  = require('../services/ai/AIClientResolver');
+const ModelDiscoveryService = require('../services/ai/ModelDiscoveryService');
 
 const router = express.Router();
 router.use(authenticateToken, orgContext);
@@ -50,6 +51,21 @@ router.get('/config', async (req, res) => {
     );
     const user_settings = ur.rows[0]?.ai_settings || {};
 
+    // Provider catalog with merged model lists (static registry + live
+    // discovered models). Falls back to the static catalog if discovery
+    // is unavailable, so this endpoint never hard-fails on it.
+    let providers;
+    try {
+      const merged = await ModelDiscoveryService.getAllMergedModels();
+      providers = listProviders().map(p => ({
+        ...p,
+        models: merged[p.id] || p.models,
+      }));
+    } catch (e) {
+      console.error('GET /me/ai/config — model merge failed, using registry:', e.message);
+      providers = listProviders();
+    }
+
     res.json({
       policy,
       user_settings: {
@@ -57,7 +73,7 @@ router.get('/config', async (req, res) => {
         default_model:      user_settings.default_model      || null,
         models_by_call_type: user_settings.models_by_call_type || {},
       },
-      providers:  listProviders(),
+      providers,
       call_types: CALL_TYPES,
     });
   } catch (err) {

@@ -37,27 +37,9 @@ const SOURCES = [
   { key: 'ai',       label: 'AI enhancement', hint: 'Add AI-generated context-aware actions on top of rules' },
 ];
 
-const PROVIDERS = [
-  { value: 'anthropic', label: 'Anthropic', sub: 'Claude models' },
-  { value: 'openai',    label: 'OpenAI',    sub: 'GPT-4 models' },
-  { value: 'gemini',    label: 'Google',    sub: 'Gemini models' },
-];
-
-const MODELS = {
-  anthropic: [
-    { value: 'claude-haiku-4-5-20251001',  label: 'Claude Haiku',  hint: 'Fast and economical' },
-    { value: 'claude-sonnet-4-6',          label: 'Claude Sonnet', hint: 'Balanced' },
-    { value: 'claude-opus-4-6',            label: 'Claude Opus',   hint: 'Most capable' },
-  ],
-  openai: [
-    { value: 'gpt-4o-mini', label: 'GPT-4o Mini', hint: 'Fast and economical' },
-    { value: 'gpt-4o',      label: 'GPT-4o',      hint: 'Most capable' },
-  ],
-  gemini: [
-    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash', hint: 'Fast' },
-    { value: 'gemini-1.5-pro',   label: 'Gemini 1.5 Pro',   hint: 'Most capable' },
-  ],
-};
+// Provider/model catalog is no longer hardcoded — it is fetched live from
+// GET /me/ai/config, which returns the registry merged with discovered
+// models (and the org policy flags). See the 'provider' tab below.
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
@@ -137,6 +119,7 @@ function Flash({ flash }) {
 export default function ActionAISettings() {
   const [config,      setConfig]      = useState(null);
   const [orgSettings, setOrgSettings] = useState(null);
+  const [aiCatalog,   setAiCatalog]   = useState(null);   // /me/ai/config — providers, policy, merged models
   const [loading,     setLoading]     = useState(true);
   const [saving,      setSaving]      = useState(false);
   const [flash,       setFlash]       = useState(null);
@@ -159,6 +142,17 @@ export default function ActionAISettings() {
       setConfig(data.config);
       setOrgSettings(data.config.org_ai_settings || {});
       setPending({});
+
+      // Provider/model catalog + policy flags + merged (registry+discovered)
+      // model lists. Non-fatal — if it fails, the Provider & model tab shows
+      // a gentle notice instead of stale hardcoded data.
+      try {
+        const cRes = await fetch(`${API}/me/ai/config`, { headers: authHeaders() });
+        if (cRes.ok) setAiCatalog(await cRes.json());
+        else         setAiCatalog(null);
+      } catch {
+        setAiCatalog(null);
+      }
     } catch (err) {
       showFlash('error', 'Could not load AI settings: ' + err.message);
     } finally {
@@ -431,83 +425,174 @@ export default function ActionAISettings() {
         )}
 
         {/* ══ PROVIDER & MODEL TAB ══ */}
-        {activeTab === 'provider' && (
-          <>
-            <Card>
-              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>AI provider</div>
-              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 12 }}>
-                Which provider powers action generation for your account.
-                {orgAI.ai_provider && (
-                  <span style={{ marginLeft: 6, color: '#0F6E56', fontWeight: 500 }}>
-                    Org default: {orgAI.ai_provider}
-                  </span>
-                )}
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
-                {PROVIDERS.map(p => (
-                  <button
-                    key={p.value}
-                    onClick={() => patchAI('ai_provider', p.value)}
-                    style={{
-                      border: provider === p.value ? '2px solid #534AB7' : '1px solid #e5e7eb',
-                      borderRadius: 8, padding: '10px 12px', cursor: 'pointer', textAlign: 'left',
-                      background: provider === p.value ? '#EEEDFE' : '#fff',
-                    }}
-                  >
-                    <div style={{ fontSize: 12, fontWeight: 500, color: '#111827' }}>{p.label}</div>
-                    <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{p.sub}</div>
-                    {(orgAI.ai_provider || 'anthropic') === p.value && (
-                      <div style={{ fontSize: 10, color: '#0F6E56', marginTop: 4, fontWeight: 500 }}>Org default</div>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </Card>
-
-            <Card>
-              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>Model</div>
-              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 12 }}>
-                Specific model to use. Faster models cost less but may produce less nuanced actions.
-              </div>
-              {(MODELS[provider] || MODELS.anthropic).map((m, i, arr) => (
-                <div key={m.value} style={i === arr.length - 1 ? lastRowStyle : rowStyle}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, color: '#111827' }}>{m.label}</div>
-                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1 }}>{m.hint}</div>
-                  </div>
-                  {(orgAI.default_model || (MODELS[provider]?.[0]?.value)) === m.value && (
-                    <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: '#E1F5EE', color: '#0F6E56', fontWeight: 500 }}>
-                      Org default
-                    </span>
-                  )}
-                  <input
-                    type="radio"
-                    name="ai-model"
-                    checked={model === m.value || (!model && i === 0)}
-                    onChange={() => patchAI('default_model', m.value)}
-                    style={{ accentColor: '#534AB7', width: 15, height: 15, flexShrink: 0, cursor: 'pointer' }}
-                  />
+        {activeTab === 'provider' && (() => {
+          // Catalog unavailable — show a gentle notice rather than stale data.
+          if (!aiCatalog) {
+            return (
+              <Card>
+                <div style={{ fontSize: 13, color: '#6b7280' }}>
+                  Provider and model options are temporarily unavailable. Your
+                  account continues to use the organization's configured AI
+                  settings. Please try again shortly.
                 </div>
-              ))}
-            </Card>
+              </Card>
+            );
+          }
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 4 }}>
-              <button
-                onClick={resetToOrgDefaults}
-                style={{ fontSize: 12, padding: '6px 14px', borderRadius: 6, border: '1px solid #d1d5db', background: 'none', color: '#6b7280', cursor: 'pointer' }}
-              >
-                Reset to org defaults
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={saving}
-                style={{ fontSize: 13, padding: '7px 20px', borderRadius: 6, border: 'none', background: '#534AB7', color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : 1 }}
-              >
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-          </>
-        )}
+          const policy        = aiCatalog.policy || {};
+          const catProviders  = aiCatalog.providers || [];
+          const canOverride   = policy.allow_user_override !== false;
+          const orgProviderId = policy.org_provider || orgAI.ai_provider || 'anthropic';
+          const orgModelId    = policy.org_model    || orgAI.default_model || '';
+
+          // Effective selection: user override (pending or saved) else org default
+          const effProvider = canOverride ? (provider || orgProviderId) : orgProviderId;
+          const effModel    = canOverride ? (model    || orgModelId)    : orgModelId;
+
+          const provDef      = catProviders.find(p => p.id === effProvider) || catProviders[0];
+          const providerModels = provDef?.models || [];
+
+          // Label for a model row, tagging discovered-only models.
+          const modelRowLabel = (m) => ({
+            name: m.label || m.id,
+            hint: m.source === 'discovered'
+              ? 'Newly discovered — available to use'
+              : (m.tier ? m.tier[0].toUpperCase() + m.tier.slice(1) : ''),
+            isNew: m.source === 'discovered',
+          });
+
+          return (
+            <>
+              {/* Locked notice when org disallows user override */}
+              {!canOverride && (
+                <div style={{
+                  background: '#FAEEDA', border: '1px solid #F0D9A8', borderRadius: 8,
+                  padding: '10px 14px', marginBottom: 12, fontSize: 12, color: '#854F0B',
+                }}>
+                  🔒 Your organization has locked AI provider and model selection.
+                  These are shown below for reference and can't be changed from your account.
+                </div>
+              )}
+
+              {/* ── Provider ── */}
+              <Card>
+                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>AI provider</div>
+                <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 12 }}>
+                  Which provider powers action generation for your account.
+                  <span style={{ marginLeft: 6, color: '#0F6E56', fontWeight: 500 }}>
+                    Org default: {orgProviderId}
+                  </span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
+                  {catProviders.map(p => {
+                    const selected = effProvider === p.id;
+                    const isOrgDefault = orgProviderId === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        disabled={!canOverride}
+                        onClick={() => {
+                          if (!canOverride) return;
+                          // Switching provider resets model to that provider's first.
+                          const firstModel = (p.models && p.models[0]?.id) || '';
+                          setPending(prev => ({
+                            ...prev,
+                            ai_settings: {
+                              ...(prev.ai_settings || {}),
+                              ai_provider: p.id,
+                              default_model: firstModel,
+                            },
+                          }));
+                        }}
+                        style={{
+                          border: selected ? '2px solid #534AB7' : '1px solid #e5e7eb',
+                          borderRadius: 8, padding: '10px 12px', textAlign: 'left',
+                          background: selected ? '#EEEDFE' : '#fff',
+                          cursor: canOverride ? 'pointer' : 'default',
+                          opacity: canOverride ? 1 : 0.85,
+                        }}
+                      >
+                        <div style={{ fontSize: 12, fontWeight: 500, color: '#111827' }}>{p.label}</div>
+                        <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+                          {p.models ? `${p.models.length} model${p.models.length === 1 ? '' : 's'}` : ''}
+                        </div>
+                        {isOrgDefault && (
+                          <div style={{ fontSize: 10, color: '#0F6E56', marginTop: 4, fontWeight: 500 }}>Org default</div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Card>
+
+              {/* ── Model ── */}
+              <Card>
+                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>Model</div>
+                <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 12 }}>
+                  Specific model to use. Faster models cost less but may produce less nuanced actions.
+                </div>
+                {providerModels.length === 0 && (
+                  <div style={{ fontSize: 12, color: '#9ca3af' }}>No models available for this provider.</div>
+                )}
+                {providerModels.map((m, i, arr) => {
+                  const meta = modelRowLabel(m);
+                  const isOrgDefault = orgModelId === m.id && effProvider === orgProviderId;
+                  const checked = effModel === m.id || (!effModel && i === 0);
+                  return (
+                    <div key={m.id} style={i === arr.length - 1 ? lastRowStyle : rowStyle}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, color: '#111827', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {meta.name}
+                          {meta.isNew && (
+                            <span style={{
+                              fontSize: 9, padding: '1px 6px', borderRadius: 4,
+                              background: '#EEEDFE', color: '#534AB7', fontWeight: 600,
+                              textTransform: 'uppercase', letterSpacing: 0.3,
+                            }}>New</span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 1 }}>{meta.hint}</div>
+                      </div>
+                      {isOrgDefault && (
+                        <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, background: '#E1F5EE', color: '#0F6E56', fontWeight: 500 }}>
+                          Org default
+                        </span>
+                      )}
+                      <input
+                        type="radio"
+                        name="ai-model"
+                        disabled={!canOverride}
+                        checked={checked}
+                        onChange={() => canOverride && patchAI('default_model', m.id)}
+                        style={{ accentColor: '#534AB7', width: 15, height: 15, flexShrink: 0,
+                                 cursor: canOverride ? 'pointer' : 'default' }}
+                      />
+                    </div>
+                  );
+                })}
+              </Card>
+
+              {/* Action row — only when the user can actually change things */}
+              {canOverride && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 4 }}>
+                  <button
+                    onClick={resetToOrgDefaults}
+                    style={{ fontSize: 12, padding: '6px 14px', borderRadius: 6, border: '1px solid #d1d5db', background: 'none', color: '#6b7280', cursor: 'pointer' }}
+                  >
+                    Reset to org defaults
+                  </button>
+                  <button
+                    onClick={handleSave}
+                    disabled={saving}
+                    style={{ fontSize: 13, padding: '7px 20px', borderRadius: 6, border: 'none', background: '#534AB7', color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : 1 }}
+                  >
+                    {saving ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              )}
+            </>
+          );
+        })()}
       </div>
     </div>
   );
