@@ -74,11 +74,20 @@ export default function SAAIPlatformSettings() {
   const [error,   setError]   = useState('');
   const [success, setSuccess] = useState('');
 
+  // Model discovery config + last-run state
+  const [discovery,        setDiscovery]        = useState(null);  // { config, state }
+  const [discoverySaving,  setDiscoverySaving]  = useState(false);
+  const [running,          setRunning]          = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await apiFetch('/super-admin/ai/status');
-      setStatus(r);
+      const [statusRes, discoveryRes] = await Promise.all([
+        apiFetch('/super-admin/ai/status'),
+        apiFetch('/super-admin/ai/discovery').catch(() => null),
+      ]);
+      setStatus(statusRes);
+      if (discoveryRes) setDiscovery(discoveryRes);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -87,6 +96,39 @@ export default function SAAIPlatformSettings() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  async function patchDiscovery(patch) {
+    setDiscoverySaving(true);
+    setError(''); setSuccess('');
+    try {
+      const r = await apiFetch('/super-admin/ai/discovery', {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      });
+      setDiscovery(prev => ({ ...prev, config: r.config }));
+      setSuccess('Saved ✓');
+      setTimeout(() => setSuccess(''), 2000);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setDiscoverySaving(false);
+    }
+  }
+
+  async function runDiscoveryNow() {
+    setRunning(true);
+    setError(''); setSuccess('');
+    try {
+      const r = await apiFetch('/super-admin/ai/discovery/run', { method: 'POST' });
+      setDiscovery(prev => ({ ...prev, state: r.state }));
+      setSuccess('Discovery run complete ✓');
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (e) {
+      setError('Discovery run failed: ' + e.message);
+    } finally {
+      setRunning(false);
+    }
+  }
 
   async function toggleProvider(providerId, enabled) {
     setSaving(true);
@@ -209,6 +251,144 @@ export default function SAAIPlatformSettings() {
         </table>
       </div>
 
+      {/* ── Model Discovery ── */}
+      {discovery && (() => {
+        const cfg = discovery.config || {};
+        const st  = discovery.state;
+        const bothOff = !cfg.cron_enabled && !cfg.ondemand_enabled;
+        return (
+          <div style={{ marginBottom: 28 }}>
+            <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Model Discovery</h4>
+            <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 12, lineHeight: 1.5 }}>
+              Keeps the model dropdowns current by fetching each provider's live
+              model list. Runs on a schedule, and org admins can trigger an
+              on-demand refresh (a single shared, debounced run).
+            </p>
+
+            {bothOff && (
+              <div style={{
+                background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10,
+                padding: '12px 16px', marginBottom: 14, fontSize: 13, color: '#991b1b',
+              }}>
+                ⚠️ Model discovery is fully disabled — scheduled and on-demand are
+                both off. Model lists will not update until a provider is added in
+                code. Re-enable at least one mechanism below to keep models current.
+              </div>
+            )}
+
+            <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
+              {/* Scheduled run */}
+              <div style={discRow}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 500, fontSize: 14 }}>Scheduled discovery</div>
+                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+                    Automatic refresh — runs daily at 03:30 UTC, or weekly on Mondays.
+                  </div>
+                </div>
+                <select
+                  value={cfg.cron_frequency || 'weekly'}
+                  disabled={discoverySaving || !cfg.cron_enabled}
+                  onChange={(e) => patchDiscovery({ cron_frequency: e.target.value })}
+                  style={{ ...discSelect, marginRight: 12, opacity: cfg.cron_enabled ? 1 : 0.5 }}
+                >
+                  <option value="weekly">Weekly</option>
+                  <option value="daily">Daily</option>
+                </select>
+                <ToggleSwitch
+                  on={!!cfg.cron_enabled}
+                  onChange={() => !discoverySaving && patchDiscovery({ cron_enabled: !cfg.cron_enabled })}
+                  color="#10b981"
+                />
+              </div>
+
+              {/* On-demand */}
+              <div style={{ ...discRow, borderTop: '1px solid #f1f1ec' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 500, fontSize: 14 }}>On-demand refresh</div>
+                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+                    Lets org admins trigger a refresh. Debounced — repeated clicks
+                    within the window return the cached result.
+                  </div>
+                </div>
+                <ToggleSwitch
+                  on={!!cfg.ondemand_enabled}
+                  onChange={() => !discoverySaving && patchDiscovery({ ondemand_enabled: !cfg.ondemand_enabled })}
+                  color="#10b981"
+                />
+              </div>
+
+              {/* Debounce window */}
+              <div style={{ ...discRow, borderTop: '1px solid #f1f1ec', opacity: cfg.ondemand_enabled ? 1 : 0.5 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 500, fontSize: 14 }}>Debounce window</div>
+                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+                    Minimum minutes between real discovery runs (0–1440). 0 = every
+                    click refreshes; 1440 = at most once a day.
+                  </div>
+                </div>
+                <input
+                  type="number"
+                  min={0} max={1440}
+                  value={cfg.ondemand_debounce_minutes ?? 10}
+                  disabled={discoverySaving || !cfg.ondemand_enabled}
+                  onChange={(e) => {
+                    const v = Math.max(0, Math.min(1440, parseInt(e.target.value, 10) || 0));
+                    setDiscovery(prev => ({
+                      ...prev, config: { ...prev.config, ondemand_debounce_minutes: v },
+                    }));
+                  }}
+                  onBlur={(e) => {
+                    const v = Math.max(0, Math.min(1440, parseInt(e.target.value, 10) || 0));
+                    patchDiscovery({ ondemand_debounce_minutes: v });
+                  }}
+                  style={{ ...discSelect, width: 90, textAlign: 'right' }}
+                />
+                <span style={{ fontSize: 13, color: '#6b7280', marginLeft: 8 }}>min</span>
+              </div>
+
+              {/* Last run + manual trigger */}
+              <div style={{ ...discRow, borderTop: '1px solid #f1f1ec', background: '#fafafa' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, color: '#374151' }}>
+                    {st?.last_run_at
+                      ? <>Last run: <strong>{new Date(st.last_run_at).toLocaleString()}</strong>{' '}
+                          {st.last_run_status === 'ok'      && <Pill tone="ok">ok</Pill>}
+                          {st.last_run_status === 'partial' && <Pill tone="warn">partial</Pill>}
+                          {st.last_run_status === 'error'   && <Pill tone="danger">error</Pill>}
+                          {st.last_run_source && (
+                            <span style={{ color: '#6b7280', marginLeft: 6 }}>
+                              ({st.last_run_source})
+                            </span>
+                          )}
+                        </>
+                      : <span style={{ color: '#6b7280' }}>No discovery run yet.</span>}
+                  </div>
+                  {st?.providers && (
+                    <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+                      {Object.entries(st.providers).map(([prov, r]) => (
+                        <span key={prov} style={{ marginRight: 12 }}>
+                          {prov}: {r.ok ? `${r.count} models` : (r.skipped ? 'skipped (no key)' : 'error')}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={runDiscoveryNow}
+                  disabled={running}
+                  style={{
+                    padding: '8px 14px', fontSize: 13, fontWeight: 500,
+                    background: running ? '#9ca3af' : '#4f46e5', color: '#fff',
+                    border: 'none', borderRadius: 7, cursor: running ? 'default' : 'pointer',
+                  }}>
+                  {running ? 'Running…' : 'Run discovery now'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── Usage rollup ── */}
       <h4 style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Usage (last 30 days)</h4>
       <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 12, lineHeight: 1.5 }}>
@@ -265,6 +445,14 @@ const thStyle = {
   fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.3,
 };
 const tdStyle = { padding: '12px 14px', verticalAlign: 'middle' };
+
+const discRow = {
+  display: 'flex', alignItems: 'center', padding: '14px 18px',
+};
+const discSelect = {
+  padding: '6px 10px', fontSize: 13, border: '1px solid #d1d5db',
+  borderRadius: 7, background: '#fff', color: '#111827', outline: 'none',
+};
 
 function alertStyle(kind) {
   const isOk = kind === 'success';

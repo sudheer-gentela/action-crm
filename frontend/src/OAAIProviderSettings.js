@@ -126,6 +126,9 @@ export default function OAAIProviderSettings() {
   const [newKey,      setNewKey]      = useState({ provider: 'anthropic', api_key: '', label: '', endpoint_url: '' });
   const [addingKey,   setAddingKey]   = useState(false);
 
+  const [discovery,   setDiscovery]   = useState(null);   // { last_run_at, last_run_status }
+  const [refreshing,  setRefreshing]  = useState(false);
+
   const showFlash = (kind, msg) => {
     setFlash({ kind, msg });
     setTimeout(() => setFlash(null), 4000);
@@ -142,6 +145,7 @@ export default function OAAIProviderSettings() {
       setProviders(provRes.providers || []);
       setCallTypes(provRes.call_types || []);
       setCredsConfigured(provRes.credentials_configured);
+      setDiscovery(provRes.discovery || null);
       setConfig(cfgRes.ai_settings);
       setProviderStatus(cfgRes.provider_status || {});
       setCredentials(credsRes.credentials || []);
@@ -247,6 +251,28 @@ export default function OAAIProviderSettings() {
     }
   }
 
+  async function refreshModels() {
+    setRefreshing(true);
+    try {
+      const r = await apiFetch('/org/admin/ai/refresh-models', { method: 'POST' });
+      if (r.ran) {
+        showFlash('success', r.message || 'Model list refreshed.');
+        await load();   // re-pull /providers to pick up newly-discovered models
+      } else if (r.reason === 'debounced') {
+        showFlash('success', r.message || 'Models are already current.');
+        await load();
+      } else if (r.reason === 'disabled') {
+        showFlash('error', r.message || 'On-demand refresh is disabled by the platform admin.');
+      } else {
+        showFlash('success', r.message || 'Done.');
+      }
+    } catch (e) {
+      showFlash('error', 'Refresh failed: ' + e.message);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -261,6 +287,38 @@ export default function OAAIProviderSettings() {
         <Flash kind="error" msg="⚠️ Server key storage is not configured (AI_CREDS_KEY missing). Org-level keys cannot be saved. Calls will use the platform fallback." />
       )}
       {flash && <Flash kind={flash.kind} msg={flash.msg} />}
+
+      {/* ── Model list freshness / refresh ── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10,
+        padding: '10px 16px', marginBottom: 20,
+      }}>
+        <div style={{ fontSize: 13, color: '#6b7280' }}>
+          {discovery?.last_run_at
+            ? <>Model lists last updated{' '}
+                <strong style={{ color: '#374151' }}>
+                  {timeAgo(discovery.last_run_at)}
+                </strong>
+                {discovery.last_run_status === 'error' && (
+                  <span style={{ color: '#A32D2D', marginLeft: 6 }}>(last run had errors)</span>
+                )}
+              </>
+            : 'Model lists have not been refreshed yet.'}
+        </div>
+        <button
+          onClick={refreshModels}
+          disabled={refreshing}
+          style={{
+            padding: '7px 14px', fontSize: 13, fontWeight: 500,
+            background: refreshing ? '#cbd5e1' : '#fff',
+            color: refreshing ? '#64748b' : '#334155',
+            border: '1px solid #cbd5e1', borderRadius: 7,
+            cursor: refreshing ? 'default' : 'pointer', whiteSpace: 'nowrap',
+          }}>
+          {refreshing ? 'Refreshing…' : '↻ Refresh models'}
+        </button>
+      </div>
 
       {/* ── Default provider & model ── */}
       <Section title="Default provider & model"
@@ -307,7 +365,7 @@ export default function OAAIProviderSettings() {
                 >
                   {availableModels.map(m => (
                     <option key={m.id} value={m.id}>
-                      {m.label}{m.tier ? ` — ${m.tier}` : ''}
+                      {modelOptionLabel(m)}
                     </option>
                   ))}
                 </select>
@@ -346,7 +404,7 @@ export default function OAAIProviderSettings() {
                       >
                         <option value="">Use default ({modelLabel(config.default_model, availableModels)})</option>
                         {availableModels.map(m => (
-                          <option key={m.id} value={m.id}>{m.label}</option>
+                          <option key={m.id} value={m.id}>{modelOptionLabel(m)}</option>
                         ))}
                       </select>
                       {override && (
@@ -551,6 +609,29 @@ function modelLabel(modelId, models) {
   if (!modelId) return '—';
   const m = models.find(x => x.id === modelId);
   return m ? m.label : modelId;
+}
+
+// Label for an <option> in a model dropdown. Discovered-only models (not yet
+// in the static registry) are tagged "NEW" — they're selectable immediately;
+// only their cost is pending a registry backfill.
+function modelOptionLabel(m) {
+  let s = m.label || m.id;
+  if (m.tier) s += ` — ${m.tier}`;
+  if (m.source === 'discovered') s += '  • NEW';
+  return s;
+}
+
+// Compact relative time, e.g. "3 minutes ago", "2 days ago".
+function timeAgo(iso) {
+  if (!iso) return 'never';
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.round(diff / 60000);
+  if (mins < 1)   return 'just now';
+  if (mins < 60)  return `${mins} minute${mins === 1 ? '' : 's'} ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24)   return `${hrs} hour${hrs === 1 ? '' : 's'} ago`;
+  const days = Math.round(hrs / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
 // ── Style tokens that match the existing OrgAdmin pages ─────────────────────

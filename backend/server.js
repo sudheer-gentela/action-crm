@@ -353,6 +353,7 @@ app.listen(PORT, () => {
   // ── Cron jobs ───────────────────────────────────────────────────────────
   try {
     const cron = require('node-cron');
+    require('./jobs/modelDiscoveryScheduler').startScheduler();
 
     // Hourly: expire stale agent proposals
     cron.schedule('0 * * * *', async () => {
@@ -427,6 +428,7 @@ app.listen(PORT, () => {
         console.error('📞 StuckCall Cron error:', err.message);
       }
     });
+
 
     console.log('✅ Cron jobs initialized (proposals hourly, CLM hourly+daily, sequences 15m, SF write-back 04:30 UTC, stuck calls 30m)');
   } catch (err) {
