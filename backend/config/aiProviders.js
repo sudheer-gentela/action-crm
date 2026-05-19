@@ -190,6 +190,7 @@ const CALL_TYPES = [
   { id: 'prospecting_research',      label: 'Prospect research',          group: 'prospecting' },
   { id: 'prospecting_draft',         label: 'Prospect outreach drafts',   group: 'prospecting' },
   { id: 'prospecting_ai_enhancement', label: 'Prospect AI enhancement',   group: 'prospecting' },
+  { id: 'discovery_call_prep',       label: 'Discovery call prep skill',  group: 'deals'       },
   { id: 'action_completion_detect',  label: 'Action completion detection', group: 'workflow'   },
 ];
 

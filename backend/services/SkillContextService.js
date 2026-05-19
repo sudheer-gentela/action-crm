@@ -778,6 +778,219 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
   }
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildDealSkillContext — canonical deal payload for the discovery-call-prep
+// skill. Extracted verbatim from the retired routes/skill-context.routes.js
+// GET /deals/:dealId handler during the 2026 skills integration. The HTTP
+// wrapper is gone; this is now called in-process by SkillRunnerService.
+//
+// Returns the gowarm-deal.json-shaped payload. Throws an Error with
+// statusCode=404 when the deal does not exist.
+// ─────────────────────────────────────────────────────────────────────────────
+async function buildDealSkillContext({ dealId }) {
+  let client;
+  try {
+    client = await pool.connect();
+    // ── Step 1: lookup the deal's org_id (pre-RLS) ──
+    const dealCoreRes = await client.query(
+      `SELECT id, org_id FROM deals WHERE id = $1`,
+      [dealId]
+    );
+
+    if (dealCoreRes.rows.length === 0) {
+      const e = new Error('Deal not found');
+      e.statusCode = 404;
+      throw e;
+    }
+    const orgId = dealCoreRes.rows[0].org_id;
+
+    // ── Step 2: set RLS session variable for this connection ──
+    await client.query(
+      `SELECT set_config('app.current_org_id', $1::text, true)`,
+      [String(orgId)]
+    );
+
+    // ── Deal (full details) ────────────────────────────────
+    const dealRes = await client.query(
+      `SELECT id, name, stage, stage_type, playbook_id, created_at,
+              value, account_id, economic_buyer_contact_id,
+              stage_changed_at, expected_close_date, health, health_score,
+              external_crm_type, competitive_competitors,
+              buyer_event_description, legal_engaged_user, security_review_user,
+              EXTRACT(DAY FROM (NOW() - COALESCE(stage_changed_at, created_at)))::int AS days_in_stage
+         FROM deals WHERE id = $1`,
+      [dealId]
+    );
+    const deal = dealRes.rows[0];
+
+    // ── Primary contact: prefer deal_contacts; fall back to economic buyer ──
+    let prospectContact = null;
+    const dealContacts = await safeQuery(client,
+      `SELECT c.id, c.first_name, c.last_name, c.title, c.email,
+              c.linkedin_url, c.role_type, c.engagement_level
+         FROM deal_contacts dc
+         JOIN contacts c ON c.id = dc.contact_id
+        WHERE dc.deal_id = $1
+        ORDER BY CASE
+                   WHEN c.role_type = 'economic_buyer' THEN 1
+                   WHEN c.role_type = 'champion'       THEN 2
+                   WHEN c.role_type = 'decision_maker' THEN 3
+                   ELSE 4
+                 END
+        LIMIT 1`,
+      [dealId]);
+
+    if (dealContacts.length > 0) {
+      prospectContact = dealContacts[0];
+    } else if (deal.economic_buyer_contact_id) {
+      const ebRows = await safeQuery(client,
+        `SELECT id, first_name, last_name, title, email, linkedin_url
+           FROM contacts WHERE id = $1`,
+        [deal.economic_buyer_contact_id]);
+      prospectContact = ebRows[0] || null;
+    }
+
+    // ── Account ────────────────────────────────────────────
+    const accountRows = await safeQuery(client,
+      `SELECT id, name, industry, size, location, description, domain
+         FROM accounts WHERE id = $1`,
+      [deal.account_id]);
+    const account = accountRows[0] || {};
+
+    // ── Economic buyer name ───────────────────────────────
+    let economicBuyerName = null;
+    if (deal.economic_buyer_contact_id) {
+      const ebRows = await safeQuery(client,
+        `SELECT first_name, last_name, title FROM contacts WHERE id = $1`,
+        [deal.economic_buyer_contact_id]);
+      if (ebRows[0]) {
+        const eb = ebRows[0];
+        economicBuyerName = `${eb.first_name} ${eb.last_name}${eb.title ? ' (' + eb.title + ')' : ''}`;
+      }
+    }
+
+    // ── Champion name ─────────────────────────────────────
+    let championName = null;
+    const champRows = await safeQuery(client,
+      `SELECT c.first_name, c.last_name, c.title
+         FROM deal_contacts dc
+         JOIN contacts c ON c.id = dc.contact_id
+        WHERE dc.deal_id = $1 AND c.role_type = 'champion'
+        LIMIT 1`,
+      [dealId]);
+    if (champRows[0]) {
+      const ch = champRows[0];
+      championName = `${ch.first_name} ${ch.last_name}${ch.title ? ' (' + ch.title + ')' : ''}`;
+    }
+
+    // ── Interaction history — 3 queries (safer than one UNION) ──
+    // Emails
+    const emails = await safeQuery(client,
+      `SELECT 'email' AS type,
+              COALESCE(created_at) AS ts,
+              COALESCE(subject, '(no subject)') AS summary,
+              NULL::text AS direction
+         FROM emails
+        WHERE deal_id = $1
+        ORDER BY created_at DESC NULLS LAST
+        LIMIT 10`,
+      [dealId]);
+
+    // Meetings
+    const meetings = await safeQuery(client,
+      `SELECT 'meeting' AS type,
+              COALESCE(created_at) AS ts,
+              COALESCE(title, '(meeting)') AS summary,
+              NULL::text AS direction
+         FROM meetings
+        WHERE deal_id = $1
+        ORDER BY created_at DESC NULLS LAST
+        LIMIT 10`,
+      [dealId]);
+
+    // Actions
+    const actions = await safeQuery(client,
+      `SELECT COALESCE(type, 'note') AS type,
+              COALESCE(created_at) AS ts,
+              COALESCE(description, title, '(action)') AS summary,
+              NULL::text AS direction
+         FROM actions
+        WHERE deal_id = $1
+        ORDER BY created_at DESC NULLS LAST
+        LIMIT 10`,
+      [dealId]);
+
+    const allInteractions = [...emails, ...meetings, ...actions]
+      .filter(r => r.ts)
+      .sort((a, b) => new Date(b.ts) - new Date(a.ts))
+      .slice(0, 10);
+
+    // ── MEDDPICC composed from deals + deal_contacts ──────
+    const meddpicc = {
+      metrics: null,
+      economic_buyer: economicBuyerName,
+      decision_criteria: null,
+      decision_process: (deal.legal_engaged_user || deal.security_review_user)
+        ? `Legal engaged: ${deal.legal_engaged_user ? 'yes' : 'no'}; Security review: ${deal.security_review_user ? 'yes' : 'no'}`
+        : null,
+      paper_process: null,
+      identified_pain: deal.buyer_event_description || null,
+      champion: championName,
+      competition: deal.competitive_competitors
+        ? JSON.stringify(deal.competitive_competitors)
+        : null,
+    };
+
+    // ── Compose final canonical payload ────────────────────
+    const payload = {
+      prospect: prospectContact ? {
+        name: [prospectContact.first_name, prospectContact.last_name].filter(Boolean).join(' '),
+        title: prospectContact.title || '',
+        company: account.name || '',
+        linkedin_url: prospectContact.linkedin_url || undefined,
+        email: prospectContact.email || undefined,
+      } : {
+        name: 'Unknown',
+        title: '',
+        company: account.name || '',
+      },
+      account: {
+        industry: account.industry || '',
+        size: account.size || '',
+        revenue_band: undefined,
+        recent_signals: [],
+      },
+      deal: {
+        stage: deal.stage,
+        source: deal.external_crm_type ? `external_${deal.external_crm_type}` : 'unknown',
+        playbook_id: deal.playbook_id,
+        created_at: deal.created_at,
+        amount: deal.value ? Number(deal.value) : undefined,
+        days_in_stage: deal.days_in_stage || 0,
+      },
+      interaction_history: allInteractions.map(r => ({
+        type: r.type,
+        timestamp: r.ts,
+        summary: r.summary,
+        direction: r.direction || undefined,
+      })),
+      meddpicc,
+    };
+
+    payload._meta = {
+      org_id: orgId,
+      deal_id: deal.id,
+      rep_user_id: null,
+    };
+
+    return payload;
+  } finally {
+    if (client) client.release();
+  }
+}
+
 module.exports = {
   buildProspectSkillContext,
+  buildDealSkillContext,
 };

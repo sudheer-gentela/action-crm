@@ -148,8 +148,11 @@ app.get('/health', (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Skills & runs ────────────────────────────────────────────────────────
-app.use('/api/skill-context', require('./routes/skill-context.routes'));
-app.use('/api/skill-runs',    require('./routes/skill-runs.routes'));
+// skill-context.routes.js was retired in the 2026 skills integration — skill
+// context is now built in-process by SkillContextService, called directly by
+// SkillRunnerService. No HTTP hop, no shared-secret auth.
+app.use('/api/skills',     require('./routes/skills.routes'));
+app.use('/api/skill-runs', require('./routes/skill-runs.routes'));
 
 // ── Core CRM ──────────────────────────────────────────────────────────────
 app.use('/api/auth',          require('./routes/auth.routes'));

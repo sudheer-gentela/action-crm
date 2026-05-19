@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GoWarm Deal Context Payload",
+  "description": "The semantic, CRM-agnostic deal payload returned by GoWarm's /api/deals/:id/context endpoint. Field names are canonical; field_map handles resolution from Salesforce/HubSpot/Dynamics.",
+  "type": "object",
+  "required": ["prospect", "account", "deal", "interaction_history", "meddpicc"],
+  "properties": {
+    "prospect": {
+      "type": "object",
+      "required": ["name", "title", "company"],
+      "properties": {
+        "name": { "type": "string" },
+        "title": { "type": "string" },
+        "company": { "type": "string" },
+        "linkedin_url": { "type": "string" },
+        "email": { "type": "string" },
+        "tenure_in_role_months": { "type": "number" }
+      }
+    },
+    "account": {
+      "type": "object",
+      "required": ["industry", "size"],
+      "properties": {
+        "industry": { "type": "string" },
+        "size": { "type": "string", "description": "e.g. '50-200', '500-1000'" },
+        "revenue_band": { "type": "string" },
+        "recent_signals": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Recent company events: funding, layoffs, leadership changes, product launches"
+        }
+      }
+    },
+    "deal": {
+      "type": "object",
+      "required": ["stage", "source", "playbook_id", "created_at"],
+      "properties": {
+        "stage": { "type": "string", "enum": ["outreach", "research", "discovery_call", "qualified_sal", "demo", "proposal", "closed_won", "closed_lost"] },
+        "source": { "type": "string", "enum": ["inbound", "outbound", "referral", "event", "partner"] },
+        "playbook_id": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "amount": { "type": "number" },
+        "days_in_stage": { "type": "number" }
+      }
+    },
+    "interaction_history": {
+      "type": "array",
+      "description": "Last 10 touches, most recent first",
+      "items": {
+        "type": "object",
+        "required": ["type", "timestamp", "summary"],
+        "properties": {
+          "type": { "type": "string", "enum": ["email_sent", "email_received", "call", "meeting", "linkedin", "note"] },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "summary": { "type": "string" },
+          "direction": { "type": "string", "enum": ["inbound", "outbound"] }
+        }
+      }
+    },
+    "meddpicc": {
+      "type": "object",
+      "description": "Qualification data. Fields are nullable. Empty fields signal discovery gaps.",
+      "properties": {
+        "metrics": { "type": ["string", "null"] },
+        "economic_buyer": { "type": ["string", "null"] },
+        "decision_criteria": { "type": ["string", "null"] },
+        "decision_process": { "type": ["string", "null"] },
+        "paper_process": { "type": ["string", "null"] },
+        "identified_pain": { "type": ["string", "null"] },
+        "champion": { "type": ["string", "null"] },
+        "competition": { "type": ["string", "null"] }
+      }
+    }
+  }
+}
