@@ -241,6 +241,42 @@ async function enrichAccountByIdInternal(client, accountId, orgId) {
       params
     );
 
+    // Propagate the resolved domain to linked prospects.
+    //
+    // Background: prospects carry a denormalized `company_domain` column
+    // that's copied off the account at creation time. When a prospect is
+    // created via the LinkedIn extension we usually have no real domain
+    // yet, so the account is created as catchall and every linked
+    // prospect's company_domain is written as 'catchalldomain.com' too.
+    // Later, when enrichment resolves the real domain, the account row
+    // gets updated — but those denormalized copies on the prospects
+    // would stay stale forever without this step. The prospect drawer's
+    // Overview tab reads company_domain, so visually the prospect would
+    // keep showing 'catchalldomain.com' even though the account itself
+    // has the real domain. This was the visible "enrichment didn't work"
+    // bug even though enrichment *had* worked at the data layer.
+    //
+    // We only overwrite prospects whose current value is NULL, the
+    // catchall placeholder, or different from the newly resolved one.
+    // We deliberately do NOT overwrite a prospect.company_domain that
+    // already matches a non-catchall value — a user may have manually
+    // corrected an individual prospect's domain, and we don't want
+    // enrichment to silently undo that.
+    if (applied.domain) {
+      await client.query(
+        `UPDATE prospects
+            SET company_domain = $1,
+                updated_at     = CURRENT_TIMESTAMP
+          WHERE account_id = $2
+            AND org_id     = $3
+            AND deleted_at IS NULL
+            AND (company_domain IS NULL
+                 OR company_domain = $4
+                 OR company_domain = '')`,
+        [applied.domain, account.id, orgId, CATCHALL_DOMAIN]
+      );
+    }
+
     return {
       ok: true,
       accountId: account.id,
