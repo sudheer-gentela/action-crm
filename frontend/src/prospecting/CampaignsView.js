@@ -38,6 +38,144 @@ const STATUS_STYLE = {
 
 const EMBER = '#E8630A';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SequenceHealthTile — surfaces draft/sent/failed counts per sequence for
+// this campaign over the last 24h and 7d. Reads from
+// /api/prospecting-campaigns/:id/sequence-health (Sprint 4).
+//
+// Display rules:
+//   - If failed_24h > 0 → RED status pill ("Failing").
+//   - Else if stalledEnrollments > 0 → AMBER pill ("Stalled").
+//   - Else → GREEN pill ("Healthy"), or grey "Idle" if no recent activity.
+//
+// Reps see this on the campaign detail page so silent draft-generation
+// failures don't go unnoticed. Before Sprint 4, errors only hit console.log.
+// ─────────────────────────────────────────────────────────────────────────────
+function SequenceHealthTile({ campaignId }) {
+  const [health, setHealth]   = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState({});
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    apiFetch(`/prospecting-campaigns/${campaignId}/sequence-health`)
+      .then(r => { if (!cancelled) setHealth(r.health || []); })
+      .catch(() => { if (!cancelled) setHealth([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [campaignId]);
+
+  if (loading) {
+    return (
+      <div style={{ margin: '14px 0', fontSize: 11, color: '#9ca3af' }}>
+        Loading sequence health…
+      </div>
+    );
+  }
+  if (!health || health.length === 0) return null;  // no sequences = no tile
+
+  const statusFor = (h) => {
+    if (h.last24h.failed > 0)       return { bg: '#fef2f2', fg: '#991b1b', label: 'Failing' };
+    if (h.stalledEnrollments > 0)   return { bg: '#fffbeb', fg: '#b45309', label: 'Stalled' };
+    if ((h.last7d.sent + h.last7d.drafts + h.last7d.replied) === 0)
+      return { bg: '#f3f4f6', fg: '#6b7280', label: 'Idle' };
+    return { bg: '#ecfdf5', fg: '#059669', label: 'Healthy' };
+  };
+
+  return (
+    <div style={{ margin: '14px 0 18px' }}>
+      <div style={{
+        fontSize: 11, color: '#6b7280', fontWeight: 600,
+        letterSpacing: 0.3, marginBottom: 6,
+      }}>
+        SEQUENCE HEALTH
+      </div>
+      <div style={{
+        background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
+        overflow: 'hidden',
+      }}>
+        {health.map((h, idx) => {
+          const status = statusFor(h);
+          const isExpanded = !!expanded[h.sequenceId];
+          return (
+            <div key={h.sequenceId} style={{
+              borderTop: idx === 0 ? 'none' : '1px solid #f3f4f6',
+            }}>
+              <button
+                onClick={() => setExpanded(prev => ({ ...prev, [h.sequenceId]: !isExpanded }))}
+                style={{
+                  width: '100%', padding: '10px 12px', background: '#fff',
+                  border: 'none', cursor: 'pointer', textAlign: 'left',
+                  display: 'flex', alignItems: 'center', gap: 10,
+                }}
+              >
+                <span style={{
+                  padding: '2px 8px', fontSize: 10, fontWeight: 700,
+                  background: status.bg, color: status.fg, borderRadius: 10,
+                }}>
+                  {status.label}
+                </span>
+                <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>{h.sequenceName}</span>
+                <span style={{ fontSize: 11, color: '#6b7280' }}>
+                  24h: <strong>{h.last24h.sent}</strong> sent
+                  {h.last24h.failed > 0 && (
+                    <>, <span style={{ color: '#dc2626' }}><strong>{h.last24h.failed}</strong> failed</span></>
+                  )}
+                  {h.last24h.drafts > 0 && <>, {h.last24h.drafts} drafts</>}
+                </span>
+                <span style={{ fontSize: 10, color: '#9ca3af' }}>
+                  {isExpanded ? '▾' : '▸'}
+                </span>
+              </button>
+
+              {isExpanded && (
+                <div style={{ padding: '4px 12px 12px', fontSize: 12, color: '#374151' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 600, marginBottom: 2 }}>Last 7 days</div>
+                      <div style={{ color: '#6b7280', fontSize: 11 }}>
+                        {h.last7d.sent} sent · {h.last7d.replied} replied · {h.last7d.drafts} drafts
+                        {h.last7d.failed > 0 && <span style={{ color: '#dc2626' }}> · {h.last7d.failed} failed</span>}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 600, marginBottom: 2 }}>Stalled enrollments</div>
+                      <div style={{ color: h.stalledEnrollments > 0 ? '#b45309' : '#6b7280', fontSize: 11 }}>
+                        {h.stalledEnrollments} active enrollment{h.stalledEnrollments === 1 ? '' : 's'} with no activity in 7d
+                      </div>
+                    </div>
+                  </div>
+                  {h.lastFiredAt && (
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6 }}>
+                      Last activity: {new Date(h.lastFiredAt).toLocaleString()}
+                    </div>
+                  )}
+                  {h.topErrors && h.topErrors.length > 0 && (
+                    <div style={{
+                      marginTop: 6, padding: 8,
+                      background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6,
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: '#991b1b', marginBottom: 4 }}>
+                        Top failure reasons (last 7d)
+                      </div>
+                      {h.topErrors.map((e, i) => (
+                        <div key={i} style={{ fontSize: 11, color: '#7f1d1d', fontFamily: 'ui-monospace, monospace' }}>
+                          <strong>{e.count}×</strong> {e.message}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function StatusPill({ status }) {
   const s = STATUS_STYLE[status] || STATUS_STYLE.active;
   return (
@@ -241,10 +379,17 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
   const [showImport,   setShowImport]   = useState(false);
   const [showEnroll,   setShowEnroll]   = useState(false);
 
-  const load = useCallback(async () => {
+  // Channel filter for the outreach metric cards. `null` = show all channels
+  // side-by-side. A specific value collapses the cards to that channel only.
+  // The filter is sent to the API so the server doesn't return data for
+  // channels we won't display.
+  const [channelFilter, setChannelFilter] = useState(null);
+
+  const load = useCallback(async (chFilter) => {
     setLoading(true);
     try {
-      const r = await apiFetch(`/prospecting-campaigns/${campaignId}`);
+      const qs = chFilter ? `?channel=${chFilter}` : '';
+      const r = await apiFetch(`/prospecting-campaigns/${campaignId}${qs}`);
       setData(r);
       // Member preview — up to 10, via the prospects list scoped by campaign.
       const pr = await apiFetch(`/prospects?scope=org&campaignId=${campaignId}`);
@@ -257,7 +402,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
     }
   }, [campaignId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(channelFilter); }, [load, channelFilter]);
 
   const togglePause = async () => {
     if (!data) return;
@@ -267,7 +412,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
       await apiFetch(`/prospecting-campaigns/${campaignId}`, {
         method: 'PUT', body: JSON.stringify({ status: next }),
       });
-      await load();
+      await load(channelFilter);
       onChanged?.();
     } catch (err) {
       setError('Could not update status: ' + err.message);
@@ -282,7 +427,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
       method: 'POST',
       body: JSON.stringify({ prospects: rows, source: 'csv_import', campaignId }),
     });
-    await load();
+    await load(channelFilter);
     onChanged?.();
     return res;
   };
@@ -339,14 +484,96 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
               </button>
             </div>
 
-            {/* Metric cards */}
+            {/* Metric cards — top row: prospects + total touches + in-sequences */}
             <div style={{
-              display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 20,
+              display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 12,
             }}>
               <MetricCard label="Prospects"      value={data.metrics.totalProspects} />
               <MetricCard label="Outreach / wk"  value={data.metrics.outreachThisWeek} />
               <MetricCard label="Responses / wk" value={data.metrics.responsesThisWeek} />
               <MetricCard label="In sequences"   value={data.metrics.activeEnrollments} />
+            </div>
+
+            {/* Channel filter pills + per-channel cards. byChannel always
+                returns exactly the channels the API decided to surface
+                (filtered by ?channel= if set). When no filter, all three
+                channels render side-by-side; when filtered, only one card. */}
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              marginBottom: 8,
+            }}>
+              <div style={{ fontSize: 11, color: '#6b7280', fontWeight: 600, letterSpacing: 0.3 }}>
+                BY CHANNEL — THIS WEEK
+              </div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {[
+                  { key: null,       label: 'All' },
+                  { key: 'email',    label: '✉ Email' },
+                  { key: 'linkedin', label: 'in LinkedIn' },
+                  { key: 'call',     label: '☎ Call' },
+                ].map(opt => {
+                  const active = channelFilter === opt.key;
+                  return (
+                    <button
+                      key={String(opt.key)}
+                      onClick={() => setChannelFilter(opt.key)}
+                      style={{
+                        padding: '3px 10px', fontSize: 11, fontWeight: 600,
+                        background: active ? '#111827' : '#fff',
+                        color:      active ? '#fff'    : '#374151',
+                        border: `1px solid ${active ? '#111827' : '#d1d5db'}`,
+                        borderRadius: 12, cursor: 'pointer',
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: channelFilter
+                ? '1fr 1fr'
+                : 'repeat(3, 1fr)',
+              gap: 8, marginBottom: 20,
+            }}>
+              {Object.entries(data.metrics.byChannel || {}).map(([ch, stats]) => {
+                const chLabel = ch === 'email' ? '✉ Email'
+                             : ch === 'linkedin' ? 'in LinkedIn'
+                             : ch === 'call' ? '☎ Call'
+                             : ch;
+                return channelFilter
+                  ? (
+                    // Filtered view: separate outreach + responses cards for the one channel.
+                    <React.Fragment key={ch}>
+                      <MetricCard label={`${chLabel} — outreach`}  value={stats.outreach} />
+                      <MetricCard label={`${chLabel} — responses`} value={stats.responses} />
+                    </React.Fragment>
+                  )
+                  : (
+                    // All-channels view: one card per channel showing outreach / responses pair.
+                    <div key={ch} style={{
+                      background: '#fff', border: '1px solid #e5e7eb',
+                      borderRadius: 8, padding: 12,
+                    }}>
+                      <div style={{ fontSize: 11, color: '#6b7280', fontWeight: 600, marginBottom: 6 }}>
+                        {chLabel}
+                      </div>
+                      <div style={{ display: 'flex', gap: 16 }}>
+                        <div>
+                          <div style={{ fontSize: 18, fontWeight: 700, color: '#111827' }}>{stats.outreach}</div>
+                          <div style={{ fontSize: 10, color: '#9ca3af' }}>outreach</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 18, fontWeight: 700, color: '#111827' }}>{stats.responses}</div>
+                          <div style={{ fontSize: 10, color: '#9ca3af' }}>responses</div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+              })}
             </div>
 
             {/* Goal progress */}
@@ -373,6 +600,49 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
             {/* Funnel */}
             <SectionTitle>Funnel</SectionTitle>
             <Funnel funnel={data.funnel} terminal={data.terminal} />
+
+            {/* Prospects by source — small mini-card row. Only renders when
+                we have at least one prospect, otherwise the empty pills look
+                awkward against an empty campaign. */}
+            {data.metrics.bySource && Object.keys(data.metrics.bySource).length > 0 && (
+              <div style={{ margin: '14px 0 18px' }}>
+                <div style={{
+                  fontSize: 11, color: '#6b7280', fontWeight: 600,
+                  letterSpacing: 0.3, marginBottom: 6,
+                }}>
+                  PROSPECTS BY SOURCE
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {Object.entries(data.metrics.bySource).map(([src, n]) => {
+                    const label = src === 'csv_import' ? 'CSV'
+                                : src === 'extension'  ? 'Extension'
+                                : src === 'linkedin'   ? 'LinkedIn'
+                                : src === 'manual'     ? 'Manual'
+                                : src === 'referral'   ? 'Referral'
+                                : src === 'event'      ? 'Event'
+                                : src === 'inbound'    ? 'Inbound'
+                                : src === 'import'     ? 'Import'
+                                : src;
+                    return (
+                      <div key={src} style={{
+                        padding: '4px 10px',
+                        background: '#f3f4f6',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: 6, fontSize: 12,
+                      }}>
+                        <span style={{ color: '#374151', fontWeight: 600 }}>{label}</span>
+                        <span style={{ color: '#6b7280', marginLeft: 6 }}>{n}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Sequence health — surfaces silent draft generation failures
+                and stalled enrollments. Reads from the new
+                /prospecting-campaigns/:id/sequence-health endpoint. */}
+            <SequenceHealthTile campaignId={campaignId} />
 
             {/* Enroll-all */}
             <div style={{ margin: '18px 0' }}>
@@ -455,7 +725,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
           <EnrollAllModal
             campaign={data.campaign}
             onClose={() => setShowEnroll(false)}
-            onEnrolled={() => { setShowEnroll(false); load(); onChanged?.(); }}
+            onEnrolled={() => { setShowEnroll(false); load(channelFilter); onChanged?.(); }}
           />
         )}
       </div>

@@ -5,6 +5,32 @@ import React from 'react';
 import { useStages, CHANNEL_ICONS, LI_STATUS_LABELS, getLiStatus, getLiDotColor, timeAgo } from './prospectingShared';
 import ProspectRowMenu from './ProspectRowMenu';
 
+// Source pill — mapped from prospects.source to a short label and tone.
+// Unknown values get a neutral grey pill with the raw value so we don't lose
+// information when a writer introduces a new source.
+const SOURCE_META = {
+  manual:        { label: 'Manual',    bg: '#e0e7ff', fg: '#3730a3' },
+  csv_import:    { label: 'CSV',       bg: '#dbeafe', fg: '#1d4ed8' },
+  extension:     { label: 'Extension', bg: '#dcfce7', fg: '#166534' },
+  linkedin:      { label: 'LinkedIn',  bg: '#e0f2fe', fg: '#0369a1' },
+  referral:      { label: 'Referral',  bg: '#fef3c7', fg: '#92400e' },
+  event:         { label: 'Event',     bg: '#fce7f3', fg: '#9d174d' },
+  inbound:       { label: 'Inbound',   bg: '#f3e8ff', fg: '#6b21a8' },
+  import:        { label: 'Import',    bg: '#dbeafe', fg: '#1d4ed8' },
+};
+function SourcePill({ source }) {
+  if (!source) return <span style={{ color: '#9ca3af' }}>—</span>;
+  const meta = SOURCE_META[source] || { label: source, bg: '#f3f4f6', fg: '#374151' };
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 8px',
+      fontSize: 10, fontWeight: 600,
+      background: meta.bg, color: meta.fg,
+      borderRadius: 10, whiteSpace: 'nowrap',
+    }}>{meta.label}</span>
+  );
+}
+
 function ListView({
   prospects,
   onSelect,
@@ -35,7 +61,9 @@ function ListView({
   };
 
   // Column count used for the empty-state cell's colSpan.
-  const colCount = 9 + (onToggleSelect ? 1 : 0) + (showMenu ? 1 : 0);
+  // 10 base cols (Name, Company, Title, Stage, Channel, Source, LinkedIn,
+  // Outreach, Last Touch, ICP) + optional select column + optional menu.
+  const colCount = 10 + (onToggleSelect ? 1 : 0) + (showMenu ? 1 : 0);
 
   return (
     <div className="pv-list">
@@ -59,6 +87,7 @@ function ListView({
             <th>Title</th>
             <th>Stage</th>
             <th>Channel</th>
+            <th>Source</th>
             <th>LinkedIn</th>
             <th>Outreach</th>
             <th>Last Touch</th>
@@ -120,6 +149,7 @@ function ListView({
                   </span>
                 </td>
                 <td>{CHANNEL_ICONS[p.preferred_channel] || '—'}</td>
+                <td><SourcePill source={p.source} /></td>
                 <td>
                   {getLiStatus(p) ? (
                     <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: getLiDotColor(getLiStatus(p)) }}>
@@ -153,4 +183,5 @@ function ListView({
 // ═════════════════════════════════════════════════════════════════════════════
 
 
+export { SourcePill };
 export default ListView;

@@ -525,6 +525,33 @@ const SequenceStepFirer = {
         } catch (stepErr) {
           console.error(`📨 SequenceStepFirer: error on enrollment ${enrollment.id}:`, stepErr.message);
           errors++;
+          // Write a failed log row so the sequence-health endpoint can
+          // surface this. Without it, errors die in stdout only and we'd
+          // never know which sequences are silently broken in production.
+          //
+          // We do NOT fail the surrounding loop if this insert itself
+          // throws — that would just hide the original error behind a
+          // schema problem. Swallow and log.
+          try {
+            await client.query(
+              `INSERT INTO sequence_step_logs
+                 (org_id, enrollment_id, sequence_step_id, prospect_id,
+                  channel, status, error_message, scheduled_send_at, fired_at)
+               VALUES ($1, $2, $3, $4, $5, 'failed', $6, NOW(), NOW())`,
+              [
+                enrollment.org_id,
+                enrollment.id,
+                // sequence_step_id may not be known if the failure happened
+                // before we resolved the step; null it out gracefully.
+                null,
+                enrollment.prospect_id,
+                null,  // channel unknown at catch level — failure could be pre-channel
+                String(stepErr.message || 'unknown error').slice(0, 1000),
+              ]
+            );
+          } catch (logErr) {
+            console.warn('📨 SequenceStepFirer: failed-log write also failed:', logErr.message);
+          }
         }
       }
     } finally {

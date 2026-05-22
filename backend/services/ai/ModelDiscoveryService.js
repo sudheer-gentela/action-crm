@@ -76,12 +76,15 @@ async function _discoveryKey(providerId) {
     return { apiKey: process.env[def.envKey], endpoint: null };
   }
 
-  // 2. Any active org-level key for this provider
+  // 2. Any active org-level key for this provider (purpose='ai')
   try {
     const r = await db.query(
       `SELECT key_ciphertext, key_iv, key_tag, endpoint_url
-         FROM ai_credentials
-        WHERE provider = $1 AND user_id IS NULL AND status = 'active'
+         FROM org_credentials
+        WHERE provider = $1
+          AND purpose  = 'ai'
+          AND user_id IS NULL
+          AND status   = 'active'
         ORDER BY last_validated_at DESC NULLS LAST
         LIMIT 1`,
       [providerId]

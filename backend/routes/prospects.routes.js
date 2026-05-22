@@ -366,8 +366,8 @@ router.post('/bulk', async (req, res) => {
     // Log a single import activity
     if (imported > 0) {
       await db.query(
-        `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-         SELECT id, $1, 'created', $2, $3
+        `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+         SELECT $4, id, $1, 'created', $2, $3
          FROM prospects
          WHERE org_id = $4 AND owner_id = $1 AND source = $5
            AND created_at >= NOW() - INTERVAL '10 seconds'
@@ -854,16 +854,16 @@ Return ONLY valid JSON:
       stageAdvanced = true;
 
       await db.query(
-        `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
-         VALUES ($1, $2, 'stage_change', 'Auto-advanced to researched after AI research')`,
-        [req.params.id, req.user.userId]
+        `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
+         VALUES ($1, $2, $3, 'stage_change', 'Auto-advanced to researched after AI research')`,
+        [req.orgId, req.params.id, req.user.userId]
       );
     }
 
     await db.query(
-      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, 'research_completed', 'AI research notes generated', $3)`,
-      [
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'research_completed', 'AI research notes generated', $4)`,
+      [req.orgId, 
         req.params.id,
         req.user.userId,
         JSON.stringify({ stageAdvanced, model: aiModel, provider: aiProvider }),
@@ -994,9 +994,9 @@ router.post('/', async (req, res) => {
     );
 
     await db.query(
-      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
-       VALUES ($1, $2, 'created', $3)`,
-      [result.rows[0].id, req.user.userId, `Prospect created from ${source || 'manual'}`]
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
+       VALUES ($1, $2, $3, 'created', $4)`,
+      [req.orgId, result.rows[0].id, req.user.userId, `Prospect created from ${source || 'manual'}`]
     );
 
     res.status(201).json({ prospect: result.rows[0] });
@@ -1140,9 +1140,9 @@ router.post('/:id/stage', async (req, res) => {
     );
 
     await db.query(
-      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, 'stage_change', $3, $4)`,
-      [
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'stage_change', $4, $5)`,
+      [req.orgId, 
         req.params.id, req.user.userId,
         `Stage changed from ${currentStage} to ${stage}`,
         JSON.stringify({
@@ -1263,9 +1263,9 @@ router.post('/:id/disqualify', async (req, res) => {
 
     await client.query(
       `INSERT INTO prospecting_activities
-         (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, 'stage_change', $3, $4)`,
-      [
+         (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'stage_change', $4, $5)`,
+      [req.orgId, 
         req.params.id,
         req.user.userId,
         `Disqualified from ${currentStage} — reason: ${reason}`,
@@ -1323,9 +1323,9 @@ router.post('/:id/nurture', async (req, res) => {
     );
 
     await db.query(
-      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, 'stage_change', $3, $4)`,
-      [
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'stage_change', $4, $5)`,
+      [req.orgId, 
         req.params.id, req.user.userId,
         `Moved to nurture from ${current.rows[0].stage}`,
         JSON.stringify({ from: current.rows[0].stage, to: 'nurture', revisit_date, reason }),
@@ -1463,9 +1463,9 @@ router.post('/:id/convert', async (req, res) => {
     );
 
     await client.query(
-      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, 'converted', $3, $4)`,
-      [
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'converted', $4, $5)`,
+      [req.orgId, 
         p.id, req.user.userId,
         `Converted to contact${dealId ? ' + deal' : ''}`,
         JSON.stringify({ contactId, dealId, accountId }),
@@ -1545,6 +1545,179 @@ router.post('/:id/enrich-from-coresignal', async (req, res) => {
   } catch (err) {
     console.error('enrich-from-coresignal error:', err);
     res.status(500).json({ error: { message: 'Enrichment failed: ' + err.message } });
+  }
+});
+
+// ── POST /:id/enrich-person ───────────────────────────────────────────────────
+// Person-level enrichment for a prospect. Calls the orchestrator's
+// enrichPerson chain (default: Apollo), normalizes the response, and writes:
+//   - person-level data back onto the prospects row (title, headline,
+//     linkedin_url, phone, location — only fields currently null/empty)
+//   - rich person data (experience, education) into linkedin_profiles with
+//     source='apollo', via the same internal upsert path the Chrome
+//     extension uses
+//
+// Distinct from /enrich-from-coresignal which only does account-level
+// (organization) enrichment.
+//
+// Response: { ok, prospectId, provider, written, raw? }   on success
+//           { ok: false, reason, provider? }              on failure
+router.post('/:id/enrich-person', async (req, res) => {
+  try {
+    const prospectId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(prospectId)) {
+      return res.status(400).json({ error: { message: 'invalid prospect id' } });
+    }
+
+    // Load prospect — need the identifiers to pass to the orchestrator.
+    const pres = await db.query(
+      `SELECT id, org_id, first_name, last_name, email, linkedin_url,
+              title, linkedin_headline, location, phone, company_domain
+         FROM prospects
+        WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+      [prospectId, req.orgId]
+    );
+    if (pres.rows.length === 0) {
+      return res.status(404).json({ ok: false, reason: 'prospect_not_found' });
+    }
+    const p = pres.rows[0];
+
+    const enrichment = require('../services/enrichment');
+    const result = await enrichment.enrichPerson(req.orgId, {
+      email:       p.email,
+      linkedinUrl: p.linkedin_url,
+      firstName:   p.first_name,
+      lastName:    p.last_name,
+      domain:      p.company_domain,
+      prospectId:  p.id,
+    });
+
+    if (!result.ok) {
+      const userVisible404 = [];
+      const userVisible422 = [
+        'no_identifier', 'not_found', 'ambiguous', 'no_credits',
+        'auth_failed', 'rate_limited', 'timeout', 'network_error',
+        'invalid_response', 'http_error', 'no_api_key',
+        'monthly_cap_exceeded', 'no_providers_configured',
+      ];
+      const code = userVisible404.includes(result.reason) ? 404
+                 : userVisible422.includes(result.reason) ? 422
+                 : 500;
+      return res.status(code).json({
+        ok:       false,
+        reason:   result.reason,
+        provider: result.provider,
+        // Pass through cap usage when it's the reason — UI can show "X of Y used"
+        ...(result.reason === 'monthly_cap_exceeded' ? { cap: result.cap, used: result.used } : {}),
+      });
+    }
+
+    // Write the prospect-level fields. Only fill columns currently null/empty —
+    // never overwrite user-entered data with a third-party guess.
+    const d = result.data || {};
+    const updates = {};
+    if (d.title       && !p.title)              updates.title              = d.title;
+    if (d.headline    && !p.linkedin_headline)  updates.linkedin_headline  = d.headline;
+    if (d.linkedin_url && !p.linkedin_url)      updates.linkedin_url       = d.linkedin_url;
+    if (d.location    && !p.location)           updates.location           = d.location;
+    if (d.phone       && !p.phone)              updates.phone              = d.phone;
+
+    if (Object.keys(updates).length > 0) {
+      const fields = Object.keys(updates);
+      const params = [prospectId, req.orgId];
+      const sets   = fields.map((f, i) => {
+        params.push(updates[f]);
+        return `${f} = $${params.length}`;
+      }).join(', ');
+      await db.query(
+        `UPDATE prospects SET ${sets}, updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1 AND org_id = $2`,
+        params
+      );
+    }
+
+    // Write rich payload (experience, education, headline) to linkedin_profiles.
+    // We do this only if the prospect has a linkedin_url we can key on, since
+    // linkedin_profiles is slug-indexed. Apollo also returns a linkedin_url
+    // for the person; prefer the one already on the prospect if both exist.
+    const liUrl = p.linkedin_url || d.linkedin_url;
+    let profileWritten = false;
+    if (liUrl && (d.experience?.length || d.education?.length || d.headline || d.full_name)) {
+      try {
+        // Internal HTTP-shape call: reuse the /api/linkedin-profiles/upsert
+        // logic by calling the function inline. To keep the route handler
+        // simple and avoid spinning a sub-request, we hit the DB pattern
+        // used by the upsert directly here.
+        //
+        // We DO NOT call the API route via fetch — that would round-trip
+        // auth, which is silly. The schema is documented enough that an
+        // inline INSERT … ON CONFLICT works.
+        const slugMatch = String(liUrl).match(/\/in\/([^/?#]+)/);
+        const slug = slugMatch ? slugMatch[1].toLowerCase() : null;
+        if (slug) {
+          await db.query(
+            `INSERT INTO linkedin_profiles
+               (org_id, linkedin_slug, linkedin_url, full_name, headline, location,
+                experience, education, source, last_captured_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, 'apollo', NOW())
+             ON CONFLICT (org_id, linkedin_slug) DO UPDATE
+               SET linkedin_url = EXCLUDED.linkedin_url,
+                   full_name    = COALESCE(NULLIF(EXCLUDED.full_name, ''),    linkedin_profiles.full_name),
+                   headline     = COALESCE(NULLIF(EXCLUDED.headline, ''),     linkedin_profiles.headline),
+                   location     = COALESCE(NULLIF(EXCLUDED.location, ''),     linkedin_profiles.location),
+                   experience   = CASE
+                                    WHEN jsonb_array_length(EXCLUDED.experience) > 0 THEN EXCLUDED.experience
+                                    ELSE linkedin_profiles.experience
+                                  END,
+                   education    = CASE
+                                    WHEN jsonb_array_length(EXCLUDED.education) > 0 THEN EXCLUDED.education
+                                    ELSE linkedin_profiles.education
+                                  END,
+                   source       = 'apollo',
+                   last_captured_at = NOW()`,
+            [
+              req.orgId, slug, liUrl,
+              d.full_name || null, d.headline || null, d.location || null,
+              JSON.stringify(d.experience || []),
+              JSON.stringify(d.education  || []),
+            ]
+          );
+          profileWritten = true;
+        }
+      } catch (lpErr) {
+        // Non-fatal — the prospect was still enriched, just no linkedin_profiles row.
+        console.warn('enrich-person: linkedin_profiles upsert failed:', lpErr.message);
+      }
+    }
+
+    // Activity log
+    await db.query(
+      `INSERT INTO prospecting_activities
+         (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'enrichment', $4, $5::jsonb)`,
+      [
+        req.orgId, prospectId, req.user.userId,
+        `Person enrichment from ${result.provider}`,
+        JSON.stringify({
+          provider:        result.provider,
+          identifier_used: result.identifier_used,
+          fields_written:  Object.keys(updates),
+          profile_written: profileWritten,
+        }),
+      ]
+    );
+
+    res.json({
+      ok:              true,
+      prospectId,
+      provider:        result.provider,
+      written:         Object.keys(updates),
+      profile_written: profileWritten,
+      identifier_used: result.identifier_used,
+    });
+  } catch (err) {
+    console.error('enrich-person error:', err);
+    res.status(500).json({ error: { message: 'Person enrichment failed: ' + err.message } });
   }
 });
 
@@ -1666,9 +1839,9 @@ router.post('/:id/linkedin-event', async (req, res) => {
           [req.params.id, req.orgId]
         );
         await db.query(
-          `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
-           VALUES ($1, $2, 'stage_change', 'Auto-advanced to outreach after LinkedIn outreach')`,
-          [req.params.id, req.user.userId]
+          `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
+           VALUES ($1, $2, $3, 'stage_change', 'Auto-advanced to outreach after LinkedIn outreach')`,
+          [req.orgId, req.params.id, req.user.userId]
         );
       }
     }
@@ -1703,9 +1876,9 @@ router.post('/:id/linkedin-event', async (req, res) => {
     ].filter(Boolean);
 
     await db.query(
-      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, 'linkedin_event', $3, $4)`,
-      [
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'linkedin_event', $4, $5)`,
+      [req.orgId, 
         req.params.id, req.user.userId,
         descParts.join(' '),
         JSON.stringify({ event, channel: 'linkedin', sentiment: sentiment || null }),
@@ -1750,9 +1923,9 @@ router.post('/:id/link-account', async (req, res) => {
     }
 
     await db.query(
-      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
-       VALUES ($1, $2, 'account_linked', $3)`,
-      [req.params.id, req.user.userId, `Linked to account: ${acc.rows[0].name}`]
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
+       VALUES ($1, $2, $3, 'account_linked', $4)`,
+      [req.orgId, req.params.id, req.user.userId, `Linked to account: ${acc.rows[0].name}`]
     );
 
     res.json({ prospect: result.rows[0] });
@@ -1792,9 +1965,9 @@ router.post('/:id/link-contact', async (req, res) => {
 
     const c = contact.rows[0];
     await db.query(
-      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
-       VALUES ($1, $2, 'contact_linked', $3)`,
-      [req.params.id, req.user.userId, `Linked to existing contact: ${c.first_name} ${c.last_name}`]
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
+       VALUES ($1, $2, $3, 'contact_linked', $4)`,
+      [req.orgId, req.params.id, req.user.userId, `Linked to existing contact: ${c.first_name} ${c.last_name}`]
     );
 
     res.json({ prospect: result.rows[0] });
@@ -1956,9 +2129,9 @@ router.post('/:id/generate-actions', async (req, res) => {
 
     if (result.inserted > 0) {
       await db.query(
-        `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-         VALUES ($1, $2, 'actions_generated', $3, $4)`,
-        [
+        `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+         VALUES ($1, $2, $3, 'actions_generated', $4, $5)`,
+        [req.orgId, 
           prospectId, userId,
           `Generated ${result.inserted} action(s) from "${playbookName || 'playbook'}" via ${effectiveMode} mode`,
           JSON.stringify({ playbookId, stage: stageKey, mode: effectiveMode, inserted: result.inserted }),

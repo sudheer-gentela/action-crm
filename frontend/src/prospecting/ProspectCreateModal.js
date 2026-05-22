@@ -127,6 +127,7 @@ function ProspectCreateModal({ onSave, onClose }) {
             <select value={form.source} onChange={e => set('source', e.target.value)}>
               <option value="manual">Manual</option>
               <option value="linkedin">LinkedIn</option>
+              <option value="extension">Chrome extension</option>
               <option value="referral">Referral</option>
               <option value="event">Event</option>
               <option value="inbound">Inbound</option>

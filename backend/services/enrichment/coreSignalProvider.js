@@ -347,42 +347,76 @@ async function enrichByDomain(apiKey, domain) {
 //                         upstream_body)
 //   'invalid_response'  — body wasn't parseable JSON or normalize failed
 // ─────────────────────────────────────────────────────────────────────────────
-async function enrich({ linkedinCompanyUrl, domain }) {
-  const apiKey = process.env.CORESIGNAL_API_KEY;
-  if (!apiKey) return { ok: false, reason: 'no_api_key' };
+// ─────────────────────────────────────────────────────────────────────────────
+// Approximate credit cost per strategy. These match the cost comments at the
+// top of the file. CoreSignal doesn't return billable credits in the response
+// payload, so we report our best estimate. Final billing is reconciled
+// against their dashboard.
+//
+// These values feed the enrichment_credit_log table. They're approximate —
+// don't treat them as authoritative for chargeback to customers, only for
+// dashboards and cap enforcement.
+// ─────────────────────────────────────────────────────────────────────────────
+const CORESIGNAL_CREDIT_COSTS = {
+  search_then_collect: 3,  // 1 search + 1 collect
+  direct_collect:      2,
+  direct_enrich:       2,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public entry. Returns:
+//   { ok: true, data, raw, identifier_used, credits }
+//   { ok: false, reason, ..., credits }
+//
+// credits is always present — even on failure paths, since some CoreSignal
+// failure modes are still billable (e.g. search returns 0 hits — the
+// search itself was charged). The credit log uses the `status` field to
+// distinguish billed-but-empty from genuine errors.
+//
+// `apiKey` is now a required parameter rather than being read from env. The
+// caller (services/enrichment/index.js) resolves per-org credentials and
+// passes them in. For backward compat, if no apiKey is supplied we fall
+// back to process.env.CORESIGNAL_API_KEY — this transitional fallback will
+// be removed in a future cleanup.
+// ─────────────────────────────────────────────────────────────────────────────
+async function enrich({ linkedinCompanyUrl, domain, apiKey }) {
+  const key = apiKey || process.env.CORESIGNAL_API_KEY;
+  if (!key) return { ok: false, reason: 'no_api_key', credits: 0 };
 
   const plan = planCall({ linkedinCompanyUrl, domain });
-  if (!plan) return { ok: false, reason: 'no_identifier' };
+  if (!plan) return { ok: false, reason: 'no_identifier', credits: 0 };
+
+  const credits = CORESIGNAL_CREDIT_COSTS[plan.strategy] || 0;
 
   // ── Path 1: numeric LinkedIn ID — search then collect ─────────────────
   if (plan.strategy === 'search_then_collect') {
-    const search = await searchBySourceId(apiKey, plan.source_id);
+    const search = await searchBySourceId(key, plan.source_id);
     if (!search.ok) {
-      return { ...search, identifier_used: 'linkedin_id' };
+      return { ...search, identifier_used: 'linkedin_id', credits };
     }
-    const coll = await collectByCoreSignalId(apiKey, search.coresignal_id);
+    const coll = await collectByCoreSignalId(key, search.coresignal_id);
     if (!coll.ok) {
-      return { ...coll, identifier_used: 'linkedin_id' };
+      return { ...coll, identifier_used: 'linkedin_id', credits };
     }
-    return finalizeRaw(coll.json, 'linkedin_id', { coresignal_id: search.coresignal_id });
+    return { ...finalizeRaw(coll.json, 'linkedin_id', { coresignal_id: search.coresignal_id }), credits };
   }
 
   // ── Path 2: slug — direct /collect ────────────────────────────────────
   if (plan.strategy === 'direct_collect') {
-    const coll = await collectBySlug(apiKey, plan.slug);
-    if (!coll.ok) return { ...coll, identifier_used: 'linkedin_shorthand' };
-    return finalizeRaw(coll.json, 'linkedin_shorthand');
+    const coll = await collectBySlug(key, plan.slug);
+    if (!coll.ok) return { ...coll, identifier_used: 'linkedin_shorthand', credits };
+    return { ...finalizeRaw(coll.json, 'linkedin_shorthand'), credits };
   }
 
   // ── Path 3: domain — direct /enrich ───────────────────────────────────
   if (plan.strategy === 'direct_enrich') {
-    const coll = await enrichByDomain(apiKey, plan.domain);
-    if (!coll.ok) return { ...coll, identifier_used: 'domain' };
-    return finalizeRaw(coll.json, 'domain');
+    const coll = await enrichByDomain(key, plan.domain);
+    if (!coll.ok) return { ...coll, identifier_used: 'domain', credits };
+    return { ...finalizeRaw(coll.json, 'domain'), credits };
   }
 
   // Defensive — planCall should never produce an unknown strategy.
-  return { ok: false, reason: 'invalid_response' };
+  return { ok: false, reason: 'invalid_response', credits: 0 };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

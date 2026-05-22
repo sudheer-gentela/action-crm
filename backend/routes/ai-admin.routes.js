@@ -123,8 +123,11 @@ router.get('/config', adminOnly, async (req, res) => {
 
     const credsRes = await db.query(
       `SELECT provider, COUNT(*)::int AS active_keys
-         FROM ai_credentials
-        WHERE org_id = $1 AND user_id IS NULL AND status = 'active'
+         FROM org_credentials
+        WHERE org_id = $1
+          AND purpose = 'ai'
+          AND user_id IS NULL
+          AND status = 'active'
         GROUP BY provider`,
       [req.orgId]
     );
@@ -283,8 +286,12 @@ router.post('/credentials/:id/test', adminOnly, async (req, res) => {
   const credId = parseInt(req.params.id, 10);
   try {
     const row = await db.query(
-      `SELECT id, provider FROM ai_credentials
-        WHERE id = $1 AND org_id = $2 AND user_id IS NULL AND status != 'revoked'`,
+      `SELECT id, provider FROM org_credentials
+        WHERE id = $1
+          AND org_id = $2
+          AND purpose = 'ai'
+          AND user_id IS NULL
+          AND status != 'revoked'`,
       [credId, req.orgId]
     );
     if (row.rows.length === 0) return res.status(404).json({ error: { message: 'Not found' } });

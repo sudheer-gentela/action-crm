@@ -234,7 +234,9 @@ export default function NotificationSettings() {
   );
   if (!prefs) return <div className="ns-error">{error || 'Failed to load settings'}</div>;
 
-  const anyAlert = prefs.immediate_alert || prefs.daily_digest;
+  const anyAlert = prefs.immediate_alert || prefs.daily_digest
+                || prefs.prospecting_immediate_alert !== false
+                || prefs.prospecting_daily_digest    !== false;
 
   return (
     <div className="ns-panel">
@@ -278,6 +280,38 @@ export default function NotificationSettings() {
             <div className="ns-card-desc">A daily summary of all overdue actions, sent at 9:00 AM UTC.</div>
           </div>
           <Toggle checked={prefs.daily_digest} onChange={v => set('daily_digest', v)} />
+        </div>
+      </div>
+
+      {/* ── Prospecting actions: separate toggles ───────────────────────────
+          Prospecting has its own alert + digest cadence so reps can quiet
+          one without affecting the other. The org-level policy (timezone,
+          escalation tiers) is managed under Org Admin. */}
+      <div className="ns-section-label" style={{ marginTop: 24 }}>Prospecting actions</div>
+
+      <div className="ns-card">
+        <div className="ns-toggle-row">
+          <div>
+            <div className="ns-card-title">Prospecting immediate alert</div>
+            <div className="ns-card-desc">Notify when a prospecting action (sequence step, follow-up, call task) is overdue. Uses the org's threshold.</div>
+          </div>
+          <Toggle
+            checked={prefs.prospecting_immediate_alert !== false}
+            onChange={v => set('prospecting_immediate_alert', v)}
+          />
+        </div>
+      </div>
+
+      <div className="ns-card">
+        <div className="ns-toggle-row">
+          <div>
+            <div className="ns-card-title">Prospecting daily digest</div>
+            <div className="ns-card-desc">A daily summary of your overdue prospecting actions. Time of day is set by your org (default 8:30 AM IST).</div>
+          </div>
+          <Toggle
+            checked={prefs.prospecting_daily_digest !== false}
+            onChange={v => set('prospecting_daily_digest', v)}
+          />
         </div>
       </div>
 

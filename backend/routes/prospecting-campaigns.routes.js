@@ -160,11 +160,36 @@ router.post('/', async (req, res) => {
   }
 });
 
-// ── GET /:id — one campaign + funnel breakdown ───────────────────────────────
+// ── GET /:id — one campaign + funnel + multi-channel outreach metrics ────────
+//
+// Outreach metrics now span three channels:
+//   - email     (emails table, direction sent vs received/inbound)
+//   - linkedin  (prospecting_activities, activity_type='linkedin_event',
+//                direction derived from metadata->>'event')
+//   - call      (calls table, direction outbound vs inbound — supports both
+//                rep voicemails left AND prospect callback voicemails)
+//
+// All three roll up into byChannel + totals. The `?channel=` query param
+// filters byChannel to only the requested slice (still returns funnel +
+// totals unfiltered — see SPRINT_PROGRESS.md design note: funnel-by-channel
+// is semantically odd because a prospect is in stage X regardless of which
+// channel touched them).
+//
+// Also returns bySource: counts of prospects in this campaign grouped by
+// where they were added from (manual / csv_import / extension / linkedin /
+// referral / event / inbound). This powers the Sources mini-card on the UI.
 router.get('/:id', async (req, res) => {
   try {
     const campaign = await loadCampaign(req.orgId, req.params.id);
     if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+
+    const channelFilter = req.query.channel;  // 'email' | 'linkedin' | 'call' | undefined
+    const VALID_CHANNEL_FILTERS = new Set(['email', 'linkedin', 'call']);
+    if (channelFilter && !VALID_CHANNEL_FILTERS.has(channelFilter)) {
+      return res.status(400).json({
+        error: { message: `channel must be one of: ${[...VALID_CHANNEL_FILTERS].join(', ')}` },
+      });
+    }
 
     // Funnel: prospect count per stage within this campaign.
     const stageRes = await pool.query(
@@ -185,22 +210,145 @@ router.get('/:id', async (req, res) => {
     const totalProspects = Object.values(stageMap).reduce((a, b) => a + b, 0);
     const qualified      = stageMap['qualified_sal'] || 0;
 
-    // Outreach + replies this week, scoped to this campaign's prospects.
+    // Outreach + responses this week, unioned across channels. Week starts
+    // on the most recent Sunday in server time (matches the old behaviour).
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     weekStart.setHours(0, 0, 0, 0);
 
-    const emailRes = await pool.query(
-      `SELECT
-         COUNT(*) FILTER (WHERE e.direction = 'sent')                       AS outreach_this_week,
-         COUNT(*) FILTER (WHERE e.direction IN ('received','inbound'))       AS responses_this_week
-         FROM emails e
-         JOIN prospects p ON p.id = e.prospect_id
-        WHERE e.org_id = $1
-          AND p.campaign_id = $2
-          AND e.sent_at >= $3`,
+    // The CTE produces one row per touch with (channel, direction). We then
+    // aggregate by channel.
+    //
+    // LinkedIn direction derivation: metadata->>'event' tells us what kind
+    // of LinkedIn action it was. Outbound events count as outreach; the
+    // single inbound event 'reply_received' counts as a response. Events
+    // that are neither (e.g. 'connection_accepted', 'profile_viewed',
+    // 'meeting_booked') are excluded — they're status milestones, not
+    // outreach/response. We also count 'sequence_step_sent' as an outbound
+    // touch on whatever channel the sequence step was for (almost always
+    // email; linkedin sequence steps are also valid).
+    //
+    // Calls: direction column on the table already distinguishes outbound
+    // (rep dialing, including voicemails left) from inbound (prospect
+    // calling back, including voicemails left for the rep).
+    const outreachRes = await pool.query(
+      `WITH outreach AS (
+         -- Email touches
+         SELECT 'email'::text  AS channel,
+                CASE
+                  WHEN e.direction = 'sent'                     THEN 'outreach'
+                  WHEN e.direction IN ('received','inbound')    THEN 'response'
+                  ELSE NULL
+                END AS kind
+           FROM emails e
+           JOIN prospects p ON p.id = e.prospect_id
+          WHERE e.org_id     = $1
+            AND p.campaign_id = $2
+            AND e.sent_at    >= $3
+
+         UNION ALL
+
+         -- LinkedIn touches from prospecting_activities (extension or rep)
+         SELECT 'linkedin'::text AS channel,
+                CASE
+                  WHEN pa.metadata->>'event' IN (
+                    'connection_request_sent', 'message_sent',
+                    'inmail_sent',              'voice_note_sent'
+                  ) THEN 'outreach'
+                  WHEN pa.metadata->>'event' = 'reply_received' THEN 'response'
+                  ELSE NULL
+                END AS kind
+           FROM prospecting_activities pa
+           JOIN prospects p ON p.id = pa.prospect_id
+          WHERE pa.org_id      = $1
+            AND p.campaign_id  = $2
+            AND pa.activity_type = 'linkedin_event'
+            AND pa.created_at  >= $3
+
+         UNION ALL
+
+         -- Sequence step sends — attributed to the step's channel
+         SELECT
+           CASE
+             WHEN pa.metadata->>'channel' IN ('email','linkedin','call')
+               THEN pa.metadata->>'channel'
+             ELSE 'email'  -- default for legacy rows without channel meta
+           END::text AS channel,
+           'outreach'::text AS kind
+           FROM prospecting_activities pa
+           JOIN prospects p ON p.id = pa.prospect_id
+          WHERE pa.org_id      = $1
+            AND p.campaign_id  = $2
+            AND pa.activity_type = 'sequence_step_sent'
+            AND pa.created_at  >= $3
+
+         UNION ALL
+
+         -- Calls (both directions)
+         SELECT 'call'::text AS channel,
+                CASE
+                  WHEN c.direction = 'outbound' THEN 'outreach'
+                  WHEN c.direction = 'inbound'  THEN 'response'
+                  ELSE NULL
+                END AS kind
+           FROM calls c
+           JOIN prospects p ON p.id = c.prospect_id
+          WHERE c.org_id      = $1
+            AND p.campaign_id = $2
+            AND c.occurred_at >= $3
+       )
+       SELECT channel,
+              COUNT(*) FILTER (WHERE kind = 'outreach')::int AS outreach,
+              COUNT(*) FILTER (WHERE kind = 'response')::int AS responses
+         FROM outreach
+        WHERE kind IS NOT NULL
+     GROUP BY channel`,
       [req.orgId, req.params.id, weekStart]
     );
+
+    // Build byChannel with explicit zeros for any missing channel so the
+    // UI doesn't have to defensively handle absent keys.
+    const byChannel = {
+      email:    { outreach: 0, responses: 0 },
+      linkedin: { outreach: 0, responses: 0 },
+      call:     { outreach: 0, responses: 0 },
+    };
+    for (const row of outreachRes.rows) {
+      if (byChannel[row.channel]) {
+        byChannel[row.channel] = {
+          outreach:  row.outreach  || 0,
+          responses: row.responses || 0,
+        };
+      }
+    }
+
+    // Totals across all channels — kept on the response for the cards that
+    // show "Outreach this week" without a channel split (and for the
+    // backward-compat fields we still emit below).
+    const outreachThisWeek  = byChannel.email.outreach  + byChannel.linkedin.outreach  + byChannel.call.outreach;
+    const responsesThisWeek = byChannel.email.responses + byChannel.linkedin.responses + byChannel.call.responses;
+
+    // Apply channel filter to byChannel if requested. We keep the totals
+    // computed over ALL channels, since totals are an unconditional rollup
+    // for the campaign — filtering totals would just confuse the UI.
+    const byChannelOut = channelFilter
+      ? { [channelFilter]: byChannel[channelFilter] }
+      : byChannel;
+
+    // Prospects by source — counts of how each prospect in this campaign
+    // was added. Source is set at create time and never changes.
+    const sourceRes = await pool.query(
+      `SELECT COALESCE(source, 'unknown') AS source,
+              COUNT(*)::int AS count
+         FROM prospects
+        WHERE org_id = $1
+          AND campaign_id = $2
+          AND deleted_at IS NULL
+     GROUP BY COALESCE(source, 'unknown')`,
+      [req.orgId, req.params.id]
+    );
+    const bySource = {};
+    sourceRes.rows.forEach(r => { bySource[r.source] = r.count; });
 
     // Active enrollments for this campaign's prospects.
     const enrollRes = await pool.query(
@@ -219,9 +367,13 @@ router.get('/:id', async (req, res) => {
         totalProspects,
         qualified,
         goalQualified:       campaign.goal_qualified || null,
-        outreachThisWeek:    parseInt(emailRes.rows[0]?.outreach_this_week  || 0, 10),
-        responsesThisWeek:   parseInt(emailRes.rows[0]?.responses_this_week || 0, 10),
+        // Back-compat — older frontend code reads these flat fields.
+        outreachThisWeek,
+        responsesThisWeek,
         activeEnrollments:   enrollRes.rows[0]?.active_enrollments || 0,
+        // New, channel-aware shape.
+        byChannel:           byChannelOut,
+        bySource,
       },
     });
   } catch (err) {
@@ -509,6 +661,121 @@ router.post('/:id/enroll-all', async (req, res) => {
     res.status(500).json({ error: { message: 'Enroll-all failed' } });
   } finally {
     client.release();
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GET /:id/sequence-health
+// Sprint 4 (Group C). Campaign-scoped sequence health — same shape as
+// /api/sequences/health but restricted to enrollments whose prospects are
+// in this campaign.
+// ═════════════════════════════════════════════════════════════════════════════
+router.get('/:id/sequence-health', async (req, res) => {
+  try {
+    const campaign = await loadCampaign(req.orgId, req.params.id);
+    if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+
+    const day  = `'24 hours'::interval`;
+    const week = `'7 days'::interval`;
+
+    // Per-sequence aggregates scoped to this campaign's enrollments.
+    // We list only sequences that actually have at least one campaign
+    // enrollment — different from the global /health endpoint which lists
+    // every active sequence in the org.
+    const aggRes = await pool.query(
+      `SELECT
+         s.id    AS sequence_id,
+         s.name  AS sequence_name,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${day}  AND ssl.status = 'draft')::int     AS drafts_24h,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${day}  AND ssl.status = 'completed')::int AS sent_24h,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${day}  AND ssl.status = 'replied')::int   AS replied_24h,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${day}  AND ssl.status = 'failed')::int    AS failed_24h,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${week} AND ssl.status = 'draft')::int     AS drafts_7d,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${week} AND ssl.status = 'completed')::int AS sent_7d,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${week} AND ssl.status = 'replied')::int   AS replied_7d,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${week} AND ssl.status = 'failed')::int    AS failed_7d,
+         MAX(ssl.fired_at) AS last_fired_at
+       FROM sequences s
+       JOIN sequence_enrollments se ON se.sequence_id = s.id
+       JOIN prospects p             ON p.id = se.prospect_id
+       LEFT JOIN sequence_step_logs ssl ON ssl.enrollment_id = se.id
+      WHERE s.org_id      = $1
+        AND p.campaign_id = $2
+      GROUP BY s.id, s.name
+      ORDER BY s.id ASC`,
+      [req.orgId, req.params.id]
+    );
+
+    // Top errors per sequence within this campaign.
+    const errRes = await pool.query(
+      `SELECT se.sequence_id,
+              ssl.error_message,
+              COUNT(*)::int AS count
+         FROM sequence_step_logs ssl
+         JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
+         JOIN prospects p             ON p.id = se.prospect_id
+        WHERE ssl.org_id    = $1
+          AND p.campaign_id = $2
+          AND ssl.status    = 'failed'
+          AND ssl.fired_at >= NOW() - ${week}
+          AND ssl.error_message IS NOT NULL
+     GROUP BY se.sequence_id, ssl.error_message
+     ORDER BY se.sequence_id, count DESC`,
+      [req.orgId, req.params.id]
+    );
+    const errorsBySeq = {};
+    for (const row of errRes.rows) {
+      if (!errorsBySeq[row.sequence_id]) errorsBySeq[row.sequence_id] = [];
+      if (errorsBySeq[row.sequence_id].length < 3) {
+        errorsBySeq[row.sequence_id].push({ message: row.error_message, count: row.count });
+      }
+    }
+
+    // Stalled enrollments per sequence within this campaign.
+    const stalledRes = await pool.query(
+      `SELECT se.sequence_id,
+              COUNT(*)::int AS stalled
+         FROM sequence_enrollments se
+         JOIN prospects p ON p.id = se.prospect_id
+         LEFT JOIN LATERAL (
+           SELECT MAX(fired_at) AS last_fired
+             FROM sequence_step_logs
+            WHERE enrollment_id = se.id
+         ) ssl ON true
+        WHERE se.org_id     = $1
+          AND p.campaign_id = $2
+          AND se.status     = 'active'
+          AND COALESCE(ssl.last_fired, se.enrolled_at) < NOW() - ${week}
+     GROUP BY se.sequence_id`,
+      [req.orgId, req.params.id]
+    );
+    const stalledBySeq = {};
+    for (const row of stalledRes.rows) stalledBySeq[row.sequence_id] = row.stalled;
+
+    const health = aggRes.rows.map(r => ({
+      sequenceId:   r.sequence_id,
+      sequenceName: r.sequence_name,
+      last24h: {
+        drafts:  r.drafts_24h,
+        sent:    r.sent_24h,
+        replied: r.replied_24h,
+        failed:  r.failed_24h,
+      },
+      last7d: {
+        drafts:  r.drafts_7d,
+        sent:    r.sent_7d,
+        replied: r.replied_7d,
+        failed:  r.failed_7d,
+      },
+      lastFiredAt:        r.last_fired_at,
+      topErrors:          errorsBySeq[r.sequence_id] || [],
+      stalledEnrollments: stalledBySeq[r.sequence_id] || 0,
+    }));
+
+    res.json({ campaignId: parseInt(req.params.id, 10), health });
+  } catch (err) {
+    console.error('campaign sequence-health error:', err);
+    res.status(500).json({ error: { message: 'Failed to load sequence health' } });
   }
 });
 

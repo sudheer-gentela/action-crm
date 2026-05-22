@@ -2255,3 +2255,209 @@ router.get('/ai-usage', adminOnly, async (req, res) => {
     res.status(500).json({ error: { message: 'Failed to load AI usage data' } });
   }
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Prospecting Escalation Policy — Org Admin
+// ═════════════════════════════════════════════════════════════════════════════
+
+const ProspectingEscalationService = require('../services/prospectingEscalation.service');
+
+/**
+ * GET /org/admin/prospecting-escalation
+ * Returns the org's current escalation policy, merged with system defaults.
+ * Safe to call even if no policy has been set (returns defaults).
+ */
+router.get('/prospecting-escalation', adminOnly, async (req, res) => {
+  try {
+    const policy = await ProspectingEscalationService.getForOrg(req.orgId);
+    res.json({ policy, defaults: ProspectingEscalationService.SYSTEM_DEFAULTS });
+  } catch (err) {
+    console.error('GET /org/admin/prospecting-escalation error:', err);
+    res.status(500).json({ error: { message: 'Failed to load prospecting escalation policy' } });
+  }
+});
+
+/**
+ * PUT /org/admin/prospecting-escalation
+ * Updates the org's escalation policy. Body is a partial patch — only the
+ * fields you want to change need to be sent. Unknown fields are dropped.
+ *
+ * Validation rules in ProspectingEscalationService._validatePatch:
+ *   - digest_hour_utc: 0..23
+ *   - immediate_hours / tier{1,2,3}_hours: 1..720 (one month)
+ *   - tier hours must be strictly increasing when all three are sent
+ *   - channels: non-empty array of 'email' | 'in_app'
+ */
+router.put('/prospecting-escalation', adminOnly, async (req, res) => {
+  try {
+    const updated = await ProspectingEscalationService.setForOrg(
+      req.orgId, req.body, req.user.userId
+    );
+    res.json({ policy: updated });
+  } catch (err) {
+    if (err.code === 'INVALID_POLICY') {
+      return res.status(400).json({ error: { message: err.message, code: err.code } });
+    }
+    console.error('PUT /org/admin/prospecting-escalation error:', err);
+    res.status(500).json({ error: { message: 'Failed to update prospecting escalation policy' } });
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Enrichment Config + Credit Usage — Org Admin (Sprint 3, Group E)
+// ═════════════════════════════════════════════════════════════════════════════
+
+const EnrichmentSettingsService = require('../services/enrichmentSettings.service');
+const enrichmentCreditLog       = require('../services/enrichment/creditLog');
+
+/**
+ * GET /org/admin/enrichment-config
+ * Returns the org's current enrichment configuration:
+ *   - chain_company / chain_person — provider order
+ *   - monthly_cap                  — credit cap (null = unlimited)
+ *   - providers                    — which providers have stored API keys
+ */
+router.get('/enrichment-config', adminOnly, async (req, res) => {
+  try {
+    const config = await EnrichmentSettingsService.getForOrg(req.orgId);
+
+    // Which providers have an active org-level key configured?
+    const credsRes = await pool.query(
+      `SELECT provider FROM org_credentials
+        WHERE org_id  = $1
+          AND purpose = 'enrichment'
+          AND user_id IS NULL
+          AND status  = 'active'`,
+      [req.orgId]
+    );
+    const configuredProviders = credsRes.rows.map(r => r.provider);
+
+    res.json({
+      config,
+      defaults:            EnrichmentSettingsService.SYSTEM_DEFAULTS,
+      valid_providers:     [...EnrichmentSettingsService.VALID_PROVIDERS],
+      configured_providers: configuredProviders,
+    });
+  } catch (err) {
+    console.error('GET /org/admin/enrichment-config error:', err);
+    res.status(500).json({ error: { message: 'Failed to load enrichment config' } });
+  }
+});
+
+/**
+ * PUT /org/admin/enrichment-config
+ * Updates the org's enrichment config. Body is a partial patch.
+ *
+ * Fields:
+ *   chain_company: ['coresignal' | 'apollo', ...]
+ *   chain_person:  ['apollo', ...]
+ *   monthly_cap:   integer | null
+ */
+router.put('/enrichment-config', adminOnly, async (req, res) => {
+  try {
+    const updated = await EnrichmentSettingsService.setForOrg(
+      req.orgId, req.body, req.user.userId
+    );
+    res.json({ config: updated });
+  } catch (err) {
+    if (err.code === 'INVALID_ENRICHMENT_CONFIG') {
+      return res.status(400).json({ error: { message: err.message, code: err.code } });
+    }
+    console.error('PUT /org/admin/enrichment-config error:', err);
+    res.status(500).json({ error: { message: 'Failed to update enrichment config' } });
+  }
+});
+
+/**
+ * POST /org/admin/enrichment-credentials
+ * Store or rotate an org-level enrichment API key (CoreSignal or Apollo).
+ * Body: { provider, api_key, label? }
+ *
+ * The plaintext key is encrypted via the shared encryption module before
+ * persisting. Existing active keys for the same provider are auto-revoked
+ * (see CredentialsStore.store).
+ */
+router.post('/enrichment-credentials', adminOnly, async (req, res) => {
+  try {
+    const { provider, api_key, label } = req.body || {};
+    if (!provider || !api_key) {
+      return res.status(400).json({ error: { message: 'provider and api_key required' } });
+    }
+    if (!EnrichmentSettingsService.VALID_PROVIDERS.has(provider)) {
+      return res.status(400).json({
+        error: { message: `Unknown enrichment provider '${provider}'` },
+      });
+    }
+    const CredentialsStore = require('../services/ai/CredentialsStore');
+    if (!CredentialsStore.isConfigured()) {
+      return res.status(500).json({
+        error: { message: 'Server credential encryption is not configured (AI_CREDS_KEY missing)' },
+      });
+    }
+
+    const stored = await CredentialsStore.store({
+      orgId:     req.orgId,
+      userId:    null,
+      provider,
+      apiKey:    api_key,
+      label:     label || null,
+      purpose:   'enrichment',
+      createdBy: req.user.userId,
+    });
+    res.json({ credential: stored });
+  } catch (err) {
+    console.error('POST /org/admin/enrichment-credentials error:', err);
+    res.status(500).json({ error: { message: 'Failed to store enrichment credential' } });
+  }
+});
+
+/**
+ * GET /org/admin/enrichment-credentials
+ * Lists the masked credentials for enrichment providers in this org.
+ */
+router.get('/enrichment-credentials', adminOnly, async (req, res) => {
+  try {
+    const CredentialsStore = require('../services/ai/CredentialsStore');
+    const rows = await CredentialsStore.list(req.orgId, null, 'enrichment');
+    res.json({ credentials: rows });
+  } catch (err) {
+    console.error('GET /org/admin/enrichment-credentials error:', err);
+    res.status(500).json({ error: { message: 'Failed to list credentials' } });
+  }
+});
+
+/**
+ * GET /org/admin/enrichment-usage?month=YYYY-MM
+ * Returns this org's credit usage for the month. Defaults to current month.
+ *
+ * Response:
+ *   { month, total, cap, percent_used, by_provider: [{ provider, credits, calls, errors }] }
+ */
+router.get('/enrichment-usage', adminOnly, async (req, res) => {
+  try {
+    const month = req.query.month || new Date().toISOString().slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: { message: 'month must be YYYY-MM' } });
+    }
+
+    const [total, breakdown, config] = await Promise.all([
+      enrichmentCreditLog.monthlyUsage(req.orgId, { month }),
+      enrichmentCreditLog.monthlyBreakdown(req.orgId, { month }),
+      EnrichmentSettingsService.getForOrg(req.orgId),
+    ]);
+
+    const cap = config.monthly_cap;
+    const percentUsed = (cap && cap > 0) ? Math.round((total / cap) * 100) : null;
+
+    res.json({
+      month,
+      total,
+      cap,
+      percent_used: percentUsed,
+      by_provider:  breakdown,
+    });
+  } catch (err) {
+    console.error('GET /org/admin/enrichment-usage error:', err);
+    res.status(500).json({ error: { message: 'Failed to load enrichment usage' } });
+  }
+});

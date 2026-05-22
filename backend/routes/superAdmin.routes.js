@@ -1022,5 +1022,39 @@ router.patch('/platform-settings/:key', requireSuperAdmin, async (req, res) => {
 });
 
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Enrichment Usage — SuperAdmin (Sprint 3, Group E)
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * GET /super/enrichment-usage?month=YYYY-MM
+ *
+ * Cross-org breakdown of enrichment credit usage for a month. Used by the
+ * SuperAdmin dashboard to see who's spending what and which providers are
+ * being hit hardest.
+ *
+ * Response:
+ *   {
+ *     month,
+ *     total,                        // overall credits across all orgs
+ *     by_org_provider: [{ org_id, org_name, provider, credits, calls }],
+ *   }
+ */
+router.get('/enrichment-usage', requireSuperAdmin, async (req, res) => {
+  try {
+    const month = req.query.month || new Date().toISOString().slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return res.status(400).json({ error: { message: 'month must be YYYY-MM' } });
+    }
+    const enrichmentCreditLog = require('../services/enrichment/creditLog');
+    const rows = await enrichmentCreditLog.crossOrgBreakdown({ month });
+    const total = rows.reduce((sum, r) => sum + (r.credits || 0), 0);
+    res.json({ month, total, by_org_provider: rows });
+  } catch (err) {
+    console.error('GET /super/enrichment-usage error:', err);
+    res.status(500).json({ error: { message: 'Failed to load enrichment usage' } });
+  }
+});
+
 
 module.exports = router;

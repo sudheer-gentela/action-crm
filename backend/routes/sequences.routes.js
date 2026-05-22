@@ -449,9 +449,9 @@ router.post('/enroll', async (req, res) => {
           try {
             await client.query(
               `INSERT INTO prospecting_activities
-                           (prospect_id, user_id, activity_type, description, metadata)
-                    VALUES ($1, $2, 'sequence_enrolled', $3, $4)`,
-              [
+                           (org_id, prospect_id, user_id, activity_type, description, metadata)
+                    VALUES ($1, $2, $3, 'sequence_enrolled', $4, $5)`,
+              [req.orgId, 
                 prospectId,
                 req.user.userId,
                 `Enrolled in sequence "${sequenceName}"`,
@@ -1161,9 +1161,9 @@ router.post('/drafts/:logId/send', async (req, res) => {
     // ── 13. Write activity ─────────────────────────────────────────────────
     await client.query(
       `INSERT INTO prospecting_activities
-         (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1,$2,'sequence_step_sent',$3,$4)`,
-      [
+         (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2,$3,'sequence_step_sent',$4,$5)`,
+      [req.orgId, 
         draft.prospect_id, req.user.userId,
         `Sequence step ${draft.step_order} sent — ${draft.sequence_name}: ${draft.subject || '(no subject)'}`,
         JSON.stringify({
@@ -1341,9 +1341,9 @@ router.post('/drafts/:logId/complete', async (req, res) => {
     // ── 5. Write activity ─────────────────────────────────────────────────
     await client.query(
       `INSERT INTO prospecting_activities
-         (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1,$2,'sequence_step_completed',$3,$4)`,
-      [
+         (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2,$3,'sequence_step_completed',$4,$5)`,
+      [req.orgId, 
         draft.prospect_id, req.user.userId,
         `${draft.channel} step completed — ${draft.sequence_name} step ${draft.step_order}`,
         JSON.stringify({
@@ -1427,9 +1427,9 @@ router.delete('/drafts/:logId', async (req, res) => {
 
     await client.query(
       `INSERT INTO prospecting_activities
-         (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1,$2,'sequence_step_skipped',$3,$4)`,
-      [
+         (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2,$3,'sequence_step_skipped',$4,$5)`,
+      [req.orgId, 
         draft.prospect_id, req.user.userId,
         `Draft discarded — ${draft.sequence_name} step ${draft.step_order}`,
         JSON.stringify({ enrollmentId: draft.enrollment_id, draftLogId: draft.id, stepOrder: draft.step_order }),
@@ -1951,6 +1951,135 @@ router.get('/:id/stats', async (req, res) => {
   } catch (err) {
     console.error('sequence stats error:', err);
     res.status(500).json({ error: { message: 'Failed to load stats' } });
+  }
+});
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GET /api/sequences/health
+// Sprint 4 (Group C). Per-sequence telemetry for the last 24h and 7d.
+//
+// Returns an array, one entry per active sequence in the org:
+//   {
+//     sequenceId, sequenceName,
+//     last24h: { drafts, sent, replied, failed },
+//     last7d:  { drafts, sent, replied, failed },
+//     lastFiredAt,             // most recent log row's fired_at
+//     topErrors,               // [{ message, count }] for the last 7d
+//     stalledEnrollments,      // active enrollments with no log activity in 7d
+//   }
+//
+// Health is computed against sequence_step_logs. A 'failed' row is written
+// whenever SequenceStepFirer's per-step block throws. Without the Sprint-4
+// migration that adds 'failed' to the status check constraint, this endpoint
+// will return all-zero failed counts (correct, but uninformative).
+// ═════════════════════════════════════════════════════════════════════════════
+router.get('/health', async (req, res) => {
+  try {
+    // Window helpers
+    const day  = `'24 hours'::interval`;
+    const week = `'7 days'::interval`;
+
+    // Per-sequence aggregates over the last 7d, including last24h via FILTER.
+    // Joining sequences ensures we list every active sequence even if it has
+    // no recent logs (drafts=sent=failed=0).
+    const aggRes = await pool.query(
+      `SELECT
+         s.id    AS sequence_id,
+         s.name  AS sequence_name,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${day}  AND ssl.status = 'draft')::int     AS drafts_24h,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${day}  AND ssl.status = 'completed')::int AS sent_24h,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${day}  AND ssl.status = 'replied')::int   AS replied_24h,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${day}  AND ssl.status = 'failed')::int    AS failed_24h,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${week} AND ssl.status = 'draft')::int     AS drafts_7d,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${week} AND ssl.status = 'completed')::int AS sent_7d,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${week} AND ssl.status = 'replied')::int   AS replied_7d,
+         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${week} AND ssl.status = 'failed')::int    AS failed_7d,
+         MAX(ssl.fired_at) AS last_fired_at
+       FROM sequences s
+       LEFT JOIN sequence_step_logs ssl
+              ON ssl.org_id = s.org_id
+             AND EXISTS (
+                   SELECT 1 FROM sequence_enrollments se2
+                    WHERE se2.id = ssl.enrollment_id AND se2.sequence_id = s.id
+                 )
+      WHERE s.org_id = $1
+        AND s.status = 'active'
+      GROUP BY s.id, s.name
+      ORDER BY s.id ASC`,
+      [req.orgId]
+    );
+
+    // Top error messages over the last 7d, grouped per sequence. We collect
+    // these once and stitch into the aggregate result so we don't run N+1
+    // queries per sequence.
+    const errRes = await pool.query(
+      `SELECT se.sequence_id,
+              ssl.error_message,
+              COUNT(*)::int AS count
+         FROM sequence_step_logs ssl
+         JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
+        WHERE ssl.org_id = $1
+          AND ssl.status = 'failed'
+          AND ssl.fired_at >= NOW() - ${week}
+          AND ssl.error_message IS NOT NULL
+     GROUP BY se.sequence_id, ssl.error_message
+     ORDER BY se.sequence_id, count DESC`,
+      [req.orgId]
+    );
+    const errorsBySeq = {};
+    for (const row of errRes.rows) {
+      if (!errorsBySeq[row.sequence_id]) errorsBySeq[row.sequence_id] = [];
+      if (errorsBySeq[row.sequence_id].length < 3) {
+        errorsBySeq[row.sequence_id].push({ message: row.error_message, count: row.count });
+      }
+    }
+
+    // Stalled enrollments per sequence: active enrollments whose last log
+    // row (or enrolled_at if no log yet) is older than 7d. Indicates the
+    // firer never ran for them, or they're stuck.
+    const stalledRes = await pool.query(
+      `SELECT se.sequence_id,
+              COUNT(*)::int AS stalled
+         FROM sequence_enrollments se
+         LEFT JOIN LATERAL (
+           SELECT MAX(fired_at) AS last_fired
+             FROM sequence_step_logs
+            WHERE enrollment_id = se.id
+         ) ssl ON true
+        WHERE se.org_id = $1
+          AND se.status = 'active'
+          AND COALESCE(ssl.last_fired, se.enrolled_at) < NOW() - ${week}
+     GROUP BY se.sequence_id`,
+      [req.orgId]
+    );
+    const stalledBySeq = {};
+    for (const row of stalledRes.rows) stalledBySeq[row.sequence_id] = row.stalled;
+
+    const health = aggRes.rows.map(r => ({
+      sequenceId:   r.sequence_id,
+      sequenceName: r.sequence_name,
+      last24h: {
+        drafts:  r.drafts_24h,
+        sent:    r.sent_24h,
+        replied: r.replied_24h,
+        failed:  r.failed_24h,
+      },
+      last7d: {
+        drafts:  r.drafts_7d,
+        sent:    r.sent_7d,
+        replied: r.replied_7d,
+        failed:  r.failed_7d,
+      },
+      lastFiredAt:        r.last_fired_at,
+      topErrors:          errorsBySeq[r.sequence_id] || [],
+      stalledEnrollments: stalledBySeq[r.sequence_id] || 0,
+    }));
+
+    res.json({ health });
+  } catch (err) {
+    console.error('sequence health error:', err);
+    res.status(500).json({ error: { message: 'Failed to load sequence health' } });
   }
 });
 

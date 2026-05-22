@@ -266,6 +266,7 @@ function SequencesView({ prospects }) {
             { key: 'drafts',      label: `📋 Drafts${drafts.length > 0 ? ` (${drafts.length})` : ''}` },
             { key: 'enrollments', label: '🗓 Enrollments' },
             { key: 'stats',       label: '📊 Stats' },
+            { key: 'health',      label: '❤️ Health' },
           ].map(t => (
             <button
               key={t.key}
@@ -1061,6 +1062,168 @@ function SequencesView({ prospects }) {
           onClose={() => setShowEnroll(false)}
         />
       )}
+
+      {/* ── Health panel (Sprint 4) ──────────────────────────────────────────
+          Org-wide sequence telemetry. Reads /api/sequences/health which
+          returns per-sequence drafts/sent/replied/failed counts over the
+          last 24h and 7d, plus stalled-enrollment counts and top error
+          messages. Mirrors the campaign-scoped tile, but covers ALL active
+          sequences in the org. */}
+      {subTab === 'health' && <OrgSequenceHealthPanel />}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OrgSequenceHealthPanel — Health tab body. Same data shape as the
+// SequenceHealthTile in CampaignsView, but org-scoped (lists every active
+// sequence, not just those touched by a particular campaign).
+//
+// Render is intentionally near-identical to the campaign tile so a rep who
+// learned to read one reads the other immediately. The big difference is
+// that we render this as a full-screen list rather than a compact tile —
+// the global view is the place to triage health issues across the org.
+// ─────────────────────────────────────────────────────────────────────────────
+function OrgSequenceHealthPanel() {
+  const [health,   setHealth]   = useState(null);
+  const [loading,  setLoading]  = useState(true);
+  const [expanded, setExpanded] = useState({});
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    apiFetch('/sequences/health')
+      .then(r => { if (!cancelled) setHealth(r.health || []); })
+      .catch(() => { if (!cancelled) setHealth([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const statusFor = (h) => {
+    if (h.last24h.failed > 0)     return { bg: '#fef2f2', fg: '#991b1b', label: 'Failing' };
+    if (h.stalledEnrollments > 0) return { bg: '#fffbeb', fg: '#b45309', label: 'Stalled' };
+    if ((h.last7d.sent + h.last7d.drafts + h.last7d.replied) === 0)
+      return { bg: '#f3f4f6', fg: '#6b7280', label: 'Idle' };
+    return { bg: '#ecfdf5', fg: '#059669', label: 'Healthy' };
+  };
+
+  if (loading) {
+    return <div style={{ padding: 24, color: '#9ca3af', fontSize: 13 }}>Loading sequence health…</div>;
+  }
+  if (!health || health.length === 0) {
+    return (
+      <div style={{ padding: 24, color: '#6b7280', fontSize: 13 }}>
+        No active sequences in this org yet. Create one in the Library tab.
+      </div>
+    );
+  }
+
+  // Roll-up banner: any failing sequences in the last 24h? Surfaced at the
+  // top so the rep doesn't have to scan every row to spot a red one.
+  const failingCount = health.filter(h => h.last24h.failed > 0).length;
+  const stalledCount = health.filter(h => h.stalledEnrollments > 0 && h.last24h.failed === 0).length;
+
+  return (
+    <div style={{ padding: 16, overflowY: 'auto' }}>
+      {(failingCount > 0 || stalledCount > 0) && (
+        <div style={{
+          padding: '10px 14px', marginBottom: 12, borderRadius: 6,
+          background: failingCount > 0 ? '#fef2f2' : '#fffbeb',
+          color:      failingCount > 0 ? '#991b1b' : '#b45309',
+          border: `1px solid ${failingCount > 0 ? '#fecaca' : '#fcd34d'}`,
+          fontSize: 13,
+        }}>
+          {failingCount > 0 && <><strong>{failingCount}</strong> sequence{failingCount === 1 ? '' : 's'} failing in the last 24h.</>}
+          {failingCount > 0 && stalledCount > 0 && ' '}
+          {stalledCount > 0 && <><strong>{stalledCount}</strong> additional sequence{stalledCount === 1 ? '' : 's'} with stalled enrollments.</>}
+          {' '}Expand the rows below to see error details.
+        </div>
+      )}
+
+      <div style={{
+        background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
+        overflow: 'hidden',
+      }}>
+        {health.map((h, idx) => {
+          const status = statusFor(h);
+          const isExpanded = !!expanded[h.sequenceId];
+          return (
+            <div key={h.sequenceId} style={{
+              borderTop: idx === 0 ? 'none' : '1px solid #f3f4f6',
+            }}>
+              <button
+                onClick={() => setExpanded(prev => ({ ...prev, [h.sequenceId]: !isExpanded }))}
+                style={{
+                  width: '100%', padding: '12px 14px', background: '#fff',
+                  border: 'none', cursor: 'pointer', textAlign: 'left',
+                  display: 'flex', alignItems: 'center', gap: 12,
+                }}
+              >
+                <span style={{
+                  padding: '3px 10px', fontSize: 11, fontWeight: 700,
+                  background: status.bg, color: status.fg, borderRadius: 10,
+                  minWidth: 64, textAlign: 'center',
+                }}>
+                  {status.label}
+                </span>
+                <span style={{ flex: 1, fontSize: 14, fontWeight: 500, color: '#111827' }}>
+                  {h.sequenceName}
+                </span>
+                <span style={{ fontSize: 12, color: '#6b7280' }}>
+                  <strong>{h.last24h.sent}</strong> sent · {h.last24h.drafts} drafts
+                  {h.last24h.failed > 0 && (
+                    <>, <span style={{ color: '#dc2626' }}><strong>{h.last24h.failed}</strong> failed</span></>
+                  )}
+                  <span style={{ color: '#9ca3af', marginLeft: 8 }}>last 24h</span>
+                </span>
+                <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                  {isExpanded ? '▾' : '▸'}
+                </span>
+              </button>
+
+              {isExpanded && (
+                <div style={{ padding: '4px 14px 14px', fontSize: 12, color: '#374151' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 600, marginBottom: 2 }}>Last 7 days</div>
+                      <div style={{ color: '#6b7280', fontSize: 11 }}>
+                        {h.last7d.sent} sent · {h.last7d.replied} replied · {h.last7d.drafts} drafts
+                        {h.last7d.failed > 0 && <span style={{ color: '#dc2626' }}> · {h.last7d.failed} failed</span>}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 600, marginBottom: 2 }}>Stalled enrollments</div>
+                      <div style={{ color: h.stalledEnrollments > 0 ? '#b45309' : '#6b7280', fontSize: 11 }}>
+                        {h.stalledEnrollments} active enrollment{h.stalledEnrollments === 1 ? '' : 's'} with no activity in 7d
+                      </div>
+                    </div>
+                  </div>
+                  {h.lastFiredAt && (
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6 }}>
+                      Last activity: {new Date(h.lastFiredAt).toLocaleString()}
+                    </div>
+                  )}
+                  {h.topErrors && h.topErrors.length > 0 && (
+                    <div style={{
+                      marginTop: 6, padding: 10,
+                      background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6,
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: '#991b1b', marginBottom: 4 }}>
+                        Top failure reasons (last 7d)
+                      </div>
+                      {h.topErrors.map((e, i) => (
+                        <div key={i} style={{ fontSize: 11, color: '#7f1d1d', fontFamily: 'ui-monospace, monospace', marginTop: 2 }}>
+                          <strong>{e.count}×</strong> {e.message}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

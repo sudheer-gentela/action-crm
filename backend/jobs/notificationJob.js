@@ -25,7 +25,7 @@ const notificationQueue = new Queue('team-notifications', process.env.REDIS_URL,
 
 // ── Job processor ─────────────────────────────────────────────────────────────
 notificationQueue.process(async (job) => {
-  const { type, orgId, actionId, userId, overdueActions, prospectId, accountId, meta } = job.data;
+  const { type, orgId, actionId, userId, overdueActions, prospectId, accountId, meta, targetTier } = job.data;
 
   console.log(`[notifications] Processing job ${job.id}: type=${type} org=${orgId}`);
 
@@ -50,6 +50,30 @@ notificationQueue.process(async (job) => {
   } else if (type === 'revisit_account') {
     job.progress(20);
     const result = await _processRevisitAccount({ orgId, accountId, userId, meta });
+    job.progress(100);
+    return result;
+
+  // ── Prospecting variants ──────────────────────────────────────────────
+  // These mirror the deal-action variants above but against
+  // prospecting_actions. The `meta` field is unused; instead we have
+  // explicit `actionId`, `userId`, `overdueActions`, and `targetTier`
+  // payloads matching the prospecting processor signatures.
+
+  } else if (type === 'prospecting_immediate') {
+    job.progress(20);
+    const result = await notificationService.processProspectingImmediateNotification(orgId, actionId);
+    job.progress(100);
+    return result;
+
+  } else if (type === 'prospecting_daily_digest') {
+    job.progress(20);
+    const result = await notificationService.processProspectingDailyDigest(orgId, userId, overdueActions);
+    job.progress(100);
+    return result;
+
+  } else if (type === 'prospecting_escalation') {
+    job.progress(20);
+    const result = await notificationService.processProspectingEscalation(orgId, actionId, targetTier);
     job.progress(100);
     return result;
 

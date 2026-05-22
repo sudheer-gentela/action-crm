@@ -127,11 +127,15 @@ async function enrichAccountByIdInternal(client, accountId, orgId) {
     };
   }
 
-  // Call the provider.
-  const result = await enrichmentProvider.enrich({
+  // Call the provider chain via the orchestrator. We pass orgId so the
+  // orchestrator can resolve per-org credentials, walk the chain, enforce
+  // the monthly cap, and write to enrichment_credit_log. We also pass
+  // accountId so each credit_log row links back here for traceability.
+  const result = await enrichmentProvider.enrichCompany(orgId, {
     linkedinCompanyUrl,
-      domain: realDomain,
-    });
+    domain:    realDomain,
+    accountId: account.id,
+  });
 
     if (!result.ok) {
       // Persist a failed-attempt record so we don't keep retrying the same
