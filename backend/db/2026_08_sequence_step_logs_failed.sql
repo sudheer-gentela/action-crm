@@ -1,13 +1,20 @@
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Migration: sequence_step_logs.status += 'failed'
--- Sprint 4 (Group C)
+-- Sprint 4 (Group C) — corrected after first deploy attempt
 -- ─────────────────────────────────────────────────────────────────────────────
--- Today's allowed values: 'draft', 'active', 'completed', 'replied'.
--- We add 'failed' so the SequenceStepFirer can write a log row when a per-
--- step send/draft throws, instead of silently logging to console only.
--- Without this, the new sequence-health endpoint has nothing to read.
+-- Allowed values in production today (per row counts on 2026-05-22):
+--   'sent'      — email draft was dispatched (the success state for email steps)
+--   'draft'     — pending rep review
+--   'completed' — non-email step marked done by rep (call / LinkedIn / task)
+--   'skipped'   — draft discarded by rep
 --
--- Also adds an `error_message TEXT` column where the failure detail can live.
+-- Older / legacy values still permitted by the existing constraint but not
+-- observed in current data: 'active', 'replied'. We keep both in the new
+-- allowed list to avoid breaking any code path that still writes them.
+--
+-- Adds: 'failed' (Sprint 4 — SequenceStepFirer per-step catch writes here)
+--
+-- Also adds an error_message TEXT column where the failure detail can live.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 BEGIN;
@@ -15,9 +22,7 @@ BEGIN;
 ALTER TABLE sequence_step_logs
   ADD COLUMN IF NOT EXISTS error_message TEXT;
 
--- Drop and re-add the status CHECK constraint with the expanded value set.
--- Constraint name varies by environment (some orgs run with the implicit
--- name, others have a custom one). Use a DO block that finds it dynamically.
+-- Drop the existing status CHECK constraint, regardless of name.
 DO $$
 DECLARE
   rec RECORD;
@@ -34,14 +39,22 @@ BEGIN
   END LOOP;
 END $$;
 
+-- Recreate with the full set of statuses actually in use, plus 'failed'.
 ALTER TABLE sequence_step_logs
   ADD CONSTRAINT sequence_step_logs_status_check
-  CHECK (status IN ('draft', 'active', 'completed', 'replied', 'failed'));
+  CHECK (status IN (
+    'draft',      -- pending rep review
+    'sent',       -- email dispatched (success for email steps)
+    'completed',  -- non-email step marked done (call / LinkedIn / task)
+    'replied',    -- prospect replied; enrollment auto-stopped
+    'skipped',    -- draft discarded by rep
+    'active',     -- legacy; retained for back-compat
+    'failed'      -- new — written by SequenceStepFirer's per-step catch
+  ));
 
--- Index for the health query — counts of failed/draft rows in the last 24h/7d.
--- Partial index on the rows we'll actually scan keeps it cheap.
+-- Health-query index. Covers the rows the /sequences/health endpoint scans.
 CREATE INDEX IF NOT EXISTS idx_sequence_step_logs_health
   ON sequence_step_logs (org_id, status, fired_at DESC)
-  WHERE status IN ('failed', 'draft', 'completed');
+  WHERE status IN ('failed', 'draft', 'sent', 'completed');
 
 COMMIT;
