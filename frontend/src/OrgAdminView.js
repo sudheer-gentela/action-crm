@@ -8175,9 +8175,6 @@ function OAProspectingEnrichment() {
     background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
     padding: 16, marginBottom: 12,
   };
-  const labelStyle = {
-    display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4,
-  };
   const helpStyle = { fontSize: 11, color: '#6b7280', marginTop: 4 };
 
   const PROVIDER_LABELS = {
