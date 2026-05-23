@@ -3,12 +3,14 @@
 //
 // THE source of truth for the shape of `prospecting_config`. This config is
 // read by services/SkillContextService.js (buildOrgContext) and written by
-// routes/prospecting-config.routes.js. Keep this file and buildOrgContext in
+// routes/prospecting-config.routes.js + routes/prospecting-campaigns.routes.js
+// (the campaign config endpoints). Keep this file and buildOrgContext in
 // sync — if a field is added here it must be consumed there, and vice versa.
 //
-// Two stores:
-//   ORG  — organizations.settings.prospecting_config
-//   USER — user_preferences.preferences.prospecting_config
+// Three stores:
+//   ORG       — organizations.settings.prospecting_config
+//   CAMPAIGN  — prospecting_campaigns.prospecting_config_override (new in Slice 1)
+//   USER      — user_preferences.preferences.prospecting_config
 //
 // ─── ORG-LEVEL SHAPE ─────────────────────────────────────────────────────────
 //   {
@@ -17,6 +19,9 @@
 //     default_value_props:          string[]
 //     default_target_personas:      string[]
 //     default_case_study_summaries: CaseStudy[]    // structured — see below
+//     hook_preferences: {
+//       preferred_categories: string[]   // org default; ordered; (Slice 1)
+//     }
 //     guardrails: {
 //       banned_phrasings:     string[]
 //       required_disclaimers: string[]
@@ -27,8 +32,23 @@
 //       creation, never changed. It is the key user-level exclusion uses.
 //     - `customer` is the human-readable label shown in every UI.
 //
-// Note: competitors are NOT in the org config — the org competitor list lives
-// in the `competitors` table, managed by its own screen.
+// ─── CAMPAIGN-LEVEL SHAPE (Slice 1) ──────────────────────────────────────────
+// Same field set as ORG. Every field is independently optional — leaving a
+// field empty/absent means "inherit from org" for that field. Non-empty
+// fields REPLACE the org value for products / value_props / target_personas /
+// case_studies / hook_preferences. Guardrails are additive — campaign values
+// are unioned with org values; campaigns never loosen org restrictions.
+//   {
+//     products?:                     string[]
+//     default_value_props?:          string[]
+//     default_target_personas?:      string[]
+//     default_case_study_summaries?: CaseStudy[]
+//     hook_preferences?: { preferred_categories: string[] }
+//     guardrails?: {
+//       banned_phrasings?:     string[]   // unioned
+//       required_disclaimers?: string[]   // unioned
+//     }
+//   }
 //
 // ─── USER-LEVEL SHAPE ────────────────────────────────────────────────────────
 //   {
@@ -50,7 +70,7 @@
 //       avoid_phrases: string[]
 //     }
 //     hook_preferences: {
-//       preferred_categories: string[]   // standing preference; ordered
+//       preferred_categories: string[]   // per-rep override; ordered
 //     }
 //   }
 // ============================================================================
@@ -74,6 +94,11 @@ function cleanStringArray(v) {
   return v
     .map(x => (typeof x === 'string' ? x.trim() : ''))
     .filter(x => x.length > 0);
+}
+
+// Filter a string array down to valid hook categories, preserving order.
+function cleanHookCategories(v) {
+  return cleanStringArray(v).filter(x => HOOK_CATEGORIES.includes(x));
 }
 
 // Generate an opaque, stable case-study id.
@@ -103,20 +128,53 @@ function cleanCaseStudyArray(v) {
 // sanitizeOrgConfig — takes arbitrary input, returns a clean org config object.
 // Always returns the full shape (empty arrays/objects rather than missing
 // keys) so buildOrgContext never has to null-guard.
+//
+// Slice 1: added top-level hook_preferences.preferred_categories so the org
+// can set a default ordering. Previously this field only existed at the user
+// level.
 // ─────────────────────────────────────────────────────────────────────────────
 function sanitizeOrgConfig(input) {
   const c = (input && typeof input === 'object') ? input : {};
   const g = (c.guardrails && typeof c.guardrails === 'object') ? c.guardrails : {};
+  const hp = (c.hook_preferences && typeof c.hook_preferences === 'object')
+    ? c.hook_preferences : {};
   return {
     products:                     cleanStringArray(c.products),
     default_value_props:          cleanStringArray(c.default_value_props),
     default_target_personas:      cleanStringArray(c.default_target_personas),
     default_case_study_summaries: cleanCaseStudyArray(c.default_case_study_summaries),
+    hook_preferences: {
+      preferred_categories: cleanHookCategories(hp.preferred_categories),
+    },
     guardrails: {
       banned_phrasings:     cleanStringArray(g.banned_phrasings),
       required_disclaimers: cleanStringArray(g.required_disclaimers),
     },
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// sanitizeCampaignConfig — same shape as org, but every section is
+// independently optional. We still always emit the full shape (arrays default
+// to []); the resolver in buildOrgContext distinguishes "empty array" from
+// "absent override" by reading from the raw stored JSONB before normalizing.
+//
+// The wire format from the UI is exactly the same as org config — the UI
+// passes whatever the user typed. We do not introduce "null fields mean
+// inherit" sentinels in the stored JSON because that's brittle across
+// JS/JSONB round-trips. Instead, EMPTY arrays mean inherit (no override for
+// that field), and NON-EMPTY arrays replace.
+//
+// The single exception: if a campaign should fall back to ZERO products/
+// personas/etc (i.e. explicitly clear, not inherit), the campaign owner can
+// instead just delete the entire override (set the column to NULL via the
+// PUT endpoint's "clear" path). This is a deliberate simplicity tradeoff
+// for Slice 1.
+// ─────────────────────────────────────────────────────────────────────────────
+function sanitizeCampaignConfig(input) {
+  // Reuse the org sanitizer — identical shape, same validation. The
+  // semantics ("empty array means inherit") live in buildOrgContext.
+  return sanitizeOrgConfig(input);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -128,10 +186,6 @@ function sanitizeUserConfig(input) {
   const voice = (c.voice && typeof c.voice === 'object') ? c.voice : {};
   const hp    = (c.hook_preferences && typeof c.hook_preferences === 'object')
     ? c.hook_preferences : {};
-
-  // Only keep hook categories that are actually valid, preserving order.
-  const preferred = cleanStringArray(hp.preferred_categories)
-    .filter(x => HOOK_CATEGORIES.includes(x));
 
   return {
     custom_products:          cleanStringArray(c.custom_products),
@@ -152,20 +206,23 @@ function sanitizeUserConfig(input) {
       avoid_phrases: cleanStringArray(voice.avoid_phrases),
     },
     hook_preferences: {
-      preferred_categories: preferred,
+      preferred_categories: cleanHookCategories(hp.preferred_categories),
     },
   };
 }
 
 // Empty defaults — handed to the UI when no config exists yet.
-function emptyOrgConfig()  { return sanitizeOrgConfig(null); }
-function emptyUserConfig() { return sanitizeUserConfig(null); }
+function emptyOrgConfig()      { return sanitizeOrgConfig(null); }
+function emptyCampaignConfig() { return sanitizeCampaignConfig(null); }
+function emptyUserConfig()     { return sanitizeUserConfig(null); }
 
 module.exports = {
   HOOK_CATEGORIES,
   sanitizeOrgConfig,
+  sanitizeCampaignConfig,
   sanitizeUserConfig,
   emptyOrgConfig,
+  emptyCampaignConfig,
   emptyUserConfig,
   newCaseStudyId,
 };

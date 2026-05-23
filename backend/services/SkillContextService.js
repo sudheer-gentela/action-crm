@@ -253,43 +253,86 @@ const caseKey = (item) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // buildOrgContext — assembles the rep-side context block.
 //
-// Resolution rules (applied uniformly):
-//   products         : org.products ∪ user.custom_products − user.excluded_products
-//   value_props      : org.default_value_props ∪ user.custom_value_props − user.excluded_value_props
-//   target_personas  : org.default_target_personas ∪ user.custom_target_personas − user.excluded_target_personas
-//   case_studies     : org.default_case_study_summaries ∪ user.custom_case_studies − user.excluded_case_studies
+// Resolution cascade (Slice 1):
+//   org_baseline → campaign_override → user_layer (add/exclude)
+//
+// Per-field rules:
+//   products         : campaign REPLACES org (if non-empty) → + user add/exclude
+//   value_props      : campaign REPLACES org (if non-empty) → + user add/exclude
+//   target_personas  : campaign REPLACES org (if non-empty) → + user add/exclude
+//   case_studies     : campaign REPLACES org (if non-empty) → + user add/exclude
+//   hook_preferences : user > campaign > org   (user is per-rep standing pref;
+//                      per-run picker in runProspectSkill still wins above all)
 //   competitors      : competitors-table ∪ user.custom_competitors − user.excluded_competitors
+//                      (campaign layer not applied — competitor list is org-wide)
 //   rep              : user prospecting_config + users-table fallback
 //   voice            : user only
-//   guardrails_extra : org banned phrasings ∪ user avoid phrases (additive)
+//   guardrails       : org ∪ campaign ∪ user (additive — campaigns can ADD
+//                      restrictions, never loosen them)
 // ─────────────────────────────────────────────────────────────────────────────
-function buildOrgContext({ orgConfig, userConfig, repUser, competitors }) {
-  const oc = orgConfig || {};
-  const uc = userConfig || {};
+// Slice 1: campaign override layer. For products / value_props /
+// target_personas / case_studies / hook_preferences, a non-empty array on the
+// campaign override REPLACES the org array. For banned_phrasings and
+// required_disclaimers, the campaign array is UNIONED with org — campaigns
+// can add restrictions, never loosen them.
+//
+// Semantics rationale: when a rep configures a campaign with its own value
+// props, they mean "use these *instead of* the org defaults" — a merge would
+// mix old and new pitches and defeat the point. Guardrails differ because
+// loosening them is never desired; campaigns are additive there.
+//
+// "Empty array on campaign override = inherit from org" is the rule. To
+// explicitly clear a field for a campaign (e.g. no products at all), delete
+// the entire campaign override via the DELETE endpoint — a deliberate
+// simplicity tradeoff for Slice 1.
+function resolveCampaignReplacement(orgItems, campaignItems) {
+  const c = Array.isArray(campaignItems) ? campaignItems : [];
+  if (c.length > 0) return c;
+  return Array.isArray(orgItems) ? orgItems : [];
+}
 
+function buildOrgContext({ orgConfig, campaignConfig, userConfig, repUser, competitors }) {
+  const oc = orgConfig      || {};
+  const cc = campaignConfig || {};
+  const uc = userConfig     || {};
+
+  // ── Replacement layer: campaign overrides org for these fields ────────────
+  const effectiveProducts        = resolveCampaignReplacement(oc.products, cc.products);
+  const effectiveValueProps      = resolveCampaignReplacement(oc.default_value_props,          cc.default_value_props);
+  const effectivePersonas        = resolveCampaignReplacement(oc.default_target_personas,      cc.default_target_personas);
+  const effectiveCaseStudies     = resolveCampaignReplacement(oc.default_case_study_summaries, cc.default_case_study_summaries);
+
+  // Hook preferences: campaign array replaces org array when non-empty. We
+  // pass the resolved categories into the returned context — the skill reads
+  // org_context.hook_preferences.preferred_categories at run time.
+  const orgHookCats      = Array.isArray(oc.hook_preferences?.preferred_categories) ? oc.hook_preferences.preferred_categories : [];
+  const campaignHookCats = Array.isArray(cc.hook_preferences?.preferred_categories) ? cc.hook_preferences.preferred_categories : [];
+  const effectiveHookCats = campaignHookCats.length > 0 ? campaignHookCats : orgHookCats;
+
+  // ── User add/exclude applies AFTER campaign replacement ───────────────────
   const products = mergeAndExclude({
-    orgItems:       oc.products,
+    orgItems:       effectiveProducts,
     userAdditions:  uc.custom_products,
     userExclusions: uc.excluded_products,
     keyFn:          productKey,
   });
 
   const valueProps = mergeAndExclude({
-    orgItems:       oc.default_value_props,
+    orgItems:       effectiveValueProps,
     userAdditions:  uc.custom_value_props,
     userExclusions: uc.excluded_value_props,
     keyFn:          stringKey,
   });
 
   const targetPersonas = mergeAndExclude({
-    orgItems:       oc.default_target_personas,
+    orgItems:       effectivePersonas,
     userAdditions:  uc.custom_target_personas,
     userExclusions: uc.excluded_target_personas,
     keyFn:          stringKey,
   });
 
   const caseStudies = mergeAndExclude({
-    orgItems:       oc.default_case_study_summaries,
+    orgItems:       effectiveCaseStudies,
     userAdditions:  uc.custom_case_studies,
     userExclusions: uc.excluded_case_studies,
     keyFn:          caseKey,
@@ -315,15 +358,27 @@ function buildOrgContext({ orgConfig, userConfig, repUser, competitors }) {
     email_signature: repFromUser.email_signature_block || null,
   };
 
-  const orgBanned = Array.isArray(oc.guardrails?.banned_phrasings)
-    ? oc.guardrails.banned_phrasings : [];
-  const userAvoid = Array.isArray(uc.voice?.avoid_phrases)
-    ? uc.voice.avoid_phrases : [];
+  // ── Guardrails: additive across org, campaign, and user ───────────────────
+  const orgBanned      = Array.isArray(oc.guardrails?.banned_phrasings) ? oc.guardrails.banned_phrasings : [];
+  const campaignBanned = Array.isArray(cc.guardrails?.banned_phrasings) ? cc.guardrails.banned_phrasings : [];
+  const userAvoid      = Array.isArray(uc.voice?.avoid_phrases)         ? uc.voice.avoid_phrases         : [];
+
+  const orgDisc      = Array.isArray(oc.guardrails?.required_disclaimers) ? oc.guardrails.required_disclaimers : [];
+  const campaignDisc = Array.isArray(cc.guardrails?.required_disclaimers) ? cc.guardrails.required_disclaimers : [];
+
   const guardrailsExtra = {
-    banned_phrasings: [...new Set([...orgBanned, ...userAvoid])],
-    required_disclaimers: Array.isArray(oc.guardrails?.required_disclaimers)
-      ? oc.guardrails.required_disclaimers : [],
+    banned_phrasings:     [...new Set([...orgBanned, ...campaignBanned, ...userAvoid])],
+    required_disclaimers: [...new Set([...orgDisc,   ...campaignDisc])],
   };
+
+  // hook_preferences: prefer user's per-rep override when present, else the
+  // effective (campaign-or-org) categories. The skill's per-run picker
+  // (passed via runProspectSkill's hookPreferences arg) still wins over this
+  // — that path injects directly into org_context.hook_preferences.
+  const userHookCats = Array.isArray(uc.hook_preferences?.preferred_categories) ? uc.hook_preferences.preferred_categories : [];
+  const resolvedHookPrefs = userHookCats.length > 0
+    ? { preferred_categories: userHookCats }
+    : (effectiveHookCats.length > 0 ? { preferred_categories: effectiveHookCats } : null);
 
   return {
     rep,
@@ -333,7 +388,7 @@ function buildOrgContext({ orgConfig, userConfig, repUser, competitors }) {
     case_study_summaries: caseStudies,
     competitors: competitorNames,
     voice: uc.voice || null,
-    hook_preferences: uc.hook_preferences || null,
+    hook_preferences: resolvedHookPrefs,
     guardrails_extra: guardrailsExtra,
   };
 }
@@ -650,6 +705,20 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
     );
     const orgConfig = orgRes.rows[0]?.settings?.prospecting_config || null;
 
+    // ── Campaign override → prospecting_config_override (Slice 1) ───────
+    // Loaded via safeQuery so environments where the migration hasn't run
+    // yet (column missing → 42703) silently fall back to "no override".
+    let campaignConfig = null;
+    if (prospect.campaign_id) {
+      const ccRes = await safeQuery(client,
+        `SELECT prospecting_config_override
+           FROM prospecting_campaigns
+          WHERE id = $1 AND org_id = $2`,
+        [prospect.campaign_id, orgId]
+      );
+      campaignConfig = ccRes[0]?.prospecting_config_override || null;
+    }
+
     // ── User preferences → prospecting_config (only if asUserId provided) ──
     let userConfig = null;
     let repUser = null;
@@ -714,6 +783,7 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
     // ── Org context ─────────────────────────────────────────────────────
     const orgContext = buildOrgContext({
       orgConfig,
+      campaignConfig,
       userConfig,
       repUser,
       competitors,
@@ -993,4 +1063,6 @@ async function buildDealSkillContext({ dealId }) {
 module.exports = {
   buildProspectSkillContext,
   buildDealSkillContext,
+  // Exported for unit tests of the resolution cascade. Not used by route code.
+  buildOrgContext,
 };

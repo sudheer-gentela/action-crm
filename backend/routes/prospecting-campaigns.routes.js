@@ -23,8 +23,14 @@ const express = require('express');
 const router  = express.Router();
 const { pool } = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
-const { orgContext }    = require('../middleware/orgContext.middleware');
+const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
 const requireModule     = require('../middleware/requireModule.middleware');
+const {
+  sanitizeCampaignConfig,
+  sanitizeOrgConfig,
+  emptyCampaignConfig,
+  emptyOrgConfig,
+} = require('../config/prospectingConfigSchema');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -776,6 +782,150 @@ router.get('/:id/sequence-health', async (req, res) => {
   } catch (err) {
     console.error('campaign sequence-health error:', err);
     res.status(500).json({ error: { message: 'Failed to load sequence health' } });
+  }
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CAMPAIGN-LEVEL PROSPECTING_CONFIG OVERRIDE (Slice 1)
+// ─────────────────────────────────────────────────────────────────────────────
+// A campaign can override the org's prospecting_config for specific fields
+// (value_props, target_personas, etc.). The override is stored as a JSONB
+// blob on prospecting_campaigns.prospecting_config_override.
+//
+// Resolution semantics (enforced in services/SkillContextService.js
+// buildOrgContext):
+//   - Non-empty arrays on the campaign REPLACE the org array
+//   - Empty arrays mean "inherit from org" — to explicitly clear a field
+//     campaign-wide, DELETE the entire override (column → NULL)
+//   - Guardrails (banned_phrasings / required_disclaimers) UNION across layers
+//
+// Endpoints:
+//   GET    /:id/config   → { override, resolved, org_baseline }
+//   PUT    /:id/config   → write/replace the override JSONB
+//   DELETE /:id/config   → clear the override (column → NULL)
+//
+// Owner/admin only — matches the gating on routes/prospecting-config.routes.js
+// (org-level config). Campaign-level config is a config-write privilege.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const configWriteGuard = requireRole('owner', 'admin');
+
+// ── GET /:id/config — current override + resolved view + org baseline ────────
+router.get('/:id/config', configWriteGuard, async (req, res) => {
+  try {
+    const campRes = await pool.query(
+      `SELECT id, prospecting_config_override
+         FROM prospecting_campaigns
+        WHERE id = $1 AND org_id = $2`,
+      [req.params.id, req.orgId]
+    );
+    if (!campRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Campaign not found' } });
+    }
+    const rawOverride = campRes.rows[0].prospecting_config_override;
+    // sanitizeCampaignConfig always returns the full shape (empty arrays where
+    // unset) — handy for the UI which can render an editor without null guards.
+    const override = sanitizeCampaignConfig(rawOverride);
+
+    // Org baseline — same shape, returned so the UI can show "Inherits: ..." next
+    // to each field.
+    const orgRes = await pool.query(
+      `SELECT settings FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const orgBaseline = sanitizeOrgConfig(orgRes.rows[0]?.settings?.prospecting_config);
+
+    // Resolved view — what the skill will actually see. Mirrors buildOrgContext
+    // semantics without invoking it (no user layer here — that's per-rep).
+    const resolveReplace = (orgArr, campArr) =>
+      (Array.isArray(campArr) && campArr.length > 0) ? campArr : (orgArr || []);
+
+    const resolved = {
+      products:                     resolveReplace(orgBaseline.products,                     override.products),
+      default_value_props:          resolveReplace(orgBaseline.default_value_props,          override.default_value_props),
+      default_target_personas:      resolveReplace(orgBaseline.default_target_personas,      override.default_target_personas),
+      default_case_study_summaries: resolveReplace(orgBaseline.default_case_study_summaries, override.default_case_study_summaries),
+      hook_preferences: {
+        preferred_categories: resolveReplace(
+          orgBaseline.hook_preferences?.preferred_categories,
+          override.hook_preferences?.preferred_categories
+        ),
+      },
+      guardrails: {
+        banned_phrasings: [...new Set([
+          ...(orgBaseline.guardrails?.banned_phrasings     || []),
+          ...(override.guardrails?.banned_phrasings        || []),
+        ])],
+        required_disclaimers: [...new Set([
+          ...(orgBaseline.guardrails?.required_disclaimers || []),
+          ...(override.guardrails?.required_disclaimers    || []),
+        ])],
+      },
+    };
+
+    res.json({
+      override,
+      resolved,
+      org_baseline: orgBaseline,
+      has_override: rawOverride !== null && rawOverride !== undefined,
+    });
+  } catch (err) {
+    console.error('campaign GET /:id/config:', err);
+    res.status(500).json({ error: { message: 'Failed to load campaign config' } });
+  }
+});
+
+// ── PUT /:id/config — write/replace the override JSONB ───────────────────────
+// Body: { override: { ...sanitizeCampaignConfig-shape... } }
+router.put('/:id/config', configWriteGuard, async (req, res) => {
+  try {
+    if (!req.body || typeof req.body.override !== 'object' || req.body.override === null) {
+      return res.status(400).json({ error: { message: 'override object is required' } });
+    }
+    const clean = sanitizeCampaignConfig(req.body.override);
+
+    const r = await pool.query(
+      `UPDATE prospecting_campaigns
+          SET prospecting_config_override = $3::jsonb,
+              updated_at = now()
+        WHERE id = $1 AND org_id = $2
+      RETURNING id, prospecting_config_override`,
+      [req.params.id, req.orgId, JSON.stringify(clean)]
+    );
+    if (!r.rows.length) {
+      return res.status(404).json({ error: { message: 'Campaign not found' } });
+    }
+
+    res.json({
+      override: sanitizeCampaignConfig(r.rows[0].prospecting_config_override),
+      has_override: true,
+    });
+  } catch (err) {
+    console.error('campaign PUT /:id/config:', err);
+    res.status(500).json({ error: { message: 'Failed to save campaign config' } });
+  }
+});
+
+// ── DELETE /:id/config — clear the override (column → NULL) ──────────────────
+// After this the campaign inherits org config entirely.
+router.delete('/:id/config', configWriteGuard, async (req, res) => {
+  try {
+    const r = await pool.query(
+      `UPDATE prospecting_campaigns
+          SET prospecting_config_override = NULL,
+              updated_at = now()
+        WHERE id = $1 AND org_id = $2
+      RETURNING id`,
+      [req.params.id, req.orgId]
+    );
+    if (!r.rows.length) {
+      return res.status(404).json({ error: { message: 'Campaign not found' } });
+    }
+    res.json({ cleared: true, has_override: false });
+  } catch (err) {
+    console.error('campaign DELETE /:id/config:', err);
+    res.status(500).json({ error: { message: 'Failed to clear campaign config' } });
   }
 });
 
