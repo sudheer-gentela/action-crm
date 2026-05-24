@@ -245,6 +245,9 @@ app.use('/api/org/call-settings',   require('./routes/org-call-settings.routes')
 // Prospecting Phase 2
 app.use('/api/prospecting-senders', require('./routes/prospecting-senders.routes'));
 app.use('/api/org/outreach-limits', require('./routes/outreach-limits.routes'));
+// Slice 2: per-rep activation target (lives next to outreach-limits since
+// they're conceptually paired — org ceiling + per-user override).
+app.use('/api/me/activation-target', require('./routes/user-activation-target.routes'));
 app.use('/api/prospecting/inbox',   require('./routes/prospecting-inbox.routes'));
 
 // ── Twilio (Phase 3) ──────────────────────────────────────────────────────
@@ -434,8 +437,28 @@ app.listen(PORT, () => {
       }
     });
 
+    // Daily 09:00 UTC: campaign SLA sweeps (Slice 2). Inserts rolled-up
+    // prospecting_actions for campaigns whose research-stage or target-stage
+    // backlog is older than the org's configured SLA window.
+    cron.schedule('0 9 * * *', async () => {
+      try {
+        const { syncOverdueActivations, syncOverdueResearch } =
+          require('./services/CampaignSweeps');
+        const [a, r] = await Promise.all([
+          syncOverdueActivations(),
+          syncOverdueResearch(),
+        ]);
+        const total = (a.inserted || 0) + (r.inserted || 0);
+        if (total > 0) {
+          console.log(`📍 CampaignSweeps Cron: activations ${a.inserted}/${a.scanned}, research ${r.inserted}/${r.scanned}`);
+        }
+      } catch (err) {
+        console.error('📍 CampaignSweeps Cron error:', err.message);
+      }
+    });
 
-    console.log('✅ Cron jobs initialized (proposals hourly, CLM hourly+daily, sequences 15m, SF write-back 04:30 UTC, stuck calls 30m)');
+
+    console.log('✅ Cron jobs initialized (proposals hourly, CLM hourly+daily, sequences 15m, SF write-back 04:30 UTC, stuck calls 30m, campaign SLA 09:00 UTC)');
   } catch (err) {
     console.error('⚠️  Failed to initialize cron jobs:', err.message);
   }

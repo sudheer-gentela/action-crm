@@ -83,6 +83,33 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
   const CHANNEL_LABEL = { email: '✉️ Email', linkedin: '🔗 LinkedIn', call: '📞 Call', task: '📋 Task' };
   const channelLabel  = CHANNEL_LABEL[channel] || channel;
 
+  // Slice 3: intent badge — surfaces the step_intent the dispatcher used to
+  // pick the skill template (first_touch, follow_up, breakup,
+  // connection_request, post_accept_message, nurture_dm). Sourced from
+  // draft.personalizeSources.stepIntent. Shows the inference source as a
+  // secondary marker (Auto vs Override) so the rep can see when a sequence
+  // author forced something specific.
+  const INTENT_LABEL = {
+    first_touch:           'First touch',
+    follow_up:             'Follow-up',
+    breakup:               'Breakup',
+    connection_request:    'Connection req',
+    post_accept_message:   'Post-accept DM',
+    nurture_dm:            'Nurture DM',
+  };
+  const INTENT_COLOR = {
+    first_touch:           { bg: '#dcfce7', fg: '#166534' },
+    follow_up:             { bg: '#dbeafe', fg: '#1e40af' },
+    breakup:               { bg: '#fee2e2', fg: '#991b1b' },
+    connection_request:    { bg: '#e0e7ff', fg: '#3730a3' },
+    post_accept_message:   { bg: '#fef3c7', fg: '#92400e' },
+    nurture_dm:            { bg: '#f3e8ff', fg: '#6b21a8' },
+  };
+  const stepIntent    = draft.personalizeSources?.stepIntent || null;
+  const intentSource  = draft.personalizeSources?.intentSource || null;
+  const intentLabel   = stepIntent ? INTENT_LABEL[stepIntent] : null;
+  const intentColor   = stepIntent ? INTENT_COLOR[stepIntent] : null;
+
   return (
     <div style={{
       border: `1.5px solid ${overdue ? '#fecaca' : '#e5e7eb'}`,
@@ -116,6 +143,27 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
         }}>
           {draft.sequenceName} · step {draft.stepOrder}
         </div>
+
+        {intentLabel && intentColor && (
+          <span
+            title={intentSource === 'override'
+              ? `Intent set explicitly on this step (skill template: ${stepIntent})`
+              : `Intent inferred from step position + engagement history (skill template: ${stepIntent})`}
+            style={{
+              fontSize: 10, fontWeight: 600,
+              padding: '2px 8px', borderRadius: 10,
+              background: intentColor.bg, color: intentColor.fg,
+              border: `1px solid ${intentColor.fg}33`,
+              flexShrink: 0,
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+            }}
+          >
+            {intentLabel}
+            {intentSource === 'override' && (
+              <span style={{ fontSize: 9, opacity: 0.7 }}>●</span>
+            )}
+          </span>
+        )}
 
         <div style={{
           flex: 1, fontSize: 12, color: '#374151',

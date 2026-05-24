@@ -1,21 +1,19 @@
 // prospecting/OutreachSkillPanel.js
 //
-// The outreach-personalization skill UI. Rendered as a section inside the
-// Intel tab of ProspectDetailPanel. Lets a rep generate a first-touch
-// outreach package (email + LinkedIn note), see the hook rationale and
-// confidence notes, push the email into the OutreachComposer, and browse
-// past runs for this prospect.
+// Slice 3 rewrite — the panel now calls TWO skills in parallel for the
+// first-touch package:
+//   POST /api/skills/outreach-email/run     (step_intent: first_touch)
+//   POST /api/skills/outreach-linkedin/run  (step_intent: connection_request)
 //
-// Backend:
-//   POST /api/skills/outreach-personalization/run   { prospectId, hookPreferences? }
-//   GET  /api/skill-runs?skill_name=outreach-personalization&prospect_id=<id>
-//   GET  /api/skill-runs/:id
+// The retired outreach-personalization skill emitted both at once; this UI
+// preserves that user experience by aggregating two separate skill calls.
+// Each call produces its own skill_runs row, so the past-runs list shows
+// email runs and LinkedIn runs interleaved by timestamp.
 //
 // Props:
 //   prospectId   {number}
 //   onUseDraft   {fn}  ({ messageSubject, messageBody }) => void
-//                       — opens the OutreachComposer pre-filled. The panel
-//                       owns the composer; this just hands it a draft.
+//                       — opens the OutreachComposer pre-filled.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from './prospectingShared';
@@ -38,28 +36,47 @@ const HOOK_LABELS = {
   role_curiosity:  'role curiosity',
 };
 
+const SKILL_LABELS = {
+  'outreach-email':    '✉️ Email',
+  'outreach-linkedin': '🔗 LinkedIn',
+};
+
 const TEAL = '#0F9D8E';
 
 export default function OutreachSkillPanel({ prospectId, onUseDraft }) {
   const [hook, setHook]           = useState('');
   const [running, setRunning]     = useState(false);
-  const [result, setResult]       = useState(null);   // current ephemeral result
+  const [emailResult, setEmailResult]       = useState(null);    // { runId, output, status }
+  const [linkedinResult, setLinkedinResult] = useState(null);
   const [error, setError]         = useState(null);
-  const [copied, setCopied]       = useState(null);    // 'email' | 'linkedin'
+  const [copied, setCopied]       = useState(null);   // 'email' | 'linkedin'
 
-  // Past runs for this prospect.
+  // Past runs across BOTH skills, sorted newest-first.
   const [runs, setRuns]           = useState([]);
   const [runsLoading, setRunsLoading] = useState(true);
   const [expandedRunId, setExpandedRunId] = useState(null);
 
-  // ── Load past runs (Intel tab open / after a new run) ──
+  // ── Load past runs across both new skills ──────────────────────────────────
   const loadRuns = useCallback(async () => {
     setRunsLoading(true);
     try {
-      const r = await apiFetch(
-        `/skill-runs?skill_name=outreach-personalization&prospect_id=${prospectId}&limit=20`
-      );
-      setRuns(Array.isArray(r.runs) ? r.runs : []);
+      const [er, lr] = await Promise.all([
+        apiFetch(`/skill-runs?skill_name=outreach-email&prospect_id=${prospectId}&limit=20`)
+          .catch(() => ({ runs: [] })),
+        apiFetch(`/skill-runs?skill_name=outreach-linkedin&prospect_id=${prospectId}&limit=20`)
+          .catch(() => ({ runs: [] })),
+      ]);
+      const combined = [
+        ...((er && Array.isArray(er.runs)) ? er.runs : []),
+        ...((lr && Array.isArray(lr.runs)) ? lr.runs : []),
+      ];
+      // Newest first; some rows lack created_at, push them to the bottom.
+      combined.sort((a, b) => {
+        const da = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const db = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return db - da;
+      });
+      setRuns(combined.slice(0, 30));
     } catch (_) {
       setRuns([]);
     } finally {
@@ -69,31 +86,48 @@ export default function OutreachSkillPanel({ prospectId, onUseDraft }) {
 
   useEffect(() => { loadRuns(); }, [loadRuns]);
 
-  // ── Generate ──
+  // ── Generate — calls both skills in parallel ──────────────────────────────
   const handleGenerate = async () => {
     setRunning(true);
     setError(null);
     setExpandedRunId(null);
+    setEmailResult(null);
+    setLinkedinResult(null);
     try {
       const body = { prospectId };
       if (hook) body.hookPreferences = [hook];
-      const res = await apiFetch('/skills/outreach-personalization/run', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-      if (res && res.ok && res.status === 'ok') {
-        setResult({
-          runId: res.runId,
-          output: res.output,
-          model: res.usage ? null : null, // model not in run response; shown via runs list
-          status: 'ok',
-        });
-      } else if (res && res.status === 'parse_failed') {
-        setError('The model returned output that could not be parsed. Try regenerating.');
-      } else {
-        setError('Generation did not complete. Try again.');
+
+      // Two skill calls in parallel. Each returns its own runId.
+      const [er, lr] = await Promise.all([
+        apiFetch('/skills/outreach-email/run', {
+          method: 'POST',
+          body: JSON.stringify({ ...body, stepIntent: 'first_touch' }),
+        }).catch(err => ({ ok: false, errorMessage: err.message })),
+        apiFetch('/skills/outreach-linkedin/run', {
+          method: 'POST',
+          body: JSON.stringify({ ...body, stepIntent: 'connection_request' }),
+        }).catch(err => ({ ok: false, errorMessage: err.message })),
+      ]);
+
+      if (er && er.ok && er.status === 'ok') {
+        setEmailResult({ runId: er.runId, output: er.output, status: 'ok' });
+      } else if (er && er.errorMessage) {
+        // One side can fail without aborting the whole flow — surface the
+        // partial result. UI shows the LinkedIn output even if email failed.
+        setError(prev => (prev ? prev + ' · ' : '') + 'Email: ' + er.errorMessage);
+      } else if (er && er.status === 'parse_failed') {
+        setError(prev => (prev ? prev + ' · ' : '') + 'Email: model output unparseable');
       }
-      loadRuns(); // refresh history
+
+      if (lr && lr.ok && lr.status === 'ok') {
+        setLinkedinResult({ runId: lr.runId, output: lr.output, status: 'ok' });
+      } else if (lr && lr.errorMessage) {
+        setError(prev => (prev ? prev + ' · ' : '') + 'LinkedIn: ' + lr.errorMessage);
+      } else if (lr && lr.status === 'parse_failed') {
+        setError(prev => (prev ? prev + ' · ' : '') + 'LinkedIn: model output unparseable');
+      }
+
+      loadRuns();
     } catch (err) {
       setError(err?.message || 'Failed to generate outreach.');
     } finally {
@@ -101,26 +135,26 @@ export default function OutreachSkillPanel({ prospectId, onUseDraft }) {
     }
   };
 
-  // ── Expand a past run — fetch its full detail ──
-  const handleExpandRun = async (runId) => {
-    if (expandedRunId === runId) { setExpandedRunId(null); return; }
-    setExpandedRunId(runId);
+  // ── Expand a past run — fetch its full detail and load into the right card ─
+  const handleExpandRun = async (run) => {
+    if (expandedRunId === run.id) { setExpandedRunId(null); return; }
+    setExpandedRunId(run.id);
     setError(null);
     try {
-      const detail = await apiFetch(`/skill-runs/${runId}`);
-      // skill_runs.output is the stored JSONB skill output
-      if (detail && detail.output) {
-        setResult({
-          runId: detail.id,
-          output: typeof detail.output === 'string'
-            ? JSON.parse(detail.output)
-            : detail.output,
-          model: detail.model || null,
-          status: detail.status,
-          historical: true,
-        });
-      } else {
+      const detail = await apiFetch(`/skill-runs/${run.id}`);
+      if (!detail || !detail.output) {
         setError('That run has no stored output.');
+        return;
+      }
+      const output = typeof detail.output === 'string'
+        ? JSON.parse(detail.output)
+        : detail.output;
+
+      // Decide which card to populate based on the run's skill_name.
+      if (run.skill_name === 'outreach-email') {
+        setEmailResult({ runId: detail.id, output, status: detail.status, historical: true });
+      } else if (run.skill_name === 'outreach-linkedin') {
+        setLinkedinResult({ runId: detail.id, output, status: detail.status, historical: true });
       }
     } catch (err) {
       setError('Could not load that run.');
@@ -133,9 +167,10 @@ export default function OutreachSkillPanel({ prospectId, onUseDraft }) {
     setTimeout(() => setCopied(null), 1500);
   };
 
-  const out = result?.output || null;
-  const email = out?.email || {};
-  const liNote = out?.linkedin_note || '';
+  const email = emailResult?.output?.email || {};
+  const linkedinBody = linkedinResult?.output?.linkedin?.body || '';
+  const emailHook    = emailResult?.output?.hook;
+  const linkedinHook = linkedinResult?.output?.hook;
 
   return (
     <div style={{ marginTop: 20, borderTop: '1px solid #e5e7eb', paddingTop: 16 }}>
@@ -143,7 +178,7 @@ export default function OutreachSkillPanel({ prospectId, onUseDraft }) {
         ✨ GENERATE OUTREACH
       </div>
       <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>
-        First-touch email + LinkedIn note, personalized from this prospect's signals.
+        First-touch email + LinkedIn note, generated independently by two skills.
       </div>
 
       {/* Controls */}
@@ -167,7 +202,7 @@ export default function OutreachSkillPanel({ prospectId, onUseDraft }) {
             color: running ? '#6b7280' : '#fff',
           }}
         >
-          {running ? '⏳ Generating…' : '▶ Generate'}
+          {running ? '⏳ Generating both…' : '▶ Generate'}
         </button>
       </div>
 
@@ -178,30 +213,23 @@ export default function OutreachSkillPanel({ prospectId, onUseDraft }) {
         }}>{error}</div>
       )}
 
-      {/* Result */}
-      {out && (
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+      {/* Email card */}
+      {emailResult && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
             <span style={{ fontSize: 11, background: '#E1F5EE', color: '#0F6E56', padding: '3px 9px', borderRadius: 12 }}>
-              ⚓ hook: {HOOK_LABELS[out.hook?.category] || out.hook?.category || 'n/a'}
+              ⚓ hook: {HOOK_LABELS[emailHook?.category] || emailHook?.category || 'n/a'}
             </span>
-            {result.model && (
-              <span style={{ fontSize: 11, background: '#f3f4f6', color: '#6b7280', padding: '3px 9px', borderRadius: 12 }}>
-                {result.model}
-              </span>
-            )}
             <span style={{ fontSize: 11, background: '#f3f4f6', color: '#6b7280', padding: '3px 9px', borderRadius: 12 }}>
-              run #{result.runId}{result.historical ? ' · past' : ''}
+              run #{emailResult.runId}{emailResult.historical ? ' · past' : ''}
             </span>
           </div>
-
-          {/* Email card */}
-          <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, marginBottom: 10 }}>
+          <div style={{ border: '1px solid #e5e7eb', borderRadius: 8 }}>
             <div style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               padding: '8px 12px', borderBottom: '1px solid #e5e7eb', background: '#f9fafb',
             }}>
-              <span style={{ fontSize: 12, fontWeight: 600 }}>✉️ Email</span>
+              <span style={{ fontSize: 12, fontWeight: 600 }}>✉️ Email (first-touch)</span>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button
                   onClick={() => copy(
@@ -231,48 +259,68 @@ export default function OutreachSkillPanel({ prospectId, onUseDraft }) {
                 fontSize: 12, color: '#374151', lineHeight: 1.6, whiteSpace: 'pre-wrap',
                 borderTop: '1px dashed #e5e7eb', paddingTop: 6,
               }}>{email.body || '—'}</div>
+              {emailResult.output.rationale && (
+                <div style={{
+                  marginTop: 8, background: '#f3f4f6', borderRadius: 6, padding: '7px 10px',
+                  fontSize: 11, color: '#4b5563',
+                }}>
+                  <strong style={{ color: '#6b7280' }}>Why this hook:</strong> {emailResult.output.rationale}
+                </div>
+              )}
+              {emailResult.output.confidence_notes && (
+                <div style={{
+                  marginTop: 6, background: '#FAEEDA', borderRadius: 6, padding: '7px 10px',
+                  fontSize: 11, color: '#633806',
+                }}>
+                  <strong>⚠ Confidence notes:</strong> {emailResult.output.confidence_notes}
+                </div>
+              )}
             </div>
           </div>
+        </div>
+      )}
 
-          {/* LinkedIn note card */}
-          <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, marginBottom: 10 }}>
+      {/* LinkedIn card */}
+      {linkedinResult && (
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+            <span style={{ fontSize: 11, background: '#E1F5EE', color: '#0F6E56', padding: '3px 9px', borderRadius: 12 }}>
+              ⚓ hook: {HOOK_LABELS[linkedinHook?.category] || linkedinHook?.category || 'n/a'}
+            </span>
+            <span style={{ fontSize: 11, background: '#f3f4f6', color: '#6b7280', padding: '3px 9px', borderRadius: 12 }}>
+              run #{linkedinResult.runId}{linkedinResult.historical ? ' · past' : ''}
+            </span>
+          </div>
+          <div style={{ border: '1px solid #e5e7eb', borderRadius: 8 }}>
             <div style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               padding: '8px 12px', borderBottom: '1px solid #e5e7eb', background: '#f9fafb',
             }}>
-              <span style={{ fontSize: 12, fontWeight: 600 }}>🔗 LinkedIn note</span>
-              <button onClick={() => copy(liNote, 'linkedin')} style={miniBtn(false)}>
+              <span style={{ fontSize: 12, fontWeight: 600 }}>🔗 LinkedIn connection request</span>
+              <button onClick={() => copy(linkedinBody, 'linkedin')} style={miniBtn(false)}>
                 {copied === 'linkedin' ? '✓ Copied' : '⧉ Copy'}
               </button>
             </div>
             <div style={{ padding: '10px 12px', fontSize: 12, color: '#374151', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-              {liNote || '—'}
+              {linkedinBody || '—'}
               <span style={{ display: 'block', fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
-                {(liNote || '').length} / 280 characters
+                {(linkedinBody || '').length} / 280 characters
               </span>
+              {linkedinResult.output.confidence_notes && (
+                <div style={{
+                  marginTop: 8, background: '#FAEEDA', borderRadius: 6, padding: '7px 10px',
+                  fontSize: 11, color: '#633806',
+                }}>
+                  <strong>⚠ Confidence notes:</strong> {linkedinResult.output.confidence_notes}
+                </div>
+              )}
             </div>
-          </div>
-
-          {/* Rationale + confidence notes */}
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            {out.rationale && (
-              <div style={{ flex: 1, minWidth: 200, background: '#f3f4f6', borderRadius: 6, padding: '9px 11px' }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 3 }}>💡 WHY THIS HOOK</div>
-                <div style={{ fontSize: 11, color: '#4b5563', lineHeight: 1.55 }}>{out.rationale}</div>
-              </div>
-            )}
-            {out.confidence_notes && (
-              <div style={{ flex: 1, minWidth: 200, background: '#FAEEDA', borderRadius: 6, padding: '9px 11px' }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: '#633806', marginBottom: 3 }}>⚠ CONFIDENCE NOTES</div>
-                <div style={{ fontSize: 11, color: '#633806', lineHeight: 1.55 }}>{out.confidence_notes}</div>
-              </div>
-            )}
           </div>
         </div>
       )}
 
       {/* Past runs */}
-      <div style={{ marginTop: 8 }}>
+      <div style={{ marginTop: 16 }}>
         <div style={{ fontSize: 11, fontWeight: 600, color: '#9ca3af', letterSpacing: 0.3, marginBottom: 6 }}>
           PAST RUNS FOR THIS PROSPECT
         </div>
@@ -286,8 +334,8 @@ export default function OutreachSkillPanel({ prospectId, onUseDraft }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {runs.map(run => (
               <div
-                key={run.id}
-                onClick={() => handleExpandRun(run.id)}
+                key={`${run.skill_name}_${run.id}`}
+                onClick={() => handleExpandRun(run)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
                   fontSize: 12, padding: '6px 10px', borderRadius: 6,
@@ -295,6 +343,9 @@ export default function OutreachSkillPanel({ prospectId, onUseDraft }) {
                   border: '1px solid ' + (expandedRunId === run.id ? '#a7d8d4' : '#f0f0f0'),
                 }}
               >
+                <span style={{ fontSize: 11, fontWeight: 600 }}>
+                  {SKILL_LABELS[run.skill_name] || run.skill_name}
+                </span>
                 <span style={{ color: '#6b7280' }}>
                   {run.created_at ? new Date(run.created_at).toLocaleDateString() : '—'}
                 </span>

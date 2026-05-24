@@ -31,6 +31,11 @@ const {
   emptyCampaignConfig,
   emptyOrgConfig,
 } = require('../config/prospectingConfigSchema');
+// Slice 3: per-prospect personalisation now goes through the dispatcher,
+// which walks all sequence steps and calls the right per-channel skill
+// (outreach-email / outreach-linkedin) with the right step_intent. Replaces
+// Slice 2's inline mapping of the retired outreach-personalization skill.
+const PersonalizationDispatcher = require('../services/PersonalizationDispatcher');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -926,6 +931,480 @@ router.delete('/:id/config', configWriteGuard, async (req, res) => {
   } catch (err) {
     console.error('campaign DELETE /:id/config:', err);
     res.status(500).json({ error: { message: 'Failed to clear campaign config' } });
+  }
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SLICE 2 — RESEARCHER WORKFLOW + BATCH ACTIVATION + PACING
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Helper: load this org's effective LinkedIn activation cap ────────────────
+// Org ceiling: org_integrations.config.linkedinDailyActivationCap (default 25).
+// User target:  user_preferences.preferences.linkedin_daily_activation_target.
+// Effective = min(userTarget || orgCap, orgCap). NULL user target → orgCap.
+async function resolveActivationLimits(orgId, userId) {
+  const [orgRes, userRes] = await Promise.all([
+    pool.query(
+      `SELECT config FROM org_integrations
+        WHERE org_id = $1 AND integration_type = 'prospecting_email'`,
+      [orgId]
+    ),
+    pool.query(
+      `SELECT preferences FROM user_preferences
+        WHERE user_id = $1 AND org_id = $2`,
+      [userId, orgId]
+    ),
+  ]);
+  const cfg = orgRes.rows[0]?.config || {};
+  const orgCap = parseInt(cfg.linkedinDailyActivationCap, 10);
+  const effectiveOrgCap = (Number.isFinite(orgCap) && orgCap > 0) ? orgCap : 25;
+
+  const prefs = userRes.rows[0]?.preferences || {};
+  const userTargetRaw = prefs.linkedin_daily_activation_target;
+  const userTarget = parseInt(userTargetRaw, 10);
+  const effectiveTarget = (Number.isFinite(userTarget) && userTarget > 0)
+    ? Math.min(userTarget, effectiveOrgCap)
+    : effectiveOrgCap;
+
+  return {
+    orgCap:    effectiveOrgCap,
+    userTarget: Number.isFinite(userTarget) && userTarget > 0 ? userTarget : null,
+    effective: effectiveTarget,
+    activationSlaDays: parseInt(cfg.activationSlaDays, 10) || 7,
+    researchSlaDays:   parseInt(cfg.researchSlaDays, 10)   || 14,
+  };
+}
+
+// ── GET /:id/research-queue — paginated list of `target` prospects ──────────
+// For the Research Queue UI. Returns prospects newest-first by default; the UI
+// processes one at a time. Returned shape includes everything the researcher
+// needs to write the signal without re-doing the AI's account research.
+router.get('/:id/research-queue', async (req, res) => {
+  try {
+    const limit  = Math.min(parseInt(req.query.limit  || '20', 10), 50);
+    const offset = parseInt(req.query.offset || '0', 10);
+    const stage  = req.query.stage === 'research' ? 'research' : 'target';
+
+    const campRes = await pool.query(
+      `SELECT id FROM prospecting_campaigns WHERE id = $1 AND org_id = $2`,
+      [req.params.id, req.orgId]
+    );
+    if (!campRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Campaign not found' } });
+    }
+
+    const { rows } = await pool.query(
+      `SELECT p.id, p.first_name, p.last_name, p.email, p.linkedin_url,
+              p.title, p.company_name, p.company_industry,
+              p.stage, p.stage_changed_at, p.research_notes, p.research_meta,
+              p.created_at,
+              a.research_notes AS account_research,
+              a.research_meta  AS account_research_meta
+         FROM prospects p
+    LEFT JOIN accounts a ON a.id = p.account_id
+        WHERE p.org_id      = $1
+          AND p.campaign_id = $2
+          AND p.stage       = $3
+          AND p.deleted_at IS NULL
+     ORDER BY p.created_at ASC
+        LIMIT $4 OFFSET $5`,
+      [req.orgId, req.params.id, stage, limit, offset]
+    );
+
+    // Total for paging.
+    const countRes = await pool.query(
+      `SELECT COUNT(*)::int AS total
+         FROM prospects
+        WHERE org_id      = $1
+          AND campaign_id = $2
+          AND stage       = $3
+          AND deleted_at IS NULL`,
+      [req.orgId, req.params.id, stage]
+    );
+
+    res.json({
+      campaignId: parseInt(req.params.id, 10),
+      stage,
+      total: countRes.rows[0].total,
+      limit,
+      offset,
+      prospects: rows.map(r => ({
+        id: r.id,
+        firstName:   r.first_name,
+        lastName:    r.last_name,
+        email:       r.email,
+        linkedinUrl: r.linkedin_url,
+        title:       r.title,
+        companyName: r.company_name,
+        companyIndustry: r.company_industry,
+        stage:       r.stage,
+        stageChangedAt: r.stage_changed_at,
+        createdAt:   r.created_at,
+        researchNotes: r.research_notes,
+        researchMeta:  r.research_meta,
+        // Surface the account-level research so the researcher can decide
+        // whether they need to type anything at all, or just hit Approve.
+        accountResearch:     r.account_research,
+        accountResearchMeta: r.account_research_meta,
+      })),
+    });
+  } catch (err) {
+    console.error('research-queue error:', err);
+    res.status(500).json({ error: { message: 'Failed to load research queue' } });
+  }
+});
+
+// ── POST /:id/bulk-activate — batch-activate research-stage prospects ───────
+// Creates fresh sequence_enrollments in 'active' status using the campaign's
+// default_sequence_id. Optionally runs PersonalizationDispatcher per prospect
+// before enrolling, walking every step of the sequence and calling the right
+// per-channel skill (outreach-email / outreach-linkedin) with the inferred
+// step_intent. Replaces Slice 2's inline single-skill mapping.
+//
+// Body:
+//   {
+//     count?:        number,                  // pick N oldest first
+//     prospectIds?:  number[],                // explicit list (capped at limit)
+//     runSkill?:     boolean (default true),  // call skill before enroll
+//     skipPersonalisation?: boolean           // alias for runSkill=false
+//   }
+//
+// Caps: min(userTarget, orgCap), default 25. Hard ceiling enforced server-side.
+//
+// Returns:
+//   {
+//     activated: number,
+//     enrollments: [{prospectId, enrollmentId, skillStatus}],
+//     skipped:   [{prospectId, reason}],
+//     cap:       { orgCap, userTarget, effective, used }
+//   }
+router.post('/:id/bulk-activate', async (req, res) => {
+  try {
+    const { count, prospectIds, runSkill = true, skipPersonalisation } = req.body || {};
+
+    // Validate campaign + ensure it has a default sequence to enroll into.
+    const campRes = await pool.query(
+      `SELECT id, default_sequence_id, name
+         FROM prospecting_campaigns
+        WHERE id = $1 AND org_id = $2 AND status IN ('active', 'paused')`,
+      [req.params.id, req.orgId]
+    );
+    if (!campRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Campaign not found or archived' } });
+    }
+    const campaign = campRes.rows[0];
+    if (!campaign.default_sequence_id) {
+      return res.status(400).json({ error: {
+        message: 'Campaign has no default sequence — set one before bulk-activating.',
+      } });
+    }
+
+    // Compute cap.
+    const limits = await resolveActivationLimits(req.orgId, req.user.userId);
+
+    // Determine candidate set.
+    let candidates;
+    if (Array.isArray(prospectIds) && prospectIds.length > 0) {
+      // Explicit list — validate they're all in this campaign, research stage,
+      // and not already enrolled in the default sequence.
+      const ids = prospectIds.map(x => parseInt(x, 10)).filter(Number.isFinite);
+      const r = await pool.query(
+        `SELECT p.id
+           FROM prospects p
+          WHERE p.org_id      = $1
+            AND p.campaign_id = $2
+            AND p.stage       = 'research'
+            AND p.deleted_at IS NULL
+            AND p.id = ANY($3::int[])
+            AND NOT EXISTS (
+              SELECT 1 FROM sequence_enrollments se
+               WHERE se.prospect_id = p.id
+                 AND se.sequence_id = $4
+                 AND se.status IN ('active', 'paused')
+            )`,
+        [req.orgId, req.params.id, ids, campaign.default_sequence_id]
+      );
+      candidates = r.rows.map(row => row.id);
+    } else {
+      const n = Math.max(1, Math.min(parseInt(count, 10) || limits.effective, limits.effective));
+      const r = await pool.query(
+        `SELECT p.id
+           FROM prospects p
+          WHERE p.org_id      = $1
+            AND p.campaign_id = $2
+            AND p.stage       = 'research'
+            AND p.deleted_at IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM sequence_enrollments se
+               WHERE se.prospect_id = p.id
+                 AND se.sequence_id = $3
+                 AND se.status IN ('active', 'paused')
+            )
+       ORDER BY p.stage_changed_at ASC NULLS FIRST, p.id ASC
+          LIMIT $4`,
+        [req.orgId, req.params.id, campaign.default_sequence_id, n]
+      );
+      candidates = r.rows.map(row => row.id);
+    }
+
+    // Hard ceiling: never exceed effective cap, even if caller asks for more.
+    if (candidates.length > limits.effective) {
+      candidates = candidates.slice(0, limits.effective);
+    }
+
+    if (candidates.length === 0) {
+      return res.json({
+        activated: 0,
+        enrollments: [],
+        skipped: [],
+        cap: { ...limits, used: 0 },
+        message: 'No eligible prospects (must be in research stage and not already enrolled).',
+      });
+    }
+
+    // Load sequence to compute next_step_due.
+    const seqRes = await pool.query(
+      `SELECT s.id, s.name,
+              (SELECT delay_days FROM sequence_steps
+                 WHERE sequence_id = s.id ORDER BY step_order LIMIT 1) AS first_delay
+         FROM sequences s
+        WHERE s.id = $1 AND s.org_id = $2 AND s.status = 'active'`,
+      [campaign.default_sequence_id, req.orgId]
+    );
+    if (!seqRes.rows.length) {
+      return res.status(400).json({ error: {
+        message: 'Default sequence not found or inactive.',
+      } });
+    }
+    const seq = seqRes.rows[0];
+    const firstDelay = parseInt(seq.first_delay, 10) || 0;
+
+    // Per-prospect processing — sequential to keep skill rate-limited and to
+    // produce clean per-prospect error messages. For 25 prospects with skill
+    // calls (~3-6s each per step; multiple steps per sequence) this completes
+    // in a couple of minutes; the UI shows a progress count.
+    //
+    // Slice 3: personalisation is now delegated to PersonalizationDispatcher,
+    // which walks all steps and routes each to outreach-email or
+    // outreach-linkedin with the inferred step_intent. The dispatcher handles
+    // any sequence shape — 3 steps or 8 steps, LinkedIn-first or email-first,
+    // with breakups and tasks in any position.
+    const wantSkill = runSkill !== false && skipPersonalisation !== true;
+    const enrollments = [];
+    const skipped     = [];
+
+    for (const prospectId of candidates) {
+      let personalisedSteps = {};
+      let skillStatus       = 'not_run';
+      let dispatchSummary   = null;
+
+      // Step 1: dispatch personalisation across all sequence steps (optional).
+      if (wantSkill) {
+        try {
+          const dispatchResult = await PersonalizationDispatcher.personaliseEnrollment({
+            orgId:      req.orgId,
+            userId:     req.user.userId,
+            sequenceId: campaign.default_sequence_id,
+            prospectId,
+          });
+          personalisedSteps = dispatchResult.personalisedSteps || {};
+          dispatchSummary   = dispatchResult.summary;
+
+          // Status semantics:
+          //   - 'ok':      every personalisable step succeeded
+          //   - 'partial': some succeeded, some errored (rep can still enroll;
+          //                errored steps fall back to sequence templates)
+          //   - 'failed':  zero steps personalised
+          if (dispatchSummary.personalised === 0) {
+            skillStatus = 'failed';
+          } else if (dispatchSummary.errored > 0) {
+            skillStatus = 'partial';
+          } else {
+            skillStatus = 'ok';
+          }
+
+          // Log per-step errors at warn level — useful for tuning intents.
+          if (dispatchResult.errors && dispatchResult.errors.length > 0) {
+            console.warn(
+              `bulk-activate: dispatcher errors for prospect ${prospectId}:`,
+              dispatchResult.errors.map(e => `step ${e.stepOrder}: ${e.reason}`).join('; ')
+            );
+          }
+        } catch (dispatchErr) {
+          // Hard failure (e.g. sequence has no steps) — non-fatal at the
+          // batch level. Enrollment still proceeds with empty
+          // personalised_steps; the firer will render from sequence templates.
+          console.warn(`bulk-activate dispatcher failed for prospect ${prospectId}:`, dispatchErr.message);
+          skillStatus = 'error';
+        }
+      }
+
+      // Step 2: insert enrollment (active, next_step_due = now + firstDelay).
+      try {
+        const nextDue = new Date();
+        nextDue.setDate(nextDue.getDate() + firstDelay);
+
+        const er = await pool.query(
+          `INSERT INTO sequence_enrollments
+                       (org_id, sequence_id, prospect_id, enrolled_by,
+                        next_step_due, personalised_steps, status)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'active')
+           ON CONFLICT (sequence_id, prospect_id) DO NOTHING
+           RETURNING id`,
+          [req.orgId, campaign.default_sequence_id, prospectId,
+           req.user.userId, nextDue, JSON.stringify(personalisedSteps)]
+        );
+
+        if (er.rows.length === 0) {
+          // Race condition: someone enrolled the prospect between our
+          // candidate fetch and this INSERT. Skip silently.
+          skipped.push({ prospectId, reason: 'already_enrolled' });
+          continue;
+        }
+
+        const enrollmentId = er.rows[0].id;
+
+        // Move stage research → outreach. The firer would do this on first
+        // step fire, but advancing now keeps the funnel honest immediately.
+        await pool.query(
+          `UPDATE prospects
+              SET stage = 'outreach',
+                  stage_changed_at = CURRENT_TIMESTAMP,
+                  updated_at       = CURRENT_TIMESTAMP
+            WHERE id = $1 AND org_id = $2 AND stage = 'research'`,
+          [prospectId, req.orgId]
+        );
+
+        // Activity row — feeds the campaign drawer's activity feed.
+        try {
+          await pool.query(
+            `INSERT INTO prospecting_activities
+                         (org_id, prospect_id, user_id, activity_type, description, metadata)
+                  VALUES ($1, $2, $3, 'activation_completed', $4, $5::jsonb)`,
+            [
+              req.orgId, prospectId, req.user.userId,
+              `Activated in sequence "${seq.name}"`,
+              JSON.stringify({
+                campaignId: parseInt(req.params.id, 10),
+                sequenceId: campaign.default_sequence_id,
+                sequenceName: seq.name,
+                enrollmentId,
+                skillStatus,
+                dispatchSummary,
+                bulkActivate: true,
+              }),
+            ]
+          );
+        } catch (actErr) {
+          console.warn('bulk-activate: activity log failed:', actErr.message);
+        }
+
+        enrollments.push({ prospectId, enrollmentId, skillStatus, dispatchSummary });
+      } catch (insertErr) {
+        console.error(`bulk-activate enroll failed for prospect ${prospectId}:`, insertErr);
+        skipped.push({ prospectId, reason: insertErr.message });
+      }
+    }
+
+    res.json({
+      activated: enrollments.length,
+      enrollments,
+      skipped,
+      cap: { ...limits, used: enrollments.length },
+      campaignId: parseInt(req.params.id, 10),
+      sequenceName: seq.name,
+    });
+  } catch (err) {
+    console.error('bulk-activate error:', err);
+    res.status(500).json({ error: { message: 'Bulk activation failed: ' + err.message } });
+  }
+});
+
+// ── GET /:id/pacing — funnel counts + 7d activation rate + days-to-clear ────
+router.get('/:id/pacing', async (req, res) => {
+  try {
+    const campRes = await pool.query(
+      `SELECT id, name, end_date, default_sequence_id
+         FROM prospecting_campaigns
+        WHERE id = $1 AND org_id = $2`,
+      [req.params.id, req.orgId]
+    );
+    if (!campRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Campaign not found' } });
+    }
+    const campaign = campRes.rows[0];
+
+    // Stage counts.
+    const stageRes = await pool.query(
+      `SELECT stage, COUNT(*)::int AS count
+         FROM prospects
+        WHERE org_id = $1 AND campaign_id = $2 AND deleted_at IS NULL
+     GROUP BY stage`,
+      [req.orgId, req.params.id]
+    );
+    const stageCounts = {};
+    stageRes.rows.forEach(r => { stageCounts[r.stage] = r.count; });
+
+    // 7d activation rate: count activation_completed activities in last 7 days.
+    const actRes = await pool.query(
+      `SELECT COUNT(*)::int AS recent_activations
+         FROM prospecting_activities pa
+         JOIN prospects p ON p.id = pa.prospect_id
+        WHERE pa.org_id = $1
+          AND p.campaign_id = $2
+          AND pa.activity_type = 'activation_completed'
+          AND pa.created_at >= NOW() - INTERVAL '7 days'`,
+      [req.orgId, req.params.id]
+    );
+    const recentActivations = actRes.rows[0].recent_activations;
+    const activationsPerDay = recentActivations / 7;
+
+    const readyToActivate = stageCounts.research || 0;
+    const daysToClear = activationsPerDay > 0
+      ? Math.ceil(readyToActivate / activationsPerDay)
+      : null;
+
+    // Health: green if pace is sufficient to clear within end_date (or 60d
+    // default), amber if it'll take 1.5x the window, red if more.
+    let health = 'gray';
+    if (readyToActivate === 0) {
+      health = 'green';
+    } else if (daysToClear === null) {
+      health = 'red';   // ready to activate but no recent activity
+    } else {
+      const windowDays = campaign.end_date
+        ? Math.max(1, Math.ceil((new Date(campaign.end_date) - new Date()) / (1000 * 60 * 60 * 24)))
+        : 60;
+      const ratio = daysToClear / windowDays;
+      if (ratio <= 1)      health = 'green';
+      else if (ratio <= 1.5) health = 'amber';
+      else                  health = 'red';
+    }
+
+    res.json({
+      campaignId: parseInt(req.params.id, 10),
+      stages: {
+        target:         stageCounts.target         || 0,
+        research:       stageCounts.research       || 0,
+        outreach:       stageCounts.outreach       || 0,
+        engaged:        stageCounts.engaged        || 0,
+        discovery_call: stageCounts.discovery_call || 0,
+        qualified_sal:  stageCounts.qualified_sal  || 0,
+        disqualified:   stageCounts.disqualified   || 0,
+        nurture:        stageCounts.nurture        || 0,
+      },
+      pacing: {
+        readyToActivate,
+        activationsLast7d: recentActivations,
+        activationsPerDay: Math.round(activationsPerDay * 10) / 10,
+        daysToClear,
+        health,
+      },
+    });
+  } catch (err) {
+    console.error('pacing error:', err);
+    res.status(500).json({ error: { message: 'Failed to load pacing' } });
   }
 });
 

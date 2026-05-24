@@ -39,6 +39,9 @@ const { orgContext }    = require('../middleware/orgContext.middleware');
 const { pool }          = require('../config/database');
 const TokenTrackingService = require('../services/TokenTrackingService');
 const { resolvePersonalizeConfig } = require('../services/personalizeConfig');
+// Slice 3: personalisation runs through the dispatcher, which walks every
+// sequence step and calls per-channel skills with the right step_intent.
+const PersonalizationDispatcher = require('../services/PersonalizationDispatcher');
 const { buildLinkedInArtifacts }   = require('../services/linkedinSnippets');
 
 // ── AI provider chain (same pattern as ProspectingAIEnhancer) ─────────────────
@@ -108,12 +111,14 @@ router.post('/', async (req, res) => {
         `INSERT INTO sequence_steps
                      (sequence_id, org_id, step_order, channel, delay_days,
                       subject_template, body_template, task_note, require_approval,
-                      personalize_config)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+                      personalize_config, step_intent)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
         [seq.id, req.orgId, i + 1, s.channel, s.delay_days ?? 0,
          s.subject_template || null, s.body_template || null, s.task_note || null,
          s.require_approval !== undefined ? s.require_approval : null,
-         s.personalize_config ? JSON.stringify(s.personalize_config) : null]
+         s.personalize_config ? JSON.stringify(s.personalize_config) : null,
+         // Slice 3: step_intent — null means "auto-infer at dispatch time".
+         s.step_intent || null]
       );
       insertedSteps.push(sr.rows[0]);
     }
@@ -130,266 +135,103 @@ router.post('/', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI PERSONALISE ENROLLMENT
+// AI PERSONALISE ENROLLMENT  (Slice 3 — refactored)
 // POST /api/sequences/ai-personalise-enrollment
-// body: { sequenceId, prospectId }
-// Returns personalised step content for ONE prospect using their research.
-// Content is stored against the enrollment — master template is never modified.
+// body: { sequenceId, prospectId, hookPreferences? }
+//
+// Returns personalised step content for ONE prospect. This endpoint is now
+// a thin wrapper around PersonalizationDispatcher — the entire 250-line
+// inline prompt that lived here previously is replaced by the dispatcher,
+// which walks every sequence step and calls the right per-channel skill
+// (outreach-email / outreach-linkedin) with the inferred step_intent.
+//
+// Response shape is preserved for back-compat with existing callers
+// (SequencesView "Preview personalised" feature, etc.):
+//   {
+//     prospectId,
+//     hasResearch,
+//     steps: [{ step_order, subject, body, task_note, personalize_sources }],
+//     dispatchSummary: { total, personalised, skipped, errored },
+//     errors: [{ stepOrder, channel, intent, reason }]
+//   }
+//
+// The dispatchSummary and errors fields are NEW in Slice 3 — additive, so
+// callers that ignore them still work.
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/ai-personalise-enrollment', async (req, res) => {
-  const { sequenceId, prospectId } = req.body;
+  const { sequenceId, prospectId, hookPreferences } = req.body || {};
   if (!sequenceId || !prospectId) {
     return res.status(400).json({ error: { message: 'sequenceId and prospectId are required' } });
   }
 
   try {
-    // Load sequence + steps
+    // Sequence existence + org scope — guards against the dispatcher loading
+    // a sequence from a different org.
     const seqRes = await pool.query(
-      `SELECT * FROM sequences WHERE id=$1 AND org_id=$2`,
+      `SELECT id, name FROM sequences WHERE id = $1 AND org_id = $2`,
       [sequenceId, req.orgId]
     );
-    if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Sequence not found' } });
-    const sequence = seqRes.rows[0];
+    if (!seqRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Sequence not found' } });
+    }
 
-    const stepsRes = await pool.query(
-      `SELECT * FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order`,
-      [sequenceId]
-    );
-    const steps = stepsRes.rows;
-
-    // Load prospect + account research
-    const prospectRes = await pool.query(
-      `SELECT p.*, a.name AS account_name, a.research_notes AS account_research,
-              a.domain AS account_domain, a.industry AS account_industry,
-              a.research_meta AS account_research_meta
-         FROM prospects p
-    LEFT JOIN accounts a ON a.id = p.account_id
-        WHERE p.id=$1 AND p.org_id=$2`,
+    // Prospect existence — same guard.
+    const pRes = await pool.query(
+      `SELECT id, research_notes, research_meta FROM prospects
+        WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
       [prospectId, req.orgId]
     );
-    if (!prospectRes.rows.length) return res.status(404).json({ error: { message: 'Prospect not found' } });
-    const prospect = prospectRes.rows[0];
-
-    // ── Phase 3: load LinkedIn profile (best-effort) ──────────────────────────
-    // Match the by-url lookup used by the drawer: match by slug within org.
-    // Non-fatal — if no profile, every step's provenance is null and no data
-    // gets injected.
-    let linkedinProfile = null;
-    if (prospect.linkedin_url) {
-      const slugMatch = String(prospect.linkedin_url).match(/\/in\/([^/?#]+)/);
-      const slug = slugMatch ? slugMatch[1].toLowerCase() : null;
-      if (slug) {
-        try {
-          const profRes = await pool.query(
-            `SELECT * FROM linkedin_profiles
-              WHERE org_id = $1 AND linkedin_slug = $2
-              LIMIT 1`,
-            [req.orgId, slug]
-          );
-          linkedinProfile = profRes.rows[0] || null;
-        } catch (e) {
-          // Schema/connection error — proceed without LinkedIn data, never block draft generation.
-          console.warn('ai-personalise-enrollment: LinkedIn profile fetch failed:', e.message);
-        }
-      }
+    if (!pRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
     }
+    const p = pRes.rows[0];
+    const hasResearch = !!(
+      p.research_notes ||
+      (p.research_meta && typeof p.research_meta === 'object' &&
+        (p.research_meta.signal_summary || p.research_meta.researchBullets))
+    );
 
-    // ── Phase 3: resolve per-step config + build per-step artifacts ───────────
-    // Each step gets its own (config, promptBlock, provenance) tuple.
-    // Steps where personalize is meaningful (email + linkedin channels) are
-    // resolved; call/task steps skip both (no body to personalize).
-    const stepArtifacts = [];
-    for (const step of steps) {
-      const isPersonalizable = step.channel === 'email' || step.channel === 'linkedin';
-      if (!isPersonalizable) {
-        stepArtifacts.push({ step, config: null, promptBlock: null, provenance: null, source: 'n/a' });
-        continue;
-      }
-      const { config, source } = await resolvePersonalizeConfig(pool, {
-        userId:   req.user.userId,
-        orgId:    req.orgId,
-        sequence,
-        step,
-      });
-      const { promptBlock, provenance } = buildLinkedInArtifacts(linkedinProfile, config);
-      stepArtifacts.push({ step, config, promptBlock, provenance, source });
-    }
-
-    const hasResearch = !!(prospect.research_notes || prospect.account_research);
-
-    // Extract ALL structured Intel fields from research_meta
-    const researchMeta    = prospect.research_meta  || {};
-    const pitchAngle      = researchMeta.pitchAngle  || '';
-    const crispPitch      = researchMeta.crispPitch  || '';
-    const subjectLine     = researchMeta.subjectLine || '';
-    const researchBullets = Array.isArray(researchMeta.researchBullets) ? researchMeta.researchBullets : [];
-
-    // ── Fetch sender display_name so AI writes the sign-off naturally ──────
-    // CHANGED: AND client_id IS NULL — only look up the rep's personal sender,
-    // not a client-owned sender account.
-    // Best-effort: if no sender account exists, AI omits the sign-off token.
-    let senderDisplayName = '';
-    try {
-      const senderRes = await pool.query(
-        `SELECT display_name FROM prospecting_sender_accounts
-          WHERE org_id    = $1
-            AND user_id   = $2
-            AND client_id IS NULL
-            AND is_active = true
-          ORDER BY
-            (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
-            last_sent_at ASC NULLS FIRST
-          LIMIT 1`,
-        [req.orgId, req.user.userId]
-      );
-      senderDisplayName = senderRes.rows[0]?.display_name || '';
-    } catch (_) {
-      // Non-fatal — proceed without display_name
-    }
-
-    // Build research block
-    const researchBlock = hasResearch
-      ? [
-          'PROSPECT RESEARCH (write FROM this — not around it):',
-          researchBullets.length > 0 ? 'Key insights:\n' + researchBullets.map(b => '  - ' + b).join('\n') : '',
-          pitchAngle   ? '\nStrongest pitch angle: ' + pitchAngle : '',
-          crispPitch   ? '\nPre-written pitch (use as core of step 1 body — adapt tone, do not ignore it):\n' + crispPitch : '',
-          subjectLine  ? '\nSuggested subject line for step 1: ' + subjectLine : '',
-          prospect.research_notes   ? '\nFull research notes:\n' + prospect.research_notes : '',
-          prospect.account_research ? '\nAccount research:\n' + prospect.account_research  : '',
-        ].filter(Boolean).join('\n')
-      : 'No research available — write from first principles using their role, company and industry.';
-
-    // ── Phase 3: build LinkedIn block + per-step usage rules ──────────────────
-    // To avoid duplicating snippets across steps when configs overlap (the
-    // common case), build a single shared block listing every (field, value)
-    // tuple referenced by ANY step, then tell the AI which fields are
-    // permitted per step. Provenance per step still honestly reflects only
-    // that step's own resolved config.
-    let linkedinPromptSection = '';
-    {
-      // Union of all (field, value) pairs across all step provenances, keyed
-      // by field+value so identical snippets de-dupe.
-      const seen = new Set();
-      const sharedSnippets = [];
-      for (const sa of stepArtifacts) {
-        const snips = sa.provenance?.snippets || [];
-        for (const s of snips) {
-          const k = s.field + '\u0000' + s.value;
-          if (seen.has(k)) continue;
-          seen.add(k);
-          sharedSnippets.push(s);
-        }
-      }
-      if (sharedSnippets.length > 0) {
-        const lines = [
-          'CAPTURED LINKEDIN DATA (use only where it adds genuine specificity. Do not invent details. If a field is empty, do not reference it):',
-          ...sharedSnippets.map(s => `  - [${s.field}] ${s.value}`),
-          '',
-          'PER-STEP USAGE — when writing each step, ONLY reference the LinkedIn fields listed for that step:',
-          ...stepArtifacts.map(sa => {
-            const fields = sa.provenance?.fields_used || [];
-            return `  Step ${sa.step.step_order}: ${fields.length ? fields.join(', ') : '(none — do not reference any LinkedIn data)'}`;
-          }),
-        ];
-        linkedinPromptSection = '\n\n' + lines.join('\n');
-      }
-    }
-
-    const systemPrompt = `You are an expert SDR writing highly personalised outreach emails. You write from research, not from templates.
-Return ONLY valid JSON — no markdown fences, no prose.`;
-
-    const userPrompt = `Write personalised outreach emails for this prospect. The research is your primary input — templates below are structural guides only. Do NOT copy template wording.
-
-PROSPECT:
-Name: ${prospect.first_name} ${prospect.last_name}
-Title: ${prospect.title || 'unknown'}
-Company: ${prospect.account_name || prospect.company_name || 'unknown'}
-Industry: ${prospect.account_industry || 'unknown'}
-${researchBlock}${linkedinPromptSection}
-
-SENDER: ${senderDisplayName || prospect.account_name || 'the sender'}
-${senderDisplayName ? 'End each email body with a natural sign-off using the sender name above (e.g. "Best,\n' + senderDisplayName + '"). Do NOT add a signature block — just the name sign-off.' : ''}
-
-SEQUENCE: "${sequence.name}"
-Tone & Goal: ${sequence.description || 'Professional outreach'}
-
-WRITING RULES:
-- Step 1: Open with the most specific insight from the research. Write something that could only be for this person.
-- If a crispPitch is provided, use it as the backbone of step 1.
-- If a subjectLine is provided, use it (or a close variant) for the step 1 subject.
-- Follow-ups: reference the first email, vary the angle, stay specific.
-- Under 120 words per email body (excluding the sign-off). No filler openers.
-- Use {{first_name}}, {{company}}, {{title}} tokens only where natural.
-- Non-email steps (call, task, linkedin): write a specific task_note referencing what was sent.
-
-STRUCTURAL REFERENCE (format/CTA style only — do not copy wording):
-${steps.map((s, i) => 'Step ' + (i+1) + ': channel=' + s.channel + ', delay=' + s.delay_days + 'd\n  Template subject: ' + (s.subject_template || '(none)') + '\n  Template body: ' + (s.body_template || '(none)') + '\n  Task note: ' + (s.task_note || '(none)')).join('\n\n')}
-
-Return JSON:
-{
-  "steps": [
-    {
-      "step_order": 1,
-      "subject": "...",
-      "body": "...",
-      "task_note": ""
-    }
-  ]
-}`;
-
-    const { adapter, model, provider, keySource } =
-      await AIClientResolver.resolve(req.orgId, req.user.userId, 'prospecting_sequence_generate');
-
-    const aiRes = await adapter.complete({
-      model,
-      maxTokens: 3000,
-      system:    systemPrompt,
-      messages:  [{ role: 'user', content: userPrompt }],
+    // Dispatch.
+    const dispatchResult = await PersonalizationDispatcher.personaliseEnrollment({
+      orgId:      req.orgId,
+      userId:     req.user.userId,
+      sequenceId,
+      prospectId,
+      hookPreferences,
     });
 
-    try {
-      await TokenTrackingService.log({
-        orgId:    req.orgId,
-        userId:   req.user.userId,
-        callType: 'prospecting_sequence_generate',
-        model,
-        provider,
-        keySource,
-        usage:    aiRes.usage,
-      });
-    } catch (_) {}
+    // Convert dispatcher's keyed map into the legacy steps[] array shape.
+    const stepOrders = Object.keys(dispatchResult.personalisedSteps || {})
+      .map(k => parseInt(k, 10))
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
 
-    const raw    = aiRes.text || '{}';
-    const clean  = raw.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(clean);
-
-    // ── Phase 3: thread per-step provenance into the response ────────────────
-    // Frontend will pass this through to the enroll endpoint, which stores it
-    // in sequence_enrollments.personalised_steps so SequenceStepFirer can
-    // copy it onto the draft row at fire time.
-    const provenanceByStep = {};
-    for (const sa of stepArtifacts) {
-      if (sa.provenance) provenanceByStep[sa.step.step_order] = sa.provenance;
-    }
+    const steps = stepOrders.map(order => {
+      const s = dispatchResult.personalisedSteps[String(order)] || {};
+      return {
+        step_order:          order,
+        subject:             s.subject   || '',
+        body:                s.body      || '',
+        task_note:           s.task_note || '',
+        personalize_sources: s.personalize_sources || null,
+      };
+    });
 
     res.json({
       prospectId,
       hasResearch,
-      steps: (parsed.steps || []).map(s => ({
-        step_order:          s.step_order,
-        subject:             s.subject    || '',
-        body:                s.body       || '',
-        task_note:           s.task_note  || '',
-        personalize_sources: provenanceByStep[s.step_order] || null,
-      })),
+      steps,
+      dispatchSummary: dispatchResult.summary,
+      errors:          dispatchResult.errors || [],
     });
-
   } catch (err) {
     console.error('ai-personalise-enrollment error:', err);
-    res.status(500).json({ error: { message: 'AI personalisation failed: ' + err.message } });
+    res.status(err.statusCode || 500).json({
+      error: { message: 'AI personalisation failed: ' + err.message },
+    });
   }
 });
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ENROLL  (must be before /:id to avoid shadowing)
@@ -1524,7 +1366,8 @@ router.delete('/:id', async (req, res) => {
 
 // POST /api/sequences/:id/steps
 router.post('/:id/steps', async (req, res) => {
-  const { channel, delay_days, subject_template, body_template, task_note, require_approval, personalize_config } = req.body;
+  const { channel, delay_days, subject_template, body_template, task_note,
+          require_approval, personalize_config, step_intent } = req.body;
   try {
     const maxRes = await pool.query(
       `SELECT COALESCE(MAX(step_order), 0) AS max_order FROM sequence_steps WHERE sequence_id=$1`,
@@ -1536,12 +1379,13 @@ router.post('/:id/steps', async (req, res) => {
       `INSERT INTO sequence_steps
          (sequence_id, org_id, step_order, channel, delay_days,
           subject_template, body_template, task_note, require_approval,
-          personalize_config)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+          personalize_config, step_intent)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
       [req.params.id, req.orgId, nextOrder, channel, delay_days ?? 0,
        subject_template || null, body_template || null, task_note || null,
        require_approval !== undefined ? require_approval : null,
-       personalize_config ? JSON.stringify(personalize_config) : null]
+       personalize_config ? JSON.stringify(personalize_config) : null,
+       step_intent || null]
     );
     res.status(201).json({ step: rows[0] });
   } catch (err) {
@@ -1552,7 +1396,8 @@ router.post('/:id/steps', async (req, res) => {
 
 // PUT /api/sequences/:id/steps/:stepId
 router.put('/:id/steps/:stepId', async (req, res) => {
-  const { channel, delay_days, subject_template, body_template, task_note, require_approval, personalize_config } = req.body;
+  const { channel, delay_days, subject_template, body_template, task_note,
+          require_approval, personalize_config, step_intent } = req.body;
   try {
     // personalize_config: undefined → don't touch; null → clear (inherit); obj → set
     const pcParam = personalize_config === undefined
@@ -1560,19 +1405,28 @@ router.put('/:id/steps/:stepId', async (req, res) => {
       : (personalize_config === null ? null : JSON.stringify(personalize_config));
     const pcProvided = personalize_config !== undefined;
 
+    // step_intent semantics mirror personalize_config:
+    //   undefined → don't touch
+    //   null      → clear (auto-infer)
+    //   string    → set explicit override
+    const siProvided = step_intent !== undefined;
+    const siParam = step_intent === undefined ? null : (step_intent || null);
+
     const { rows } = await pool.query(
       `UPDATE sequence_steps
           SET channel=$1, delay_days=$2, subject_template=$3,
               body_template=$4, task_note=$5,
               require_approval=COALESCE($6, require_approval),
               personalize_config = CASE WHEN $7::boolean THEN $8::jsonb ELSE personalize_config END,
+              step_intent = CASE WHEN $9::boolean THEN $10::text ELSE step_intent END,
               updated_at=NOW()
-        WHERE id=$9 AND sequence_id=$10
+        WHERE id=$11 AND sequence_id=$12
         RETURNING *`,
       [channel, delay_days ?? 0, subject_template || null,
        body_template || null, task_note || null,
        require_approval !== undefined ? require_approval : null,
        pcProvided, pcParam,
+       siProvided, siParam,
        req.params.stepId, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Step not found' } });

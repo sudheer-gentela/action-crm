@@ -25,6 +25,7 @@ import ProspectDetailPanel  from './prospecting/ProspectDetailPanel';
 import DiscardProspectModal from './prospecting/DiscardProspectModal';
 import SequencesView        from './prospecting/SequencesView';
 import CampaignsView        from './prospecting/CampaignsView';
+import ResearchQueueView    from './prospecting/ResearchQueueView';
 import CallsInboxView       from './prospecting/CallsInboxView';
 import ProspectingInbox     from './prospecting/ProspectingInbox';
 
@@ -376,6 +377,7 @@ export default function ProspectingView() {
               { key: 'list',      icon: '≡',  label: 'List' },
               { key: 'account',   icon: '🏢', label: 'Accounts' },
               { key: 'campaigns', icon: '🚀', label: 'Campaigns' },
+              { key: 'research',  icon: '🔬', label: 'Research Queue' },
               { key: 'inbox',     icon: '📥', label: 'Inbox' },
               { key: 'sequences', icon: '📨', label: 'Sequences' },
               { key: 'calls',     icon: '📞', label: 'Calls' },
@@ -539,6 +541,8 @@ export default function ProspectingView() {
         <SequencesView prospects={prospects} />
       ) : viewMode === 'campaigns' ? (
         <CampaignsView />
+      ) : viewMode === 'research' ? (
+        <ResearchQueueView />
       ) : viewMode === 'calls' ? (
         <CallsInboxView
           scope={scope}

@@ -845,9 +845,11 @@ Return ONLY valid JSON:
 
     let stageAdvanced = false;
     if (p.stage === 'target') {
+      // Slice 2 fix: canonical stage value is 'research', not 'researched'.
+      // The pre-Slice-2 migration backfills any legacy 'researched' rows.
       await db.query(
         `UPDATE prospects
-         SET stage = 'researched', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         SET stage = 'research', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
          WHERE id = $1 AND org_id = $2`,
         [req.params.id, req.orgId]
       );
@@ -855,7 +857,7 @@ Return ONLY valid JSON:
 
       await db.query(
         `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
-         VALUES ($1, $2, $3, 'stage_change', 'Auto-advanced to researched after AI research')`,
+         VALUES ($1, $2, $3, 'stage_change', 'Auto-advanced to research after AI research')`,
         [req.orgId, req.params.id, req.user.userId]
       );
     }
@@ -873,7 +875,7 @@ Return ONLY valid JSON:
     res.json({
       researchNotes,
       stageAdvanced,
-      newStage:           stageAdvanced ? 'researched' : p.stage,
+      newStage:           stageAdvanced ? 'research' : p.stage,
       researchBullets:    parsed?.researchBullets    || null,
       pitchAngle:         parsed?.pitchAngle         || null,
       crispPitch:         parsed?.crispPitch         || null,
@@ -2153,6 +2155,138 @@ router.post('/:id/generate-actions', async (req, res) => {
   }
 });
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /:id/approve-research  (Slice 2 — researcher workflow)
+// ─────────────────────────────────────────────────────────────────────────────
+// Researcher-facing endpoint. Saves the curated signal blob, transitions
+// stage target → research, and writes a research_approved activity row.
+//
+// Body:
+//   {
+//     signalSummary:   string (required) — 1-3 sentences of factual observation
+//     signalCategory:  string (required) — one of: prospect_post,
+//                                          prospect_comment, account_post,
+//                                          account_event, tech_stack,
+//                                          role_curiosity
+//     signalSourceUrl: string (optional) — URL of the source (e.g. a LinkedIn
+//                                          post link)
+//   }
+//
+// Behavior:
+//   - target stage → updates to 'research'
+//   - already in 'research' → fields updated, stage unchanged, idempotent
+//   - any other stage → 409 (researcher shouldn't touch active-outreach
+//     prospects; manual edit is still available via PUT /:id)
+//
+// research_notes mirrors signalSummary (the existing column already used by
+// the personalisation prompt). research_meta jsonb keeps the structured fields
+// the skill's hookPreferences picker can consume.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const VALID_SIGNAL_CATEGORIES = [
+  'prospect_post', 'prospect_comment', 'account_post',
+  'account_event', 'tech_stack', 'role_curiosity',
+];
+
+router.post('/:id/approve-research', async (req, res) => {
+  try {
+    const { signalSummary, signalCategory, signalSourceUrl } = req.body || {};
+
+    if (!signalSummary || typeof signalSummary !== 'string' || !signalSummary.trim()) {
+      return res.status(400).json({ error: { message: 'signalSummary is required' } });
+    }
+    if (!signalCategory || !VALID_SIGNAL_CATEGORIES.includes(signalCategory)) {
+      return res.status(400).json({ error: {
+        message: `signalCategory must be one of: ${VALID_SIGNAL_CATEGORIES.join(', ')}`,
+      } });
+    }
+    // Soft sanity check on URL; we don't strictly validate it being well-formed.
+    const sourceUrl = (typeof signalSourceUrl === 'string' && signalSourceUrl.trim())
+      ? signalSourceUrl.trim().substring(0, 1000)
+      : null;
+
+    const trimmedSummary = signalSummary.trim().substring(0, 4000);
+
+    // Load prospect — enforce org scope.
+    const pRes = await db.query(
+      `SELECT id, stage, research_meta FROM prospects
+        WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+      [req.params.id, req.orgId]
+    );
+    if (pRes.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+    const p = pRes.rows[0];
+
+    // Stage gating: only target or research are valid starting points.
+    if (!['target', 'research'].includes(p.stage)) {
+      return res.status(409).json({ error: {
+        message: `Cannot approve research from stage '${p.stage}'. Use the prospect edit screen instead.`,
+      } });
+    }
+
+    // Merge structured signal fields into research_meta (preserve any keys
+    // already there — e.g. researchBullets from the AI research action).
+    const existingMeta = (p.research_meta && typeof p.research_meta === 'object') ? p.research_meta : {};
+    const newMeta = {
+      ...existingMeta,
+      signal_summary:    trimmedSummary,
+      signal_category:   signalCategory,
+      signal_source_url: sourceUrl,
+      approved_by:       req.user.userId,
+      approved_at:       new Date().toISOString(),
+    };
+
+    const stageAdvanced = p.stage === 'target';
+    const nextStage = 'research';
+
+    // Single UPDATE — research_notes mirrors summary for back-compat with the
+    // inline personalisation prompt, which reads research_notes free-text.
+    await db.query(
+      `UPDATE prospects
+          SET research_notes    = $1,
+              research_meta     = $2::jsonb,
+              stage             = $3,
+              stage_changed_at  = CASE WHEN stage != $3 THEN CURRENT_TIMESTAMP ELSE stage_changed_at END,
+              updated_at        = CURRENT_TIMESTAMP
+        WHERE id = $4 AND org_id = $5`,
+      [trimmedSummary, JSON.stringify(newMeta), nextStage, req.params.id, req.orgId]
+    );
+
+    // Activity row — researcher audit trail. Non-fatal.
+    try {
+      await db.query(
+        `INSERT INTO prospecting_activities
+                     (org_id, prospect_id, user_id, activity_type, description, metadata)
+              VALUES ($1, $2, $3, 'research_approved', $4, $5::jsonb)`,
+        [
+          req.orgId, req.params.id, req.user.userId,
+          stageAdvanced
+            ? 'Researcher approved — moved to research stage'
+            : 'Researcher updated signal on already-researched prospect',
+          JSON.stringify({
+            signal_category:   signalCategory,
+            signal_source_url: sourceUrl,
+            stageAdvanced,
+          }),
+        ]
+      );
+    } catch (actErr) {
+      console.warn('approve-research: activity log failed:', actErr.message);
+    }
+
+    res.json({
+      prospectId:    parseInt(req.params.id, 10),
+      stageAdvanced,
+      stage:         nextStage,
+      research_meta: newMeta,
+    });
+  } catch (err) {
+    console.error('approve-research error:', err);
+    res.status(500).json({ error: { message: 'Failed to approve research: ' + err.message } });
+  }
+});
 
 module.exports = router;
 

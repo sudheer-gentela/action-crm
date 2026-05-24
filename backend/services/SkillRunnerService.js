@@ -38,10 +38,27 @@ const ALLOWED_METHODOLOGIES = new Set(['meddic', 'challenger']);
 
 // Per-skill metadata: which callType to resolve a model with, max output
 // tokens, and which context builder + id field applies.
+//
+// Slice 3: The retired 'outreach-personalization' skill is kept in the
+// registry so /api/skill-runs queries with skill_name=outreach-personalization
+// keep working for old rows. No live code path creates new runs of the
+// retired skill — the dispatcher routes everything through
+// outreach-email + outreach-linkedin.
 const SKILL_REGISTRY = {
   'outreach-personalization': {
     callType:   'prospecting_draft',
     maxTokens:  2000,
+    entity:     'prospect',
+    retired:    true,    // Slice 3 — no new runs created via dispatcher
+  },
+  'outreach-email': {
+    callType:   'prospecting_draft',
+    maxTokens:  1500,
+    entity:     'prospect',
+  },
+  'outreach-linkedin': {
+    callType:   'prospecting_draft',
+    maxTokens:  1200,
     entity:     'prospect',
   },
   'discovery-call-prep': {
@@ -375,7 +392,7 @@ async function runSkill({
 // Builds prospect context in-process, optionally injects per-run hook
 // preferences, then runs the skill.
 // ─────────────────────────────────────────────────────────────────────────────
-async function runProspectSkill({ orgId, userId, prospectId, skillName, hookPreferences }) {
+async function runProspectSkill({ orgId, userId, prospectId, skillName, hookPreferences, stepIntent }) {
   if (!orgId || !userId || !prospectId) {
     const e = new Error('orgId, userId and prospectId are required');
     e.statusCode = 400;
@@ -394,6 +411,19 @@ async function runProspectSkill({ orgId, userId, prospectId, skillName, hookPref
       ...(contextPayload.org_context.hook_preferences || {}),
       preferred_categories: hookPreferences,
     };
+  }
+
+  // Slice 3: per-run step intent — required by outreach-email and
+  // outreach-linkedin to pick the right template. The dispatcher injects it.
+  // The skill reads org_context.step_intent.
+  //
+  // For back-compat with the on-demand path that just calls runProspectSkill
+  // without an intent (e.g. early Slice 3 OutreachSkillPanel before the UI
+  // is updated), an absent intent is left null and the skill defaults to
+  // first_touch / connection_request, flagging in confidence_notes.
+  if (stepIntent && typeof stepIntent === 'string') {
+    contextPayload.org_context = contextPayload.org_context || {};
+    contextPayload.org_context.step_intent = stepIntent;
   }
 
   return runSkill({

@@ -5,15 +5,25 @@
 // + orgContext — NOT the retired SKILL_RUNNER_TOKEN shared secret. orgId and
 // userId come from the authenticated session.
 //
-//   POST /api/skills/outreach-personalization/run
-//        body: { prospectId, hookPreferences?: string[] }
+// Slice 3:
+//   POST /api/skills/outreach-email/run
+//        body: { prospectId, stepIntent?: 'first_touch'|'follow_up'|'breakup',
+//                hookPreferences?: string[] }
+//        Default stepIntent is 'first_touch'.
+//
+//   POST /api/skills/outreach-linkedin/run
+//        body: { prospectId, stepIntent?: 'connection_request'|'post_accept_message'|'nurture_dm',
+//                hookPreferences?: string[] }
+//        Default stepIntent is 'connection_request'.
 //
 //   POST /api/skills/discovery-call-prep/run
 //        body: { dealId, methodology?: 'meddic' | 'challenger' }
 //
-// Both delegate to SkillRunnerService, which builds context in-process,
-// resolves a model via AIClientResolver, runs the skill, logs token usage,
-// and persists a skill_runs row.
+//   POST /api/skills/outreach-personalization/run
+//        DEPRECATED — returns 410 Gone. Callers should use outreach-email
+//        and outreach-linkedin in parallel for the first-touch package.
+//
+// All non-deprecated endpoints delegate to SkillRunnerService.
 // ============================================================================
 
 const express = require('express');
@@ -26,6 +36,11 @@ const SkillRunnerService = require('../services/SkillRunnerService');
 router.use(authenticateToken);
 router.use(orgContext);
 
+// Valid intent enums — kept in sync with PersonalizationDispatcher and both
+// new skills' SKILL.md files.
+const EMAIL_INTENTS    = ['first_touch', 'follow_up', 'breakup'];
+const LINKEDIN_INTENTS = ['connection_request', 'post_accept_message', 'nurture_dm'];
+
 // Helper: normalize a thrown service error into an HTTP response.
 function sendSkillError(res, err, fallbackMsg) {
   const status = err.statusCode || 500;
@@ -36,19 +51,24 @@ function sendSkillError(res, err, fallbackMsg) {
   });
 }
 
-// ── POST /outreach-personalization/run ───────────────────────────────────────
-// Prospecting-module gated. Generates the first-touch outreach package for a
-// prospect.
+// ── POST /outreach-email/run ─────────────────────────────────────────────────
+// Generates one email for a prospect. step_intent picks the template.
 router.post(
-  '/outreach-personalization/run',
+  '/outreach-email/run',
   requireModule('prospecting'),
   async (req, res) => {
-    const { prospectId, hookPreferences } = req.body || {};
+    const { prospectId, stepIntent, hookPreferences } = req.body || {};
     if (!prospectId || !/^\d+$/.test(String(prospectId))) {
       return res.status(400).json({ error: { message: 'prospectId (numeric) is required' } });
     }
     if (hookPreferences !== undefined && !Array.isArray(hookPreferences)) {
       return res.status(400).json({ error: { message: 'hookPreferences must be an array of strings' } });
+    }
+    const intent = stepIntent || 'first_touch';
+    if (!EMAIL_INTENTS.includes(intent)) {
+      return res.status(400).json({
+        error: { message: `stepIntent must be one of: ${EMAIL_INTENTS.join(', ')}` },
+      });
     }
 
     try {
@@ -56,17 +76,71 @@ router.post(
         orgId:     req.orgId,
         userId:    req.user.userId,
         prospectId: parseInt(prospectId, 10),
-        skillName: 'outreach-personalization',
+        skillName: 'outreach-email',
         hookPreferences: hookPreferences || null,
+        stepIntent: intent,
       });
-      // result.ok === false for parse failures — still a 200 with the detail,
-      // so the UI can show "the model returned unparseable output, retry".
       return res.json(result);
     } catch (err) {
-      return sendSkillError(res, err, 'Outreach skill failed');
+      return sendSkillError(res, err, 'Outreach email skill failed');
     }
   }
 );
+
+// ── POST /outreach-linkedin/run ──────────────────────────────────────────────
+// Generates one LinkedIn artifact for a prospect. step_intent picks the template.
+router.post(
+  '/outreach-linkedin/run',
+  requireModule('prospecting'),
+  async (req, res) => {
+    const { prospectId, stepIntent, hookPreferences } = req.body || {};
+    if (!prospectId || !/^\d+$/.test(String(prospectId))) {
+      return res.status(400).json({ error: { message: 'prospectId (numeric) is required' } });
+    }
+    if (hookPreferences !== undefined && !Array.isArray(hookPreferences)) {
+      return res.status(400).json({ error: { message: 'hookPreferences must be an array of strings' } });
+    }
+    const intent = stepIntent || 'connection_request';
+    if (!LINKEDIN_INTENTS.includes(intent)) {
+      return res.status(400).json({
+        error: { message: `stepIntent must be one of: ${LINKEDIN_INTENTS.join(', ')}` },
+      });
+    }
+
+    try {
+      const result = await SkillRunnerService.runProspectSkill({
+        orgId:     req.orgId,
+        userId:    req.user.userId,
+        prospectId: parseInt(prospectId, 10),
+        skillName: 'outreach-linkedin',
+        hookPreferences: hookPreferences || null,
+        stepIntent: intent,
+      });
+      return res.json(result);
+    } catch (err) {
+      return sendSkillError(res, err, 'Outreach LinkedIn skill failed');
+    }
+  }
+);
+
+// ── POST /outreach-personalization/run (DEPRECATED) ──────────────────────────
+// Slice 3 retires this skill. Returns 410 Gone with the redirect hint. Kept
+// as a route (not removed) so callers see a useful error rather than a 404.
+//
+// Frontend OutreachSkillPanel was updated in Slice 3 to call the two new
+// endpoints in parallel; if you see a request hit this path, it's coming
+// from a stale browser cache or a script that hasn't been updated.
+router.post('/outreach-personalization/run', (req, res) => {
+  res.status(410).json({
+    error: {
+      message: 'outreach-personalization has been retired. ' +
+               'Call /api/skills/outreach-email/run AND /api/skills/outreach-linkedin/run ' +
+               '(in parallel, with step_intent: first_touch / connection_request) for an equivalent first-touch package.',
+      code: 'SKILL_RETIRED',
+      replacedBy: ['outreach-email', 'outreach-linkedin'],
+    },
+  });
+});
 
 // ── POST /discovery-call-prep/run ────────────────────────────────────────────
 // Deal-side skill. Deals are a core module, so only auth + orgContext gate it.

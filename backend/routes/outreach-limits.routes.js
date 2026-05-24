@@ -48,6 +48,10 @@ router.get('/', requireAdmin, async (req, res) => {
         minDelayMinutesCeiling: config.minDelayMinutesCeiling ?? 2,
         defaultDailyLimit:      config.defaultDailyLimit      ?? 50,
         defaultMinDelayMinutes: config.defaultMinDelayMinutes ?? 5,
+        // Slice 2 additions
+        linkedinDailyActivationCap: config.linkedinDailyActivationCap ?? 25,
+        activationSlaDays:          config.activationSlaDays          ?? 7,
+        researchSlaDays:            config.researchSlaDays            ?? 14,
       },
       updatedAt: result.rows[0]?.updated_at || null,
     });
@@ -65,6 +69,10 @@ router.put('/', requireAdmin, async (req, res) => {
       minDelayMinutesCeiling,
       defaultDailyLimit,
       defaultMinDelayMinutes,
+      // Slice 2 additions
+      linkedinDailyActivationCap,
+      activationSlaDays,
+      researchSlaDays,
     } = req.body;
 
     // Validation
@@ -85,6 +93,19 @@ router.put('/', requireAdmin, async (req, res) => {
       const v = parseInt(defaultMinDelayMinutes);
       if (isNaN(v) || v < 0) errors.push('defaultMinDelayMinutes cannot be negative');
     }
+    // Slice 2
+    if (linkedinDailyActivationCap !== undefined) {
+      const v = parseInt(linkedinDailyActivationCap);
+      if (isNaN(v) || v < 1 || v > 200) errors.push('linkedinDailyActivationCap must be between 1 and 200');
+    }
+    if (activationSlaDays !== undefined) {
+      const v = parseInt(activationSlaDays);
+      if (isNaN(v) || v < 1 || v > 90) errors.push('activationSlaDays must be between 1 and 90');
+    }
+    if (researchSlaDays !== undefined) {
+      const v = parseInt(researchSlaDays);
+      if (isNaN(v) || v < 1 || v > 90) errors.push('researchSlaDays must be between 1 and 90');
+    }
     if (errors.length > 0) {
       return res.status(400).json({ error: { message: errors.join('; ') } });
     }
@@ -103,6 +124,10 @@ router.put('/', requireAdmin, async (req, res) => {
       minDelayMinutesCeiling: parseInt(minDelayMinutesCeiling) ?? existing.minDelayMinutesCeiling ?? 2,
       defaultDailyLimit:      parseInt(defaultDailyLimit)      ?? existing.defaultDailyLimit      ?? 50,
       defaultMinDelayMinutes: parseInt(defaultMinDelayMinutes) ?? existing.defaultMinDelayMinutes ?? 5,
+      // Slice 2 additions — preserved on every write.
+      linkedinDailyActivationCap: parseInt(linkedinDailyActivationCap) ?? existing.linkedinDailyActivationCap ?? 25,
+      activationSlaDays:          parseInt(activationSlaDays)          ?? existing.activationSlaDays          ?? 7,
+      researchSlaDays:            parseInt(researchSlaDays)            ?? existing.researchSlaDays            ?? 14,
     };
 
     // Handle undefined (NaN from parseInt of undefined)
@@ -110,6 +135,9 @@ router.put('/', requireAdmin, async (req, res) => {
     if (isNaN(merged.minDelayMinutesCeiling)) merged.minDelayMinutesCeiling = existing.minDelayMinutesCeiling || 2;
     if (isNaN(merged.defaultDailyLimit))      merged.defaultDailyLimit      = existing.defaultDailyLimit      || 50;
     if (isNaN(merged.defaultMinDelayMinutes)) merged.defaultMinDelayMinutes = existing.defaultMinDelayMinutes || 5;
+    if (isNaN(merged.linkedinDailyActivationCap)) merged.linkedinDailyActivationCap = existing.linkedinDailyActivationCap || 25;
+    if (isNaN(merged.activationSlaDays))          merged.activationSlaDays          = existing.activationSlaDays          || 7;
+    if (isNaN(merged.researchSlaDays))            merged.researchSlaDays            = existing.researchSlaDays            || 14;
 
     if (merged.defaultDailyLimit > merged.dailyLimitCeiling) {
       return res.status(400).json({

@@ -49,6 +49,24 @@ const CHANNEL_OPTIONS = [
 
 const TEMPLATE_TOKENS = ['{{first_name}}', '{{last_name}}', '{{full_name}}', '{{title}}', '{{company}}', '{{industry}}'];
 
+// Slice 3: per-step intent override for the personalization dispatcher.
+// `null` (the default) means "auto-infer from channel + position + engagement
+// history." Explicit values override inference. Email and LinkedIn channels
+// have different intent enums — the UI in StepRow surfaces only the ones
+// valid for the step's channel.
+const EMAIL_INTENT_OPTIONS = [
+  { value: '',             label: 'Auto (recommended)' },
+  { value: 'first_touch',  label: 'First touch' },
+  { value: 'follow_up',    label: 'Follow-up' },
+  { value: 'breakup',      label: 'Breakup' },
+];
+const LINKEDIN_INTENT_OPTIONS = [
+  { value: '',                     label: 'Auto (recommended)' },
+  { value: 'connection_request',   label: 'Connection request' },
+  { value: 'post_accept_message',  label: 'Post-accept DM' },
+  { value: 'nurture_dm',           label: 'Nurture DM' },
+];
+
 function blankStep(order) {
   return {
     _id:              Date.now() + Math.random(),
@@ -63,6 +81,7 @@ function blankStep(order) {
     task_note:        '',
     require_approval:    null, // null = inherit from sequence
     personalize_config:  null, // null = inherit from sequence default → user pref → SYSTEM_DEFAULT
+    step_intent:         null, // Slice 3: null = auto-infer; explicit = override
   };
 }
 
@@ -87,6 +106,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
           ai_generated:       false,
           require_approval:   s.require_approval !== undefined ? s.require_approval : null,
           personalize_config: s.personalize_config !== undefined ? s.personalize_config : null,
+          step_intent:        s.step_intent || null,   // Slice 3
         }))
       : [blankStep(1)]
   );
@@ -233,7 +253,13 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
     setSaving(true);
     setError('');
 
-    const stepsPayload = steps.map(s => ({ ...s, mode: s.mode }));
+    const stepsPayload = steps.map(s => ({
+      ...s,
+      mode: s.mode,
+      // Slice 3: empty string from the dropdown means "Auto" — send null so the
+      // DB column is NULL (the dispatcher's inference branch).
+      step_intent: s.step_intent && s.step_intent.length > 0 ? s.step_intent : null,
+    }));
 
     try {
       let saved;
@@ -639,6 +665,34 @@ function StepCard({ step, index, total, expanded, seqRequireApproval, seqPersona
               />
             </div>
           </div>
+
+          {/* Slice 3: Step intent override. Auto = let the dispatcher infer
+              based on channel + position + engagement history. Explicit
+              picks bypass inference — useful for forcing a breakup or
+              skipping straight to a post-accept DM. */}
+          {(step.channel === 'email' || step.channel === 'linkedin') && (
+            <div>
+              <label style={labelStyle}>
+                Step intent <span style={{ fontWeight: 400, color: '#9ca3af', fontSize: 10 }}>
+                  — controls which AI template runs for this step
+                </span>
+              </label>
+              <select
+                value={step.step_intent || ''}
+                onChange={e => onChange('step_intent', e.target.value || null)}
+                style={selectStyle}
+              >
+                {(step.channel === 'email' ? EMAIL_INTENT_OPTIONS : LINKEDIN_INTENT_OPTIONS).map(o => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              {step.step_intent && (
+                <div style={{ fontSize: 10, color: '#92400e', marginTop: 4 }}>
+                  Override active — the dispatcher will use this intent, not the inferred one.
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Step-level approval override (email steps only) */}
           {isEmailChannel && (
