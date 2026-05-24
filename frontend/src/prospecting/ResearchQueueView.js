@@ -81,15 +81,6 @@ export default function ResearchQueueView() {
     setTimeout(() => setFlash(null), 3000);
   };
 
-  const advance = () => {
-    if (idx + 1 < queue.length) {
-      setIdx(idx + 1);
-    } else {
-      // End of current batch — reload to fetch next set.
-      loadQueue(campaignId);
-    }
-  };
-
   const handleApprove = async (payload) => {
     const prospect = queue[idx];
     try {

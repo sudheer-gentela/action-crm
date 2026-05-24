@@ -173,7 +173,6 @@ export default function BatchActivateModal({ campaign, readyCount, onClose, onAc
 }
 
 function ResultView({ result, onDone }) {
-  const allSkillOk    = result.enrollments.every(e => e.skillStatus === 'ok' || e.skillStatus === 'not_run');
   const skillProblems = result.enrollments.filter(e => !['ok', 'not_run'].includes(e.skillStatus));
 
   return (
