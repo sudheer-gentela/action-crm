@@ -18,6 +18,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiFetch, DEFAULT_PROSPECT_STAGES } from './prospectingShared';
 import CSVImportModal from '../CSVImportModal';
+import CampaignConfigPanel from './CampaignConfigPanel';
+import PacingTile from './PacingTile';
+import BatchActivateModal from './BatchActivateModal';
 
 // Stage colors for the funnel — keyed to DEFAULT_PROSPECT_STAGES keys.
 const STAGE_META = {
@@ -378,6 +381,9 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
   const [busy,     setBusy]     = useState(false);
   const [showImport,   setShowImport]   = useState(false);
   const [showEnroll,   setShowEnroll]   = useState(false);
+  // Slice 2: batch-activation modal + pacing-driven CTA.
+  const [showBatchActivate, setShowBatchActivate] = useState(false);
+  const [readyToActivate,   setReadyToActivate]   = useState(0);
 
   // Channel filter for the outreach metric cards. `null` = show all channels
   // side-by-side. A specific value collapses the cards to that channel only.
@@ -394,6 +400,11 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
       // Member preview — up to 10, via the prospects list scoped by campaign.
       const pr = await apiFetch(`/prospects?scope=org&campaignId=${campaignId}`);
       setMembers((pr.prospects || []).slice(0, 10));
+      // Slice 2: fetch pacing to drive the "Activate next N" button.
+      try {
+        const pc = await apiFetch(`/prospecting-campaigns/${campaignId}/pacing`);
+        setReadyToActivate(pc?.pacing?.readyToActivate || 0);
+      } catch (_) { setReadyToActivate(0); }
       setError('');
     } catch (err) {
       setError('Failed to load campaign: ' + (err.message || 'unknown error'));
@@ -644,22 +655,45 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
                 /prospecting-campaigns/:id/sequence-health endpoint. */}
             <SequenceHealthTile campaignId={campaignId} />
 
-            {/* Enroll-all */}
-            <div style={{ margin: '18px 0' }}>
-              <button
-                className="pv-btn-primary"
-                style={{ width: '100%' }}
-                disabled={busy || totalProspects === 0}
-                onClick={() => setShowEnroll(true)}
-              >
-                📨 Enroll all in sequence
-              </button>
-              {!data.campaign.default_sequence_id && (
-                <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, textAlign: 'center' }}>
-                  No default sequence set — you'll pick one.
-                </div>
-              )}
-            </div>
+            {/* Slice 2: pacing tile — funnel + activation rate */}
+            <PacingTile campaignId={campaignId} />
+
+            {/* Slice 2: batch-activate button — primary action when prospects
+                are in research stage. Falls back to the legacy Enroll-all when
+                nothing is research-ready (e.g. before researcher curates). */}
+            {readyToActivate > 0 ? (
+              <div style={{ margin: '18px 0' }}>
+                <button
+                  className="pv-btn-primary"
+                  style={{ width: '100%' }}
+                  disabled={busy || !data.campaign.default_sequence_id}
+                  onClick={() => setShowBatchActivate(true)}
+                >
+                  ⚡ Activate next batch ({readyToActivate} research-ready)
+                </button>
+                {!data.campaign.default_sequence_id && (
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, textAlign: 'center' }}>
+                    Set a default sequence on this campaign before activating.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{ margin: '18px 0' }}>
+                <button
+                  className="pv-btn-secondary"
+                  style={{ width: '100%' }}
+                  disabled={busy || totalProspects === 0}
+                  onClick={() => setShowEnroll(true)}
+                >
+                  📨 Enroll all in sequence (legacy)
+                </button>
+                {!data.campaign.default_sequence_id && (
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, textAlign: 'center' }}>
+                    No default sequence set — you'll pick one.
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Members preview */}
             <div style={{
@@ -711,6 +745,19 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
                 <div>📅 {data.campaign.start_date || '?'} → {data.campaign.end_date || '?'}</div>
               )}
             </div>
+
+            {/* Slice 1: campaign-level prospecting_config override.
+                Owner/admin only — the panel itself handles 403 read-only fallback,
+                but we also gate the editable controls client-side via canEdit. */}
+            <CampaignConfigPanel
+              campaignId={campaignId}
+              canEdit={(() => {
+                try {
+                  const u = JSON.parse(localStorage.getItem('user') || '{}');
+                  return u.role === 'owner' || u.role === 'admin';
+                } catch (_) { return false; }
+              })()}
+            />
           </div>
         )}
 
@@ -726,6 +773,14 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
             campaign={data.campaign}
             onClose={() => setShowEnroll(false)}
             onEnrolled={() => { setShowEnroll(false); load(channelFilter); onChanged?.(); }}
+          />
+        )}
+        {showBatchActivate && data && (
+          <BatchActivateModal
+            campaign={data.campaign}
+            readyCount={readyToActivate}
+            onClose={() => setShowBatchActivate(false)}
+            onActivated={() => { setShowBatchActivate(false); load(channelFilter); onChanged?.(); }}
           />
         )}
       </div>
