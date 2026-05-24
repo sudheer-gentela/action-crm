@@ -24,15 +24,6 @@ const HOOK_CATEGORY_OPTIONS = [
   { value: 'role_curiosity',  label: 'Role + stage curiosity' },
 ];
 
-const EMPTY_OVERRIDE = {
-  products: [],
-  default_value_props: [],
-  default_target_personas: [],
-  default_case_study_summaries: [],
-  hook_preferences: { preferred_categories: [] },
-  guardrails: { banned_phrasings: [], required_disclaimers: [] },
-};
-
 export default function CampaignConfigPanel({ campaignId, canEdit }) {
   const [data,    setData]    = useState(null);   // { override, resolved, org_baseline, has_override }
   const [draft,   setDraft]   = useState(null);   // editable copy of override
@@ -74,7 +65,7 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const r = await apiFetch(`/prospecting-campaigns/${campaignId}/config`, {
+      await apiFetch(`/prospecting-campaigns/${campaignId}/config`, {
         method: 'PUT',
         body: JSON.stringify({ override: draft }),
       });
