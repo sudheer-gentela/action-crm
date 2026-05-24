@@ -1937,4 +1937,317 @@ router.get('/health', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SLICE 4 — PREVIEW + STOP-AND-UNDO ENROLLMENT
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── POST /:id/preview — non-destructive personalisation for N prospects ─────
+// Runs the dispatcher in-memory for each prospect and returns the full
+// personalised steps as JSON. No DB writes to sequence_enrollments,
+// sequence_step_logs, or prospects. The only side effect is skill_runs rows
+// (each skill call persists for audit), which is acceptable — the rep
+// triggered the run intentionally.
+//
+// Body:
+//   { prospectIds: number[] }   // 1-5 prospect IDs
+//
+// Response:
+//   {
+//     sequenceId,
+//     sequenceName,
+//     previews: [{
+//       prospectId,
+//       prospectName,
+//       prospectCompany,
+//       steps: [{ step_order, channel, subject, body, task_note,
+//                 personalize_sources, intent }],
+//       dispatchSummary: { total, personalised, skipped, errored },
+//       errors: [...]
+//     }],
+//     summary: { requested, succeeded, failed }
+//   }
+//
+// HARD CAP: 5 prospects per preview to bound skill API cost (a 3-step
+// sequence × 5 prospects = up to 15 Anthropic calls per preview).
+router.post('/:id/preview', async (req, res) => {
+  const { prospectIds } = req.body || {};
+  if (!Array.isArray(prospectIds) || prospectIds.length === 0) {
+    return res.status(400).json({ error: { message: 'prospectIds array is required' } });
+  }
+  if (prospectIds.length > 5) {
+    return res.status(400).json({ error: {
+      message: 'Maximum 5 prospects per preview (to bound Anthropic API cost).',
+    } });
+  }
+
+  try {
+    // Sequence existence + org scope
+    const seqRes = await pool.query(
+      `SELECT id, name FROM sequences WHERE id = $1 AND org_id = $2`,
+      [req.params.id, req.orgId]
+    );
+    if (!seqRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Sequence not found' } });
+    }
+    const sequence = seqRes.rows[0];
+
+    // Validate prospects belong to this org
+    const ids = prospectIds.map(x => parseInt(x, 10)).filter(Number.isFinite);
+    if (ids.length === 0) {
+      return res.status(400).json({ error: { message: 'No valid prospect IDs' } });
+    }
+    const pRes = await pool.query(
+      `SELECT id, first_name, last_name, company_name
+         FROM prospects
+        WHERE id = ANY($1::int[]) AND org_id = $2 AND deleted_at IS NULL`,
+      [ids, req.orgId]
+    );
+    if (pRes.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'No prospects found in this org' } });
+    }
+    const prospectsById = {};
+    for (const p of pRes.rows) prospectsById[p.id] = p;
+
+    // Sequence steps — needed to attach channel + intent to each preview step
+    const stepsRes = await pool.query(
+      `SELECT id, step_order, channel, step_intent
+         FROM sequence_steps
+        WHERE sequence_id = $1 AND org_id = $2
+     ORDER BY step_order ASC`,
+      [req.params.id, req.orgId]
+    );
+    const stepsByOrder = {};
+    for (const s of stepsRes.rows) stepsByOrder[s.step_order] = s;
+
+    // Run dispatcher per prospect — sequentially to keep skill rate-limited.
+    const previews = [];
+    let succeeded = 0, failed = 0;
+
+    for (const prospectId of ids) {
+      const p = prospectsById[prospectId];
+      if (!p) {
+        previews.push({
+          prospectId,
+          prospectName: null,
+          prospectCompany: null,
+          error: 'Prospect not found or in another org',
+          steps: [],
+        });
+        failed++;
+        continue;
+      }
+
+      try {
+        const dispatch = await PersonalizationDispatcher.personaliseEnrollment({
+          orgId:      req.orgId,
+          userId:     req.user.userId,
+          sequenceId: parseInt(req.params.id, 10),
+          prospectId,
+        });
+
+        // Flatten dispatcher's keyed map → array sorted by step_order, with
+        // channel/intent metadata attached from sequence_steps for display.
+        const stepOrders = Object.keys(dispatch.personalisedSteps || {})
+          .map(k => parseInt(k, 10))
+          .filter(Number.isFinite)
+          .sort((a, b) => a - b);
+
+        const steps = stepOrders.map(order => {
+          const s = dispatch.personalisedSteps[String(order)] || {};
+          const seqStep = stepsByOrder[order] || {};
+          return {
+            step_order:          order,
+            channel:             seqStep.channel || null,
+            subject:             s.subject   || '',
+            body:                s.body      || '',
+            task_note:           s.task_note || '',
+            personalize_sources: s.personalize_sources || null,
+            intent:              s.personalize_sources?.stepIntent || null,
+            intent_source:       s.personalize_sources?.intentSource || null,
+          };
+        });
+
+        previews.push({
+          prospectId,
+          prospectName:   `${p.first_name || ''} ${p.last_name || ''}`.trim(),
+          prospectCompany: p.company_name || null,
+          steps,
+          dispatchSummary: dispatch.summary,
+          errors:          dispatch.errors || [],
+        });
+        succeeded++;
+      } catch (err) {
+        console.error(`preview failed for prospect ${prospectId}:`, err);
+        previews.push({
+          prospectId,
+          prospectName: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
+          prospectCompany: p.company_name || null,
+          error: err.message,
+          steps: [],
+        });
+        failed++;
+      }
+    }
+
+    res.json({
+      sequenceId:   parseInt(req.params.id, 10),
+      sequenceName: sequence.name,
+      previews,
+      summary: {
+        requested: ids.length,
+        succeeded,
+        failed,
+      },
+    });
+  } catch (err) {
+    console.error('preview error:', err);
+    res.status(500).json({ error: { message: 'Preview failed: ' + err.message } });
+  }
+});
+
+// ── POST /enrollments/:enrollId/undo — stop AND clean up ────────────────────
+// Differs from the existing /stop endpoint:
+//   - /stop just sets status='stopped' (existing audit-friendly action)
+//   - /undo sets status='stopped' AND discards unsent drafts AND reverts
+//     prospect stage (the rep is saying "I made a mistake, undo")
+//
+// What gets undone:
+//   - sequence_step_logs WHERE enrollment_id = X AND status = 'draft' → deleted
+//   - prospects.stage reverts to 'research' (or 'target' if no research_notes)
+//   - sequence_enrollments.status = 'stopped' with stop_reason = 'undone'
+//
+// What does NOT get undone:
+//   - Already-sent emails (status='sent') — cannot recall outbound mail
+//   - Already-logged LinkedIn touches (prospecting_activities rows)
+//   - The enrollment row itself — kept for audit (status='stopped')
+//
+// The rep can re-enroll the prospect fresh after undo (the bulk-activate
+// candidate query filters out 'active'/'paused' enrollments, so 'stopped'
+// enrollments don't block re-enrollment).
+router.post('/enrollments/:enrollId/undo', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Load enrollment, scope to org. Lock the row to prevent races with
+    // the firer picking up the same enrollment.
+    const eRes = await client.query(
+      `SELECT id, prospect_id, sequence_id, status
+         FROM sequence_enrollments
+        WHERE id = $1 AND org_id = $2
+        FOR UPDATE`,
+      [req.params.enrollId, req.orgId]
+    );
+    if (!eRes.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: { message: 'Enrollment not found' } });
+    }
+    const enrollment = eRes.rows[0];
+
+    if (['stopped', 'completed'].includes(enrollment.status)) {
+      // Already terminal — no-op. Return current state.
+      await client.query('ROLLBACK');
+      return res.json({
+        enrollmentId: enrollment.id,
+        wasAlreadyTerminal: true,
+        status: enrollment.status,
+        draftsDiscarded: 0,
+        stageReverted: null,
+      });
+    }
+
+    // Count + discard unsent drafts. Sent steps stay (audit trail).
+    const draftRes = await client.query(
+      `DELETE FROM sequence_step_logs
+        WHERE enrollment_id = $1 AND org_id = $2 AND status = 'draft'
+      RETURNING id`,
+      [enrollment.id, req.orgId]
+    );
+    const draftsDiscarded = draftRes.rowCount;
+
+    // Stop the enrollment with explicit stop_reason='undone' so audit
+    // queries can distinguish manual undo from other stops.
+    await client.query(
+      `UPDATE sequence_enrollments
+          SET status = 'stopped',
+              stopped_at = NOW(),
+              stop_reason = 'undone'
+        WHERE id = $1 AND org_id = $2`,
+      [enrollment.id, req.orgId]
+    );
+
+    // Revert prospect stage. The rule:
+    //   - had research_notes (or research_meta.signal_summary) → 'research'
+    //   - else → 'target'
+    //
+    // Only revert if the prospect is currently in 'outreach' — if they've
+    // already advanced beyond outreach (engaged, qualified, etc.) we leave
+    // the stage alone; undoing one enrollment shouldn't push them backwards
+    // through engagement.
+    const pRes = await client.query(
+      `SELECT id, stage, research_notes, research_meta
+         FROM prospects
+        WHERE id = $1 AND org_id = $2`,
+      [enrollment.prospect_id, req.orgId]
+    );
+    let stageReverted = null;
+    if (pRes.rows.length && pRes.rows[0].stage === 'outreach') {
+      const hadResearch = !!(
+        pRes.rows[0].research_notes ||
+        (pRes.rows[0].research_meta && (
+          pRes.rows[0].research_meta.signal_summary ||
+          pRes.rows[0].research_meta.researchBullets
+        ))
+      );
+      const newStage = hadResearch ? 'research' : 'target';
+      await client.query(
+        `UPDATE prospects
+            SET stage = $3,
+                stage_changed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1 AND org_id = $2`,
+        [enrollment.prospect_id, req.orgId, newStage]
+      );
+      stageReverted = newStage;
+    }
+
+    // Audit activity row. Non-fatal if it fails.
+    try {
+      await client.query(
+        `INSERT INTO prospecting_activities
+                     (org_id, prospect_id, user_id, activity_type, description, metadata)
+              VALUES ($1, $2, $3, 'enrollment_undone', $4, $5::jsonb)`,
+        [
+          req.orgId, enrollment.prospect_id, req.user.userId,
+          `Enrollment undone — ${draftsDiscarded} draft(s) discarded` +
+            (stageReverted ? `, stage reverted to '${stageReverted}'` : ''),
+          JSON.stringify({
+            enrollmentId:    enrollment.id,
+            sequenceId:      enrollment.sequence_id,
+            draftsDiscarded,
+            stageReverted,
+          }),
+        ]
+      );
+    } catch (actErr) {
+      console.warn('undo: activity log failed:', actErr.message);
+    }
+
+    await client.query('COMMIT');
+    res.json({
+      enrollmentId:        enrollment.id,
+      wasAlreadyTerminal:  false,
+      status:              'stopped',
+      draftsDiscarded,
+      stageReverted,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('enrollment undo error:', err);
+    res.status(500).json({ error: { message: 'Undo failed: ' + err.message } });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;

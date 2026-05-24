@@ -252,6 +252,47 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
     }
   };
 
+  // Slice 4: Stop-and-undo the whole enrollment. Distinct from discarding a
+  // single draft — this stops the entire sequence enrollment, discards ALL
+  // unsent drafts (this one plus any future steps), and reverts the prospect's
+  // stage from 'outreach' back to 'research' (or 'target' if no research_notes).
+  // Already-sent emails and LinkedIn touches cannot be recalled — they stay
+  // in the audit trail.
+  const handleUndoEnrollment = async (draft) => {
+    if (!draft.enrollmentId) {
+      window.alert('This draft is not associated with an enrollment.');
+      return;
+    }
+    if (!window.confirm(
+      'Stop this enrollment and discard all unsent drafts?\n\n' +
+      'Sent emails and LinkedIn touches cannot be recalled — they stay in history.\n' +
+      'The prospect can be re-enrolled fresh after this.'
+    )) return;
+    try {
+      const result = await apiFetch(`/sequences/enrollments/${draft.enrollmentId}/undo`, {
+        method: 'POST',
+      });
+      if (result.wasAlreadyTerminal) {
+        window.alert('This enrollment was already stopped.');
+        return;
+      }
+      // Remove all drafts tied to that enrollment from the local list.
+      setProspectDrafts(prev => prev.filter(d => d.enrollmentId !== draft.enrollmentId));
+      // Refresh activities so the audit entry shows up.
+      try {
+        const res = await apiFetch(`/prospects/${prospectId}`);
+        setActivities(res.activities || []);
+      } catch (_) {}
+      window.alert(
+        `Enrollment stopped. ${result.draftsDiscarded || 0} draft(s) discarded.` +
+        (result.stageReverted ? ` Stage reverted to '${result.stageReverted}'.` : '')
+      );
+    } catch (err) {
+      console.error('Failed to undo enrollment:', err);
+      window.alert('Failed to undo enrollment: ' + (err.message || 'unknown error'));
+    }
+  };
+
   const handleMarkDoneProspectDraft = async (draftId) => {
     // Phase 2: for call-channel drafts, open the LogCallModal instead of
     // hitting /complete directly. The modal's save handler will POST to
@@ -1159,6 +1200,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
                             onComplete={() => handleMarkDoneProspectDraft(draft.id)}
                             onDiscard={() => handleDiscardProspectDraft(draft.id)}
                             onConvertAndSend={() => handleConvertAndSendProspectDraft(draft)}
+                            onUndoEnrollment={() => handleUndoEnrollment(draft)}
                             onDrawerToggle={(open) => setOpenDrawers(prev => ({ ...prev, [draft.id]: open }))}
                           />
                         );

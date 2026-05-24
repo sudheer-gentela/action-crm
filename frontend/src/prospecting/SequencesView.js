@@ -150,6 +150,36 @@ function SequencesView({ prospects }) {
     }
   };
 
+  // Slice 4: stop-and-undo the entire enrollment. Discards ALL unsent drafts
+  // tied to this enrollment plus reverts the prospect's stage.
+  const handleUndoEnrollment = async (draft) => {
+    if (!draft.enrollmentId) {
+      window.alert('This draft is not associated with an enrollment.');
+      return;
+    }
+    if (!window.confirm(
+      'Stop this enrollment and discard all unsent drafts?\n\n' +
+      'Sent emails and LinkedIn touches cannot be recalled — they stay in history.'
+    )) return;
+    try {
+      const result = await apiFetch(`/sequences/enrollments/${draft.enrollmentId}/undo`, {
+        method: 'POST',
+      });
+      if (result.wasAlreadyTerminal) {
+        window.alert('This enrollment was already stopped.');
+        return;
+      }
+      // Drop all drafts for this enrollment.
+      setDrafts(prev => prev.filter(d => d.enrollmentId !== draft.enrollmentId));
+      window.alert(
+        `Enrollment stopped. ${result.draftsDiscarded || 0} draft(s) discarded.` +
+        (result.stageReverted ? ` Stage reverted to '${result.stageReverted}'.` : '')
+      );
+    } catch (err) {
+      setError('Failed to undo enrollment: ' + err.message);
+    }
+  };
+
   const handleMarkDoneDraft = async (draftId) => {
     setDraftEdits(prev => ({ ...prev, [draftId]: { ...prev[draftId], sending: true, error: null } }));
     try {
@@ -453,6 +483,7 @@ function SequencesView({ prospects }) {
                     onComplete={() => handleMarkDoneDraft(draft.id)}
                     onDiscard={() => handleDiscardDraft(draft.id)}
                     onConvertAndSend={() => handleConvertAndSendDraft(draft)}
+                    onUndoEnrollment={() => handleUndoEnrollment(draft)}
                   />
                 );
               })}

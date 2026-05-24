@@ -1408,4 +1408,148 @@ router.get('/:id/pacing', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SLICE 4 — SENDER VISIBILITY
+// ─────────────────────────────────────────────────────────────────────────────
+// "Where are emails going FROM, and which LinkedIn account drives the LinkedIn
+// tasks?" — exposed on the campaign drawer so reps don't have to navigate to
+// Settings to find out before launching.
+//
+// Sender resolution logic mirrors SequenceStepFirer.resolveSender, simplified:
+//   1. Per-campaign owner sender (campaign.owner_id) — primary path
+//   2. Fallback: any active sender for that owner
+//
+// LinkedIn doesn't have a server-side account binding — it's whoever's signed
+// into the Chrome extension when LinkedIn tasks fire. We surface this as a
+// "you" answer with a tooltip explaining the model.
+//
+// Response shape:
+//   {
+//     email: {
+//       configured: bool,
+//       email: string | null,
+//       provider: 'google' | 'outlook' | null,
+//       display_name: string | null,
+//       is_active: bool,
+//       emails_sent_today: number,
+//       daily_limit: number,
+//       health: 'healthy' | 'warning' | 'unconfigured' | 'over_limit',
+//       health_reason: string | null,
+//       owner_id: number,
+//       owner_name: string
+//     },
+//     linkedin: {
+//       model: 'chrome_extension',
+//       owner_id: number,
+//       owner_name: string,
+//       note: string
+//     }
+//   }
+
+router.get('/:id/sender-summary', async (req, res) => {
+  try {
+    // Load campaign + owner. Sender resolution follows the campaign owner;
+    // for backstop, owner_id falls back to created_by (same pattern as the
+    // SLA sweeps).
+    const campRes = await pool.query(
+      `SELECT c.id, COALESCE(c.owner_id, c.created_by) AS resolved_owner_id,
+              u.first_name, u.last_name, u.email AS owner_user_email
+         FROM prospecting_campaigns c
+    LEFT JOIN users u ON u.id = COALESCE(c.owner_id, c.created_by)
+        WHERE c.id = $1 AND c.org_id = $2`,
+      [req.params.id, req.orgId]
+    );
+    if (!campRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Campaign not found' } });
+    }
+    const camp = campRes.rows[0];
+    const ownerId = camp.resolved_owner_id;
+    const ownerName = [camp.first_name, camp.last_name].filter(Boolean).join(' ') || 'Unassigned';
+
+    // Sender pick — match SequenceStepFirer's logic: active sender for the
+    // owner, sorted by least-used-today + oldest-sent. We don't need the
+    // tokens here; just identity + health metrics.
+    const sRes = await pool.query(
+      `SELECT id, email, provider, display_name, is_active,
+              emails_sent_today, daily_limit, last_reset_at, last_sent_at,
+              created_at
+         FROM prospecting_sender_accounts
+        WHERE org_id = $1
+          AND user_id = $2
+          AND client_id IS NULL
+        ORDER BY
+          (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+          last_sent_at ASC NULLS FIRST
+        LIMIT 1`,
+      [req.orgId, ownerId]
+    );
+
+    let emailSummary;
+    if (!sRes.rows.length) {
+      emailSummary = {
+        configured: false,
+        email: null,
+        provider: null,
+        display_name: null,
+        is_active: false,
+        emails_sent_today: 0,
+        daily_limit: 0,
+        health: 'unconfigured',
+        health_reason: 'No sender account connected for the campaign owner. Connect one under Settings → Email senders.',
+        owner_id: ownerId,
+        owner_name: ownerName,
+      };
+    } else {
+      const s = sRes.rows[0];
+      // Reset emails_sent_today display if the last reset was before today.
+      const sentToday = (s.last_reset_at && new Date(s.last_reset_at) < new Date(new Date().toISOString().slice(0, 10)))
+        ? 0
+        : (s.emails_sent_today || 0);
+      const dailyLimit = s.daily_limit || 0;
+
+      let health = 'healthy';
+      let healthReason = null;
+      if (!s.is_active) {
+        health = 'warning';
+        healthReason = 'Sender is connected but currently inactive. Re-activate under Settings → Email senders.';
+      } else if (dailyLimit > 0 && sentToday >= dailyLimit) {
+        health = 'over_limit';
+        healthReason = `Daily limit (${dailyLimit}) reached. Future sends will queue until tomorrow.`;
+      } else if (dailyLimit > 0 && sentToday >= dailyLimit * 0.9) {
+        health = 'warning';
+        healthReason = `Near daily limit (${sentToday}/${dailyLimit}). Plan future activations carefully.`;
+      }
+
+      emailSummary = {
+        configured: true,
+        email: s.email,
+        provider: s.provider,
+        display_name: s.display_name,
+        is_active: s.is_active,
+        emails_sent_today: sentToday,
+        daily_limit: dailyLimit,
+        health,
+        health_reason: healthReason,
+        owner_id: ownerId,
+        owner_name: ownerName,
+      };
+    }
+
+    // LinkedIn: no server-side account. The driving account is whoever's
+    // logged in on the rep's browser when LinkedIn tasks fire. We surface
+    // the rep identity + an explanatory note.
+    const linkedinSummary = {
+      model: 'chrome_extension',
+      owner_id: ownerId,
+      owner_name: ownerName,
+      note: 'LinkedIn connection requests and messages are executed from the rep\'s logged-in LinkedIn account via the GoWarmCRM Chrome extension. There is no server-side LinkedIn account binding — whoever is signed in on the rep\'s browser at task execution time is the sender.',
+    };
+
+    res.json({ email: emailSummary, linkedin: linkedinSummary });
+  } catch (err) {
+    console.error('sender-summary error:', err);
+    res.status(500).json({ error: { message: 'Failed to load sender summary' } });
+  }
+});
+
 module.exports = router;

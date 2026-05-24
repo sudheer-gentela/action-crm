@@ -5,7 +5,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import LinkedInDataDrawer from '../LinkedInDataDrawer';
 import PersonalizeProvenanceFooter from '../PersonalizeProvenanceFooter';
 
-function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle, onSubjectChange, onBodyChange, onSend, onComplete, onDiscard, onConvertAndSend, compact = false, onDrawerToggle }) {
+function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle, onSubjectChange, onBodyChange, onSend, onComplete, onDiscard, onConvertAndSend, onUndoEnrollment, compact = false, onDrawerToggle }) {
   const overdue  = draft.isOverdue || (draft.scheduledSendAt && new Date(draft.scheduledSendAt) < new Date());
   const channel  = draft.channel || 'email';
   const isEmail  = channel === 'email';
@@ -381,7 +381,24 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
           )}
 
           {/* Actions */}
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+            {/* Slice 4: Undo enrollment — stops the whole enrollment and
+                discards all unsent drafts, not just this one. Distinct from
+                Discard (which just removes this single step). */}
+            {onUndoEnrollment && (
+              <button
+                onClick={onUndoEnrollment}
+                title="Stop the entire enrollment and discard all unsent drafts. Sent touches cannot be recalled."
+                style={{
+                  padding: '7px 12px', borderRadius: 7,
+                  border: '1px solid #d1d5db', background: '#fff', color: '#6b7280',
+                  fontSize: 11, fontWeight: 500, cursor: 'pointer',
+                  marginRight: 'auto',
+                }}
+              >
+                ↩ Undo enrollment
+              </button>
+            )}
             <button
               onClick={onDiscard}
               style={{ padding: '7px 14px', borderRadius: 7, border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}

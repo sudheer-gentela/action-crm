@@ -21,6 +21,9 @@ import CSVImportModal from '../CSVImportModal';
 import CampaignConfigPanel from './CampaignConfigPanel';
 import PacingTile from './PacingTile';
 import BatchActivateModal from './BatchActivateModal';
+// Slice 4: preview drafts + sender visibility
+import PreviewDraftsModal from './PreviewDraftsModal';
+import SenderSummaryTile from './SenderSummaryTile';
 
 // Stage colors for the funnel — keyed to DEFAULT_PROSPECT_STAGES keys.
 const STAGE_META = {
@@ -385,6 +388,10 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
   const [showBatchActivate, setShowBatchActivate] = useState(false);
   const [readyToActivate,   setReadyToActivate]   = useState(0);
 
+  // Slice 4: preview drafts modal + picker for which prospects to preview.
+  const [showPreviewPicker, setShowPreviewPicker] = useState(false);
+  const [previewProspectIds, setPreviewProspectIds] = useState([]);
+
   // Channel filter for the outreach metric cards. `null` = show all channels
   // side-by-side. A specific value collapses the cards to that channel only.
   // The filter is sent to the API so the server doesn't return data for
@@ -658,19 +665,35 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
             {/* Slice 2: pacing tile — funnel + activation rate */}
             <PacingTile campaignId={campaignId} />
 
-            {/* Slice 2: batch-activate button — primary action when prospects
-                are in research stage. Falls back to the legacy Enroll-all when
-                nothing is research-ready (e.g. before researcher curates). */}
+            {/* Slice 4: sender visibility — which email + LinkedIn account
+                will fire this campaign's outreach. */}
+            <SenderSummaryTile campaignId={campaignId} />
+
+            {/* Slice 2 + 4: batch-activate button (primary) + preview button
+                (secondary). The preview button lets the rep see all sequence
+                steps for 1-5 prospects WITHOUT enrolling anyone — useful
+                before committing to a real activation. */}
             {readyToActivate > 0 ? (
               <div style={{ margin: '18px 0' }}>
-                <button
-                  className="pv-btn-primary"
-                  style={{ width: '100%' }}
-                  disabled={busy || !data.campaign.default_sequence_id}
-                  onClick={() => setShowBatchActivate(true)}
-                >
-                  ⚡ Activate next batch ({readyToActivate} research-ready)
-                </button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className="pv-btn-primary"
+                    style={{ flex: 1 }}
+                    disabled={busy || !data.campaign.default_sequence_id}
+                    onClick={() => setShowBatchActivate(true)}
+                  >
+                    ⚡ Activate next batch ({readyToActivate} research-ready)
+                  </button>
+                  <button
+                    className="pv-btn-secondary"
+                    style={{ flex: '0 0 auto' }}
+                    title="Preview personalised drafts for up to 5 prospects without enrolling them"
+                    disabled={busy || !data.campaign.default_sequence_id}
+                    onClick={() => setShowPreviewPicker(true)}
+                  >
+                    👁️ Preview drafts
+                  </button>
+                </div>
                 {!data.campaign.default_sequence_id && (
                   <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, textAlign: 'center' }}>
                     Set a default sequence on this campaign before activating.
@@ -679,14 +702,25 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
               </div>
             ) : (
               <div style={{ margin: '18px 0' }}>
-                <button
-                  className="pv-btn-secondary"
-                  style={{ width: '100%' }}
-                  disabled={busy || totalProspects === 0}
-                  onClick={() => setShowEnroll(true)}
-                >
-                  📨 Enroll all in sequence (legacy)
-                </button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className="pv-btn-secondary"
+                    style={{ flex: 1 }}
+                    disabled={busy || totalProspects === 0}
+                    onClick={() => setShowEnroll(true)}
+                  >
+                    📨 Enroll all in sequence (legacy)
+                  </button>
+                  <button
+                    className="pv-btn-secondary"
+                    style={{ flex: '0 0 auto' }}
+                    title="Preview personalised drafts for up to 5 prospects without enrolling them"
+                    disabled={busy || !data.campaign.default_sequence_id || totalProspects === 0}
+                    onClick={() => setShowPreviewPicker(true)}
+                  >
+                    👁️ Preview drafts
+                  </button>
+                </div>
                 {!data.campaign.default_sequence_id && (
                   <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, textAlign: 'center' }}>
                     No default sequence set — you'll pick one.
@@ -783,6 +817,194 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
             onActivated={() => { setShowBatchActivate(false); load(channelFilter); onChanged?.(); }}
           />
         )}
+        {/* Slice 4: Preview-picker modal — pick 1-5 prospects, then opens
+            PreviewDraftsModal with the selected IDs. */}
+        {showPreviewPicker && data && (
+          <PreviewPickerModal
+            campaignId={campaignId}
+            sequenceId={data.campaign.default_sequence_id}
+            sequenceName={data.campaign.default_sequence_name}
+            members={members}
+            onClose={() => setShowPreviewPicker(false)}
+            onPick={(ids) => {
+              setPreviewProspectIds(ids);
+              setShowPreviewPicker(false);
+            }}
+          />
+        )}
+        {previewProspectIds.length > 0 && data && data.campaign.default_sequence_id && (
+          <PreviewDraftsModal
+            sequenceId={data.campaign.default_sequence_id}
+            prospectIds={previewProspectIds}
+            onClose={() => setPreviewProspectIds([])}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PreviewPickerModal — Slice 4 helper. Lets the rep pick 1-5 prospects from
+// the campaign before launching the actual preview. Reuses the campaign
+// members list already loaded into the drawer.
+// ─────────────────────────────────────────────────────────────────────────────
+function PreviewPickerModal({ campaignId, sequenceId, sequenceName, members, onClose, onPick }) {
+  const [selected, setSelected] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [allMembers, setAllMembers] = useState(members || []);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  // The drawer only loads the first 10 members for preview. For the picker,
+  // fetch a larger batch so the rep can search across the campaign.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoadingMore(true);
+      try {
+        const r = await apiFetch(`/prospects?scope=org&campaignId=${campaignId}&limit=200`);
+        if (!cancelled) setAllMembers(r.prospects || []);
+      } catch (_) {
+        // Keep the 10 we already have
+      } finally {
+        if (!cancelled) setLoadingMore(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [campaignId]);
+
+  const filtered = allMembers.filter(m => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      (m.firstName || '').toLowerCase().includes(q) ||
+      (m.lastName || '').toLowerCase().includes(q) ||
+      (m.companyName || '').toLowerCase().includes(q) ||
+      (m.email || '').toLowerCase().includes(q)
+    );
+  });
+
+  const toggle = (id) => {
+    if (selected.includes(id)) {
+      setSelected(selected.filter(x => x !== id));
+    } else if (selected.length < 5) {
+      setSelected([...selected, id]);
+    }
+  };
+
+  if (!sequenceId) {
+    return (
+      <div className="pv-modal-overlay" onClick={onClose}>
+        <div className="pv-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
+          <div className="pv-modal-header">
+            <h3>Preview drafts</h3>
+            <button className="pv-modal-close" onClick={onClose}>×</button>
+          </div>
+          <div className="pv-form" style={{ padding: 20 }}>
+            <div style={{
+              padding: 14, background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b',
+              fontSize: 13, borderRadius: 6,
+            }}>
+              This campaign has no default sequence. Set one before previewing.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pv-modal-overlay" onClick={onClose}>
+      <div className="pv-modal" onClick={e => e.stopPropagation()}
+           style={{ maxWidth: 580, display: 'flex', flexDirection: 'column', maxHeight: '85vh' }}>
+        <div className="pv-modal-header">
+          <h3>Preview drafts — pick prospects</h3>
+          <button className="pv-modal-close" onClick={onClose}>×</button>
+        </div>
+
+        <div style={{ padding: 16, borderBottom: '1px solid #f0f0f0' }}>
+          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 8 }}>
+            Pick up to 5 prospects to preview personalisation for sequence "{sequenceName || 'default'}".
+            Nothing is enrolled or sent.
+          </div>
+          <input
+            type="text"
+            placeholder="Search by name, company, or email…"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            style={{
+              width: '100%', fontSize: 13, padding: '7px 10px',
+              border: '1px solid #d1d5db', borderRadius: 6,
+            }}
+          />
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+          {loadingMore && allMembers.length === 0 ? (
+            <div style={{ padding: 30, textAlign: 'center', color: '#6b7280', fontSize: 13 }}>
+              Loading prospects…
+            </div>
+          ) : filtered.length === 0 ? (
+            <div style={{ padding: 30, textAlign: 'center', color: '#6b7280', fontSize: 13 }}>
+              No prospects match.
+            </div>
+          ) : (
+            filtered.slice(0, 100).map(m => {
+              const isSelected = selected.includes(m.id);
+              const isDisabled = !isSelected && selected.length >= 5;
+              return (
+                <div
+                  key={m.id}
+                  onClick={() => !isDisabled && toggle(m.id)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '8px 16px',
+                    cursor: isDisabled ? 'not-allowed' : 'pointer',
+                    background: isSelected ? '#ecfdf5' : 'transparent',
+                    opacity: isDisabled ? 0.4 : 1,
+                    borderLeft: '3px solid ' + (isSelected ? '#10b981' : 'transparent'),
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    disabled={isDisabled}
+                    onChange={() => {}}
+                    style={{ cursor: 'inherit' }}
+                  />
+                  <div style={{ flex: 1, fontSize: 13 }}>
+                    <div style={{ fontWeight: 600, color: '#1A3A5C' }}>
+                      {m.firstName} {m.lastName}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#6b7280' }}>
+                      {m.title || '—'} · {m.companyName || '—'}
+                    </div>
+                  </div>
+                  <span style={{
+                    fontSize: 10, padding: '2px 7px', borderRadius: 10,
+                    background: '#f3f4f6', color: '#6b7280',
+                  }}>
+                    {m.stage}
+                  </span>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <div className="pv-form-actions" style={{ padding: 14, borderTop: '1px solid #f0f0f0' }}>
+          <div style={{ flex: 1, fontSize: 12, color: '#6b7280' }}>
+            {selected.length} of 5 selected
+          </div>
+          <button className="pv-btn-secondary" onClick={onClose}>Cancel</button>
+          <button
+            className="pv-btn-primary"
+            disabled={selected.length === 0}
+            onClick={() => onPick(selected)}
+          >
+            Preview {selected.length} draft{selected.length === 1 ? '' : 's'}
+          </button>
+        </div>
       </div>
     </div>
   );
