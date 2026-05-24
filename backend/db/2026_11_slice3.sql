@@ -25,9 +25,7 @@ ALTER TABLE sequence_steps
   ADD COLUMN IF NOT EXISTS step_intent TEXT;
 
 COMMENT ON COLUMN sequence_steps.step_intent IS
-  'Optional override for personalization dispatcher. NULL = auto-infer. ' ||
-  'Email intents: first_touch, follow_up, breakup. ' ||
-  'LinkedIn intents: connection_request, post_accept_message, nurture_dm.';
+  'Optional override for personalization dispatcher. NULL = auto-infer. Email intents: first_touch, follow_up, breakup. LinkedIn intents: connection_request, post_accept_message, nurture_dm.';
 
 -- ── (2) Documentation: retirement of outreach-personalization ────────────────
 -- The old skill's folder (skills/outreach-personalization/) stays on disk so
