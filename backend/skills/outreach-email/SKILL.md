@@ -31,6 +31,31 @@ The caller passes a prospect payload (shape defined in `schema/gowarm-prospect.j
 
 If `step_intent` is missing or not one of the three valid values, default to `first_touch` and add a note to `confidence_notes`.
 
+## org_context shape (v2)
+
+The dispatcher injects an `org_context` block into the payload. The fields it contains:
+
+- `rep` — `{ name, title, email_signature }` for sign-off. May be partially empty.
+- `products` — array of `{ name, one_liner }`. **`name`** is the customer's product label (e.g. "Aquarient Data Services"); **`one_liner`** is a pre-written pitch sentence the skill is allowed to paraphrase but should never quote verbatim. Anchor to `products[0]` unless a later product better matches the prospect's signals. If `one_liner` is empty, fall back to inferring the pitch from `value_props` and `products[i].name`.
+- `value_props` — array of strings. Pick ONE per email. Never combine two value props in a single email body.
+- `target_personas` — array of strings. Used for ICP fit check, NOT for direct reference in the email body ("you're a perfect persona for us" is a sycophancy violation).
+- `case_study_summaries` — array of `{ id, customer, their_problem, what_we_did, outcome }`. **All four content fields are independent** — the skill may reference any combination in any email. Typical patterns:
+  - `their_problem` makes a strong follow-up opener ("a lot of [their_problem] is showing up in this space right now…")
+  - `outcome` is the strongest social-proof line ("a similar firm got to [outcome] after we…")
+  - `what_we_did` is the bridge between problem and outcome — useful when the prospect's pain matches the customer's
+  - `customer` is anonymized when needed (e.g. "an energy management firm"); use it verbatim when referencing the case study.
+  - **Never invent fields.** If a case study has empty content fields, do not invent the problem or the work; skip it.
+- `competitors` — array of strings. Never name a competitor in the email body. Use only for ICP fit and `confidence_notes` flagging if the prospect's company is a known competitor.
+- `voice` — `{ avoid_phrases }` — additional banned phrasings layered on top of `guardrails_extra.banned_phrasings`. Treat both as the union of disallowed text.
+- `hook_preferences` — `{ preferred_categories }` — ordered list. Try the first category; fall back in order if no signal is available for that category.
+- `guardrails_extra` — `{ banned_phrasings, required_disclaimers }`. Banned phrasings are unioned with the universal banned list from `reference/outreach-principles.md`. Required disclaimers must appear verbatim in the email body if non-empty.
+
+### Schema notes
+
+- Sparse data is the norm: any field may be empty (`[]` or `""`). Degrade gracefully — produce a short honest question-led email rather than fabricating content from sparse inputs.
+- The `products[].one_liner` field is the v2 model-facing pitch sentence. Configs migrated from v1 may have empty `one_liner`s — that's fine; rely on `name` + `value_props`.
+- The `case_study_summaries` entries replaced the legacy `summary` field with three structured fields (`their_problem`, `what_we_did`, `outcome`). Pre-v2 entries are dropped on save — do not expect a `summary` field on any entry.
+
 ## Intent-specific behaviour
 
 The three intents share the same hooks, principles, and guardrails. They differ in template, length, tone, and what the email references.

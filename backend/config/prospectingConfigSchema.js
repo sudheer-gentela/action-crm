@@ -9,59 +9,61 @@
 //
 // Three stores:
 //   ORG       — organizations.settings.prospecting_config
-//   CAMPAIGN  — prospecting_campaigns.prospecting_config_override (new in Slice 1)
+//   CAMPAIGN  — prospecting_campaigns.prospecting_config_override
 //   USER      — user_preferences.preferences.prospecting_config
 //
 // ─── ORG-LEVEL SHAPE ─────────────────────────────────────────────────────────
 //   {
-//     products:                     string[]      // priority order; skill
+//     products:                     Product[]      // priority order; skill
 //                                                  // anchors to products[0]
 //     default_value_props:          string[]
 //     default_target_personas:      string[]
 //     default_case_study_summaries: CaseStudy[]    // structured — see below
 //     hook_preferences: {
-//       preferred_categories: string[]   // org default; ordered; (Slice 1)
+//       preferred_categories: string[]   // ordered list of HOOK_CATEGORIES
 //     }
 //     guardrails: {
 //       banned_phrasings:     string[]
 //       required_disclaimers: string[]
 //     }
 //   }
-//   CaseStudy = { id: string, customer: string, summary: string }
+//
+//   Product = { name: string, one_liner: string }
+//     - `name` is the human-readable product label (e.g. "Aquarient Data Services")
+//     - `one_liner` is the model-facing pitch sentence the skill paraphrases
+//
+//   CaseStudy = {
+//     id:             string,    // opaque, stable, generated once
+//     customer:       string,    // human label, e.g. "an energy management firm"
+//     their_problem:  string,    // what was broken before we engaged
+//     what_we_did:    string,    // the concrete work we did
+//     outcome:        string,    // the result (qualitative or quantitative)
+//   }
 //     - `id` is opaque and stable (e.g. "cs_a1b2c3"), generated once at
 //       creation, never changed. It is the key user-level exclusion uses.
-//     - `customer` is the human-readable label shown in every UI.
+//     - All four content fields are independent. The skill may reference any
+//       combination in any given email — `their_problem` in the opener,
+//       `outcome` in the bridge, etc.
 //
-// ─── CAMPAIGN-LEVEL SHAPE (Slice 1) ──────────────────────────────────────────
+// ─── CAMPAIGN-LEVEL SHAPE ────────────────────────────────────────────────────
 // Same field set as ORG. Every field is independently optional — leaving a
 // field empty/absent means "inherit from org" for that field. Non-empty
 // fields REPLACE the org value for products / value_props / target_personas /
 // case_studies / hook_preferences. Guardrails are additive — campaign values
 // are unioned with org values; campaigns never loosen org restrictions.
-//   {
-//     products?:                     string[]
-//     default_value_props?:          string[]
-//     default_target_personas?:      string[]
-//     default_case_study_summaries?: CaseStudy[]
-//     hook_preferences?: { preferred_categories: string[] }
-//     guardrails?: {
-//       banned_phrasings?:     string[]   // unioned
-//       required_disclaimers?: string[]   // unioned
-//     }
-//   }
 //
 // ─── USER-LEVEL SHAPE ────────────────────────────────────────────────────────
 //   {
-//     custom_products:           string[]
+//     custom_products:           Product[]           // structured
 //     custom_value_props:        string[]
 //     custom_target_personas:    string[]
-//     custom_case_studies:       CaseStudy[]
+//     custom_case_studies:       CaseStudy[]         // structured
 //     custom_competitors:        string[]
-//     excluded_products:         string[]    // match org product strings
+//     excluded_products:         string[]            // match by product NAME
 //     excluded_value_props:      string[]
 //     excluded_target_personas:  string[]
-//     excluded_case_studies:     string[]    // case study IDs OR customer names
-//     excluded_competitors:      string[]    // competitor names
+//     excluded_case_studies:     string[]            // case study IDs OR customer names
+//     excluded_competitors:      string[]            // competitor names
 //     rep: {
 //       title_for_signature:   string
 //       email_signature_block: string
@@ -73,12 +75,25 @@
 //       preferred_categories: string[]   // per-rep override; ordered
 //     }
 //   }
+//
+// ─── SCHEMA EVOLUTION (this file) ────────────────────────────────────────────
+// v2: products promoted from string[] to Product[]; CaseStudy.summary dropped,
+//     replaced by three fields: their_problem, what_we_did, outcome.
+//
+// Validation is STRICT on new writes:
+//   - Products without a `name` are dropped (a one_liner with no name is junk).
+//   - Case studies without a `customer` AND without any content field are dropped.
+//   - Legacy-shape entries (string product / {customer, summary} case study)
+//     are also dropped silently. This is intentional — there is no legacy data
+//     in any store as of the v2 cutover. If you find this file in 6 months and
+//     need to migrate something, write a one-off migration script; don't relax
+//     this sanitizer.
 // ============================================================================
 
 const crypto = require('crypto');
 
-// Valid hook categories — must match the outreach-personalization SKILL.md
-// Output format enum.
+// Valid hook categories — must match the outreach-email / outreach-linkedin
+// SKILL.md output format enums.
 const HOOK_CATEGORIES = [
   'prospect_post', 'prospect_comment', 'account_post',
   'account_event', 'tech_stack', 'role_curiosity',
@@ -101,23 +116,76 @@ function cleanHookCategories(v) {
   return cleanStringArray(v).filter(x => HOOK_CATEGORIES.includes(x));
 }
 
-// Generate an opaque, stable case-study id.
+// ─────────────────────────────────────────────────────────────────────────────
+// Products (v2: structured)
+// ─────────────────────────────────────────────────────────────────────────────
+function cleanProduct(p) {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+  const name      = typeof p.name      === 'string' ? p.name.trim()      : '';
+  const oneLiner  = typeof p.one_liner === 'string' ? p.one_liner.trim() : '';
+  // A product MUST have a name. Drop nameless entries silently — a one_liner
+  // without a name is unanchored content the skill can't reference cleanly.
+  if (!name) return null;
+  return { name, one_liner: oneLiner };
+}
+
+function cleanProductArray(v) {
+  if (!Array.isArray(v)) return [];
+  // De-dupe by name (case-insensitive trim).
+  const seen = new Set();
+  const out = [];
+  for (const item of v) {
+    const cleaned = cleanProduct(item);
+    if (!cleaned) continue;
+    const key = cleaned.name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Case studies (v2: structured, four content fields, no summary)
+// ─────────────────────────────────────────────────────────────────────────────
 function newCaseStudyId() {
   return 'cs_' + crypto.randomBytes(4).toString('hex');
 }
 
-// Normalize one case study object. Preserves an existing valid id; mints a new
-// one when missing. Drops entries with no customer AND no summary.
+// Normalize one case study object. Preserves a valid id; mints one when missing.
+// A case study MUST have at least one of the three content fields
+// (their_problem, what_we_did, outcome) to be kept. Entries with only a
+// customer name and no content are dropped — there is nothing for the skill
+// to anchor to.
+//
+// Legacy `{customer, summary}` entries (pre-v2 schema) are dropped: the
+// `summary` field is not preserved or auto-migrated. This is intentional —
+// see file header. To migrate legacy data, write a one-off script that
+// promotes `summary` to one of the three new fields before save.
 function cleanCaseStudy(cs) {
   if (!cs || typeof cs !== 'object') return null;
-  const customer = typeof cs.customer === 'string' ? cs.customer.trim() : '';
-  const summary  = typeof cs.summary  === 'string' ? cs.summary.trim()  : '';
-  if (!customer && !summary) return null;
+  const customer     = typeof cs.customer      === 'string' ? cs.customer.trim()      : '';
+  const theirProblem = typeof cs.their_problem === 'string' ? cs.their_problem.trim() : '';
+  const whatWeDid    = typeof cs.what_we_did   === 'string' ? cs.what_we_did.trim()   : '';
+  const outcome      = typeof cs.outcome       === 'string' ? cs.outcome.trim()       : '';
+
+  // Must have at least one content field. A customer name alone is not enough
+  // — there is nothing for the skill to reference.
+  if (!theirProblem && !whatWeDid && !outcome) return null;
+
   const id = (typeof cs.id === 'string' && /^cs_[a-z0-9]+$/.test(cs.id))
     ? cs.id
     : newCaseStudyId();
-  return { id, customer, summary };
+  return {
+    id,
+    customer,
+    their_problem: theirProblem,
+    what_we_did:   whatWeDid,
+    outcome,
+  };
 }
+
+
 
 function cleanCaseStudyArray(v) {
   if (!Array.isArray(v)) return [];
@@ -128,10 +196,6 @@ function cleanCaseStudyArray(v) {
 // sanitizeOrgConfig — takes arbitrary input, returns a clean org config object.
 // Always returns the full shape (empty arrays/objects rather than missing
 // keys) so buildOrgContext never has to null-guard.
-//
-// Slice 1: added top-level hook_preferences.preferred_categories so the org
-// can set a default ordering. Previously this field only existed at the user
-// level.
 // ─────────────────────────────────────────────────────────────────────────────
 function sanitizeOrgConfig(input) {
   const c = (input && typeof input === 'object') ? input : {};
@@ -139,7 +203,7 @@ function sanitizeOrgConfig(input) {
   const hp = (c.hook_preferences && typeof c.hook_preferences === 'object')
     ? c.hook_preferences : {};
   return {
-    products:                     cleanStringArray(c.products),
+    products:                     cleanProductArray(c.products),
     default_value_props:          cleanStringArray(c.default_value_props),
     default_target_personas:      cleanStringArray(c.default_target_personas),
     default_case_study_summaries: cleanCaseStudyArray(c.default_case_study_summaries),
@@ -158,18 +222,6 @@ function sanitizeOrgConfig(input) {
 // independently optional. We still always emit the full shape (arrays default
 // to []); the resolver in buildOrgContext distinguishes "empty array" from
 // "absent override" by reading from the raw stored JSONB before normalizing.
-//
-// The wire format from the UI is exactly the same as org config — the UI
-// passes whatever the user typed. We do not introduce "null fields mean
-// inherit" sentinels in the stored JSON because that's brittle across
-// JS/JSONB round-trips. Instead, EMPTY arrays mean inherit (no override for
-// that field), and NON-EMPTY arrays replace.
-//
-// The single exception: if a campaign should fall back to ZERO products/
-// personas/etc (i.e. explicitly clear, not inherit), the campaign owner can
-// instead just delete the entire override (set the column to NULL via the
-// PUT endpoint's "clear" path). This is a deliberate simplicity tradeoff
-// for Slice 1.
 // ─────────────────────────────────────────────────────────────────────────────
 function sanitizeCampaignConfig(input) {
   // Reuse the org sanitizer — identical shape, same validation. The
@@ -188,7 +240,7 @@ function sanitizeUserConfig(input) {
     ? c.hook_preferences : {};
 
   return {
-    custom_products:          cleanStringArray(c.custom_products),
+    custom_products:          cleanProductArray(c.custom_products),
     custom_value_props:       cleanStringArray(c.custom_value_props),
     custom_target_personas:   cleanStringArray(c.custom_target_personas),
     custom_case_studies:      cleanCaseStudyArray(c.custom_case_studies),
@@ -225,4 +277,9 @@ module.exports = {
   emptyCampaignConfig,
   emptyUserConfig,
   newCaseStudyId,
+  // Exported for tests and downstream consumers that need them directly:
+  cleanProduct,
+  cleanProductArray,
+  cleanCaseStudy,
+  cleanCaseStudyArray,
 };

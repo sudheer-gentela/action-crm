@@ -11,6 +11,16 @@
 // Override model — for each shared category the rep sees the org baseline as
 // tickable rows: unticking a row adds it to excluded_*; an "add your own"
 // input appends to custom_*.
+//
+// Schema v2 (this revision):
+//   - Org products are now {name, one_liner} objects, not strings. The
+//     exclusion key is the product NAME. Rows display name + one_liner as sub.
+//   - Org case studies have new fields {their_problem, what_we_did, outcome}
+//     replacing the legacy `summary`. The display shows what_we_did as the
+//     preview line (closest to the legacy summary semantics).
+//   - User-level custom_products are now structured too. To keep this UI
+//     simple, v2 omits the "add your own product" UI (only exclusion ticks).
+//     Same pattern as custom_case_studies which has always been exclusion-only.
 
 import React, { useState, useEffect, useCallback } from 'react';
 
@@ -109,11 +119,26 @@ export default function MyOutreachStyleSettings() {
     return <div style={{ padding: 24, color: '#6b7280', fontSize: 13 }}>Loading your outreach style…</div>;
   }
 
-  // org case studies use a structured shape; tick-list keys on the id, label
-  // shows the customer name.
+  // ─── v2: org rows for the override-section tick lists ────────────────────
+  // Products: structured {name, one_liner}. Defensive: if a stray string is
+  // present from a legacy blob (shouldn't happen after sanitizer runs, but
+  // keep the UI from crashing), treat it as {name: <str>}.
+  // Exclusion key is the product NAME — matches excluded_products semantics.
+  const productRows = orgBase.products.map(p => {
+    if (typeof p === 'string') return { key: p, label: p };
+    return { key: p?.name || '', label: p?.name || '(unnamed)', sub: p?.one_liner || null };
+  }).filter(r => r.key);
+
+  // Case studies: v2 structured {id, customer, their_problem, what_we_did,
+  // outcome}. The legacy `summary` field is gone. Use `what_we_did` as the
+  // preview line (closest semantic to the old summary). Falls back to
+  // outcome → their_problem if what_we_did is empty.
   const caseRows = orgBase.default_case_study_summaries.map(cs => ({
-    key: cs.id, label: cs.customer || '(unnamed)', sub: cs.summary,
+    key: cs.id,
+    label: cs.customer || '(unnamed)',
+    sub: cs.what_we_did || cs.outcome || cs.their_problem || null,
   }));
+
   const compRows = orgComp.map(c => ({ key: c.name, label: c.name }));
 
   return (
@@ -137,14 +162,17 @@ export default function MyOutreachStyleSettings() {
         }}>{flash.msg}</div>
       )}
 
+      {/* Products — exclusion-only at user level in v2. Adding your own
+          structured product belongs in the org admin panel; if reps need
+          per-rep product overrides later, we'll add a structured editor here. */}
       <OverrideSection
         title="Products"
-        orgItems={orgBase.products.map(p => ({ key: p, label: p }))}
+        orgItems={productRows}
         excluded={config.excluded_products}
-        custom={config.custom_products}
+        custom={null}
         onExcluded={(v) => update({ excluded_products: v })}
-        onCustom={(v) => update({ custom_products: v })}
-        addPlaceholder="Add a product you pitch…"
+        onCustom={null}
+        addPlaceholder=""
       />
 
       <OverrideSection
@@ -171,7 +199,7 @@ export default function MyOutreachStyleSettings() {
         title="Case studies"
         orgItems={caseRows}
         excluded={config.excluded_case_studies}
-        custom={null}   /* custom case studies are structured — omitted from v1 add UI */
+        custom={null}   /* custom case studies are structured — omitted from add UI */
         onExcluded={(v) => update({ excluded_case_studies: v })}
         onCustom={null}
         addPlaceholder=""

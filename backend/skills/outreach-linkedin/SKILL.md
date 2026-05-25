@@ -31,6 +31,31 @@ The caller passes a prospect payload (shape defined in `schema/gowarm-prospect.j
 
 If `step_intent` is missing or invalid, default to `connection_request` and flag in `confidence_notes`.
 
+## org_context shape (v2)
+
+The dispatcher injects an `org_context` block into the payload. The fields it contains:
+
+- `rep` — `{ name, title, email_signature }` for sign-off. May be partially empty. (LinkedIn artifacts use first name only for sign-off — see intent sections below.)
+- `products` — array of `{ name, one_liner }`. **`name`** is the customer's product label (e.g. "Aquarient Data Services"); **`one_liner`** is a pre-written pitch sentence the skill is allowed to paraphrase but should never quote verbatim. Anchor to `products[0]` unless a later product better matches the prospect's signals. If `one_liner` is empty, fall back to inferring the pitch from `value_props` and `products[i].name`.
+- `value_props` — array of strings. Pick ONE per artifact. LinkedIn artifacts are short — there is no room to combine two value props.
+- `target_personas` — array of strings. Used for ICP fit check, NOT for direct reference in the LinkedIn body.
+- `case_study_summaries` — array of `{ id, customer, their_problem, what_we_did, outcome }`. **All four content fields are independent.** LinkedIn-specific use:
+  - Almost NEVER referenced in `connection_request` (no room — 280-char cap)
+  - `outcome` is the strongest social-proof line for `post_accept_message` ("a similar firm got to [outcome] after we…")
+  - `what_we_did` works well as the bridge in `nurture_dm` follow-ups
+  - `customer` is anonymized when needed; use verbatim when referencing.
+  - **Never invent fields.** If a case study has empty content fields, do not invent; skip it.
+- `competitors` — array of strings. Never name a competitor in the LinkedIn body. Use only for ICP fit and `confidence_notes` flagging.
+- `voice` — `{ avoid_phrases }` — additional banned phrasings layered on top of `guardrails_extra.banned_phrasings`. Treat both as the union of disallowed text.
+- `hook_preferences` — `{ preferred_categories }` — ordered list. Try the first category; fall back in order if no signal is available for that category.
+- `guardrails_extra` — `{ banned_phrasings, required_disclaimers }`. Banned phrasings are unioned with the universal banned list from `reference/outreach-principles.md`. Required disclaimers — if any — must appear verbatim in the body; on LinkedIn this is rare and competes hard against character caps.
+
+### Schema notes
+
+- Sparse data is the norm: any field may be empty (`[]` or `""`). Degrade gracefully — produce a short honest LinkedIn artifact rather than fabricating content from sparse inputs.
+- The `products[].one_liner` field is the v2 model-facing pitch sentence. Configs migrated from v1 may have empty `one_liner`s — that's fine; rely on `name` + `value_props`.
+- The `case_study_summaries` entries replaced the legacy `summary` field with three structured fields (`their_problem`, `what_we_did`, `outcome`). Pre-v2 entries are dropped on save — do not expect a `summary` field on any entry.
+
 ## Intent-specific behaviour
 
 ### `connection_request`

@@ -1,13 +1,21 @@
 // OAProspectingSkillConfig.js
 //
 // Org-admin editor for prospecting_config — the shared baseline the
-// outreach-personalization skill draws on. Rendered as a sub-tab inside
-// OAProspectingModule (OrgAdminView). Owner/admin only (gated server-side).
+// outreach skills (outreach-email / outreach-linkedin) draw on. Rendered as
+// a sub-tab inside OAProspectingModule (OrgAdminView). Owner/admin only
+// (gated server-side).
 //
 // Backend: GET/PUT /api/prospecting-config/org
 //
-// Built as its own file so OrgAdminView.js doesn't grow — and so the
-// upcoming OrgAdminView split has one less component to extract.
+// Schema v2 (this revision):
+//   - Products are structured {name, one_liner}. Replaces OrderedListEditor
+//     of strings with new ProductsEditor that takes both fields per row.
+//   - Case studies are structured {id, customer, their_problem, what_we_did,
+//     outcome}. The legacy `summary` field is gone.
+//
+// Legacy v1 entries (string products, {customer, summary} case studies) are
+// silently dropped by the backend sanitizer on next save. There is no
+// auto-migration — re-enter affected items with the new fields.
 
 import React, { useState, useEffect, useCallback } from 'react';
 
@@ -56,7 +64,6 @@ export default function OAProspectingSkillConfig() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Mutators — every change marks the form dirty.
   const update = (patch) => { setConfig(prev => ({ ...prev, ...patch })); setDirty(true); };
   const updateGuardrails = (patch) =>
     update({ guardrails: { ...config.guardrails, ...patch } });
@@ -100,13 +107,12 @@ export default function OAProspectingSkillConfig() {
         }}>{flash.msg}</div>
       )}
 
-      {/* Products — ordered list */}
-      <OrderedListEditor
+      {/* Products — structured {name, one_liner} */}
+      <ProductsEditor
         title="Products"
         hint="Priority order — the skill anchors to the first product unless a later one better matches the prospect."
         items={config.products}
         onChange={(products) => update({ products })}
-        placeholder="Add a product…"
       />
 
       {/* Value props */}
@@ -234,17 +240,33 @@ function TagListEditor({ title, hint, items, onChange, placeholder, danger, nest
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// OrderedListEditor — like TagList but rows, with up/down reordering.
+// ProductsEditor — v2 structured products {name, one_liner}.
+//
+// Each row has a name input, a one-liner textarea, and up/down reordering.
+// `name` is required; `one_liner` is the model-facing pitch sentence and is
+// strongly encouraged but technically optional (backend keeps the row).
 // ─────────────────────────────────────────────────────────────────────────────
-function OrderedListEditor({ title, hint, items, onChange, placeholder }) {
-  const [draft, setDraft] = useState('');
-  const add = () => {
-    const v = draft.trim();
-    if (!v || items.includes(v)) { setDraft(''); return; }
-    onChange([...items, v]);
-    setDraft('');
+function ProductsEditor({ title, hint, items, onChange }) {
+  const [addingName,     setAddingName]     = useState('');
+  const [addingOneLiner, setAddingOneLiner] = useState('');
+
+  const addProduct = () => {
+    const name = addingName.trim();
+    const oneLiner = addingOneLiner.trim();
+    if (!name) return;
+    if (items.some(p => p && p.name && p.name.toLowerCase() === name.toLowerCase())) {
+      setAddingName(''); setAddingOneLiner('');
+      return;
+    }
+    onChange([...items, { name, one_liner: oneLiner }]);
+    setAddingName(''); setAddingOneLiner('');
   };
-  const remove = (i) => onChange(items.filter((_, idx) => idx !== i));
+  const removeProduct = (i) => onChange(items.filter((_, idx) => idx !== i));
+  const editProduct = (i, field, value) => {
+    const next = items.slice();
+    next[i] = { ...next[i], [field]: value };
+    onChange(next);
+  };
   const move = (i, dir) => {
     const j = i + dir;
     if (j < 0 || j >= items.length) return;
@@ -257,58 +279,85 @@ function OrderedListEditor({ title, hint, items, onChange, placeholder }) {
     <div style={{ marginBottom: 22 }}>
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>{title}</div>
       {hint && <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 6 }}>{hint}</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 6 }}>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
         {items.length === 0 && (
           <span style={{ fontSize: 12, color: '#9ca3af', fontStyle: 'italic' }}>None yet</span>
         )}
-        {items.map((it, i) => (
-          <div key={i} style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            background: '#f9fafb', borderRadius: 6, padding: '7px 10px',
+        {items.map((p, i) => (
+          <div key={`p-${i}`} style={{
+            border: '1px solid #e5e7eb', borderRadius: 6, padding: 10, background: '#fff',
           }}>
-            <span style={{
-              fontSize: 11, fontWeight: 700, minWidth: 18, textAlign: 'center',
-              borderRadius: 4, padding: '1px 4px',
-              background: i === 0 ? '#e0e7ff' : '#e5e7eb',
-              color:      i === 0 ? '#3730a3' : '#6b7280',
-            }}>{i + 1}</span>
-            <span style={{ flex: 1, fontSize: 13 }}>{it}</span>
-            <span onClick={() => move(i, -1)} style={{ cursor: i === 0 ? 'default' : 'pointer', opacity: i === 0 ? 0.3 : 1, fontSize: 13 }}>▲</span>
-            <span onClick={() => move(i, 1)}  style={{ cursor: i === items.length - 1 ? 'default' : 'pointer', opacity: i === items.length - 1 ? 0.3 : 1, fontSize: 13 }}>▼</span>
-            <span onClick={() => remove(i)} style={{ cursor: 'pointer', color: '#9ca3af', fontWeight: 700 }}>×</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+              <span style={{
+                fontSize: 11, fontWeight: 700, minWidth: 18, textAlign: 'center',
+                borderRadius: 4, padding: '1px 4px',
+                background: i === 0 ? '#e0e7ff' : '#e5e7eb',
+                color:      i === 0 ? '#3730a3' : '#6b7280',
+              }}>{i + 1}</span>
+              <input
+                value={(p && p.name) || ''}
+                onChange={e => editProduct(i, 'name', e.target.value)}
+                placeholder="Product name"
+                style={{ flex: 1, fontSize: 13, fontWeight: 600, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 5 }}
+              />
+              <span onClick={() => move(i, -1)} style={{ cursor: i === 0 ? 'default' : 'pointer', opacity: i === 0 ? 0.3 : 1, fontSize: 13 }}>▲</span>
+              <span onClick={() => move(i, 1)}  style={{ cursor: i === items.length - 1 ? 'default' : 'pointer', opacity: i === items.length - 1 ? 0.3 : 1, fontSize: 13 }}>▼</span>
+              <span onClick={() => removeProduct(i)} style={{ cursor: 'pointer', color: '#9ca3af', fontWeight: 700, fontSize: 16 }}>×</span>
+            </div>
+            <textarea
+              value={(p && p.one_liner) || ''}
+              onChange={e => editProduct(i, 'one_liner', e.target.value)}
+              placeholder="One-liner the skill can paraphrase (e.g. what the product does, who it's for, in one sentence)"
+              rows={2}
+              style={{ width: '100%', fontSize: 12, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 5, resize: 'vertical' }}
+            />
           </div>
         ))}
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
+
+      <div style={{ border: '1px dashed #d1d5db', borderRadius: 6, padding: 10 }}>
         <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
-          placeholder={placeholder}
-          style={{ flex: 1, fontSize: 13, padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
+          value={addingName}
+          onChange={e => setAddingName(e.target.value)}
+          placeholder="New product — name"
+          style={{ width: '100%', fontSize: 13, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 5, marginBottom: 6 }}
         />
-        <button onClick={add} style={btnStyle(false, false)}>+ Add</button>
+        <textarea
+          value={addingOneLiner}
+          onChange={e => setAddingOneLiner(e.target.value)}
+          placeholder="One-liner (optional but recommended)…"
+          rows={2}
+          style={{ width: '100%', fontSize: 12, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 5, resize: 'vertical', marginBottom: 6 }}
+        />
+        <button onClick={addProduct} disabled={!addingName.trim()} style={btnStyle(false, !addingName.trim())}>+ Add product</button>
       </div>
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CaseStudyEditor — structured {id, customer, summary}. The id is opaque and
-// minted server-side on save; the UI shows customer as the label. New rows are
-// added with id:null and the backend assigns one.
+// CaseStudyEditor — v2 structured case study {id, customer, their_problem,
+// what_we_did, outcome}. The id is opaque and minted server-side on save.
+//
+// The legacy `summary` field is gone. v1 case studies that had only customer
+// + summary are dropped by the backend sanitizer on next save. Re-enter
+// affected studies with the new fields.
 // ─────────────────────────────────────────────────────────────────────────────
 function CaseStudyEditor({ items, onChange }) {
-  const [addingCustomer, setAddingCustomer] = useState('');
-  const [addingSummary,  setAddingSummary]  = useState('');
+  const [adding, setAdding] = useState({
+    customer: '', their_problem: '', what_we_did: '', outcome: '',
+  });
 
   const addCase = () => {
-    const customer = addingCustomer.trim();
-    const summary  = addingSummary.trim();
-    if (!customer && !summary) return;
-    // id omitted — the backend mints an opaque id on save.
-    onChange([...items, { customer, summary }]);
-    setAddingCustomer(''); setAddingSummary('');
+    const customer     = (adding.customer      || '').trim();
+    const theirProblem = (adding.their_problem || '').trim();
+    const whatWeDid    = (adding.what_we_did   || '').trim();
+    const outcome      = (adding.outcome       || '').trim();
+    // Mirror the backend sanitizer: must have at least one content field.
+    if (!theirProblem && !whatWeDid && !outcome) return;
+    onChange([...items, { customer, their_problem: theirProblem, what_we_did: whatWeDid, outcome }]);
+    setAdding({ customer: '', their_problem: '', what_we_did: '', outcome: '' });
   };
   const removeCase = (i) => onChange(items.filter((_, idx) => idx !== i));
   const editCase = (i, field, value) => {
@@ -317,11 +366,16 @@ function CaseStudyEditor({ items, onChange }) {
     onChange(next);
   };
 
+  const inputStyle  = { width: '100%', fontSize: 13, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 5 };
+  const textareaStyle = { ...inputStyle, fontSize: 12, resize: 'vertical' };
+  const labelStyle = { fontSize: 11, fontWeight: 600, color: '#374151', marginTop: 6, marginBottom: 3 };
+
   return (
     <div style={{ marginBottom: 22 }}>
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>Case studies</div>
       <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 6 }}>
         Stored as structured entries so reps can exclude individual ones.
+        Three content fields: what was broken, what we did, what changed.
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
@@ -330,26 +384,43 @@ function CaseStudyEditor({ items, onChange }) {
         )}
         {items.map((cs, i) => (
           <div key={cs.id || `new-${i}`} style={{
-            border: '1px solid #e5e7eb', borderRadius: 6, padding: 10,
+            border: '1px solid #e5e7eb', borderRadius: 6, padding: 10, background: '#fff',
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
               <input
                 value={cs.customer || ''}
                 onChange={(e) => editCase(i, 'customer', e.target.value)}
-                placeholder="Customer name"
-                style={{ flex: 1, fontSize: 13, fontWeight: 600, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 5 }}
+                placeholder="Customer name (anonymized OK)"
+                style={{ ...inputStyle, fontWeight: 600 }}
               />
               <span onClick={() => removeCase(i)} style={{ cursor: 'pointer', color: '#9ca3af', fontWeight: 700, fontSize: 16 }}>×</span>
             </div>
+            <div style={labelStyle}>Their problem</div>
             <textarea
-              value={cs.summary || ''}
-              onChange={(e) => editCase(i, 'summary', e.target.value)}
-              placeholder="One-line outcome the skill can reference"
+              value={cs.their_problem || ''}
+              onChange={e => editCase(i, 'their_problem', e.target.value)}
+              placeholder="What was broken before — be specific and concrete"
               rows={2}
-              style={{ width: '100%', fontSize: 12, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 5, resize: 'vertical' }}
+              style={textareaStyle}
+            />
+            <div style={labelStyle}>What we did</div>
+            <textarea
+              value={cs.what_we_did || ''}
+              onChange={e => editCase(i, 'what_we_did', e.target.value)}
+              placeholder="The concrete work — what did we build, fix, or run"
+              rows={2}
+              style={textareaStyle}
+            />
+            <div style={labelStyle}>Outcome</div>
+            <textarea
+              value={cs.outcome || ''}
+              onChange={e => editCase(i, 'outcome', e.target.value)}
+              placeholder="The result — qualitative is fine, don't invent numbers"
+              rows={2}
+              style={textareaStyle}
             />
             {cs.id && (
-              <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+              <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 5 }}>
                 ref: {cs.id} — used as the exclusion key
               </div>
             )}
@@ -359,19 +430,42 @@ function CaseStudyEditor({ items, onChange }) {
 
       <div style={{ border: '1px dashed #d1d5db', borderRadius: 6, padding: 10 }}>
         <input
-          value={addingCustomer}
-          onChange={(e) => setAddingCustomer(e.target.value)}
+          value={adding.customer}
+          onChange={(e) => setAdding(a => ({ ...a, customer: e.target.value }))}
           placeholder="New case study — customer name"
-          style={{ width: '100%', fontSize: 13, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 5, marginBottom: 6 }}
+          style={{ ...inputStyle, fontWeight: 600, marginBottom: 6 }}
         />
+        <div style={labelStyle}>Their problem</div>
         <textarea
-          value={addingSummary}
-          onChange={(e) => setAddingSummary(e.target.value)}
-          placeholder="One-line outcome…"
+          value={adding.their_problem}
+          onChange={(e) => setAdding(a => ({ ...a, their_problem: e.target.value }))}
+          placeholder="What was broken before"
           rows={2}
-          style={{ width: '100%', fontSize: 12, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 5, resize: 'vertical', marginBottom: 6 }}
+          style={{ ...textareaStyle, marginBottom: 6 }}
         />
-        <button onClick={addCase} style={btnStyle(false, false)}>+ Add case study</button>
+        <div style={labelStyle}>What we did</div>
+        <textarea
+          value={adding.what_we_did}
+          onChange={(e) => setAdding(a => ({ ...a, what_we_did: e.target.value }))}
+          placeholder="The concrete work"
+          rows={2}
+          style={{ ...textareaStyle, marginBottom: 6 }}
+        />
+        <div style={labelStyle}>Outcome</div>
+        <textarea
+          value={adding.outcome}
+          onChange={(e) => setAdding(a => ({ ...a, outcome: e.target.value }))}
+          placeholder="The result"
+          rows={2}
+          style={{ ...textareaStyle, marginBottom: 6 }}
+        />
+        <button
+          onClick={addCase}
+          disabled={!adding.their_problem.trim() && !adding.what_we_did.trim() && !adding.outcome.trim()}
+          style={btnStyle(false, !adding.their_problem.trim() && !adding.what_we_did.trim() && !adding.outcome.trim())}
+        >
+          + Add case study
+        </button>
       </div>
     </div>
   );

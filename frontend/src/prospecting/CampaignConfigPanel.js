@@ -13,6 +13,13 @@
 // for this campaign" (non-empty array stored on the campaign replaces org).
 // The toggle just hides/shows the editor block — empty arrays inherit either
 // way. Guardrails are additive — the toggle wording reflects that.
+//
+// Schema v2 (this revision):
+//   - Products are now structured {name, one_liner} objects, not strings.
+//     ProductsSection replaces the generic FieldGroup for that field.
+//   - Case studies are now {id, customer, their_problem, what_we_did, outcome}.
+//     CaseStudySection takes four content fields instead of one summary.
+//     The `summary` field is gone from the schema entirely.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from './prospectingShared';
@@ -46,18 +53,6 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
       setData(r);
       setDraft(JSON.parse(JSON.stringify(r.override)));   // deep clone
     } catch (err) {
-      // 403 — user lacks permission to read this campaign's config.
-      // The backend's guard checks BOTH org role (owner/admin) AND campaign
-      // ownership (owner_id / created_by), so a 403 here truly means "you're
-      // a member who didn't create or own this campaign."
-      //
-      // Match by message OR status — different backend versions phrase the
-      // error differently:
-      //   - pre-Slice-5-fix: "Requires role: owner or admin"
-      //   - Slice-5-fix:     "Only owners/admins or this campaign's owner..."
-      //   - Both also surface via 403 status, but apiFetch's error may not
-      //     preserve status code; fall back to regex matching on either
-      //     forbidden-style phrasing.
       const msg = err.message || '';
       if (/Requires role|Only owners.*can edit|Access denied/i.test(msg)) {
         setData({ readOnly: true });
@@ -80,7 +75,6 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
         method: 'PUT',
         body: JSON.stringify({ override: draft }),
       });
-      // Reload to refresh the resolved view + org_baseline alongside the new override.
       await load();
       showFlash('success', 'Campaign config saved');
     } catch (err) {
@@ -108,7 +102,6 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
     setDraft(JSON.parse(JSON.stringify(data.override)));
   };
 
-  // Header row — always visible. Click to expand.
   const header = (
     <div
       onClick={() => setExpanded(e => !e)}
@@ -172,10 +165,6 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
 
   if (!draft || !data) return null;
 
-  // Effective edit permission. Prefer the server-side `can_edit` flag (Slice 5
-  // fix returns it from GET /:id/config based on org role OR campaign
-  // ownership). Fall back to the parent prop for backward compatibility with
-  // older backends that didn't return the flag.
   const effectiveCanEdit = (typeof data.can_edit === 'boolean') ? data.can_edit : canEdit;
 
   return (
@@ -225,14 +214,13 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
           canEdit={effectiveCanEdit}
         />
 
-        {/* Products */}
-        <FieldGroup
+        {/* Products — structured {name, one_liner} */}
+        <ProductsSection
           title="Products (priority order)"
           hint="Non-empty here REPLACES the org product list. Skill anchors to the first."
           orgItems={data.org_baseline.products}
           items={draft.products}
           onChange={v => setDraft({ ...draft, products: v })}
-          placeholder="Add a product…"
           canEdit={effectiveCanEdit}
         />
 
@@ -249,7 +237,7 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
           canEdit={effectiveCanEdit}
         />
 
-        {/* Case studies — structured */}
+        {/* Case studies — structured {customer, their_problem, what_we_did, outcome} */}
         <CaseStudySection
           title="Case studies"
           hint="Non-empty here REPLACES the org case studies for this campaign."
@@ -352,7 +340,6 @@ function FieldGroup({ title, hint, orgItems, items, onChange, placeholder, canEd
       <div style={{ fontSize: nested ? 12 : 13, fontWeight: nested ? 500 : 600, marginBottom: 2 }}>{title}</div>
       {hint && <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6 }}>{hint}</div>}
 
-      {/* Org defaults reminder — read-only */}
       {orgList.length > 0 && (
         <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
           Org default{additive ? ' (always applies)' : items.length === 0 ? ' (in effect — no campaign override)' : ' (will be replaced by campaign list)'}:{' '}
@@ -399,15 +386,21 @@ function FieldGroup({ title, hint, orgItems, items, onChange, placeholder, canEd
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HookPreferencesEditor — ordered list with up/down arrows + a category picker
-// dropdown. Categories cannot duplicate.
 // ─────────────────────────────────────────────────────────────────────────────
 function HookPreferencesEditor({ title, hint, orgItems, items, onChange, canEdit }) {
-  const [pick, setPick] = useState('');
+  const [picker, setPicker] = useState('');
+  const orgList = Array.isArray(orgItems) ? orgItems : [];
+  const available = HOOK_CATEGORY_OPTIONS.filter(o => !items.includes(o.value));
 
+  const labelFor = (v) => {
+    const o = HOOK_CATEGORY_OPTIONS.find(opt => opt.value === v);
+    return o ? o.label : v;
+  };
   const add = () => {
-    if (!pick || items.includes(pick)) return;
-    onChange([...items, pick]);
-    setPick('');
+    if (!picker) return;
+    if (items.includes(picker)) { setPicker(''); return; }
+    onChange([...items, picker]);
+    setPicker('');
   };
   const remove = (i) => onChange(items.filter((_, idx) => idx !== i));
   const move = (i, dir) => {
@@ -418,10 +411,6 @@ function HookPreferencesEditor({ title, hint, orgItems, items, onChange, canEdit
     onChange(next);
   };
 
-  const labelOf = (v) => HOOK_CATEGORY_OPTIONS.find(o => o.value === v)?.label || v;
-  const available = HOOK_CATEGORY_OPTIONS.filter(o => !items.includes(o.value));
-  const orgList = Array.isArray(orgItems) ? orgItems : [];
-
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{title}</div>
@@ -429,34 +418,34 @@ function HookPreferencesEditor({ title, hint, orgItems, items, onChange, canEdit
 
       {orgList.length > 0 && (
         <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
-          Org default order{items.length === 0 ? ' (in effect)' : ' (will be replaced)'}:{' '}
-          <span style={{ fontStyle: 'italic' }}>{orgList.map(labelOf).join(' → ')}</span>
+          Org default{items.length === 0 ? ' (in effect — no campaign override)' : ' (will be replaced)'}:{' '}
+          <span style={{ fontStyle: 'italic' }}>{orgList.map(labelFor).join(' › ')}</span>
         </div>
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 6 }}>
         {items.length === 0 && (
           <span style={{ fontSize: 11, color: '#9ca3af', fontStyle: 'italic' }}>
-            {orgList.length === 0 ? 'No ordering set — skill picks automatically' : 'No campaign override — inheriting org'}
+            {orgList.length === 0 ? 'Nothing set' : 'No campaign override — inheriting org'}
           </span>
         )}
-        {items.map((it, i) => (
-          <div key={it} style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            background: '#f9fafb', borderRadius: 6, padding: '5px 9px',
+        {items.map((v, i) => (
+          <div key={v} style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: '#f9fafb', borderRadius: 5, padding: '4px 8px',
           }}>
             <span style={{
               fontSize: 10, fontWeight: 700, minWidth: 16, textAlign: 'center',
-              borderRadius: 3, padding: '1px 4px',
+              borderRadius: 3, padding: '1px 3px',
               background: i === 0 ? '#e0e7ff' : '#e5e7eb',
               color:      i === 0 ? '#3730a3' : '#6b7280',
             }}>{i + 1}</span>
-            <span style={{ flex: 1, fontSize: 12 }}>{labelOf(it)}</span>
+            <span style={{ flex: 1, fontSize: 12 }}>{labelFor(v)}</span>
             {canEdit && (
               <>
-                <span onClick={() => move(i, -1)} style={{ cursor: i === 0 ? 'default' : 'pointer', opacity: i === 0 ? 0.3 : 1, fontSize: 11 }}>▲</span>
-                <span onClick={() => move(i, 1)}  style={{ cursor: i === items.length - 1 ? 'default' : 'pointer', opacity: i === items.length - 1 ? 0.3 : 1, fontSize: 11 }}>▼</span>
-                <span onClick={() => remove(i)} style={{ cursor: 'pointer', color: '#9ca3af', fontWeight: 700 }}>×</span>
+                <span onClick={() => move(i, -1)} style={{ cursor: i === 0 ? 'default' : 'pointer', opacity: i === 0 ? 0.3 : 1, fontSize: 12 }}>▲</span>
+                <span onClick={() => move(i, 1)}  style={{ cursor: i === items.length - 1 ? 'default' : 'pointer', opacity: i === items.length - 1 ? 0.3 : 1, fontSize: 12 }}>▼</span>
+                <span onClick={() => remove(i)} style={{ cursor: 'pointer', color: '#9ca3af', fontWeight: 700, fontSize: 12 }}>×</span>
               </>
             )}
           </div>
@@ -466,16 +455,14 @@ function HookPreferencesEditor({ title, hint, orgItems, items, onChange, canEdit
       {canEdit && available.length > 0 && (
         <div style={{ display: 'flex', gap: 6 }}>
           <select
-            value={pick}
-            onChange={e => setPick(e.target.value)}
+            value={picker}
+            onChange={e => setPicker(e.target.value)}
             style={{ flex: 1, fontSize: 12, padding: '5px 9px', border: '1px solid #d1d5db', borderRadius: 5 }}
           >
-            <option value="">— Pick a category to add —</option>
-            {available.map(o => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
+            <option value="">Add a category…</option>
+            {available.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
-          <button onClick={add} disabled={!pick} style={btnStyle(false, !pick)}>+ Add</button>
+          <button onClick={add} disabled={!picker} style={btnStyle(false, !picker)}>+ Add</button>
         </div>
       )}
     </div>
@@ -483,21 +470,167 @@ function HookPreferencesEditor({ title, hint, orgItems, items, onChange, canEdit
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CaseStudySection — structured {id, customer, summary}. New rows omit id;
-// the backend mints one on save.
+// ProductsSection — structured {name, one_liner} editor (v2 schema).
+//
+// Each product has:
+//   - name:      the human label (e.g. "Aquarient Data Services")
+//   - one_liner: the model-facing pitch sentence
+//
+// Priority is implicit (array order). The skill anchors to products[0] unless
+// a later one better matches the prospect — we expose up/down arrows so the
+// rep can re-order without rebuilding the list.
+//
+// New rows save as {name, one_liner}; the backend sanitizer (cleanProductArray)
+// strips entries with no name. Legacy string entries from older configs
+// (pre-v2) are no longer accepted and will be silently dropped by the
+// sanitizer on next save. Migrate by re-entering.
+// ─────────────────────────────────────────────────────────────────────────────
+function ProductsSection({ title, hint, orgItems, items, onChange, canEdit }) {
+  const [addingName,     setAddingName]     = useState('');
+  const [addingOneLiner, setAddingOneLiner] = useState('');
+
+  const orgList = (Array.isArray(orgItems) ? orgItems : [])
+    // Defensive normalize: if a legacy string snuck through, render its label.
+    .map(p => (typeof p === 'string' ? { name: p, one_liner: '' } : p))
+    .filter(p => p && p.name);
+
+  const addProduct = () => {
+    const name = addingName.trim();
+    const oneLiner = addingOneLiner.trim();
+    if (!name) return;   // name is required; one_liner can be empty
+    if (items.some(p => p && p.name && p.name.toLowerCase() === name.toLowerCase())) {
+      setAddingName(''); setAddingOneLiner('');
+      return;
+    }
+    onChange([...items, { name, one_liner: oneLiner }]);
+    setAddingName(''); setAddingOneLiner('');
+  };
+  const removeProduct = (i) => onChange(items.filter((_, idx) => idx !== i));
+  const editProduct = (i, field, value) => {
+    const next = items.slice();
+    next[i] = { ...next[i], [field]: value };
+    onChange(next);
+  };
+  const move = (i, dir) => {
+    const j = i + dir;
+    if (j < 0 || j >= items.length) return;
+    const next = items.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  };
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{title}</div>
+      {hint && <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6 }}>{hint}</div>}
+
+      {orgList.length > 0 && (
+        <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
+          Org default{items.length === 0 ? ' (in effect — no campaign override)' : ' (will be replaced by campaign list)'}:{' '}
+          <span style={{ fontStyle: 'italic' }}>{orgList.map(p => p.name).join(' · ')}</span>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+        {items.length === 0 && (
+          <span style={{ fontSize: 11, color: '#9ca3af', fontStyle: 'italic' }}>
+            {orgList.length === 0 ? 'Nothing set — nothing inherited either' : 'No campaign override — inheriting org'}
+          </span>
+        )}
+        {items.map((p, i) => (
+          <div key={`p-${i}`} style={{
+            border: '1px solid #e5e7eb', borderRadius: 6, padding: 8, background: '#fff',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
+              <span style={{
+                fontSize: 10, fontWeight: 700, minWidth: 18, textAlign: 'center',
+                borderRadius: 3, padding: '1px 4px',
+                background: i === 0 ? '#e0e7ff' : '#e5e7eb',
+                color:      i === 0 ? '#3730a3' : '#6b7280',
+              }}>{i + 1}</span>
+              <input
+                value={(p && p.name) || ''}
+                onChange={e => editProduct(i, 'name', e.target.value)}
+                placeholder="Product name"
+                disabled={!canEdit}
+                style={{ flex: 1, fontSize: 12, fontWeight: 600, padding: '4px 7px', border: '1px solid #d1d5db', borderRadius: 4 }}
+              />
+              {canEdit && (
+                <>
+                  <span onClick={() => move(i, -1)} style={{ cursor: i === 0 ? 'default' : 'pointer', opacity: i === 0 ? 0.3 : 1, fontSize: 13 }}>▲</span>
+                  <span onClick={() => move(i, 1)}  style={{ cursor: i === items.length - 1 ? 'default' : 'pointer', opacity: i === items.length - 1 ? 0.3 : 1, fontSize: 13 }}>▼</span>
+                  <span onClick={() => removeProduct(i)} style={{ cursor: 'pointer', color: '#9ca3af', fontWeight: 700, fontSize: 14 }}>×</span>
+                </>
+              )}
+            </div>
+            <textarea
+              value={(p && p.one_liner) || ''}
+              onChange={e => editProduct(i, 'one_liner', e.target.value)}
+              placeholder="One-liner the skill can paraphrase into outreach (e.g. what the product does, in one sentence)"
+              rows={2}
+              disabled={!canEdit}
+              style={{ width: '100%', fontSize: 11, padding: '4px 7px', border: '1px solid #d1d5db', borderRadius: 4, resize: 'vertical' }}
+            />
+          </div>
+        ))}
+      </div>
+
+      {canEdit && (
+        <div style={{ border: '1px dashed #d1d5db', borderRadius: 6, padding: 8 }}>
+          <input
+            value={addingName}
+            onChange={e => setAddingName(e.target.value)}
+            placeholder="New product — name"
+            style={{ width: '100%', fontSize: 12, padding: '4px 7px', border: '1px solid #d1d5db', borderRadius: 4, marginBottom: 5 }}
+          />
+          <textarea
+            value={addingOneLiner}
+            onChange={e => setAddingOneLiner(e.target.value)}
+            placeholder="One-liner (optional but recommended)…"
+            rows={2}
+            style={{ width: '100%', fontSize: 11, padding: '4px 7px', border: '1px solid #d1d5db', borderRadius: 4, resize: 'vertical', marginBottom: 5 }}
+          />
+          <button onClick={addProduct} disabled={!addingName.trim()} style={btnStyle(false, !addingName.trim())}>
+            + Add product
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CaseStudySection — structured case study editor (v2 schema).
+//
+// Each case study has:
+//   - id            opaque, minted server-side on save; preserved across edits
+//   - customer      human label (anonymized OK — e.g. "an energy management firm")
+//   - their_problem what was broken before
+//   - what_we_did   the concrete work
+//   - outcome       the result (qualitative is fine — don't invent numbers)
+//
+// The legacy `summary` field is gone. Case studies that only had a customer
+// + summary in v1 will be dropped by the sanitizer on next save — there is
+// no automatic migration. Re-enter affected entries with the new fields.
 // ─────────────────────────────────────────────────────────────────────────────
 function CaseStudySection({ title, hint, orgItems, items, onChange, canEdit }) {
-  const [addingCustomer, setAddingCustomer] = useState('');
-  const [addingSummary,  setAddingSummary]  = useState('');
+  const [adding, setAdding] = useState({
+    customer: '', their_problem: '', what_we_did: '', outcome: '',
+  });
 
   const orgList = Array.isArray(orgItems) ? orgItems : [];
 
   const addCase = () => {
-    const customer = addingCustomer.trim();
-    const summary  = addingSummary.trim();
-    if (!customer && !summary) return;
-    onChange([...items, { customer, summary }]);
-    setAddingCustomer(''); setAddingSummary('');
+    const customer     = (adding.customer      || '').trim();
+    const theirProblem = (adding.their_problem || '').trim();
+    const whatWeDid    = (adding.what_we_did   || '').trim();
+    const outcome      = (adding.outcome       || '').trim();
+    // Must have at least one of the three content fields. A customer name
+    // alone is not enough — the skill has nothing to reference. This mirrors
+    // the backend sanitizer in prospectingConfigSchema.cleanCaseStudy.
+    if (!theirProblem && !whatWeDid && !outcome) return;
+    onChange([...items, { customer, their_problem: theirProblem, what_we_did: whatWeDid, outcome }]);
+    setAdding({ customer: '', their_problem: '', what_we_did: '', outcome: '' });
   };
   const removeCase = (i) => onChange(items.filter((_, idx) => idx !== i));
   const editCase = (i, field, value) => {
@@ -505,6 +638,24 @@ function CaseStudySection({ title, hint, orgItems, items, onChange, canEdit }) {
     next[i] = { ...next[i], [field]: value };
     onChange(next);
   };
+
+  const inputStyle  = { width: '100%', fontSize: 12, padding: '5px 8px', border: '1px solid #d1d5db', borderRadius: 4 };
+  const textareaStyle = { ...inputStyle, fontSize: 11, resize: 'vertical' };
+  const labelStyle = { fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 3 };
+
+  const renderFieldEditor = (cs, i, field, placeholder, rows = 2) => (
+    <div style={{ marginTop: 6 }}>
+      <div style={labelStyle}>{field === 'their_problem' ? 'Their problem' : field === 'what_we_did' ? 'What we did' : 'Outcome'}</div>
+      <textarea
+        value={(cs && cs[field]) || ''}
+        onChange={e => editCase(i, field, e.target.value)}
+        placeholder={placeholder}
+        rows={rows}
+        disabled={!canEdit}
+        style={textareaStyle}
+      />
+    </div>
+  );
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -518,7 +669,7 @@ function CaseStudySection({ title, hint, orgItems, items, onChange, canEdit }) {
         </div>
       )}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
         {items.length === 0 && (
           <span style={{ fontSize: 11, color: '#9ca3af', fontStyle: 'italic' }}>
             No campaign override — inheriting org case studies
@@ -526,48 +677,71 @@ function CaseStudySection({ title, hint, orgItems, items, onChange, canEdit }) {
         )}
         {items.map((cs, i) => (
           <div key={cs.id || `new-${i}`} style={{
-            border: '1px solid #e5e7eb', borderRadius: 6, padding: 8,
+            border: '1px solid #e5e7eb', borderRadius: 6, padding: 10, background: '#fff',
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
               <input
                 value={cs.customer || ''}
                 onChange={e => editCase(i, 'customer', e.target.value)}
-                placeholder="Customer name"
+                placeholder="Customer name (anonymized OK)"
                 disabled={!canEdit}
-                style={{ flex: 1, fontSize: 12, fontWeight: 600, padding: '4px 7px', border: '1px solid #d1d5db', borderRadius: 4 }}
+                style={{ ...inputStyle, fontWeight: 600 }}
               />
               {canEdit && (
                 <span onClick={() => removeCase(i)} style={{ cursor: 'pointer', color: '#9ca3af', fontWeight: 700, fontSize: 14 }}>×</span>
               )}
             </div>
-            <textarea
-              value={cs.summary || ''}
-              onChange={e => editCase(i, 'summary', e.target.value)}
-              placeholder="One-line outcome the skill can reference"
-              rows={2}
-              disabled={!canEdit}
-              style={{ width: '100%', fontSize: 11, padding: '4px 7px', border: '1px solid #d1d5db', borderRadius: 4, resize: 'vertical' }}
-            />
+            {renderFieldEditor(cs, i, 'their_problem', 'What was broken before — be specific and concrete', 2)}
+            {renderFieldEditor(cs, i, 'what_we_did',   'The concrete work — what did we build, fix, or run', 2)}
+            {renderFieldEditor(cs, i, 'outcome',       'The result — qualitative is fine, don\'t invent numbers', 2)}
+            {cs.id && (
+              <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 5 }}>
+                ref: {cs.id} — used as the exclusion key
+              </div>
+            )}
           </div>
         ))}
       </div>
 
       {canEdit && (
-        <div style={{ border: '1px dashed #d1d5db', borderRadius: 6, padding: 8 }}>
+        <div style={{ border: '1px dashed #d1d5db', borderRadius: 6, padding: 10 }}>
           <input
-            value={addingCustomer}
-            onChange={e => setAddingCustomer(e.target.value)}
+            value={adding.customer}
+            onChange={e => setAdding(a => ({ ...a, customer: e.target.value }))}
             placeholder="New case study — customer name"
-            style={{ width: '100%', fontSize: 12, padding: '4px 7px', border: '1px solid #d1d5db', borderRadius: 4, marginBottom: 5 }}
+            style={{ ...inputStyle, fontWeight: 600, marginBottom: 6 }}
           />
+          <div style={labelStyle}>Their problem</div>
           <textarea
-            value={addingSummary}
-            onChange={e => setAddingSummary(e.target.value)}
-            placeholder="One-line outcome…"
+            value={adding.their_problem}
+            onChange={e => setAdding(a => ({ ...a, their_problem: e.target.value }))}
+            placeholder="What was broken before — be specific"
             rows={2}
-            style={{ width: '100%', fontSize: 11, padding: '4px 7px', border: '1px solid #d1d5db', borderRadius: 4, resize: 'vertical', marginBottom: 5 }}
+            style={{ ...textareaStyle, marginBottom: 6 }}
           />
-          <button onClick={addCase} style={btnStyle(false, false)}>+ Add case study</button>
+          <div style={labelStyle}>What we did</div>
+          <textarea
+            value={adding.what_we_did}
+            onChange={e => setAdding(a => ({ ...a, what_we_did: e.target.value }))}
+            placeholder="The concrete work"
+            rows={2}
+            style={{ ...textareaStyle, marginBottom: 6 }}
+          />
+          <div style={labelStyle}>Outcome</div>
+          <textarea
+            value={adding.outcome}
+            onChange={e => setAdding(a => ({ ...a, outcome: e.target.value }))}
+            placeholder="The result — qualitative is fine"
+            rows={2}
+            style={{ ...textareaStyle, marginBottom: 6 }}
+          />
+          <button
+            onClick={addCase}
+            disabled={!adding.their_problem.trim() && !adding.what_we_did.trim() && !adding.outcome.trim()}
+            style={btnStyle(false, !adding.their_problem.trim() && !adding.what_we_did.trim() && !adding.outcome.trim())}
+          >
+            + Add case study
+          </button>
         </div>
       )}
     </div>
