@@ -121,7 +121,11 @@ export default function PreviewDraftsModal({ sequenceId, prospectIds, onClose })
                       {p.prospectCompany || '—'}
                     </div>
                     <div style={{ fontSize: 10, color: hasError ? '#991b1b' : '#9ca3af', marginTop: 4 }}>
-                      {hasError ? '⚠ error' : `${p.steps?.length || 0} steps personalised`}
+                      {hasError
+                        ? '⚠ error'
+                        : (p.steps?.length || 0) === 0
+                          ? <span style={{ color: '#991b1b' }}>⚠ 0 steps personalised</span>
+                          : `${p.steps?.length || 0} step${p.steps.length === 1 ? '' : 's'} personalised`}
                     </div>
                   </div>
                 );
@@ -172,8 +176,74 @@ function PreviewStepsPanel({ preview }) {
   }
 
   if (!preview.steps || preview.steps.length === 0) {
+    // Slice-6: empty steps is the dispatcher's "nothing personalisable" signal,
+    // which can happen for two reasons:
+    //   1. Sequence really has no email/linkedin steps (all call/task) — rare
+    //   2. Every step errored — usually because the skill couldn't find enough
+    //      data on the prospect (no LinkedIn profile captured, no research
+    //      notes, sparse account_events)
+    //
+    // Surface the dispatcher's error list prominently so the rep knows what
+    // to fix. If errors mention data gaps, point at LinkedIn capture + research
+    // approval as the fix paths.
+    const errs = preview.errors || [];
+    const dispatchTotal = preview.dispatchSummary?.total || 0;
+    const dispatchErrored = preview.dispatchSummary?.errored || 0;
+    const dispatchSkipped = preview.dispatchSummary?.skipped || 0;
+    const allErrored = dispatchTotal > 0 && dispatchErrored === dispatchTotal;
+
     return (
-      <div style={{ color: '#6b7280', fontSize: 13 }}>No personalisable steps in this sequence.</div>
+      <div>
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#1A3A5C' }}>{preview.prospectName}</div>
+          <div style={{ fontSize: 12, color: '#6b7280' }}>{preview.prospectCompany || '—'}</div>
+        </div>
+        <div style={{
+          background: allErrored ? '#fef2f2' : '#fffbeb',
+          border: `1px solid ${allErrored ? '#fecaca' : '#fde68a'}`,
+          color: allErrored ? '#991b1b' : '#92400e',
+          padding: 14, borderRadius: 8, fontSize: 13, marginBottom: 10,
+        }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>
+            {allErrored ? 'Personalisation failed for every step' : 'No personalisable steps produced'}
+          </div>
+          <div style={{ fontSize: 12, lineHeight: 1.5 }}>
+            {dispatchTotal > 0 ? (
+              <>
+                Out of {dispatchTotal} step{dispatchTotal === 1 ? '' : 's'}: {' '}
+                {dispatchErrored > 0 && <>{dispatchErrored} errored</>}
+                {dispatchErrored > 0 && dispatchSkipped > 0 && ', '}
+                {dispatchSkipped > 0 && <>{dispatchSkipped} skipped (call/task steps)</>}.
+              </>
+            ) : (
+              <>The sequence has no email or LinkedIn steps to personalise.</>
+            )}
+          </div>
+          {allErrored && (
+            <div style={{ fontSize: 12, marginTop: 10, padding: 10, background: 'rgba(255,255,255,0.5)', borderRadius: 4 }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Most common cause: not enough data on this prospect.</div>
+              <ol style={{ margin: '6px 0 0 18px', padding: 0, lineHeight: 1.6 }}>
+                <li><strong>Capture their LinkedIn profile.</strong> Open the prospect's LinkedIn page with the Chrome extension installed — it auto-fills the prospect's headline, about, and experience into the database.</li>
+                <li><strong>Approve research with notes.</strong> Use the Research Queue tab to write a 1-3 sentence signal observation (what's compelling about them right now), then approve.</li>
+                <li><strong>Re-run this preview</strong> after capturing the data.</li>
+              </ol>
+            </div>
+          )}
+        </div>
+        {errs.length > 0 && (
+          <div style={{
+            padding: 12, borderRadius: 6,
+            background: '#f8fafc', border: '1px solid #e5e7eb', fontSize: 11, color: '#475569',
+          }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>Dispatcher details:</div>
+            <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+              {errs.map((e, i) => (
+                <li key={i}>Step {e.stepOrder} ({e.channel}): {e.reason}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
     );
   }
 

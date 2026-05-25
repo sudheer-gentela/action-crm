@@ -52,7 +52,27 @@ router.get('/', async (req, res) => {
              acc.name AS account_name,
              acc.domain AS account_domain,
              u.first_name AS owner_first_name,
-             u.last_name  AS owner_last_name
+             u.last_name  AS owner_last_name,
+             /* Slice-6: data-readiness signal for preview/personalisation.
+                A linkedin_profiles row keyed by the prospect's slug means the
+                Chrome extension has captured their headline, about, experience,
+                education, and activity — which the personalisation skill reads
+                directly. Without this row, the skill produces generic output.
+                NULL linkedin_url → false (we can't even capture them). */
+             (
+               p.linkedin_url IS NOT NULL
+               AND EXISTS (
+                 SELECT 1 FROM linkedin_profiles lp
+                  WHERE lp.org_id       = p.org_id
+                    AND lp.linkedin_slug = lower(substring(p.linkedin_url from '/in/([^/?#]+)'))
+               )
+             ) AS linkedin_profile_captured,
+             /* Slice-6: research-readiness signal. The 'Approve research' flow
+                writes a non-empty research_notes; the skill uses it as the
+                lead-with-this hook. A campaign with prospects in 'target'
+                whose research_notes is empty will personalise less well. */
+             (p.research_notes IS NOT NULL AND TRIM(p.research_notes) <> '')
+               AS has_research_notes
       FROM prospects p
       LEFT JOIN accounts acc ON p.account_id = acc.id
       LEFT JOIN users u ON p.owner_id = u.id

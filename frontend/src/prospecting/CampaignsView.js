@@ -959,6 +959,19 @@ function PreviewPickerModal({ campaignId, sequenceId, sequenceName, members, onC
             Pick up to 5 prospects to preview personalisation for sequence "{sequenceName || 'default'}".
             Nothing is enrolled or sent.
           </div>
+          {/* Slice-6: surface data-readiness so users understand WHY their
+              preview drafts might be generic. Skill quality depends on
+              LinkedIn profile capture + research notes; this row legend
+              tells them what each badge means. */}
+          <div style={{
+            fontSize: 11, color: '#475569', background: '#f8fafc', borderRadius: 6,
+            padding: '8px 10px', marginBottom: 10, lineHeight: 1.5,
+          }}>
+            <strong>Data-readiness:</strong> <span style={{ color: '#166534' }}>✅ Ready</span> = LinkedIn captured + research notes.{' '}
+            <span style={{ color: '#1e40af' }}>🔗 LinkedIn only</span> = headline/about captured, no research hook.{' '}
+            <span style={{ color: '#92400e' }}>📝 Notes only</span> = no LinkedIn data yet.{' '}
+            <span style={{ color: '#991b1b' }}>⚠</span> = personalisation will be sparse. Use "Open ↗" to visit a prospect's LinkedIn page; the Chrome extension auto-captures it.
+          </div>
           <input
             type="text"
             placeholder="Search by name, company, or email…"
@@ -984,6 +997,23 @@ function PreviewPickerModal({ campaignId, sequenceId, sequenceName, members, onC
             filtered.slice(0, 100).map(m => {
               const isSelected = selected.includes(m.id);
               const isDisabled = !isSelected && selected.length >= 5;
+              // Slice-6: data-readiness indicators. The backend now returns
+              // linkedin_profile_captured + has_research_notes per prospect.
+              // Both contribute to personalisation quality:
+              //   - LinkedIn captured → skill has headline/about/experience/activity
+              //   - Research notes  → skill has a stated hook to lead with
+              // We surface combined readiness as a colored pill, and offer a
+              // "Capture LinkedIn" shortcut for prospects whose linkedin_url is
+              // known but whose profile data hasn't been pulled by the extension.
+              const liCaptured = m.linkedin_profile_captured === true;
+              const hasResearch = m.has_research_notes === true;
+              const hasLinkedinUrl = !!m.linkedin_url;
+              const readiness =
+                liCaptured && hasResearch  ? { label: '✅ Ready',           bg: '#dcfce7', fg: '#166534' } :
+                liCaptured                 ? { label: '🔗 LinkedIn only',    bg: '#dbeafe', fg: '#1e40af' } :
+                hasResearch                ? { label: '📝 Notes only',       bg: '#fef3c7', fg: '#92400e' } :
+                hasLinkedinUrl             ? { label: '⚠ Capture first',     bg: '#fef2f2', fg: '#991b1b' } :
+                                             { label: '⚠ No LinkedIn URL',   bg: '#fef2f2', fg: '#991b1b' };
               return (
                 <div
                   key={m.id}
@@ -1004,17 +1034,53 @@ function PreviewPickerModal({ campaignId, sequenceId, sequenceName, members, onC
                     onChange={() => {}}
                     style={{ cursor: 'inherit' }}
                   />
-                  <div style={{ flex: 1, fontSize: 13 }}>
+                  <div style={{ flex: 1, fontSize: 13, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, color: '#1A3A5C' }}>
                       {m.first_name} {m.last_name}
                     </div>
-                    <div style={{ fontSize: 11, color: '#6b7280' }}>
+                    <div style={{ fontSize: 11, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {m.title || '—'} · {m.company_name || '—'}
                     </div>
                   </div>
+                  {/* Readiness pill */}
+                  <span title={
+                    liCaptured && hasResearch ? 'LinkedIn profile captured AND research notes written. Best personalisation quality.' :
+                    liCaptured ? 'LinkedIn profile captured. Skill has the prospect\'s headline, about, experience. Quality improves with approved research notes.' :
+                    hasResearch ? 'Research notes written but LinkedIn profile not captured yet. Skill is missing the prospect\'s LinkedIn data.' :
+                    hasLinkedinUrl ? 'LinkedIn URL known but profile not captured. Visit their LinkedIn page with the Chrome extension to capture data.' :
+                    'No LinkedIn URL on file. Personalisation will be very limited.'
+                  } style={{
+                    fontSize: 10, padding: '2px 7px', borderRadius: 10, fontWeight: 600,
+                    background: readiness.bg, color: readiness.fg,
+                    whiteSpace: 'nowrap', flexShrink: 0,
+                  }}>
+                    {readiness.label}
+                  </span>
+                  {/* "Capture LinkedIn" shortcut — opens the prospect's
+                      LinkedIn page in a new tab so the user can visit it
+                      with the Chrome extension installed, which auto-captures
+                      headline/about/experience into linkedin_profiles. */}
+                  {hasLinkedinUrl && !liCaptured && (
+                    <a
+                      href={m.linkedin_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      title="Open in new tab and capture with the Chrome extension"
+                      style={{
+                        fontSize: 10, padding: '2px 7px', borderRadius: 10,
+                        background: '#fff', border: '1px solid #cbd5e1',
+                        color: '#0F9D8E', textDecoration: 'none', fontWeight: 600,
+                        whiteSpace: 'nowrap', flexShrink: 0,
+                      }}
+                    >
+                      Open ↗
+                    </a>
+                  )}
                   <span style={{
                     fontSize: 10, padding: '2px 7px', borderRadius: 10,
                     background: '#f3f4f6', color: '#6b7280',
+                    whiteSpace: 'nowrap', flexShrink: 0,
                   }}>
                     {m.stage}
                   </span>
