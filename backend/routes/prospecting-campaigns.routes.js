@@ -814,7 +814,71 @@ router.get('/:id/sequence-health', async (req, res) => {
 // (org-level config). Campaign-level config is a config-write privilege.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const configWriteGuard = requireRole('owner', 'admin');
+// ─────────────────────────────────────────────────────────────────────────────
+// Campaign config access guard.
+//
+// Original rule: only owner/admin can read/write a campaign's prospecting_config_override.
+// That's too restrictive — campaigns are owned by individual reps, and the rep
+// running a campaign needs to author its pain narrative, value props, and hook
+// preferences without bothering an admin.
+//
+// New rule: ANY of these grants access to /:id/config (GET/PUT/DELETE):
+//   1. Org-level owner or admin (broad authority)
+//   2. The campaign's owner_id matches the requesting user (rep authority)
+//   3. The campaign's created_by matches the requesting user (creator authority,
+//      for the case where owner_id is unset and the creator should retain edit
+//      rights as a fallback)
+//
+// Returns 403 if none match, 404 if the campaign doesn't exist in the org.
+// Sets req.userRole, req.campaignOwnerId, req.isCampaignOwner for downstream use.
+async function campaignConfigGuard(req, res, next) {
+  try {
+    // 1) Org role check — fastest, gates the whole thing if user is admin/owner.
+    const roleRes = await pool.query(
+      `SELECT role FROM org_users
+        WHERE user_id = $1 AND org_id = $2 AND is_active = TRUE`,
+      [req.userId, req.orgId]
+    );
+    if (roleRes.rows.length === 0) {
+      return res.status(403).json({ error: { message: 'Access denied — not a member of this org' } });
+    }
+    const userRole = roleRes.rows[0].role;
+    req.userRole = userRole;
+
+    // 2) Owner/admin: grant immediately, skip the campaign lookup.
+    if (userRole === 'owner' || userRole === 'admin') {
+      req.isCampaignOwner = true;   // for UI semantics, even though it's role-based
+      return next();
+    }
+
+    // 3) Otherwise look up the campaign and check owner_id / created_by.
+    const cRes = await pool.query(
+      `SELECT id, owner_id, created_by
+         FROM prospecting_campaigns
+        WHERE id = $1 AND org_id = $2`,
+      [req.params.id, req.orgId]
+    );
+    if (cRes.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Campaign not found' } });
+    }
+    const camp = cRes.rows[0];
+    req.campaignOwnerId = camp.owner_id || camp.created_by;
+    if (camp.owner_id === req.userId || camp.created_by === req.userId) {
+      req.isCampaignOwner = true;
+      return next();
+    }
+
+    // 4) Neither role nor ownership match — refuse.
+    return res.status(403).json({ error: {
+      message: 'Only owners/admins or this campaign\'s owner can edit its outreach config.',
+    } });
+  } catch (err) {
+    console.error('campaignConfigGuard error:', err);
+    return res.status(500).json({ error: { message: 'Permission check failed' } });
+  }
+}
+
+const configWriteGuard = campaignConfigGuard;
 
 // ── GET /:id/config — current override + resolved view + org baseline ────────
 router.get('/:id/config', configWriteGuard, async (req, res) => {
@@ -874,6 +938,13 @@ router.get('/:id/config', configWriteGuard, async (req, res) => {
       resolved,
       org_baseline: orgBaseline,
       has_override: rawOverride !== null && rawOverride !== undefined,
+      // Slice-5-fix: tell the client whether the requesting user is allowed
+      // to edit. The guard already ran; this just surfaces its result so the
+      // UI doesn't need to re-derive role/ownership logic client-side.
+      can_edit: true,                    // if we got this far, guard passed
+      access_via: req.userRole === 'owner' || req.userRole === 'admin'
+        ? 'org_role'
+        : 'campaign_ownership',
     });
   } catch (err) {
     console.error('campaign GET /:id/config:', err);

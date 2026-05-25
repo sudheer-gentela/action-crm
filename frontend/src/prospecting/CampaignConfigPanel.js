@@ -46,12 +46,23 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
       setData(r);
       setDraft(JSON.parse(JSON.stringify(r.override)));   // deep clone
     } catch (err) {
-      // 403 here means the current user isn't owner/admin — render a read-only
-      // placeholder rather than an error.
-      if (/Requires role/i.test(err.message || '')) {
+      // 403 — user lacks permission to read this campaign's config.
+      // The backend's guard checks BOTH org role (owner/admin) AND campaign
+      // ownership (owner_id / created_by), so a 403 here truly means "you're
+      // a member who didn't create or own this campaign."
+      //
+      // Match by message OR status — different backend versions phrase the
+      // error differently:
+      //   - pre-Slice-5-fix: "Requires role: owner or admin"
+      //   - Slice-5-fix:     "Only owners/admins or this campaign's owner..."
+      //   - Both also surface via 403 status, but apiFetch's error may not
+      //     preserve status code; fall back to regex matching on either
+      //     forbidden-style phrasing.
+      const msg = err.message || '';
+      if (/Requires role|Only owners.*can edit|Access denied/i.test(msg)) {
         setData({ readOnly: true });
       } else {
-        setError('Failed to load campaign config: ' + (err.message || 'unknown'));
+        setError('Failed to load campaign config: ' + (msg || 'unknown'));
       }
     } finally {
       setLoading(false);
@@ -161,6 +172,12 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
 
   if (!draft || !data) return null;
 
+  // Effective edit permission. Prefer the server-side `can_edit` flag (Slice 5
+  // fix returns it from GET /:id/config based on org role OR campaign
+  // ownership). Fall back to the parent prop for backward compatibility with
+  // older backends that didn't return the flag.
+  const effectiveCanEdit = (typeof data.can_edit === 'boolean') ? data.can_edit : canEdit;
+
   return (
     <div style={{ marginTop: 20 }}>
       {header}
@@ -170,6 +187,11 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
           Override the org's outreach config for this campaign. Leave a field empty to inherit from the org.
           Banned phrasings and required disclaimers are <strong>additive</strong> — campaign restrictions
           augment org restrictions, never loosen them.
+          {data.access_via === 'campaign_ownership' && (
+            <span style={{ display: 'block', marginTop: 4, fontStyle: 'italic', color: '#0F9D8E' }}>
+              You can edit this because you own this campaign.
+            </span>
+          )}
         </p>
 
         {flash && (
@@ -189,7 +211,7 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
           items={draft.default_value_props}
           onChange={v => setDraft({ ...draft, default_value_props: v })}
           placeholder="Add a value prop…"
-          canEdit={canEdit}
+          canEdit={effectiveCanEdit}
         />
 
         {/* Target personas */}
@@ -200,7 +222,7 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
           items={draft.default_target_personas}
           onChange={v => setDraft({ ...draft, default_target_personas: v })}
           placeholder="Add a persona…"
-          canEdit={canEdit}
+          canEdit={effectiveCanEdit}
         />
 
         {/* Products */}
@@ -211,7 +233,7 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
           items={draft.products}
           onChange={v => setDraft({ ...draft, products: v })}
           placeholder="Add a product…"
-          canEdit={canEdit}
+          canEdit={effectiveCanEdit}
         />
 
         {/* Hook preferences — ordered category list with a picker */}
@@ -224,7 +246,7 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
             ...draft,
             hook_preferences: { ...draft.hook_preferences, preferred_categories: v },
           })}
-          canEdit={canEdit}
+          canEdit={effectiveCanEdit}
         />
 
         {/* Case studies — structured */}
@@ -234,7 +256,7 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
           orgItems={data.org_baseline.default_case_study_summaries}
           items={draft.default_case_study_summaries}
           onChange={v => setDraft({ ...draft, default_case_study_summaries: v })}
-          canEdit={canEdit}
+          canEdit={effectiveCanEdit}
         />
 
         {/* Guardrails — additive */}
@@ -251,7 +273,7 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
               guardrails: { ...(draft.guardrails || {}), banned_phrasings: v },
             })}
             placeholder="Phrase the skill must avoid…"
-            canEdit={canEdit}
+            canEdit={effectiveCanEdit}
             danger
             nested
             additive
@@ -265,7 +287,7 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
               guardrails: { ...(draft.guardrails || {}), required_disclaimers: v },
             })}
             placeholder="Disclaimer the skill must include…"
-            canEdit={canEdit}
+            canEdit={effectiveCanEdit}
             nested
             additive
           />
@@ -283,7 +305,7 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
         </details>
 
         {/* Action bar */}
-        {canEdit && (
+        {effectiveCanEdit && (
           <div style={{
             marginTop: 16, paddingTop: 12, borderTop: '1px solid #f1f5f9',
             display: 'flex', alignItems: 'center', gap: 8,

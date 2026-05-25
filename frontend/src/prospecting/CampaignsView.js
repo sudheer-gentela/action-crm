@@ -800,15 +800,25 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
               )}
             </div>
 
-            {/* Slice 1: campaign-level prospecting_config override.
-                Owner/admin only — the panel itself handles 403 read-only fallback,
-                but we also gate the editable controls client-side via canEdit. */}
+            {/* Slice 1 + Slice-5-fix: campaign-level prospecting_config override.
+                Editable by org owner/admin OR by the campaign's owner / creator.
+                The panel's GET /:id/config response also includes a server-side
+                `can_edit` boolean that the panel prefers — this prop is the
+                initial-render hint, with the server truth winning on load. */}
             <CampaignConfigPanel
               campaignId={campaignId}
               canEdit={(() => {
                 try {
                   const u = JSON.parse(localStorage.getItem('user') || '{}');
-                  return u.role === 'owner' || u.role === 'admin';
+                  if (u.role === 'owner' || u.role === 'admin') return true;
+                  // Campaign-ownership check: data.campaign.owner_id (or
+                  // created_by if owner_id is null) === current user id.
+                  const camp = data?.campaign;
+                  if (camp) {
+                    const campOwner = camp.owner_id ?? camp.created_by;
+                    if (campOwner && campOwner === u.id) return true;
+                  }
+                  return false;
                 } catch (_) { return false; }
               })()}
             />
