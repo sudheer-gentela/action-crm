@@ -789,6 +789,60 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
       competitors,
     });
 
+    // ── Researcher note (from prospects.research_meta) ──────────────────
+    //
+    // The Research Queue lets the researcher type an optional note about
+    // the prospect. There are three modes:
+    //
+    //   1. No note   — researcher_note is null. Skill picks its own hook
+    //                  from signals.linkedin_activity and account_events
+    //                  per org_context.hook_preferences.preferred_categories.
+    //
+    //   2. Hint mode — researcher_note is populated but signal_override
+    //                  is false. The skill receives the note as additional
+    //                  context (under signals.researcher_note) and may use,
+    //                  ignore, or partially incorporate it — model's call.
+    //
+    //   3. Override  — researcher_note populated AND signal_override is true.
+    //                  The skill MUST use the note as the hook anchor.
+    //                  We enforce this by prepending 'researcher_override'
+    //                  to preferred_categories so it wins the priority pass.
+    //
+    // Mode is derived from research_meta written by approve-research. We
+    // also surface the source URL and category alongside the note text so
+    // the skill's Pattern 7 (researcher_override) can do the right citation.
+    const researchMeta = (prospect.research_meta && typeof prospect.research_meta === 'object')
+      ? prospect.research_meta : {};
+    const researcherNoteText = (typeof researchMeta.signal_summary === 'string' && researchMeta.signal_summary.trim())
+      ? researchMeta.signal_summary.trim() : null;
+    const researcherNoteOverride = researchMeta.signal_override === true && !!researcherNoteText;
+    const researcherNote = researcherNoteText
+      ? {
+          text:       researcherNoteText,
+          category:   researchMeta.signal_category || 'researcher_override',
+          source_url: researchMeta.signal_source_url || null,
+          override:   researcherNoteOverride,
+        }
+      : null;
+
+    // When override is on, prepend 'researcher_override' to the hook
+    // priority list so the skill picks it first. We mutate a copy of
+    // org_context here rather than buildOrgContext so this stays a
+    // per-prospect transformation, not an org-wide config change.
+    const finalOrgContext = researcherNoteOverride
+      ? {
+          ...orgContext,
+          hook_preferences: {
+            ...(orgContext.hook_preferences || {}),
+            preferred_categories: [
+              'researcher_override',
+              ...((orgContext.hook_preferences?.preferred_categories) || [])
+                .filter(c => c !== 'researcher_override'),
+            ],
+          },
+        }
+      : orgContext;
+
     // ── Compose ─────────────────────────────────────────────────────────
     const payload = {
       prospect: {
@@ -825,11 +879,15 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
       signals: {
         account_events: buildAccountEvents(account),
         linkedin_activity: splitLinkedInActivity(liActivity),
+        // null when the researcher left the queue note blank. The skill
+        // checks for non-null and acts per the rules in
+        // reference/hook-patterns.md → Pattern 7.
+        researcher_note: researcherNote,
       },
       engagement_history: engagementHistory,
       sequence_state: sequenceState,
       reply_payload: null,  // populated only by reply-event-triggered skills
-      org_context: orgContext,
+      org_context: finalOrgContext,
 
       // Out-of-band metadata for the runner. The leading underscore marks this
       // as not part of the skill contract — skills MUST ignore it. Used by the

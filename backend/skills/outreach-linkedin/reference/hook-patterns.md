@@ -124,13 +124,51 @@ The fallback when no stronger hook is available. This is honest, short, and ques
 - Don't ask "are you the right person?" — it admits the rep didn't do basic qualification.
 - Don't load this template with the same confidence as the stronger hooks. The brevity is the feature.
 
+## Pattern 6 — Researcher override
+
+Used ONLY when `signals.researcher_note` is non-null AND `signals.researcher_note.override` is true. A human researcher has explicitly flagged something about this prospect that should drive the message — typically context that isn't in the LinkedIn activity feed or account enrichment (a conversation at a conference, a referral from a mutual contact, a topic the prospect raised in a podcast the rep listened to, a press mention not yet in the enrichment data).
+
+The note is the hook. You do not pick a different hook even if a stronger-looking signal exists in the activity feed — the researcher saw something the auto-detection didn't.
+
+**Opener**: Anchor on the substance of the researcher's note. If the note has a source URL or attribution that you can cite naturally, do so. If it doesn't, frame the observation honestly — "a colleague flagged X" or "saw a note that you'd been thinking about Y" — rather than pretending you read the prospect's own post.
+
+**Bridge**: Connect the substance of the note to the product. This works the same way as Patterns 1 and 2 — the prospect's stated view or situation is the relevance signal.
+
+**Ask**: Curiosity-framed. Tone-match the specificity of the note: a concrete note ("she mentioned at the panel that data fragmentation is their #1 issue") supports a more targeted ask than a vague one ("seemed interested in scaling").
+
+**Example scaffolds**:
+
+When the note is concrete with attribution:
+> Picked up on a note from your panel at [event] — the line about data fragmentation in fleet ops being your #1 issue is exactly what we built [product] around.
+>
+> [One sentence: the product's angle on that specific problem.]
+>
+> Worth a 20-min compare-notes conversation?
+
+When the note is concrete but lacks a citable source:
+> A colleague flagged that you're rethinking how your team handles [topic from note].
+>
+> [One sentence: the product's angle.]
+>
+> Curious whether that's still active for you, or whether the focus has shifted.
+
+**What to avoid**:
+- **Never fabricate a quote.** The researcher's note is a paraphrase, not the prospect's own words. Do NOT put the researcher's wording in quote marks as if the prospect said it.
+- **Never fabricate a source.** If the note has no `source_url`, do not invent one ("saw your LinkedIn post"). Use honest attribution ("a colleague flagged", "saw a note that…") or attribute generally ("understand that…").
+- **Don't downgrade the override.** If `override` is true and a stronger-looking signal exists in the activity feed, you still use the note as the hook. The researcher made an explicit call; respect it.
+- **Don't apologize for the override path.** Don't write "this came from a colleague rather than your LinkedIn." Just write the email; the rep already knows the source.
+- **Don't pad with auto-detected signals.** A researcher override email mentions only the researcher's note as the hook. You can use account-level facts (industry, growth stage, tech stack) in the bridge if they're relevant, but don't open with two hooks stacked.
+
+When `signals.researcher_note` is non-null but `override` is false — i.e. hint mode — DO NOT use Pattern 6. Pick a hook from the auto-detected signals (Patterns 1-5) as usual, but you MAY weave the researcher's note into the bridge or ask if it strengthens the email. If it doesn't fit naturally, ignore it. The note is context, not a directive.
+
 ## Choosing between hooks
 
 When multiple hooks are available, the tiebreakers:
 
+- **Researcher override wins absolutely** when `signals.researcher_note.override` is true. No other pattern overrides this.
 - **Recency wins.** A post from last week beats an account event from 3 months ago.
 - **Specificity wins.** A quote from the prospect beats a firmographic generality.
 - **Concreteness wins.** A tech stack fact beats a persona inference.
 - **Honesty wins.** A weak hook you can fully defend beats a strong hook you partially fabricated.
 
-Log the chosen hook in the `hook` field of the output, with the signal `id` so the rep can trace back to the source.
+Log the chosen hook in the `hook` field of the output, with the signal `id` so the rep can trace back to the source. For Pattern 6, use `category: "researcher_override"` and set `primary_signal_id` to the researcher_note's source_url when present, or to `"researcher_note"` literally when no URL exists.

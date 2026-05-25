@@ -1071,9 +1071,22 @@ router.get('/:id/research-queue', async (req, res) => {
               p.stage, p.stage_changed_at, p.research_notes, p.research_meta,
               p.created_at,
               a.research_notes AS account_research,
-              a.research_meta  AS account_research_meta
+              a.research_meta  AS account_research_meta,
+              -- LinkedIn capture status — joined on slug parsed from
+              -- linkedin_url with the same regex linkedin-profiles.routes.js
+              -- uses on write. last_captured_at is the most recent of any
+              -- per-section capture timestamp on the row, written by the
+              -- extension upsert. NULL when no row exists for the prospect's
+              -- LinkedIn URL — the Research Queue UI renders the "amber"
+              -- capture-missing badge in that case.
+              lp.last_captured_at        AS linkedin_captured_at,
+              lp.last_activity_captured_at AS linkedin_activity_captured_at
          FROM prospects p
     LEFT JOIN accounts a ON a.id = p.account_id
+    LEFT JOIN linkedin_profiles lp
+           ON lp.org_id = p.org_id
+          AND lp.deleted_at IS NULL
+          AND lp.linkedin_slug = LOWER(SUBSTRING(p.linkedin_url FROM '/in/([^/?#]+)'))
         WHERE p.org_id      = $1
           AND p.campaign_id = $2
           AND p.stage       = $3
@@ -1118,6 +1131,12 @@ router.get('/:id/research-queue', async (req, res) => {
         // whether they need to type anything at all, or just hit Approve.
         accountResearch:     r.account_research,
         accountResearchMeta: r.account_research_meta,
+        // LinkedIn capture status drives the badge in the Research Queue
+        // UI. linkedinCapturedAt is NULL when no row exists; in that case
+        // the UI shows an amber "Not captured" hint with a "Open LinkedIn"
+        // CTA so the researcher can run the Chrome extension on the page.
+        linkedinCapturedAt:         r.linkedin_captured_at,
+        linkedinActivityCapturedAt: r.linkedin_activity_captured_at,
       })),
     });
   } catch (err) {

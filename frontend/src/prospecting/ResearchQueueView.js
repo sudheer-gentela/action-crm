@@ -1,16 +1,26 @@
 // prospecting/ResearchQueueView.js
 //
 // Slice 2 — Researcher workflow. A focused, one-prospect-at-a-time editor for
-// the researcher to write the signal observation that feeds personalisation.
+// the researcher to optionally write a hook note that feeds personalisation.
 //
 // Flow:
 //   1. Pick a campaign (campaign picker at top)
 //   2. Queue loads `target`-stage prospects in that campaign
-//   3. Current prospect shows: LinkedIn URL (click-out), account research
-//      (read-only), signal summary textarea, signal category dropdown,
-//      optional source URL
+//   3. Current prospect shows: LinkedIn URL (click-out), LinkedIn-capture
+//      status badge, account research (read-only), researcher note textarea
+//      (OPTIONAL), signal category dropdown, optional source URL, and an
+//      "Use this as the hook" override checkbox.
 //   4. Approve → POST /:id/approve-research → next prospect
+//      - With no note: prospect advances; the skill auto-picks a hook from
+//        LinkedIn activity + account enrichment.
+//      - With a note (hint mode): the note flows to the skill as additional
+//        context; the skill chooses whether to use it.
+//      - With a note + override checked: the skill MUST anchor on the note.
 //   5. Skip / Disqualify → mark as disqualified with a reason
+//
+// The capture badge is informational only — it doesn't block approval.
+// Researchers use the GoWarmCRM Chrome extension on the prospect's LinkedIn
+// page to populate the linkedin_profiles row that the badge reflects.
 //
 // Backend:
 //   GET  /api/prospecting-campaigns/:id/research-queue
@@ -21,13 +31,33 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from './prospectingShared';
 
 const HOOK_CATEGORIES = [
-  { value: 'prospect_post',   label: "Prospect's own post" },
-  { value: 'prospect_comment',label: "Prospect's comment on someone else's post" },
-  { value: 'account_event',   label: 'Account event (funding, hiring, launch)' },
-  { value: 'account_post',    label: 'Company post' },
-  { value: 'tech_stack',      label: 'Tech stack overlap' },
-  { value: 'role_curiosity',  label: 'Role + stage curiosity (no specific signal)' },
+  { value: 'prospect_post',       label: "Prospect's own post" },
+  { value: 'prospect_comment',    label: "Prospect's comment on someone else's post" },
+  { value: 'account_event',       label: 'Account event (funding, hiring, launch)' },
+  { value: 'account_post',        label: 'Company post' },
+  { value: 'tech_stack',          label: 'Tech stack overlap' },
+  { value: 'role_curiosity',      label: 'Role + stage curiosity (no specific signal)' },
+  // researcher_override is the category the backend defaults to when the
+  // researcher writes a note. It's last in the list because most researchers
+  // who categorise their note will pick one of the six above — picking
+  // researcher_override is appropriate when the note doesn't fit any
+  // category (e.g., context from a conversation, a referral, a podcast).
+  { value: 'researcher_override', label: "Researcher's own note (doesn't fit other categories)" },
 ];
+
+// Human-readable "X days ago" for the capture badge.
+function formatRelative(iso) {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return null;
+  const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (sec < 60)        return 'just now';
+  if (sec < 3600)      return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400)     return `${Math.floor(sec / 3600)}h ago`;
+  if (sec < 86400 * 7) return `${Math.floor(sec / 86400)}d ago`;
+  if (sec < 86400 * 30) return `${Math.floor(sec / (86400 * 7))}w ago`;
+  return `${Math.floor(sec / (86400 * 30))}mo ago`;
+}
 
 export default function ResearchQueueView() {
   const [campaigns,   setCampaigns]   = useState([]);
@@ -175,34 +205,68 @@ export default function ResearchQueueView() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ProspectCard — the per-prospect editor.
+//
+// Three approval modes, all available from one form:
+//   • Blank note  → skill auto-picks hook from LinkedIn + account enrichment.
+//   • Note typed  → skill receives note as additional context; chooses freely.
+//   • Note + "Use this as the hook" checked → skill MUST anchor on the note.
+//
+// The Approve button is always enabled. The LinkedIn capture badge is
+// informational — researchers can leave the queue, run the Chrome extension
+// on the LinkedIn profile, and come back; the badge updates on next queue
+// refresh. The badge never blocks approval.
 // ─────────────────────────────────────────────────────────────────────────────
 function ProspectCard({ prospect, onApprove, onDisqualify }) {
   const [summary,  setSummary]  = useState('');
-  const [category, setCategory] = useState('prospect_post');
+  const [category, setCategory] = useState('researcher_override');
   const [source,   setSource]   = useState('');
+  const [override, setOverride] = useState(false);
   const [busy,     setBusy]     = useState(false);
 
   // Pre-populate from existing research_meta when re-editing an already-approved.
+  // When meta exists, we restore everything — including the override flag.
+  // For first-time edits the category defaults to researcher_override
+  // (the most honest default when there's no recorded category).
   useEffect(() => {
     const meta = prospect.researchMeta || {};
     setSummary(meta.signal_summary || prospect.researchNotes || '');
-    setCategory(meta.signal_category || 'prospect_post');
+    setCategory(meta.signal_category || 'researcher_override');
     setSource(meta.signal_source_url || '');
+    setOverride(meta.signal_override === true);
   }, [prospect.id]);   // eslint-disable-line react-hooks/exhaustive-deps
 
+  const hasNote = summary.trim().length > 0;
+
+  // When the user types into an empty box, the checkbox becomes enabled but
+  // stays unchecked. When they clear the box, the override flag silently
+  // resets so it doesn't get submitted alongside an empty summary.
+  useEffect(() => {
+    if (!hasNote && override) setOverride(false);
+  }, [hasNote, override]);
+
   const approve = async () => {
-    if (!summary.trim()) return;
     setBusy(true);
     try {
       await onApprove({
-        signalSummary:   summary,
-        signalCategory:  category,
-        signalSourceUrl: source || null,
+        // Send nulls (not empty strings) when blank — keeps research_meta
+        // honest and lets the backend distinguish "no note" from "empty note".
+        signalSummary:   hasNote ? summary : null,
+        signalCategory:  hasNote ? category : null,
+        signalSourceUrl: hasNote && source.trim() ? source.trim() : null,
+        signalOverride:  hasNote && override,
       });
     } finally {
       setBusy(false);
     }
   };
+
+  // LinkedIn capture status — green badge when a linkedin_profiles row exists,
+  // amber prompt-to-capture badge when not. The data comes from the queue
+  // endpoint (linkedinCapturedAt joined from linkedin_profiles).
+  const captureAt   = prospect.linkedinCapturedAt;
+  const activityAt  = prospect.linkedinActivityCapturedAt;
+  const captureRel  = formatRelative(captureAt);
+  const activityRel = formatRelative(activityAt);
 
   return (
     <div style={{
@@ -221,6 +285,42 @@ function ProspectCard({ prospect, onApprove, onDisqualify }) {
           {prospect.companyIndustry && (
             <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{prospect.companyIndustry}</div>
           )}
+
+          {/* LinkedIn capture badge */}
+          <div style={{ marginTop: 10 }}>
+            {captureAt ? (
+              <span
+                title={`Captured via Chrome extension${activityAt ? ` · activity ${activityRel}` : ''}`}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  fontSize: 11, fontWeight: 600,
+                  padding: '3px 9px', borderRadius: 999,
+                  background: '#ecfdf5', color: '#047857',
+                  border: '1px solid #a7f3d0',
+                }}
+              >
+                ✓ LinkedIn captured · {captureRel}
+                {activityAt && (
+                  <span style={{ color: '#059669', fontWeight: 500 }}>
+                    · {activityRel} activity
+                  </span>
+                )}
+              </span>
+            ) : (
+              <span
+                title="No LinkedIn capture yet — use the GoWarmCRM Chrome extension on their profile to capture about/experience/activity"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  fontSize: 11, fontWeight: 600,
+                  padding: '3px 9px', borderRadius: 999,
+                  background: '#fef3c7', color: '#92400e',
+                  border: '1px solid #fcd34d',
+                }}
+              >
+                ⚠ No LinkedIn capture — extension recommended
+              </span>
+            )}
+          </div>
         </div>
         {prospect.linkedinUrl && (
           <a
@@ -253,18 +353,18 @@ function ProspectCard({ prospect, onApprove, onDisqualify }) {
         </details>
       )}
 
-      {/* Signal capture */}
+      {/* Researcher note (optional) */}
       <div style={{ marginBottom: 12 }}>
         <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#374151' }}>
-          Signal observation
+          Researcher note <span style={{ color: '#9ca3af', fontWeight: 400 }}>(optional)</span>
           <span style={{ color: '#9ca3af', fontWeight: 400, marginLeft: 6 }}>
-            (1–3 sentences of factual observation — what you saw on their LinkedIn)
+            — leave blank to let the AI pick its own hook from the LinkedIn capture and account data
           </span>
         </label>
         <textarea
           value={summary}
           onChange={e => setSummary(e.target.value)}
-          placeholder={`e.g. "Posted on Apr 12 about CSAT dropping in their managed services practice. Comments thread shows 40+ peer engagements."`}
+          placeholder={`Optional — e.g. "Mentioned at the FleetForward panel that data fragmentation is their #1 issue." Skip entirely if there's nothing specific to add.`}
           rows={4}
           style={{
             width: '100%', fontSize: 13, padding: '8px 10px',
@@ -273,19 +373,49 @@ function ProspectCard({ prospect, onApprove, onDisqualify }) {
           }}
         />
         <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
-          {summary.length} / 4000 chars · Don't write pitch or pain — just what you saw.
+          {summary.length} / 4000 chars · Factual observation only — no pitch, no pain.
         </div>
+
+        {/* Override checkbox — only meaningful when there's a note to override with. */}
+        <label
+          style={{
+            display: 'flex', alignItems: 'flex-start', gap: 8,
+            marginTop: 10,
+            fontSize: 12, color: hasNote ? '#374151' : '#9ca3af',
+            cursor: hasNote ? 'pointer' : 'default',
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={override}
+            disabled={!hasNote}
+            onChange={e => setOverride(e.target.checked)}
+            style={{ marginTop: 2 }}
+          />
+          <span>
+            <span style={{ fontWeight: 600 }}>Use this as the hook</span>
+            <span style={{ color: '#9ca3af', fontWeight: 400, marginLeft: 6 }}>
+              (overrides AI auto-detection — only check this if you're sure your note is stronger than any LinkedIn or account signal the AI might find)
+            </span>
+          </span>
+        </label>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
         <div>
-          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#374151' }}>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: hasNote ? '#374151' : '#9ca3af' }}>
             Signal category
           </label>
           <select
             value={category}
             onChange={e => setCategory(e.target.value)}
-            style={{ width: '100%', fontSize: 13, padding: '6px 8px', border: '1px solid #d1d5db', borderRadius: 5 }}
+            disabled={!hasNote}
+            style={{
+              width: '100%', fontSize: 13, padding: '6px 8px',
+              border: '1px solid #d1d5db', borderRadius: 5,
+              background: hasNote ? '#fff' : '#f9fafb',
+              color: hasNote ? '#1a202c' : '#9ca3af',
+            }}
           >
             {HOOK_CATEGORIES.map(opt => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -293,14 +423,20 @@ function ProspectCard({ prospect, onApprove, onDisqualify }) {
           </select>
         </div>
         <div>
-          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: '#374151' }}>
+          <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 4, color: hasNote ? '#374151' : '#9ca3af' }}>
             Source URL <span style={{ color: '#9ca3af', fontWeight: 400 }}>(optional)</span>
           </label>
           <input
             value={source}
             onChange={e => setSource(e.target.value)}
+            disabled={!hasNote}
             placeholder="https://linkedin.com/posts/..."
-            style={{ width: '100%', fontSize: 13, padding: '6px 8px', border: '1px solid #d1d5db', borderRadius: 5 }}
+            style={{
+              width: '100%', fontSize: 13, padding: '6px 8px',
+              border: '1px solid #d1d5db', borderRadius: 5,
+              background: hasNote ? '#fff' : '#f9fafb',
+              color: hasNote ? '#1a202c' : '#9ca3af',
+            }}
           />
         </div>
       </div>
@@ -325,12 +461,19 @@ function ProspectCard({ prospect, onApprove, onDisqualify }) {
         <div style={{ flex: 1 }} />
         <button
           onClick={approve}
-          disabled={busy || !summary.trim()}
+          disabled={busy}
+          title={
+            hasNote
+              ? (override
+                  ? 'Approve — your note will be used as the email hook'
+                  : 'Approve — your note will be additional context for the AI')
+              : 'Approve — the AI will pick a hook from LinkedIn capture + account data'
+          }
           style={{
             padding: '7px 16px', fontSize: 13, fontWeight: 600,
-            background: !summary.trim() ? '#cbd5e1' : '#10b981',
+            background: '#10b981',
             color: '#fff', border: 'none', borderRadius: 6,
-            cursor: (busy || !summary.trim()) ? 'default' : 'pointer',
+            cursor: busy ? 'default' : 'pointer',
           }}
         >
           {busy ? 'Approving…' : '✓ Approve → next'}

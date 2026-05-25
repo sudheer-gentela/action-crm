@@ -28,6 +28,7 @@ The caller passes a prospect payload (shape defined in `schema/gowarm-prospect.j
 
 - `org_context.step_intent` — required. One of `connection_request`, `post_accept_message`, `nurture_dm`.
 - `engagement_history` — for `post_accept_message`, find the most recent `linkedin_connection_accepted` event. For `nurture_dm`, find prior `linkedin_message_sent` and `linkedin_message_replied` events.
+- `signals.researcher_note` — optional. When present, the Research Queue captured an explicit note from a human researcher. Shape: `{ text, category, source_url, override }`. When `override` is `true`, you MUST anchor the message on this note (see Pattern 7 in `reference/hook-patterns.md`). When `override` is `false`, treat it as additional context you MAY use to inform the hook — model's call. When this field is `null`, ignore it and pick a hook from auto-detected signals as usual.
 
 If `step_intent` is missing or invalid, default to `connection_request` and flag in `confidence_notes`.
 
@@ -131,7 +132,7 @@ Return a single JSON object. Do NOT wrap in markdown fences. Do NOT include pros
     "character_count": <number>
   },
   "hook": {
-    "category": "prospect_post" | "prospect_comment" | "account_post" | "account_event" | "tech_stack" | "role_curiosity" | "none_available",
+    "category": "prospect_post" | "prospect_comment" | "account_post" | "account_event" | "tech_stack" | "role_curiosity" | "researcher_override" | "none_available",
     "primary_signal_id": "..."
   },
   "step_intent": "connection_request" | "post_accept_message" | "nurture_dm",

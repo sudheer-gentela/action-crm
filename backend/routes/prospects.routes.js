@@ -2179,18 +2179,29 @@ router.post('/:id/generate-actions', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /:id/approve-research  (Slice 2 — researcher workflow)
 // ─────────────────────────────────────────────────────────────────────────────
-// Researcher-facing endpoint. Saves the curated signal blob, transitions
-// stage target → research, and writes a research_approved activity row.
+// Researcher-facing endpoint. Saves the curated signal blob (if any),
+// transitions stage target → research, and writes a research_approved
+// activity row.
 //
-// Body:
+// Body (all fields optional):
 //   {
-//     signalSummary:   string (required) — 1-3 sentences of factual observation
-//     signalCategory:  string (required) — one of: prospect_post,
-//                                          prospect_comment, account_post,
-//                                          account_event, tech_stack,
-//                                          role_curiosity
-//     signalSourceUrl: string (optional) — URL of the source (e.g. a LinkedIn
-//                                          post link)
+//     signalSummary:   string  — 1-3 sentences of factual observation, OR
+//                                empty/omitted to advance without a curated
+//                                signal (LinkedIn-capture-driven workflow)
+//     signalCategory:  string  — one of: prospect_post, prospect_comment,
+//                                account_post, account_event, tech_stack,
+//                                role_curiosity, researcher_override.
+//                                Defaults to 'researcher_override' when
+//                                signalSummary is present and the caller
+//                                hasn't picked one explicitly.
+//     signalSourceUrl: string  — URL of the source (e.g. LinkedIn post link)
+//     signalOverride:  boolean — when true AND signalSummary is non-empty,
+//                                the skill is instructed to use the
+//                                researcher's note AS THE HOOK, overriding
+//                                whatever auto-detection would have picked.
+//                                When false (default), the note is surfaced
+//                                as ADDITIONAL CONTEXT the skill may use or
+//                                ignore at its discretion.
 //   }
 //
 // Behavior:
@@ -2198,6 +2209,15 @@ router.post('/:id/generate-actions', async (req, res) => {
 //   - already in 'research' → fields updated, stage unchanged, idempotent
 //   - any other stage → 409 (researcher shouldn't touch active-outreach
 //     prospects; manual edit is still available via PUT /:id)
+//
+// When signalSummary is blank/omitted, the prospect still advances to
+// 'research' but research_meta records no curated signal. The skill will
+// pick its own hook from LinkedIn data (signals.linkedin_activity) and
+// account enrichment (signals.account_events). If neither yields a viable
+// signal, the SequenceStepFirer falls back to the raw sequence template
+// at send time. This is the LinkedIn-capture-driven workflow: the rep
+// uses the Chrome extension to populate linkedin_profiles, and the skill
+// auto-picks the best hook from that data.
 //
 // research_notes mirrors signalSummary (the existing column already used by
 // the personalisation prompt). research_meta jsonb keeps the structured fields
@@ -2207,26 +2227,46 @@ router.post('/:id/generate-actions', async (req, res) => {
 const VALID_SIGNAL_CATEGORIES = [
   'prospect_post', 'prospect_comment', 'account_post',
   'account_event', 'tech_stack', 'role_curiosity',
+  // Used when the researcher's own note IS the hook — the skill anchors
+  // on the researcher's observation rather than something it found in the
+  // LinkedIn activity feed or account enrichment.
+  'researcher_override',
 ];
 
 router.post('/:id/approve-research', async (req, res) => {
   try {
-    const { signalSummary, signalCategory, signalSourceUrl } = req.body || {};
+    const { signalSummary, signalCategory, signalSourceUrl, signalOverride } = req.body || {};
 
-    if (!signalSummary || typeof signalSummary !== 'string' || !signalSummary.trim()) {
-      return res.status(400).json({ error: { message: 'signalSummary is required' } });
+    // signalSummary is now optional. If provided, validate it; if blank,
+    // we advance the prospect without recording a curated signal.
+    const trimmedSummary = (typeof signalSummary === 'string' && signalSummary.trim())
+      ? signalSummary.trim().substring(0, 4000)
+      : null;
+
+    // signalCategory is only meaningful when there's a summary.
+    let resolvedCategory = null;
+    if (trimmedSummary) {
+      if (signalCategory && !VALID_SIGNAL_CATEGORIES.includes(signalCategory)) {
+        return res.status(400).json({ error: {
+          message: `signalCategory must be one of: ${VALID_SIGNAL_CATEGORIES.join(', ')}`,
+        } });
+      }
+      // Default: when override is on the category IS researcher_override.
+      // When override is off and no category was picked, default to
+      // researcher_override too — the note isn't a real LinkedIn post or
+      // account event the skill can validate, so attributing it to one of
+      // the other categories would mislead the model into Pattern 1/2
+      // expectations (verbatim quote, dated source, etc).
+      resolvedCategory = signalCategory || 'researcher_override';
     }
-    if (!signalCategory || !VALID_SIGNAL_CATEGORIES.includes(signalCategory)) {
-      return res.status(400).json({ error: {
-        message: `signalCategory must be one of: ${VALID_SIGNAL_CATEGORIES.join(', ')}`,
-      } });
-    }
+
+    // signalOverride only meaningful when there's a summary to override with.
+    const isOverride = !!(trimmedSummary && signalOverride === true);
+
     // Soft sanity check on URL; we don't strictly validate it being well-formed.
     const sourceUrl = (typeof signalSourceUrl === 'string' && signalSourceUrl.trim())
       ? signalSourceUrl.trim().substring(0, 1000)
       : null;
-
-    const trimmedSummary = signalSummary.trim().substring(0, 4000);
 
     // Load prospect — enforce org scope.
     const pRes = await db.query(
@@ -2248,12 +2288,17 @@ router.post('/:id/approve-research', async (req, res) => {
 
     // Merge structured signal fields into research_meta (preserve any keys
     // already there — e.g. researchBullets from the AI research action).
+    // When summary is blank, we explicitly null out signal_* fields so a
+    // researcher who previously typed something can also clear it.
     const existingMeta = (p.research_meta && typeof p.research_meta === 'object') ? p.research_meta : {};
     const newMeta = {
       ...existingMeta,
       signal_summary:    trimmedSummary,
-      signal_category:   signalCategory,
+      signal_category:   resolvedCategory,
       signal_source_url: sourceUrl,
+      // Explicit override flag — read by SkillContextService to decide
+      // whether to prepend 'researcher_override' to preferred_categories.
+      signal_override:   isOverride,
       approved_by:       req.user.userId,
       approved_at:       new Date().toISOString(),
     };
@@ -2263,6 +2308,8 @@ router.post('/:id/approve-research', async (req, res) => {
 
     // Single UPDATE — research_notes mirrors summary for back-compat with the
     // inline personalisation prompt, which reads research_notes free-text.
+    // When summary is null (blank), research_notes is also set to null so
+    // the legacy prompt path doesn't pick up stale text.
     await db.query(
       `UPDATE prospects
           SET research_notes    = $1,
@@ -2274,7 +2321,17 @@ router.post('/:id/approve-research', async (req, res) => {
       [trimmedSummary, JSON.stringify(newMeta), nextStage, req.params.id, req.orgId]
     );
 
-    // Activity row — researcher audit trail. Non-fatal.
+    // Activity row — researcher audit trail. Non-fatal. The description
+    // distinguishes the three cases (advance with signal / advance without
+    // signal / update in place) so the audit log is honest about what
+    // happened, including whether the override flag was set.
+    const activityDescription = (() => {
+      if (!stageAdvanced) return 'Researcher updated signal on already-researched prospect';
+      if (!trimmedSummary) return 'Researcher approved — moved to research stage (no curated signal)';
+      if (isOverride)      return 'Researcher approved — moved to research stage (override hook)';
+      return                       'Researcher approved — moved to research stage';
+    })();
+
     try {
       await db.query(
         `INSERT INTO prospecting_activities
@@ -2282,12 +2339,12 @@ router.post('/:id/approve-research', async (req, res) => {
               VALUES ($1, $2, $3, 'research_approved', $4, $5::jsonb)`,
         [
           req.orgId, req.params.id, req.user.userId,
-          stageAdvanced
-            ? 'Researcher approved — moved to research stage'
-            : 'Researcher updated signal on already-researched prospect',
+          activityDescription,
           JSON.stringify({
-            signal_category:   signalCategory,
+            signal_category:   resolvedCategory,
             signal_source_url: sourceUrl,
+            signal_override:   isOverride,
+            had_signal:        !!trimmedSummary,
             stageAdvanced,
           }),
         ]
