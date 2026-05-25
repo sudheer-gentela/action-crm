@@ -142,6 +142,28 @@ async function _walkChain({ orgId, chain, adapters, inputs, operationLabel }) {
 
     // Write the ledger entry. Even credits=0 paths (no_identifier) write
     // a row so we can see attempt counts.
+    //
+    // The metadata block intentionally captures all the diagnostic data the
+    // adapter returned on failure. Without this, debugging a provider failure
+    // requires reproducing the call out-of-band — which is exactly what we
+    // had to do for the May 2026 Apollo http_error case. The cost of a few
+    // extra JSONB bytes per row is well worth the operability win.
+    //
+    // upstream_body is truncated to 4 KB to avoid pathological cases where
+    // a provider returns a huge HTML error page; the first few KB are always
+    // enough to see the error class and message.
+    const truncatedBody = (() => {
+      if (result.upstream_body == null) return null;
+      try {
+        const s = typeof result.upstream_body === 'string'
+          ? result.upstream_body
+          : JSON.stringify(result.upstream_body);
+        return s.length > 4096 ? s.slice(0, 4096) + '…[truncated]' : s;
+      } catch {
+        return String(result.upstream_body).slice(0, 4096);
+      }
+    })();
+
     await creditLog.writeLog({
       orgId,
       provider,
@@ -153,7 +175,14 @@ async function _walkChain({ orgId, chain, adapters, inputs, operationLabel }) {
       metadata: {
         identifier_used: result.identifier_used || null,
         reason:          result.reason || null,
-        ...(result.coresignal_id ? { coresignal_id: result.coresignal_id } : {}),
+        // Diagnostic fields — present on failure rows only, used by SuperAdmin
+        // and on-call debugging. Schema is loose by design: providers may
+        // surface different shapes, and JSONB tolerates that.
+        ...(result.status        != null ? { http_status:   result.status }       : {}),
+        ...(truncatedBody                ? { upstream_body: truncatedBody }       : {}),
+        ...(result.message               ? { message:       result.message }      : {}),
+        ...(result.hit_count     != null ? { hit_count:     result.hit_count }    : {}),
+        ...(result.coresignal_id         ? { coresignal_id: result.coresignal_id }: {}),
       },
     });
 

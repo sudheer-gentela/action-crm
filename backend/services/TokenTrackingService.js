@@ -297,6 +297,20 @@ class TokenTrackingService {
 
   // ── Private ──────────────────────────────────────────────────
 
+  /**
+   * Public-API alias for _estimateCost. Other services (e.g.
+   * SkillRunnerService, which writes per-prospect cost to skill_runs.cost_usd)
+   * call this without reaching into the _-prefixed implementation.
+   *
+   * @param {string} model    e.g. 'claude-haiku-4-5-20251001'
+   * @param {number} promptTokens
+   * @param {number} completionTokens
+   * @returns {number|null}   USD cost, or null if model is missing.
+   */
+  static estimateCost(model, promptTokens, completionTokens) {
+    return this._estimateCost(model, promptTokens, completionTokens);
+  }
+
   static _estimateCost(model, promptTokens, completionTokens) {
     if (!model) return null;
     const modelLower = model.toLowerCase();

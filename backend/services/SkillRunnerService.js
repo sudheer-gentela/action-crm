@@ -307,6 +307,29 @@ async function persistSkillRun(client, {
     hookSignalId = output.hook.primary_signal_id ?? null;
   }
 
+  // Cost attribution.
+  //
+  // The historical pattern was to keep skill_runs.cost_usd = 0 and let
+  // TokenTrackingService own all cost reporting via ai_token_usage. That
+  // works for org-wide / call-type rollups, but breaks attribution: token
+  // usage rows don't carry prospect_id or deal_id, so "what did Adam Boucher's
+  // drafts cost?" can't be answered without fragile time-window joins.
+  //
+  // We now populate cost_usd here as well — duplicating the value across
+  // ai_token_usage and skill_runs intentionally. ai_token_usage remains the
+  // org-wide source of truth (it covers AI calls that don't go through the
+  // skill runner). skill_runs.cost_usd enables per-prospect / per-deal cost
+  // queries against skill_runs alone.
+  //
+  // Single source of pricing data: TokenTrackingService.estimateCost. If the
+  // model isn't recognized (returns null) we store 0 — matching what
+  // ai_token_usage does in the same case.
+  const promptTokens     = usage?.input_tokens  || 0;
+  const completionTokens = usage?.output_tokens || 0;
+  const estimatedCost    = TokenTrackingService.estimateCost(
+    model, promptTokens, completionTokens
+  ) || 0;
+
   const ins = await client.query(
     `INSERT INTO skill_runs (
        org_id, user_id, skill_name, prospect_id, deal_id,
@@ -329,9 +352,9 @@ async function persistSkillRun(client, {
       output != null ? JSON.stringify(output) : null, rawOutput || null,
       hookCategory, hookSignalId,
       model || 'unknown',
-      usage?.input_tokens  || 0,
-      usage?.output_tokens || 0,
-      0,                                  // cost_usd — TokenTrackingService owns cost; kept 0 here
+      promptTokens,
+      completionTokens,
+      estimatedCost,
       latencyMs != null ? latencyMs : null,
       status, errorDetail || null,
     ]
