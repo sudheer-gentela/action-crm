@@ -200,56 +200,91 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
 
   // ── Per-account enrichment ───────────────────────────────────────────────
   //
-  // Triggered from the "Enrich" button on cards in the Needs Review tab.
-  // Posts to /accounts/:id/enrich-from-coresignal, which never overwrites
-  // populated fields. On success the row's needs_domain_review flag is
-  // typically cleared by the backend (when a real domain landed), so we
-  // refresh the list to surface that state change.
+  // Triggered from the "Enrich account" button on Needs Review cards AND the
+  // matching button on the Account Detail panel's Company Information section.
+  // Posts to /accounts/:id/enrich-from-coresignal (the endpoint name is
+  // historical — the backend now walks the configured provider chain set in
+  // Org Admin → Prospecting → Enrichment, which may be Apollo, CoreSignal, or
+  // others). Never overwrites populated fields. On success, the row's
+  // needs_domain_review flag is typically cleared by the backend if a real
+  // domain landed, so we reload the list to surface that state change.
   //
-  // Failure reasons we surface as user-friendly text:
-  //   not_found            - CoreSignal had no record for this company
-  //   ambiguous            - multiple matches, can't safely pick
+  // After success, if the enriched account is also the currently-open detail
+  // panel target, refresh selectedAccount from the reloaded list so the
+  // panel immediately shows new firmographics rather than the stale snapshot.
+  //
+  // Failure reasons we surface as user-friendly text (provider-agnostic since
+  // the chain may route through any configured source):
+  //   not_found                - no provider had a record for this company
+  //   ambiguous                - multiple matches, can't safely pick
   //   no_identifier_on_account - row has neither LinkedIn URL nor real domain
-  //   no_credits           - out of CoreSignal credits (operator concern)
-  //   auth_failed          - API key issue (operator concern)
-  //   *                    - generic transport/server error
+  //   no_credits               - org cap reached or out of provider credits
+  //   auth_failed              - API key issue (operator concern)
+  //   no_api_key               - no provider key configured for the chain
+  //   *                        - generic transport/server error
   const handleEnrichAccount = async (accountId) => {
     setEnrichState(prev => ({ ...prev, [accountId]: { status: 'loading' } }));
 
     try {
       const response = await apiService.accounts.enrichFromCoresignal(accountId);
       const data = response.data || {};
+      const provider = data.provider ? ` via ${data.provider}` : '';
       const fields = data.enriched ? Object.keys(data.enriched).filter(k => k !== 'needs_domain_review_cleared') : [];
       const cleared = data.enriched?.needs_domain_review_cleared;
 
       let message;
       if (fields.length === 0 && !cleared) {
-        message = 'No new data — fields already populated.';
+        message = `No new data${provider} — fields already populated.`;
       } else {
         const fragments = [];
         if (cleared) fragments.push('domain resolved');
         if (fields.length > 0) fragments.push(`updated: ${fields.join(', ')}`);
-        message = fragments.join(' · ');
+        message = fragments.join(' · ') + provider;
       }
 
       setEnrichState(prev => ({
         ...prev,
         [accountId]: { status: 'ok', message, ts: Date.now() },
       }));
-      // Reload to reflect cleared flag / new firmographics in the list and counts.
-      loadAccounts();
+
+      // Reload to reflect cleared flag / new firmographics in the list and
+      // counts. We refresh selectedAccount from the *new* list afterwards so
+      // the detail panel reflects the enriched fields without forcing the
+      // user to close and reopen.
+      try {
+        const accountsRes = await apiService.accounts.getAll({
+          scope, needsReview: filterTab === 'needs_review',
+        });
+        const fresh = accountsRes.data.accounts || accountsRes.data || [];
+        const enrichedList = enrichData({
+          accounts: fresh,
+          deals,
+          contacts,
+          emails: [], meetings: [], actions: [],
+        });
+        setAccounts(enrichedList.accounts);
+        if (accountsRes.data.counts) setCounts(accountsRes.data.counts);
+        if (selectedAccount?.id === accountId) {
+          const updated = fresh.find(a => a.id === accountId);
+          if (updated) setSelectedAccount(updated);
+        }
+      } catch {
+        // Fallback to a generic reload if the refresh-with-refocus path fails.
+        loadAccounts();
+      }
     } catch (err) {
       const body = err?.response?.data || {};
       const reason = body.reason || 'unknown';
       const friendly = {
-        not_found:                'CoreSignal had no match for this company.',
+        not_found:                'No provider had a match for this company.',
         ambiguous:                `Multiple candidates found${body.hit_count ? ` (${body.hit_count})` : ''}. Needs human review.`,
-        no_identifier_on_account: 'No LinkedIn URL or real domain on this account.',
-        no_credits:               'Out of CoreSignal credits.',
-        auth_failed:              'CoreSignal auth failed — check API key.',
-        rate_limited:             'CoreSignal rate-limited the request. Try again in a minute.',
-        timeout:                  'CoreSignal timed out.',
-        no_api_key:               'CoreSignal API key not configured.',
+        no_identifier_on_account: 'No LinkedIn URL or real domain on this account — add one and retry.',
+        no_credits:               'Monthly enrichment cap reached or provider credits exhausted.',
+        auth_failed:              'Provider auth failed — check API key in Org Admin → Credentials.',
+        rate_limited:             'Provider rate-limited the request. Try again in a minute.',
+        timeout:                  'Provider request timed out.',
+        no_api_key:               'No enrichment provider key configured. See Org Admin → Prospecting → Enrichment.',
+        no_providers_configured:  'No enrichment providers configured. See Org Admin → Prospecting → Enrichment.',
       }[reason] || `Enrichment failed: ${reason}`;
       setEnrichState(prev => ({
         ...prev,
@@ -578,6 +613,67 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
                     {renderEditableField('location', selectedAccount)}
                   </div>
                 </div>
+
+                {/* ── Enrich affordance ─────────────────────────────────
+                    Available on every account regardless of needs_domain_review.
+                    Calls the same handler as the Needs Review cards. Disabled
+                    when the account has no enrichment identifier (no domain
+                    and no LinkedIn URL) — the backend would just return
+                    no_identifier_on_account and we save the round trip.
+
+                    The button is intentionally low-emphasis: it sits below
+                    the editable fields, not in the page header, because for
+                    most accounts the rep has already filled the fields in
+                    manually. This is for the case where Industry / Size /
+                    Location are blank and the rep wants to backfill them
+                    from a provider without leaving the page.                */}
+                {(() => {
+                  const eState = enrichState[selectedAccount.id];
+                  const hasIdent = !!(selectedAccount.domain && selectedAccount.domain !== 'catchalldomain.com')
+                                  || !!selectedAccount.linkedin_company_url;
+                  const loading  = eState?.status === 'loading';
+                  const palette  = eState && {
+                    loading: { bg: '#fef3c7', fg: '#92400e' },
+                    ok:      { bg: '#dcfce7', fg: '#166534' },
+                    error:   { bg: '#fee2e2', fg: '#991b1b' },
+                  }[eState.status];
+                  return (
+                    <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                      <button
+                        onClick={() => handleEnrichAccount(selectedAccount.id)}
+                        disabled={loading || !hasIdent}
+                        title={!hasIdent ? 'Add a website or LinkedIn URL first' : 'Pull firmographics from your configured enrichment provider'}
+                        style={{
+                          padding: '7px 14px',
+                          background: loading || !hasIdent ? '#e5e7eb' : '#6366f1',
+                          color:      loading || !hasIdent ? '#6b7280' : '#fff',
+                          border: 'none', borderRadius: 6,
+                          fontSize: 12, fontWeight: 600,
+                          cursor: loading || !hasIdent ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        {loading ? 'Enriching…' : '✨ Enrich account'}
+                      </button>
+                      {!hasIdent && (
+                        <span style={{ fontSize: 11, color: '#9ca3af', fontStyle: 'italic' }}>
+                          Add a website or LinkedIn URL to enable enrichment.
+                        </span>
+                      )}
+                      {eState && palette && (
+                        <span style={{
+                          padding: '4px 10px',
+                          background: palette.bg,
+                          color: palette.fg,
+                          borderRadius: 12,
+                          fontSize: 11,
+                          fontWeight: 500,
+                        }}>
+                          {eState.message || (loading ? 'Enriching…' : '')}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* ── 2. Description (inline-editable) ──────────────── */}
@@ -810,7 +906,7 @@ function AccountCard({ account, deals, contacts, totalValue, onEdit, onDelete, o
             cursor: enrichState?.status === 'loading' ? 'not-allowed' : 'pointer',
           }}
         >
-          {enrichState?.status === 'loading' ? 'Enriching…' : '✨ Enrich from CoreSignal'}
+          {enrichState?.status === 'loading' ? 'Enriching…' : '✨ Enrich account'}
         </button>
       )}
 
