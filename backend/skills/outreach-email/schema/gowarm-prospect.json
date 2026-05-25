@@ -1,0 +1,369 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "GoWarm Prospect Context Payload",
+  "description": "The semantic, CRM-agnostic prospect payload returned by GoWarm's /api/skill-context/prospects/:id endpoint. Designed to support all prospecting-module skills (outreach-personalization, reply-triage, handoff-brief, etc.) via a core shape plus optional slices. Fields use canonical semantic names; field_map resolution from Salesforce/HubSpot/Dynamics runs in the GoWarm backend before the skill ever sees the data.",
+  "type": "object",
+  "required": ["prospect", "account", "icp", "signals", "org_context"],
+  "properties": {
+    "prospect": {
+      "type": "object",
+      "required": ["name", "title", "company"],
+      "properties": {
+        "name": { "type": "string" },
+        "title": { "type": ["string", "null"] },
+        "company": { "type": ["string", "null"] },
+        "linkedin_url": { "type": ["string", "null"] },
+        "email": { "type": ["string", "null"] },
+        "seniority_level": {
+          "type": ["string", "null"],
+          "enum": ["ic", "manager", "director", "vp", "c_level", "founder", null],
+          "description": "Normalized seniority band, inferred from title."
+        },
+        "function": {
+          "type": ["string", "null"],
+          "description": "Normalized function inferred from title, e.g. 'sales', 'revops', 'marketing', 'engineering'."
+        },
+        "tenure_in_role_months": {
+          "type": ["number", "null"],
+          "description": "Months in current role, computed from the LinkedIn-captured current-role start_date. Null when no profile capture exists or start_date isn't parseable. New-in-role (<6 months) is a meaningful signal."
+        },
+        "headline": {
+          "type": ["string", "null"],
+          "description": "The prospect's LinkedIn headline, verbatim. Quotable; not paraphrasable into claims."
+        },
+        "about": {
+          "type": ["string", "null"],
+          "description": "The prospect's LinkedIn 'About' section, verbatim. Quotable; not paraphrasable into claims."
+        },
+        "experience": {
+          "type": "array",
+          "description": "Job history, most recent first. Sourced from the LinkedIn-captured profile.",
+          "items": {
+            "type": "object",
+            "required": ["title", "company"],
+            "properties": {
+              "title": { "type": "string" },
+              "company": { "type": "string" },
+              "location": { "type": ["string", "null"] },
+              "start_date": { "type": ["string", "null"], "description": "Date string as captured. Format may be 'YYYY-MM-DD', 'YYYY-MM', or 'YYYY'." },
+              "end_date": { "type": ["string", "null"], "description": "null, empty, or 'Present' indicates the current role." },
+              "duration_months": { "type": ["number", "null"] },
+              "description": { "type": ["string", "null"], "description": "Prospect's own words from LinkedIn, if available. Quotable." }
+            }
+          }
+        },
+        "education": {
+          "type": "array",
+          "description": "Education history. Use sparingly — fake-commonality failure mode risk is highest here.",
+          "items": {
+            "type": "object",
+            "required": ["school"],
+            "properties": {
+              "school": { "type": "string" },
+              "degree": { "type": ["string", "null"] },
+              "field_of_study": { "type": ["string", "null"] },
+              "start_year": { "type": ["number", "null"] },
+              "end_year": { "type": ["number", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "account": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "industry": { "type": ["string", "null"] },
+        "size": {
+          "type": ["string", "null"],
+          "description": "Headcount band, e.g. '50-200 employees', '501-1000 employees'. Comes from enrichment, format is provider-determined."
+        },
+        "growth_stage": {
+          "type": ["string", "null"],
+          "enum": ["early", "growth", "mature", null],
+          "description": "Derived from funding-round type and founded year. 'mature' = Series C+ or growth/late-stage; 'growth' = Pre-seed/Seed/Series A/B; 'early' = founded <7 years ago AND no funding info; null = signal too weak. Shapes hook selection."
+        },
+        "tech_stack": {
+          "type": "array",
+          "description": "Known technology stack. Each entry MUST carry source — the skill's signal-use rules say 'only reference tools that are IN the tech_stack array with a source.'",
+          "items": {
+            "type": "object",
+            "required": ["tool", "source"],
+            "properties": {
+              "tool": { "type": "string" },
+              "category": { "type": ["string", "null"], "description": "e.g. 'crm', 'sales_engagement'. Often null at the data layer." },
+              "source": { "type": "string", "description": "e.g. 'coresignal', 'builtwith'. Required so the skill knows where the signal came from." }
+            }
+          }
+        },
+        "website": { "type": ["string", "null"] },
+        "one_line_description": { "type": ["string", "null"] }
+      }
+    },
+    "icp": {
+      "type": "object",
+      "required": ["fit_score"],
+      "properties": {
+        "fit_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "ICP fit score computed by the GoWarm rules engine. Not computed by the skill."
+        },
+        "matched_criteria": {
+          "type": "array",
+          "description": "ICP criteria this prospect matches. Skills can reference these as validated fit reasons.",
+          "items": { "type": "string" }
+        },
+        "missed_criteria": {
+          "type": "array",
+          "description": "ICP criteria this prospect does NOT match. Inform disqualify-check and confidence_notes.",
+          "items": { "type": "string" }
+        },
+        "persona_match": {
+          "type": ["string", "null"],
+          "description": "Named persona matched, e.g. 'vp_revops_growth_saas'. Null if no persona match."
+        }
+      }
+    },
+    "signals": {
+      "type": "object",
+      "description": "Evidence the skill can cite. Every signal carries a source and timestamp so skills reference provenance instead of generating from priors.",
+      "required": ["account_events", "linkedin_activity"],
+      "properties": {
+        "account_events": {
+          "type": "array",
+          "description": "Things that happened to the company — funding, leadership changes, layoffs, product launches, earnings, hiring surges. Usable as trigger events. Currently sourced from firmographic enrichment (funding rounds); other types planned.",
+          "items": {
+            "type": "object",
+            "required": ["type", "description", "source", "timestamp"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["funding", "leadership_change", "layoff", "product_launch", "earnings", "hiring_surge", "acquisition", "expansion", "award", "other"]
+              },
+              "description": { "type": "string", "description": "One-line summary, e.g. 'Series C raised ($55M)'." },
+              "source": { "type": "string", "description": "e.g. 'coresignal', 'manual', 'news_feed'." },
+              "source_url": { "type": ["string", "null"] },
+              "timestamp": { "type": "string", "format": "date-time", "description": "Real event timestamp. The skill ages events for freshness — fabricated dates are not emitted." }
+            }
+          }
+        },
+        "linkedin_activity": {
+          "type": "object",
+          "description": "Prospect-level LinkedIn activity, sourced from the linkedin_profiles table. Posts and substantive comments are usable for direct citation. Reactions are present but guarded — see outreach-principles.md.",
+          "required": ["posts", "comments", "reactions"],
+          "properties": {
+            "posts": {
+              "type": "array",
+              "description": "Posts on the prospect's profile. The `action` field distinguishes original posts the prospect authored, plain reposts of others' posts, and quoted reposts (where the prospect added their own commentary on top of someone else's post). Framing rules differ per action — see outreach-principles.md.",
+              "items": {
+                "type": "object",
+                "required": ["id", "posted_at", "text"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "posted_at": { "type": ["string", "null"], "format": "date-time" },
+                  "text": { "type": "string", "description": "The body text shown on the post. For action='posted' this is the prospect's words. For action='reposted' this is the ORIGINAL author's words (the prospect did not write this). For action='quoted_repost' this is often a merged blob — prefer `commentary` and `quoted_text` for clean attribution." },
+                  "action": {
+                    "type": ["string", "null"],
+                    "enum": ["posted", "reposted", "quoted_repost", null],
+                    "description": "Authorship signal. `posted` = prospect authored the text. `reposted` = plain repost; prospect did NOT write the text (see quoted_author). `quoted_repost` = prospect reposted someone else's post AND added their own commentary (see commentary + quoted_text). `null` or absent = legacy capture; treat as likely original but hedge framing."
+                  },
+                  "commentary": {
+                    "type": ["string", "null"],
+                    "description": "ONLY populated for action='quoted_repost'. The prospect's own words written on top of the embedded original post. This IS the prospect's voice — cite this when using a quoted_repost as a hook, NOT the quoted_text or text fields."
+                  },
+                  "quoted_text": {
+                    "type": ["string", "null"],
+                    "description": "The body of the embedded original post when action='reposted' or 'quoted_repost'. NOT written by the prospect. Use only as context — never quote with phrasing like 'your post'."
+                  },
+                  "quoted_author": {
+                    "type": ["string", "null"],
+                    "description": "The display name of the original author when action='reposted' or 'quoted_repost'. Use for honest attribution: 'saw you share <quoted_author>'s post about X' rather than 'your post about X'."
+                  },
+                  "engagement_count": { "type": ["number", "null"] },
+                  "topic_tags": {
+                    "type": "array",
+                    "description": "Optional auto-extracted topics. Do not treat as authoritative.",
+                    "items": { "type": "string" }
+                  }
+                }
+              }
+            },
+            "comments": {
+              "type": "array",
+              "description": "Comments the prospect wrote on other people's posts. Usable only with parent_post_summary for context.",
+              "items": {
+                "type": "object",
+                "required": ["id", "commented_at", "text", "parent_post_summary"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "commented_at": { "type": ["string", "null"], "format": "date-time" },
+                  "text": { "type": "string" },
+                  "parent_post_summary": { "type": "string", "description": "Brief description of what the comment was replying to. Without this, comment is unusable." },
+                  "parent_author": { "type": ["string", "null"] }
+                }
+              }
+            },
+            "reactions": {
+              "type": "array",
+              "description": "Posts the prospect reacted to. LAST-RESORT SIGNAL — outreach-personalization skill must never cite these in the email body. See outreach-principles.md.",
+              "items": {
+                "type": "object",
+                "required": ["id", "reacted_at", "parent_post_summary"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "reacted_at": { "type": ["string", "null"], "format": "date-time" },
+                  "reaction_type": { "type": ["string", "null"], "description": "e.g. 'like', 'celebrate', 'insightful'" },
+                  "parent_post_summary": { "type": "string" },
+                  "parent_author": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "engagement_history": {
+      "type": "array",
+      "description": "Touches between the rep and prospect. Usually empty or sparse for new prospects. Populated for re-engagement and reply-triage skills.",
+      "items": {
+        "type": "object",
+        "required": ["type", "timestamp"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["email_sent", "email_received", "email_opened", "email_replied", "email_bounced", "linkedin_connection_sent", "linkedin_connection_accepted", "linkedin_message_sent", "linkedin_message_replied", "meeting_booked", "meeting_held", "meeting_no_show"]
+          },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "summary": { "type": ["string", "null"] },
+          "direction": { "type": ["string", "null"], "enum": ["inbound", "outbound", null] }
+        }
+      }
+    },
+    "sequence_state": {
+      "type": ["object", "null"],
+      "description": "Present only when the prospect is mid-sequence. Informs sequence-design and re-engagement skills.",
+      "properties": {
+        "sequence_id": { "type": "string" },
+        "sequence_name": { "type": "string" },
+        "current_step": { "type": "number" },
+        "total_steps": { "type": "number" },
+        "last_touched_at": { "type": ["string", "null"], "format": "date-time" },
+        "next_scheduled_at": { "type": ["string", "null"], "format": "date-time" },
+        "channels_used": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["email", "linkedin", "phone"] }
+        }
+      }
+    },
+    "reply_payload": {
+      "type": ["object", "null"],
+      "description": "Present only when a skill is triggered by an inbound reply (reply-triage, objection-handler). Absent for first-touch skills like outreach-personalization.",
+      "properties": {
+        "body": { "type": "string" },
+        "received_at": { "type": "string", "format": "date-time" },
+        "detected_language": { "type": ["string", "null"] },
+        "in_reply_to_step": { "type": ["number", "null"] }
+      }
+    },
+    "org_context": {
+      "type": "object",
+      "description": "The rep's own company, products, and positioning. Merged from org-level prospecting_config and (when as_user is supplied) user-level overrides.",
+      "required": ["rep", "products", "value_props", "competitors"],
+      "properties": {
+        "rep": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string" },
+            "title": { "type": ["string", "null"] },
+            "email_signature": { "type": ["string", "null"] }
+          }
+        },
+        "products": {
+          "type": "array",
+          "description": "All products the rep can sell, in priority order. Skills typically anchor to products[0] but may reference others when relevant to the prospect's signals.",
+          "items": {
+            "type": "object",
+            "required": ["name", "one_liner"],
+            "properties": {
+              "name": { "type": "string" },
+              "one_liner": { "type": "string", "description": "One-sentence description of what the product does." },
+              "category": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "value_props": {
+          "type": "array",
+          "description": "Short, claim-based value propositions. The skill may draw on these but must not fabricate new ones.",
+          "items": { "type": "string" }
+        },
+        "target_personas": {
+          "type": "array",
+          "description": "Named personas the products are built for. Helps the skill judge persona fit.",
+          "items": { "type": "string" }
+        },
+        "case_study_summaries": {
+          "type": "array",
+          "description": "Short summaries of real case studies. Skill must only reference these verbatim — never fabricate stats.",
+          "items": {
+            "type": "object",
+            "required": ["customer", "summary"],
+            "properties": {
+              "customer": { "type": "string", "description": "Can be anonymized, e.g. 'a Series C SaaS company'." },
+              "summary": { "type": "string" },
+              "stat": { "type": ["string", "null"], "description": "Verifiable stat, if any. Use verbatim or not at all." }
+            }
+          }
+        },
+        "competitors": {
+          "type": "array",
+          "description": "Known competitors. Skills may reference if prospect's tech_stack includes one.",
+          "items": { "type": "string" }
+        },
+        "voice": {
+          "type": ["object", "null"],
+          "description": "Per-rep voice preferences from user prospecting_config. Null when no per-user overrides applied.",
+          "properties": {
+            "tone": { "type": ["string", "null"], "description": "e.g. 'direct', 'curious', 'consultative'" },
+            "avoid_phrases": { "type": "array", "items": { "type": "string" } },
+            "preferred_openers": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "hook_preferences": {
+          "type": ["object", "null"],
+          "description": "Per-rep hook preferences from user prospecting_config. Null when no per-user overrides applied.",
+          "properties": {
+            "preferred_categories": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["prospect_post", "prospect_comment", "account_event", "tech_stack", "role_curiosity"] }
+            },
+            "avoid_categories": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["prospect_post", "prospect_comment", "account_event", "tech_stack", "role_curiosity"] }
+            }
+          }
+        },
+        "guardrails_extra": {
+          "type": "object",
+          "description": "Additional org/user guardrails layered on top of the skill's built-in rules.",
+          "required": ["banned_phrasings", "required_disclaimers"],
+          "properties": {
+            "banned_phrasings": {
+              "type": "array",
+              "description": "Phrases the skill must not produce. Union of org banned phrasings and user voice.avoid_phrases.",
+              "items": { "type": "string" }
+            },
+            "required_disclaimers": {
+              "type": "array",
+              "description": "Strings that must appear in the email body (e.g. compliance disclaimers).",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -15,8 +15,9 @@
 // Public API:
 //   runProspectSkill({ orgId, userId, prospectId, skillName, hookPreferences? })
 //   runDealSkill({ orgId, userId, dealId, skillName, methodology? })
+//   validateSkillRegistry()    — boot-time sanity check; throws on misconfig
 //
-// Both return { ok, output, runId, status, usage }.
+// Both run-functions return { ok, output, runId, status, usage }.
 // ============================================================================
 
 const path   = require('path');
@@ -67,6 +68,84 @@ const SKILL_REGISTRY = {
     entity:     'deal',
   },
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// validateSkillRegistry — boot-time sanity check.
+//
+// Catches the class of bug where a skill is registered in code but its on-disk
+// bundle is missing, incomplete, or mis-named. Intended to run once at app
+// boot (see server.js / app.js).
+//
+// Checks performed for every non-retired skill in SKILL_REGISTRY:
+//   1. <skill>/SKILL.md exists on disk
+//   2. <skill>/SKILL.md frontmatter declares `name: <skill>` (catches the
+//      copy-paste-and-forget-to-rename failure mode that produced the
+//      original "Skill not found: outreach-linkedin" preview errors)
+//
+// Throws on any failure, with a message that names every offending skill and
+// the specific check that failed. App refuses to boot until fixed — preferred
+// over silently allowing every preview to error at runtime.
+//
+// Retired skills are skipped: they may still be on disk for back-compat
+// queries against historical skill_runs rows, but no live code path dispatches
+// against them so their bundle state is not safety-critical.
+// ─────────────────────────────────────────────────────────────────────────────
+function validateSkillRegistry() {
+  const failures = [];
+  const activeSkills = Object.entries(SKILL_REGISTRY).filter(([, m]) => !m.retired);
+
+  for (const [skillName] of activeSkills) {
+    const skillMdPath = path.join(SKILLS_DIR, skillName, 'SKILL.md');
+
+    if (!fs.existsSync(skillMdPath)) {
+      failures.push(
+        `[${skillName}] SKILL.md not found at ${skillMdPath}`
+      );
+      continue;
+    }
+
+    // Parse the frontmatter `name:` field. The file starts with `---\n`,
+    // then YAML keys, then `---\n`. We only need `name`, so a cheap regex
+    // beats pulling in a YAML dep.
+    const skillMd = fs.readFileSync(skillMdPath, 'utf8');
+    const fmMatch = skillMd.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (!fmMatch) {
+      failures.push(
+        `[${skillName}] SKILL.md has no frontmatter block (expected leading '---' / '---')`
+      );
+      continue;
+    }
+    const nameMatch = fmMatch[1].match(/^name:\s*(\S+)\s*$/m);
+    if (!nameMatch) {
+      failures.push(
+        `[${skillName}] SKILL.md frontmatter is missing 'name:' field`
+      );
+      continue;
+    }
+    const declaredName = nameMatch[1];
+    if (declaredName !== skillName) {
+      failures.push(
+        `[${skillName}] SKILL.md frontmatter declares name='${declaredName}' ` +
+        `but registry key is '${skillName}'. ` +
+        `This usually means a SKILL.md was copy-pasted from another skill ` +
+        `without updating the name field.`
+      );
+    }
+  }
+
+  if (failures.length > 0) {
+    const msg =
+      `Skill registry validation failed (${failures.length} issue${failures.length === 1 ? '' : 's'}):\n` +
+      failures.map(f => `  • ${f}`).join('\n') +
+      `\n\nFix the offending skill bundle(s) under backend/skills/ before booting.`;
+    throw new Error(msg);
+  }
+
+  console.log(
+    `[skill-runner] Validated ${activeSkills.length} active skill(s) on disk: ` +
+    `${activeSkills.map(([n]) => n).join(', ')}`
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Skill loader — reads a skill folder from disk into a bundle.
@@ -461,6 +540,7 @@ async function runDealSkill({ orgId, userId, dealId, skillName, methodology }) {
 module.exports = {
   runProspectSkill,
   runDealSkill,
+  validateSkillRegistry,
   // exported for unit testing
   loadSkill,
   buildSystemPrompt,
