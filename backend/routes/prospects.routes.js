@@ -2310,14 +2310,22 @@ router.post('/:id/approve-research', async (req, res) => {
     // inline personalisation prompt, which reads research_notes free-text.
     // When summary is null (blank), research_notes is also set to null so
     // the legacy prompt path doesn't pick up stale text.
+    //
+    // Explicit ::type casts on every parameter — pg-node doesn't send type
+    // hints when a parameter is null, and when $1 is null Postgres has to
+    // deduce types for the remaining params from context alone. Because
+    // $3 (nextStage) is used in BOTH `stage = $3` (SET clause) and
+    // `stage != $3` (CASE expression), the parser can deduce inconsistent
+    // types ("text" in one path, "character varying" in the other) and
+    // raise SQLSTATE 42P08. Casts make every parameter's type unambiguous.
     await db.query(
       `UPDATE prospects
-          SET research_notes    = $1,
+          SET research_notes    = $1::text,
               research_meta     = $2::jsonb,
-              stage             = $3,
-              stage_changed_at  = CASE WHEN stage != $3 THEN CURRENT_TIMESTAMP ELSE stage_changed_at END,
+              stage             = $3::varchar,
+              stage_changed_at  = CASE WHEN stage != $3::varchar THEN CURRENT_TIMESTAMP ELSE stage_changed_at END,
               updated_at        = CURRENT_TIMESTAMP
-        WHERE id = $4 AND org_id = $5`,
+        WHERE id = $4::int AND org_id = $5::int`,
       [trimmedSummary, JSON.stringify(newMeta), nextStage, req.params.id, req.orgId]
     );
 
