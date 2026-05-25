@@ -702,30 +702,50 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
               </div>
             ) : (
               <div style={{ margin: '18px 0' }}>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button
-                    className="pv-btn-secondary"
-                    style={{ flex: 1 }}
-                    disabled={busy || totalProspects === 0}
-                    onClick={() => setShowEnroll(true)}
-                  >
-                    📨 Enroll all in sequence (legacy)
-                  </button>
-                  <button
-                    className="pv-btn-secondary"
-                    style={{ flex: '0 0 auto' }}
-                    title="Preview personalised drafts for up to 5 prospects without enrolling them"
-                    disabled={busy || !data.campaign.default_sequence_id || totalProspects === 0}
-                    onClick={() => setShowPreviewPicker(true)}
-                  >
-                    👁️ Preview drafts
-                  </button>
+                {/* No research-approved prospects yet. Preview becomes the
+                    primary action (it's safe, instructive, no commitment).
+                    Legacy enroll-all is demoted to a small text link below
+                    with a hover explainer so reps know what it's for. */}
+                <button
+                  className="pv-btn-primary"
+                  style={{ width: '100%' }}
+                  disabled={busy || !data.campaign.default_sequence_id || totalProspects === 0}
+                  onClick={() => setShowPreviewPicker(true)}
+                >
+                  👁️ Preview drafts for some prospects
+                </button>
+                <div style={{
+                  fontSize: 11, color: '#6b7280', marginTop: 4, textAlign: 'center',
+                }}>
+                  Approve research on prospects to unlock personalised batch activation.
                 </div>
                 {!data.campaign.default_sequence_id && (
                   <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, textAlign: 'center' }}>
-                    No default sequence set — you'll pick one.
+                    No default sequence set on this campaign.
                   </div>
                 )}
+                <div style={{
+                  marginTop: 12, padding: '8px 10px', background: '#f8fafc', borderRadius: 6,
+                  fontSize: 11, color: '#6b7280',
+                }}>
+                  <div style={{ fontWeight: 600, marginBottom: 3 }}>
+                    Advanced: skip research, enrol everyone with templates only
+                  </div>
+                  <div style={{ marginBottom: 6 }}>
+                    Bypasses per-prospect AI personalisation. Each enrollment uses the sequence template verbatim. Useful if you don't have or want signal-based research.
+                  </div>
+                  <button
+                    onClick={() => setShowEnroll(true)}
+                    disabled={busy || totalProspects === 0}
+                    style={{
+                      background: 'none', border: '1px solid #cbd5e1', borderRadius: 4,
+                      padding: '4px 10px', fontSize: 11, color: '#475569',
+                      cursor: 'pointer', fontWeight: 500,
+                    }}
+                  >
+                    📨 Enroll all in sequence (template-only)
+                  </button>
+                </div>
               </div>
             )}
 
@@ -876,10 +896,12 @@ function PreviewPickerModal({ campaignId, sequenceId, sequenceName, members, onC
   const filtered = allMembers.filter(m => {
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
+    // API returns snake_case from /api/prospects/. Read first_name, last_name,
+    // company_name, email — the camelCase variants don't exist on this payload.
     return (
-      (m.firstName || '').toLowerCase().includes(q) ||
-      (m.lastName || '').toLowerCase().includes(q) ||
-      (m.companyName || '').toLowerCase().includes(q) ||
+      (m.first_name || '').toLowerCase().includes(q) ||
+      (m.last_name || '').toLowerCase().includes(q) ||
+      (m.company_name || '').toLowerCase().includes(q) ||
       (m.email || '').toLowerCase().includes(q)
     );
   });
@@ -974,10 +996,10 @@ function PreviewPickerModal({ campaignId, sequenceId, sequenceName, members, onC
                   />
                   <div style={{ flex: 1, fontSize: 13 }}>
                     <div style={{ fontWeight: 600, color: '#1A3A5C' }}>
-                      {m.firstName} {m.lastName}
+                      {m.first_name} {m.last_name}
                     </div>
                     <div style={{ fontSize: 11, color: '#6b7280' }}>
-                      {m.title || '—'} · {m.companyName || '—'}
+                      {m.title || '—'} · {m.company_name || '—'}
                     </div>
                   </div>
                   <span style={{

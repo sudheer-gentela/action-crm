@@ -52,6 +52,23 @@ export default function ProspectingView() {
   // and a dismissible banner is shown.
   const [campaignFilter, setCampaignFilter] = useState(null);
 
+  // Slice 5: list of active campaigns the user can switch between from the
+  // filter banner. Loaded once on mount and on campaign-filter changes so the
+  // dropdown always reflects the current set. Pinned campaigns surface first.
+  const [activeCampaigns, setActiveCampaigns] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiFetch('/prospecting-campaigns?status=active');
+        if (!cancelled) setActiveCampaigns(r.campaigns || []);
+      } catch (_) {
+        if (!cancelled) setActiveCampaigns([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   // Phase 2: set of prospect_ids that have an overdue call task (either a
   // sequence step past scheduled_send_at, or a callback_requested past its
   // callback_requested_at). Fetched separately so the prospects list query
@@ -475,16 +492,50 @@ export default function ProspectingView() {
       )}
 
       {/* ── Campaign Filter Banner ─────────────────────────────────────────── */}
+      {/* Slice 5: banner now includes a switcher dropdown so the rep can
+          change campaigns without leaving the pipeline view. */}
       {campaignFilter && ['pipeline', 'list', 'account'].includes(viewMode) && (
         <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'space-between',
           background: '#fff8f0', border: '1px solid #FBCF9D', borderRadius: 8,
-          padding: '8px 14px', marginBottom: 12, fontSize: 13,
+          padding: '8px 14px', marginBottom: 12, fontSize: 13, flexWrap: 'wrap',
         }}>
-          <span style={{ color: '#92400e' }}>
-            🚀 Showing prospects in campaign:{' '}
-            <strong>{campaignFilter.campaignName}</strong>
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 auto' }}>
+            <span style={{ color: '#92400e' }}>🚀 Showing prospects in campaign:</span>
+            <select
+              value={campaignFilter.campaignId}
+              onChange={(e) => {
+                const id = parseInt(e.target.value, 10);
+                if (!id) {
+                  setCampaignFilter(null);
+                  return;
+                }
+                const next = activeCampaigns.find(c => c.id === id);
+                setCampaignFilter({
+                  campaignId: id,
+                  campaignName: next?.name || `Campaign ${id}`,
+                });
+              }}
+              style={{
+                fontSize: 13, fontWeight: 600, padding: '4px 8px',
+                border: '1px solid #FBCF9D', borderRadius: 5,
+                background: '#fff', color: '#92400e', cursor: 'pointer',
+                maxWidth: 320,
+              }}
+            >
+              {/* If the current filter isn't in the active campaigns list (e.g.
+                  paused or completed), surface it as a synthetic option so the
+                  rep can still see what they're filtered to. */}
+              {!activeCampaigns.some(c => c.id === campaignFilter.campaignId) && (
+                <option value={campaignFilter.campaignId}>
+                  {campaignFilter.campaignName} (not active)
+                </option>
+              )}
+              {activeCampaigns.map(c => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
           <button
             onClick={() => setCampaignFilter(null)}
             style={{

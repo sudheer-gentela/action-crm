@@ -1,9 +1,13 @@
 // prospecting/SenderSummaryTile.js
 //
-// Slice 4 — "Sending from" tile shown in CampaignDetailDrawer. Surfaces
-// which email sender will fire this campaign's emails plus the LinkedIn
-// model (chrome extension), so reps don't have to navigate to Settings to
-// find out before activating.
+// Slice 4 + Slice 5 fix — "Sending from" tile shown in CampaignDetailDrawer.
+//
+// Slice 5 changes:
+//   - Surfaces ALL active senders, not just next-to-fire. SequenceStepFirer
+//     round-robins across active senders, so showing only one is misleading.
+//   - The "Manage senders →" link dispatches a 'navigate' event with
+//     detail='settings' which App.js listens for and switches the tab.
+//     Previously it dispatched 'app-navigate' which had no listener.
 //
 // Backend: GET /api/prospecting-campaigns/:id/sender-summary
 
@@ -22,10 +26,19 @@ const PROVIDER_LABEL = {
   outlook: 'Outlook',
 };
 
+// Navigation helper -- App.js listens for a 'navigate' window event with a
+// string detail (the tab name). Used to take the user to Settings without
+// breaking the SPA into a fresh page load.
+function goToSettings(e) {
+  if (e?.preventDefault) e.preventDefault();
+  window.dispatchEvent(new CustomEvent('navigate', { detail: 'settings' }));
+}
+
 export default function SenderSummaryTile({ campaignId }) {
-  const [data, setData]       = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState('');
+  const [data, setData]         = useState(null);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     if (!campaignId) return;
@@ -47,7 +60,7 @@ export default function SenderSummaryTile({ campaignId }) {
   if (loading) {
     return (
       <div style={tileStyle}>
-        <div style={{ fontSize: 12, color: '#9ca3af' }}>Loading sender info…</div>
+        <div style={{ fontSize: 12, color: '#9ca3af' }}>Loading sender info...</div>
       </div>
     );
   }
@@ -62,6 +75,25 @@ export default function SenderSummaryTile({ campaignId }) {
 
   const { email, linkedin } = data;
   const emailHealth = HEALTH_STYLES[email.health] || HEALTH_STYLES.unconfigured;
+  // Slice 5: backend returns senders[]. Pre-Slice-5 backend only has top-level
+  // fields; fall back to a synthesised single-sender list.
+  const senders = Array.isArray(email.senders) && email.senders.length > 0
+    ? email.senders
+    : email.configured
+      ? [{
+          id: 'compat-1',
+          email: email.email,
+          provider: email.provider,
+          display_name: email.display_name,
+          is_active: email.is_active,
+          emails_sent_today: email.emails_sent_today,
+          daily_limit: email.daily_limit,
+          health: email.health,
+          health_reason: email.health_reason,
+        }]
+      : [];
+  const activeCount = email.active_count ?? senders.filter(s => s.is_active).length;
+  const inactiveCount = email.inactive_count ?? senders.filter(s => !s.is_active).length;
 
   return (
     <div style={tileStyle}>
@@ -69,16 +101,17 @@ export default function SenderSummaryTile({ campaignId }) {
         📤 Sending from
       </div>
 
-      {/* Email sender row */}
       <div style={{
         background: '#fff', border: `1px solid ${emailHealth.border}`, borderRadius: 6,
         padding: '10px 12px', marginBottom: 8,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
           <span style={{ fontSize: 13 }}>✉️</span>
-          <span style={{ fontSize: 13, fontWeight: 600, color: '#1A3A5C', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#1A3A5C', flex: 1 }}>
             {email.configured
-              ? (email.email || 'Configured sender')
+              ? (activeCount > 1
+                  ? `${activeCount} active senders (round-robin)`
+                  : (senders[0]?.email || 'Configured sender'))
               : 'No sender connected'}
           </span>
           <span style={{
@@ -90,41 +123,97 @@ export default function SenderSummaryTile({ campaignId }) {
             {emailHealth.label}
           </span>
         </div>
-        {email.configured && (
+
+        {email.configured && activeCount === 1 && senders[0] && (
           <div style={{ fontSize: 11, color: '#6b7280' }}>
-            {PROVIDER_LABEL[email.provider] || email.provider} ·{' '}
-            {email.owner_name} ·{' '}
-            {email.daily_limit > 0
-              ? `${email.emails_sent_today}/${email.daily_limit} sent today`
-              : `${email.emails_sent_today} sent today`}
+            {PROVIDER_LABEL[senders[0].provider] || senders[0].provider} - {email.owner_name} - {senders[0].daily_limit > 0
+              ? `${senders[0].emails_sent_today}/${senders[0].daily_limit} sent today`
+              : `${senders[0].emails_sent_today} sent today`}
           </div>
         )}
+
+        {email.configured && activeCount > 1 && (
+          <>
+            <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>
+              Owner: {email.owner_name} - Next to fire: <strong>{email.next_to_fire?.email}</strong>
+            </div>
+            <button
+              onClick={() => setExpanded(!expanded)}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: '#0F9D8E', fontSize: 11, fontWeight: 600, padding: 0,
+                marginBottom: expanded ? 6 : 0,
+              }}
+            >
+              {expanded ? '▲ Hide senders' : `▼ Show all ${senders.length} senders`}
+            </button>
+            {expanded && (
+              <div style={{
+                border: '1px solid #f1f5f9', borderRadius: 4, overflow: 'hidden',
+                marginTop: 6,
+              }}>
+                {senders.map((s, idx) => {
+                  const sHealth = HEALTH_STYLES[s.health] || HEALTH_STYLES.unconfigured;
+                  return (
+                    <div
+                      key={s.id || idx}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        padding: '6px 10px', fontSize: 11,
+                        borderTop: idx > 0 ? '1px solid #f1f5f9' : 'none',
+                        background: s.is_active ? '#fff' : '#f9fafb',
+                      }}
+                    >
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: sHealth.dot, flexShrink: 0 }} />
+                      <span style={{ flex: 1, color: s.is_active ? '#1A3A5C' : '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {s.email}
+                      </span>
+                      <span style={{ color: '#6b7280', fontSize: 10 }}>
+                        {PROVIDER_LABEL[s.provider] || s.provider}
+                      </span>
+                      <span style={{ color: s.is_active ? '#6b7280' : '#9ca3af', fontSize: 10, minWidth: 60, textAlign: 'right' }}>
+                        {s.is_active
+                          ? (s.daily_limit > 0
+                              ? `${s.emails_sent_today}/${s.daily_limit}`
+                              : `${s.emails_sent_today} today`)
+                          : 'inactive'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+
         {email.health_reason && (
           <div style={{
-            fontSize: 11, color: emailHealth.fg, marginTop: 6,
+            fontSize: 11, color: emailHealth.fg, marginTop: 8,
             padding: '6px 8px', background: emailHealth.bg, borderRadius: 4,
           }}>
             {emailHealth.label === 'Not connected' ? '⚠ ' : 'ℹ '}{email.health_reason}
           </div>
         )}
-        <a
-          href="/settings/email"
-          onClick={(e) => {
-            // Try in-app navigation if a routing handler is wired up; else
-            // fall back to standard navigation.
-            const ev = new CustomEvent('app-navigate', { detail: { path: '/settings/email' } });
-            window.dispatchEvent(ev);
-          }}
+
+        {inactiveCount > 0 && activeCount > 0 && (
+          <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+            {inactiveCount} inactive sender{inactiveCount === 1 ? '' : 's'} not in rotation.
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={goToSettings}
           style={{
-            display: 'inline-block', marginTop: 6, fontSize: 11, color: '#0F9D8E',
+            display: 'inline-block', marginTop: 8, fontSize: 11, color: '#0F9D8E',
             textDecoration: 'none', fontWeight: 600,
+            background: 'none', border: 'none', cursor: 'pointer', padding: 0,
           }}
         >
-          {email.configured ? 'Change sender →' : 'Connect a sender →'}
-        </a>
+          {email.configured ? 'Manage senders →' : 'Connect a sender →'}
+        </button>
       </div>
 
-      {/* LinkedIn row */}
       <div style={{
         background: '#fff', border: '1px solid #e5e7eb', borderRadius: 6,
         padding: '10px 12px',

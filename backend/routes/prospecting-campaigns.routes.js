@@ -1466,9 +1466,14 @@ router.get('/:id/sender-summary', async (req, res) => {
     const ownerId = camp.resolved_owner_id;
     const ownerName = [camp.first_name, camp.last_name].filter(Boolean).join(' ') || 'Unassigned';
 
-    // Sender pick — match SequenceStepFirer's logic: active sender for the
-    // owner, sorted by least-used-today + oldest-sent. We don't need the
-    // tokens here; just identity + health metrics.
+    // Load ALL active senders for the owner — not just the next-to-fire. The
+    // firer round-robins across active senders by emails_sent_today then
+    // last_sent_at, so a campaign with multiple connected senders sends from
+    // all of them. Surface that to the UI so reps don't think the campaign
+    // sends from a single account.
+    //
+    // Sort order matches the firer's selection logic, so the FIRST row is
+    // the next-to-fire sender (rep can see "[email protected] sends next").
     const sRes = await pool.query(
       `SELECT id, email, provider, display_name, is_active,
               emails_sent_today, daily_limit, last_reset_at, last_sent_at,
@@ -1477,61 +1482,132 @@ router.get('/:id/sender-summary', async (req, res) => {
         WHERE org_id = $1
           AND user_id = $2
           AND client_id IS NULL
+          AND is_active = true
         ORDER BY
           (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
-          last_sent_at ASC NULLS FIRST
-        LIMIT 1`,
+          last_sent_at ASC NULLS FIRST`,
       [req.orgId, ownerId]
     );
 
-    let emailSummary;
-    if (!sRes.rows.length) {
-      emailSummary = {
-        configured: false,
-        email: null,
-        provider: null,
-        display_name: null,
-        is_active: false,
-        emails_sent_today: 0,
-        daily_limit: 0,
-        health: 'unconfigured',
-        health_reason: 'No sender account connected for the campaign owner. Connect one under Settings → Email senders.',
-        owner_id: ownerId,
-        owner_name: ownerName,
-      };
-    } else {
-      const s = sRes.rows[0];
-      // Reset emails_sent_today display if the last reset was before today.
-      const sentToday = (s.last_reset_at && new Date(s.last_reset_at) < new Date(new Date().toISOString().slice(0, 10)))
-        ? 0
-        : (s.emails_sent_today || 0);
+    // Also load inactive senders for the owner — useful for the UI to show
+    // "you have 1 active + 2 inactive senders, here's how to reactivate."
+    const inactiveRes = await pool.query(
+      `SELECT id, email, provider, display_name, is_active,
+              emails_sent_today, daily_limit
+         FROM prospecting_sender_accounts
+        WHERE org_id = $1
+          AND user_id = $2
+          AND client_id IS NULL
+          AND is_active = false`,
+      [req.orgId, ownerId]
+    );
+
+    // Today-aware sent count — sender rows that haven't reset since yesterday
+    // still carry yesterday's counter. UI should display 0 in that case.
+    const todayStr = new Date().toISOString().slice(0, 10);
+    function sentTodayFor(s) {
+      if (!s.last_reset_at) return s.emails_sent_today || 0;
+      return new Date(s.last_reset_at) < new Date(todayStr) ? 0 : (s.emails_sent_today || 0);
+    }
+
+    function computeHealth(s) {
+      const sentToday = sentTodayFor(s);
       const dailyLimit = s.daily_limit || 0;
-
-      let health = 'healthy';
-      let healthReason = null;
       if (!s.is_active) {
-        health = 'warning';
-        healthReason = 'Sender is connected but currently inactive. Re-activate under Settings → Email senders.';
-      } else if (dailyLimit > 0 && sentToday >= dailyLimit) {
-        health = 'over_limit';
-        healthReason = `Daily limit (${dailyLimit}) reached. Future sends will queue until tomorrow.`;
-      } else if (dailyLimit > 0 && sentToday >= dailyLimit * 0.9) {
-        health = 'warning';
-        healthReason = `Near daily limit (${sentToday}/${dailyLimit}). Plan future activations carefully.`;
+        return { health: 'warning', reason: 'Connected but inactive. Reactivate under Settings → Email senders.' };
       }
+      if (dailyLimit > 0 && sentToday >= dailyLimit) {
+        return { health: 'over_limit', reason: `Daily limit (${dailyLimit}) reached. Future sends queue until tomorrow.` };
+      }
+      if (dailyLimit > 0 && sentToday >= dailyLimit * 0.9) {
+        return { health: 'warning', reason: `Near daily limit (${sentToday}/${dailyLimit}). Plan activations carefully.` };
+      }
+      return { health: 'healthy', reason: null };
+    }
 
-      emailSummary = {
-        configured: true,
+    // Build the senders[] list — active first (in firer order), then inactive.
+    const senders = [
+      ...sRes.rows.map(s => {
+        const h = computeHealth(s);
+        return {
+          id: s.id,
+          email: s.email,
+          provider: s.provider,
+          display_name: s.display_name,
+          is_active: true,
+          emails_sent_today: sentTodayFor(s),
+          daily_limit: s.daily_limit || 0,
+          health: h.health,
+          health_reason: h.reason,
+        };
+      }),
+      ...inactiveRes.rows.map(s => ({
+        id: s.id,
         email: s.email,
         provider: s.provider,
         display_name: s.display_name,
-        is_active: s.is_active,
-        emails_sent_today: sentToday,
-        daily_limit: dailyLimit,
-        health,
-        health_reason: healthReason,
+        is_active: false,
+        emails_sent_today: 0,
+        daily_limit: s.daily_limit || 0,
+        health: 'warning',
+        health_reason: 'Inactive — not in round-robin rotation.',
+      })),
+    ];
+
+    // Aggregate health across all ACTIVE senders. The overall rollup is the
+    // worst-state among active senders, falling back to 'unconfigured' if
+    // none are active.
+    const activeSenders = senders.filter(s => s.is_active);
+
+    let emailSummary;
+    if (activeSenders.length === 0) {
+      emailSummary = {
+        configured: false,
+        sender_count: 0,
+        active_count: 0,
+        inactive_count: senders.filter(s => !s.is_active).length,
+        senders,                  // empty if no connected senders at all
+        next_to_fire: null,
+        health: 'unconfigured',
+        health_reason: 'No active email senders connected for the campaign owner. Connect one under Settings → Email senders.',
         owner_id: ownerId,
         owner_name: ownerName,
+        // Backward-compat: keep the old single-sender shape readable by the
+        // pre-Slice-5 UI. Points at the first inactive sender if none active.
+        email: senders[0]?.email || null,
+        provider: senders[0]?.provider || null,
+        display_name: senders[0]?.display_name || null,
+        is_active: false,
+        emails_sent_today: 0,
+        daily_limit: 0,
+      };
+    } else {
+      // Pick worst health among active senders for the rollup.
+      const worstActive = activeSenders.reduce((worst, s) => {
+        const rank = { healthy: 0, warning: 1, over_limit: 2 };
+        return (rank[s.health] > rank[worst.health]) ? s : worst;
+      }, activeSenders[0]);
+      const nextToFire = activeSenders[0];   // already sorted by firer order
+
+      emailSummary = {
+        configured: true,
+        sender_count: senders.length,
+        active_count: activeSenders.length,
+        inactive_count: senders.length - activeSenders.length,
+        senders,
+        next_to_fire: { id: nextToFire.id, email: nextToFire.email, provider: nextToFire.provider },
+        health: worstActive.health,
+        health_reason: worstActive.health_reason,
+        owner_id: ownerId,
+        owner_name: ownerName,
+        // Backward-compat shape — pre-Slice-5 UI will still render the
+        // next-to-fire sender from the top-level fields.
+        email: nextToFire.email,
+        provider: nextToFire.provider,
+        display_name: nextToFire.display_name,
+        is_active: true,
+        emails_sent_today: nextToFire.emails_sent_today,
+        daily_limit: nextToFire.daily_limit,
       };
     }
 
