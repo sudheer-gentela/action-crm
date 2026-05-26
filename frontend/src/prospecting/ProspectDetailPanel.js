@@ -607,7 +607,11 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
 
   if (!prospect) return null;
 
-  const stageCfg = allStages.find(s => s.key === prospect.stage);
+  // stageCfg was previously used to drive the stage pill at the top of
+  // the detail header — removed because the stage progress bar below the
+  // action row already shows the current stage, and Move Stage dropdown
+  // handles transitions. Keep this comment as a breadcrumb in case the
+  // pill is ever re-introduced.
   const currentStageIdx = prospectStages.findIndex(s => s.key === prospect.stage);
 
   return (
@@ -645,12 +649,17 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
           <button className="pv-detail-close" onClick={onClose}>×</button>
         </div>
 
-        {/* Stage indicator + actions */}
-        <div className="pv-detail-stage-row">
-          <div className="pv-detail-stage-pill" style={{ background: stageCfg?.color + '20', color: stageCfg?.color }}>
-            {stageCfg?.icon} {stageCfg?.label}
-          </div>
+        {/* Stage indicator + actions
+            Stage pill removed — the stage progress bar (below this row) and
+            Move Stage dropdown together cover both "what stage am I in" and
+            "let me change it". The pill was a third surface for the same
+            information and made the row noisier than it needed to be.
 
+            Log call button removed — the Calls tab on this same panel has
+            its own Log Call entry point (handled via onLogCall there), and
+            sequence-step call drafts open the modal directly. The header
+            button was duplication. */}
+        <div className="pv-detail-stage-row">
           <div className="pv-detail-stage-actions">
             <button
               style={{
@@ -670,21 +679,6 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
                 : 'Add a phone number to enable calling'}
             >
               {isInitiatingTwilio ? '⏳ Starting…' : '📞 Call via Twilio'}
-            </button>
-            <button
-              style={{
-                fontSize: '12px', padding: '5px 12px',
-                background: '#fff7ed',
-                border: '1px solid #fdba74',
-                color: '#9a3412',
-                borderRadius: 6,
-                cursor: 'pointer',
-                fontWeight: 600,
-              }}
-              onClick={() => setShowLogCallModal(true)}
-              title={prospect.phone ? `Log a call to ${prospect.phone}` : 'Log a call (no phone on file yet)'}
-            >
-              📞 Log call
             </button>
             <button className="pv-btn-primary" style={{ fontSize: '12px', padding: '5px 12px' }} onClick={() => openOutreach()}>
               📤 New Outreach
