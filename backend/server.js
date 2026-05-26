@@ -172,6 +172,14 @@ app.use('/api/calendar',      require('./routes/calendar.routes'));
 app.use('/api/dashboard',     require('./routes/dashboard.routes'));
 app.use('/api/agent',         require('./routes/agent.routes'));
 
+// ── Reporting (cross-campaign manager dashboards) ─────────────────────────
+// Phase 2 of the sequence reporting feature. Read-only aggregation
+// endpoints that resolve "who can this viewer see" via
+// services/ReportingScopeService, then aggregate sequence_step_logs
+// and sequence_enrollments scoped to the resolved user IDs. See
+// docs/SEQUENCE_REPORTING_DESIGN.md for the full design.
+app.use('/api/reporting',     require('./routes/reporting.routes'));
+
 // ── External integrations ────────────────────────────────────────────────
 app.use('/api/outlook',       require('./routes/outlook.routes'));
 app.use('/api/google',        require('./routes/google.routes'));

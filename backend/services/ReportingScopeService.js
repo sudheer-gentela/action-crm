@@ -186,7 +186,7 @@ const ReportingScopeService = {
     if (await _isOrgAdmin(orgId, viewerId)) {
       const allIds = await _allOrgUserIds(orgId);
       const hydrated = await _hydrateUsers(orgId, allIds);
-      const reports = hydrated.map(u => ({
+      const allReports = hydrated.map(u => ({
         ...u,
         depthFromManager: null,
         isDirect: false,
@@ -198,6 +198,13 @@ const ReportingScopeService = {
 
       // Always ensure viewer is in the userIds set
       const finalIds = userIds.includes(viewerId) ? userIds : [...userIds, viewerId];
+
+      // Reports list moves with userIds (same rationale as the team
+      // path below) — admins who narrow their view should see only the
+      // narrowed list, not zero-state rows for everyone else.
+      const reports = explicitUserIds
+        ? allReports.filter(r => explicitUserIds.includes(r.userId))
+        : allReports;
 
       return {
         scope:    'admin',
@@ -248,7 +255,7 @@ const ReportingScopeService = {
     const hydrated = await _hydrateUsers(orgId, reportIds);
     const byId = new Map(hydrated.map(h => [h.userId, h]));
 
-    const reports = subordinates.map(s => {
+    const allReports = subordinates.map(s => {
       const h = byId.get(s.user_id) || { userId: s.user_id, name: null, email: null };
       const depthFromManager = isUnboundedAll ? null : s.depth;
       return {
@@ -266,6 +273,20 @@ const ReportingScopeService = {
     const userIds = explicitUserIds
       ? explicitUserIds.filter(id => teamPlusViewerIds.includes(id))
       : teamPlusViewerIds;
+
+    // Reports list moves with userIds — if Minaakshi filters her view to
+    // just Rohit, Priya disappears from the reports list entirely (not
+    // shown at zero-state). This was a deliberate UX decision: showing
+    // a filtered-out rep at zero-state is more confusing than just
+    // hiding them. To get the full structural view, the viewer clears
+    // the userIds filter.
+    //
+    // The viewer themselves is filtered out of `reports` regardless —
+    // `reports` is the team-list-not-including-the-manager. So when
+    // explicitUserIds = [viewerId] alone, reports correctly shrinks to [].
+    const reports = explicitUserIds
+      ? allReports.filter(r => explicitUserIds.includes(r.userId))
+      : allReports;
 
     // Guarantee non-empty — if the explicitUserIds filter dropped everything,
     // fall back to viewer-only so the query still returns rows (just empty
