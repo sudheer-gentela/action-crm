@@ -108,7 +108,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
   const [tab, setTab] = useState(drilldownCampaignId ? 'campaign' : 'rep');
   const [scope, setScope] = useState(null);   // hydrated from /reporting-scope
   const [depth, setDepth] = useState(null);   // null until scope loads
-  const [windowState, setWindowState] = useState({ kind: 'preset', windowDays: 7 });
+  const [windowState, setWindowState] = useState({ kind: 'preset', windowDays: 30 });
   const [campaignFilter, setCampaignFilter] = useState([]);   // multi-select campaign IDs
   const [allCampaigns, setAllCampaigns] = useState([]);       // for the multi-select dropdown
   const [showCampaignDropdown, setShowCampaignDropdown] = useState(false);
@@ -258,7 +258,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
   // of in-scope campaigns. Refresh whenever campaign tab data updates.
   useEffect(() => {
     if (campaignData?.campaigns) {
-      setAllCampaigns(campaignData.campaigns.map(c => ({ id: c.campaignId, name: c.campaignName })));
+      setAllCampaigns(campaignData.campaigns.map(c => ({ id: c.campaignId, name: c.name })));
     }
   }, [campaignData]);
 
@@ -269,7 +269,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
       apiFetch(`/reporting/sequences/team-overview?depth=${depth}&windowDays=30`)
         .then(res => {
           if (res?.campaigns) {
-            setAllCampaigns(res.campaigns.map(c => ({ id: c.campaignId, name: c.campaignName })));
+            setAllCampaigns(res.campaigns.map(c => ({ id: c.campaignId, name: c.name })));
           }
         })
         .catch(() => {});
@@ -306,7 +306,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
       {tab === 'rep' && (
-        <RepTab data={repData} loading={tabLoading} scope={scope} />
+        <RepTab data={repData} loading={tabLoading} scope={scope} windowState={windowState} onSetWindow={setWindowState} />
       )}
 
       {tab === 'campaign' && !drilledIn && (
@@ -315,6 +315,8 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
           loading={tabLoading}
           scope={scope}
           onDrillIn={(campaignId) => setDrillCampaignId(campaignId)}
+          windowState={windowState}
+          onSetWindow={setWindowState}
         />
       )}
 
@@ -333,7 +335,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
       )}
 
       {tab === 'sequence' && (
-        <SequenceTab data={sequenceData} loading={tabLoading} scope={scope} />
+        <SequenceTab data={sequenceData} loading={tabLoading} scope={scope} windowState={windowState} onSetWindow={setWindowState} />
       )}
     </div>
   );
@@ -502,6 +504,53 @@ function Toolbar({
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// SmartEmpty — when rows are technically present but all-zero, give the
+// user something to do besides stare at zeros. The most common cause of
+// "I see my team but everyone has 0" is "no activity in this window";
+// the fastest unblock is a longer window. We surface a one-click "Try 90d"
+// button when we detect that pattern.
+// ──────────────────────────────────────────────────────────────────────────
+function SmartEmpty({ rowsExist, allZero, windowState, onSetWindow, entityLabel }) {
+  if (!rowsExist) {
+    return <div className="trv-empty">No {entityLabel} visible in your scope. Try a different depth.</div>;
+  }
+  if (allZero) {
+    const isShortWindow = windowState.kind === 'preset' && windowState.windowDays <= 30;
+    return (
+      <div className="trv-empty-actionable">
+        <div className="trv-empty-msg">
+          Your team has no {entityLabel} activity in {windowDescription(windowState)}.
+        </div>
+        {isShortWindow && (
+          <div className="trv-empty-actions">
+            <button
+              className="trv-empty-cta"
+              onClick={() => onSetWindow({ kind: 'preset', windowDays: 90 })}
+            >
+              Try last 90 days →
+            </button>
+            <button
+              className="trv-empty-cta-secondary"
+              onClick={() => onSetWindow({ kind: 'preset', windowDays: 365 })}
+            >
+              Try last year
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+  return null;
+}
+
+// Inline helper — same as windowToQueryParams but returns a human label.
+function windowDescription(window) {
+  if (window.kind === 'custom') return `${window.startDate} → ${window.endDate}`;
+  if (window.windowDays === 1) return 'the last 24 hours';
+  return `the last ${window.windowDays} days`;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // MetricTiles — shared 4-up tile strip
 // ──────────────────────────────────────────────────────────────────────────
 function MetricTiles({ tiles }) {
@@ -519,13 +568,18 @@ function MetricTiles({ tiles }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// RepTab — per-rep table from /team-by-rep
+// RepTab — per-rep table from /team-by-rep. Rows are expandable to reveal
+// top campaigns + last activity, both already in the response shape.
 // ──────────────────────────────────────────────────────────────────────────
-function RepTab({ data, loading, scope }) {
+function RepTab({ data, loading, scope, windowState, onSetWindow }) {
+  const [expandedId, setExpandedId] = useState(null);
   if (loading && !data) return <LoadingState />;
   if (!data) return null;
   const totals = data.totals || {};
   const reps = data.reps || [];
+  const allZero = reps.length > 0 && reps.every(r =>
+    (r.sent || 0) === 0 && (r.enrolled || 0) === 0 && (r.drafts || 0) === 0 && (r.replied || 0) === 0
+  );
   return (
     <div className="trv-tab-body">
       <MetricTiles
@@ -536,12 +590,14 @@ function RepTab({ data, loading, scope }) {
           { label: 'Reply rate',   value: fmtPct(totals.repliedRate) },
         ]}
       />
-      {reps.length === 0 && <EmptyState message="No rep activity in this window." />}
+      <SmartEmpty rowsExist={reps.length > 0} allZero={allZero} windowState={windowState}
+                  onSetWindow={onSetWindow} entityLabel="rep" />
       {reps.length > 0 && (
         <div className="trv-table-wrap">
           <table className="trv-table">
             <thead>
               <tr>
+                <th style={{ width: 24 }}></th>
                 <th>Rep</th>
                 <th className="num">Enrolled</th>
                 <th className="num">Drafts</th>
@@ -555,20 +611,61 @@ function RepTab({ data, loading, scope }) {
             <tbody>
               {reps.map(r => {
                 const isZero = (r.sent || 0) === 0 && (r.enrolled || 0) === 0 && (r.drafts || 0) === 0;
+                const expanded = expandedId === r.userId;
                 return (
-                  <tr key={r.userId} className={isZero ? 'trv-row-muted' : ''}>
-                    <td>
-                      {r.name}
-                      {depthBadge(r)}
-                    </td>
-                    <td className="num">{fmtNum(r.enrolled)}</td>
-                    <td className="num">{fmtNum(r.drafts)}</td>
-                    <td className="num">{fmtNum(r.sent)}</td>
-                    <td className="num">{fmtNum(r.replied)}</td>
-                    <td className="num">{fmtNum(r.failed)}</td>
-                    <td className={`num ${r.stalled > 0 ? 'trv-warning' : ''}`}>{fmtNum(r.stalled)}</td>
-                    <td className="num">{fmtPct(r.repliedRate)}</td>
-                  </tr>
+                  <React.Fragment key={r.userId}>
+                    <tr
+                      className={`trv-row-click ${isZero ? 'trv-row-muted' : ''}`}
+                      onClick={() => setExpandedId(expanded ? null : r.userId)}
+                    >
+                      <td className="trv-chevron">{expanded ? '▾' : '›'}</td>
+                      <td>
+                        {r.name}
+                        {depthBadge(r)}
+                      </td>
+                      <td className="num">{fmtNum(r.enrolled)}</td>
+                      <td className="num">{fmtNum(r.drafts)}</td>
+                      <td className="num">{fmtNum(r.sent)}</td>
+                      <td className="num">{fmtNum(r.replied)}</td>
+                      <td className="num">{fmtNum(r.failed)}</td>
+                      <td className={`num ${r.stalled > 0 ? 'trv-warning' : ''}`}>{fmtNum(r.stalled)}</td>
+                      <td className="num">{fmtPct(r.repliedRate)}</td>
+                    </tr>
+                    {expanded && (
+                      <tr className="trv-expand-row">
+                        <td colSpan={9}>
+                          <div className="trv-expand-grid">
+                            <div className="trv-expand-block">
+                              <div className="trv-expand-label">Last activity</div>
+                              <div className="trv-expand-val">{fmtDate(r.lastActivityAt)}</div>
+                            </div>
+                            <div className="trv-expand-block">
+                              <div className="trv-expand-label">Top campaigns ({(r.topCampaigns || []).length})</div>
+                              {(r.topCampaigns || []).length === 0 ? (
+                                <div className="trv-expand-val trv-muted">none</div>
+                              ) : (
+                                <div className="trv-chip-list">
+                                  {r.topCampaigns.map(tc => (
+                                    <span key={tc.campaignId} className="trv-topuser-chip">
+                                      {tc.name || '(unnamed)'} <span className="trv-topuser-sub">{tc.sent} sent</span>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div className="trv-expand-block">
+                              <div className="trv-expand-label">Role in your scope</div>
+                              <div className="trv-expand-val">
+                                {r.depthFromManager === 0 ? 'You' :
+                                 r.isDirect ? 'Direct report' :
+                                 `Indirect (${r.depthFromManager} levels down)`}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -580,14 +677,20 @@ function RepTab({ data, loading, scope }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// CampaignTab — per-campaign table from /team-overview
-// Rows are clickable to drill in.
+// CampaignTab — per-campaign table from /team-overview.
+// Click a row to expand inline (shows last activity + a "View detailed
+// breakdown →" button that opens the side-panel drill-down). This gives
+// the user a hint of what's there before committing to the full drill.
 // ──────────────────────────────────────────────────────────────────────────
-function CampaignTab({ data, loading, scope, onDrillIn }) {
+function CampaignTab({ data, loading, scope, onDrillIn, windowState, onSetWindow }) {
+  const [expandedId, setExpandedId] = useState(null);
   if (loading && !data) return <LoadingState />;
   if (!data) return null;
   const totals = data.totals || {};
   const campaigns = data.campaigns || [];
+  const allZero = campaigns.length > 0 && campaigns.every(c =>
+    (c.sent || 0) === 0 && (c.enrolled || 0) === 0 && (c.drafts || 0) === 0 && (c.replied || 0) === 0
+  );
   return (
     <div className="trv-tab-body">
       <MetricTiles
@@ -598,12 +701,14 @@ function CampaignTab({ data, loading, scope, onDrillIn }) {
           { label: 'Reply rate',       value: fmtPct(totals.repliedRate) },
         ]}
       />
-      {campaigns.length === 0 && <EmptyState message="No campaign activity in this window." />}
+      <SmartEmpty rowsExist={campaigns.length > 0} allZero={allZero} windowState={windowState}
+                  onSetWindow={onSetWindow} entityLabel="campaign" />
       {campaigns.length > 0 && (
         <div className="trv-table-wrap">
           <table className="trv-table">
             <thead>
               <tr>
+                <th style={{ width: 24 }}></th>
                 <th>Campaign</th>
                 <th>Owner</th>
                 <th className="num">Enrolled</th>
@@ -611,25 +716,62 @@ function CampaignTab({ data, loading, scope, onDrillIn }) {
                 <th className="num">Replied</th>
                 <th className="num">Stalled</th>
                 <th className="num">Reply rate</th>
-                <th></th>
               </tr>
             </thead>
             <tbody>
-              {campaigns.map(c => (
-                <tr key={c.campaignId} className="trv-row-click" onClick={() => onDrillIn(c.campaignId)}>
-                  <td className="trv-link">{c.campaignName}</td>
-                  <td>
-                    {c.owner ? c.owner.name : <span className="trv-muted">—</span>}
-                    {c.owner && depthBadge(c.owner)}
-                  </td>
-                  <td className="num">{fmtNum(c.enrolled)}</td>
-                  <td className="num">{fmtNum(c.sent)}</td>
-                  <td className="num">{fmtNum(c.replied)}</td>
-                  <td className={`num ${c.stalled > 0 ? 'trv-warning' : ''}`}>{fmtNum(c.stalled)}</td>
-                  <td className="num">{fmtPct(c.repliedRate)}</td>
-                  <td className="trv-arrow-cell">→</td>
-                </tr>
-              ))}
+              {campaigns.map(c => {
+                const isZero = (c.sent || 0) === 0 && (c.enrolled || 0) === 0;
+                const expanded = expandedId === c.campaignId;
+                return (
+                  <React.Fragment key={c.campaignId}>
+                    <tr
+                      className={`trv-row-click ${isZero ? 'trv-row-muted' : ''}`}
+                      onClick={() => setExpandedId(expanded ? null : c.campaignId)}
+                    >
+                      <td className="trv-chevron">{expanded ? '▾' : '›'}</td>
+                      <td className="trv-link">{c.name || <span className="trv-muted">(unnamed campaign)</span>}</td>
+                      <td>
+                        {c.owner ? c.owner.name : <span className="trv-muted">—</span>}
+                        {c.owner && depthBadge(c.owner)}
+                      </td>
+                      <td className="num">{fmtNum(c.enrolled)}</td>
+                      <td className="num">{fmtNum(c.sent)}</td>
+                      <td className="num">{fmtNum(c.replied)}</td>
+                      <td className={`num ${c.stalled > 0 ? 'trv-warning' : ''}`}>{fmtNum(c.stalled)}</td>
+                      <td className="num">{fmtPct(c.repliedRate)}</td>
+                    </tr>
+                    {expanded && (
+                      <tr className="trv-expand-row">
+                        <td colSpan={8}>
+                          <div className="trv-expand-grid">
+                            <div className="trv-expand-block">
+                              <div className="trv-expand-label">Last activity</div>
+                              <div className="trv-expand-val">{fmtDate(c.lastActivityAt)}</div>
+                            </div>
+                            <div className="trv-expand-block">
+                              <div className="trv-expand-label">Drafts pending</div>
+                              <div className="trv-expand-val">{fmtNum(c.drafts)}</div>
+                            </div>
+                            <div className="trv-expand-block">
+                              <div className="trv-expand-label">Failed</div>
+                              <div className="trv-expand-val">{fmtNum(c.failed)}</div>
+                            </div>
+                            <div className="trv-expand-block trv-expand-action">
+                              <button
+                                className="trv-cta-primary"
+                                onClick={(e) => { e.stopPropagation(); onDrillIn(c.campaignId); }}
+                              >
+                                View detailed breakdown →
+                              </button>
+                              <div className="trv-expand-hint">per-sequence and per-rep view</div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -639,15 +781,20 @@ function CampaignTab({ data, loading, scope, onDrillIn }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// SequenceTab — per-sequence table from /team-by-sequence
-// Surfaces the orphan-bucket activity (sequences run on prospects with no
-// campaign) which is invisible to the campaign tab.
+// SequenceTab — per-sequence table from /team-by-sequence. Surfaces the
+// orphan-bucket activity (sequences run on prospects with no campaign)
+// which is invisible to the campaign tab. Expandable rows show all top
+// users with their numbers + last activity.
 // ──────────────────────────────────────────────────────────────────────────
-function SequenceTab({ data, loading, scope }) {
+function SequenceTab({ data, loading, scope, windowState, onSetWindow }) {
+  const [expandedId, setExpandedId] = useState(null);
   if (loading && !data) return <LoadingState />;
   if (!data) return null;
   const totals = data.totals || {};
   const sequences = data.sequences || [];
+  const allZero = sequences.length > 0 && sequences.every(s =>
+    (s.sent || 0) === 0 && (s.enrolled || 0) === 0 && (s.drafts || 0) === 0 && (s.replied || 0) === 0
+  );
   return (
     <div className="trv-tab-body">
       <MetricTiles
@@ -658,12 +805,14 @@ function SequenceTab({ data, loading, scope }) {
           { label: 'Reply rate',       value: fmtPct(totals.repliedRate) },
         ]}
       />
-      {sequences.length === 0 && <EmptyState message="No sequence activity in this window." />}
+      <SmartEmpty rowsExist={sequences.length > 0} allZero={allZero} windowState={windowState}
+                  onSetWindow={onSetWindow} entityLabel="sequence" />
       {sequences.length > 0 && (
         <div className="trv-table-wrap">
           <table className="trv-table">
             <thead>
               <tr>
+                <th style={{ width: 24 }}></th>
                 <th>Sequence</th>
                 <th>Owner</th>
                 <th className="num">Enrolled</th>
@@ -674,26 +823,81 @@ function SequenceTab({ data, loading, scope }) {
               </tr>
             </thead>
             <tbody>
-              {sequences.map(s => (
-                <tr key={s.sequenceId}>
-                  <td>{s.name}</td>
-                  <td>
-                    {s.owner ? s.owner.name : <span className="trv-muted">—</span>}
-                    {s.owner && depthBadge(s.owner)}
-                  </td>
-                  <td className="num">{fmtNum(s.enrolled)}</td>
-                  <td className="num">{fmtNum(s.sent)}</td>
-                  <td className="num">{fmtNum(s.replied)}</td>
-                  <td className={`num ${s.stalled > 0 ? 'trv-warning' : ''}`}>{fmtNum(s.stalled)}</td>
-                  <td className="trv-topusers">
-                    {(s.topUsers || []).slice(0, 3).map((u, i) => (
-                      <span key={u.userId} className="trv-topuser-chip">
-                        {u.name} <span className="trv-topuser-sub">({u.sent})</span>
-                      </span>
-                    ))}
-                  </td>
-                </tr>
-              ))}
+              {sequences.map(s => {
+                const isZero = (s.sent || 0) === 0 && (s.enrolled || 0) === 0;
+                const expanded = expandedId === s.sequenceId;
+                return (
+                  <React.Fragment key={s.sequenceId}>
+                    <tr
+                      className={`trv-row-click ${isZero ? 'trv-row-muted' : ''}`}
+                      onClick={() => setExpandedId(expanded ? null : s.sequenceId)}
+                    >
+                      <td className="trv-chevron">{expanded ? '▾' : '›'}</td>
+                      <td>{s.name}</td>
+                      <td>
+                        {s.owner ? s.owner.name : <span className="trv-muted">—</span>}
+                        {s.owner && depthBadge(s.owner)}
+                      </td>
+                      <td className="num">{fmtNum(s.enrolled)}</td>
+                      <td className="num">{fmtNum(s.sent)}</td>
+                      <td className="num">{fmtNum(s.replied)}</td>
+                      <td className={`num ${s.stalled > 0 ? 'trv-warning' : ''}`}>{fmtNum(s.stalled)}</td>
+                      <td className="trv-topusers">
+                        {(s.topUsers || []).slice(0, 3).map((u) => (
+                          <span key={u.userId} className="trv-topuser-chip">
+                            {u.name} <span className="trv-topuser-sub">({u.sent})</span>
+                          </span>
+                        ))}
+                      </td>
+                    </tr>
+                    {expanded && (
+                      <tr className="trv-expand-row">
+                        <td colSpan={8}>
+                          <div className="trv-expand-grid">
+                            <div className="trv-expand-block">
+                              <div className="trv-expand-label">Last activity</div>
+                              <div className="trv-expand-val">{fmtDate(s.lastActivityAt)}</div>
+                            </div>
+                            <div className="trv-expand-block">
+                              <div className="trv-expand-label">Drafts</div>
+                              <div className="trv-expand-val">{fmtNum(s.drafts)}</div>
+                            </div>
+                            <div className="trv-expand-block">
+                              <div className="trv-expand-label">Failed</div>
+                              <div className="trv-expand-val">{fmtNum(s.failed)}</div>
+                            </div>
+                            <div className="trv-expand-block trv-expand-fullwidth">
+                              <div className="trv-expand-label">All contributing reps ({(s.topUsers || []).length})</div>
+                              {(s.topUsers || []).length === 0 ? (
+                                <div className="trv-expand-val trv-muted">none</div>
+                              ) : (
+                                <table className="trv-mini-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Rep</th>
+                                      <th className="num">Enrolled</th>
+                                      <th className="num">Sent</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {s.topUsers.map(u => (
+                                      <tr key={u.userId}>
+                                        <td>{u.name}</td>
+                                        <td className="num">{fmtNum(u.enrolled)}</td>
+                                        <td className="num">{fmtNum(u.sent)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -729,7 +933,7 @@ function DrilldownView({
               className={`trv-drill-list-item ${c.campaignId === currentCampaignId ? 'active' : ''}`}
               onClick={() => onPickCampaign(c.campaignId)}
             >
-              <div className="trv-drill-item-name">{c.campaignName}</div>
+              <div className="trv-drill-item-name">{c.name || '(unnamed)'}</div>
               <div className="trv-drill-item-sub">
                 {fmtNum(c.sent)} sent · {fmtNum(c.enrolled)} enrolled
               </div>
