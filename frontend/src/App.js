@@ -21,6 +21,7 @@ import ContractsView from './ContractsView';
 import HandoverView from './HandoverView';
 import SupportView from './SupportView';
 import AgencyView from './AgencyView';
+import TeamReportingView from './TeamReportingView';
 import Sidebar from './Sidebar';
 
 // ─────────────────────────────────────────────────────────────
@@ -65,6 +66,7 @@ const NAV_ITEMS_BY_ROLE = {
     { id: 'files',        label: 'Files',        icon: '📁' },
     { id: 'agent',        label: 'Agents',       icon: '🤖' },
     { id: 'playbooks',    label: 'Playbooks',    icon: '📋' },
+    { id: 'reporting',    label: 'Reporting',    icon: '📊' },
     { id: 'settings',     label: 'Settings',     icon: '⚙️' },
   ],
   'org-admin': [
@@ -503,6 +505,43 @@ function Dashboard({ user, onLogout }) {
       .catch(() => {}); // non-fatal — stays empty
   }, []);
 
+  // ── Phase 4: reporting scope gate ──────────────────────────────────────
+  // The "Reporting" sidebar item is only shown when the user has a non-self
+  // scope (i.e., they manage at least one report, or are an admin). We
+  // fetch the resolved scope once at mount. While loading (reportingScope
+  // === null), the nav item is hidden — same as how a module flag works.
+  const [reportingScope, setReportingScope]                       = useState(null);
+  const [pendingReportingCampaignId, setPendingReportingCampaignId] = useState(null);
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    const API   = process.env.REACT_APP_API_URL || '';
+    fetch(`${API}/api/users/me/reporting-scope`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.scope) setReportingScope(data.scope);
+      })
+      .catch(() => {}); // non-fatal — nav item stays hidden if fetch fails
+  }, []);
+  const canSeeReporting = reportingScope && (reportingScope.scope === 'team' || reportingScope.scope === 'admin');
+
+  // Deep-link from CampaignsView: when a user clicks "Team Activity →" on a
+  // campaign, that view fires a window event with the campaign id. We catch
+  // it here and switch tabs + pass the id to TeamReportingView, which
+  // consumes it and pops the drill-down open.
+  useEffect(() => {
+    const handler = (e) => {
+      const id = e.detail?.campaignId;
+      if (!id) return;
+      setPendingReportingCampaignId(id);
+      setCurrentTab('reporting');
+    };
+    window.addEventListener('reportingDrilldown', handler);
+    return () => window.removeEventListener('reportingDrilldown', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Cap on how many modules a user can pin to the sidebar (mirror of backend)
   const PINNED_MODULES_CAP = 4;
 
@@ -574,7 +613,13 @@ function Dashboard({ user, onLogout }) {
     if (isMobile) setSidebarOpen(false);
   };
 
-  const navItems = NAV_ITEMS_BY_ROLE[activeRole] || NAV_ITEMS_BY_ROLE.member;
+  // Member nav, filtered. Currently filters one item — "Reporting" hides
+  // until the user's resolved scope confirms they have a team to view.
+  const rawNavItems = NAV_ITEMS_BY_ROLE[activeRole] || NAV_ITEMS_BY_ROLE.member;
+  const navItems = rawNavItems.filter(item => {
+    if (item.id === 'reporting') return canSeeReporting;
+    return true;
+  });
 
   // Only surface module items whose flag is enabled in org settings
   const enabledModuleItems = ALL_MODULE_ITEMS.filter(m => !!orgModules[m.id]);
@@ -832,6 +877,20 @@ function Dashboard({ user, onLogout }) {
             />
           )}
           {currentTab === 'settings'    && <SettingsView />}
+          {currentTab === 'reporting'   && (
+            canSeeReporting ? (
+              <TeamReportingView
+                drilldownCampaignId={pendingReportingCampaignId}
+                onDrilldownConsumed={() => setPendingReportingCampaignId(null)}
+              />
+            ) : (
+              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12, color:'#94a3b8' }}>
+                <div style={{ fontSize:48 }}>📊</div>
+                <div style={{ fontSize:16, fontWeight:600, color:'#475569' }}>Reporting is unavailable</div>
+                <div style={{ fontSize:13 }}>No team configured. Ask an admin to set up your org hierarchy.</div>
+              </div>
+            )
+          )}
           {currentTab === 'agent'       && <AgentInboxView />}
           {currentTab === 'playbooks'   && (
             <PlaybooksView

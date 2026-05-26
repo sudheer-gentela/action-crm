@@ -1,0 +1,465 @@
+/* TeamReportingView.css — scoped to .trv-* class names. Matches
+   GoWarmCRM's existing palette (Teal #0F9D8E accent, slate neutrals). */
+
+.trv-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Header */
+.trv-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+  flex-shrink: 0;
+}
+.trv-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #111827;
+  line-height: 1.3;
+}
+.trv-scope-note {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #6b7280;
+}
+.trv-scope-icon {
+  display: inline-block;
+  margin-right: 4px;
+  color: #94a3b8;
+}
+
+/* Tab bar */
+.trv-tabbar {
+  display: flex;
+  gap: 2px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+  flex-shrink: 0;
+}
+.trv-tab {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.trv-tab:hover {
+  background: #f3f4f6;
+}
+.trv-tab.active {
+  background: #0F9D8E;
+  color: #fff;
+}
+.trv-tab.active:hover {
+  background: #0d8a7d;
+}
+
+/* Toolbar */
+.trv-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+  flex-shrink: 0;
+}
+.trv-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.trv-toolbar-right {
+  margin-left: auto;
+}
+.trv-toolbar-label {
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 500;
+}
+.trv-select {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  color: #111827;
+  cursor: pointer;
+}
+.trv-window-btn {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  color: #374151;
+  cursor: pointer;
+  font-weight: 500;
+}
+.trv-window-btn:hover {
+  background: #f3f4f6;
+}
+.trv-window-btn.active {
+  background: #0F9D8E;
+  color: #fff;
+  border-color: #0F9D8E;
+}
+.trv-custom-dates {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+}
+.trv-date {
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+}
+
+/* Campaign multi-select dropdown */
+.trv-campaign-filter {
+  position: relative;
+}
+.trv-campaign-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  z-index: 50;
+  width: 240px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 7px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.08);
+  padding: 6px 0;
+}
+.trv-dropdown-actions {
+  padding: 4px 12px 6px;
+  border-bottom: 1px solid #f3f4f6;
+  display: flex;
+  justify-content: flex-end;
+}
+.trv-dropdown-actions button {
+  font-size: 11px;
+  color: #0F9D8E;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.trv-dropdown-actions button:hover {
+  text-decoration: underline;
+}
+.trv-dropdown-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #111827;
+}
+.trv-dropdown-row:hover {
+  background: #f9fafb;
+}
+.trv-dropdown-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #9ca3af;
+  font-style: italic;
+}
+
+/* Error / loading / empty */
+.trv-error {
+  margin: 10px 16px 0;
+  padding: 8px 12px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 7px;
+  font-size: 12px;
+  color: #dc2626;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.trv-error-close {
+  background: transparent;
+  border: none;
+  color: #dc2626;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+.trv-loading {
+  padding: 40px 16px;
+  text-align: center;
+  color: #6b7280;
+  font-size: 13px;
+}
+.trv-empty {
+  padding: 40px 16px;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 13px;
+  font-style: italic;
+}
+
+/* Tab body container */
+.trv-tab-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+/* Metric tiles */
+.trv-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.trv-tile {
+  background: #f9fafb;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid #f3f4f6;
+}
+.trv-tile-label {
+  font-size: 11px;
+  color: #6b7280;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+.trv-tile-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: #111827;
+  line-height: 1.2;
+}
+.trv-tile-sub {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-top: 2px;
+}
+
+/* Tables */
+.trv-table-wrap {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.trv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.trv-table thead tr {
+  background: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+}
+.trv-table th {
+  text-align: left;
+  padding: 10px 12px;
+  color: #6b7280;
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.trv-table th.num,
+.trv-table td.num {
+  text-align: right;
+}
+.trv-table tbody tr {
+  border-bottom: 1px solid #f3f4f6;
+}
+.trv-table tbody tr:last-child {
+  border-bottom: none;
+}
+.trv-table td {
+  padding: 10px 12px;
+  color: #111827;
+}
+.trv-row-muted td {
+  color: #9ca3af;
+}
+.trv-row-click {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.trv-row-click:hover {
+  background: #f9fafb;
+}
+.trv-link {
+  color: #0F9D8E;
+  font-weight: 500;
+}
+.trv-row-click:hover .trv-link {
+  text-decoration: underline;
+}
+.trv-arrow-cell {
+  color: #9ca3af;
+  text-align: right;
+  width: 24px;
+}
+.trv-warning {
+  color: #d97706;
+  font-weight: 500;
+}
+.trv-muted {
+  color: #9ca3af;
+}
+
+/* Compact table for drill-down */
+.trv-table-compact th,
+.trv-table-compact td {
+  padding: 8px 10px;
+  font-size: 11px;
+}
+
+/* Top-users chips column */
+.trv-topusers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.trv-topuser-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  background: #f3f4f6;
+  border-radius: 10px;
+  font-size: 10px;
+  color: #374151;
+}
+.trv-topuser-sub {
+  margin-left: 4px;
+  color: #9ca3af;
+}
+
+/* ── Drill-down layout (Option B side panel) ───────────────────────────── */
+.trv-drill-root {
+  display: flex;
+  gap: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.trv-drill-list {
+  width: 280px;
+  min-width: 240px;
+  flex-shrink: 0;
+  border-right: 1px solid #e5e7eb;
+  background: #fafafa;
+  display: flex;
+  flex-direction: column;
+}
+.trv-drill-list-header {
+  padding: 12px 14px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+}
+.trv-back-btn {
+  background: transparent;
+  border: none;
+  color: #0F9D8E;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.trv-back-btn:hover {
+  text-decoration: underline;
+}
+.trv-drill-list-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+.trv-drill-list-item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid #f3f4f6;
+  transition: background 0.1s;
+}
+.trv-drill-list-item:hover {
+  background: #f3f4f6;
+}
+.trv-drill-list-item.active {
+  background: #e6f5f3;
+  border-left: 3px solid #0F9D8E;
+  padding-left: 11px;
+}
+.trv-drill-item-name {
+  font-size: 13px;
+  color: #111827;
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+.trv-drill-list-item.active .trv-drill-item-name {
+  color: #0F9D8E;
+}
+.trv-drill-item-sub {
+  font-size: 11px;
+  color: #9ca3af;
+}
+.trv-drill-empty {
+  padding: 20px 14px;
+  font-size: 12px;
+  color: #9ca3af;
+  font-style: italic;
+}
+.trv-drill-panel {
+  flex: 1;
+  overflow-y: auto;
+  background: #fff;
+}
+.trv-drill-detail {
+  padding: 16px 20px;
+}
+.trv-drill-detail-tiles {
+  margin-bottom: 18px;
+}
+.trv-drill-section {
+  margin-top: 24px;
+}
+.trv-drill-section:first-of-type {
+  margin-top: 0;
+}
+.trv-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 8px;
+}
+
+/* Responsive: collapse the drill list under ~900px */
+@media (max-width: 900px) {
+  .trv-drill-list {
+    width: 200px;
+    min-width: 200px;
+  }
+  .trv-tiles {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

@@ -32,7 +32,7 @@ const MEMBER_NAV_SECTIONS = [
   {
     id: 'resources',
     label: 'Resources',
-    items: ['agent', 'playbooks'],
+    items: ['agent', 'playbooks', 'reporting'],
   },
 ];
 
