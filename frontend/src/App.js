@@ -510,12 +510,18 @@ function Dashboard({ user, onLogout }) {
   // scope (i.e., they manage at least one report, or are an admin). We
   // fetch the resolved scope once at mount. While loading (reportingScope
   // === null), the nav item is hidden — same as how a module flag works.
+  //
+  // NOTE: this App.js convention sets API to '' when REACT_APP_API_URL is
+  // unset, but in prod REACT_APP_API_URL is set to '<host>/api' — so the
+  // path passed to fetch must NOT start with '/api/'. Match the existing
+  // `${API}/users/me/preferences` pattern above, not the apiFetch one
+  // from prospectingShared (which uses different base URL semantics).
   const [reportingScope, setReportingScope]                       = useState(null);
   const [pendingReportingCampaignId, setPendingReportingCampaignId] = useState(null);
   useEffect(() => {
     const token = localStorage.getItem('token');
     const API   = process.env.REACT_APP_API_URL || '';
-    fetch(`${API}/api/users/me/reporting-scope`, {
+    fetch(`${API}/users/me/reporting-scope`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then(r => r.ok ? r.json() : null)

@@ -5,7 +5,7 @@
 // Top-level view reached from sidebar "Reporting". Only mounted when the
 // logged-in user's resolved scope is 'team' or 'admin' (App.js gates this).
 //
-// Three primary tabs over /api/reporting/sequences/*:
+// Three primary tabs over /reporting/sequences/*:
 //   • "By rep"      → /team-by-rep        (default)
 //   • "By campaign" → /team-overview      (clickable rows open drill-down)
 //   • "By sequence" → /team-by-sequence
@@ -13,7 +13,7 @@
 // Drill-down (side panel, Option B from the design discussion): reachable
 // ONLY from the "By campaign" tab. Clicking a campaign row collapses the
 // table into a compact list on the left and opens the campaign's
-// /api/prospecting-campaigns/:id/sequence-health on the right with
+// /prospecting-campaigns/:id/sequence-health on the right with
 // groupBy=both (per-sequence + per-rep). Closing returns to the full table.
 //
 // External entry: when App.js renders this view with a non-null
@@ -135,7 +135,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
   // ── Initial scope load + depth hydration ───────────────────────────────
   useEffect(() => {
     let cancelled = false;
-    apiFetch('/api/users/me/preferences/reporting')
+    apiFetch('/users/me/preferences/reporting')
       .then(prefs => {
         if (cancelled) return;
         const d = prefs?.preferences?.depth || 'direct';
@@ -156,7 +156,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
   useEffect(() => {
     if (!depth) return;
     let cancelled = false;
-    apiFetch(`/api/users/me/reporting-scope?depth=${depth}`)
+    apiFetch(`/users/me/reporting-scope?depth=${depth}`)
       .then(res => {
         if (cancelled) return;
         setScope(res.scope || null);
@@ -173,7 +173,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
     setDepth(newDepth);
     // Fire-and-forget; if it fails the user sees no error (the in-session
     // depth still applies). Worst case: their preference doesn't persist.
-    apiFetch('/api/users/me/preferences/reporting', {
+    apiFetch('/users/me/preferences/reporting', {
       method: 'PATCH',
       body: JSON.stringify({ depth: newDepth }),
     }).catch(() => {});
@@ -196,9 +196,9 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
     setError(null);
 
     let url;
-    if (which === 'rep')      url = `/api/reporting/sequences/team-by-rep?${queryString}`;
-    if (which === 'campaign') url = `/api/reporting/sequences/team-overview?${queryString}`;
-    if (which === 'sequence') url = `/api/reporting/sequences/team-by-sequence?${queryString}`;
+    if (which === 'rep')      url = `/reporting/sequences/team-by-rep?${queryString}`;
+    if (which === 'campaign') url = `/reporting/sequences/team-overview?${queryString}`;
+    if (which === 'sequence') url = `/reporting/sequences/team-by-sequence?${queryString}`;
 
     try {
       const res = await apiFetch(url);
@@ -225,7 +225,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
     let cancelled = false;
     setDrillLoading(true);
     setDrillError(null);
-    const url = `/api/prospecting-campaigns/${drillCampaignId}/sequence-health?${queryString}&groupBy=both`;
+    const url = `/prospecting-campaigns/${drillCampaignId}/sequence-health?${queryString}&groupBy=both`;
     apiFetch(url)
       .then(res => {
         if (cancelled) return;
@@ -266,7 +266,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
   // Sequence and wants to use the campaign filter, fetch the list lazily.
   useEffect(() => {
     if (allCampaigns.length === 0 && tab !== 'campaign' && depth) {
-      apiFetch(`/api/reporting/sequences/team-overview?depth=${depth}&windowDays=30`)
+      apiFetch(`/reporting/sequences/team-overview?depth=${depth}&windowDays=30`)
         .then(res => {
           if (res?.campaigns) {
             setAllCampaigns(res.campaigns.map(c => ({ id: c.campaignId, name: c.campaignName })));
