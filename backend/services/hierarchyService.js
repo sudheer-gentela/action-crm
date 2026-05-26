@@ -68,6 +68,74 @@ const hierarchyService = {
     }
   },
 
+  // ── getSubordinatesWithDepth ─────────────────────────────────
+  //
+  // Depth-bounded variant of getSubordinates, used by the manager
+  // reporting feature. Returns each subordinate's depth from the
+  // viewing manager:
+  //
+  //   depth = 1   → direct report
+  //   depth = 2   → report of a direct report
+  //   depth = N   → N levels down
+  //
+  // Same line-type semantics as getSubordinates:
+  //   - Seed (depth 1) includes BOTH solid AND dotted lines so a
+  //     matrix manager sees their dotted reports at the right level.
+  //   - Recursive descent follows SOLID lines only — this prevents
+  //     the same user from appearing twice in the tree via a dotted
+  //     line a few levels down. A dotted-line subordinate is the
+  //     terminal leaf for that branch.
+  //
+  // maxDepth is the inclusive cap (1 = direct only, 2 = direct + 1
+  // level beneath, etc.). Pass Number.MAX_SAFE_INTEGER (or omit
+  // entirely and use getSubordinates instead) for unbounded depth.
+  //
+  // The DISTINCT clause picks the SHALLOWEST depth when the same
+  // user could be reached via multiple paths — this keeps the
+  // depthFromManager number honest. The window function
+  //   ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY depth ASC)
+  // is the canonical way to express "row with minimum depth per user"
+  // in PostgreSQL.
+  //
+  // Returns: [{ user_id, depth }, ...] sorted by depth then user_id.
+  async getSubordinatesWithDepth(orgId, userId, maxDepth) {
+    if (!Number.isInteger(maxDepth) || maxDepth < 1) {
+      throw new Error('getSubordinatesWithDepth: maxDepth must be a positive integer');
+    }
+    try {
+      const result = await pool.query(`
+        WITH RECURSIVE subordinates AS (
+          -- Seed: depth 1, both solid and dotted direct reports
+          SELECT h.user_id, 1 AS depth
+          FROM org_hierarchy h
+          WHERE h.org_id = $1 AND h.reports_to = $2
+
+          UNION ALL
+
+          -- Recurse: solid lines only, increment depth, stop at maxDepth
+          SELECT h.user_id, s.depth + 1 AS depth
+          FROM org_hierarchy h
+          INNER JOIN subordinates s ON h.reports_to = s.user_id
+          WHERE h.org_id = $1
+            AND h.relationship_type = 'solid'
+            AND s.depth < $3
+        ),
+        ranked AS (
+          SELECT user_id, depth,
+                 ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY depth ASC) AS rn
+          FROM subordinates
+        )
+        SELECT user_id, depth FROM ranked
+        WHERE rn = 1
+        ORDER BY depth ASC, user_id ASC
+      `, [orgId, userId, maxDepth]);
+      return result.rows.map(r => ({ user_id: r.user_id, depth: r.depth }));
+    } catch (err) {
+      if (err.message?.includes('relation "org_hierarchy" does not exist')) return [];
+      throw err;
+    }
+  },
+
   // ── getDirectReports ─────────────────────────────────────────
   async getDirectReports(orgId, userId) {
     try {

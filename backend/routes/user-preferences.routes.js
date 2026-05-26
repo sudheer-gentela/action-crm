@@ -283,6 +283,161 @@ router.patch('/preferences/personalize-linkedin', async (req, res) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Reporting — Depth Preference & Resolved Scope
+//
+// Three routes for the manager-reporting feature:
+//   GET   /users/me/preferences/reporting — read the rep's persisted depth choice
+//   PATCH /users/me/preferences/reporting — write a new depth choice
+//   GET   /users/me/reporting-scope       — derive the resolved scope for this user
+//
+// The depth preference governs how deep into the org tree this user's
+// reporting view goes by default. One of:
+//   'direct' — only people who report directly to them
+//   'plus1'  — direct reports + 1 more level
+//   'plus2'  — direct reports + 2 more levels
+//   'all'    — full subtree (unbounded depth)
+//
+// Default for a never-saved user: 'direct'.
+// Persisted in user_preferences.preferences.reporting.depth.
+//
+// The /reporting-scope endpoint resolves the user IDs the viewer can see
+// activity for, given a depth (defaulting to their saved preference).
+// Frontend uses it to:
+//   - Decide whether to render the "Reporting" nav item (hide when scope='self')
+//   - Render the scope-indicator line under the page title
+//   - Populate the depth selector with the current saved value
+//
+// See: services/ReportingScopeService.js for the resolution logic and the
+// auth contract; SEQUENCE_REPORTING_DESIGN.md §4.1 for the design rationale.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ReportingScopeService = require('../services/ReportingScopeService');
+
+// Returns the persisted reporting prefs for a user. Always returns a
+// non-null object — missing keys are filled with defaults so the frontend
+// doesn't need a separate "first-time" branch.
+async function getReportingPrefs(userId, orgId) {
+  const { rows: [row] } = await db.query(
+    `SELECT preferences->'reporting' AS cfg
+       FROM user_preferences
+      WHERE user_id = $1 AND org_id = $2`,
+    [userId, orgId]
+  );
+  const stored = row?.cfg
+    ? (typeof row.cfg === 'string' ? JSON.parse(row.cfg) : row.cfg)
+    : {};
+  return {
+    depth: ReportingScopeService.normalizeDepth(stored?.depth),
+  };
+}
+
+// ── GET /users/me/preferences/reporting ──────────────────────────────────────
+router.get('/preferences/reporting', async (req, res) => {
+  try {
+    const preferences = await getReportingPrefs(req.user.userId, req.orgId);
+    res.json({ preferences });
+  } catch (error) {
+    console.error('GET /users/me/preferences/reporting error:', error);
+    res.status(500).json({ error: { message: 'Failed to load reporting preferences' } });
+  }
+});
+
+// ── PATCH /users/me/preferences/reporting ────────────────────────────────────
+//
+// Accepts: { depth: 'direct'|'plus1'|'plus2'|'all' }
+//
+// Any other body keys are ignored (intentional — the reporting namespace
+// may grow other prefs over time; this route doesn't gate the namespace,
+// just the depth key today). An invalid depth value returns 400 rather
+// than silently coercing — better UX to surface the typo than have the
+// user's intended change silently fall back to 'direct'.
+router.patch('/preferences/reporting', async (req, res) => {
+  try {
+    const filtered = {};
+    if ('depth' in (req.body || {})) {
+      const d = req.body.depth;
+      if (!ReportingScopeService.VALID_DEPTHS.includes(d)) {
+        return res.status(400).json({
+          error: { message: `depth must be one of: ${ReportingScopeService.VALID_DEPTHS.join(', ')}` },
+        });
+      }
+      filtered.depth = d;
+    }
+
+    if (Object.keys(filtered).length === 0) {
+      return res.status(400).json({ error: { message: 'No valid preference keys supplied' } });
+    }
+
+    // Same upsert + jsonb_set pattern as the other preference namespaces.
+    // The COALESCE inside jsonb_set is important: without it, attempting
+    // to merge into a NULL existing namespace would itself produce NULL
+    // and overwrite the whole row's preferences. With it, missing
+    // namespace = {} and the merge proceeds correctly.
+    await db.query(`
+      INSERT INTO user_preferences (user_id, org_id, preferences)
+      VALUES ($1, $2, jsonb_build_object('reporting', $3::jsonb))
+      ON CONFLICT (user_id, org_id) DO UPDATE
+      SET preferences = jsonb_set(
+        COALESCE(user_preferences.preferences, '{}'::jsonb),
+        '{reporting}',
+        COALESCE(user_preferences.preferences->'reporting', '{}'::jsonb) || $3::jsonb
+      ),
+      updated_at = CURRENT_TIMESTAMP
+    `, [req.user.userId, req.orgId, JSON.stringify(filtered)]);
+
+    const preferences = await getReportingPrefs(req.user.userId, req.orgId);
+    res.json({ preferences });
+  } catch (error) {
+    console.error('PATCH /users/me/preferences/reporting error:', error);
+    res.status(500).json({ error: { message: 'Failed to save reporting preferences' } });
+  }
+});
+
+// ── GET /users/me/reporting-scope ─────────────────────────────────────────────
+//
+// Derived endpoint — the resolved scope for THIS user given a depth.
+// Depth precedence:
+//   1. ?depth query param (must be one of VALID_DEPTHS or 400)
+//   2. The user's persisted preference (from preferences.reporting.depth)
+//   3. DEFAULT_DEPTH ('direct') when neither is set
+//
+// This endpoint is the one the frontend hits on TeamReportingView mount.
+// It returns enough information to render the scope indicator AND the
+// depth selector (with current value pre-filled).
+//
+// Cache hint: this resolves a small set of DB queries (1-2 round trips).
+// Frontend should call it once per view mount, not on every interaction.
+router.get('/reporting-scope', async (req, res) => {
+  try {
+    const depthFromQuery = req.query.depth;
+    let depth;
+    if (depthFromQuery !== undefined) {
+      if (!ReportingScopeService.VALID_DEPTHS.includes(depthFromQuery)) {
+        return res.status(400).json({
+          error: { message: `depth must be one of: ${ReportingScopeService.VALID_DEPTHS.join(', ')}` },
+        });
+      }
+      depth = depthFromQuery;
+    } else {
+      const prefs = await getReportingPrefs(req.user.userId, req.orgId);
+      depth = prefs.depth;
+    }
+
+    const scope = await ReportingScopeService.resolveReportingScope(
+      req.user.userId,
+      req.orgId,
+      { depth }
+    );
+
+    res.json({ scope });
+  } catch (error) {
+    console.error('GET /users/me/reporting-scope error:', error);
+    res.status(500).json({ error: { message: 'Failed to resolve reporting scope: ' + error.message } });
+  }
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ADD TO: backend/routes/user-preferences.routes.js
 // (or create as a new file and register in server.js)
 //
