@@ -35,7 +35,6 @@ import { apiFetch } from './prospecting/prospectingShared';
 import './TeamReportingView.css';
 
 // ── Constants ──────────────────────────────────────────────────────────────
-const TEAL = '#0F9D8E';
 const DEPTH_OPTIONS = [
   { value: 'direct', label: 'Direct only' },
   { value: 'plus1',  label: 'Direct + 1' },
@@ -84,11 +83,6 @@ function depthBadge(meta) {
     </span>
   );
 }
-function csvIntsToArray(s) {
-  if (!s) return null;
-  if (Array.isArray(s)) return s;
-  return String(s).split(',').map(t => parseInt(t.trim(), 10)).filter(Number.isInteger);
-}
 function arrayToCsv(arr) {
   if (!arr || !arr.length) return '';
   return arr.join(',');
@@ -103,10 +97,6 @@ function windowToQueryParams(window) {
     return `&startDate=${encodeURIComponent(window.startDate)}&endDate=${encodeURIComponent(window.endDate)}`;
   }
   return `&windowDays=${window.windowDays}`;
-}
-function windowDescription(window) {
-  if (window.kind === 'custom') return `${window.startDate} to ${window.endDate}`;
-  return `last ${window.windowDays} days`;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
