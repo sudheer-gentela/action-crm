@@ -985,24 +985,14 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
                   )}
                 </div>
 
-                {/* AI-cost guidance line. Visible whenever the rep is on this
-                    tab; lets them make an informed call before clicking the
-                    button. Numbers are guidance (Haiku 4.5 list pricing) —
-                    real per-call cost is logged in ai_token_usage. The
-                    account-cache hint is the meaningful detail: a rep
-                    researching their 10th prospect at the same company pays
-                    roughly 0.5¢, not 1.2¢. */}
-                <div style={{
-                  fontSize: 11, color: '#6b7280', marginBottom: 12,
-                  display: 'flex', alignItems: 'center', gap: 6,
-                }}>
-                  <span aria-hidden="true">💸</span>
-                  <span>
-                    AI cost: <strong style={{ color: '#374151' }}>~$0.012</strong> first prospect at an account,
-                    <strong style={{ color: '#374151' }}> ~$0.005</strong> for subsequent prospects
-                    {' '}<span style={{ color: '#9ca3af' }}>(account research is cached 30 days)</span>.
-                  </span>
-                </div>
+                {/* Inline AI-cost hint was previously rendered here. We removed
+                    it because the rep-facing prospect detail screen is not the
+                    right home for cost reporting — the AI Usage tab in Org
+                    Admin (which now has a "Cost per Feature" section with
+                    per-org accurate numbers) is the authoritative place.
+                    Keeping the cost-aware tooltip on the button itself so a
+                    rep who hovers can still see it without ever leaving the
+                    workflow. */}
 
                 {researchError && (
                   <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 13, color: '#dc2626', marginBottom: 12 }}>

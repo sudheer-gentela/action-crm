@@ -2256,6 +2256,38 @@ router.get('/ai-usage', adminOnly, async (req, res) => {
   }
 });
 
+/**
+ * GET /org/admin/ai-cost-estimates
+ *
+ * Returns per-call-type cost estimates for THIS org, computed using:
+ *   - The model resolved by AIClientResolver for each call_type (org-level
+ *     defaults; user overrides are not applied since this is an org view).
+ *   - The same TokenTrackingService.estimateCost the runtime uses for billing.
+ *   - Median input/output token counts from this org's ai_token_usage history
+ *     (last 30 days), falling back to a hardcoded catalog when historical
+ *     samples < 5.
+ *
+ * Also returns bundle estimates for multi-call user actions:
+ *   - research_full (account + person research stages, with cached variant)
+ *   - outreach_first_touch (email + linkedin skills, with cache-read variant)
+ *
+ * Cost numbers are projections, not bills. The authoritative per-call cost
+ * is logged in ai_token_usage.estimated_cost_usd by TokenTrackingService.log.
+ * Use this endpoint for "what does this feature cost?" rep-facing guidance;
+ * use ai_token_usage for "what have we actually spent?" reporting.
+ */
+router.get('/ai-cost-estimates', adminOnly, async (req, res) => {
+  try {
+    const AICostCatalogService = require('../services/AICostCatalogService');
+    const lookbackDays = Math.min(parseInt(req.query.lookbackDays) || 30, 90);
+    const data = await AICostCatalogService.getCostEstimates(req.orgId, { lookbackDays });
+    res.json(data);
+  } catch (err) {
+    console.error('GET /org/admin/ai-cost-estimates error:', err);
+    res.status(500).json({ error: { message: 'Failed to load AI cost estimates: ' + err.message } });
+  }
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Prospecting Escalation Policy — Org Admin
 // ═════════════════════════════════════════════════════════════════════════════

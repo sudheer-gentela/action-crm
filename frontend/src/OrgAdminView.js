@@ -200,15 +200,25 @@ function OATokenUsageModule() {
 
   const [days,    setDays]    = React.useState(30);
   const [data,    setData]    = React.useState(null);
+  const [costEst, setCostEst] = React.useState(null);  // per-feature cost catalog
   const [loading, setLoading] = React.useState(true);
   const [error,   setError]   = React.useState('');
 
   React.useEffect(() => {
     setLoading(true);
-    fetch(`${API}/ai-usage/org?days=${days}`, { headers })
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => { setError('Failed to load usage data'); setLoading(false); });
+    // Load token usage and cost estimates in parallel. Both come from the
+    // same orgAdmin router (mounted at /api/org/admin) so they share the
+    // adminOnly middleware. The old `${API}/ai-usage/org` URL was a stale
+    // path — the correct route is `/api/org/admin/ai-usage`. Cost estimates
+    // live alongside at `/api/org/admin/ai-cost-estimates`.
+    Promise.all([
+      fetch(`${API}/org/admin/ai-usage?days=${days}`, { headers })
+        .then(r => r.ok ? r.json() : Promise.reject(new Error('usage ' + r.status))),
+      fetch(`${API}/org/admin/ai-cost-estimates?lookbackDays=${days}`, { headers })
+        .then(r => r.ok ? r.json() : Promise.reject(new Error('estimates ' + r.status))),
+    ])
+      .then(([u, c]) => { setData(u); setCostEst(c); setLoading(false); })
+      .catch((e) => { setError('Failed to load: ' + e.message); setLoading(false); });
   }, [days]); // eslint-disable-line
 
   const totals   = data?.totals  || {};
@@ -264,6 +274,114 @@ function OATokenUsageModule() {
               </div>
             ))}
           </div>
+
+          {/* ── Cost per Feature (typical) ──────────────────────────────────
+              Per-call-type cost projection for THIS org, using the model
+              each call_type actually resolves to (via AIClientResolver). The
+              "typical" input/output sizes come from this org's own history
+              (median of last 30 days) once there are ≥ 5 samples per
+              call_type; otherwise they fall back to a hardcoded catalog.
+
+              Three numbers per row:
+                Typical cost   — projection per single call
+                Cached cost    — for cache-eligible skills (e.g. drafts),
+                                 the cache-read price; shown as a second
+                                 number when it's meaningfully cheaper
+                Recent spend   — what this org has actually spent in the
+                                 lookback window (real billed cost from
+                                 ai_token_usage.estimated_cost_usd) ──── */}
+          {costEst && Object.keys(costEst.estimates || {}).length > 0 && (
+            <div style={{ marginBottom: 28 }}>
+              <h4 style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 600, color: '#374151' }}>
+                Cost per Feature <span style={{ fontWeight: 400, color: '#9ca3af' }}>(typical, per call)</span>
+              </h4>
+              <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 12 }}>
+                Projected from {costEst.period?.sample_days || 30}-day median where available, fallback catalog otherwise. Models resolved from this org's AI settings.
+              </div>
+
+              {/* Bundles — multi-call user actions, top */}
+              {costEst.bundles && Object.keys(costEst.bundles).length > 0 && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10, marginBottom: 16 }}>
+                  {Object.entries(costEst.bundles).map(([bid, b]) => (
+                    <div key={bid} style={{
+                      background: '#f0fdfa', border: '1px solid #99f6e4', borderRadius: 10, padding: '12px 14px',
+                    }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: '#065f46', marginBottom: 4 }}>{b.label}</div>
+                      <div style={{ fontSize: 11, color: '#0d9488', marginBottom: 8 }}>{b.desc}</div>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+                        <div>
+                          <div style={{ fontSize: 18, fontWeight: 700, color: '#0F9D8E' }}>{formatCost(b.cold_cost_usd)}</div>
+                          <div style={{ fontSize: 10, color: '#9ca3af' }}>cold</div>
+                        </div>
+                        {b.warm_cost_usd != null && b.warm_cost_usd < b.cold_cost_usd && (
+                          <div>
+                            <div style={{ fontSize: 18, fontWeight: 700, color: '#0d9488' }}>{formatCost(b.warm_cost_usd)}</div>
+                            <div style={{ fontSize: 10, color: '#9ca3af' }}>warm / cached</div>
+                          </div>
+                        )}
+                      </div>
+                      {b.notes && (
+                        <div style={{ fontSize: 10, color: '#6b7280', marginTop: 8, fontStyle: 'italic' }}>{b.notes}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Per-call-type table */}
+              <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1.8fr 1fr 0.9fr 0.9fr 1fr',
+                  padding: '8px 12px', background: '#f9fafb', borderBottom: '1px solid #e5e7eb',
+                  fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em',
+                }}>
+                  <div>Feature</div>
+                  <div>Model</div>
+                  <div style={{ textAlign: 'right' }}>Per Call</div>
+                  <div style={{ textAlign: 'right' }}>Cached</div>
+                  <div style={{ textAlign: 'right' }}>Recent ({days}d)</div>
+                </div>
+                {Object.entries(costEst.estimates)
+                  .filter(([ct, e]) => e.recent_calls > 0 || e.source === 'fallback')  // hide noise
+                  .sort((a, b) => (b[1].recent_cost_usd || 0) - (a[1].recent_cost_usd || 0))
+                  .map(([ct, e]) => (
+                  <div key={ct} style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1.8fr 1fr 0.9fr 0.9fr 1fr',
+                    padding: '10px 12px', borderBottom: '1px solid #f3f4f6',
+                    fontSize: 12, alignItems: 'center',
+                  }}>
+                    <div>
+                      <div style={{ fontWeight: 600, color: '#374151' }}>{e.label}</div>
+                      <div style={{ fontSize: 10, color: '#9ca3af' }}>
+                        {e.desc}
+                        {e.source === 'historical' && (
+                          <span title={`Median over ${e.sample_count} calls`}> · historical</span>
+                        )}
+                        {e.source === 'fallback' && (
+                          <span title="No historical data yet — estimate from prompt template"> · estimate</span>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#6b7280', fontFamily: 'monospace' }}>
+                      {e.model || '—'}
+                    </div>
+                    <div style={{ textAlign: 'right', fontWeight: 600, color: '#111827' }}>
+                      {formatCost(e.cost_usd)}
+                    </div>
+                    <div style={{ textAlign: 'right', color: e.cached_cost_usd != null ? '#0d9488' : '#d1d5db' }}>
+                      {e.cached_cost_usd != null ? formatCost(e.cached_cost_usd) : '—'}
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ color: '#374151', fontWeight: 600 }}>{formatCost(e.recent_cost_usd)}</div>
+                      <div style={{ fontSize: 10, color: '#9ca3af' }}>{e.recent_calls} call{e.recent_calls === 1 ? '' : 's'}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* ── By module ── */}
           {(data?.byModule || []).length > 0 && (
