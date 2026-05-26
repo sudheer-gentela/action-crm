@@ -37,6 +37,10 @@ const {
 // Slice 2's inline mapping of the retired outreach-personalization skill.
 const PersonalizationDispatcher = require('../services/PersonalizationDispatcher');
 
+// Phase 3 — campaign-scoped sequence reporting: ?depth and ?userIds filters
+// on /:id/sequence-health go through the scope service for auth.
+const ReportingScopeService = require('../services/ReportingScopeService');
+
 router.use(authenticateToken);
 router.use(orgContext);
 router.use(requireModule('prospecting'));
@@ -680,6 +684,21 @@ router.post('/:id/enroll-all', async (req, res) => {
 // Sprint 4 (Group C). Campaign-scoped sequence health — same shape as
 // /api/sequences/health but restricted to enrollments whose prospects are
 // in this campaign.
+//
+// Phase 3 extensions (all optional, additive — backward compat preserved):
+//   ?depth=direct|plus1|plus2|all   filter to a scope of enrolled_by users
+//   ?userIds=1,2,3                   filter to a specific set (∩ with scope)
+//   ?startDate=ISO  ?endDate=ISO     time window for the byUser block
+//   ?windowDays=N                    alternative to start/end (default 7)
+//   ?groupBy=sequence|user|both      defaults to 'sequence' (current behavior).
+//                                    'user' or 'both' add a byUser[] array.
+//
+// The original 24h/7d aggregates remain on the same hardcoded windows
+// (back-compat); when ?userIds or ?depth is set, the per-sequence
+// numbers are restricted to that scope as well. The startDate/endDate/
+// windowDays params drive ONLY the new byUser[] block — they don't shift
+// the 24h/7d windows. See SEQUENCE_REPORTING_DESIGN.md Appendix A.3 for
+// the rationale (same compromise as /api/sequences/:id/stats).
 // ═════════════════════════════════════════════════════════════════════════════
 router.get('/:id/sequence-health', async (req, res) => {
   try {
@@ -688,6 +707,41 @@ router.get('/:id/sequence-health', async (req, res) => {
 
     const day  = `'24 hours'::interval`;
     const week = `'7 days'::interval`;
+
+    // ── Phase 3: parse optional filters ──────────────────────────────
+    const groupBy = ['sequence', 'user', 'both'].includes(req.query.groupBy)
+      ? req.query.groupBy
+      : 'sequence';
+
+    const hasUserFilter = req.query.userIds !== undefined || req.query.depth !== undefined;
+    let scope = null;
+    let userFilterIds = null;
+    if (hasUserFilter || groupBy !== 'sequence') {
+      const explicitUserIds = req.query.userIds !== undefined
+        ? String(req.query.userIds).split(',').map(s => parseInt(s.trim(), 10)).filter(Number.isInteger)
+        : null;
+      scope = await ReportingScopeService.resolveReportingScope(
+        req.user.userId,
+        req.orgId,
+        { depth: req.query.depth, explicitUserIds }
+      );
+      userFilterIds = scope.userIds;
+    }
+
+    // Rep-filter clause appended to each state query when a user filter
+    // was opted into explicitly. When groupBy is non-default but no
+    // user filter was set, the state queries stay unfiltered for
+    // back-compat (only the byUser block uses the scope).
+    let stateRepClause = '';
+    const stateRepParam = (hasUserFilter && userFilterIds) ? userFilterIds : null;
+
+    // Build params and the rep clause. Original queries use 2 params
+    // ($1 = orgId, $2 = campaignId). When a rep filter is set, we add $3.
+    const aggParams = [req.orgId, req.params.id];
+    if (stateRepParam) {
+      aggParams.push(stateRepParam);
+      stateRepClause = `AND se.enrolled_by = ANY($3::int[])`;
+    }
 
     // Per-sequence aggregates scoped to this campaign's enrollments.
     // We list only sequences that actually have at least one campaign
@@ -712,9 +766,10 @@ router.get('/:id/sequence-health', async (req, res) => {
        LEFT JOIN sequence_step_logs ssl ON ssl.enrollment_id = se.id
       WHERE s.org_id      = $1
         AND p.campaign_id = $2
+        ${stateRepClause}
       GROUP BY s.id, s.name
       ORDER BY s.id ASC`,
-      [req.orgId, req.params.id]
+      aggParams
     );
 
     // Top errors per sequence within this campaign.
@@ -730,9 +785,10 @@ router.get('/:id/sequence-health', async (req, res) => {
           AND ssl.status    = 'failed'
           AND ssl.fired_at >= NOW() - ${week}
           AND ssl.error_message IS NOT NULL
+          ${stateRepClause}
      GROUP BY se.sequence_id, ssl.error_message
      ORDER BY se.sequence_id, count DESC`,
-      [req.orgId, req.params.id]
+      aggParams
     );
     const errorsBySeq = {};
     for (const row of errRes.rows) {
@@ -757,8 +813,9 @@ router.get('/:id/sequence-health', async (req, res) => {
           AND p.campaign_id = $2
           AND se.status     = 'active'
           AND COALESCE(ssl.last_fired, se.enrolled_at) < NOW() - ${week}
+          ${stateRepClause}
      GROUP BY se.sequence_id`,
-      [req.orgId, req.params.id]
+      aggParams
     );
     const stalledBySeq = {};
     for (const row of stalledRes.rows) stalledBySeq[row.sequence_id] = row.stalled;
@@ -783,12 +840,169 @@ router.get('/:id/sequence-health', async (req, res) => {
       stalledEnrollments: stalledBySeq[r.sequence_id] || 0,
     }));
 
-    res.json({ campaignId: parseInt(req.params.id, 10), health });
+    const response = { campaignId: parseInt(req.params.id, 10), health };
+
+    // ── Phase 3: byUser block (window-bound) ─────────────────────────
+    if (groupBy === 'user' || groupBy === 'both') {
+      const w = _parseCampaignHealthWindow(req.query);
+      const buParams = [req.orgId, req.params.id, scope.userIds, w.startISO, w.endISO];
+
+      const buRes = await pool.query(
+        `WITH log_agg AS (
+           SELECT
+             se.enrolled_by AS user_id,
+             COUNT(*) FILTER (WHERE ssl.status = 'draft')::int                              AS drafts,
+             COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed'))::int                AS sent,
+             COUNT(*) FILTER (WHERE ssl.status = 'replied')::int                            AS replied,
+             COUNT(*) FILTER (WHERE ssl.status = 'failed')::int                             AS failed,
+             COUNT(*) FILTER (WHERE ssl.status = 'draft'    AND ssl.fired_at >= NOW() - INTERVAL '24 hours')::int               AS drafts_24h,
+             COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed') AND ssl.fired_at >= NOW() - INTERVAL '24 hours')::int    AS sent_24h,
+             COUNT(*) FILTER (WHERE ssl.status = 'replied'  AND ssl.fired_at >= NOW() - INTERVAL '24 hours')::int               AS replied_24h,
+             COUNT(*) FILTER (WHERE ssl.status = 'failed'   AND ssl.fired_at >= NOW() - INTERVAL '24 hours')::int               AS failed_24h,
+             COUNT(*) FILTER (WHERE ssl.status = 'draft'    AND ssl.fired_at >= NOW() - INTERVAL '7 days')::int                 AS drafts_7d,
+             COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed') AND ssl.fired_at >= NOW() - INTERVAL '7 days')::int      AS sent_7d,
+             COUNT(*) FILTER (WHERE ssl.status = 'replied'  AND ssl.fired_at >= NOW() - INTERVAL '7 days')::int                 AS replied_7d,
+             COUNT(*) FILTER (WHERE ssl.status = 'failed'   AND ssl.fired_at >= NOW() - INTERVAL '7 days')::int                 AS failed_7d,
+             MAX(ssl.fired_at) AS last_fired_at
+           FROM sequence_step_logs ssl
+           JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
+           JOIN prospects p             ON p.id = se.prospect_id
+           WHERE ssl.org_id     = $1
+             AND p.campaign_id  = $2
+             AND se.enrolled_by = ANY($3::int[])
+             AND ssl.fired_at  >= $4::timestamptz
+             AND ssl.fired_at  <= $5::timestamptz
+           GROUP BY se.enrolled_by
+         ),
+         enroll_agg AS (
+           SELECT
+             se.enrolled_by AS user_id,
+             COUNT(*)::int AS enrolled,
+             COUNT(*) FILTER (WHERE se.status = 'active')::int AS active_enrollments
+           FROM sequence_enrollments se
+           JOIN prospects p ON p.id = se.prospect_id
+           WHERE se.org_id     = $1
+             AND p.campaign_id = $2
+             AND se.enrolled_by = ANY($3::int[])
+             AND se.enrolled_at >= $4::timestamptz
+             AND se.enrolled_at <= $5::timestamptz
+           GROUP BY se.enrolled_by
+         ),
+         stalled_agg AS (
+           SELECT
+             se.enrolled_by AS user_id,
+             COUNT(*)::int AS stalled
+           FROM sequence_enrollments se
+           JOIN prospects p ON p.id = se.prospect_id
+           LEFT JOIN LATERAL (
+             SELECT MAX(fired_at) AS last_fired FROM sequence_step_logs
+              WHERE enrollment_id = se.id
+           ) sx ON true
+           WHERE se.org_id     = $1
+             AND p.campaign_id = $2
+             AND se.enrolled_by = ANY($3::int[])
+             AND se.status     = 'active'
+             AND COALESCE(sx.last_fired, se.enrolled_at) < $5::timestamptz - INTERVAL '7 days'
+           GROUP BY se.enrolled_by
+         )
+         SELECT
+           u.id AS user_id, u.first_name, u.last_name, u.email,
+           COALESCE(l.drafts, 0)    AS drafts,
+           COALESCE(l.sent, 0)      AS sent,
+           COALESCE(l.replied, 0)   AS replied,
+           COALESCE(l.failed, 0)    AS failed,
+           COALESCE(l.drafts_24h,  0) AS drafts_24h,
+           COALESCE(l.sent_24h,    0) AS sent_24h,
+           COALESCE(l.replied_24h, 0) AS replied_24h,
+           COALESCE(l.failed_24h,  0) AS failed_24h,
+           COALESCE(l.drafts_7d,   0) AS drafts_7d,
+           COALESCE(l.sent_7d,     0) AS sent_7d,
+           COALESCE(l.replied_7d,  0) AS replied_7d,
+           COALESCE(l.failed_7d,   0) AS failed_7d,
+           l.last_fired_at,
+           COALESCE(e.enrolled, 0)            AS enrolled,
+           COALESCE(e.active_enrollments, 0)  AS active_enrollments,
+           COALESCE(st.stalled, 0)            AS stalled
+         FROM users u
+         LEFT JOIN log_agg     l  ON l.user_id  = u.id
+         LEFT JOIN enroll_agg  e  ON e.user_id  = u.id
+         LEFT JOIN stalled_agg st ON st.user_id = u.id
+         WHERE u.id = ANY($3::int[])
+         ORDER BY l.last_fired_at DESC NULLS LAST, u.first_name ASC`,
+        buParams
+      );
+
+      const reportByUserId = new Map(scope.reports.map(r => [r.userId, r]));
+      response.byUser = buRes.rows.map(r => {
+        const name = [r.first_name, r.last_name].filter(Boolean).join(' ').trim() || r.email;
+        const meta = reportByUserId.get(r.user_id);
+        const isViewer = r.user_id === req.user.userId;
+        return {
+          userId:           r.user_id,
+          name,
+          email:            r.email,
+          isDirect:         isViewer ? false : (meta?.isDirect ?? null),
+          depthFromManager: isViewer ? 0     : (meta?.depthFromManager ?? null),
+          enrolled:         r.enrolled,
+          drafts:           r.drafts,
+          sent:             r.sent,
+          replied:          r.replied,
+          failed:           r.failed,
+          stalled:          r.stalled,
+          drafts_24h:       r.drafts_24h,
+          sent_24h:         r.sent_24h,
+          replied_24h:      r.replied_24h,
+          failed_24h:       r.failed_24h,
+          drafts_7d:        r.drafts_7d,
+          sent_7d:          r.sent_7d,
+          replied_7d:       r.replied_7d,
+          failed_7d:        r.failed_7d,
+          lastFiredAt:      r.last_fired_at,
+          activeEnrollments: r.active_enrollments,
+        };
+      });
+      response.period = {
+        startDate:   w.startISO,
+        endDate:     w.endISO,
+        description: w.isoIntervalDescription,
+      };
+      response.scope = scope;
+    }
+
+    res.json(response);
   } catch (err) {
     console.error('campaign sequence-health error:', err);
-    res.status(500).json({ error: { message: 'Failed to load sequence health' } });
+    res.status(500).json({ error: { message: 'Failed to load sequence health: ' + err.message } });
   }
 });
+
+// Phase 3 window-parsing helper for /:id/sequence-health (mirrors the one
+// in sequences.routes.js and reporting.routes.js).
+function _parseCampaignHealthWindow(query) {
+  const { startDate, endDate, windowDays } = query;
+  if (startDate && endDate) {
+    const s = new Date(startDate);
+    const e = new Date(endDate);
+    if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) {
+      throw new Error('startDate and endDate must be valid ISO date strings');
+    }
+    return {
+      startISO: s.toISOString(),
+      endISO:   e.toISOString(),
+      isoIntervalDescription: `${s.toISOString().slice(0, 10)} to ${e.toISOString().slice(0, 10)}`,
+    };
+  }
+  const days = windowDays !== undefined
+    ? Math.max(1, Math.min(365, parseInt(windowDays, 10) || 7))
+    : 7;
+  const end = new Date();
+  const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000);
+  return {
+    startISO: start.toISOString(),
+    endISO:   end.toISOString(),
+    isoIntervalDescription: `last ${days} day${days === 1 ? '' : 's'}`,
+  };
+}
 
 
 // ─────────────────────────────────────────────────────────────────────────────

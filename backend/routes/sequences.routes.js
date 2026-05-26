@@ -47,6 +47,10 @@ const { buildLinkedInArtifacts }   = require('../services/linkedinSnippets');
 // ── AI provider chain (same pattern as ProspectingAIEnhancer) ─────────────────
 const AIClientResolver = require('../services/ai/AIClientResolver');
 
+// Phase 3 — sequence reporting: per-rep filters on /enrollments and /:id/stats
+// go through the scope service for auth (silently drop out-of-scope userIds).
+const ReportingScopeService = require('../services/ReportingScopeService');
+
 // ── Auth middleware on all routes ─────────────────────────────────────────────
 router.use(authenticateToken, orgContext);
 
@@ -333,8 +337,29 @@ router.post('/enroll', async (req, res) => {
 
 // GET /api/sequences/enrollments
 router.get('/enrollments', async (req, res) => {
-  const { prospectId, status } = req.query;
+  const { prospectId, status, enrolledBy, depth } = req.query;
   try {
+    // Phase 3: optional ?enrolledBy=csv and ?depth= filter the enrollments
+    // by the rep who enrolled the prospect, intersected with the viewer's
+    // resolved scope (silently drops out-of-scope IDs).
+    //
+    // Backward compat: callers without either param see the original
+    // behavior — all enrollments visible to the org. The depth-aware
+    // filter only kicks in when ?enrolledBy is supplied OR when ?depth is
+    // supplied explicitly. Bare GET /enrollments still returns everything.
+    let scopedUserIds = null;   // null = no enrolled_by predicate
+    if (enrolledBy !== undefined || depth !== undefined) {
+      const explicitUserIds = enrolledBy !== undefined
+        ? String(enrolledBy).split(',').map(s => parseInt(s.trim(), 10)).filter(Number.isInteger)
+        : null;
+      const scope = await ReportingScopeService.resolveReportingScope(
+        req.user.userId,
+        req.orgId,
+        { depth, explicitUserIds }
+      );
+      scopedUserIds = scope.userIds;
+    }
+
     let query = `
       SELECT se.*,
              s.name AS sequence_name,
@@ -347,6 +372,10 @@ router.get('/enrollments', async (req, res) => {
 
     if (prospectId) { params.push(prospectId); query += ` AND se.prospect_id = $${params.length}`; }
     if (status)     { params.push(status);     query += ` AND se.status = $${params.length}`; }
+    if (scopedUserIds !== null) {
+      params.push(scopedUserIds);
+      query += ` AND se.enrolled_by = ANY($${params.length}::int[])`;
+    }
 
     query += ' ORDER BY se.enrolled_at DESC LIMIT 200';
     const { rows } = await pool.query(query, params);
@@ -1723,6 +1752,43 @@ router.post('/ai-write-step', async (req, res) => {
 // SEQUENCE STATS
 // GET /api/sequences/:id/stats
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/sequences/:id/stats
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Per-sequence funnel stats. Original (Sprint-3) behavior is preserved when
+// called with no Phase-3 query params — frontends like SequencesView keep
+// working without any change.
+//
+// Phase 3 extensions (all optional, additive):
+//   ?depth=direct|plus1|plus2|all   filter to a scope of enrolled_by users
+//   ?userIds=1,2,3                   filter to a specific set (∩ with scope)
+//   ?startDate=ISO  ?endDate=ISO     time window for the byUser block
+//   ?windowDays=N                    alternative to start/end
+//   ?groupBy=sequence|user|both      defaults to 'sequence' (current behavior).
+//                                    'user' or 'both' add a byUser[] array.
+//
+// Important note on the time window (see SEQUENCE_REPORTING_DESIGN.md
+// Appendix A.3 for context):
+//   The original response fields (totalEnrolled, statusBreakdown, stepFunnel,
+//   replyRate, avgReplyStep) remain ALL-TIME by default. They reflect the
+//   current state of enrollments + cumulative log activity. Changing those
+//   silently to "last 7 days" would break SequencesView's "Reply Rate" tile
+//   (it would suddenly show only a fraction of the historical denominator).
+//
+//   The new byUser[] block is window-bound — it shows per-rep activity
+//   within the supplied window. windowDays defaults to 7 in that block.
+//
+//   If a caller wants the original fields windowed too, they should pass
+//   ?userIds= AND ?startDate=/?endDate= explicitly. In that mode the user
+//   filter applies to the original state queries as well (the caller has
+//   asked to slice). This compromise satisfies A.3's goal of bounding heavy
+//   queries while preserving back-compat for the existing UI caller.
+//
+// Auth: when ?userIds or ?depth is set, results pass through
+// ReportingScopeService.resolveReportingScope — out-of-scope IDs are
+// silently dropped, never errored.
+//
 router.get('/:id/stats', async (req, res) => {
   try {
     const seqRes = await pool.query(
@@ -1735,12 +1801,53 @@ router.get('/:id/stats', async (req, res) => {
     );
     if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
 
+    // ── Phase 3: parse optional filters ──────────────────────────────
+    const groupBy = ['sequence', 'user', 'both'].includes(req.query.groupBy)
+      ? req.query.groupBy
+      : 'sequence';
+
+    const hasUserFilter = req.query.userIds !== undefined || req.query.depth !== undefined;
+    let scope = null;     // resolved when needed
+    let userFilterIds = null;
+    if (hasUserFilter || groupBy !== 'sequence') {
+      const explicitUserIds = req.query.userIds !== undefined
+        ? String(req.query.userIds).split(',').map(s => parseInt(s.trim(), 10)).filter(Number.isInteger)
+        : null;
+      scope = await ReportingScopeService.resolveReportingScope(
+        req.user.userId,
+        req.orgId,
+        { depth: req.query.depth, explicitUserIds }
+      );
+      userFilterIds = scope.userIds;
+    }
+
+    // Build the rep-filter SQL fragment for the state queries below.
+    // Only applied when the caller explicitly opted into a user filter.
+    // When groupBy !== 'sequence' but no userIds/depth was passed, the
+    // scope service still ran (to enable the byUser block) but the state
+    // queries should remain unfiltered for back-compat.
+    let repFilterClause = '';
+    let repFilterParam  = null;
+    if (hasUserFilter && userFilterIds) {
+      repFilterParam = userFilterIds;
+      // Will be appended as the third param below.
+    }
+
+    // ── Original (state) queries — params + optional rep filter ──────
+    const stateParams = [req.params.id, req.orgId];
+    let stateRepClause = '';
+    if (repFilterParam) {
+      stateParams.push(repFilterParam);
+      stateRepClause = `AND se.enrolled_by = ANY($3::int[])`;
+    }
+
     const statusRes = await pool.query(
       `SELECT status, COUNT(*) AS count
-         FROM sequence_enrollments
-        WHERE sequence_id = $1 AND org_id = $2
+         FROM sequence_enrollments se
+        WHERE se.sequence_id = $1 AND se.org_id = $2
+              ${stateRepClause}
      GROUP BY status`,
-      [req.params.id, req.orgId]
+      stateParams
     );
     const statusMap = {};
     statusRes.rows.forEach(r => { statusMap[r.status] = parseInt(r.count); });
@@ -1757,18 +1864,20 @@ router.get('/:id/stats', async (req, res) => {
        JOIN sequence_steps ss       ON ss.id = ssl.sequence_step_id
        JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
       WHERE se.sequence_id = $1 AND se.org_id = $2
+            ${stateRepClause}
    GROUP BY ss.step_order
    ORDER BY ss.step_order`,
-      [req.params.id, req.orgId]
+      stateParams
     );
 
     const replyStepRes = await pool.query(
       `SELECT current_step, COUNT(*) AS reply_count
-         FROM sequence_enrollments
-        WHERE sequence_id = $1 AND org_id = $2 AND status = 'replied'
+         FROM sequence_enrollments se
+        WHERE se.sequence_id = $1 AND se.org_id = $2 AND se.status = 'replied'
+              ${stateRepClause}
      GROUP BY current_step
      ORDER BY current_step`,
-      [req.params.id, req.orgId]
+      stateParams
     );
     const replyByStep = {};
     replyStepRes.rows.forEach(r => { replyByStep[r.current_step] = parseInt(r.reply_count); });
@@ -1787,7 +1896,7 @@ router.get('/:id/stats', async (req, res) => {
       replied_here: replyByStep[row.step_order] || 0,
     }));
 
-    res.json({
+    const response = {
       sequence:      seqRes.rows[0],
       totalEnrolled,
       totalReplied,
@@ -1801,12 +1910,168 @@ router.get('/:id/stats', async (req, res) => {
         replied:   statusMap['replied']   || 0,
       },
       stepFunnel,
-    });
+    };
+
+    // ── Phase 3: byUser block (window-bound) ─────────────────────────
+    if (groupBy === 'user' || groupBy === 'both') {
+      const w = _parsePhase3Window(req.query);
+      const buParams = [req.orgId, scope.userIds, req.params.id, w.startISO, w.endISO];
+
+      const buRes = await pool.query(
+        `WITH log_agg AS (
+           SELECT
+             se.enrolled_by AS user_id,
+             COUNT(*) FILTER (WHERE ssl.status = 'draft')::int                              AS drafts,
+             COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed'))::int                AS sent,
+             COUNT(*) FILTER (WHERE ssl.status = 'replied')::int                            AS replied,
+             COUNT(*) FILTER (WHERE ssl.status = 'failed')::int                             AS failed,
+             COUNT(*) FILTER (WHERE ssl.status = 'draft'    AND ssl.fired_at >= NOW() - INTERVAL '24 hours')::int               AS drafts_24h,
+             COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed') AND ssl.fired_at >= NOW() - INTERVAL '24 hours')::int    AS sent_24h,
+             COUNT(*) FILTER (WHERE ssl.status = 'replied'  AND ssl.fired_at >= NOW() - INTERVAL '24 hours')::int               AS replied_24h,
+             COUNT(*) FILTER (WHERE ssl.status = 'failed'   AND ssl.fired_at >= NOW() - INTERVAL '24 hours')::int               AS failed_24h,
+             COUNT(*) FILTER (WHERE ssl.status = 'draft'    AND ssl.fired_at >= NOW() - INTERVAL '7 days')::int                 AS drafts_7d,
+             COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed') AND ssl.fired_at >= NOW() - INTERVAL '7 days')::int      AS sent_7d,
+             COUNT(*) FILTER (WHERE ssl.status = 'replied'  AND ssl.fired_at >= NOW() - INTERVAL '7 days')::int                 AS replied_7d,
+             COUNT(*) FILTER (WHERE ssl.status = 'failed'   AND ssl.fired_at >= NOW() - INTERVAL '7 days')::int                 AS failed_7d,
+             MAX(ssl.fired_at) AS last_fired_at
+           FROM sequence_step_logs ssl
+           JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
+           WHERE ssl.org_id     = $1
+             AND se.sequence_id = $3
+             AND se.enrolled_by = ANY($2::int[])
+             AND ssl.fired_at  >= $4::timestamptz
+             AND ssl.fired_at  <= $5::timestamptz
+           GROUP BY se.enrolled_by
+         ),
+         enroll_agg AS (
+           SELECT
+             se.enrolled_by AS user_id,
+             COUNT(*)::int AS enrolled,
+             COUNT(*) FILTER (WHERE se.status = 'active')::int AS active_enrollments
+           FROM sequence_enrollments se
+           WHERE se.org_id     = $1
+             AND se.sequence_id = $3
+             AND se.enrolled_by = ANY($2::int[])
+             AND se.enrolled_at >= $4::timestamptz
+             AND se.enrolled_at <= $5::timestamptz
+           GROUP BY se.enrolled_by
+         ),
+         stalled_agg AS (
+           SELECT
+             se.enrolled_by AS user_id,
+             COUNT(*)::int AS stalled
+           FROM sequence_enrollments se
+           LEFT JOIN LATERAL (
+             SELECT MAX(fired_at) AS last_fired FROM sequence_step_logs
+              WHERE enrollment_id = se.id
+           ) sx ON true
+           WHERE se.org_id     = $1
+             AND se.sequence_id = $3
+             AND se.enrolled_by = ANY($2::int[])
+             AND se.status     = 'active'
+             AND COALESCE(sx.last_fired, se.enrolled_at) < $5::timestamptz - INTERVAL '7 days'
+           GROUP BY se.enrolled_by
+         )
+         SELECT
+           u.id AS user_id, u.first_name, u.last_name, u.email,
+           COALESCE(l.drafts, 0)    AS drafts,
+           COALESCE(l.sent, 0)      AS sent,
+           COALESCE(l.replied, 0)   AS replied,
+           COALESCE(l.failed, 0)    AS failed,
+           COALESCE(l.drafts_24h,  0) AS drafts_24h,
+           COALESCE(l.sent_24h,    0) AS sent_24h,
+           COALESCE(l.replied_24h, 0) AS replied_24h,
+           COALESCE(l.failed_24h,  0) AS failed_24h,
+           COALESCE(l.drafts_7d,   0) AS drafts_7d,
+           COALESCE(l.sent_7d,     0) AS sent_7d,
+           COALESCE(l.replied_7d,  0) AS replied_7d,
+           COALESCE(l.failed_7d,   0) AS failed_7d,
+           l.last_fired_at,
+           COALESCE(e.enrolled, 0)            AS enrolled,
+           COALESCE(e.active_enrollments, 0)  AS active_enrollments,
+           COALESCE(st.stalled, 0)            AS stalled
+         FROM users u
+         LEFT JOIN log_agg     l  ON l.user_id  = u.id
+         LEFT JOIN enroll_agg  e  ON e.user_id  = u.id
+         LEFT JOIN stalled_agg st ON st.user_id = u.id
+         WHERE u.id = ANY($2::int[])
+         ORDER BY l.last_fired_at DESC NULLS LAST, u.first_name ASC`,
+        buParams
+      );
+
+      const reportByUserId = new Map(scope.reports.map(r => [r.userId, r]));
+      response.byUser = buRes.rows.map(r => {
+        const name = [r.first_name, r.last_name].filter(Boolean).join(' ').trim() || r.email;
+        const meta = reportByUserId.get(r.user_id);
+        const isViewer = r.user_id === req.user.userId;
+        return {
+          userId:           r.user_id,
+          name,
+          email:            r.email,
+          isDirect:         isViewer ? false : (meta?.isDirect ?? null),
+          depthFromManager: isViewer ? 0     : (meta?.depthFromManager ?? null),
+          enrolled:         r.enrolled,
+          drafts:           r.drafts,
+          sent:             r.sent,
+          replied:          r.replied,
+          failed:           r.failed,
+          stalled:          r.stalled,
+          drafts_24h:       r.drafts_24h,
+          sent_24h:         r.sent_24h,
+          replied_24h:      r.replied_24h,
+          failed_24h:       r.failed_24h,
+          drafts_7d:        r.drafts_7d,
+          sent_7d:          r.sent_7d,
+          replied_7d:       r.replied_7d,
+          failed_7d:        r.failed_7d,
+          lastFiredAt:      r.last_fired_at,
+          activeEnrollments: r.active_enrollments,
+        };
+      });
+      response.period = {
+        startDate:   w.startISO,
+        endDate:     w.endISO,
+        description: w.isoIntervalDescription,
+      };
+      response.scope = scope;
+    }
+
+    res.json(response);
   } catch (err) {
     console.error('sequence stats error:', err);
-    res.status(500).json({ error: { message: 'Failed to load stats' } });
+    res.status(500).json({ error: { message: 'Failed to load stats: ' + err.message } });
   }
 });
+
+// Phase 3 helper — same semantics as parseTimeWindow in reporting.routes.js
+// (duplicated here to avoid a circular import; both files own their own
+// param-parsing surface). Default window: last 7 days. windowDays clamped
+// to [1, 365].
+function _parsePhase3Window(query) {
+  const { startDate, endDate, windowDays } = query;
+  if (startDate && endDate) {
+    const s = new Date(startDate);
+    const e = new Date(endDate);
+    if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) {
+      throw new Error('startDate and endDate must be valid ISO date strings');
+    }
+    return {
+      startISO: s.toISOString(),
+      endISO:   e.toISOString(),
+      isoIntervalDescription: `${s.toISOString().slice(0, 10)} to ${e.toISOString().slice(0, 10)}`,
+    };
+  }
+  const days = windowDays !== undefined
+    ? Math.max(1, Math.min(365, parseInt(windowDays, 10) || 7))
+    : 7;
+  const end = new Date();
+  const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000);
+  return {
+    startISO: start.toISOString(),
+    endISO:   end.toISOString(),
+    isoIntervalDescription: `last ${days} day${days === 1 ? '' : 's'}`,
+  };
+}
 
 
 // ═════════════════════════════════════════════════════════════════════════════

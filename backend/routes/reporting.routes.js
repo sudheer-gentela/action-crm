@@ -8,8 +8,9 @@
 // Endpoints:
 //   GET /api/reporting/sequences/team-overview
 //   GET /api/reporting/sequences/team-by-rep
+//   GET /api/reporting/sequences/team-by-sequence    (Phase 3)
 //
-// Both endpoints return aggregate metrics across multiple campaigns and
+// All three endpoints return aggregate metrics across multiple campaigns and
 // sequences, scoped to "what this viewer is allowed to see" via
 // ReportingScopeService. That service is the single auth gatekeeper —
 // these routes never query sequence data using client-supplied user IDs
@@ -664,6 +665,501 @@ router.get('/sequences/team-by-rep', async (req, res) => {
   } catch (err) {
     console.error('team-by-rep error:', err);
     res.status(500).json({ error: { message: 'Failed to load team-by-rep: ' + err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/reporting/sequences/team-by-sequence
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Per-sequence rollup for the "All Campaigns — by Sequence" view. Peer to
+// team-overview and team-by-rep.
+//
+// Why this exists separately from team-overview:
+//   Sequences can run on prospects that have NO campaign at all (one-off
+//   prospects enrolled directly into a sequence). Those activities never
+//   appear in team-overview.campaigns[] because there's no campaign to
+//   roll up to. This endpoint captures every activity that goes through
+//   sequence_enrollments, regardless of whether the prospect has a campaign.
+//
+//   Counting in both lenses is INTENTIONAL, not double-counting. When a
+//   sequence runs on a prospect in a campaign, that same activity appears
+//   in both team-overview (one row per campaign) and team-by-sequence (one
+//   row per sequence) — two views of the same data, not partitions.
+//
+// Returns:
+//   {
+//     scope, period,
+//     totals: { activeSequences, activeCampaigns, enrolledProspects,
+//               drafts, sent, replied, failed, stalled, repliedRate },
+//     sequences: [
+//       { sequenceId, name,
+//         owner: { userId, name, isDirect, depthFromManager },   // sequences.created_by
+//         enrolled, drafts, sent, replied, failed, stalled,
+//         lastActivityAt,
+//         topUsers: [ { userId, name, enrolled, sent } ]          // top 3 by sent
+//       }
+//     ]
+//   }
+//
+// Filter semantics:
+//   ?sequenceIds=  — optional; restricts the result to these sequences only
+//                    (intersected with scope-visible sequences, silently filtered).
+//   ?campaignIds=  — optional. When PRESENT, restricts to sequences running on
+//                    prospects in those campaigns — the orphan bucket
+//                    (prospects.campaign_id IS NULL) is EXCLUDED.
+//                    When ABSENT (no filter), the orphan bucket IS INCLUDED:
+//                    sequences that run on prospects with no campaign at all
+//                    contribute their activity to the rollup.
+//
+// Notes on totals.activeCampaigns:
+//   This counts distinct non-null campaign_ids touched by in-scope activity
+//   in the window. The orphan bucket (campaign_id = NULL) is NOT counted as
+//   a campaign — it's a "no campaign" pseudo-bucket. So when orphan-only
+//   activity is present, activeCampaigns can be 0 while activeSequences > 0
+//   (correct: there are sequences running but no campaigns containing them).
+//
+// Stalled definition:
+//   Same as Phase 2: active enrollments whose latest log is older than
+//   7 days before the window's end. Definition is independent of windowDays.
+//
+router.get('/sequences/team-by-sequence', async (req, res) => {
+  try {
+    const explicitUserIds      = parseIntListParam(req.query.userIds);
+    const requestedSequenceIds = parseIntListParam(req.query.sequenceIds);
+    const requestedCampaignIds = parseIntListParam(req.query.campaignIds);
+
+    const window = parseTimeWindow(req.query);
+
+    const scope = await ReportingScopeService.resolveReportingScope(
+      req.user.userId,
+      req.orgId,
+      { depth: req.query.depth, explicitUserIds }
+    );
+
+    const scopeUserIds = scope.userIds;
+
+    // Resolve campaign filter through the same auth helper team-overview uses.
+    // null = "no filter" (include orphan bucket); empty array = "filtered to
+    // nothing" (return empty response).
+    const campaignIdFilter = await resolveCampaignFilter(
+      req.orgId, scopeUserIds, requestedCampaignIds
+    );
+
+    if (campaignIdFilter && campaignIdFilter.length === 0) {
+      // Caller asked for campaigns but none survived the scope intersection.
+      // Return empty response — consistent with how the other two endpoints
+      // handle this case.
+      return res.json({
+        scope,
+        period: {
+          startDate:   window.startISO,
+          endDate:     window.endISO,
+          description: window.isoIntervalDescription,
+        },
+        totals:    _emptyTotals(),
+        sequences: [],
+      });
+    }
+
+    // ── Build the campaign predicate for this endpoint ──────────────
+    //
+    // Two modes depending on whether the caller passed ?campaignIds=:
+    //
+    //   campaignIdFilter === null  → include orphan-bucket activity
+    //                                (no predicate on campaign_id at all)
+    //   campaignIdFilter !== null  → restrict to those campaigns only
+    //                                (predicate: p.campaign_id = ANY(...))
+    //
+    // The "orphan inclusion" mode is what distinguishes team-by-sequence
+    // from team-overview — see header comment for the rationale.
+
+    // Build the param list once and reference positions in SQL.
+    // Params: [orgId, scopeUserIds, windowStart, windowEnd, (campaignIdFilter?), (sequenceIdFilter?)]
+    const params = [req.orgId, scopeUserIds, window.startISO, window.endISO];
+    let nextParam = 5;
+
+    let campaignClause = '';
+    if (campaignIdFilter !== null) {
+      params.push(campaignIdFilter);
+      // Use the same alias name everywhere in the CTEs below — the prospects
+      // table is aliased as p_log / p_enroll / p_stall / p_act in different
+      // CTEs but each one applies the same campaign predicate. We template
+      // the predicate per-CTE because the alias differs.
+      campaignClause = `$${nextParam}::int[]`;
+      nextParam++;
+    }
+
+    // Sequence ID filter is intersected with scope-visible sequences. Same
+    // pattern as userIds — silently drop out-of-scope IDs. "In scope" =
+    // "the sequence has at least one enrollment by someone in scopeUserIds".
+    // We resolve this in one query before building the main rollup.
+    let sequenceIdFilter = null;   // null = "no filter"
+    if (requestedSequenceIds !== null) {
+      if (requestedSequenceIds.length === 0) {
+        return res.json({
+          scope,
+          period: {
+            startDate:   window.startISO,
+            endDate:     window.endISO,
+            description: window.isoIntervalDescription,
+          },
+          totals:    _emptyTotals(),
+          sequences: [],
+        });
+      }
+
+      const seqScopeParams = [req.orgId, scopeUserIds, requestedSequenceIds];
+      let seqScopeCampaignClause = '';
+      if (campaignIdFilter !== null) {
+        seqScopeParams.push(campaignIdFilter);
+        seqScopeCampaignClause = `AND p.campaign_id = ANY($4::int[])`;
+      }
+
+      const seqScopeRes = await pool.query(
+        `SELECT DISTINCT se.sequence_id
+           FROM sequence_enrollments se
+           JOIN prospects p ON p.id = se.prospect_id
+          WHERE se.org_id      = $1
+            AND se.enrolled_by = ANY($2::int[])
+            AND se.sequence_id = ANY($3::int[])
+            ${seqScopeCampaignClause}`,
+        seqScopeParams
+      );
+      sequenceIdFilter = seqScopeRes.rows.map(r => r.sequence_id);
+
+      if (sequenceIdFilter.length === 0) {
+        // All requested sequence IDs were out-of-scope. Return empty.
+        return res.json({
+          scope,
+          period: {
+            startDate:   window.startISO,
+            endDate:     window.endISO,
+            description: window.isoIntervalDescription,
+          },
+          totals:    _emptyTotals(),
+          sequences: [],
+        });
+      }
+
+      params.push(sequenceIdFilter);
+    }
+
+    // Compute the sequence-id position param # (used in WHERE on the
+    // outer SELECT and in each CTE that needs to filter).
+    const seqIdParamIdx = sequenceIdFilter !== null ? nextParam : null;
+    if (sequenceIdFilter !== null) nextParam++;
+
+    // Per-CTE campaign predicates with the right alias. campaignClause was
+    // built above; we just template the alias here. When campaignClause is
+    // empty, no predicate is applied (orphan bucket included).
+    const ccLog    = campaignClause ? `AND p_log.campaign_id    = ANY(${campaignClause})` : '';
+    const ccEnroll = campaignClause ? `AND p_enroll.campaign_id = ANY(${campaignClause})` : '';
+    const ccStall  = campaignClause ? `AND p_stall.campaign_id  = ANY(${campaignClause})` : '';
+    const ccAct    = campaignClause ? `AND p_act.campaign_id    = ANY(${campaignClause})` : '';
+
+    // Per-sequence filter predicates for each CTE (applies the
+    // user-supplied sequenceIds intersected with scope).
+    const sfLog    = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
+    const sfEnroll = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
+    const sfStall  = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
+    const sfAct    = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
+    const sfOuter  = sequenceIdFilter !== null ? `AND s.id = ANY($${seqIdParamIdx}::int[])` : '';
+
+    // ── Per-sequence aggregates ─────────────────────────────────────
+    //
+    // Three CTEs aggregated by sequence_id:
+    //   log_agg     — counts step-log statuses + last_fired_at within window
+    //   enroll_agg  — counts new enrollments within window
+    //   stalled_agg — active enrollments with no log activity in the trailing
+    //                 7 days from window's end
+    // Plus an active_state CTE that's NOT window-bound — it captures the
+    // current "is this sequence live" state (status='active' AND has any
+    // active enrollments). Used for the activeSequences total.
+    //
+    // The outer SELECT bases the row set on the sequences table so
+    // sequences with status='active' and zero activity in the window
+    // still appear with zero counters — same dormancy-as-signal convention
+    // as Phase 2's campaign rows.
+
+    const perSeqRes = await pool.query(
+      `WITH log_agg AS (
+         SELECT
+           se.sequence_id,
+           COUNT(*) FILTER (WHERE ssl.status = 'draft')::int                              AS drafts,
+           COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed'))::int                AS sent,
+           COUNT(*) FILTER (WHERE ssl.status = 'replied')::int                            AS replied,
+           COUNT(*) FILTER (WHERE ssl.status = 'failed')::int                             AS failed,
+           MAX(ssl.fired_at)                                                              AS last_fired_at
+         FROM sequence_step_logs ssl
+         JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
+         JOIN prospects p_log         ON p_log.id = se.prospect_id
+         WHERE ssl.org_id     = $1
+           AND ssl.fired_at  >= $3::timestamptz
+           AND ssl.fired_at  <= $4::timestamptz
+           AND se.enrolled_by = ANY($2::int[])
+           ${ccLog}
+           ${sfLog}
+         GROUP BY se.sequence_id
+       ),
+       enroll_agg AS (
+         SELECT
+           se.sequence_id,
+           COUNT(*)::int AS enrolled,
+           -- Count of distinct campaigns this sequence touched in the window
+           -- (excluding orphan/null campaign_id). Feeds the totals.activeCampaigns
+           -- count via UNION downstream.
+           COUNT(DISTINCT p_enroll.campaign_id) FILTER (WHERE p_enroll.campaign_id IS NOT NULL)::int AS distinct_campaigns
+         FROM sequence_enrollments se
+         JOIN prospects p_enroll ON p_enroll.id = se.prospect_id
+         WHERE se.org_id     = $1
+           AND se.enrolled_by = ANY($2::int[])
+           AND se.enrolled_at >= $3::timestamptz
+           AND se.enrolled_at <= $4::timestamptz
+           ${ccEnroll}
+           ${sfEnroll}
+         GROUP BY se.sequence_id
+       ),
+       stalled_agg AS (
+         SELECT
+           se.sequence_id,
+           COUNT(*)::int AS stalled
+         FROM sequence_enrollments se
+         JOIN prospects p_stall ON p_stall.id = se.prospect_id
+         LEFT JOIN LATERAL (
+           SELECT MAX(fired_at) AS last_fired FROM sequence_step_logs
+            WHERE enrollment_id = se.id
+         ) sx ON true
+         WHERE se.org_id     = $1
+           AND se.enrolled_by = ANY($2::int[])
+           AND se.status     = 'active'
+           AND COALESCE(sx.last_fired, se.enrolled_at) < $4::timestamptz - INTERVAL '7 days'
+           ${ccStall}
+           ${sfStall}
+         GROUP BY se.sequence_id
+       ),
+       active_state AS (
+         -- Whole-history state: which sequences currently have at least one
+         -- active enrollment by someone in scope. Independent of the window.
+         SELECT DISTINCT se.sequence_id
+         FROM sequence_enrollments se
+         JOIN prospects p_act ON p_act.id = se.prospect_id
+         WHERE se.org_id     = $1
+           AND se.enrolled_by = ANY($2::int[])
+           AND se.status     = 'active'
+           ${ccAct}
+           ${sfAct}
+       )
+       SELECT
+         s.id    AS sequence_id,
+         s.name,
+         s.created_by AS owner_id,
+         s.status AS sequence_status,
+         u.first_name, u.last_name, u.email,
+         COALESCE(l.drafts, 0)              AS drafts,
+         COALESCE(l.sent, 0)                AS sent,
+         COALESCE(l.replied, 0)             AS replied,
+         COALESCE(l.failed, 0)              AS failed,
+         COALESCE(e.enrolled, 0)            AS enrolled,
+         COALESCE(e.distinct_campaigns, 0)  AS distinct_campaigns,
+         COALESCE(st.stalled, 0)            AS stalled,
+         l.last_fired_at,
+         (a.sequence_id IS NOT NULL)        AS is_active
+       FROM sequences s
+       LEFT JOIN users        u  ON u.id = s.created_by
+       LEFT JOIN log_agg      l  ON l.sequence_id = s.id
+       LEFT JOIN enroll_agg   e  ON e.sequence_id = s.id
+       LEFT JOIN stalled_agg  st ON st.sequence_id = s.id
+       LEFT JOIN active_state a  ON a.sequence_id = s.id
+       WHERE s.org_id = $1
+         AND (
+           -- Include any sequence that has any activity in scope (any CTE
+           -- contributed a row), OR is currently active state-wise. This
+           -- mirrors Phase 2's "include zero-activity but in-scope campaigns"
+           -- behavior. A sequence that's been archived and has no recent
+           -- activity in scope is excluded.
+           l.sequence_id  IS NOT NULL
+           OR e.sequence_id  IS NOT NULL
+           OR st.sequence_id IS NOT NULL
+           OR a.sequence_id  IS NOT NULL
+         )
+         ${sfOuter}
+       ORDER BY l.last_fired_at DESC NULLS LAST, s.id ASC`,
+      params
+    );
+
+    // ── Top 3 users per sequence ────────────────────────────────────
+    //
+    // For each sequence, find the reps who have the most sent activity in
+    // the window. Capped at 3. Computed with a window function in one
+    // query, same pattern as team-by-rep's topCampaigns.
+
+    const seqIds = perSeqRes.rows.map(r => r.sequence_id);
+    const topUsers = new Map();   // sequenceId → [{ userId, name, enrolled, sent }]
+
+    if (seqIds.length > 0) {
+      const tuParams = [req.orgId, scopeUserIds, window.startISO, window.endISO, seqIds];
+      let tuParamIdx = 6;
+
+      let tuCampaignClause = '';
+      if (campaignIdFilter !== null) {
+        tuParams.push(campaignIdFilter);
+        tuCampaignClause = `AND p.campaign_id = ANY($${tuParamIdx}::int[])`;
+        tuParamIdx++;
+      }
+
+      const tuRes = await pool.query(
+        `WITH per_seq_user AS (
+           SELECT
+             se.sequence_id,
+             se.enrolled_by AS user_id,
+             COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed'))::int AS sent,
+             COUNT(DISTINCT p.id)::int AS enrolled
+           FROM sequence_enrollments se
+           JOIN prospects p ON p.id = se.prospect_id
+           LEFT JOIN sequence_step_logs ssl
+             ON ssl.enrollment_id = se.id
+            AND ssl.fired_at >= $3::timestamptz
+            AND ssl.fired_at <= $4::timestamptz
+           WHERE se.org_id     = $1
+             AND se.enrolled_by = ANY($2::int[])
+             AND se.sequence_id = ANY($5::int[])
+             ${tuCampaignClause}
+           GROUP BY se.sequence_id, se.enrolled_by
+         ),
+         ranked AS (
+           SELECT *,
+                  ROW_NUMBER() OVER (PARTITION BY sequence_id ORDER BY sent DESC, enrolled DESC, user_id ASC) AS rn
+           FROM per_seq_user
+         )
+         SELECT psu.sequence_id, psu.user_id, psu.sent, psu.enrolled,
+                u.first_name, u.last_name, u.email
+         FROM ranked psu
+         LEFT JOIN users u ON u.id = psu.user_id
+         WHERE psu.rn <= 3
+         ORDER BY psu.sequence_id, psu.rn`,
+        tuParams
+      );
+
+      for (const row of tuRes.rows) {
+        if (!topUsers.has(row.sequence_id)) topUsers.set(row.sequence_id, []);
+        const name = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || row.email;
+        topUsers.get(row.sequence_id).push({
+          userId:   row.user_id,
+          name,
+          enrolled: row.enrolled,
+          sent:     row.sent,
+        });
+      }
+    }
+
+    // ── Hydrate the rows with owner metadata (isDirect, depth) ──────
+    const reportByUserId = new Map(scope.reports.map(r => [r.userId, r]));
+    const sequences = perSeqRes.rows.map(r => {
+      const ownerName = r.owner_id
+        ? ([r.first_name, r.last_name].filter(Boolean).join(' ').trim() || r.email)
+        : null;
+      const ownerMeta = reportByUserId.get(r.owner_id);
+      const isViewer  = r.owner_id === req.user.userId;
+      return {
+        sequenceId: r.sequence_id,
+        name:       r.name,
+        owner: r.owner_id ? {
+          userId:           r.owner_id,
+          name:             ownerName,
+          isDirect:         isViewer ? false : (ownerMeta?.isDirect ?? null),
+          depthFromManager: isViewer ? 0     : (ownerMeta?.depthFromManager ?? null),
+        } : null,
+        enrolled:       r.enrolled,
+        drafts:         r.drafts,
+        sent:           r.sent,
+        replied:        r.replied,
+        failed:         r.failed,
+        stalled:        r.stalled,
+        lastActivityAt: r.last_fired_at,
+        topUsers:       topUsers.get(r.sequence_id) || [],
+      };
+    });
+
+    // ── Totals ──────────────────────────────────────────────────────
+    //
+    // Sum across the per-sequence rows for the activity counters. For
+    // activeCampaigns we compute the union of distinct campaign_ids touched
+    // across all in-scope sequences in the window (separate query — summing
+    // distinct_campaigns from each row would over-count if two sequences
+    // touch the same campaign).
+    const totals = sequences.reduce((acc, s) => {
+      acc.enrolled += s.enrolled;
+      acc.drafts   += s.drafts;
+      acc.sent     += s.sent;
+      acc.replied  += s.replied;
+      acc.failed   += s.failed;
+      acc.stalled  += s.stalled;
+      return acc;
+    }, _emptyTotals());
+
+    // activeSequences = number of sequences that have any activity or are
+    // currently active state-wise. The perSeqRes already filtered to "has
+    // any signal" via the OR in the outer WHERE, so this is just the row
+    // count.
+    totals.activeSequences = perSeqRes.rows.filter(r => r.is_active || r.drafts > 0 || r.sent > 0 || r.replied > 0 || r.enrolled > 0).length;
+
+    // activeCampaigns: distinct non-null campaign_ids touched by in-scope
+    // enrollments in the window. Excludes the orphan bucket by definition
+    // (campaign_id IS NOT NULL). When the orphan-only mode is in effect
+    // and there are no non-null campaigns, this returns 0.
+    const acParams = [req.orgId, scopeUserIds, window.startISO, window.endISO];
+    let acCampaignClause = '';
+    let acSeqClause = '';
+    let acParamIdx = 5;
+    if (campaignIdFilter !== null) {
+      acParams.push(campaignIdFilter);
+      acCampaignClause = `AND p.campaign_id = ANY($${acParamIdx}::int[])`;
+      acParamIdx++;
+    }
+    if (sequenceIdFilter !== null) {
+      acParams.push(sequenceIdFilter);
+      acSeqClause = `AND se.sequence_id = ANY($${acParamIdx}::int[])`;
+    }
+    const acRes = await pool.query(
+      `SELECT COUNT(DISTINCT p.campaign_id)::int AS n
+         FROM sequence_enrollments se
+         JOIN prospects p ON p.id = se.prospect_id
+        WHERE se.org_id     = $1
+          AND se.enrolled_by = ANY($2::int[])
+          AND p.campaign_id IS NOT NULL
+          AND (
+            -- Activity in the window OR enrollment in the window
+            EXISTS (SELECT 1 FROM sequence_step_logs ssl
+                     WHERE ssl.enrollment_id = se.id
+                       AND ssl.fired_at >= $3::timestamptz
+                       AND ssl.fired_at <= $4::timestamptz)
+            OR (se.enrolled_at >= $3::timestamptz AND se.enrolled_at <= $4::timestamptz)
+          )
+          ${acCampaignClause}
+          ${acSeqClause}`,
+      acParams
+    );
+    totals.activeCampaigns = acRes.rows[0]?.n || 0;
+    totals.enrolledProspects = totals.enrolled;   // alias for the UI tile
+
+    totals.repliedRate = totals.sent > 0
+      ? +((totals.replied / totals.sent) * 100).toFixed(1)
+      : 0;
+
+    res.json({
+      scope,
+      period: {
+        startDate:   window.startISO,
+        endDate:     window.endISO,
+        description: window.isoIntervalDescription,
+      },
+      totals,
+      sequences,
+    });
+  } catch (err) {
+    console.error('team-by-sequence error:', err);
+    res.status(500).json({ error: { message: 'Failed to load team-by-sequence: ' + err.message } });
   }
 });
 
