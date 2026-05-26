@@ -921,16 +921,42 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
             <div>
               <div style={{ marginBottom: 20 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+                  {/* Generate Research Notes — calls POST /prospects/:id/research,
+                      which runs TWO AI calls in sequence: stage-1 account research
+                      (cached 30 days per account — re-used across prospects at the
+                      same company) and stage-2 person research (per-prospect).
+                      Approximate cost on Haiku 4.5:
+                        cold (first prospect at the account):  ~$0.012
+                        warm (account research cached):        ~$0.005
+                      Numbers above reflect Anthropic Haiku 4.5 list pricing and
+                      do not include the prompt-caching discount (these calls use
+                      free-text prompts, not skill bundles, so caching gain is
+                      lower than for outreach skills). Cost is logged per-call
+                      in ai_token_usage with call_type ∈ {research_account,
+                      research_person}; ai_token_usage.estimated_cost_usd is the
+                      authoritative number — the figures here are guidance for
+                      the rep, not a billing source. */}
                   <button
                     onClick={handleResearch}
                     disabled={researching}
+                    title={
+                      researching
+                        ? 'Calling the AI research model — usually 5-15 seconds.'
+                        : (prospect.research_notes
+                            ? 'Re-run AI research. Approx cost: ~$0.005 if the account research is still cached (last 30 days), ~$0.012 otherwise.'
+                            : 'Run AI research on this prospect. Approx cost: ~$0.012 first time at this account, ~$0.005 if another prospect at the same account was researched in the last 30 days.')
+                    }
                     style={{
                       padding: '8px 18px', background: researching ? '#e5e7eb' : '#0F9D8E',
                       color: researching ? '#6b7280' : '#fff', border: 'none', borderRadius: 7,
                       fontSize: 13, fontWeight: 600, cursor: researching ? 'wait' : 'pointer',
                     }}
                   >
-                    {researching ? '⏳ Researching…' : prospect.research_notes ? '🔄 Re-research' : '🔍 Research Prospect'}
+                    {researching
+                      ? '⏳ Generating notes…'
+                      : prospect.research_notes
+                        ? '🔄 Re-generate Research Notes'
+                        : '📝 Generate Research Notes'}
                   </button>
                   {/* Enrich Account — fills account firmographics from CoreSignal.
                       Operates on the account, not the prospect, so two prospects
@@ -957,6 +983,25 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
                       {prospect.research_meta.account_research_cached ? ' · account cached ✓' : ''}
                     </span>
                   )}
+                </div>
+
+                {/* AI-cost guidance line. Visible whenever the rep is on this
+                    tab; lets them make an informed call before clicking the
+                    button. Numbers are guidance (Haiku 4.5 list pricing) —
+                    real per-call cost is logged in ai_token_usage. The
+                    account-cache hint is the meaningful detail: a rep
+                    researching their 10th prospect at the same company pays
+                    roughly 0.5¢, not 1.2¢. */}
+                <div style={{
+                  fontSize: 11, color: '#6b7280', marginBottom: 12,
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  <span aria-hidden="true">💸</span>
+                  <span>
+                    AI cost: <strong style={{ color: '#374151' }}>~$0.012</strong> first prospect at an account,
+                    <strong style={{ color: '#374151' }}> ~$0.005</strong> for subsequent prospects
+                    {' '}<span style={{ color: '#9ca3af' }}>(account research is cached 30 days)</span>.
+                  </span>
                 </div>
 
                 {researchError && (
@@ -1053,12 +1098,16 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
                 )}
               </div>
 
-              {/* Existing intel card below */}
+              {/* Intel summary card. The old "Generate AI Outreach" CTA on
+                  this card was removed because it duplicated the GENERATE
+                  OUTREACH section below (OutreachSkillPanel). The composer
+                  is still reachable from the header "📝 New Outreach"
+                  button, the Actions tab, and the "Use draft" buttons
+                  inside OutreachSkillPanel after a draft is generated. */}
               <ProspectIntelCard
                 contextData={contextData}
                 loading={contextLoading}
                 prospect={prospect}
-                onOpenOutreach={(channel) => openOutreach(channel)}
               />
 
               {/* Outreach skill — generate first-touch email + LinkedIn note.
@@ -1889,7 +1938,7 @@ function LinkedInProfileSection({ prospect }) {
   );
 }
 
-function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
+function ProspectIntelCard({ contextData, loading, prospect }) {
   const [expanded, setExpanded] = useState({});
   const toggle = (k) => setExpanded(prev => ({ ...prev, [k]: !prev[k] }));
   const [techExpanded, setTechExpanded] = useState(false);
@@ -2243,17 +2292,19 @@ function ProspectIntelCard({ contextData, loading, prospect, onOpenOutreach }) {
         )}
       </div>
 
-      {/* AI Outreach CTA */}
-      <button
-        onClick={() => onOpenOutreach && onOpenOutreach()}
-        style={{
-          width: '100%', padding: '10px 16px', background: '#0F9D8E',
-          border: 'none', borderRadius: 8, color: '#fff', fontSize: 13,
-          fontWeight: 600, cursor: 'pointer',
-        }}
-      >
-        ✨ Generate AI Outreach
-      </button>
+      {/* The "Generate AI Outreach" CTA that used to live here was removed
+          because it duplicated the GENERATE OUTREACH section directly below
+          this card (which calls the actual outreach-email and outreach-linkedin
+          skills and produces drafts inline with a hook picker). This CTA
+          opened the OutreachComposer modal — a manual-send surface — and the
+          name implied AI generation it didn't actually do. The composer is
+          still reachable from:
+            - The "Use draft" buttons inside the GENERATE OUTREACH section
+              after a draft is produced (the canonical happy path).
+            - The "📝 New Outreach" button in the detail-panel header.
+            - The "Start Outreach" button on each pending action in the
+              Actions tab.
+          No functionality was stranded by this removal. */}
     </div>
   );
 }
