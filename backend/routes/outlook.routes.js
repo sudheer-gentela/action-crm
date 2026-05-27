@@ -130,7 +130,13 @@ router.get('/callback', async (req, res) => {
       // oauth_tokens), so the userId-based getUserProfile() would fail —
       // there's nothing to look up in the oauth_tokens table. The
       // getProfileWithAccessToken helper bypasses the DB lookup entirely.
-      const profile = await getProfileWithAccessToken(tokenResponse.access_token);
+      //
+      // NOTE: getTokenFromCode() returns camelCase keys (accessToken,
+      // refreshToken, expiresOn) — matching what saveUserToken() consumes
+      // in standard mode. The original prospecting branches read
+      // snake_case (access_token, etc.) and were therefore inserting
+      // nulls into the DB. Fixed here.
+      const profile = await getProfileWithAccessToken(tokenResponse.accessToken);
       const email   = profile.mail || profile.userPrincipalName;
 
       if (!email) {
@@ -158,11 +164,9 @@ router.get('/callback', async (req, res) => {
           userId,
           email,
           stateData.label || null,
-          tokenResponse.access_token,
-          tokenResponse.refresh_token || null,
-          tokenResponse.expires_in
-            ? new Date(Date.now() + tokenResponse.expires_in * 1000)
-            : null,
+          tokenResponse.accessToken,
+          tokenResponse.refreshToken || null,
+          tokenResponse.expiresOn || null,
           JSON.stringify({
             email,
             displayName: profile.displayName || null,
@@ -192,7 +196,8 @@ router.get('/callback', async (req, res) => {
       // Use the access token directly (same reason as the prospecting
       // branch above — tokens go into prospecting_sender_accounts, not
       // oauth_tokens, so the userId-based getUserProfile() would fail).
-      const profile = await getProfileWithAccessToken(tokenResponse.access_token);
+      // Token fields are camelCase per getTokenFromCode's return shape.
+      const profile = await getProfileWithAccessToken(tokenResponse.accessToken);
       const email   = profile.mail || profile.userPrincipalName;
 
       if (!email) {
@@ -220,11 +225,9 @@ router.get('/callback', async (req, res) => {
           clientId,
           email,
           stateData.label || null,
-          tokenResponse.access_token,
-          tokenResponse.refresh_token || null,
-          tokenResponse.expires_in
-            ? new Date(Date.now() + tokenResponse.expires_in * 1000)
-            : null,
+          tokenResponse.accessToken,
+          tokenResponse.refreshToken || null,
+          tokenResponse.expiresOn || null,
           JSON.stringify({
             email,
             displayName: profile.displayName || null,
