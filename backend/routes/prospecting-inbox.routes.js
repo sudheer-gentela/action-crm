@@ -598,12 +598,19 @@ router.post('/sync', async (req, res) => {
           }
 
         } else if (account.provider === 'outlook') {
-          // Use the account owner's outlook tokens
+          // Use the sender account's own tokens (stored in
+          // prospecting_sender_accounts) — NOT the user's oauth_tokens row.
+          // The reading account here is the sender's mailbox, which is
+          // where replies will land. fetchEmails proactively refreshes
+          // the token if near expiry and writes it back.
           try {
             const result = await outlookService.fetchEmails(account.user_id, {
               top: 100,
               since: sinceDate.toISOString(),
               filter: `receivedDateTime gt ${sinceDate.toISOString()}`,
+              accessToken:  account.access_token,
+              refreshToken: account.refresh_token,
+              senderEmail:  account.email,
             });
 
             rawEmails = (result.emails || []).map(e => ({
