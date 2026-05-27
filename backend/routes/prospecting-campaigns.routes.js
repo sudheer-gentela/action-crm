@@ -41,6 +41,11 @@ const PersonalizationDispatcher = require('../services/PersonalizationDispatcher
 // on /:id/sequence-health go through the scope service for auth.
 const ReportingScopeService = require('../services/ReportingScopeService');
 
+// Slice 1 of sending-schedule feature: resolves daily cap + send window
+// (org default, optionally overridden per-campaign) and computes per-
+// enrollment next_step_due timestamps spread across days.
+const SendingSchedule = require('../services/SendingScheduleResolver');
+
 router.use(authenticateToken);
 router.use(orgContext);
 router.use(requireModule('prospecting'));
@@ -1477,10 +1482,15 @@ router.post('/:id/bulk-activate', async (req, res) => {
     }
 
     // Load sequence to compute next_step_due.
+    // Pull both delay_days and channel from the first step — channel
+    // controls within-day scheduling (email = spread across window;
+    // linkedin/task/call = released at window start for manual action).
     const seqRes = await pool.query(
       `SELECT s.id, s.name,
               (SELECT delay_days FROM sequence_steps
-                 WHERE sequence_id = s.id ORDER BY step_order LIMIT 1) AS first_delay
+                 WHERE sequence_id = s.id ORDER BY step_order LIMIT 1) AS first_delay,
+              (SELECT channel     FROM sequence_steps
+                 WHERE sequence_id = s.id ORDER BY step_order LIMIT 1) AS first_channel
          FROM sequences s
         WHERE s.id = $1 AND s.org_id = $2 AND s.status = 'active'`,
       [campaign.default_sequence_id, req.orgId]
@@ -1491,7 +1501,49 @@ router.post('/:id/bulk-activate', async (req, res) => {
       } });
     }
     const seq = seqRes.rows[0];
-    const firstDelay = parseInt(seq.first_delay, 10) || 0;
+    const firstDelay   = parseInt(seq.first_delay, 10) || 0;
+    const firstChannel = seq.first_channel || 'email';
+
+    // ── Slice 1: pre-schedule all N enrollments across days ────────────────
+    //
+    // Compute one next_step_due per candidate, spread across valid days/hours
+    // respecting the configured daily cap + send window. The cascade
+    // (default → org → campaign) is resolved here once for the whole batch.
+    //
+    // existingByDay counts already-scheduled enrollments for the campaign's
+    // default sequence, grouped by their next_step_due's local-tz day. This
+    // prevents the new batch from doubling up on days that already have
+    // enrollments from prior bulk-activate runs.
+    const scheduleSettings = await SendingSchedule.resolveSettings({
+      orgId:      req.orgId,
+      campaignId: parseInt(req.params.id, 10),
+    });
+    const tz = scheduleSettings.sendWindowTimezone;
+    const existingRes = await pool.query(
+      `SELECT next_step_due FROM sequence_enrollments
+        WHERE org_id = $1 AND sequence_id = $2 AND status = 'active'
+          AND next_step_due > NOW()`,
+      [req.orgId, campaign.default_sequence_id]
+    );
+    const existingByDay = {};
+    for (const r of existingRes.rows) {
+      // Bucket each existing next_step_due by its local-tz calendar day.
+      const local = SendingSchedule._internal.getLocalCalendarDate(new Date(r.next_step_due), tz);
+      existingByDay[local.dayKey] = (existingByDay[local.dayKey] || 0) + 1;
+    }
+    const scheduledSlots = SendingSchedule.scheduleBatchSlots({
+      count: candidates.length,
+      settings: scheduleSettings,
+      channel: firstChannel,
+      existingByDay,
+      now: new Date(),
+    });
+    // Apply the sequence's first_step delay (legacy: "first step fires N days
+    // after enrollment") on top of the scheduled slot. firstDelay=0 is the
+    // common case for prospecting sequences.
+    const finalSlots = firstDelay > 0
+      ? scheduledSlots.map(s => new Date(s.getTime() + firstDelay * 86400000))
+      : scheduledSlots;
 
     // Per-prospect processing — sequential to keep skill rate-limited and to
     // produce clean per-prospect error messages. For 25 prospects with skill
@@ -1506,6 +1558,7 @@ router.post('/:id/bulk-activate', async (req, res) => {
     const wantSkill = runSkill !== false && skipPersonalisation !== true;
     const enrollments = [];
     const skipped     = [];
+    let slotIndex     = 0;
 
     for (const prospectId of candidates) {
       let personalisedSteps = {};
@@ -1553,10 +1606,12 @@ router.post('/:id/bulk-activate', async (req, res) => {
         }
       }
 
-      // Step 2: insert enrollment (active, next_step_due = now + firstDelay).
+      // Step 2: insert enrollment (active, next_step_due = pre-computed
+      // slot from the scheduler). The scheduler already accounted for
+      // firstDelay above (see finalSlots build).
       try {
-        const nextDue = new Date();
-        nextDue.setDate(nextDue.getDate() + firstDelay);
+        const nextDue = finalSlots[slotIndex];
+        slotIndex++;
 
         const er = await pool.query(
           `INSERT INTO sequence_enrollments

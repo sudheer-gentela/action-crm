@@ -164,19 +164,58 @@ const SequenceStepFirer = {
 
     const client = await pool.connect();
     try {
-      // Include sequence-level require_approval and name for draft metadata
+      // Include sequence-level require_approval, name, prospect.campaign_id
+      // (per-campaign send-window override resolution), and the CURRENT step's
+      // channel (channel-aware window: email-only steps gate on the window,
+      // manual steps like LinkedIn/task/call create tasks regardless of hour).
       const dueRes = await client.query(
         `SELECT se.*, s.id AS seq_id, s.name AS seq_name,
-                s.require_approval AS seq_require_approval
+                s.require_approval AS seq_require_approval,
+                p.campaign_id AS prospect_campaign_id,
+                ss.channel AS current_step_channel
            FROM sequence_enrollments se
-           JOIN sequences s ON s.id = se.sequence_id
+           JOIN sequences  s ON s.id = se.sequence_id
+           JOIN prospects  p ON p.id = se.prospect_id
+           LEFT JOIN sequence_steps ss
+                  ON ss.sequence_id = se.sequence_id
+                 AND ss.step_order  = se.current_step
           WHERE se.status = 'active'
             AND se.next_step_due <= NOW()
           LIMIT 100`
       );
 
+      // Resolve send-window settings per (orgId, campaignId) once and cache —
+      // many enrollments share the same campaign, so we don't want to hit
+      // the DB for resolveSettings on every iteration.
+      const SendingSchedule = require('./SendingScheduleResolver');
+      const settingsCache = new Map();
+      const getSettings = async (orgId, campaignId) => {
+        const key = `${orgId}:${campaignId || 'null'}`;
+        if (!settingsCache.has(key)) {
+          settingsCache.set(key,
+            await SendingSchedule.resolveSettings({ orgId, campaignId }));
+        }
+        return settingsCache.get(key);
+      };
+
       for (const enrollment of dueRes.rows) {
         try {
+          // ── Send-window gate ───────────────────────────────────────────────
+          // Pre-scheduler already placed next_step_due inside the window at
+          // enrollment time, so the common case here is "always pass". But:
+          //   - Manual single-enroll paths may not use the scheduler.
+          //   - Settings may have changed since enrollment.
+          //   - Cron tick may have drifted slightly outside the window.
+          // For email steps we strictly enforce the window. For manual
+          // channels (LinkedIn, task, call) we always pass — the firer
+          // just creates a task row, no message leaves the system.
+          const settings = await getSettings(enrollment.org_id, enrollment.prospect_campaign_id);
+          const channel  = enrollment.current_step_channel || 'email';
+          if (!SendingSchedule.isWithinWindow(new Date(), settings, channel)) {
+            // Not an error; we'll try again next tick. No counter bump.
+            continue;
+          }
+
           // ── Auto-stop: inbound reply received since enrollment ────────────
           const replyCheck = await client.query(
             `SELECT id FROM emails
