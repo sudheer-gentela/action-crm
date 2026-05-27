@@ -413,7 +413,10 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
       try {
         const pc = await apiFetch(`/prospecting-campaigns/${campaignId}/pacing`);
         setReadyToActivate(pc?.pacing?.readyToActivate || 0);
-        setTargetCount(pc?.stageCounts?.target || 0);
+        // Backend returns the per-stage breakdown under `stages`, not
+        // `stageCounts` — earlier draft of this code had the wrong key
+        // which silently zeroed out the bulk-promote button.
+        setTargetCount(pc?.stages?.target || 0);
       } catch (_) { setReadyToActivate(0); setTargetCount(0); }
       setError('');
     } catch (err) {
