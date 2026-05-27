@@ -214,7 +214,15 @@ router.get('/pipeline/summary', async (req, res) => {
     const outreachResult = await db.query(
       `SELECT
          COUNT(CASE WHEN e.direction = 'sent' THEN 1 END)     AS outreach_this_week,
-         COUNT(CASE WHEN e.direction IN ('received','inbound') THEN 1 END) AS responses_this_week
+         COUNT(CASE WHEN e.direction IN ('received','inbound')
+                     AND EXISTS (
+                       SELECT 1 FROM emails out_e
+                       WHERE out_e.org_id      = e.org_id
+                         AND out_e.prospect_id = e.prospect_id
+                         AND out_e.direction   = 'sent'
+                         AND out_e.sent_at     < e.sent_at
+                     )
+                    THEN 1 END) AS responses_this_week
        FROM emails e
        WHERE e.org_id = $1
          AND e.prospect_id IS NOT NULL
@@ -442,12 +450,10 @@ router.get('/by-linkedin-url', async (req, res) => {
       `SELECT p.*,
               acc.name  AS account_name,
               u.first_name AS owner_first_name,
-              u.last_name  AS owner_last_name,
-              camp.name AS campaign_name
+              u.last_name  AS owner_last_name
        FROM prospects p
-       LEFT JOIN accounts             acc  ON p.account_id  = acc.id
-       LEFT JOIN users                u    ON p.owner_id    = u.id
-       LEFT JOIN prospecting_campaigns camp ON p.campaign_id = camp.id
+       LEFT JOIN accounts acc ON p.account_id = acc.id
+       LEFT JOIN users    u   ON p.owner_id   = u.id
        WHERE p.org_id = $1
          AND LOWER(REGEXP_REPLACE(p.linkedin_url, '.*/in/([^/?#]+).*', '\\1')) = $2
          AND p.linkedin_url IS NOT NULL
@@ -470,42 +476,12 @@ router.get('/by-linkedin-url', async (req, res) => {
     );
     const pendingDrafts = parseInt(draftsResult.rows[0].count);
 
-    // ── Active sequence enrollments (consumed by the extension panel) ────────
-    // Returned in two parallel shapes for backwards compatibility:
-    //   - activeSequenceIds: [int]                — what the smart-suggest
-    //     prompt uses to decide whether to nag (added pre-v1.8.1).
-    //   - activeSequences:   [{ id, name }]       — what the in-panel
-    //     "current target" badge uses to display names without a second
-    //     round-trip.
-    // We JOIN sequences so the names come back even when the sequence
-    // is paused or archived (the picker list only includes active ones,
-    // so a client-side lookup wouldn't find them).
-    const enrollResult = await db.query(
-      `SELECT se.sequence_id, s.name AS sequence_name
-         FROM sequence_enrollments se
-         LEFT JOIN sequences s ON s.id = se.sequence_id
-        WHERE se.prospect_id = $1 AND se.status = 'active'
-        ORDER BY se.created_at ASC`,
-      [row.id]
-    );
-    const activeSequenceIds = enrollResult.rows.map(r => r.sequence_id);
-    const activeSequences   = enrollResult.rows.map(r => ({
-      id:   r.sequence_id,
-      name: r.sequence_name || `Sequence #${r.sequence_id}`,
-    }));
-
     res.json({
       prospect: {
         ...row,
-        account:           row.account_id ? { id: row.account_id, name: row.account_name } : null,
-        owner:             { first_name: row.owner_first_name, last_name: row.owner_last_name },
-        // campaign_name comes off the JOIN above; it's null when the
-        // prospect has no campaign or the campaign was deleted. The
-        // extension badge uses this directly without a name lookup.
-        campaign:          row.campaign_id ? { id: row.campaign_id, name: row.campaign_name } : null,
-        pendingDrafts,    // ← consumed by extension badge
-        activeSequenceIds, // ← consumed by extension smart-suggest prompt (v1.8)
-        activeSequences,   // ← consumed by extension target badge (v1.8.1)
+        account:       row.account_id ? { id: row.account_id, name: row.account_name } : null,
+        owner:         { first_name: row.owner_first_name, last_name: row.owner_last_name },
+        pendingDrafts, // ← consumed by extension badge
       },
     });
   } catch (error) {
@@ -960,18 +936,6 @@ router.post('/', async (req, res) => {
       firstName, lastName, email, phone, linkedinUrl, title, linkedinHeadline, location,
       companyName, companyDomain, companySize, companyIndustry, companyLinkedInUrl,
       accountId, source, playbookId, tags,
-      // NEW (2026-05): optional campaign assignment + sequence auto-enrollment.
-      // Both are nullable / undefined-safe — callers that don't care (most of
-      // the frontend create flows today) continue to work unchanged.
-      //   campaignId  — sets prospects.campaign_id at insert time.
-      //   sequenceId  — if provided, the new prospect is enrolled into this
-      //                 sequence in the same request. Enrollment failure is
-      //                 logged but never rolls back the prospect creation —
-      //                 the response carries an enrollmentError instead.
-      // Wired up so the LinkedIn extension can push a prospect straight into
-      // a campaign + sequence in one click. Also useful for any future
-      // single-prospect import flow.
-      campaignId, sequenceId,
     } = req.body;
 
     if (!firstName || !lastName) {
@@ -994,37 +958,6 @@ router.post('/', async (req, res) => {
           },
         });
       }
-    }
-
-    // Validate campaign belongs to this org BEFORE the insert. We do this
-    // up-front (rather than relying on the FK) so we can return a clean 400
-    // instead of a generic 500 on a cross-org id. Mirrors the same check the
-    // bulk-import path does.
-    let resolvedCampaignId = null;
-    if (campaignId) {
-      const campRes = await db.query(
-        `SELECT id FROM prospecting_campaigns WHERE id = $1 AND org_id = $2`,
-        [campaignId, req.orgId]
-      );
-      if (!campRes.rows.length) {
-        return res.status(400).json({ error: { message: 'Campaign not found in this org' } });
-      }
-      resolvedCampaignId = campRes.rows[0].id;
-    }
-
-    // Same idea for the sequence — validate up-front so a bad id is a 400,
-    // not a silent enrollment failure logged after the prospect is already
-    // created. We require status='active' to match POST /api/sequences/enroll.
-    let resolvedSequenceId = null;
-    if (sequenceId) {
-      const seqRes = await db.query(
-        `SELECT id FROM sequences WHERE id = $1 AND org_id = $2 AND status = 'active'`,
-        [sequenceId, req.orgId]
-      );
-      if (!seqRes.rows.length) {
-        return res.status(400).json({ error: { message: 'Sequence not found in this org or is not active' } });
-      }
-      resolvedSequenceId = seqRes.rows[0].id;
     }
 
     // Always go through resolveAccountId. When the caller passes an explicit
@@ -1074,104 +1007,29 @@ router.post('/', async (req, res) => {
       `INSERT INTO prospects (
          org_id, owner_id, first_name, last_name, email, phone, linkedin_url,
          title, linkedin_headline, location, company_name, company_domain, company_size,
-         company_industry, account_id, source, playbook_id, tags, campaign_id,
+         company_industry, account_id, source, playbook_id, tags,
          stage, stage_changed_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7,
          $8, $9, $10, $11, $12, $13,
-         $14, $15, $16, $17, $18, $19,
+         $14, $15, $16, $17, $18,
          'target', CURRENT_TIMESTAMP
        ) RETURNING *`,
       [
         req.orgId, req.user.userId, firstName, lastName, email, phone, linkedinUrl,
         title, linkedinHeadline || null, location, companyName, prospectCompanyDomain, companySize,
         companyIndustry, resolvedAccountId, source || 'manual', resolvedPlaybookId,
-        JSON.stringify(tags || []), resolvedCampaignId,
+        JSON.stringify(tags || []),
       ]
     );
-
-    const newProspect = result.rows[0];
 
     await db.query(
       `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
        VALUES ($1, $2, $3, 'created', $4)`,
-      [req.orgId, newProspect.id, req.user.userId, `Prospect created from ${source || 'manual'}`]
+      [req.orgId, result.rows[0].id, req.user.userId, `Prospect created from ${source || 'manual'}`]
     );
 
-    // ── Optional sequence enrollment ──────────────────────────────────────────
-    // Mirrors POST /api/sequences/enroll (single-prospect path) so the
-    // extension can push a prospect straight into a sequence in one call.
-    // Best-effort: if enrollment fails for any reason the prospect insert
-    // is NOT rolled back — we still want the rep to have the prospect on
-    // file. The failure is surfaced as enrollmentError in the response so
-    // the UI can decide whether to show a warning.
-    let enrollment = null;
-    let enrollmentError = null;
-    if (resolvedSequenceId) {
-      try {
-        // First step's delay_days drives next_step_due, same as /enroll.
-        const firstStepRes = await db.query(
-          `SELECT delay_days FROM sequence_steps
-            WHERE sequence_id = $1
-            ORDER BY step_order LIMIT 1`,
-          [resolvedSequenceId]
-        );
-        const firstDelayDays = firstStepRes.rows[0]?.delay_days ?? 0;
-        const nextDue = new Date();
-        nextDue.setDate(nextDue.getDate() + (parseInt(firstDelayDays) || 0));
-
-        const er = await db.query(
-          `INSERT INTO sequence_enrollments
-                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps)
-                VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (sequence_id, prospect_id) DO NOTHING
-           RETURNING *`,
-          [req.orgId, resolvedSequenceId, newProspect.id, req.user.userId, nextDue, JSON.stringify({})]
-        );
-
-        if (er.rows.length) {
-          enrollment = er.rows[0];
-
-          // Activity row so the enrollment surfaces on the prospect's Activity
-          // tab — same shape /api/sequences/enroll writes.
-          try {
-            const seqNameRes = await db.query(
-              `SELECT name FROM sequences WHERE id = $1`,
-              [resolvedSequenceId]
-            );
-            const seqName = seqNameRes.rows[0]?.name || 'sequence';
-            await db.query(
-              `INSERT INTO prospecting_activities
-                           (org_id, prospect_id, user_id, activity_type, description, metadata)
-                    VALUES ($1, $2, $3, 'sequence_enrolled', $4, $5)`,
-              [
-                req.orgId,
-                newProspect.id,
-                req.user.userId,
-                `Enrolled in sequence "${seqName}"`,
-                JSON.stringify({
-                  sequenceId:   resolvedSequenceId,
-                  sequenceName: seqName,
-                  enrollmentId: enrollment.id,
-                }),
-              ]
-            );
-          } catch (actErr) {
-            // Non-fatal — activity log failure doesn't undo enrollment.
-            console.warn('POST /prospects sequence_enrolled activity log failed:', actErr.message);
-          }
-        }
-      } catch (enrollErr) {
-        console.error('POST /prospects inline enrollment failed:', enrollErr);
-        enrollmentError = enrollErr.message || 'Enrollment failed';
-      }
-    }
-
-    res.status(201).json({
-      prospect:        newProspect,
-      enrollment:      enrollment || null,
-      enrollmentError: enrollmentError,
-    });
+    res.status(201).json({ prospect: result.rows[0] });
   } catch (error) {
     console.error('Create prospect error:', error);
     res.status(500).json({ error: { message: 'Failed to create prospect' } });
@@ -1242,175 +1100,6 @@ router.put('/:id', async (req, res) => {
   } catch (error) {
     console.error('Update prospect error:', error);
     res.status(500).json({ error: { message: 'Failed to update prospect' } });
-  }
-});
-
-// ── POST /:id/push-to-target — assign existing prospect to campaign + sequence ──
-//
-// Used by the LinkedIn extension's "smart-suggest" prompt: when a found
-// prospect isn't in the rep's default campaign or default sequence, the
-// panel offers a one-click "Add to <campaign> → <sequence>" link that
-// hits this endpoint.
-//
-// Both fields nullable; sending just one (e.g. campaignId only) updates
-// that field and leaves the other untouched. Sequence enrollment uses
-// the same partial-failure semantics as POST /prospects:
-//   - prospect campaign update succeeds OR fails atomically
-//   - sequence enrollment is best-effort, surfaced as enrollmentError
-//     on the response without rolling back the campaign update
-router.post('/:id/push-to-target', async (req, res) => {
-  try {
-    const { campaignId, sequenceId } = req.body;
-    const prospectId = parseInt(req.params.id, 10);
-
-    if (!campaignId && !sequenceId) {
-      return res.status(400).json({ error: { message: 'campaignId or sequenceId (or both) is required' } });
-    }
-
-    // Confirm prospect belongs to this org. The campaign/sequence
-    // validations below are cheaper than the cross-table UPDATE so we
-    // do this lookup first to fail fast on a bad prospect id.
-    const pRes = await db.query(
-      `SELECT id, campaign_id FROM prospects
-        WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
-      [prospectId, req.orgId]
-    );
-    if (!pRes.rows.length) {
-      return res.status(404).json({ error: { message: 'Prospect not found' } });
-    }
-
-    // Validate campaign + sequence up-front for clean 400s on bad ids.
-    let resolvedCampaignId = null;
-    if (campaignId) {
-      const cRes = await db.query(
-        `SELECT id FROM prospecting_campaigns WHERE id = $1 AND org_id = $2`,
-        [campaignId, req.orgId]
-      );
-      if (!cRes.rows.length) {
-        return res.status(400).json({ error: { message: 'Campaign not found in this org' } });
-      }
-      resolvedCampaignId = cRes.rows[0].id;
-    }
-
-    let resolvedSequenceId = null;
-    if (sequenceId) {
-      const sRes = await db.query(
-        `SELECT id FROM sequences WHERE id = $1 AND org_id = $2 AND status = 'active'`,
-        [sequenceId, req.orgId]
-      );
-      if (!sRes.rows.length) {
-        return res.status(400).json({ error: { message: 'Sequence not found in this org or is not active' } });
-      }
-      resolvedSequenceId = sRes.rows[0].id;
-    }
-
-    // Update campaign_id only if provided. Done as a single UPDATE so
-    // we don't read-modify-write across the wire.
-    let updatedProspect = pRes.rows[0];
-    if (resolvedCampaignId) {
-      const upd = await db.query(
-        `UPDATE prospects
-            SET campaign_id = $1,
-                updated_at  = CURRENT_TIMESTAMP
-          WHERE id = $2 AND org_id = $3
-          RETURNING *`,
-        [resolvedCampaignId, prospectId, req.orgId]
-      );
-      updatedProspect = upd.rows[0];
-
-      // Activity row so the campaign assignment is visible on the
-      // prospect's Activity tab — same pattern as other in-app actions.
-      try {
-        const cNameRes = await db.query(
-          `SELECT name FROM prospecting_campaigns WHERE id = $1`,
-          [resolvedCampaignId]
-        );
-        const cName = cNameRes.rows[0]?.name || 'campaign';
-        await db.query(
-          `INSERT INTO prospecting_activities
-                       (org_id, prospect_id, user_id, activity_type, description, metadata)
-                VALUES ($1, $2, $3, 'campaign_assigned', $4, $5)`,
-          [
-            req.orgId, prospectId, req.user.userId,
-            `Assigned to campaign "${cName}" from LinkedIn extension`,
-            JSON.stringify({ campaignId: resolvedCampaignId, campaignName: cName, via: 'linkedin_extension' }),
-          ]
-        );
-      } catch (actErr) {
-        console.warn('push-to-target campaign activity log failed:', actErr.message);
-      }
-    }
-
-    // Sequence enrollment — best-effort. Mirrors the inline enrollment
-    // in POST /prospects: prospect changes already committed, enrollment
-    // failure is surfaced but doesn't undo them.
-    let enrollment = null;
-    let enrollmentError = null;
-    if (resolvedSequenceId) {
-      try {
-        const firstStepRes = await db.query(
-          `SELECT delay_days FROM sequence_steps
-            WHERE sequence_id = $1
-            ORDER BY step_order LIMIT 1`,
-          [resolvedSequenceId]
-        );
-        const firstDelayDays = firstStepRes.rows[0]?.delay_days ?? 0;
-        const nextDue = new Date();
-        nextDue.setDate(nextDue.getDate() + (parseInt(firstDelayDays) || 0));
-
-        const er = await db.query(
-          `INSERT INTO sequence_enrollments
-                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps)
-                VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (sequence_id, prospect_id) DO NOTHING
-           RETURNING *`,
-          [req.orgId, resolvedSequenceId, prospectId, req.user.userId, nextDue, JSON.stringify({})]
-        );
-
-        if (er.rows.length) {
-          enrollment = er.rows[0];
-          try {
-            const seqNameRes = await db.query(
-              `SELECT name FROM sequences WHERE id = $1`,
-              [resolvedSequenceId]
-            );
-            const seqName = seqNameRes.rows[0]?.name || 'sequence';
-            await db.query(
-              `INSERT INTO prospecting_activities
-                           (org_id, prospect_id, user_id, activity_type, description, metadata)
-                    VALUES ($1, $2, $3, 'sequence_enrolled', $4, $5)`,
-              [
-                req.orgId, prospectId, req.user.userId,
-                `Enrolled in sequence "${seqName}" from LinkedIn extension`,
-                JSON.stringify({
-                  sequenceId:   resolvedSequenceId,
-                  sequenceName: seqName,
-                  enrollmentId: enrollment.id,
-                  via:          'linkedin_extension',
-                }),
-              ]
-            );
-          } catch (actErr) {
-            console.warn('push-to-target sequence_enrolled activity log failed:', actErr.message);
-          }
-        }
-        // If er.rows is empty, the prospect was ALREADY in this sequence
-        // (ON CONFLICT DO NOTHING) — that's a no-op success from the
-        // extension's perspective. We don't surface it as an error.
-      } catch (enrollErr) {
-        console.error('push-to-target enrollment failed:', enrollErr);
-        enrollmentError = enrollErr.message || 'Enrollment failed';
-      }
-    }
-
-    res.json({
-      prospect:        updatedProspect,
-      enrollment:      enrollment || null,
-      enrollmentError: enrollmentError,
-    });
-  } catch (error) {
-    console.error('push-to-target error:', error);
-    res.status(500).json({ error: { message: 'Failed to assign prospect to target' } });
   }
 });
 

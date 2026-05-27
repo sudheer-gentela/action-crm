@@ -92,6 +92,26 @@ router.get('/', async (req, res) => {
     params.push(effectiveLimit, effectiveOffset);
     const limitClause = `LIMIT $${params.length - 1} OFFSET $${params.length}`;
 
+    // ── Solicited-reply filter ────────────────────────────────────────────────
+    // An inbound email shows in the Replies tab only when there's a preceding
+    // outbound to the same prospect in the org. This excludes cold inbound
+    // mail from prospects (where they reached out to us before we sent them
+    // anything). The full activity history endpoint does NOT apply this
+    // filter — every email related to a prospect still appears in their
+    // detail timeline.
+    const solicitedFilter = `
+      AND (
+        e.direction = 'sent'
+        OR EXISTS (
+          SELECT 1 FROM emails out_e
+          WHERE out_e.org_id     = e.org_id
+            AND out_e.prospect_id = e.prospect_id
+            AND out_e.direction   = 'sent'
+            AND out_e.sent_at     < e.sent_at
+        )
+      )
+    `;
+
     // ── Main query ────────────────────────────────────────────────────────────
     const query = `
       SELECT
@@ -133,6 +153,7 @@ router.get('/', async (req, res) => {
         ${userFilter}
         ${directionFilter}
         ${dateFilter}
+        ${solicitedFilter}
 
       ORDER BY e.sent_at DESC
       ${limitClause}
@@ -151,6 +172,7 @@ router.get('/', async (req, res) => {
         ${userFilter}
         ${directionFilter}
         ${dateFilter}
+        ${solicitedFilter}
     `;
 
     const [emailResult, countResult] = await Promise.all([
@@ -263,6 +285,18 @@ router.get('/stats', async (req, res) => {
         AND e.prospect_id IS NOT NULL
         ${userFilter}
         ${dateFilter}
+        -- Same solicited-reply filter as the inbox GET: inbound counts in
+        -- stats only if a preceding outbound to the same prospect exists.
+        AND (
+          e.direction = 'sent'
+          OR EXISTS (
+            SELECT 1 FROM emails out_e
+            WHERE out_e.org_id     = e.org_id
+              AND out_e.prospect_id = e.prospect_id
+              AND out_e.direction   = 'sent'
+              AND out_e.sent_at     < e.sent_at
+          )
+        )
       GROUP BY GROUPING SETS (
         (),
         (psa.id, psa.email, psa.provider, psa.label)

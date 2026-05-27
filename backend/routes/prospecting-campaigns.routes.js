@@ -248,11 +248,20 @@ router.get('/:id', async (req, res) => {
     // calling back, including voicemails left for the rep).
     const outreachRes = await pool.query(
       `WITH outreach AS (
-         -- Email touches
+         -- Email touches. Inbound counts as "response" only when a
+         -- preceding outbound to the same prospect exists — otherwise
+         -- cold inbound from a prospect would inflate the response count.
          SELECT 'email'::text  AS channel,
                 CASE
                   WHEN e.direction = 'sent'                     THEN 'outreach'
-                  WHEN e.direction IN ('received','inbound')    THEN 'response'
+                  WHEN e.direction IN ('received','inbound')
+                       AND EXISTS (
+                         SELECT 1 FROM emails out_e
+                         WHERE out_e.org_id      = e.org_id
+                           AND out_e.prospect_id = e.prospect_id
+                           AND out_e.direction   = 'sent'
+                           AND out_e.sent_at     < e.sent_at
+                       )                                        THEN 'response'
                   ELSE NULL
                 END AS kind
            FROM emails e
