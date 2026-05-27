@@ -203,12 +203,35 @@ async function getUserProfile(userId) {
   }
 }
 
+/**
+ * Get user profile using an access token directly — bypasses the DB token
+ * lookup. Used in the OAuth callback for "prospecting" / "prospecting_client"
+ * modes, where tokens haven't been saved to oauth_tokens yet (they go into
+ * prospecting_sender_accounts instead) but we still need the user's email
+ * + display name to seed that row. The standard mode saves to oauth_tokens
+ * first and can use the userId-based getUserProfile() above.
+ */
+async function getProfileWithAccessToken(accessToken) {
+  try {
+    const client = Client.init({
+      authProvider: (done) => done(null, accessToken)
+    });
+    return await client
+      .api('/me')
+      .select('id,displayName,mail,userPrincipalName')
+      .get();
+  } catch (error) {
+    throw new Error(`Failed to fetch user profile: ${error.message}`);
+  }
+}
+
 module.exports = {
   getAuthUrl,
   getTokenFromCode,
   fetchEmails,
   fetchEmailById,
-  sendEmail,        // ← NEW
+  sendEmail,
   getUserProfile,
+  getProfileWithAccessToken,
   SCOPES
 };

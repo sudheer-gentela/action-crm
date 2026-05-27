@@ -11,7 +11,7 @@
 
 const express = require('express');
 const router  = express.Router();
-const { getAuthUrl, getTokenFromCode, getUserProfile } = require('../services/outlookService');
+const { getAuthUrl, getTokenFromCode, getUserProfile, getProfileWithAccessToken } = require('../services/outlookService');
 const { saveUserToken, deleteUserTokens } = require('../services/tokenService');
 const { pool } = require('../config/database');
 
@@ -125,8 +125,12 @@ router.get('/callback', async (req, res) => {
         return res.redirect(`${frontendUrl}/?error=missing_org_id`);
       }
 
-      // Get the Outlook email address from profile
-      const profile = await getUserProfile(userId);
+      // Fetch profile using the access token we just received from Microsoft.
+      // This branch saves tokens to prospecting_sender_accounts (not
+      // oauth_tokens), so the userId-based getUserProfile() would fail —
+      // there's nothing to look up in the oauth_tokens table. The
+      // getProfileWithAccessToken helper bypasses the DB lookup entirely.
+      const profile = await getProfileWithAccessToken(tokenResponse.access_token);
       const email   = profile.mail || profile.userPrincipalName;
 
       if (!email) {
@@ -185,16 +189,10 @@ router.get('/callback', async (req, res) => {
         return res.redirect(`${frontendUrl}/?error=missing_org_or_client_id`);
       }
 
-      // Outlook's getTokenFromCode returns snake_case keys (access_token, refresh_token).
-      // getUserProfile does NOT need a prior saveUserToken call for Outlook — it takes
-      // the userId and looks up the token from the token store, but for client senders
-      // there is no user token. We pass the access_token directly to the Graph API call.
-      // The existing getUserProfile(userId) path works here because stateData.userId
-      // is the rep who initiated the flow and already has an Outlook token from before
-      // (or we use the tokenResponse directly). To be safe we call it the same way as
-      // the existing prospecting branch — getUserProfile(userId) — which works because
-      // the rep's userId is always present in state.
-      const profile = await getUserProfile(stateData.userId);
+      // Use the access token directly (same reason as the prospecting
+      // branch above — tokens go into prospecting_sender_accounts, not
+      // oauth_tokens, so the userId-based getUserProfile() would fail).
+      const profile = await getProfileWithAccessToken(tokenResponse.access_token);
       const email   = profile.mail || profile.userPrincipalName;
 
       if (!email) {
