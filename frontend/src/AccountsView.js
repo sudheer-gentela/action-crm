@@ -3,6 +3,7 @@ import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import AccountForm from './AccountForm';
 import AccountMergeBanner from './AccountMergeBanner';
+import EntityIdHint from './EntityIdHint';
 import CoverageScorecard from './CoverageScorecard';
 import { csvExport, EXPORT_COLUMNS } from './csvUtils';
 import CSVImportModal from './CSVImportModal';
@@ -546,7 +547,7 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
         {selectedAccount && (
           <div className="account-detail-panel panel-fullscreen">
             <div className="panel-header">
-              <h2>{selectedAccount.name}</h2>
+              <h2>{selectedAccount.name}<EntityIdHint id={selectedAccount.id} type="account" /></h2>
               <div className="panel-header-actions">
                 <button className="close-panel" onClick={() => setSelectedAccount(null)}>×</button>
               </div>

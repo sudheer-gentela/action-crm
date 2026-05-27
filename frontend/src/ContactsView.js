@@ -3,6 +3,7 @@ import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import ContactForm from './ContactForm';
 import EmailComposer from './EmailComposer';
+import EntityIdHint from './EntityIdHint';
 import ContactMergeBanner from './ContactMergeBanner';
 import { csvExport, EXPORT_COLUMNS } from './csvUtils';
 import CSVImportModal from './CSVImportModal';
@@ -612,7 +613,7 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
         {selectedContact && (
           <div className="contact-detail-panel panel-fullscreen">
             <div className="panel-header">
-              <h2>{selectedContact.first_name} {selectedContact.last_name}{selectedContact.title ? ` — ${selectedContact.title}` : ''}</h2>
+              <h2>{selectedContact.first_name} {selectedContact.last_name}{selectedContact.title ? ` — ${selectedContact.title}` : ''}<EntityIdHint id={selectedContact.id} type="contact" /></h2>
               <div className="panel-header-actions">
                 <button className="close-panel" onClick={() => setSelectedContact(null)}>×</button>
               </div>

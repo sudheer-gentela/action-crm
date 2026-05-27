@@ -6,6 +6,7 @@ import { apiFetch, stripHtml } from './prospectingShared';
 import DraftCard from './DraftCard';
 import SequenceBuilder from '../SequenceBuilder';
 import SequenceEnrollModal from '../SequenceEnrollModal';
+import EntityIdHint from '../EntityIdHint';
 
 function SequencesView({ prospects }) {
   const [subTab,       setSubTab]       = useState('library');   // library | drafts | enrollments | stats
@@ -934,6 +935,7 @@ function SequencesView({ prospects }) {
                 </div>
                 <div style={{ fontWeight: 700, fontSize: 16, color: '#111827', lineHeight: 1.3 }}>
                   {viewingSeq.name}
+                  <EntityIdHint id={viewingSeq.id} type="sequence" />
                 </div>
                 {viewingSeq.description && (
                   <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6, lineHeight: 1.5 }}>

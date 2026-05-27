@@ -16,6 +16,7 @@ import AIAnalyzeButton from './AIAnalyzeButton';
 import TranscriptUpload from './TranscriptUpload';
 import TranscriptAnalysis from './TranscriptAnalysis';
 import DealActionsPanel from './DealActionsPanel';
+import EntityIdHint from './EntityIdHint';
 import StrapPanel from './StrapPanel';               // ← CHANGED: was DealStrapPanel
 import DealTeamPanel from './DealTeamPanel';
 import DealPlaysPanel from './DealPlaysPanel';
@@ -281,7 +282,7 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
         {selectedDeal && (
           <div className="deal-detail-panel panel-fullscreen">
             <div className="panel-header">
-              <h2>{selectedDeal.name}</h2>
+              <h2>{selectedDeal.name}<EntityIdHint id={selectedDeal.id} type="deal" /></h2>
               <div className="panel-header-actions"><button className="close-panel" onClick={() => setSelectedDeal(null)}>&times;</button></div>
             </div>
             <div className="panel-content">

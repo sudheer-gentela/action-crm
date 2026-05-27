@@ -6,6 +6,7 @@ import { useStages, CHANNEL_ICONS, LI_EVENTS, getLiStatus, getLiDotColor, apiFet
 import CallsPanel from './CallsPanel';
 import DiscardProspectModal from './DiscardProspectModal';
 import DraftCard from './DraftCard';
+import EntityIdHint from '../EntityIdHint';
 import InfoRow from './InfoRow';
 import LogCallModal from './LogCallModal';
 import OutreachComposer from '../OutreachComposer';
@@ -620,7 +621,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
         {/* Header */}
         <div className="pv-detail-header">
           <div className="pv-detail-header-left">
-            <h3>{prospect.first_name} {prospect.last_name}</h3>
+            <h3>{prospect.first_name} {prospect.last_name}<EntityIdHint id={prospect.id} type="prospect" /></h3>
             {prospect.title && <span className="pv-detail-title">{prospect.title}</span>}
             {(prospect.company_name || prospect.account?.name) && (
               <span className="pv-detail-company">at {prospect.account?.name || prospect.company_name}</span>
