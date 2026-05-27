@@ -1191,6 +1191,92 @@ router.post('/:id/stage', async (req, res) => {
   }
 });
 
+// ── POST /bulk-stage — change stage for many prospects at once ───────────────
+//
+// Body: { fromStage, toStage, campaignId?, prospectIds? }
+//
+// Two selection modes (one required):
+//   - campaignId + fromStage  → all prospects in that campaign on fromStage
+//   - prospectIds[]           → explicit list (still gated by fromStage)
+//
+// Validates that fromStage → toStage is in STAGE_TRANSITIONS. Org-scoped.
+// Skips prospects not currently on fromStage (so the operation is idempotent
+// and safe to re-run). Returns { moved, skipped, fromStage, toStage }.
+//
+// Designed for cases like "I imported 400 CSV prospects (all stage='target')
+// and want to skip the research step for templated outreach" — call once
+// with fromStage='target', toStage='research', campaignId=N.
+router.post('/bulk-stage', async (req, res) => {
+  try {
+    const { fromStage, toStage, campaignId, prospectIds } = req.body || {};
+
+    if (!VALID_STAGES.includes(fromStage)) {
+      return res.status(400).json({ error: { message: `Invalid fromStage: ${fromStage}` } });
+    }
+    if (!VALID_STAGES.includes(toStage)) {
+      return res.status(400).json({ error: { message: `Invalid toStage: ${toStage}` } });
+    }
+    const allowed = STAGE_TRANSITIONS[fromStage] || [];
+    if (!allowed.includes(toStage)) {
+      return res.status(400).json({ error: {
+        message: `Cannot bulk-transition from "${fromStage}" to "${toStage}". Allowed: ${allowed.join(', ') || '(none)'}`,
+      } });
+    }
+
+    // Need at least one selector
+    const hasCampaign     = campaignId != null && Number.isFinite(parseInt(campaignId, 10));
+    const idsArray        = Array.isArray(prospectIds) ? prospectIds.filter(Number.isFinite) : null;
+    const hasProspectList = idsArray && idsArray.length > 0;
+
+    if (!hasCampaign && !hasProspectList) {
+      return res.status(400).json({ error: {
+        message: 'Provide either campaignId or prospectIds[] to select prospects.',
+      } });
+    }
+
+    // Build the UPDATE. The WHERE filters silently drop any prospect not on
+    // fromStage, making this safe to re-run on a mixed-stage set.
+    let query = `UPDATE prospects
+                    SET stage             = $1,
+                        stage_changed_at  = CURRENT_TIMESTAMP,
+                        updated_at        = CURRENT_TIMESTAMP
+                  WHERE org_id     = $2
+                    AND stage      = $3
+                    AND deleted_at IS NULL`;
+    const params = [toStage, req.orgId, fromStage];
+
+    if (hasCampaign) {
+      params.push(parseInt(campaignId, 10));
+      query += ` AND campaign_id = $${params.length}`;
+    }
+    if (hasProspectList) {
+      params.push(idsArray);
+      query += ` AND id = ANY($${params.length}::int[])`;
+    }
+
+    query += ` RETURNING id`;
+    const result = await db.query(query, params);
+
+    // For "skipped" count: if the caller gave explicit IDs, the gap between
+    // requested and moved is the skipped count (already on toStage, or
+    // illegal transition row-wise). For campaign-scoped, "skipped" isn't
+    // meaningful in the same way, so we report 0.
+    const moved = result.rowCount;
+    const skipped = hasProspectList ? Math.max(0, idsArray.length - moved) : 0;
+
+    res.json({
+      moved,
+      skipped,
+      fromStage,
+      toStage,
+      campaignId: hasCampaign ? parseInt(campaignId, 10) : null,
+    });
+  } catch (error) {
+    console.error('Bulk stage change error:', error);
+    res.status(500).json({ error: { message: 'Failed to bulk-change stage' } });
+  }
+});
+
 // ── POST /:id/disqualify ──────────────────────────────────────────────────────
 router.post('/:id/disqualify', async (req, res) => {
   const client = await require('../config/database').pool.connect();

@@ -387,6 +387,8 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
   // Slice 2: batch-activation modal + pacing-driven CTA.
   const [showBatchActivate, setShowBatchActivate] = useState(false);
   const [readyToActivate,   setReadyToActivate]   = useState(0);
+  const [targetCount,       setTargetCount]       = useState(0);
+  const [bulkPromoting,     setBulkPromoting]     = useState(false);
 
   // Slice 4: preview drafts modal + picker for which prospects to preview.
   const [showPreviewPicker, setShowPreviewPicker] = useState(false);
@@ -411,7 +413,8 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
       try {
         const pc = await apiFetch(`/prospecting-campaigns/${campaignId}/pacing`);
         setReadyToActivate(pc?.pacing?.readyToActivate || 0);
-      } catch (_) { setReadyToActivate(0); }
+        setTargetCount(pc?.stageCounts?.target || 0);
+      } catch (_) { setReadyToActivate(0); setTargetCount(0); }
       setError('');
     } catch (err) {
       setError('Failed to load campaign: ' + (err.message || 'unknown error'));
@@ -499,27 +502,6 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
               </button>
               <button className="pv-btn-secondary" onClick={() => setShowImport(true)}>
                 ⬆ Import prospects
-              </button>
-              {/* Phase 4 — deep-link to Team Reporting drill-down for this
-                  campaign. App.js listens for the 'reportingDrilldown' event,
-                  switches to the Reporting tab, and passes the campaign id
-                  to TeamReportingView, which opens the drill-down panel.
-                  The Reporting nav item itself is scope-gated, so on a
-                  solo-rep account where Reporting is hidden the click
-                  results in nothing visible — that's acceptable since
-                  CampaignsView doesn't currently know the scope. We could
-                  gate this button on canSeeReporting too but the extra
-                  prop-drilling cost isn't worth it for v1. */}
-              <button
-                className="pv-btn-secondary"
-                onClick={() => {
-                  window.dispatchEvent(new CustomEvent('reportingDrilldown', {
-                    detail: { campaignId: data.campaign.id },
-                  }));
-                  onClose?.();
-                }}
-              >
-                📊 Team activity →
               </button>
             </div>
 
@@ -689,6 +671,54 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
             {/* Slice 4: sender visibility — which email + LinkedIn account
                 will fire this campaign's outreach. */}
             <SenderSummaryTile campaignId={campaignId} />
+
+            {/* Bulk-promote: skip the per-prospect research step. For when
+                the campaign is template-driven and per-prospect research
+                isn't needed before outreach. Only shown when there are
+                target-stage prospects sitting unprocessed. Confirms
+                before firing — moving 396 prospects is hard to undo. */}
+            {targetCount > 0 && (
+              <div style={{ margin: '12px 0' }}>
+                <button
+                  className="pv-btn-secondary"
+                  style={{ width: '100%' }}
+                  disabled={busy || bulkPromoting}
+                  onClick={async () => {
+                    const ok = window.confirm(
+                      `Move all ${targetCount} 'target' prospects in this campaign to 'research'?\n\n` +
+                      `Skips per-prospect research. They'll be eligible for batch-activation immediately afterwards.\n\n` +
+                      `This is not easily reversible.`
+                    );
+                    if (!ok) return;
+                    setBulkPromoting(true);
+                    try {
+                      const r = await apiFetch('/prospects/bulk-stage', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          fromStage:  'target',
+                          toStage:    'research',
+                          campaignId: parseInt(campaignId, 10),
+                        }),
+                      });
+                      // Reload pacing so both counts refresh.
+                      await load(channelFilter);
+                      window.alert(`Moved ${r.moved} prospects from target → research.`);
+                    } catch (err) {
+                      window.alert('Failed to move prospects: ' + (err.message || 'unknown error'));
+                    } finally {
+                      setBulkPromoting(false);
+                    }
+                  }}
+                >
+                  {bulkPromoting
+                    ? '⏳ Moving…'
+                    : `⏩ Skip research: move all ${targetCount} target → research`}
+                </button>
+                <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4, textAlign: 'center' }}>
+                  Use this when your campaign relies on templated outreach (no per-prospect research needed).
+                </div>
+              </div>
+            )}
 
             {/* Slice 2 + 4: batch-activate button (primary) + preview button
                 (secondary). The preview button lets the rep see all sequence
