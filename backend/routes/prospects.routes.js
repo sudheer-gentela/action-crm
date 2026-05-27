@@ -442,10 +442,12 @@ router.get('/by-linkedin-url', async (req, res) => {
       `SELECT p.*,
               acc.name  AS account_name,
               u.first_name AS owner_first_name,
-              u.last_name  AS owner_last_name
+              u.last_name  AS owner_last_name,
+              camp.name AS campaign_name
        FROM prospects p
-       LEFT JOIN accounts acc ON p.account_id = acc.id
-       LEFT JOIN users    u   ON p.owner_id   = u.id
+       LEFT JOIN accounts             acc  ON p.account_id  = acc.id
+       LEFT JOIN users                u    ON p.owner_id    = u.id
+       LEFT JOIN prospecting_campaigns camp ON p.campaign_id = camp.id
        WHERE p.org_id = $1
          AND LOWER(REGEXP_REPLACE(p.linkedin_url, '.*/in/([^/?#]+).*', '\\1')) = $2
          AND p.linkedin_url IS NOT NULL
@@ -468,26 +470,42 @@ router.get('/by-linkedin-url', async (req, res) => {
     );
     const pendingDrafts = parseInt(draftsResult.rows[0].count);
 
-    // ── Active sequence enrollments (for the extension's smart-suggest
-    //    prompt — lets the panel detect that a found prospect isn't yet
-    //    in the rep's default sequence and offer to enroll them). Slim
-    //    array of integers; the extension cross-references against its
-    //    own settings, so we don't need to return names or step counts
-    //    here.
+    // ── Active sequence enrollments (consumed by the extension panel) ────────
+    // Returned in two parallel shapes for backwards compatibility:
+    //   - activeSequenceIds: [int]                — what the smart-suggest
+    //     prompt uses to decide whether to nag (added pre-v1.8.1).
+    //   - activeSequences:   [{ id, name }]       — what the in-panel
+    //     "current target" badge uses to display names without a second
+    //     round-trip.
+    // We JOIN sequences so the names come back even when the sequence
+    // is paused or archived (the picker list only includes active ones,
+    // so a client-side lookup wouldn't find them).
     const enrollResult = await db.query(
-      `SELECT sequence_id FROM sequence_enrollments
-        WHERE prospect_id = $1 AND status = 'active'`,
+      `SELECT se.sequence_id, s.name AS sequence_name
+         FROM sequence_enrollments se
+         LEFT JOIN sequences s ON s.id = se.sequence_id
+        WHERE se.prospect_id = $1 AND se.status = 'active'
+        ORDER BY se.created_at ASC`,
       [row.id]
     );
     const activeSequenceIds = enrollResult.rows.map(r => r.sequence_id);
+    const activeSequences   = enrollResult.rows.map(r => ({
+      id:   r.sequence_id,
+      name: r.sequence_name || `Sequence #${r.sequence_id}`,
+    }));
 
     res.json({
       prospect: {
         ...row,
         account:           row.account_id ? { id: row.account_id, name: row.account_name } : null,
         owner:             { first_name: row.owner_first_name, last_name: row.owner_last_name },
+        // campaign_name comes off the JOIN above; it's null when the
+        // prospect has no campaign or the campaign was deleted. The
+        // extension badge uses this directly without a name lookup.
+        campaign:          row.campaign_id ? { id: row.campaign_id, name: row.campaign_name } : null,
         pendingDrafts,    // ← consumed by extension badge
         activeSequenceIds, // ← consumed by extension smart-suggest prompt (v1.8)
+        activeSequences,   // ← consumed by extension target badge (v1.8.1)
       },
     });
   } catch (error) {
