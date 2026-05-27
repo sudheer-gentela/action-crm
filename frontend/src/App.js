@@ -505,37 +505,14 @@ function Dashboard({ user, onLogout }) {
       .catch(() => {}); // non-fatal — stays empty
   }, []);
 
-  // ── Phase 4: reporting scope gate ──────────────────────────────────────
-  // The "Reporting" sidebar item is only shown when the user has a non-self
-  // scope (i.e., they manage at least one report, or are an admin). We
-  // fetch the resolved scope once at mount. While loading (reportingScope
-  // === null), the nav item is hidden — same as how a module flag works.
-  //
-  // NOTE: this App.js convention sets API to '' when REACT_APP_API_URL is
-  // unset, but in prod REACT_APP_API_URL is set to '<host>/api' — so the
-  // path passed to fetch must NOT start with '/api/'. Match the existing
-  // `${API}/users/me/preferences` pattern above, not the apiFetch one
-  // from prospectingShared (which uses different base URL semantics).
-  const [reportingScope, setReportingScope]                       = useState(null);
+  // ── Phase 4: deep-link from CampaignsView ──────────────────────────────
+  // When a user clicks "Team Activity →" on a campaign, CampaignsView fires
+  // a window event with the campaign id. We catch it here and switch tabs +
+  // pass the id to TeamReportingView, which consumes it and pops the
+  // drill-down open. (The reporting view fetches its own scope internally,
+  // so App.js no longer needs to do that pre-fetch — the Reporting nav item
+  // is always visible; solo users see their own activity inside the view.)
   const [pendingReportingCampaignId, setPendingReportingCampaignId] = useState(null);
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    const API   = process.env.REACT_APP_API_URL || '';
-    fetch(`${API}/users/me/reporting-scope`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data?.scope) setReportingScope(data.scope);
-      })
-      .catch(() => {}); // non-fatal — nav item stays hidden if fetch fails
-  }, []);
-  const canSeeReporting = reportingScope && (reportingScope.scope === 'team' || reportingScope.scope === 'admin');
-
-  // Deep-link from CampaignsView: when a user clicks "Team Activity →" on a
-  // campaign, that view fires a window event with the campaign id. We catch
-  // it here and switch tabs + pass the id to TeamReportingView, which
-  // consumes it and pops the drill-down open.
   useEffect(() => {
     const handler = (e) => {
       const id = e.detail?.campaignId;
@@ -619,13 +596,12 @@ function Dashboard({ user, onLogout }) {
     if (isMobile) setSidebarOpen(false);
   };
 
-  // Member nav, filtered. Currently filters one item — "Reporting" hides
-  // until the user's resolved scope confirms they have a team to view.
-  const rawNavItems = NAV_ITEMS_BY_ROLE[activeRole] || NAV_ITEMS_BY_ROLE.member;
-  const navItems = rawNavItems.filter(item => {
-    if (item.id === 'reporting') return canSeeReporting;
-    return true;
-  });
+  // Member nav. Phase 4 originally gated "Reporting" behind a scope check
+  // (only managers + admins saw it). After early user feedback, we now show
+  // Reporting to everyone — solo reps see their own activity, the view
+  // adapts. Scope is still fetched (used in the view's header) but no
+  // longer gates the nav item.
+  const navItems = NAV_ITEMS_BY_ROLE[activeRole] || NAV_ITEMS_BY_ROLE.member;
 
   // Only surface module items whose flag is enabled in org settings
   const enabledModuleItems = ALL_MODULE_ITEMS.filter(m => !!orgModules[m.id]);
@@ -884,18 +860,10 @@ function Dashboard({ user, onLogout }) {
           )}
           {currentTab === 'settings'    && <SettingsView />}
           {currentTab === 'reporting'   && (
-            canSeeReporting ? (
-              <TeamReportingView
-                drilldownCampaignId={pendingReportingCampaignId}
-                onDrilldownConsumed={() => setPendingReportingCampaignId(null)}
-              />
-            ) : (
-              <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12, color:'#94a3b8' }}>
-                <div style={{ fontSize:48 }}>📊</div>
-                <div style={{ fontSize:16, fontWeight:600, color:'#475569' }}>Reporting is unavailable</div>
-                <div style={{ fontSize:13 }}>No team configured. Ask an admin to set up your org hierarchy.</div>
-              </div>
-            )
+            <TeamReportingView
+              drilldownCampaignId={pendingReportingCampaignId}
+              onDrilldownConsumed={() => setPendingReportingCampaignId(null)}
+            />
           )}
           {currentTab === 'agent'       && <AgentInboxView />}
           {currentTab === 'playbooks'   && (

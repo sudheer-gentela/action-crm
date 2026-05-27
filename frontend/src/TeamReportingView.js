@@ -106,6 +106,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
   // ── Toolbar state ──────────────────────────────────────────────────────
   // Tab default per design: "By rep". External drill-down forces "By campaign".
   const [tab, setTab] = useState(drilldownCampaignId ? 'campaign' : 'rep');
+  const [tabExplicitlySet, setTabExplicitlySet] = useState(!!drilldownCampaignId);
   const [scope, setScope] = useState(null);   // hydrated from /reporting-scope
   const [depth, setDepth] = useState(null);   // null until scope loads
   const [windowState, setWindowState] = useState({ kind: 'preset', windowDays: 30 });
@@ -168,13 +169,21 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
     apiFetch(`/users/me/reporting-scope?depth=${depth}`)
       .then(res => {
         if (cancelled) return;
-        setScope(res.scope || null);
+        const newScope = res.scope || null;
+        setScope(newScope);
+        // For solo users (no team), the "By rep" tab shows one row (just
+        // them) — no insight. If the user hasn't manually picked a tab yet,
+        // switch them to "By campaign" which is more informative.
+        if (newScope && newScope.scope === 'self' && !tabExplicitlySet) {
+          setTab('campaign');
+        }
       })
       .catch(err => {
         if (cancelled) return;
         setError('Could not load reporting scope: ' + err.message);
       });
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [depth]);
 
   // ── Persist depth change ───────────────────────────────────────────────
@@ -296,6 +305,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         tab={tab}
         onTabChange={(t) => {
           setTab(t);
+          setTabExplicitlySet(true);
           if (t !== 'campaign') setDrillCampaignId(null);   // exit drill-down
         }}
       />
@@ -383,7 +393,7 @@ function Header({ scope }) {
   if (scope) {
     if (scope.scope === 'admin')      descriptor = `Showing all ${scope.userIds.length} org users (admin)`;
     else if (scope.scope === 'team')  descriptor = scope.sizeNote || `Showing ${scope.reports?.length || 0} reports`;
-    else if (scope.scope === 'self')  descriptor = 'No team configured — showing your activity only';
+    else if (scope.scope === 'self')  descriptor = 'Your activity';
   }
   return (
     <div className="trv-header">
