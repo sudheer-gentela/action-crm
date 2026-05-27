@@ -22,6 +22,7 @@ import CampaignConfigPanel from './CampaignConfigPanel';
 import PacingTile from './PacingTile';
 import BatchActivateModal from './BatchActivateModal';
 import EntityIdHint from '../EntityIdHint';
+import SendingScheduleSettings from '../SendingScheduleSettings';
 // Slice 4: preview drafts + sender visibility
 import PreviewDraftsModal from './PreviewDraftsModal';
 import SenderSummaryTile from './SenderSummaryTile';
@@ -1380,6 +1381,20 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
     end_date:            campaign?.end_date ? campaign.end_date.slice(0, 10) : '',
     status:              campaign?.status || 'active',
   });
+  // Schedule override state. Each field is null when the campaign inherits
+  // the org default, or a value when it overrides. The campaign object from
+  // the backend has snake_case column names; map them in here.
+  const [schedule, setSchedule] = useState({
+    dailyActivationCap:  campaign?.daily_activation_cap   ?? null,
+    sendWindowStartHour: campaign?.send_window_start_hour ?? null,
+    sendWindowEndHour:   campaign?.send_window_end_hour   ?? null,
+    sendWindowDays:      campaign?.send_window_days       ?? null,
+    sendWindowTimezone:  campaign?.send_window_timezone   ?? null,
+  });
+  const [orgDefaults, setOrgDefaults] = useState(null);
+  // Section expanded by default if any overrides exist on the campaign.
+  const hasAnyOverride = Object.values(schedule).some(v => v != null);
+  const [scheduleOpen, setScheduleOpen] = useState(hasAnyOverride);
   const [playbooks, setPlaybooks] = useState([]);
   const [sequences, setSequences] = useState([]);
   const [busy,  setBusy]  = useState(false);
@@ -1395,6 +1410,20 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
         const sq = await apiFetch('/sequences');
         setSequences((sq.sequences || []).filter(s => s.status === 'active'));
       } catch { setSequences([]); }
+      // Org defaults for the schedule section. Best-effort — if the user
+      // isn't admin, the endpoint 403s and we just show "—" for defaults.
+      try {
+        const ol = await apiFetch('/org/outreach-limits');
+        if (ol?.limits) {
+          setOrgDefaults({
+            dailyActivationCap:  ol.limits.dailyActivationCap   ?? 25,
+            sendWindowStartHour: ol.limits.sendWindowStartHour  ?? 9,
+            sendWindowEndHour:   ol.limits.sendWindowEndHour    ?? 11,
+            sendWindowDays:      Array.isArray(ol.limits.sendWindowDays) ? ol.limits.sendWindowDays : [1,2,3,4,5],
+            sendWindowTimezone:  ol.limits.sendWindowTimezone   ?? 'America/New_York',
+          });
+        }
+      } catch { /* non-fatal */ }
     })();
   }, []);
 
@@ -1414,6 +1443,13 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
       start_date:          form.start_date || null,
       end_date:            form.end_date || null,
       status:              form.status,
+      // Schedule overrides — backend treats null as "inherit from org".
+      // We always send all 5 fields so PUT can clear overrides cleanly.
+      daily_activation_cap:    schedule.dailyActivationCap,
+      send_window_start_hour:  schedule.sendWindowStartHour,
+      send_window_end_hour:    schedule.sendWindowEndHour,
+      send_window_days:        schedule.sendWindowDays,
+      send_window_timezone:    schedule.sendWindowTimezone,
     };
     try {
       if (isEdit) {
@@ -1490,6 +1526,47 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
               <input type="date" value={form.start_date} onChange={e => set('start_date', e.target.value)} />
               <input type="date" value={form.end_date}   onChange={e => set('end_date', e.target.value)} />
             </div>
+          </div>
+
+          {/* Sending schedule overrides — collapsed by default unless the
+              campaign already has any override set. Toggle expands a form
+              where each field can independently override the org default. */}
+          <div className="pv-form-section">
+            <h4
+              style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 8 }}
+              onClick={() => setScheduleOpen(!scheduleOpen)}
+            >
+              <span style={{ fontSize: 13, color: '#6b7280', width: 12, display: 'inline-block' }}>
+                {scheduleOpen ? '▾' : '▸'}
+              </span>
+              Sending Schedule
+              {hasAnyOverride && (
+                <span style={{
+                  fontSize: 11, background: '#0F9D8E', color: '#fff',
+                  padding: '2px 8px', borderRadius: 10, fontWeight: 600,
+                }}>customised</span>
+              )}
+            </h4>
+            {scheduleOpen ? (
+              <div style={{ marginTop: 8 }}>
+                <p style={{ fontSize: 12, color: '#6b7280', marginBottom: 16, lineHeight: 1.5 }}>
+                  Each field below can override the org default for this campaign only.
+                  Leave the override unchecked to inherit.
+                </p>
+                <SendingScheduleSettings
+                  mode="campaign"
+                  value={schedule}
+                  orgDefaults={orgDefaults}
+                  onChange={setSchedule}
+                />
+              </div>
+            ) : (
+              <p style={{ fontSize: 12, color: '#9ca3af', margin: '4px 0 0 20px' }}>
+                {hasAnyOverride
+                  ? 'This campaign has customised schedule settings. Click to view/edit.'
+                  : 'Uses org defaults. Click to override for this campaign.'}
+              </p>
+            )}
           </div>
 
           {isEdit && (

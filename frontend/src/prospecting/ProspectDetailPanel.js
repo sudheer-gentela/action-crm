@@ -626,6 +626,11 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
             {(prospect.company_name || prospect.account?.name) && (
               <span className="pv-detail-company">at {prospect.account?.name || prospect.company_name}</span>
             )}
+            {/* Active enrollment scheduled-fire indicator. When there's an
+                active enrollment with a future next_step_due, show when the
+                next step will fire. Helps the rep see "this prospect is
+                scheduled — don't manually message them." */}
+            <NextFireBadge enrollment={activeEnrollment} />
             {/* Debug IDs strip — visible only when debug mode is on.
                 Toggle with Ctrl+Shift+D (Cmd+Shift+D on Mac) anywhere in
                 the app. State is persisted to localStorage['gowarm_debug']
@@ -2301,3 +2306,63 @@ function ProspectIntelCard({ contextData, loading, prospect }) {
 
 export default ProspectDetailPanel;
 export { LinkedInPanel, LinkedInProfileSection, ProspectIntelCard };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NextFireBadge — small inline indicator for "this prospect's next sequence
+// step is scheduled to fire at X." Renders nothing if there's no active
+// enrollment or no future next_step_due. Used in the prospect detail header.
+// ─────────────────────────────────────────────────────────────────────────────
+function NextFireBadge({ enrollment }) {
+  if (!enrollment || !enrollment.next_step_due) return null;
+  const due = new Date(enrollment.next_step_due);
+  const diffMs = due.getTime() - Date.now();
+  // Only show if in the future (≥ 1 minute). Past-due will be picked up by
+  // the firer momentarily — no useful info to show.
+  if (diffMs < 60000) return null;
+
+  const label = formatRelativeFireTime(due);
+  const isToday = isSameLocalDay(due, new Date());
+  return (
+    <span
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        marginTop: 4, padding: '3px 8px',
+        background: isToday ? '#ecfdf5' : '#f0f9ff',
+        border: `1px solid ${isToday ? '#a7f3d0' : '#bae6fd'}`,
+        color:  isToday ? '#065f46' : '#075985',
+        fontSize: 11, borderRadius: 10, fontWeight: 500,
+      }}
+      title={`Next step fires at ${due.toLocaleString()}`}
+    >
+      ⏱ Next fires {label}
+    </span>
+  );
+}
+
+function isSameLocalDay(a, b) {
+  return a.getFullYear() === b.getFullYear()
+      && a.getMonth() === b.getMonth()
+      && a.getDate() === b.getDate();
+}
+
+function formatRelativeFireTime(due) {
+  const now = new Date();
+  const diffMs = due.getTime() - now.getTime();
+  const diffMin = diffMs / 60000;
+  const diffHr  = diffMin / 60;
+  const timeStr = due.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+  if (diffMin < 60)        return `in ${Math.round(diffMin)} min`;
+  if (isSameLocalDay(due, now)) return `today ${timeStr}`;
+  // Tomorrow check
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (isSameLocalDay(due, tomorrow)) return `tomorrow ${timeStr}`;
+  // Within a week → day of week + time
+  if (diffHr < 24 * 7) {
+    const dow = due.toLocaleDateString([], { weekday: 'short' });
+    return `${dow} ${timeStr}`;
+  }
+  // Otherwise full date
+  return due.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + timeStr;
+}

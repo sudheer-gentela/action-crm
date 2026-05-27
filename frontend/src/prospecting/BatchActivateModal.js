@@ -3,8 +3,16 @@
 // Slice 2 — modal invoked from CampaignDetailDrawer. Activates a batch of
 // research-stage prospects in the campaign's default sequence.
 //
+// Sending-schedule Slice 2 additions:
+//   - 'Enroll all eligible' checkbox (default ON). When on, the count input
+//     maxes out at readyCount (not daily cap); the scheduler spreads them
+//     across days. When off, capped at dailyActivationCap (legacy behavior).
+//   - Schedule preview block — calls GET /:id/schedule-preview to render
+//     "First N go out tomorrow 9am ET, rest split across 4 weekdays" so the
+//     user knows what they're about to commit to before clicking Activate.
+//
 // Backend: POST /api/prospecting-campaigns/:id/bulk-activate
-// Shows org cap + user target, lets rep adjust count, toggles skill personalisation.
+//          GET  /api/prospecting-campaigns/:id/schedule-preview?count=N
 
 import React, { useState, useEffect } from 'react';
 import { apiFetch } from './prospectingShared';
@@ -12,34 +20,64 @@ import { apiFetch } from './prospectingShared';
 export default function BatchActivateModal({ campaign, readyCount, onClose, onActivated }) {
   const [count,      setCount]      = useState(0);
   const [runSkill,   setRunSkill]   = useState(true);
+  // Default to enrolling everything — that's the workflow you said you want.
+  // The slider in 'enrollAll' mode is read-only (showing readyCount) since
+  // the count is implied by the toggle.
+  const [enrollAll,  setEnrollAll]  = useState(true);
   const [cap,        setCap]        = useState(null);   // { orgCap, userTarget, effective }
   const [loading,    setLoading]    = useState(true);
   const [activating, setActivating] = useState(false);
   const [error,      setError]      = useState('');
   const [result,     setResult]     = useState(null);
+  // Schedule preview: { count, summary, byDay, settings, channel }
+  const [preview,        setPreview]        = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
-  // Load org/user caps via pacing endpoint sibling — easier path: hit a
-  // throwaway bulk-activate with count=0 to read cap? No — we'll add a
-  // small dedicated config-resolver fetch to outreach-limits.
-  // For now, read from /prospecting-senders/org-limits (already exposed).
+  // Load org/user caps via outreach-limits (also gives us the schedule defaults).
   useEffect(() => {
     (async () => {
       try {
         const r = await apiFetch('/prospecting-senders/org-limits');
         const orgCap = r?.linkedinDailyActivationCap || r?.limits?.linkedinDailyActivationCap || 25;
-        // We don't currently expose userTarget on a public endpoint — surface orgCap only.
-        // Effective = min(userTarget || orgCap, orgCap), so worst-case shown == orgCap.
         setCap({ orgCap, userTarget: null, effective: orgCap });
-        setCount(Math.min(orgCap, readyCount || 0));
+        // Initial count: if enrollAll, all ready prospects; else min(cap, ready).
+        setCount(enrollAll ? (readyCount || 0) : Math.min(orgCap, readyCount || 0));
       } catch (err) {
-        // Non-fatal: fall back to a sensible default.
         setCap({ orgCap: 25, userTarget: null, effective: 25 });
-        setCount(Math.min(25, readyCount || 0));
+        setCount(enrollAll ? (readyCount || 0) : Math.min(25, readyCount || 0));
       } finally {
         setLoading(false);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readyCount]);
+
+  // When toggling enrollAll, reset count appropriately.
+  useEffect(() => {
+    if (!cap) return;
+    if (enrollAll) setCount(readyCount || 0);
+    else            setCount(Math.min(cap.effective, readyCount || 0));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enrollAll]);
+
+  // Debounced schedule preview fetch — runs when count changes. We use a
+  // 250ms debounce so dragging the slider doesn't fire a request per pixel.
+  useEffect(() => {
+    if (loading || count < 1) { setPreview(null); return; }
+    setPreviewLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const r = await apiFetch(`/prospecting-campaigns/${campaign.id}/schedule-preview?count=${count}`);
+        setPreview(r);
+      } catch (err) {
+        // Preview failure is non-fatal — the user can still activate.
+        setPreview(null);
+      } finally {
+        setPreviewLoading(false);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [count, loading, campaign.id]);
 
   const handleActivate = async () => {
     setActivating(true);
@@ -47,7 +85,7 @@ export default function BatchActivateModal({ campaign, readyCount, onClose, onAc
     try {
       const r = await apiFetch(`/prospecting-campaigns/${campaign.id}/bulk-activate`, {
         method: 'POST',
-        body: JSON.stringify({ count, runSkill }),
+        body: JSON.stringify({ count, runSkill, enrollAll }),
       });
       setResult(r);
     } catch (err) {
@@ -78,54 +116,95 @@ export default function BatchActivateModal({ campaign, readyCount, onClose, onAc
                 land in the rep's inbox as a draft.
               </p>
 
-              {/* Cap info */}
+              {/* Cap info — daily cap reframed for clarity in the new model */}
               <div style={{
                 background: '#f8fafc', borderRadius: 6, padding: '8px 12px',
                 fontSize: 12, color: '#374151', marginBottom: 14, lineHeight: 1.6,
               }}>
                 <div>📊 Ready in research stage: <strong>{readyCount}</strong></div>
-                <div>📋 Org daily LinkedIn cap: <strong>{cap.orgCap}</strong></div>
+                <div>📋 Daily activation cap: <strong>{cap.orgCap}</strong> per day</div>
                 <div style={{ color: '#6b7280', fontSize: 11, marginTop: 4 }}>
-                  Effective cap for this batch: <strong>{cap.effective}</strong> (org ceiling). Activate in batches; pace yourself.
+                  {enrollAll
+                    ? `Enrolling everything: ${readyCount} prospects will be pre-scheduled across days.`
+                    : `Today's batch only: at most ${cap.effective} will fire in the next 24h.`}
                 </div>
               </div>
 
-              {/* Count slider */}
+              {/* Mode toggle: enrollAll vs today's batch only */}
               <div className="pv-form-section">
-                <h4>How many?</h4>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <input
-                    type="range"
-                    min={1}
-                    max={Math.min(cap.effective, Math.max(readyCount, 1))}
-                    value={count}
-                    onChange={e => setCount(parseInt(e.target.value, 10))}
-                    style={{ flex: 1 }}
-                    disabled={readyCount === 0}
-                  />
-                  <input
-                    type="number"
-                    min={1}
-                    max={Math.min(cap.effective, Math.max(readyCount, 1))}
-                    value={count}
-                    onChange={e => {
-                      const v = parseInt(e.target.value, 10) || 0;
-                      const max = Math.min(cap.effective, Math.max(readyCount, 1));
-                      setCount(Math.max(1, Math.min(max, v)));
-                    }}
-                    style={{
-                      width: 60, fontSize: 13, padding: '4px 8px',
-                      border: '1px solid #d1d5db', borderRadius: 5, textAlign: 'center',
-                    }}
-                    disabled={readyCount === 0}
-                  />
+                <h4 style={{ marginBottom: 6 }}>Mode</h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      checked={enrollAll}
+                      onChange={() => setEnrollAll(true)}
+                    />
+                    <span>
+                      <strong>Enroll all eligible</strong> ({readyCount} prospects)
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+                        Pre-schedules everything. Daily cap controls how many fire each day.
+                      </div>
+                    </span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      checked={!enrollAll}
+                      onChange={() => setEnrollAll(false)}
+                    />
+                    <span>
+                      <strong>Today's batch only</strong> (up to {cap.effective})
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+                        Manual control — you'll come back tomorrow to activate the next batch.
+                      </div>
+                    </span>
+                  </label>
                 </div>
-                {count >= cap.effective && (
-                  <div style={{ fontSize: 11, color: '#92400e', marginTop: 6 }}>
-                    ⚠ Hitting the daily cap. Save the rest for tomorrow.
-                  </div>
-                )}
               </div>
+
+              {/* Count input — only shown when 'Today's batch only' is selected.
+                  In enrollAll mode the count is implicit (readyCount). */}
+              {!enrollAll && (
+                <div className="pv-form-section">
+                  <h4>How many?</h4>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <input
+                      type="range"
+                      min={1}
+                      max={Math.min(cap.effective, Math.max(readyCount, 1))}
+                      value={count}
+                      onChange={e => setCount(parseInt(e.target.value, 10))}
+                      style={{ flex: 1 }}
+                      disabled={readyCount === 0}
+                    />
+                    <input
+                      type="number"
+                      min={1}
+                      max={Math.min(cap.effective, Math.max(readyCount, 1))}
+                      value={count}
+                      onChange={e => {
+                        const v = parseInt(e.target.value, 10) || 0;
+                        const max = Math.min(cap.effective, Math.max(readyCount, 1));
+                        setCount(Math.max(1, Math.min(max, v)));
+                      }}
+                      style={{
+                        width: 60, fontSize: 13, padding: '4px 8px',
+                        border: '1px solid #d1d5db', borderRadius: 5, textAlign: 'center',
+                      }}
+                      disabled={readyCount === 0}
+                    />
+                  </div>
+                  {count >= cap.effective && (
+                    <div style={{ fontSize: 11, color: '#92400e', marginTop: 6 }}>
+                      ⚠ Hitting the daily cap. Save the rest for tomorrow.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Schedule preview — shows what's about to happen, per day. */}
+              <SchedulePreview preview={preview} loading={previewLoading} count={count} />
 
               {/* Skill toggle */}
               <div className="pv-form-section">
@@ -217,4 +296,125 @@ function ResultView({ result, onDone }) {
       </div>
     </div>
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SchedulePreview — renders the per-day breakdown from /:id/schedule-preview.
+// Shows the user what they're about to commit to before clicking Activate.
+// ─────────────────────────────────────────────────────────────────────────────
+function SchedulePreview({ preview, loading, count }) {
+  if (count < 1) return null;
+
+  if (loading && !preview) {
+    return (
+      <div className="pv-form-section">
+        <h4 style={{ marginBottom: 4 }}>Schedule preview</h4>
+        <div style={{ fontSize: 12, color: '#9ca3af', padding: '8px 0' }}>
+          Calculating…
+        </div>
+      </div>
+    );
+  }
+  if (!preview || !preview.summary) return null;
+
+  const { byDay, summary, channel, settings } = preview;
+  const tz = settings?.sendWindowTimezone || 'America/New_York';
+  // Show at most 6 days; collapse the rest into a "+N more" footer row.
+  const visible = byDay.slice(0, 6);
+  const hidden  = byDay.slice(6);
+
+  return (
+    <div className="pv-form-section">
+      <h4 style={{ marginBottom: 4 }}>Schedule preview</h4>
+      <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 8 }}>
+        {channel === 'email'
+          ? `Emails spread across ${formatHour(settings.sendWindowStartHour)}–${formatHour(settings.sendWindowEndHour)} ${tzAbbrev(tz)}.`
+          : `LinkedIn tasks released at ${formatHour(settings.sendWindowStartHour)} ${tzAbbrev(tz)}; you'll work them throughout the day.`}
+        {' '}First fires {fmtRelativeDateTime(summary.firstAt, tz)}; last fires {fmtRelativeDateTime(summary.lastAt, tz)}.
+      </div>
+      <div style={{
+        background: '#f9fafb', border: '1px solid #f3f4f6', borderRadius: 6,
+        padding: '8px 12px',
+      }}>
+        {visible.map(day => (
+          <div
+            key={day.date}
+            style={{
+              display: 'flex', justifyContent: 'space-between',
+              alignItems: 'center', padding: '4px 0',
+              borderBottom: '1px solid #f3f4f6', fontSize: 12,
+            }}
+          >
+            <span style={{ color: '#374151' }}>{fmtDate(day.date, tz)}</span>
+            <span style={{ color: '#6b7280' }}>
+              {day.count} {day.count === 1 ? 'prospect' : 'prospects'}
+              {' '}
+              <span style={{ color: '#9ca3af', fontSize: 11 }}>
+                ({fmtHM(day.firstAt, tz)}{day.firstAt !== day.lastAt ? `–${fmtHM(day.lastAt, tz)}` : ''})
+              </span>
+            </span>
+          </div>
+        ))}
+        {hidden.length > 0 && (
+          <div style={{
+            fontSize: 11, color: '#9ca3af', padding: '6px 0 2px',
+            fontStyle: 'italic',
+          }}>
+            …and {hidden.length} more day{hidden.length === 1 ? '' : 's'},
+            ending {fmtDate(byDay[byDay.length - 1].date, tz)}.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Date/time formatting helpers ─────────────────────────────────────────────
+function formatHour(h) {
+  if (h == null) return '—';
+  if (h === 0)        return '12 AM';
+  if (h < 12)         return `${h} AM`;
+  if (h === 12)       return '12 PM';
+  if (h === 24)       return '12 AM';
+  return `${h - 12} PM`;
+}
+function tzAbbrev(tz) {
+  // Best-effort abbreviation. Browser Intl gives us "EDT"/"EST"/"IST" etc.
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, timeZoneName: 'short',
+    }).formatToParts(new Date());
+    const tzPart = parts.find(p => p.type === 'timeZoneName');
+    return tzPart?.value || tz;
+  } catch (_) { return tz; }
+}
+function fmtDate(dayKey, tz) {
+  // dayKey is 'YYYY-MM-DD' in the resolved tz. Format as "Mon, May 27".
+  try {
+    const [y, m, d] = dayKey.split('-').map(n => parseInt(n, 10));
+    const dt = new Date(Date.UTC(y, m - 1, d, 12, 0));
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, weekday: 'short', month: 'short', day: 'numeric',
+    }).format(dt);
+  } catch (_) { return dayKey; }
+}
+function fmtHM(iso, tz) {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true,
+    }).format(new Date(iso));
+  } catch (_) { return iso; }
+}
+function fmtRelativeDateTime(iso, tz) {
+  try {
+    const dt   = new Date(iso);
+    const now  = new Date();
+    const diff = dt.getTime() - now.getTime();
+    const hrs  = diff / (1000 * 60 * 60);
+    const time = fmtHM(iso, tz);
+    if (hrs < 1)  return `in ${Math.max(1, Math.round(hrs * 60))} min (${time} ${tzAbbrev(tz)})`;
+    if (hrs < 24) return `today ${time} ${tzAbbrev(tz)}`;
+    if (hrs < 48) return `tomorrow ${time} ${tzAbbrev(tz)}`;
+    return `${fmtDate(iso.slice(0, 10), tz)} at ${time} ${tzAbbrev(tz)}`;
+  } catch (_) { return iso; }
 }

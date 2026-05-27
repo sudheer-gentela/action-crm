@@ -11,6 +11,7 @@ import ActionAISettings from './ActionAISettings';
 import UserAIProviderSettings from './UserAIProviderSettings';
 import PersonalizeConfigBlock from './PersonalizeConfigBlock';
 import MyOutreachStyleSettings from './MyOutreachStyleSettings';
+import OrgSendingScheduleSettings from './OrgSendingScheduleSettings';
 
 // ── Sidebar nav structure ────────────────────────────────────────────────────
 // Each group has a label and items. Items with `children` expand inline.
@@ -52,8 +53,9 @@ const NAV_GROUPS = [
   {
     group: 'Workflow',
     items: [
-      { id: 'deal-health', label: 'Deal Health', icon: '🏥', adminOnly: true },
-      { id: 'actions',     label: 'Actions',     icon: '⚡', adminOnly: true },
+      { id: 'deal-health',       label: 'Deal Health',       icon: '🏥', adminOnly: true },
+      { id: 'actions',           label: 'Actions',           icon: '⚡', adminOnly: true },
+      { id: 'sending-schedule',  label: 'Sending Schedule',  icon: '📅', adminOnly: true },
     ],
   },
 ];
@@ -217,6 +219,7 @@ export default function SettingsView({ initialTab }) {
           {/* Workflow */}
           {activeId === 'deal-health'      && <DealHealthSettings readOnly={readOnly} />}
           {activeId === 'actions'          && <ActionsSettings readOnly={readOnly} />}
+          {activeId === 'sending-schedule' && <OrgSendingScheduleSettings readOnly={readOnly} />}
         </div>
       </main>
     </div>

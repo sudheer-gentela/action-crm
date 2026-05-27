@@ -35,12 +35,15 @@ router.get('/', requireAdmin, async (req, res) => {
       [req.orgId]
     );
 
-    const config = result.rows[0]?.config || {
-      dailyLimitCeiling:      100,
-      minDelayMinutesCeiling: 2,
-      defaultDailyLimit:      50,
-      defaultMinDelayMinutes: 5,
-    };
+    const config = result.rows[0]?.config || {};
+
+    // Legacy reads: linkedinDailyActivationCap was the old name for what's
+    // now dailyActivationCap. We keep BOTH on output for back-compat with
+    // older consumers (BatchActivateModal reads linkedinDailyActivationCap).
+    // The Resolver reads dailyActivationCap.
+    const effectiveDailyCap = config.dailyActivationCap
+                           ?? config.linkedinDailyActivationCap
+                           ?? 25;
 
     res.json({
       limits: {
@@ -49,9 +52,18 @@ router.get('/', requireAdmin, async (req, res) => {
         defaultDailyLimit:      config.defaultDailyLimit      ?? 50,
         defaultMinDelayMinutes: config.defaultMinDelayMinutes ?? 5,
         // Slice 2 additions
-        linkedinDailyActivationCap: config.linkedinDailyActivationCap ?? 25,
-        activationSlaDays:          config.activationSlaDays          ?? 7,
-        researchSlaDays:            config.researchSlaDays            ?? 14,
+        linkedinDailyActivationCap: effectiveDailyCap,
+        activationSlaDays:          config.activationSlaDays  ?? 7,
+        researchSlaDays:            config.researchSlaDays    ?? 14,
+
+        // Sending-schedule additions (Slice 2 of the sending-schedule feature).
+        // dailyActivationCap is the canonical name going forward. Defaults
+        // match SendingScheduleResolver.DEFAULTS so the cascade is consistent.
+        dailyActivationCap:    effectiveDailyCap,
+        sendWindowStartHour:   config.sendWindowStartHour ?? 9,
+        sendWindowEndHour:     config.sendWindowEndHour   ?? 11,
+        sendWindowDays:        Array.isArray(config.sendWindowDays) ? config.sendWindowDays : [1,2,3,4,5],
+        sendWindowTimezone:    config.sendWindowTimezone  ?? 'America/New_York',
       },
       updatedAt: result.rows[0]?.updated_at || null,
     });
@@ -69,10 +81,16 @@ router.put('/', requireAdmin, async (req, res) => {
       minDelayMinutesCeiling,
       defaultDailyLimit,
       defaultMinDelayMinutes,
-      // Slice 2 additions
+      // Slice 2 (older — kept for back-compat)
       linkedinDailyActivationCap,
       activationSlaDays,
       researchSlaDays,
+      // Sending-schedule Slice 2 — new canonical names
+      dailyActivationCap,
+      sendWindowStartHour,
+      sendWindowEndHour,
+      sendWindowDays,
+      sendWindowTimezone,
     } = req.body;
 
     // Validation
@@ -106,12 +124,51 @@ router.put('/', requireAdmin, async (req, res) => {
       const v = parseInt(researchSlaDays);
       if (isNaN(v) || v < 1 || v > 90) errors.push('researchSlaDays must be between 1 and 90');
     }
+    // Sending-schedule validations
+    if (dailyActivationCap !== undefined) {
+      const v = parseInt(dailyActivationCap);
+      if (isNaN(v) || v < 1 || v > 500) errors.push('dailyActivationCap must be between 1 and 500');
+    }
+    if (sendWindowStartHour !== undefined) {
+      const v = parseInt(sendWindowStartHour);
+      if (isNaN(v) || v < 0 || v > 23) errors.push('sendWindowStartHour must be between 0 and 23');
+    }
+    if (sendWindowEndHour !== undefined) {
+      const v = parseInt(sendWindowEndHour);
+      if (isNaN(v) || v < 1 || v > 24) errors.push('sendWindowEndHour must be between 1 and 24');
+    }
+    if (sendWindowStartHour !== undefined && sendWindowEndHour !== undefined) {
+      if (parseInt(sendWindowEndHour) <= parseInt(sendWindowStartHour)) {
+        errors.push('sendWindowEndHour must be after sendWindowStartHour');
+      }
+    }
+    if (sendWindowDays !== undefined) {
+      if (!Array.isArray(sendWindowDays)) {
+        errors.push('sendWindowDays must be an array of 0-6 integers');
+      } else {
+        const dedup = [...new Set(sendWindowDays.map(d => parseInt(d, 10)))];
+        if (dedup.some(d => isNaN(d) || d < 0 || d > 6)) {
+          errors.push('sendWindowDays entries must be 0..6 (0=Sun..6=Sat)');
+        }
+        if (dedup.length === 0) errors.push('sendWindowDays cannot be empty');
+      }
+    }
+    if (sendWindowTimezone !== undefined) {
+      if (typeof sendWindowTimezone !== 'string' || !sendWindowTimezone.trim()) {
+        errors.push('sendWindowTimezone must be a non-empty string');
+      } else {
+        try {
+          new Intl.DateTimeFormat('en-US', { timeZone: sendWindowTimezone });
+        } catch (_) {
+          errors.push(`sendWindowTimezone "${sendWindowTimezone}" is not a valid IANA timezone`);
+        }
+      }
+    }
     if (errors.length > 0) {
       return res.status(400).json({ error: { message: errors.join('; ') } });
     }
 
     // Cross-validation: defaults must not exceed ceilings
-    // We need to load current values to merge
     const current = await db.query(
       `SELECT config FROM org_integrations
        WHERE org_id = $1 AND integration_type = 'prospecting_email'`,
@@ -119,25 +176,36 @@ router.put('/', requireAdmin, async (req, res) => {
     );
     const existing = current.rows[0]?.config || {};
 
-    const merged = {
-      dailyLimitCeiling:      parseInt(dailyLimitCeiling)      ?? existing.dailyLimitCeiling      ?? 100,
-      minDelayMinutesCeiling: parseInt(minDelayMinutesCeiling) ?? existing.minDelayMinutesCeiling ?? 2,
-      defaultDailyLimit:      parseInt(defaultDailyLimit)      ?? existing.defaultDailyLimit      ?? 50,
-      defaultMinDelayMinutes: parseInt(defaultMinDelayMinutes) ?? existing.defaultMinDelayMinutes ?? 5,
-      // Slice 2 additions — preserved on every write.
-      linkedinDailyActivationCap: parseInt(linkedinDailyActivationCap) ?? existing.linkedinDailyActivationCap ?? 25,
-      activationSlaDays:          parseInt(activationSlaDays)          ?? existing.activationSlaDays          ?? 7,
-      researchSlaDays:            parseInt(researchSlaDays)            ?? existing.researchSlaDays            ?? 14,
-    };
+    // Reconciliation: if caller sends dailyActivationCap, also mirror it to
+    // linkedinDailyActivationCap so legacy reads (resolveActivationLimits,
+    // BatchActivateModal) keep working. If they send only the legacy name,
+    // mirror it to the canonical name so the Resolver picks it up.
+    const incomingCap = dailyActivationCap !== undefined
+      ? parseInt(dailyActivationCap, 10)
+      : (linkedinDailyActivationCap !== undefined
+          ? parseInt(linkedinDailyActivationCap, 10)
+          : null);
 
-    // Handle undefined (NaN from parseInt of undefined)
-    if (isNaN(merged.dailyLimitCeiling))      merged.dailyLimitCeiling      = existing.dailyLimitCeiling      || 100;
-    if (isNaN(merged.minDelayMinutesCeiling)) merged.minDelayMinutesCeiling = existing.minDelayMinutesCeiling || 2;
-    if (isNaN(merged.defaultDailyLimit))      merged.defaultDailyLimit      = existing.defaultDailyLimit      || 50;
-    if (isNaN(merged.defaultMinDelayMinutes)) merged.defaultMinDelayMinutes = existing.defaultMinDelayMinutes || 5;
-    if (isNaN(merged.linkedinDailyActivationCap)) merged.linkedinDailyActivationCap = existing.linkedinDailyActivationCap || 25;
-    if (isNaN(merged.activationSlaDays))          merged.activationSlaDays          = existing.activationSlaDays          || 7;
-    if (isNaN(merged.researchSlaDays))            merged.researchSlaDays            = existing.researchSlaDays            || 14;
+    const merged = {
+      dailyLimitCeiling:      coalesceInt(dailyLimitCeiling,      existing.dailyLimitCeiling,      100),
+      minDelayMinutesCeiling: coalesceInt(minDelayMinutesCeiling, existing.minDelayMinutesCeiling, 2),
+      defaultDailyLimit:      coalesceInt(defaultDailyLimit,      existing.defaultDailyLimit,      50),
+      defaultMinDelayMinutes: coalesceInt(defaultMinDelayMinutes, existing.defaultMinDelayMinutes, 5),
+      // Cap — both names kept in sync.
+      linkedinDailyActivationCap: incomingCap ?? existing.dailyActivationCap ?? existing.linkedinDailyActivationCap ?? 25,
+      dailyActivationCap:         incomingCap ?? existing.dailyActivationCap ?? existing.linkedinDailyActivationCap ?? 25,
+      activationSlaDays: coalesceInt(activationSlaDays, existing.activationSlaDays, 7),
+      researchSlaDays:   coalesceInt(researchSlaDays,   existing.researchSlaDays,   14),
+      // Sending schedule
+      sendWindowStartHour: coalesceInt(sendWindowStartHour, existing.sendWindowStartHour, 9),
+      sendWindowEndHour:   coalesceInt(sendWindowEndHour,   existing.sendWindowEndHour,   11),
+      sendWindowDays:      Array.isArray(sendWindowDays)
+                             ? [...new Set(sendWindowDays.map(d => parseInt(d, 10)))].sort()
+                             : (Array.isArray(existing.sendWindowDays) ? existing.sendWindowDays : [1,2,3,4,5]),
+      sendWindowTimezone:  (typeof sendWindowTimezone === 'string' && sendWindowTimezone.trim())
+                             ? sendWindowTimezone.trim()
+                             : (existing.sendWindowTimezone || 'America/New_York'),
+    };
 
     if (merged.defaultDailyLimit > merged.dailyLimitCeiling) {
       return res.status(400).json({
@@ -173,5 +241,21 @@ router.put('/', requireAdmin, async (req, res) => {
     res.status(500).json({ error: { message: 'Failed to update outreach limits' } });
   }
 });
+
+// coalesceInt(incoming, existing, fallback) — incoming is a raw req.body field
+// that may be undefined/null/NaN; existing is what's in the DB; fallback is
+// the hard default. Numeric coercion happens once here so caller code stays
+// linear.
+function coalesceInt(incoming, existing, fallback) {
+  if (incoming !== undefined && incoming !== null && incoming !== '') {
+    const n = parseInt(incoming, 10);
+    if (Number.isFinite(n)) return n;
+  }
+  if (existing !== undefined && existing !== null) {
+    const n = parseInt(existing, 10);
+    if (Number.isFinite(n)) return n;
+  }
+  return fallback;
+}
 
 module.exports = router;

@@ -76,6 +76,85 @@ async function loadCampaign(orgId, id) {
   return rows[0] || null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: validate sending-schedule override fields from req.body. Returns
+// { values: {daily_activation_cap, send_window_start_hour, ...}, errors: [] }.
+// Each output field is null if the caller didn't provide a value (meaning
+// "inherit from org default"). Numeric fields are coerced to int; days to
+// a sorted int array; timezone is IANA-validated.
+// ─────────────────────────────────────────────────────────────────────────────
+function validateAndCoerceSchedule(body) {
+  const errors = [];
+  const out = {
+    daily_activation_cap:    null,
+    send_window_start_hour:  null,
+    send_window_end_hour:    null,
+    send_window_days:        null,
+    send_window_timezone:    null,
+  };
+
+  // Accept both camelCase (frontend) and snake_case (idiomatic API) names.
+  const raw = {
+    daily_activation_cap:    body.daily_activation_cap    ?? body.dailyActivationCap,
+    send_window_start_hour:  body.send_window_start_hour  ?? body.sendWindowStartHour,
+    send_window_end_hour:    body.send_window_end_hour    ?? body.sendWindowEndHour,
+    send_window_days:        body.send_window_days        ?? body.sendWindowDays,
+    send_window_timezone:    body.send_window_timezone    ?? body.sendWindowTimezone,
+  };
+
+  if (raw.daily_activation_cap !== undefined && raw.daily_activation_cap !== null && raw.daily_activation_cap !== '') {
+    const n = parseInt(raw.daily_activation_cap, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 500) {
+      errors.push('daily_activation_cap must be an integer 1-500');
+    } else out.daily_activation_cap = n;
+  }
+  if (raw.send_window_start_hour !== undefined && raw.send_window_start_hour !== null && raw.send_window_start_hour !== '') {
+    const n = parseInt(raw.send_window_start_hour, 10);
+    if (!Number.isFinite(n) || n < 0 || n > 23) {
+      errors.push('send_window_start_hour must be 0-23');
+    } else out.send_window_start_hour = n;
+  }
+  if (raw.send_window_end_hour !== undefined && raw.send_window_end_hour !== null && raw.send_window_end_hour !== '') {
+    const n = parseInt(raw.send_window_end_hour, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 24) {
+      errors.push('send_window_end_hour must be 1-24');
+    } else out.send_window_end_hour = n;
+  }
+  if (out.send_window_start_hour !== null && out.send_window_end_hour !== null
+      && out.send_window_end_hour <= out.send_window_start_hour) {
+    errors.push('send_window_end_hour must be after send_window_start_hour');
+  }
+  if (raw.send_window_days !== undefined && raw.send_window_days !== null) {
+    if (!Array.isArray(raw.send_window_days)) {
+      errors.push('send_window_days must be an array');
+    } else if (raw.send_window_days.length === 0) {
+      // Empty array → treat as "no override" rather than error
+      out.send_window_days = null;
+    } else {
+      const dedup = [...new Set(raw.send_window_days.map(d => parseInt(d, 10)))];
+      if (dedup.some(d => isNaN(d) || d < 0 || d > 6)) {
+        errors.push('send_window_days entries must be 0..6 (0=Sun..6=Sat)');
+      } else {
+        out.send_window_days = dedup.sort();
+      }
+    }
+  }
+  if (raw.send_window_timezone !== undefined && raw.send_window_timezone !== null && raw.send_window_timezone !== '') {
+    if (typeof raw.send_window_timezone !== 'string') {
+      errors.push('send_window_timezone must be a string');
+    } else {
+      try {
+        new Intl.DateTimeFormat('en-US', { timeZone: raw.send_window_timezone });
+        out.send_window_timezone = raw.send_window_timezone.trim();
+      } catch (_) {
+        errors.push(`send_window_timezone "${raw.send_window_timezone}" is not a valid IANA timezone`);
+      }
+    }
+  }
+
+  return { values: out, errors };
+}
+
 // ── GET / — list campaigns with live prospect counts ─────────────────────────
 router.get('/', async (req, res) => {
   try {
@@ -132,6 +211,12 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: { message: `status must be one of: ${VALID_STATUS.join(', ')}` } });
   }
 
+  // Sending-schedule overrides (all nullable — NULL means "inherit org default")
+  const sched = validateAndCoerceSchedule(req.body);
+  if (sched.errors.length) {
+    return res.status(400).json({ error: { message: sched.errors.join('; ') } });
+  }
+
   try {
     // Validate playbook belongs to this org and is a prospecting playbook.
     if (playbook_id) {
@@ -161,14 +246,21 @@ router.post('/', async (req, res) => {
     const { rows } = await pool.query(
       `INSERT INTO prospecting_campaigns
              (org_id, name, description, solution, playbook_id, default_sequence_id,
-              goal_qualified, start_date, end_date, status, owner_id, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
+              goal_qualified, start_date, end_date, status, owner_id, created_by,
+              daily_activation_cap, send_window_start_hour, send_window_end_hour,
+              send_window_days, send_window_timezone)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$13,$14,$15,$16)
        RETURNING *`,
       [
         req.orgId, name.trim(), description || null, solution || null,
         playbook_id || null, default_sequence_id || null,
         goal_qualified || null, start_date || null, end_date || null,
         status, req.user.userId,
+        sched.values.daily_activation_cap,
+        sched.values.send_window_start_hour,
+        sched.values.send_window_end_hour,
+        sched.values.send_window_days,
+        sched.values.send_window_timezone,
       ]
     );
 
@@ -445,18 +537,38 @@ router.put('/:id', async (req, res) => {
       }
     }
 
+    // Sending-schedule overrides — 3-way semantic per field:
+    //   - absent from body         → keep existing column value
+    //   - present with null/'' value → clear override (NULL → inherit org)
+    //   - present with a value     → validate + set
+    const sched = validateAndCoerceSchedule(req.body);
+    if (sched.errors.length) {
+      return res.status(400).json({ error: { message: sched.errors.join('; ') } });
+    }
+    const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
+    const incomingDailyCap = has('daily_activation_cap') || has('dailyActivationCap');
+    const incomingStart    = has('send_window_start_hour') || has('sendWindowStartHour');
+    const incomingEnd      = has('send_window_end_hour')   || has('sendWindowEndHour');
+    const incomingDays     = has('send_window_days')       || has('sendWindowDays');
+    const incomingTz       = has('send_window_timezone')   || has('sendWindowTimezone');
+
     // Build a COALESCE-style partial update: only provided fields change.
     const { rows } = await pool.query(
       `UPDATE prospecting_campaigns SET
-         name                = COALESCE($3, name),
-         description         = $4,
-         solution            = $5,
-         playbook_id         = $6,
-         default_sequence_id = $7,
-         goal_qualified      = $8,
-         start_date          = $9,
-         end_date            = $10,
-         status              = COALESCE($11, status)
+         name                   = COALESCE($3, name),
+         description            = $4,
+         solution               = $5,
+         playbook_id            = $6,
+         default_sequence_id    = $7,
+         goal_qualified         = $8,
+         start_date             = $9,
+         end_date               = $10,
+         status                 = COALESCE($11, status),
+         daily_activation_cap   = $12,
+         send_window_start_hour = $13,
+         send_window_end_hour   = $14,
+         send_window_days       = $15,
+         send_window_timezone   = $16
        WHERE id = $1 AND org_id = $2
        RETURNING id`,
       [
@@ -470,6 +582,12 @@ router.put('/:id', async (req, res) => {
         start_date !== undefined ? (start_date || null) : existing.start_date,
         end_date   !== undefined ? (end_date   || null) : existing.end_date,
         status !== undefined ? status : null,
+        // Schedule fields: use validated value if present in body, else existing
+        incomingDailyCap ? sched.values.daily_activation_cap   : existing.daily_activation_cap,
+        incomingStart    ? sched.values.send_window_start_hour : existing.send_window_start_hour,
+        incomingEnd      ? sched.values.send_window_end_hour   : existing.send_window_end_hour,
+        incomingDays     ? sched.values.send_window_days       : existing.send_window_days,
+        incomingTz       ? sched.values.send_window_timezone   : existing.send_window_timezone,
       ]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Campaign not found' } });
@@ -1399,7 +1517,7 @@ router.get('/:id/research-queue', async (req, res) => {
 //   }
 router.post('/:id/bulk-activate', async (req, res) => {
   try {
-    const { count, prospectIds, runSkill = true, skipPersonalisation } = req.body || {};
+    const { count, prospectIds, runSkill = true, skipPersonalisation, enrollAll = false } = req.body || {};
 
     // Validate campaign + ensure it has a default sequence to enroll into.
     const campRes = await pool.query(
@@ -1418,8 +1536,15 @@ router.post('/:id/bulk-activate', async (req, res) => {
       } });
     }
 
-    // Compute cap.
+    // Compute cap. When enrollAll=true the caller wants to enroll the entire
+    // eligible queue in one click; the scheduler will spread enrollments
+    // across days respecting the daily cap (next_step_due dates). When
+    // enrollAll=false (legacy "today's batch only" behavior), we cap the
+    // candidate count at limits.effective so only that many enroll.
     const limits = await resolveActivationLimits(req.orgId, req.user.userId);
+    // Set a hard safety ceiling even in enrollAll mode — refuse to schedule
+    // beyond 10,000 enrollments in a single call (operational sanity).
+    const HARD_BATCH_CEILING = 10000;
 
     // Determine candidate set.
     let candidates;
@@ -1445,7 +1570,13 @@ router.post('/:id/bulk-activate', async (req, res) => {
       );
       candidates = r.rows.map(row => row.id);
     } else {
-      const n = Math.max(1, Math.min(parseInt(count, 10) || limits.effective, limits.effective));
+      // Default n: if enrollAll, take everything eligible (capped by safety).
+      // Else use count if provided, else limits.effective (legacy default).
+      const cap = enrollAll ? HARD_BATCH_CEILING : limits.effective;
+      const requested = enrollAll
+        ? HARD_BATCH_CEILING
+        : (parseInt(count, 10) || limits.effective);
+      const n = Math.max(1, Math.min(requested, cap));
       const r = await pool.query(
         `SELECT p.id
            FROM prospects p
@@ -1466,9 +1597,12 @@ router.post('/:id/bulk-activate', async (req, res) => {
       candidates = r.rows.map(row => row.id);
     }
 
-    // Hard ceiling: never exceed effective cap, even if caller asks for more.
-    if (candidates.length > limits.effective) {
-      candidates = candidates.slice(0, limits.effective);
+    // Hard ceiling enforcement. In enrollAll mode the ceiling is the safety
+    // value (10k); else it's the per-day cap. Same logic as before, just
+    // parameterised by enrollAll.
+    const effectiveCeiling = enrollAll ? HARD_BATCH_CEILING : limits.effective;
+    if (candidates.length > effectiveCeiling) {
+      candidates = candidates.slice(0, effectiveCeiling);
     }
 
     if (candidates.length === 0) {
@@ -1686,6 +1820,114 @@ router.post('/:id/bulk-activate', async (req, res) => {
   } catch (err) {
     console.error('bulk-activate error:', err);
     res.status(500).json({ error: { message: 'Bulk activation failed: ' + err.message } });
+  }
+});
+
+// ── GET /:id/schedule-preview?count=N — predict slot timestamps ──────────────
+//
+// Returns the N future timestamps that bulk-activate would assign as
+// next_step_due for N new prospects, given current schedule settings and
+// already-scheduled enrollments. The BatchActivateModal renders these so
+// the user knows what they're about to commit to ("first 25 will go out
+// tomorrow 9am–11am ET, then ...").
+//
+// Response shape:
+//   {
+//     count, settings,
+//     summary: { days: 3, firstAt: ISO, lastAt: ISO },
+//     byDay:   [ { date: 'YYYY-MM-DD', count: 25, firstAt: ISO, lastAt: ISO }, ... ]
+//   }
+//
+// Does NOT mutate anything. Pure preview.
+router.get('/:id/schedule-preview', async (req, res) => {
+  try {
+    const count = Math.max(1, Math.min(parseInt(req.query.count, 10) || 25, 10000));
+
+    const campRes = await pool.query(
+      `SELECT id, default_sequence_id FROM prospecting_campaigns
+        WHERE id = $1 AND org_id = $2 AND status IN ('active','paused')`,
+      [req.params.id, req.orgId]
+    );
+    if (!campRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Campaign not found' } });
+    }
+    const campaign = campRes.rows[0];
+    if (!campaign.default_sequence_id) {
+      return res.status(400).json({ error: {
+        message: 'Campaign has no default sequence — preview unavailable.',
+      } });
+    }
+
+    // First step's channel determines email-spread vs task-released-at-start.
+    const firstStepRes = await pool.query(
+      `SELECT channel FROM sequence_steps
+        WHERE sequence_id = $1
+     ORDER BY step_order LIMIT 1`,
+      [campaign.default_sequence_id]
+    );
+    const channel = firstStepRes.rows[0]?.channel || 'email';
+
+    // Resolve settings + load already-scheduled enrollments for this sequence.
+    const settings = await SendingSchedule.resolveSettings({
+      orgId:      req.orgId,
+      campaignId: parseInt(req.params.id, 10),
+    });
+    const tz = settings.sendWindowTimezone;
+    const existingRes = await pool.query(
+      `SELECT next_step_due FROM sequence_enrollments
+        WHERE org_id = $1 AND sequence_id = $2 AND status = 'active'
+          AND next_step_due > NOW()`,
+      [req.orgId, campaign.default_sequence_id]
+    );
+    const existingByDay = {};
+    for (const r of existingRes.rows) {
+      const local = SendingSchedule._internal.getLocalCalendarDate(new Date(r.next_step_due), tz);
+      existingByDay[local.dayKey] = (existingByDay[local.dayKey] || 0) + 1;
+    }
+
+    const slots = SendingSchedule.scheduleBatchSlots({
+      count,
+      settings,
+      channel,
+      existingByDay,
+      now: new Date(),
+    });
+
+    // Group slots by local-tz day for the per-day summary.
+    const byDayMap = new Map();
+    for (const slot of slots) {
+      const key = SendingSchedule._internal.getLocalCalendarDate(slot, tz).dayKey;
+      if (!byDayMap.has(key)) byDayMap.set(key, []);
+      byDayMap.get(key).push(slot);
+    }
+    const byDay = [];
+    for (const [date, daySlots] of byDayMap) {
+      daySlots.sort((a, b) => a.getTime() - b.getTime());
+      byDay.push({
+        date,
+        count: daySlots.length,
+        firstAt: daySlots[0].toISOString(),
+        lastAt:  daySlots[daySlots.length - 1].toISOString(),
+      });
+    }
+    byDay.sort((a, b) => a.date.localeCompare(b.date));
+
+    res.json({
+      count: slots.length,
+      requestedCount: count,
+      channel,
+      settings,
+      existingScheduled: Object.values(existingByDay).reduce((a, b) => a + b, 0),
+      summary: slots.length > 0 ? {
+        days:    byDay.length,
+        firstAt: slots[0].toISOString(),
+        lastAt:  slots[slots.length - 1].toISOString(),
+      } : null,
+      byDay,
+    });
+  } catch (err) {
+    console.error('schedule-preview error:', err);
+    res.status(500).json({ error: { message: 'Failed to preview schedule: ' + err.message } });
   }
 });
 
