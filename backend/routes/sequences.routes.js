@@ -337,16 +337,19 @@ router.post('/enroll', async (req, res) => {
 
 // GET /api/sequences/enrollments
 router.get('/enrollments', async (req, res) => {
-  const { prospectId, status, enrolledBy, depth } = req.query;
+  const { prospectId, status, enrolledBy, depth, sequenceId, campaignId } = req.query;
   try {
     // Phase 3: optional ?enrolledBy=csv and ?depth= filter the enrollments
     // by the rep who enrolled the prospect, intersected with the viewer's
     // resolved scope (silently drops out-of-scope IDs).
     //
-    // Backward compat: callers without either param see the original
-    // behavior — all enrollments visible to the org. The depth-aware
-    // filter only kicks in when ?enrolledBy is supplied OR when ?depth is
-    // supplied explicitly. Bare GET /enrollments still returns everything.
+    // Phase 4: added ?sequenceId= and ?campaignId= so the reporting view
+    // can list prospects within a specific sequence / campaign without
+    // pulling the whole org's enrollments.
+    //
+    // Backward compat: callers without enrolledBy/depth see the original
+    // behavior (no per-rep filter). All other filters are independently
+    // applied.
     let scopedUserIds = null;   // null = no enrolled_by predicate
     if (enrolledBy !== undefined || depth !== undefined) {
       const explicitUserIds = enrolledBy !== undefined
@@ -360,18 +363,32 @@ router.get('/enrollments', async (req, res) => {
       scopedUserIds = scope.userIds;
     }
 
+    // Phase 4: enriched response. The reporting view needs per-enrollment
+    // step progress (current step, total steps, last log activity) without
+    // a per-row follow-up fetch. We compute these inline via subqueries on
+    // sequence_steps and sequence_step_logs.
     let query = `
       SELECT se.*,
              s.name AS sequence_name,
-             p.first_name, p.last_name, p.email, p.company_name
+             p.first_name, p.last_name, p.email, p.company_name,
+             p.campaign_id,
+             (SELECT COUNT(*)::int FROM sequence_steps
+                WHERE sequence_id = se.sequence_id) AS total_steps,
+             (SELECT MAX(fired_at) FROM sequence_step_logs
+                WHERE enrollment_id = se.id) AS last_fired_at,
+             (SELECT status FROM sequence_step_logs
+                WHERE enrollment_id = se.id
+                ORDER BY fired_at DESC NULLS LAST LIMIT 1) AS last_log_status
         FROM sequence_enrollments se
-        JOIN sequences s     ON s.id = se.sequence_id
-        JOIN prospects p     ON p.id = se.prospect_id
+        JOIN sequences s ON s.id = se.sequence_id
+        JOIN prospects p ON p.id = se.prospect_id
        WHERE se.org_id = $1`;
     const params = [req.orgId];
 
     if (prospectId) { params.push(prospectId); query += ` AND se.prospect_id = $${params.length}`; }
     if (status)     { params.push(status);     query += ` AND se.status = $${params.length}`; }
+    if (sequenceId) { params.push(sequenceId); query += ` AND se.sequence_id = $${params.length}`; }
+    if (campaignId) { params.push(campaignId); query += ` AND p.campaign_id = $${params.length}`; }
     if (scopedUserIds !== null) {
       params.push(scopedUserIds);
       query += ` AND se.enrolled_by = ANY($${params.length}::int[])`;

@@ -123,6 +123,15 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
   const [drillLoading, setDrillLoading] = useState(false);
   const [drillError,   setDrillError]   = useState(null);
 
+  // ── Phase 4 (later add): Prospect-list panel state ─────────────────────
+  // Side panel showing enrolled prospects for a given sequence or campaign.
+  // Two modes:
+  //   - { sequenceId, sequenceName }  → list prospects in that sequence
+  //   - { campaignId, campaignName }  → list prospects in that campaign
+  // Plus an optional drilled-in enrollment for the timeline view.
+  const [prospectPanel, setProspectPanel]               = useState(null);
+  const [prospectPanelEnrollId, setProspectPanelEnrollId] = useState(null);
+
   // ── Per-tab data state ─────────────────────────────────────────────────
   const [repData,        setRepData]        = useState(null);
   const [campaignData,   setCampaignData]   = useState(null);
@@ -315,6 +324,8 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
           loading={tabLoading}
           scope={scope}
           onDrillIn={(campaignId) => setDrillCampaignId(campaignId)}
+          onOpenProspects={(campaignId, campaignName) =>
+            setProspectPanel({ campaignId, campaignName })}
           windowState={windowState}
           onSetWindow={setWindowState}
         />
@@ -331,11 +342,34 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
           drillError={drillError}
           scope={scope}
           window={windowState}
+          onOpenProspects={(sequenceId, sequenceName) =>
+            setProspectPanel({ sequenceId, sequenceName })}
         />
       )}
 
       {tab === 'sequence' && (
-        <SequenceTab data={sequenceData} loading={tabLoading} scope={scope} windowState={windowState} onSetWindow={setWindowState} />
+        <SequenceTab
+          data={sequenceData}
+          loading={tabLoading}
+          scope={scope}
+          windowState={windowState}
+          onSetWindow={setWindowState}
+          onOpenProspects={(sequenceId, sequenceName) =>
+            setProspectPanel({ sequenceId, sequenceName })}
+        />
+      )}
+
+      {prospectPanel && (
+        <ProspectListPanel
+          context={prospectPanel}
+          enrollmentId={prospectPanelEnrollId}
+          onPickEnrollment={(id) => setProspectPanelEnrollId(id)}
+          onBackToList={() => setProspectPanelEnrollId(null)}
+          onClose={() => {
+            setProspectPanel(null);
+            setProspectPanelEnrollId(null);
+          }}
+        />
       )}
     </div>
   );
@@ -682,7 +716,7 @@ function RepTab({ data, loading, scope, windowState, onSetWindow }) {
 // breakdown →" button that opens the side-panel drill-down). This gives
 // the user a hint of what's there before committing to the full drill.
 // ──────────────────────────────────────────────────────────────────────────
-function CampaignTab({ data, loading, scope, onDrillIn, windowState, onSetWindow }) {
+function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowState, onSetWindow }) {
   const [expandedId, setExpandedId] = useState(null);
   if (loading && !data) return <LoadingState />;
   if (!data) return null;
@@ -764,6 +798,13 @@ function CampaignTab({ data, loading, scope, onDrillIn, windowState, onSetWindow
                                 View detailed breakdown →
                               </button>
                               <div className="trv-expand-hint">per-sequence and per-rep view</div>
+                              <button
+                                className="trv-cta-secondary"
+                                style={{ marginTop: 8 }}
+                                onClick={(e) => { e.stopPropagation(); onOpenProspects(c.campaignId, c.name); }}
+                              >
+                                View prospects →
+                              </button>
                             </div>
                           </div>
                         </td>
@@ -786,7 +827,7 @@ function CampaignTab({ data, loading, scope, onDrillIn, windowState, onSetWindow
 // which is invisible to the campaign tab. Expandable rows show all top
 // users with their numbers + last activity.
 // ──────────────────────────────────────────────────────────────────────────
-function SequenceTab({ data, loading, scope, windowState, onSetWindow }) {
+function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenProspects }) {
   const [expandedId, setExpandedId] = useState(null);
   if (loading && !data) return <LoadingState />;
   if (!data) return null;
@@ -891,6 +932,14 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow }) {
                                 </table>
                               )}
                             </div>
+                            <div className="trv-expand-block trv-expand-fullwidth" style={{ paddingTop: 4 }}>
+                              <button
+                                className="trv-cta-primary"
+                                onClick={(e) => { e.stopPropagation(); onOpenProspects(s.sequenceId, s.name); }}
+                              >
+                                View prospects in this sequence →
+                              </button>
+                            </div>
                           </div>
                         </td>
                       </tr>
@@ -913,7 +962,7 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow }) {
 // ──────────────────────────────────────────────────────────────────────────
 function DrilldownView({
   campaigns, currentCampaignId, onPickCampaign, onExitDrill,
-  drillData, drillLoading, drillError, scope, window: win,
+  drillData, drillLoading, drillError, scope, window: win, onOpenProspects,
 }) {
   return (
     <div className="trv-tab-body trv-drill-root">
@@ -945,7 +994,7 @@ function DrilldownView({
       <div className="trv-drill-panel">
         {drillLoading && !drillData && <LoadingState />}
         {drillError && <ErrorBanner message={drillError} />}
-        {drillData && <DrilldownDetail data={drillData} scope={scope} />}
+        {drillData && <DrilldownDetail data={drillData} scope={scope} onOpenProspects={onOpenProspects} />}
       </div>
     </div>
   );
@@ -955,7 +1004,7 @@ function DrilldownView({
 // DrilldownDetail — body of the right-side panel
 // Per-sequence table + per-rep table, both from the same response.
 // ──────────────────────────────────────────────────────────────────────────
-function DrilldownDetail({ data, scope }) {
+function DrilldownDetail({ data, scope, onOpenProspects }) {
   const health = data.health || [];
   const byUser = data.byUser || [];
 
@@ -998,6 +1047,7 @@ function DrilldownDetail({ data, scope }) {
                 <th className="num">7d replied</th>
                 <th className="num">Stalled</th>
                 <th className="num">Last activity</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -1009,6 +1059,16 @@ function DrilldownDetail({ data, scope }) {
                   <td className="num">{fmtNum(h.last7d?.replied)}</td>
                   <td className={`num ${h.stalledEnrollments > 0 ? 'trv-warning' : ''}`}>{fmtNum(h.stalledEnrollments)}</td>
                   <td className="num">{fmtDate(h.lastFiredAt)}</td>
+                  <td>
+                    {onOpenProspects && (
+                      <button
+                        className="trv-link-btn"
+                        onClick={() => onOpenProspects(h.sequenceId, h.sequenceName)}
+                      >
+                        prospects →
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1068,6 +1128,249 @@ function ErrorBanner({ message, onDismiss }) {
     <div className="trv-error">
       <span>⚠️ {message}</span>
       {onDismiss && <button onClick={onDismiss} className="trv-error-close">✕</button>}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// ProspectListPanel — right-side overlay panel
+//
+// Two modes determined by props:
+//   • enrollmentId === null → "list mode" — shows enrolled prospects in the
+//     given sequence/campaign, with current step + status + last activity.
+//   • enrollmentId !== null → "timeline mode" — shows the per-step timeline
+//     (executed + future) for one prospect's enrollment.
+//
+// Fetches:
+//   List mode  → GET /sequences/enrollments?sequenceId= or ?campaignId=
+//   Timeline   → GET /sequences/enrollments/:enrollmentId
+//
+// The panel is fixed to the right edge of the viewport, ~440px wide.
+// Clicking outside the panel does NOT close it (the underlying reporting
+// view is interactive and the user may want to switch tabs while keeping
+// the prospect list open). Only the explicit ✕ button closes it.
+// ──────────────────────────────────────────────────────────────────────────
+function ProspectListPanel({ context, enrollmentId, onPickEnrollment, onBackToList, onClose }) {
+  // ── List-mode state ──────────────────────────────────────────────────
+  const [enrollments, setEnrollments] = useState(null);
+  const [listLoading, setListLoading] = useState(false);
+  const [listError,   setListError]   = useState(null);
+
+  useEffect(() => {
+    if (enrollmentId) return;   // timeline mode handles its own fetch
+    let cancelled = false;
+    setListLoading(true);
+    setListError(null);
+    const params = context.sequenceId
+      ? `sequenceId=${context.sequenceId}`
+      : `campaignId=${context.campaignId}`;
+    apiFetch(`/sequences/enrollments?${params}`)
+      .then(res => {
+        if (cancelled) return;
+        setEnrollments(res?.enrollments || []);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        setListError(err.message);
+      })
+      .finally(() => { if (!cancelled) setListLoading(false); });
+    return () => { cancelled = true; };
+  }, [context.sequenceId, context.campaignId, enrollmentId]);
+
+  // ── Timeline-mode state ──────────────────────────────────────────────
+  const [timeline, setTimeline] = useState(null);
+  const [tlEnrollment, setTlEnrollment] = useState(null);
+  const [tlLoading, setTlLoading] = useState(false);
+  const [tlError,   setTlError]   = useState(null);
+
+  useEffect(() => {
+    if (!enrollmentId) return;
+    let cancelled = false;
+    setTlLoading(true);
+    setTlError(null);
+    apiFetch(`/sequences/enrollments/${enrollmentId}`)
+      .then(res => {
+        if (cancelled) return;
+        setTimeline(res?.logs || []);
+        setTlEnrollment(res?.enrollment || null);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        setTlError(err.message);
+      })
+      .finally(() => { if (!cancelled) setTlLoading(false); });
+    return () => { cancelled = true; };
+  }, [enrollmentId]);
+
+  // ── Render ───────────────────────────────────────────────────────────
+  const title = enrollmentId
+    ? (tlEnrollment
+        ? `${[tlEnrollment.first_name, tlEnrollment.last_name].filter(Boolean).join(' ').trim() || tlEnrollment.email}`
+        : 'Loading…')
+    : (context.sequenceName || context.campaignName || '');
+  const subtitle = enrollmentId
+    ? (tlEnrollment?.email || '')
+    : (context.sequenceId ? 'Enrolled prospects' : 'Prospects in this campaign');
+
+  return (
+    <>
+      <div className="trv-prospect-overlay" onClick={onClose} aria-hidden="true" />
+      <div className="trv-prospect-panel" role="dialog" aria-label="Prospect list">
+        <div className="trv-pp-header">
+          {enrollmentId ? (
+            <button className="trv-back-btn" onClick={onBackToList}>
+              ← Back to list
+            </button>
+          ) : (
+            <div className="trv-pp-context">{context.sequenceId ? 'Sequence' : 'Campaign'}</div>
+          )}
+          <button className="trv-pp-close" onClick={onClose} aria-label="Close panel">✕</button>
+        </div>
+        <div className="trv-pp-title-block">
+          <div className="trv-pp-title">{title}</div>
+          <div className="trv-pp-subtitle">{subtitle}</div>
+        </div>
+
+        <div className="trv-pp-body">
+          {!enrollmentId && (
+            <ProspectListBody
+              loading={listLoading}
+              error={listError}
+              enrollments={enrollments}
+              onPick={onPickEnrollment}
+            />
+          )}
+          {enrollmentId && (
+            <ProspectTimelineBody
+              loading={tlLoading}
+              error={tlError}
+              timeline={timeline}
+              enrollment={tlEnrollment}
+            />
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// ProspectListBody — table of enrollments rendered inside the panel
+// ──────────────────────────────────────────────────────────────────────────
+function ProspectListBody({ loading, error, enrollments, onPick }) {
+  if (loading && !enrollments) return <LoadingState />;
+  if (error) return <ErrorBanner message={error} />;
+  if (!enrollments || enrollments.length === 0) {
+    return <EmptyState message="No enrolled prospects." />;
+  }
+  return (
+    <div className="trv-pp-list">
+      <div className="trv-pp-count">{enrollments.length} prospect{enrollments.length === 1 ? '' : 's'}</div>
+      {enrollments.map(e => {
+        const name = [e.first_name, e.last_name].filter(Boolean).join(' ').trim() || e.email;
+        const stepLabel = e.total_steps
+          ? `step ${e.current_step ?? '—'} of ${e.total_steps}`
+          : `step ${e.current_step ?? '—'}`;
+        const statusColor =
+          e.status === 'replied'   ? 'trv-status-success' :
+          e.status === 'stopped'   ? 'trv-status-muted' :
+          e.status === 'completed' ? 'trv-status-success' :
+          e.status === 'paused'    ? 'trv-status-warning' :
+          'trv-status-neutral';
+        return (
+          <button key={e.id} className="trv-pp-row" onClick={() => onPick(e.id)}>
+            <div className="trv-pp-row-main">
+              <div className="trv-pp-row-name">{name}</div>
+              <div className="trv-pp-row-meta">
+                {e.company_name && <span>{e.company_name}</span>}
+                {e.company_name && <span className="trv-pp-row-dot">·</span>}
+                <span>{stepLabel}</span>
+              </div>
+            </div>
+            <div className="trv-pp-row-right">
+              <span className={`trv-pp-status ${statusColor}`}>{e.status}</span>
+              <div className="trv-pp-row-time">{fmtDate(e.last_fired_at || e.enrolled_at)}</div>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// ProspectTimelineBody — step-by-step view for one enrollment
+// Uses the existing /sequences/enrollments/:id response shape — each step
+// includes either log data (if fired) or scheduled metadata (if future).
+// ──────────────────────────────────────────────────────────────────────────
+function ProspectTimelineBody({ loading, error, timeline, enrollment }) {
+  if (loading && !timeline) return <LoadingState />;
+  if (error) return <ErrorBanner message={error} />;
+  if (!timeline || timeline.length === 0) {
+    return <EmptyState message="No timeline data for this enrollment." />;
+  }
+  return (
+    <div className="trv-tl">
+      {enrollment && (
+        <div className="trv-tl-summary">
+          <div><span className="trv-tl-summary-label">Sequence:</span> {enrollment.sequence_name}</div>
+          <div><span className="trv-tl-summary-label">Status:</span> {enrollment.status}</div>
+          <div><span className="trv-tl-summary-label">Enrolled:</span> {fmtDate(enrollment.enrolled_at)}</div>
+        </div>
+      )}
+      <div className="trv-tl-steps">
+        {timeline.map((step, idx) => (
+          <TimelineStep key={step.log_id || `future-${step.step_order}-${idx}`} step={step} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TimelineStep({ step }) {
+  const [expanded, setExpanded] = useState(false);
+  const isFuture = step.is_future;
+  const statusBadgeClass =
+    step.status === 'replied'   ? 'trv-tl-badge-success' :
+    step.status === 'completed' || step.status === 'sent' ? 'trv-tl-badge-info' :
+    step.status === 'failed'    ? 'trv-tl-badge-danger'  :
+    step.status === 'draft'     ? 'trv-tl-badge-warning' :
+    'trv-tl-badge-muted';
+  return (
+    <div className={`trv-tl-step ${isFuture ? 'trv-tl-step-future' : ''}`}>
+      <div className="trv-tl-step-dot" />
+      <div className="trv-tl-step-card">
+        <div className="trv-tl-step-header" onClick={() => setExpanded(!expanded)}>
+          <div className="trv-tl-step-meta">
+            <span className="trv-tl-step-num">Step {step.step_order}</span>
+            <span className="trv-tl-channel">{step.channel}</span>
+            <span className={`trv-tl-badge ${statusBadgeClass}`}>{step.status}</span>
+          </div>
+          <div className="trv-tl-step-time">
+            {step.fired_at ? fmtDate(step.fired_at) :
+             step.scheduled_send_at ? `scheduled ${fmtDate(step.scheduled_send_at)}` : ''}
+          </div>
+        </div>
+        {(step.subject || step.subject_template) && (
+          <div className="trv-tl-step-subject">{step.subject || step.subject_template}</div>
+        )}
+        {expanded && (step.body || step.body_template) && (
+          <div className="trv-tl-step-body" dangerouslySetInnerHTML={{
+            __html: (step.body || step.body_template || '').replace(/\n/g, '<br>')
+          }} />
+        )}
+        {expanded && step.task_note && (
+          <div className="trv-tl-step-task">Note: {step.task_note}</div>
+        )}
+        {expanded && step.error_message && (
+          <div className="trv-tl-step-error">Error: {step.error_message}</div>
+        )}
+        {(step.body || step.body_template || step.task_note) && (
+          <button className="trv-tl-step-toggle" onClick={() => setExpanded(!expanded)}>
+            {expanded ? 'hide details' : 'show details'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
