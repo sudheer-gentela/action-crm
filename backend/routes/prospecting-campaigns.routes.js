@@ -46,6 +46,12 @@ const ReportingScopeService = require('../services/ReportingScopeService');
 // enrollment next_step_due timestamps spread across days.
 const SendingSchedule = require('../services/SendingScheduleResolver');
 
+// Owner-based access control for campaigns. The list endpoint scopes by
+// owner_id (with manager rollup); each /:id endpoint gates on
+// requireCanAccess (read) or requireCanMutate (write). See
+// services/CampaignAccess.js for the rules.
+const CampaignAccess = require('../services/CampaignAccess');
+
 router.use(authenticateToken);
 router.use(orgContext);
 router.use(requireModule('prospecting'));
@@ -160,12 +166,48 @@ router.get('/', async (req, res) => {
   try {
     const { status } = req.query;
 
+    // ── Scope: mine | team | org ──────────────────────────────────────────
+    // mine (default) → owner_id = current user. Same default as
+    //   prospects.routes.js — reps see their own work by default.
+    // team           → owner_id in (current user + subordinates). Manager
+    //   rollup via req.subordinateIds (populated by orgContext middleware).
+    //   If the caller has no subordinates this collapses to "mine".
+    // org            → no owner filter. Admin-only — non-admins get 403.
+    const rawScope = (req.query.scope || 'mine').toLowerCase();
+    const scope    = ['mine', 'team', 'org'].includes(rawScope) ? rawScope : 'mine';
+
+    if (scope === 'org') {
+      const callerIsAdmin = await CampaignAccess.isAdmin(req);
+      if (!callerIsAdmin) {
+        return res.status(403).json({ error: {
+          message: "You don't have permission to view all campaigns. Only admins can use scope=org.",
+        } });
+      }
+    }
+
     const params = [req.orgId];
     let statusFilter = `AND c.status <> 'archived'`;   // hide archived by default
     if (status) {
       params.push(status);
       statusFilter = `AND c.status = $${params.length}`;
     }
+
+    // Owner filter — applied AFTER the org filter so the (org_id, owner_id)
+    // index introduced in 2026_13_campaign_owner_scoping.sql can be used.
+    let ownerFilter = '';
+    if (scope === 'mine') {
+      params.push(req.userId);
+      ownerFilter = `AND c.owner_id = $${params.length}`;
+    } else if (scope === 'team') {
+      // teamUserIds = [self, ...subordinates] — populated by orgContext.
+      // Falls back to [self] if the hierarchy table isn't set up.
+      const teamIds = req.teamUserIds && req.teamUserIds.length > 0
+        ? req.teamUserIds
+        : [req.userId];
+      params.push(teamIds);
+      ownerFilter = `AND c.owner_id = ANY($${params.length}::int[])`;
+    }
+    // scope === 'org' → no ownerFilter (admin already verified above)
 
     const { rows } = await pool.query(
       `SELECT c.*,
@@ -182,16 +224,54 @@ router.get('/', async (req, res) => {
          LEFT JOIN sequences sq ON sq.id = c.default_sequence_id
          LEFT JOIN users     u  ON u.id  = c.owner_id
          LEFT JOIN prospects p  ON p.campaign_id = c.id AND p.org_id = c.org_id
-        WHERE c.org_id = $1 ${statusFilter}
+        WHERE c.org_id = $1 ${statusFilter} ${ownerFilter}
      GROUP BY c.id, pb.name, sq.name, u.first_name, u.last_name
      ORDER BY c.created_at DESC`,
       params
     );
 
-    res.json({ campaigns: rows });
+    res.json({ campaigns: rows, scope });
   } catch (err) {
     console.error('campaigns GET /', err);
     res.status(500).json({ error: { message: 'Failed to load campaigns' } });
+  }
+});
+
+// ── GET /me/context — current user's role + capability flags ─────────────────
+//
+// Lightweight endpoint the frontend calls once on mount to know which scope
+// options to expose (only admins see "All"; only managers see "Team") and
+// whether to render the Edit button on campaigns the user doesn't own.
+//
+// Server-side authoritative — frontend MUST NOT rely on sessionStorage role
+// for permission decisions, since that can be stale across sessions.
+//
+// Returns:
+//   {
+//     userId:           number,
+//     role:             'member' | 'admin' | 'owner',
+//     isAdmin:          boolean,           // role ∈ {admin, owner}
+//     hasSubordinates:  boolean,           // can use scope=team
+//     subordinateCount: number
+//   }
+router.get('/me/context', async (req, res) => {
+  try {
+    const role = await CampaignAccess.loadUserRole(req);
+    if (!role) {
+      return res.status(403).json({ error: { message: 'Not a member of this org' } });
+    }
+    const callerIsAdmin = await CampaignAccess.isAdmin(req);
+    const subs = req.subordinateIds || [];
+    res.json({
+      userId:           req.userId,
+      role,
+      isAdmin:          callerIsAdmin,
+      hasSubordinates:  subs.length > 0,
+      subordinateCount: subs.length,
+    });
+  } catch (err) {
+    console.error('campaigns GET /me/context', err);
+    res.status(500).json({ error: { message: 'Failed to load user context' } });
   }
 });
 
@@ -202,6 +282,7 @@ router.post('/', async (req, res) => {
     playbook_id, default_sequence_id,
     goal_qualified, start_date, end_date,
     status = 'active',
+    owner_id: bodyOwnerId,
   } = req.body;
 
   if (!name || !name.trim()) {
@@ -209,6 +290,31 @@ router.post('/', async (req, res) => {
   }
   if (!VALID_STATUS.includes(status)) {
     return res.status(400).json({ error: { message: `status must be one of: ${VALID_STATUS.join(', ')}` } });
+  }
+
+  // ── owner_id resolution ──────────────────────────────────────────────────
+  // Default: the creator owns. Admins can pass an explicit owner_id to
+  // create a campaign on behalf of another rep (e.g. onboarding a new hire,
+  // pre-loading their pipeline). Non-admins may not.
+  let resolvedOwnerId = req.user.userId;
+  if (bodyOwnerId !== undefined && bodyOwnerId !== null && parseInt(bodyOwnerId, 10) !== req.user.userId) {
+    const callerIsAdmin = await CampaignAccess.isAdmin(req);
+    if (!callerIsAdmin) {
+      return res.status(403).json({ error: {
+        message: "You don't have permission to create a campaign owned by another user. Only admins can set owner_id.",
+      } });
+    }
+    // Validate the supplied owner is an active member of this org.
+    const ownerCheck = await pool.query(
+      `SELECT 1 FROM org_users WHERE user_id = $1 AND org_id = $2 AND is_active = TRUE`,
+      [parseInt(bodyOwnerId, 10), req.orgId]
+    );
+    if (!ownerCheck.rows.length) {
+      return res.status(400).json({ error: {
+        message: `owner_id ${bodyOwnerId} is not an active member of this org.`,
+      } });
+    }
+    resolvedOwnerId = parseInt(bodyOwnerId, 10);
   }
 
   // Sending-schedule overrides (all nullable — NULL means "inherit org default")
@@ -249,13 +355,15 @@ router.post('/', async (req, res) => {
               goal_qualified, start_date, end_date, status, owner_id, created_by,
               daily_activation_cap, send_window_start_hour, send_window_end_hour,
               send_window_days, send_window_timezone)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$13,$14,$15,$16)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        RETURNING *`,
       [
         req.orgId, name.trim(), description || null, solution || null,
         playbook_id || null, default_sequence_id || null,
         goal_qualified || null, start_date || null, end_date || null,
-        status, req.user.userId,
+        status,
+        resolvedOwnerId,    // owner_id — may differ from creator when admin assigns
+        req.user.userId,    // created_by — always the actual creator (audit)
         sched.values.daily_activation_cap,
         sched.values.send_window_start_hour,
         sched.values.send_window_end_hour,
@@ -294,6 +402,7 @@ router.get('/:id', async (req, res) => {
   try {
     const campaign = await loadCampaign(req.orgId, req.params.id);
     if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanAccess(req, res, campaign))) return;
 
     const channelFilter = req.query.channel;  // 'email' | 'linkedin' | 'call' | undefined
     const VALID_CHANNEL_FILTERS = new Set(['email', 'linkedin', 'call']);
@@ -508,12 +617,45 @@ router.put('/:id', async (req, res) => {
   try {
     const existing = await loadCampaign(req.orgId, req.params.id);
     if (!existing) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanMutate(req, res, existing))) return;
 
     const {
       name, description, solution,
       playbook_id, default_sequence_id,
       goal_qualified, start_date, end_date, status,
+      owner_id: bodyOwnerId,
     } = req.body;
+
+    // ── owner_id reassignment — admin-only ──────────────────────────────────
+    // Non-admins who pass owner_id get a clear 403 rather than a silent strip,
+    // matching the project principle that the user always has visibility into
+    // what happened. Admins can reassign to any active org member.
+    let resolvedOwnerId = existing.owner_id;
+    const ownerProvided = Object.prototype.hasOwnProperty.call(req.body, 'owner_id');
+    if (ownerProvided) {
+      const newOwnerId = parseInt(bodyOwnerId, 10);
+      if (!Number.isFinite(newOwnerId)) {
+        return res.status(400).json({ error: { message: 'owner_id must be a valid user id' } });
+      }
+      if (newOwnerId !== existing.owner_id) {
+        const callerIsAdmin = await CampaignAccess.isAdmin(req);
+        if (!callerIsAdmin) {
+          return res.status(403).json({ error: {
+            message: "You don't have permission to reassign campaign ownership. Only admins can change owner_id.",
+          } });
+        }
+        const ownerCheck = await pool.query(
+          `SELECT 1 FROM org_users WHERE user_id = $1 AND org_id = $2 AND is_active = TRUE`,
+          [newOwnerId, req.orgId]
+        );
+        if (!ownerCheck.rows.length) {
+          return res.status(400).json({ error: {
+            message: `owner_id ${newOwnerId} is not an active member of this org.`,
+          } });
+        }
+        resolvedOwnerId = newOwnerId;
+      }
+    }
 
     if (status !== undefined && !VALID_STATUS.includes(status)) {
       return res.status(400).json({ error: { message: `status must be one of: ${VALID_STATUS.join(', ')}` } });
@@ -568,7 +710,8 @@ router.put('/:id', async (req, res) => {
          send_window_start_hour = $13,
          send_window_end_hour   = $14,
          send_window_days       = $15,
-         send_window_timezone   = $16
+         send_window_timezone   = $16,
+         owner_id               = $17
        WHERE id = $1 AND org_id = $2
        RETURNING id`,
       [
@@ -588,6 +731,9 @@ router.put('/:id', async (req, res) => {
         incomingEnd      ? sched.values.send_window_end_hour   : existing.send_window_end_hour,
         incomingDays     ? sched.values.send_window_days       : existing.send_window_days,
         incomingTz       ? sched.values.send_window_timezone   : existing.send_window_timezone,
+        // owner_id: resolvedOwnerId is existing.owner_id unless an admin
+        // explicitly reassigned via owner_id in the body (validated above).
+        resolvedOwnerId,
       ]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Campaign not found' } });
@@ -607,6 +753,7 @@ router.delete('/:id', async (req, res) => {
   try {
     const existing = await loadCampaign(req.orgId, req.params.id);
     if (!existing) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanMutate(req, res, existing))) return;
 
     if (req.query.hard === 'true') {
       await pool.query(
@@ -638,6 +785,7 @@ router.post('/:id/prospects', async (req, res) => {
   try {
     const campaign = await loadCampaign(req.orgId, req.params.id);
     if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanMutate(req, res, campaign))) return;
 
     // Only re-assign prospects that actually belong to this org.
     const { rows } = await pool.query(
@@ -664,6 +812,10 @@ router.delete('/:id/prospects', async (req, res) => {
     return res.status(400).json({ error: { message: 'prospectIds[] is required' } });
   }
   try {
+    const campaign = await loadCampaign(req.orgId, req.params.id);
+    if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanMutate(req, res, campaign))) return;
+
     const { rows } = await pool.query(
       `UPDATE prospects
           SET campaign_id = NULL
@@ -695,6 +847,7 @@ router.post('/:id/enroll-all', async (req, res) => {
   try {
     const campaign = await loadCampaign(req.orgId, req.params.id);
     if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanMutate(req, res, campaign))) return;
 
     const sequenceId = bodySeqId || campaign.default_sequence_id;
     if (!sequenceId) {
@@ -836,6 +989,7 @@ router.get('/:id/sequence-health', async (req, res) => {
   try {
     const campaign = await loadCampaign(req.orgId, req.params.id);
     if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanAccess(req, res, campaign))) return;
 
     const day  = `'24 hours'::interval`;
     const week = `'7 days'::interval`;
@@ -1168,66 +1322,91 @@ function _parseCampaignHealthWindow(query) {
 // running a campaign needs to author its pain narrative, value props, and hook
 // preferences without bothering an admin.
 //
-// New rule: ANY of these grants access to /:id/config (GET/PUT/DELETE):
-//   1. Org-level owner or admin (broad authority)
-//   2. The campaign's owner_id matches the requesting user (rep authority)
-//   3. The campaign's created_by matches the requesting user (creator authority,
-//      for the case where owner_id is unset and the creator should retain edit
-//      rights as a fallback)
+// Updated rules after owner-scoping (2026_13_campaign_owner_scoping):
+//   • configReadGuard  → admins, the campaign owner, AND managers of the
+//                        owner (manager rollup via subordinateIds).
+//   • configWriteGuard → admins and the campaign owner ONLY. Managers can
+//                        read but not mutate, matching the rest of the
+//                        campaigns CRUD surface.
 //
-// Returns 403 if none match, 404 if the campaign doesn't exist in the org.
-// Sets req.userRole, req.campaignOwnerId, req.isCampaignOwner for downstream use.
-async function campaignConfigGuard(req, res, next) {
-  try {
-    // 1) Org role check — fastest, gates the whole thing if user is admin/owner.
-    const roleRes = await pool.query(
-      `SELECT role FROM org_users
-        WHERE user_id = $1 AND org_id = $2 AND is_active = TRUE`,
-      [req.userId, req.orgId]
-    );
-    if (roleRes.rows.length === 0) {
-      return res.status(403).json({ error: { message: 'Access denied — not a member of this org' } });
-    }
-    const userRole = roleRes.rows[0].role;
-    req.userRole = userRole;
+// created_by is no longer consulted: after the migration owner_id is NOT
+// NULL and is the source of truth. Removing the created_by fallback prevents
+// the case where a campaign's owner has been reassigned but the original
+// creator still retains write access via the old fallback.
+//
+// Both guards set req.userRole, req.campaignOwnerId, req.isCampaignOwner for
+// downstream use, preserving the existing shape so callers that read those
+// flags (e.g. for UI semantics) keep working.
+function buildCampaignGuard({ allowManagerRead }) {
+  return async (req, res, next) => {
+    try {
+      // 1) Org role check — fastest, gates the whole thing if user is admin/owner.
+      const role = await CampaignAccess.loadUserRole(req);
+      if (!role) {
+        return res.status(403).json({ error: { message: 'Access denied — not a member of this org' } });
+      }
+      req.userRole = role;
 
-    // 2) Owner/admin: grant immediately, skip the campaign lookup.
-    if (userRole === 'owner' || userRole === 'admin') {
-      req.isCampaignOwner = true;   // for UI semantics, even though it's role-based
-      return next();
-    }
+      // 2) Admin/owner role: grant immediately, skip the campaign lookup.
+      if (CampaignAccess.ADMIN_ROLES.has(role)) {
+        req.isCampaignOwner = true;   // for UI semantics, even though it's role-based
+        return next();
+      }
 
-    // 3) Otherwise look up the campaign and check owner_id / created_by.
-    const cRes = await pool.query(
-      `SELECT id, owner_id, created_by
-         FROM prospecting_campaigns
-        WHERE id = $1 AND org_id = $2`,
-      [req.params.id, req.orgId]
-    );
-    if (cRes.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'Campaign not found' } });
-    }
-    const camp = cRes.rows[0];
-    req.campaignOwnerId = camp.owner_id || camp.created_by;
-    if (camp.owner_id === req.userId || camp.created_by === req.userId) {
-      req.isCampaignOwner = true;
-      return next();
-    }
+      // 3) Otherwise look up the campaign and check owner_id (+ manager rollup
+      //    for read guards). owner_id is NOT NULL after 2026_13 migration.
+      const cRes = await pool.query(
+        `SELECT id, owner_id
+           FROM prospecting_campaigns
+          WHERE id = $1 AND org_id = $2`,
+        [req.params.id, req.orgId]
+      );
+      if (cRes.rows.length === 0) {
+        return res.status(404).json({ error: { message: 'Campaign not found' } });
+      }
+      const camp = cRes.rows[0];
+      req.campaignOwnerId = camp.owner_id;
 
-    // 4) Neither role nor ownership match — refuse.
-    return res.status(403).json({ error: {
-      message: 'Only owners/admins or this campaign\'s owner can edit its outreach config.',
-    } });
-  } catch (err) {
-    console.error('campaignConfigGuard error:', err);
-    return res.status(500).json({ error: { message: 'Permission check failed' } });
-  }
+      if (camp.owner_id === req.userId) {
+        req.isCampaignOwner = true;
+        return next();
+      }
+
+      // Manager-read path (only the read guard takes this branch).
+      if (allowManagerRead) {
+        const subs = req.subordinateIds || [];
+        if (subs.includes(camp.owner_id)) {
+          req.isCampaignOwner = false;
+          return next();
+        }
+      }
+
+      // 4) Neither role nor ownership match — refuse.
+      return res.status(403).json({ error: {
+        message: allowManagerRead
+          ? "You don't have permission to view this campaign's config."
+          : "You don't have permission to modify this campaign's config. Only the owner or an admin can change it.",
+      } });
+    } catch (err) {
+      console.error('campaign config guard error:', err);
+      return res.status(500).json({ error: { message: 'Permission check failed' } });
+    }
+  };
 }
 
-const configWriteGuard = campaignConfigGuard;
+// Two flavours:
+//   configReadGuard  — admin OR owner OR manager-of-owner (read-only access)
+//   configWriteGuard — admin OR owner only (mutation)
+// buildCampaignGuard is synchronous — it just returns a middleware function;
+// the work happens inside the returned function, per-request.
+const configReadGuard  = buildCampaignGuard({ allowManagerRead: true });
+const configWriteGuard = buildCampaignGuard({ allowManagerRead: false });
 
 // ── GET /:id/config — current override + resolved view + org baseline ────────
-router.get('/:id/config', configWriteGuard, async (req, res) => {
+// Read-gated: admins, the owner, and managers-of-the-owner can view. Use
+// configReadGuard (not configWriteGuard) so a manager browsing a subordinate's
+// campaign can see how it's configured without being able to mutate it.
+router.get('/:id/config', configReadGuard, async (req, res) => {
   try {
     const campRes = await pool.query(
       `SELECT id, prospecting_config_override
@@ -1404,12 +1583,13 @@ router.get('/:id/research-queue', async (req, res) => {
     const stage  = req.query.stage === 'research' ? 'research' : 'target';
 
     const campRes = await pool.query(
-      `SELECT id FROM prospecting_campaigns WHERE id = $1 AND org_id = $2`,
+      `SELECT id, owner_id FROM prospecting_campaigns WHERE id = $1 AND org_id = $2`,
       [req.params.id, req.orgId]
     );
     if (!campRes.rows.length) {
       return res.status(404).json({ error: { message: 'Campaign not found' } });
     }
+    if (!(await CampaignAccess.requireCanAccess(req, res, campRes.rows[0]))) return;
 
     const { rows } = await pool.query(
       `SELECT p.id, p.first_name, p.last_name, p.email, p.linkedin_url,
@@ -1521,7 +1701,7 @@ router.post('/:id/bulk-activate', async (req, res) => {
 
     // Validate campaign + ensure it has a default sequence to enroll into.
     const campRes = await pool.query(
-      `SELECT id, default_sequence_id, name
+      `SELECT id, default_sequence_id, name, owner_id
          FROM prospecting_campaigns
         WHERE id = $1 AND org_id = $2 AND status IN ('active', 'paused')`,
       [req.params.id, req.orgId]
@@ -1530,6 +1710,7 @@ router.post('/:id/bulk-activate', async (req, res) => {
       return res.status(404).json({ error: { message: 'Campaign not found or archived' } });
     }
     const campaign = campRes.rows[0];
+    if (!(await CampaignAccess.requireCanMutate(req, res, campaign))) return;
     if (!campaign.default_sequence_id) {
       return res.status(400).json({ error: {
         message: 'Campaign has no default sequence — set one before bulk-activating.',
@@ -1844,7 +2025,7 @@ router.get('/:id/schedule-preview', async (req, res) => {
     const count = Math.max(1, Math.min(parseInt(req.query.count, 10) || 25, 10000));
 
     const campRes = await pool.query(
-      `SELECT id, default_sequence_id FROM prospecting_campaigns
+      `SELECT id, default_sequence_id, owner_id FROM prospecting_campaigns
         WHERE id = $1 AND org_id = $2 AND status IN ('active','paused')`,
       [req.params.id, req.orgId]
     );
@@ -1852,6 +2033,7 @@ router.get('/:id/schedule-preview', async (req, res) => {
       return res.status(404).json({ error: { message: 'Campaign not found' } });
     }
     const campaign = campRes.rows[0];
+    if (!(await CampaignAccess.requireCanAccess(req, res, campaign))) return;
     if (!campaign.default_sequence_id) {
       return res.status(400).json({ error: {
         message: 'Campaign has no default sequence — preview unavailable.',
@@ -1935,7 +2117,7 @@ router.get('/:id/schedule-preview', async (req, res) => {
 router.get('/:id/pacing', async (req, res) => {
   try {
     const campRes = await pool.query(
-      `SELECT id, name, end_date, default_sequence_id
+      `SELECT id, name, end_date, default_sequence_id, owner_id
          FROM prospecting_campaigns
         WHERE id = $1 AND org_id = $2`,
       [req.params.id, req.orgId]
@@ -1944,6 +2126,7 @@ router.get('/:id/pacing', async (req, res) => {
       return res.status(404).json({ error: { message: 'Campaign not found' } });
     }
     const campaign = campRes.rows[0];
+    if (!(await CampaignAccess.requireCanAccess(req, res, campaign))) return;
 
     // Stage counts.
     const stageRes = await pool.query(
@@ -2062,7 +2245,8 @@ router.get('/:id/sender-summary', async (req, res) => {
     // for backstop, owner_id falls back to created_by (same pattern as the
     // SLA sweeps).
     const campRes = await pool.query(
-      `SELECT c.id, COALESCE(c.owner_id, c.created_by) AS resolved_owner_id,
+      `SELECT c.id, c.owner_id,
+              COALESCE(c.owner_id, c.created_by) AS resolved_owner_id,
               u.first_name, u.last_name, u.email AS owner_user_email
          FROM prospecting_campaigns c
     LEFT JOIN users u ON u.id = COALESCE(c.owner_id, c.created_by)
@@ -2073,6 +2257,7 @@ router.get('/:id/sender-summary', async (req, res) => {
       return res.status(404).json({ error: { message: 'Campaign not found' } });
     }
     const camp = campRes.rows[0];
+    if (!(await CampaignAccess.requireCanAccess(req, res, camp))) return;
     const ownerId = camp.resolved_owner_id;
     const ownerName = [camp.first_name, camp.last_name].filter(Boolean).join(' ') || 'Unassigned';
 

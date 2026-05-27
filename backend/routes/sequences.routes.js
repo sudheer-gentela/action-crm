@@ -75,12 +75,15 @@ router.get('/', async (req, res) => {
     const { rows } = await pool.query(
       `SELECT s.*,
               COUNT(DISTINCT ss.id)::int  AS step_count,
-              COUNT(DISTINCT se.id)::int  AS enrollment_count
+              COUNT(DISTINCT se.id)::int  AS enrollment_count,
+              cu.first_name AS creator_first_name,
+              cu.last_name  AS creator_last_name
          FROM sequences s
     LEFT JOIN sequence_steps ss       ON ss.sequence_id = s.id
     LEFT JOIN sequence_enrollments se ON se.sequence_id = s.id AND se.status = 'active'
+    LEFT JOIN users           cu      ON cu.id = s.created_by
         WHERE s.org_id = $1 AND s.status != 'archived'
-     GROUP BY s.id
+     GROUP BY s.id, cu.first_name, cu.last_name
      ORDER BY s.created_at DESC`,
       [req.orgId]
     );
@@ -1345,7 +1348,15 @@ router.delete('/drafts/:logId', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const seqRes = await pool.query(
-      `SELECT * FROM sequences WHERE id = $1 AND org_id = $2`,
+      `SELECT s.*,
+              cu.first_name AS creator_first_name,
+              cu.last_name  AS creator_last_name,
+              (SELECT COUNT(*)::int FROM sequence_enrollments se
+                 WHERE se.sequence_id = s.id AND se.status = 'active'
+              ) AS active_enrollment_count
+         FROM sequences s
+    LEFT JOIN users cu ON cu.id = s.created_by
+        WHERE s.id = $1 AND s.org_id = $2`,
       [req.params.id, req.orgId]
     );
     if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
@@ -1394,15 +1405,60 @@ router.put('/:id', async (req, res) => {
 });
 
 // DELETE /api/sequences/:id  — soft archive
+//
+// Sequences remain org-shared (no ownership scoping), but archiving a
+// sequence with active enrollments is a footgun: the firer skips archived
+// sequences entirely, so in-flight enrollments silently stop advancing.
+// Block non-admin archives in that state; allow admins to force-archive
+// with ?force=true after they've acknowledged the consequence in the UI.
+//
+// The original message "Existing enrollments will not be affected" was
+// factually wrong — they ARE affected (they stall). This change makes the
+// real consequence visible.
 router.delete('/:id', async (req, res) => {
   try {
+    // Count active enrollments first — if any, gate by role.
+    const enrollRes = await pool.query(
+      `SELECT COUNT(*)::int AS active_count
+         FROM sequence_enrollments
+        WHERE sequence_id = $1 AND org_id = $2 AND status = 'active'`,
+      [req.params.id, req.orgId]
+    );
+    const activeCount = enrollRes.rows[0]?.active_count || 0;
+
+    if (activeCount > 0) {
+      // Look up caller's role (admin/owner can force; member cannot).
+      const roleRes = await pool.query(
+        `SELECT role FROM org_users
+          WHERE user_id = $1 AND org_id = $2 AND is_active = TRUE`,
+        [req.userId, req.orgId]
+      );
+      const role = roleRes.rows[0]?.role || null;
+      const isAdmin = role === 'admin' || role === 'owner';
+      const forced  = req.query.force === 'true' || req.query.force === '1';
+
+      if (!isAdmin) {
+        return res.status(403).json({ error: {
+          message: `Cannot archive — sequence has ${activeCount} active enrollment${activeCount === 1 ? '' : 's'}. Stop them first, or ask an admin to force-archive.`,
+        } });
+      }
+      if (!forced) {
+        return res.status(409).json({ error: {
+          message: `Sequence has ${activeCount} active enrollment${activeCount === 1 ? '' : 's'}. Their next steps will silently stop firing once archived. Re-send with ?force=true to confirm.`,
+          activeEnrollmentCount: activeCount,
+          requiresForce: true,
+        } });
+      }
+      // Admin + force=true: fall through to archive.
+    }
+
     const { rows } = await pool.query(
       `UPDATE sequences SET status='archived', updated_at=NOW()
         WHERE id=$1 AND org_id=$2 RETURNING id`,
       [req.params.id, req.orgId]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
-    res.json({ ok: true });
+    res.json({ ok: true, archivedActiveEnrollments: activeCount });
   } catch (err) {
     console.error('sequences DELETE /:id', err);
     res.status(500).json({ error: { message: 'Failed to archive sequence' } });

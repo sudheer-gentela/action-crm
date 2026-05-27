@@ -10,6 +10,11 @@ const ActionWriter            = require('../services/ActionWriter');
 const { resolveAccountId, normalizeLinkedInCompanyUrl } = require('../services/domainResolver');
 const { enrichAccountForProspect } = require('../services/enrichmentService');
 
+// Campaign ownership gate for /bulk-stage when called with a campaignId —
+// prevents reps from moving prospects in another rep's campaign. See
+// services/CampaignAccess.js for the rules.
+const CampaignAccess = require('../services/CampaignAccess');
+
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -1232,6 +1237,31 @@ router.post('/bulk-stage', async (req, res) => {
       return res.status(400).json({ error: {
         message: 'Provide either campaignId or prospectIds[] to select prospects.',
       } });
+    }
+
+    // ── Campaign ownership gate ─────────────────────────────────────────────
+    // When the caller scopes the bulk-move by campaignId, the operation is
+    // semantically "advance the stage on someone's campaign queue". That's a
+    // campaign mutation — so it must respect the same owner/admin rules as
+    // POST /prospecting-campaigns/:id/bulk-activate and the rest of the
+    // campaign mutation surface.
+    //
+    // Without this gate the operation would silently filter to 0 rows for
+    // non-owners (their org_id matches but the prospects they don't own
+    // don't appear in the campaign), but the user would have no idea why.
+    // We chose explicit 403 with a clear message over silent zero-row
+    // success — the user always has visibility into why an action failed.
+    if (hasCampaign) {
+      const campId = parseInt(campaignId, 10);
+      const cRes = await db.query(
+        `SELECT id, owner_id FROM prospecting_campaigns
+          WHERE id = $1 AND org_id = $2`,
+        [campId, req.orgId]
+      );
+      if (!cRes.rows.length) {
+        return res.status(404).json({ error: { message: 'Campaign not found' } });
+      }
+      if (!(await CampaignAccess.requireCanMutate(req, res, cRes.rows[0]))) return;
     }
 
     // Build the UPDATE. The WHERE filters silently drop any prospect not on

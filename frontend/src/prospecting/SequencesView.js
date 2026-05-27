@@ -24,6 +24,23 @@ function SequencesView({ prospects }) {
   const [selectedProspects, setSelectedProspects] = useState([]);
   const [error,        setError]        = useState('');
 
+  // ── User context (2026_13) ──────────────────────────────────────────────
+  // Sequences remain org-shared (no ownership scoping) but archiving a
+  // sequence with active enrollments is admin-only. We load context from
+  // the same /me/context endpoint the campaigns view uses; it returns the
+  // caller's role + isAdmin flag from org_users, server-authoritative.
+  const [userContext, setUserContext] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/prospecting-campaigns/me/context')
+      .then(ctx => { if (!cancelled) setUserContext(ctx); })
+      .catch(() => {
+        if (!cancelled) setUserContext({ userId: null, role: 'member', isAdmin: false, hasSubordinates: false });
+      });
+    return () => { cancelled = true; };
+  }, []);
+  const isAdmin = !!userContext?.isAdmin;
+
   // Enrollment drill-down
   const [expandedEnrollId,   setExpandedEnrollId]   = useState(null);
   const [expandedLogs,       setExpandedLogs]       = useState([]);
@@ -36,6 +53,19 @@ function SequencesView({ prospects }) {
   // Open builder in edit mode — fetches full sequence (with steps) before opening.
   // The list endpoint only returns step_count, not the steps array.
   const openBuilderForEdit = async (seq) => {
+    // Warn when editing a sequence with active enrollments — changes to
+    // steps affect in-flight outreach (future steps render from the new
+    // templates). The user always has visibility into what they're about
+    // to do; we don't block on this, just confirm.
+    const activeCount = parseInt(seq.enrollment_count || 0, 10);
+    if (activeCount > 0) {
+      const ok = window.confirm(
+        `This sequence has ${activeCount} active enrollment${activeCount === 1 ? '' : 's'}.\n\n` +
+        `Editing now affects in-flight outreach — future steps for those prospects will render from the new templates.\n\n` +
+        `Continue?`
+      );
+      if (!ok) return;
+    }
     try {
       const r = await apiFetch(`/sequences/${seq.id}`);
       setEditingSeq(r.sequence);
@@ -248,12 +278,48 @@ function SequencesView({ prospects }) {
     if (subTab === 'drafts')      loadDrafts();
   }, [subTab, loadEnrollments, loadDrafts]);
 
-  const handleArchive = async (seqId) => {
-    if (!window.confirm('Archive this sequence? Existing enrollments will not be affected.')) return;
+  const handleArchive = async (seq) => {
+    // Backwards-compat: the click handler used to take just an id. We now
+    // pass the full sequence object so we can use enrollment_count for a
+    // smarter confirm. Tolerate both shapes for safety.
+    const seqId = typeof seq === 'object' ? seq.id : seq;
+    const activeCount = typeof seq === 'object' ? parseInt(seq.enrollment_count || 0, 10) : 0;
+
+    // Build the confirm message based on what we know up-front. If there
+    // are active enrollments we surface the real consequence (next steps
+    // stop firing); for admins, this also tells them they'll need to
+    // confirm force-archive. The actual force flag is added on the
+    // network call when the user accepts.
+    let msg;
+    if (activeCount > 0) {
+      if (isAdmin) {
+        msg = `Archive this sequence?\n\n` +
+              `⚠️  ${activeCount} active enrollment${activeCount === 1 ? '' : 's'} will silently stop advancing — their next steps won't fire.\n\n` +
+              `As an admin you can force-archive. Continue?`;
+      } else {
+        msg = `Cannot archive — ${activeCount} active enrollment${activeCount === 1 ? '' : 's'} would silently stall.\n\n` +
+              `Stop them first, or ask an admin to force-archive.`;
+        window.alert(msg);
+        return;
+      }
+    } else {
+      msg = 'Archive this sequence?';
+    }
+    if (!window.confirm(msg)) return;
+
     try {
-      await apiFetch(`/sequences/${seqId}`, { method: 'DELETE' });
+      // Force-flag only when needed (admin + active enrollments). The
+      // backend returns 409 with requiresForce:true if we try a regular
+      // archive on a sequence with active enrollments — handle that as a
+      // safety net in case enrollment_count was stale.
+      const url = activeCount > 0
+        ? `/sequences/${seqId}?force=true`
+        : `/sequences/${seqId}`;
+      await apiFetch(url, { method: 'DELETE' });
       loadSequences();
     } catch (err) {
+      // Surface the server message verbatim — it explains why the archive
+      // was blocked (e.g. enrollment-count guard).
       setError(err.message);
     }
   };
@@ -386,9 +452,20 @@ function SequencesView({ prospects }) {
                           ✏️
                         </button>
                         <button
-                          onClick={() => handleArchive(seq.id)}
-                          title="Archive"
-                          style={{ padding: '3px 8px', borderRadius: 5, border: '1px solid #e5e7eb', background: '#fff', color: '#9ca3af', fontSize: 11, cursor: 'pointer' }}
+                          onClick={() => handleArchive(seq)}
+                          title={seq.enrollment_count > 0
+                            ? (isAdmin
+                                ? `Archive (admin force — ${seq.enrollment_count} active)`
+                                : `Cannot archive — ${seq.enrollment_count} active enrollment${seq.enrollment_count === 1 ? '' : 's'}`)
+                            : 'Archive'}
+                          style={{
+                            padding: '3px 8px', borderRadius: 5,
+                            border: '1px solid #e5e7eb',
+                            background: '#fff',
+                            color: (seq.enrollment_count > 0 && !isAdmin) ? '#d1d5db' : '#9ca3af',
+                            fontSize: 11,
+                            cursor: (seq.enrollment_count > 0 && !isAdmin) ? 'not-allowed' : 'pointer',
+                          }}
                         >
                           🗃
                         </button>
@@ -396,6 +473,15 @@ function SequencesView({ prospects }) {
                     </div>
                     {seq.description && (
                       <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>{seq.description}</div>
+                    )}
+                    {/* Created by — soft social signal, no enforcement. Falls
+                        back gracefully when creator metadata is missing
+                        (legacy rows or removed users). */}
+                    {(seq.creator_first_name || seq.creator_last_name) && (
+                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+                        Created by {[seq.creator_first_name, seq.creator_last_name].filter(Boolean).join(' ')}
+                        {seq.created_at ? ` · ${new Date(seq.created_at).toLocaleDateString()}` : ''}
+                      </div>
                     )}
                   </div>
 

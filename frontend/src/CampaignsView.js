@@ -21,6 +21,8 @@ import CSVImportModal from '../CSVImportModal';
 import CampaignConfigPanel from './CampaignConfigPanel';
 import PacingTile from './PacingTile';
 import BatchActivateModal from './BatchActivateModal';
+import EntityIdHint from '../EntityIdHint';
+import SendingScheduleSettings from '../SendingScheduleSettings';
 // Slice 4: preview drafts + sender visibility
 import PreviewDraftsModal from './PreviewDraftsModal';
 import SenderSummaryTile from './SenderSummaryTile';
@@ -205,11 +207,43 @@ export default function CampaignsView() {
   const [editing,     setEditing]     = useState(null);   // campaign being edited (or null)
   const [detailId,    setDetailId]    = useState(null);   // campaign id open in drawer
 
+  // ── Owner scoping (2026_13) ──────────────────────────────────────────────
+  // userContext.role + .isAdmin drive which campaigns are visible and which
+  // affordances appear (scope toggle, Edit button on others' campaigns, etc).
+  // Loaded once on mount from GET /prospecting-campaigns/me/context — server
+  // authoritative, not derived from sessionStorage.
+  //
+  // scope (mine|team|org) determines which campaigns the API returns:
+  //   mine → owned by current user (default; matches prospects.routes.js default)
+  //   team → owned by current user or any subordinate (manager rollup)
+  //   org  → all campaigns in the org (admin-only)
+  const [userContext, setUserContext] = useState(null);   // null until first load
+  const [scope,        setScope]       = useState('mine');
+
+  // Fetch user context once. The /me/context endpoint is cheap (one row from
+  // org_users + req.subordinateIds.length) so we don't memoise; if the user's
+  // role changes mid-session they'd need to refresh anyway.
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/prospecting-campaigns/me/context')
+      .then(ctx => { if (!cancelled) setUserContext(ctx); })
+      .catch(() => {
+        // Non-fatal — fall back to a member-shaped context so the UI still
+        // renders. The list-fetch will still scope to ?scope=mine (the
+        // default), so this just means the scope toggle won't appear.
+        if (!cancelled) setUserContext({ userId: null, role: 'member', isAdmin: false, hasSubordinates: false });
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   const fetchCampaigns = useCallback(async () => {
     setLoading(true);
     try {
-      const qs = statusFilter === 'all' ? '' : `?status=${statusFilter}`;
-      const r = await apiFetch(`/prospecting-campaigns${qs}`);
+      // Build query string with both scope and status filters.
+      const params = new URLSearchParams();
+      params.set('scope', scope);
+      if (statusFilter !== 'all') params.set('status', statusFilter);
+      const r = await apiFetch(`/prospecting-campaigns?${params.toString()}`);
       setCampaigns(r.campaigns || []);
       setError('');
     } catch (err) {
@@ -217,7 +251,7 @@ export default function CampaignsView() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter]);
+  }, [statusFilter, scope]);
 
   useEffect(() => { fetchCampaigns(); }, [fetchCampaigns]);
 
@@ -227,32 +261,66 @@ export default function CampaignsView() {
     fetchCampaigns();
   };
 
+  // Available scope options based on the caller's role/hierarchy. "Mine" is
+  // always shown; "Team" only when the user has subordinates; "Org" only for
+  // admins. Computed from userContext so it auto-updates if context loads
+  // after first render.
+  const scopeOptions = [{ key: 'mine', label: 'Mine' }];
+  if (userContext?.hasSubordinates) scopeOptions.push({ key: 'team', label: 'Team' });
+  if (userContext?.isAdmin)         scopeOptions.push({ key: 'org',  label: 'All' });
+
   return (
     <div className="pv-campaigns">
-      {/* Sub-header */}
+      {/* Sub-header — status filter + (when applicable) scope toggle */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        marginBottom: 12,
+        marginBottom: 12, flexWrap: 'wrap', gap: 8,
       }}>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {[
-            { key: 'active',    label: 'Active' },
-            { key: 'paused',    label: 'Paused' },
-            { key: 'completed', label: 'Completed' },
-            { key: 'all',       label: 'All' },
-          ].map(f => (
-            <button
-              key={f.key}
-              onClick={() => setStatusFilter(f.key)}
-              style={{
-                fontSize: 12, padding: '4px 12px', borderRadius: 6,
-                cursor: 'pointer', fontWeight: 600,
-                border: '1px solid ' + (statusFilter === f.key ? EMBER : '#e5e7eb'),
-                background: statusFilter === f.key ? '#fff8f0' : '#fff',
-                color: statusFilter === f.key ? EMBER : '#6b7280',
-              }}
-            >{f.label}</button>
-          ))}
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Status filter (existing) */}
+          <div style={{ display: 'flex', gap: 6 }}>
+            {[
+              { key: 'active',    label: 'Active' },
+              { key: 'paused',    label: 'Paused' },
+              { key: 'completed', label: 'Completed' },
+              { key: 'all',       label: 'All' },
+            ].map(f => (
+              <button
+                key={f.key}
+                onClick={() => setStatusFilter(f.key)}
+                style={{
+                  fontSize: 12, padding: '4px 12px', borderRadius: 6,
+                  cursor: 'pointer', fontWeight: 600,
+                  border: '1px solid ' + (statusFilter === f.key ? EMBER : '#e5e7eb'),
+                  background: statusFilter === f.key ? '#fff8f0' : '#fff',
+                  color: statusFilter === f.key ? EMBER : '#6b7280',
+                }}
+              >{f.label}</button>
+            ))}
+          </div>
+          {/* Scope toggle — shown only when there's more than one choice.
+              A plain member with no subordinates sees nothing here (their only
+              choice is "Mine" which is the default). */}
+          {scopeOptions.length > 1 && (
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase' }}>
+                Scope
+              </span>
+              {scopeOptions.map(s => (
+                <button
+                  key={s.key}
+                  onClick={() => setScope(s.key)}
+                  style={{
+                    fontSize: 12, padding: '4px 10px', borderRadius: 6,
+                    cursor: 'pointer', fontWeight: 600,
+                    border: '1px solid ' + (scope === s.key ? '#0F9D8E' : '#e5e7eb'),
+                    background: scope === s.key ? '#ecfdf5' : '#fff',
+                    color: scope === s.key ? '#065f46' : '#6b7280',
+                  }}
+                >{s.label}</button>
+              ))}
+            </div>
+          )}
         </div>
         <button className="pv-btn-primary" onClick={() => setShowCreate(true)}>
           + New Campaign
@@ -273,7 +341,11 @@ export default function CampaignsView() {
           textAlign: 'center', padding: '48px 20px', color: '#9ca3af', fontSize: 14,
         }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>🚀</div>
-          No {statusFilter !== 'all' ? statusFilter : ''} campaigns yet.
+          {scope === 'mine'
+            ? `No ${statusFilter !== 'all' ? statusFilter : ''} campaigns owned by you yet.`
+            : scope === 'team'
+              ? `No ${statusFilter !== 'all' ? statusFilter : ''} campaigns in your team yet.`
+              : `No ${statusFilter !== 'all' ? statusFilter : ''} campaigns yet.`}
           <div style={{ marginTop: 8 }}>
             <button className="pv-btn-secondary" onClick={() => setShowCreate(true)}>
               Create your first campaign
@@ -291,6 +363,7 @@ export default function CampaignsView() {
               campaign={c}
               isLast={idx === campaigns.length - 1}
               onClick={() => setDetailId(c.id)}
+              userContext={userContext}
             />
           ))}
         </div>
@@ -301,6 +374,7 @@ export default function CampaignsView() {
           campaign={editing}
           onSaved={handleSaved}
           onClose={() => { setShowCreate(false); setEditing(null); }}
+          userContext={userContext}
         />
       )}
 
@@ -310,6 +384,7 @@ export default function CampaignsView() {
           onClose={() => setDetailId(null)}
           onChanged={fetchCampaigns}
           onEdit={(c) => { setDetailId(null); setEditing(c); }}
+          userContext={userContext}
         />
       )}
     </div>
@@ -317,11 +392,19 @@ export default function CampaignsView() {
 }
 
 // ── CampaignRow ──────────────────────────────────────────────────────────────
-function CampaignRow({ campaign: c, isLast, onClick }) {
+function CampaignRow({ campaign: c, isLast, onClick, userContext }) {
   const prospectCount = parseInt(c.prospect_count || 0, 10);
   const qualified     = parseInt(c.qualified_count || 0, 10);
   const goal          = c.goal_qualified || null;
   const pct = goal ? Math.min(100, Math.round((qualified / goal) * 100)) : 0;
+
+  // Owner display: "You" when the row belongs to the current user, else the
+  // owner's first name. Falls back to "—" if the owner has been removed from
+  // the org (LEFT JOIN returns NULL first_name).
+  const ownerIsSelf = userContext && c.owner_id === userContext.userId;
+  const ownerLabel = ownerIsSelf
+    ? 'You'
+    : ([c.owner_first_name, c.owner_last_name].filter(Boolean).join(' ') || '—');
 
   return (
     <div
@@ -334,9 +417,21 @@ function CampaignRow({ campaign: c, isLast, onClick }) {
       onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 14, fontWeight: 600, color: '#1A3A5C' }}>{c.name}</span>
           <StatusPill status={c.status} />
+          {/* Owner badge — only meaningful when scope is team or org (else
+              every row would say "You", which is noise). Render whenever
+              userContext is loaded; when the user is the owner, render
+              quietly in grey so it doesn't compete with the campaign name. */}
+          <span style={{
+            fontSize: 10, padding: '1px 7px', borderRadius: 9, fontWeight: 600,
+            background: ownerIsSelf ? '#f3f4f6' : '#eff6ff',
+            color: ownerIsSelf ? '#6b7280' : '#1d4ed8',
+            border: '1px solid ' + (ownerIsSelf ? '#e5e7eb' : '#dbeafe'),
+          }}>
+            👤 {ownerLabel}
+          </span>
         </div>
         <div style={{ fontSize: 12, color: '#6b7280' }}>
           {c.solution && <span style={{ marginRight: 10 }}>💡 {c.solution}</span>}
@@ -376,7 +471,7 @@ function Stat({ value, label, color }) {
 // CAMPAIGN DETAIL DRAWER
 // ═════════════════════════════════════════════════════════════════════════════
 
-function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
+function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, userContext }) {
   const [data,     setData]     = useState(null);   // { campaign, funnel, terminal, metrics }
   const [members,  setMembers]  = useState([]);
   const [loading,  setLoading]  = useState(true);
@@ -476,6 +571,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
             <span style={{ fontSize: 11, color: '#9ca3af' }}>← Campaigns</span>
             <h3 style={{ marginTop: 2 }}>
               {data?.campaign?.name || 'Campaign'}
+              <EntityIdHint id={data?.campaign?.id} type="campaign" />
             </h3>
             {data && (
               <span className="pv-detail-title">
@@ -493,20 +589,62 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
           <div className="pv-loading" style={{ padding: 32 }}>Loading campaign...</div>
         ) : error ? (
           <div style={{ padding: 20, color: '#991b1b', fontSize: 13 }}>{error}</div>
-        ) : !data ? null : (
+        ) : !data ? null : (() => {
+          // Compute canMutate for this campaign — drives which action
+          // buttons render. Admin/owner role bypass (server-authoritative
+          // via userContext.isAdmin); else only the owner can mutate.
+          // Managers see the drawer in read-only mode (no Edit, no Pause,
+          // no Import, no Activate, no Bulk-promote).
+          const canMutate = !!userContext && (
+            userContext.isAdmin === true ||
+            data.campaign.owner_id === userContext.userId
+          );
+          const ownerIsSelf = !!userContext && data.campaign.owner_id === userContext.userId;
+          const ownerLabel = ownerIsSelf
+            ? 'You'
+            : ([data.campaign.owner_first_name, data.campaign.owner_last_name].filter(Boolean).join(' ') || '—');
+
+          return (
           <div style={{ padding: 20, overflowY: 'auto' }}>
 
-            {/* Action buttons */}
-            <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
-              <button className="pv-btn-secondary" disabled={busy}
-                onClick={() => onEdit?.(data.campaign)}>✎ Edit</button>
-              <button className="pv-btn-secondary" disabled={busy} onClick={togglePause}>
-                {data.campaign.status === 'active' ? '⏸ Pause' : '▶ Resume'}
-              </button>
-              <button className="pv-btn-secondary" onClick={() => setShowImport(true)}>
-                ⬆ Import prospects
-              </button>
+            {/* Owner line + read-only banner ─────────────────────────────────
+                Shows whose campaign this is. For managers viewing a
+                subordinate's campaign we add an explicit read-only banner
+                so they don't search in vain for the Edit button. */}
+            <div style={{ marginBottom: 12, fontSize: 12, color: '#6b7280' }}>
+              <span style={{
+                display: 'inline-block', padding: '2px 8px', borderRadius: 10,
+                background: ownerIsSelf ? '#f3f4f6' : '#eff6ff',
+                color: ownerIsSelf ? '#374151' : '#1d4ed8',
+                border: '1px solid ' + (ownerIsSelf ? '#e5e7eb' : '#dbeafe'),
+                fontWeight: 600,
+              }}>
+                👤 Owner: {ownerLabel}
+              </span>
             </div>
+            {!canMutate && (
+              <div style={{
+                marginBottom: 14, padding: '8px 12px', background: '#fefce8',
+                border: '1px solid #fde68a', borderRadius: 6, fontSize: 12, color: '#854d0e',
+              }}>
+                Read-only view. Only the owner ({ownerLabel}) or an admin can edit this campaign,
+                pause it, import prospects, or run activations.
+              </div>
+            )}
+
+            {/* Action buttons — only visible when caller can mutate */}
+            {canMutate && (
+              <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
+                <button className="pv-btn-secondary" disabled={busy}
+                  onClick={() => onEdit?.(data.campaign)}>✎ Edit</button>
+                <button className="pv-btn-secondary" disabled={busy} onClick={togglePause}>
+                  {data.campaign.status === 'active' ? '⏸ Pause' : '▶ Resume'}
+                </button>
+                <button className="pv-btn-secondary" onClick={() => setShowImport(true)}>
+                  ⬆ Import prospects
+                </button>
+              </div>
+            )}
 
             {/* Metric cards — top row: prospects + total touches + in-sequences */}
             <div style={{
@@ -680,7 +818,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
                 isn't needed before outreach. Only shown when there are
                 target-stage prospects sitting unprocessed. Confirms
                 before firing — moving 396 prospects is hard to undo. */}
-            {targetCount > 0 && (
+            {canMutate && targetCount > 0 && (
               <div style={{ margin: '12px 0' }}>
                 <button
                   className="pv-btn-secondary"
@@ -726,8 +864,10 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
             {/* Slice 2 + 4: batch-activate button (primary) + preview button
                 (secondary). The preview button lets the rep see all sequence
                 steps for 1-5 prospects WITHOUT enrolling anyone — useful
-                before committing to a real activation. */}
-            {readyToActivate > 0 ? (
+                before committing to a real activation.
+                Hidden entirely from non-mutators (managers, other reps) so
+                they don't see triggers that would 403 on click. */}
+            {canMutate && (readyToActivate > 0 ? (
               <div style={{ margin: '18px 0' }}>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button
@@ -801,7 +941,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
                   </button>
                 </div>
               </div>
-            )}
+            ))}
 
             {/* Members preview */}
             <div style={{
@@ -877,7 +1017,8 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
               })()}
             />
           </div>
-        )}
+          );
+        })()}
 
         {showImport && (
           <CSVImportModal
@@ -1365,8 +1506,9 @@ function EnrollAllModal({ campaign, onClose, onEnrolled }) {
 // CAMPAIGN FORM MODAL — create / edit
 // ═════════════════════════════════════════════════════════════════════════════
 
-function CampaignFormModal({ campaign, onSaved, onClose }) {
+function CampaignFormModal({ campaign, onSaved, onClose, userContext }) {
   const isEdit = !!campaign;
+  const isAdmin = !!userContext?.isAdmin;
   const [form, setForm] = useState({
     name:                campaign?.name || '',
     description:         campaign?.description || '',
@@ -1377,9 +1519,30 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
     start_date:          campaign?.start_date ? campaign.start_date.slice(0, 10) : '',
     end_date:            campaign?.end_date ? campaign.end_date.slice(0, 10) : '',
     status:              campaign?.status || 'active',
+    // Admin-only field — non-admins can't change owner_id, so we don't send
+    // it. On create, undefined means "use the creator" (server default).
+    // On edit, undefined means "no change" (server preserves existing).
+    owner_id:            campaign?.owner_id || '',
   });
+  // Schedule override state. Each field is null when the campaign inherits
+  // the org default, or a value when it overrides. The campaign object from
+  // the backend has snake_case column names; map them in here.
+  const [schedule, setSchedule] = useState({
+    dailyActivationCap:  campaign?.daily_activation_cap   ?? null,
+    sendWindowStartHour: campaign?.send_window_start_hour ?? null,
+    sendWindowEndHour:   campaign?.send_window_end_hour   ?? null,
+    sendWindowDays:      campaign?.send_window_days       ?? null,
+    sendWindowTimezone:  campaign?.send_window_timezone   ?? null,
+  });
+  const [orgDefaults, setOrgDefaults] = useState(null);
+  // Section expanded by default if any overrides exist on the campaign.
+  const hasAnyOverride = Object.values(schedule).some(v => v != null);
+  const [scheduleOpen, setScheduleOpen] = useState(hasAnyOverride);
   const [playbooks, setPlaybooks] = useState([]);
   const [sequences, setSequences] = useState([]);
+  // Org members for the admin-only Owner dropdown. Populated only when the
+  // caller is admin — non-admins never see the field so we skip the fetch.
+  const [orgMembers, setOrgMembers] = useState([]);
   const [busy,  setBusy]  = useState(false);
   const [error, setError] = useState('');
 
@@ -1393,8 +1556,41 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
         const sq = await apiFetch('/sequences');
         setSequences((sq.sequences || []).filter(s => s.status === 'active'));
       } catch { setSequences([]); }
+      // Org defaults for the schedule section. Best-effort — if the user
+      // isn't admin, the endpoint 403s and we just show "—" for defaults.
+      try {
+        const ol = await apiFetch('/org/outreach-limits');
+        if (ol?.limits) {
+          setOrgDefaults({
+            dailyActivationCap:  ol.limits.dailyActivationCap   ?? 25,
+            sendWindowStartHour: ol.limits.sendWindowStartHour  ?? 9,
+            sendWindowEndHour:   ol.limits.sendWindowEndHour    ?? 11,
+            sendWindowDays:      Array.isArray(ol.limits.sendWindowDays) ? ol.limits.sendWindowDays : [1,2,3,4,5],
+            sendWindowTimezone:  ol.limits.sendWindowTimezone   ?? 'America/New_York',
+          });
+        }
+      } catch { /* non-fatal */ }
+      // Admin-only: load org member list for the Owner dropdown. Tries
+      // /users first; if not available, falls back to /org/users.
+      // Non-admins skip this entirely — the field doesn't render for them.
+      if (isAdmin) {
+        try {
+          let users = null;
+          try {
+            const r = await apiFetch('/users');
+            users = r?.users || null;
+          } catch (_) { /* fall through */ }
+          if (!users) {
+            try {
+              const r = await apiFetch('/org/users');
+              users = r?.users || null;
+            } catch (_) { /* fall through */ }
+          }
+          if (Array.isArray(users)) setOrgMembers(users);
+        } catch { setOrgMembers([]); }
+      }
     })();
-  }, []);
+  }, [isAdmin]);
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
@@ -1412,7 +1608,21 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
       start_date:          form.start_date || null,
       end_date:            form.end_date || null,
       status:              form.status,
+      // Schedule overrides — backend treats null as "inherit from org".
+      // We always send all 5 fields so PUT can clear overrides cleanly.
+      daily_activation_cap:    schedule.dailyActivationCap,
+      send_window_start_hour:  schedule.sendWindowStartHour,
+      send_window_end_hour:    schedule.sendWindowEndHour,
+      send_window_days:        schedule.sendWindowDays,
+      send_window_timezone:    schedule.sendWindowTimezone,
     };
+    // Admin-only: include owner_id in the payload when an admin has set or
+    // changed it. We send only when there's actually a value — sending
+    // undefined for non-admins keeps the backend's "preserve existing" path
+    // and matches the non-admin UI (no field rendered).
+    if (isAdmin && form.owner_id) {
+      payload.owner_id = parseInt(form.owner_id, 10);
+    }
     try {
       if (isEdit) {
         await apiFetch(`/prospecting-campaigns/${campaign.id}`, {
@@ -1489,6 +1699,80 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
               <input type="date" value={form.end_date}   onChange={e => set('end_date', e.target.value)} />
             </div>
           </div>
+
+          {/* Sending schedule overrides — collapsed by default unless the
+              campaign already has any override set. Toggle expands a form
+              where each field can independently override the org default. */}
+          <div className="pv-form-section">
+            <h4
+              style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 8 }}
+              onClick={() => setScheduleOpen(!scheduleOpen)}
+            >
+              <span style={{ fontSize: 13, color: '#6b7280', width: 12, display: 'inline-block' }}>
+                {scheduleOpen ? '▾' : '▸'}
+              </span>
+              Sending Schedule
+              {hasAnyOverride && (
+                <span style={{
+                  fontSize: 11, background: '#0F9D8E', color: '#fff',
+                  padding: '2px 8px', borderRadius: 10, fontWeight: 600,
+                }}>customised</span>
+              )}
+            </h4>
+            {scheduleOpen ? (
+              <div style={{ marginTop: 8 }}>
+                <p style={{ fontSize: 12, color: '#6b7280', marginBottom: 16, lineHeight: 1.5 }}>
+                  Each field below can override the org default for this campaign only.
+                  Leave the override unchecked to inherit.
+                </p>
+                <SendingScheduleSettings
+                  mode="campaign"
+                  value={schedule}
+                  orgDefaults={orgDefaults}
+                  onChange={setSchedule}
+                />
+              </div>
+            ) : (
+              <p style={{ fontSize: 12, color: '#9ca3af', margin: '4px 0 0 20px' }}>
+                {hasAnyOverride
+                  ? 'This campaign has customised schedule settings. Click to view/edit.'
+                  : 'Uses org defaults. Click to override for this campaign.'}
+              </p>
+            )}
+          </div>
+
+          {/* Admin-only: Owner ─────────────────────────────────────────────
+              Lets an admin create or reassign a campaign to any active member
+              of the org. Non-admins never see this field; their owner_id is
+              assigned server-side (caller = owner on POST, unchanged on PUT). */}
+          {isAdmin && (
+            <div className="pv-form-section">
+              <h4>Owner</h4>
+              <select
+                value={form.owner_id || ''}
+                onChange={e => set('owner_id', e.target.value)}
+              >
+                <option value="">— No change —</option>
+                {orgMembers.length === 0 && form.owner_id && (
+                  // Failsafe: when org members can't be loaded but a value
+                  // is set (e.g. from an existing campaign), show that value
+                  // by id so the dropdown isn't blank.
+                  <option value={form.owner_id}>{`User #${form.owner_id} (current)`}</option>
+                )}
+                {orgMembers.map(u => (
+                  <option key={u.id} value={u.id}>
+                    {[u.first_name, u.last_name].filter(Boolean).join(' ') || u.email || `User #${u.id}`}
+                    {u.email ? ` · ${u.email}` : ''}
+                  </option>
+                ))}
+              </select>
+              <p style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+                {isEdit
+                  ? 'Reassigning changes who can edit and activate this campaign. The original creator is preserved as audit info.'
+                  : 'Defaults to you. Pick another member to create on their behalf.'}
+              </p>
+            </div>
+          )}
 
           {isEdit && (
             <div className="pv-form-section">
