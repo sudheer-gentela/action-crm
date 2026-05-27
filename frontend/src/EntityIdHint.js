@@ -40,6 +40,10 @@ export default function EntityIdHint({ id, type = '', inline = false }) {
   const [copied,   setCopied]   = useState(false);
   const hideTimer = useRef(null);
 
+  // Clear timer on unmount. Declared BEFORE any early return so hook order
+  // stays stable across renders (rules-of-hooks).
+  useEffect(() => () => clearTimeout(hideTimer.current), []);
+
   // If no id, render nothing — saves callers from null-guarding.
   if (id == null || id === '') return null;
 
@@ -77,9 +81,6 @@ export default function EntityIdHint({ id, type = '', inline = false }) {
       hideTimer.current = setTimeout(() => setShowTip(false), 2500);
     }
   };
-
-  // Clear timer on unmount
-  useEffect(() => () => clearTimeout(hideTimer.current), []);
 
   return (
     <span
