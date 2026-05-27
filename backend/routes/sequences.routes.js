@@ -909,10 +909,13 @@ router.post('/drafts/:logId/send', async (req, res) => {
         });
       } else if (sender.provider === 'outlook') {
         await sendOutlookEmail(req.user.userId, {
-          to:      prospect.email,
-          subject: draft.subject,
-          body:    htmlBody,
-          isHtml:  true,
+          to:           prospect.email,
+          subject:      draft.subject,
+          body:         htmlBody,
+          isHtml:       true,
+          senderEmail:  sender.email,
+          accessToken:  sender.access_token,
+          refreshToken: sender.refresh_token,
         });
       }
     } catch (err) {

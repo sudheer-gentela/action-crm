@@ -401,10 +401,13 @@ const SequenceStepFirer = {
                   });
                 } else if (sender.provider === 'outlook') {
                   await sendOutlookEmail(enrollment.enrolled_by, {
-                    to:     prospect.email,
+                    to:           prospect.email,
                     subject,
-                    body:   sendBody,
-                    isHtml: true,
+                    body:         sendBody,
+                    isHtml:       true,
+                    senderEmail:  sender.email,
+                    accessToken:  sender.access_token,
+                    refreshToken: sender.refresh_token,
                   });
                 }
               } catch (err) {

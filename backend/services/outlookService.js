@@ -154,9 +154,96 @@ async function fetchEmailById(userId, emailId) {
  * @param {string}   [opts.saveToSentItems=true]
  * @returns {Promise<void>}  Graph returns 202 Accepted with no body on success
  */
-async function sendEmail(userId, { to, subject, body, isHtml = false, replyToId = null, saveToSentItems = true }) {
+/**
+ * Send an email via Outlook.
+ *
+ * Two auth modes:
+ *  - Standard: pass only `userId`; tokens are read from `oauth_tokens` via
+ *    getGraphClient(userId). Used by personal/main Outlook integration.
+ *  - Prospecting sender: pass `accessToken`, `refreshToken`, and `senderEmail`.
+ *    Skips the DB token lookup. If the access token is near expiry, refreshes
+ *    it via Microsoft's token endpoint and writes the new value back to
+ *    `prospecting_sender_accounts` (keyed by senderEmail) so subsequent sends
+ *    pick it up. Mirrors googleService.sendEmail's prospecting branch.
+ */
+async function sendEmail(userId, {
+  to, subject, body, isHtml = false,
+  replyToId = null, saveToSentItems = true,
+  accessToken = null, refreshToken = null, senderEmail = null,
+}) {
   try {
-    const client = await getGraphClient(userId);
+    let client;
+
+    if (accessToken) {
+      // ── Prospecting sender path ──────────────────────────────────────
+      let resolvedAccessToken = accessToken;
+
+      if (senderEmail && refreshToken) {
+        // Proactively refresh if the access token is expired or within
+        // 5 minutes of expiry. Mirrors the Gmail flow — prevents the
+        // ghost-send pattern where an expired token causes a silent
+        // failure after DB writes.
+        try {
+          const { pool } = require('../config/database');
+          const expiryRes = await pool.query(
+            `SELECT expires_at FROM prospecting_sender_accounts WHERE email = $1 LIMIT 1`,
+            [senderEmail]
+          );
+          const rawExpiry = expiryRes.rows[0]?.expires_at;
+
+          if (rawExpiry) {
+            const expiresAt = new Date(rawExpiry).getTime();
+            const isExpired = expiresAt < Date.now() + 5 * 60 * 1000;
+
+            if (isExpired) {
+              console.log(`🔄 Outlook sender ${senderEmail} token expires at ${rawExpiry} — refreshing proactively`);
+              const tenantId = process.env.MICROSOFT_TENANT_ID;
+              const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+              const params = new URLSearchParams({
+                client_id:     process.env.MICROSOFT_CLIENT_ID,
+                client_secret: process.env.MICROSOFT_CLIENT_SECRET,
+                refresh_token: refreshToken,
+                grant_type:    'refresh_token',
+                scope:         SCOPES.join(' '),
+              });
+              const response = await axios.post(tokenUrl, params.toString(), {
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              });
+              resolvedAccessToken = response.data.access_token;
+              const newRefresh = response.data.refresh_token || refreshToken;
+              const newExpiry  = new Date(Date.now() + response.data.expires_in * 1000);
+              await pool.query(
+                `UPDATE prospecting_sender_accounts
+                    SET access_token = $1, refresh_token = $2, expires_at = $3, updated_at = CURRENT_TIMESTAMP
+                  WHERE email = $4`,
+                [resolvedAccessToken, newRefresh, newExpiry, senderEmail]
+              );
+              console.log(`✅ Outlook sender ${senderEmail} token refreshed, new expiry: ${newExpiry}`);
+            }
+          } else {
+            console.log(`ℹ️  Outlook sender ${senderEmail} has no expires_at — skipping proactive refresh`);
+          }
+        } catch (refreshErr) {
+          // Only block the send on confirmed revocation. Other errors
+          // (network, DB) fall through and we try with the existing token.
+          const errData = refreshErr.response?.data || {};
+          const isRevoked =
+            errData.error === 'invalid_grant' ||
+            /AADSTS70008|AADSTS700082|invalid_grant/i.test(errData.error_description || refreshErr.message || '');
+          if (isRevoked) {
+            throw new Error(`invalid_grant: Outlook sender ${senderEmail} needs to be reconnected in Settings → Outreach.`);
+          }
+          console.warn(`⚠️  Outlook proactive refresh failed for ${senderEmail} (non-fatal):`, refreshErr.message);
+        }
+      }
+
+      client = Client.init({
+        authProvider: (done) => done(null, resolvedAccessToken),
+      });
+    } else {
+      // ── Standard path: read from oauth_tokens by userId ─────────────
+      client = await getGraphClient(userId);
+    }
 
     const message = {
       subject,
@@ -181,7 +268,7 @@ async function sendEmail(userId, { to, subject, body, isHtml = false, replyToId 
         .post({ message, saveToSentItems });
     }
 
-    console.log(`📤 Sent email via Outlook to ${to} — subject: "${subject}"`);
+    console.log(`📤 Sent email via Outlook (${senderEmail || 'default'}) to ${to} — subject: "${subject}"`);
   } catch (error) {
     console.error('Error sending email via Outlook:', error);
     throw new Error(`Failed to send email: ${error.message}`);
