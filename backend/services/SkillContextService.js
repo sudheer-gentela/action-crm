@@ -574,24 +574,39 @@ async function buildEngagementHistory(client, prospect, orgId) {
   }
 
   const activities = await safeQuery(client,
-    `SELECT activity_type, description, created_at
+    `SELECT activity_type, description, metadata, created_at
        FROM prospecting_activities
       WHERE prospect_id = $1
       ORDER BY created_at DESC
       LIMIT 30`,
     [prospect.id]
   );
+  // Non-LinkedIn activity types that flow straight into the engagement feed.
   const typeMap = {
-    linkedin_connection_sent:     'linkedin_connection_sent',
-    linkedin_connection_accepted: 'linkedin_connection_accepted',
-    linkedin_message_sent:        'linkedin_message_sent',
-    linkedin_message_replied:     'linkedin_message_replied',
     meeting_booked:               'meeting_booked',
     meeting_held:                 'meeting_held',
     meeting_no_show:              'meeting_no_show',
   };
+  // LinkedIn touches are stored as a single bucket activity_type='linkedin_event'
+  // with the granular event in metadata->>'event'. Normalise those granular
+  // events into the canonical 'linkedin_*' type names that downstream consumers
+  // (and the prior version of this map) expect. Without this, the LinkedIn
+  // branch of the engagement feed is silently empty — no row ever had
+  // activity_type='linkedin_connection_sent' etc.
+  const LINKEDIN_EVENT_TYPE_MAP = {
+    connection_request_sent: 'linkedin_connection_sent',
+    connection_accepted:     'linkedin_connection_accepted',
+    message_sent:            'linkedin_message_sent',
+    inmail_sent:             'linkedin_message_sent',
+    reply_received:          'linkedin_message_replied',
+  };
   for (const a of activities) {
-    const type = typeMap[a.activity_type];
+    let type = typeMap[a.activity_type];
+    if (!type && a.activity_type === 'linkedin_event') {
+      const meta = a.metadata || {};
+      const ev = typeof meta === 'string' ? (JSON.parse(meta).event) : meta.event;
+      type = LINKEDIN_EVENT_TYPE_MAP[ev];
+    }
     if (!type) continue;
     events.push({
       type,

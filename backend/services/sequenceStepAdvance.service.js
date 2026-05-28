@@ -153,9 +153,10 @@ class SequenceStepAdvanceService {
     // 6. Activity log.
     await client.query(
       `INSERT INTO prospecting_activities
-         (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, 'sequence_step_completed', $3, $4)`,
+         (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'sequence_step_completed', $4, $5)`,
       [
+        orgId,
         ctx.prospect_id,
         userId,
         `${ctx.channel} step completed — ${ctx.sequence_name} step ${ctx.step_order}`,

@@ -371,9 +371,10 @@ const SequenceStepFirer = {
             try {
               await client.query(
                 `INSERT INTO prospecting_activities
-                             (prospect_id, user_id, activity_type, description, metadata)
-                      VALUES ($1, $2, 'sequence_draft_created', $3, $4)`,
+                             (org_id, prospect_id, user_id, activity_type, description, metadata)
+                      VALUES ($1, $2, $3, 'sequence_draft_created', $4, $5)`,
                 [
+                  enrollment.org_id,
                   enrollment.prospect_id,
                   enrollment.enrolled_by,
                   draftActivityDesc,
@@ -516,9 +517,10 @@ const SequenceStepFirer = {
 
             await client.query(
               `INSERT INTO prospecting_activities
-                           (prospect_id, user_id, activity_type, description, metadata)
-                    VALUES ($1, $2, 'sequence_step_sent', $3, $4)`,
+                           (org_id, prospect_id, user_id, activity_type, description, metadata)
+                    VALUES ($1, $2, $3, 'sequence_step_sent', $4, $5)`,
               [
+                enrollment.org_id,
                 enrollment.prospect_id,
                 enrollment.enrolled_by,
                 description,

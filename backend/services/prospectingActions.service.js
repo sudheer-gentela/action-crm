@@ -190,10 +190,10 @@ async function _generateFromPlays(prospect, orgId, userId, plays, playbook, play
   // Log activity
   if (created.length > 0) {
     await db.query(
-      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, 'actions_generated', $3, $4)`,
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'actions_generated', $4, $5)`,
       [
-        prospect.id, userId,
+        orgId, prospect.id, userId,
         `Generated ${created.length} action(s) from playbook plays "${playbookName}" for stage "${prospect.stage}"`,
         JSON.stringify({ playbookId: playbook.id, stage: prospect.stage, actionCount: created.length, skipped, source: 'playbook_plays' }),
       ]

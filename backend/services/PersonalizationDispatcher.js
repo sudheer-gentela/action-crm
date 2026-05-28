@@ -229,24 +229,41 @@ async function loadEngagementHistory(prospectId, orgId) {
     }
   }
 
-  // LinkedIn events from prospecting_activities
+  // LinkedIn events from prospecting_activities.
+  //
+  // The only writer of LinkedIn touches is POST /prospects/:id/linkedin-event,
+  // which stores a single bucket activity_type='linkedin_event' and puts the
+  // granular event ('connection_request_sent', 'connection_accepted',
+  // 'message_sent', 'inmail_sent', 'reply_received', ...) in metadata->>'event'.
+  // (Sequence-driven LinkedIn touches land as 'sequence_step_completed' and are
+  // not LinkedIn-evidence events — the rep attests the touch via linkedin-event.)
+  //
+  // We read that bucket and NORMALISE each granular event into the
+  // 'linkedin_*' type names that inferIntent() consumes, so the intent logic
+  // below is unchanged. The map is intentionally narrow — only the events that
+  // affect intent inference are carried through.
+  const LINKEDIN_EVENT_TYPE_MAP = {
+    connection_request_sent: 'linkedin_connection_request_sent',
+    connection_accepted:     'linkedin_connection_accepted',
+    message_sent:            'linkedin_message_sent',
+    inmail_sent:             'linkedin_message_sent',
+    reply_received:          'linkedin_message_replied',
+  };
   const aRes = await pool.query(
-    `SELECT activity_type, created_at
+    `SELECT metadata->>'event' AS event, created_at
        FROM prospecting_activities
       WHERE prospect_id = $1
-        AND activity_type IN (
-          'linkedin_connection_sent',
-          'linkedin_connection_accepted',
-          'linkedin_message_sent',
-          'linkedin_message_replied'
-        )
+        AND activity_type = 'linkedin_event'
+        AND metadata->>'event' IS NOT NULL
    ORDER BY created_at DESC
       LIMIT 30`,
     [prospectId]
   );
   for (const row of aRes.rows) {
+    const mappedType = LINKEDIN_EVENT_TYPE_MAP[row.event];
+    if (!mappedType) continue; // ignore events that don't affect intent (e.g. profile_viewed)
     events.push({
-      type: row.activity_type,
+      type: mappedType,
       timestamp: row.created_at,
       direction: null,
     });

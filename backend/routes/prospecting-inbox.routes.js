@@ -775,9 +775,10 @@ router.post('/sync', async (req, res) => {
 
               // Log a prospecting activity (non-blocking)
               db.query(
-                `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-                 VALUES ($1, $2, 'email_received', $3, $4)`,
+                `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+                 VALUES ($1, $2, $3, 'email_received', $4, $5)`,
                 [
+                  orgId,
                   prospectId,
                   account.user_id,
                   `Reply received: ${email.subject}`,
@@ -805,9 +806,10 @@ router.post('/sync', async (req, res) => {
 
                   await db.query(
                     `INSERT INTO prospecting_activities
-                       (prospect_id, user_id, activity_type, description, metadata)
-                     VALUES ($1, $2, 'stage_change', $3, $4)`,
+                       (org_id, prospect_id, user_id, activity_type, description, metadata)
+                     VALUES ($1, $2, $3, 'stage_change', $4, $5)`,
                     [
+                      orgId,
                       prospectId,
                       account.user_id,
                       `Stage advanced: outreach → engaged (reply received)`,

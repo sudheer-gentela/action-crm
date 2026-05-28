@@ -280,17 +280,17 @@ router.patch('/:id/status', async (req, res) => {
           [action.prospect_id]
         );
         await db.query(
-          `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
-           VALUES ($1, $2, 'stage_change', 'Auto-advanced to outreach after first outreach')`,
-          [action.prospect_id, req.user.userId]
+          `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
+           VALUES ($1, $2, $3, 'stage_change', 'Auto-advanced to outreach after first outreach')`,
+          [req.orgId, action.prospect_id, req.user.userId]
         );
       }
 
       await db.query(
-        `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-         VALUES ($1, $2, 'outreach_sent', $3, $4)`,
+        `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+         VALUES ($1, $2, $3, 'outreach_sent', $4, $5)`,
         [
-          action.prospect_id, req.user.userId,
+          req.orgId, action.prospect_id, req.user.userId,
           `${action.channel} outreach: ${action.title}`,
           JSON.stringify({ channel: action.channel, outcome: outcome || null, actionId: action.id }),
         ]
@@ -319,17 +319,17 @@ router.patch('/:id/status', async (req, res) => {
           [action.prospect_id]
         );
         await db.query(
-          `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description)
-           VALUES ($1, $2, 'stage_change', 'Auto-advanced to engaged after response received')`,
-          [action.prospect_id, req.user.userId]
+          `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
+           VALUES ($1, $2, $3, 'stage_change', 'Auto-advanced to engaged after response received')`,
+          [req.orgId, action.prospect_id, req.user.userId]
         );
       }
 
       await db.query(
-        `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-         VALUES ($1, $2, 'response_received', $3, $4)`,
+        `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+         VALUES ($1, $2, $3, 'response_received', $4, $5)`,
         [
-          action.prospect_id, req.user.userId,
+          req.orgId, action.prospect_id, req.user.userId,
           `Response via ${action.channel}: ${outcome}`,
           JSON.stringify({ channel: action.channel, outcome, actionId: action.id }),
         ]
@@ -466,10 +466,10 @@ router.post('/:id/execute', async (req, res) => {
 
     // Log activity
     await db.query(
-      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, 'outreach_sent', $3, $4)`,
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'outreach_sent', $4, $5)`,
       [
-        a.prospect_id, req.user.userId,
+        req.orgId, a.prospect_id, req.user.userId,
         `Executed: ${a.title} via ${a.channel || 'task'}`,
         JSON.stringify({ channel: a.channel, outcome, actionId: a.id }),
       ]
@@ -681,9 +681,9 @@ Write a short personalised outreach email. Return ONLY valid JSON:
     }
 
     db.query(
-      `INSERT INTO prospecting_activities (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, 'ai_draft', 'AI email draft generated', $3)`,
-      [prospectId, req.user.userId, JSON.stringify({ model: aiModel, provider: aiProvider, confidence: parsed.confidence })]
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'ai_draft', 'AI email draft generated', $4)`,
+      [req.orgId, prospectId, req.user.userId, JSON.stringify({ model: aiModel, provider: aiProvider, confidence: parsed.confidence })]
     ).catch(() => {});
 
     res.json({

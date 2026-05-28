@@ -930,10 +930,10 @@ router.post('/:id/enroll-all', async (req, res) => {
           try {
             await client.query(
               `INSERT INTO prospecting_activities
-                     (prospect_id, user_id, activity_type, description, metadata)
-               VALUES ($1, $2, 'sequence_enrolled', $3, $4)`,
+                     (org_id, prospect_id, user_id, activity_type, description, metadata)
+               VALUES ($1, $2, $3, 'sequence_enrolled', $4, $5)`,
               [
-                prospectId, req.user.userId,
+                req.orgId, prospectId, req.user.userId,
                 `Enrolled in sequence "${sequenceName}" via campaign "${campaign.name}"`,
                 JSON.stringify({
                   sequenceId, sequenceName,

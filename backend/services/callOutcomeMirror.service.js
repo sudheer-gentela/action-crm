@@ -51,9 +51,9 @@ class CallOutcomeMirrorService {
     // 1. Mirror activity row.
     await client.query(
       `INSERT INTO prospecting_activities
-         (prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, 'call_logged', $3, $4)`,
-      [call.prospect_id, call.user_id, description, JSON.stringify(metadata)]
+         (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'call_logged', $4, $5)`,
+      [call.org_id, call.prospect_id, call.user_id, description, JSON.stringify(metadata)]
     );
 
     // 2. Update prospects.channel_data.call (JSONB merge).
