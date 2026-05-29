@@ -65,6 +65,31 @@ function calcDueDate(delayDays) {
   return d;
 }
 
+/**
+ * Render a sequence-step template with {{var}} substitution.
+ *
+ * Mirrors SequenceStepFirer.renderTemplate so the non-AI ("runSkill=false")
+ * preview path produces exactly what the firer would send when an enrollment
+ * has no personalised_steps blob and falls back to the raw template.
+ *
+ * Account-derived vars (company/industry/domain) fall back to the prospect's
+ * own company_* fields, matching the firer's COALESCE(account, prospect)
+ * resolution closely enough for a non-destructive preview.
+ */
+function renderPreviewTemplate(template, p) {
+  if (!template) return '';
+  const vars = {
+    first_name: p.first_name || '',
+    last_name:  p.last_name  || '',
+    full_name:  `${p.first_name || ''} ${p.last_name || ''}`.trim(),
+    title:      p.title            || '',
+    company:    p.company_name     || '',
+    industry:   p.company_industry || '',
+    domain:     p.company_domain   || '',
+  };
+  return template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SEQUENCES CRUD
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2310,8 +2335,17 @@ router.get('/health', async (req, res) => {
 //
 // HARD CAP: 5 prospects per preview to bound skill API cost (a 3-step
 // sequence × 5 prospects = up to 15 Anthropic calls per preview).
+//
+// AI gating (mirrors bulk-activate in prospecting-campaigns.routes.js):
+//   Body may include runSkill (default true) / skipPersonalisation. When AI is
+//   OFF, the preview renders the sequence's subject_template / body_template
+//   verbatim (same as the firer's fallback) WITHOUT calling any skill — so
+//   previewing a non-AI campaign costs zero Anthropic tokens and writes no
+//   skill_runs rows. This keeps Preview consistent with what activation will
+//   actually do for the same toggle state.
 router.post('/:id/preview', async (req, res) => {
-  const { prospectIds } = req.body || {};
+  const { prospectIds, runSkill = true, skipPersonalisation } = req.body || {};
+  const wantSkill = runSkill !== false && skipPersonalisation !== true;
   if (!Array.isArray(prospectIds) || prospectIds.length === 0) {
     return res.status(400).json({ error: { message: 'prospectIds array is required' } });
   }
@@ -2338,7 +2372,8 @@ router.post('/:id/preview', async (req, res) => {
       return res.status(400).json({ error: { message: 'No valid prospect IDs' } });
     }
     const pRes = await pool.query(
-      `SELECT id, first_name, last_name, company_name
+      `SELECT id, first_name, last_name, title, company_name,
+              company_industry, company_domain
          FROM prospects
         WHERE id = ANY($1::int[]) AND org_id = $2 AND deleted_at IS NULL`,
       [ids, req.orgId]
@@ -2349,9 +2384,11 @@ router.post('/:id/preview', async (req, res) => {
     const prospectsById = {};
     for (const p of pRes.rows) prospectsById[p.id] = p;
 
-    // Sequence steps — needed to attach channel + intent to each preview step
+    // Sequence steps — needed to attach channel + intent to each preview step,
+    // and (when AI is off) to render subject_template / body_template directly.
     const stepsRes = await pool.query(
-      `SELECT id, step_order, channel, step_intent
+      `SELECT id, step_order, channel, step_intent,
+              subject_template, body_template, task_note
          FROM sequence_steps
         WHERE sequence_id = $1 AND org_id = $2
      ORDER BY step_order ASC`,
@@ -2378,13 +2415,38 @@ router.post('/:id/preview', async (req, res) => {
         continue;
       }
 
-      try {
-        const dispatch = await PersonalizationDispatcher.personaliseEnrollment({
-          orgId:      req.orgId,
-          userId:     req.user.userId,
-          sequenceId: parseInt(req.params.id, 10),
+      // AI OFF — render sequence templates verbatim, no skill calls, no
+      // skill_runs rows, zero Anthropic tokens. This is what the firer would
+      // send for this prospect when the enrollment has no personalised_steps.
+      if (!wantSkill) {
+        const steps = stepsRes.rows.map(s => ({
+          step_order:          s.step_order,
+          channel:             s.channel || null,
+          subject:             renderPreviewTemplate(s.subject_template, p),
+          body:                renderPreviewTemplate(s.body_template, p),
+          task_note:           s.task_note || '',
+          personalize_sources: { engine: 'template' },
+          intent:              s.step_intent || null,
+          intent_source:       s.step_intent ? 'override' : null,
+        }));
+        previews.push({
           prospectId,
+          prospectName:    `${p.first_name || ''} ${p.last_name || ''}`.trim(),
+          prospectCompany: p.company_name || null,
+          steps,
+          dispatchSummary: {
+            total:        stepsRes.rows.length,
+            personalised: 0,
+            skipped:      stepsRes.rows.length,
+            errored:      0,
+          },
+          errors: [],
         });
+        succeeded++;
+        continue;
+      }
+
+      try {
 
         // Flatten dispatcher's keyed map → array sorted by step_order, with
         // channel/intent metadata attached from sequence_steps for display.

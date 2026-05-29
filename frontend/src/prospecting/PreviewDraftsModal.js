@@ -37,11 +37,15 @@ const CHANNEL_ICON = {
   task:     '📋',
 };
 
-export default function PreviewDraftsModal({ sequenceId, prospectIds, onClose }) {
+export default function PreviewDraftsModal({ sequenceId, prospectIds, runSkill: runSkillProp = true, onClose }) {
   const [loading, setLoading] = useState(true);
   const [data, setData]       = useState(null);
   const [error, setError]     = useState('');
   const [selectedProspect, setSelectedProspect] = useState(0);
+  // Mirrors BatchActivateModal's "Run AI personalisation" toggle. When OFF the
+  // backend renders the sequence templates verbatim (no skill calls, no
+  // tokens), so a non-AI campaign previews exactly what it will send.
+  const [runSkill, setRunSkill] = useState(runSkillProp !== false);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,7 +55,7 @@ export default function PreviewDraftsModal({ sequenceId, prospectIds, onClose })
       try {
         const r = await apiFetch(`/sequences/${sequenceId}/preview`, {
           method: 'POST',
-          body: JSON.stringify({ prospectIds: prospectIds.slice(0, 5) }),
+          body: JSON.stringify({ prospectIds: prospectIds.slice(0, 5), runSkill }),
         });
         if (!cancelled) setData(r);
       } catch (err) {
@@ -61,7 +65,7 @@ export default function PreviewDraftsModal({ sequenceId, prospectIds, onClose })
       }
     })();
     return () => { cancelled = true; };
-  }, [sequenceId, prospectIds]);
+  }, [sequenceId, prospectIds, runSkill]);
 
   return (
     <div className="pv-modal-overlay" onClick={onClose}>
@@ -72,15 +76,30 @@ export default function PreviewDraftsModal({ sequenceId, prospectIds, onClose })
           <button className="pv-modal-close" onClick={onClose}>×</button>
         </div>
 
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid #f0f0f0', fontSize: 12, color: '#6b7280' }}>
-          Generates personalisation for the selected prospects without enrolling them.
-          Nothing is sent. Skill calls do consume API tokens — refreshing re-runs the calls.
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid #f0f0f0' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', color: '#1A3A5C' }}>
+            <input
+              type="checkbox"
+              checked={runSkill}
+              onChange={e => setRunSkill(e.target.checked)}
+            />
+            <span>Run AI personalisation per prospect</span>
+          </label>
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6, marginLeft: 22 }}>
+            {runSkill
+              ? 'Generates personalisation for the selected prospects without enrolling them. Nothing is sent. Skill calls consume API tokens — refreshing re-runs the calls.'
+              : 'Shows the sequence templates exactly as they will send when AI is off. No skill calls, no API tokens used.'}
+          </div>
         </div>
 
         {loading ? (
           <div style={{ padding: 60, textAlign: 'center', color: '#6b7280' }}>
-            <div style={{ fontSize: 14 }}>🪄 Running dispatcher for {prospectIds.length} prospect{prospectIds.length === 1 ? '' : 's'}…</div>
-            <div style={{ fontSize: 12, marginTop: 6, color: '#9ca3af' }}>~3-6 seconds per step per prospect.</div>
+            <div style={{ fontSize: 14 }}>
+              {runSkill ? '🪄 Running dispatcher' : '📋 Rendering templates'} for {prospectIds.length} prospect{prospectIds.length === 1 ? '' : 's'}…
+            </div>
+            {runSkill && (
+              <div style={{ fontSize: 12, marginTop: 6, color: '#9ca3af' }}>~3-6 seconds per step per prospect.</div>
+            )}
           </div>
         ) : error ? (
           <div style={{ padding: 30 }}>
@@ -124,8 +143,8 @@ export default function PreviewDraftsModal({ sequenceId, prospectIds, onClose })
                       {hasError
                         ? '⚠ error'
                         : (p.steps?.length || 0) === 0
-                          ? <span style={{ color: '#991b1b' }}>⚠ 0 steps personalised</span>
-                          : `${p.steps?.length || 0} step${p.steps.length === 1 ? '' : 's'} personalised`}
+                          ? <span style={{ color: '#991b1b' }}>⚠ 0 steps</span>
+                          : `${p.steps?.length || 0} step${p.steps.length === 1 ? '' : 's'}${runSkill ? ' personalised' : ''}`}
                     </div>
                   </div>
                 );
