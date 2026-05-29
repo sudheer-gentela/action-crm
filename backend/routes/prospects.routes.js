@@ -1788,6 +1788,55 @@ router.post('/:id/stage', async (req, res) => {
   }
 });
 
+// ── POST /bulk-campaign — assign, move, or REMOVE prospects' campaign tag ─────
+// Unlike /bulk-stage (stage only) and discard (disqualifies), this changes ONLY
+// campaign membership without touching stage or marking anyone disqualified.
+// Body: { prospectIds: int[], campaignId: int | null }
+//   campaignId: null → remove from any campaign (untag)
+//   campaignId: int  → assign/move to that campaign (validated as live in org)
+router.post('/bulk-campaign', async (req, res) => {
+  try {
+    const { prospectIds, campaignId = null } = req.body || {};
+    if (!Array.isArray(prospectIds) || prospectIds.length === 0) {
+      return res.status(400).json({ error: { message: 'prospectIds array is required' } });
+    }
+    const ids = prospectIds.map(x => parseInt(x, 10)).filter(Number.isFinite);
+    if (ids.length === 0) {
+      return res.status(400).json({ error: { message: 'No valid prospectIds' } });
+    }
+
+    // If assigning to a campaign, verify it belongs to this org.
+    if (campaignId != null) {
+      const camp = await db.query(
+        `SELECT id FROM prospecting_campaigns WHERE id = $1 AND org_id = $2`,
+        [parseInt(campaignId, 10), req.orgId]
+      );
+      if (camp.rows.length === 0) {
+        return res.status(404).json({ error: { message: `Campaign ${campaignId} not found in this org` } });
+      }
+    }
+
+    const result = await db.query(
+      `UPDATE prospects
+          SET campaign_id = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ANY($2::int[]) AND org_id = $3 AND deleted_at IS NULL
+        RETURNING id`,
+      [campaignId != null ? parseInt(campaignId, 10) : null, ids, req.orgId]
+    );
+
+    res.json({
+      updated: result.rowCount,
+      campaignId: campaignId != null ? parseInt(campaignId, 10) : null,
+      message: campaignId == null
+        ? `Removed ${result.rowCount} prospect(s) from their campaign.`
+        : `Moved ${result.rowCount} prospect(s) to campaign ${campaignId}.`,
+    });
+  } catch (error) {
+    console.error('bulk-campaign error:', error);
+    res.status(500).json({ error: { message: 'Failed to update campaign: ' + error.message } });
+  }
+});
+
 // ── POST /bulk-stage — change stage for many prospects at once ───────────────
 //
 // Body: { fromStage, toStage, campaignId?, prospectIds? }
