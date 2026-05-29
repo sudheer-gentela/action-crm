@@ -246,6 +246,11 @@ export const IMPORT_FIELDS = {
   // ── NEW ──────────────────────────────────────────────────────────────────────
   // CSVImportModal.js picks these up automatically — no changes needed there.
   prospects: [
+    // id + do_not_edit_check are only used by the "update existing by ID"
+    // mode (export → edit → re-import). They auto-map from the export's
+    // headers and are ignored in insert/upsert modes.
+    { key: 'id',              label: 'id' },
+    { key: 'verifyCheck',     label: 'do_not_edit_check' },
     { key: 'firstName',       label: 'First Name',     required: true },
     { key: 'lastName',        label: 'Last Name',      required: true },
     { key: 'email',           label: 'Email' },

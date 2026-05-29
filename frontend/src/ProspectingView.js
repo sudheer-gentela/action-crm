@@ -14,6 +14,7 @@ import {
   StagesContext,
   TEAL,
   apiFetch,
+  downloadCsv,
   readDebugFlag,
 } from './prospecting/prospectingShared';
 
@@ -193,13 +194,31 @@ export default function ProspectingView() {
     setSelectedIds(new Set());
   }, [viewMode, searchQuery, scope]);
 
-  const handleImportProspects = async (rows) => {
+  const handleExportProspects = async () => {
+    // Scope the export to the campaign currently in view, if any — otherwise
+    // export all live prospects in scope. The downloaded sheet carries the
+    // immutable id + a do_not_edit_check column for the "update by ID" reimport.
+    try {
+      const qs = campaignFilter ? `?campaignId=${campaignFilter.campaignId}` : '';
+      await downloadCsv(`/prospects/export.csv${qs}`, 'prospects.csv');
+    } catch (err) {
+      alert(`Export failed: ${err.message}`);
+    }
+  };
+
+  const handleImportProspects = async (rows, opts = {}) => {
+    const mode = opts.mode || 'insert';
     const res = await apiFetch('/prospects/bulk', {
       method: 'POST',
-      body: JSON.stringify({ prospects: rows, source: 'csv_import' }),
+      body: JSON.stringify({
+        prospects: rows,
+        source: 'csv_import',
+        mode,
+        ...(mode === 'upsert' ? { matchField: 'linkedin_url' } : {}),
+      }),
     });
     fetchProspects();
-    return res; // { imported, skipped, errors }
+    return res; // { imported, updated, skipped, errors }
   };
 
   // Dynamic stages from API
@@ -414,6 +433,11 @@ export default function ProspectingView() {
             window.dispatchEvent(new CustomEvent('navigate', { detail: { tab: 'playbooks', playbookFilter: 'prospecting' } }));
           }}>
             📋 Playbooks
+          </button>
+
+          <button className="pv-btn-secondary" onClick={handleExportProspects}
+            title={campaignFilter ? `Export "${campaignFilter.campaignName}" prospects` : 'Export prospects'}>
+            ⬇ Export CSV
           </button>
 
           <button className="pv-btn-secondary" onClick={() => setShowImportModal(true)}>
@@ -719,6 +743,8 @@ export default function ProspectingView() {
         <CSVImportModal
           entity="prospects"
           onImport={handleImportProspects}
+          supportsUpsert={true}
+          upsertMatchLabel="LinkedIn URL"
           onClose={() => setShowImportModal(false)}
         />
       )}

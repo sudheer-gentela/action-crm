@@ -5,12 +5,15 @@ import { csvParse, IMPORT_FIELDS } from './csvUtils';
  * CSVImportModal — shared 4-step import dialog for Accounts, Contacts, Deals
  *
  * Props:
- *   entity      — 'accounts' | 'contacts' | 'deals'
- *   onImport    — async (rows) => { imported, errors } — calls bulk API
+ *   entity      — 'accounts' | 'contacts' | 'deals' | 'prospects'
+ *   onImport    — async (rows, opts) => { imported, updated, errors } — calls bulk API.
+ *                 opts = { mode: 'insert' | 'upsert' }
  *   onClose     — () => void
  *   accounts    — array of existing accounts (for name→id matching in contacts/deals)
+ *   supportsUpsert    — when true, shows an "update existing" toggle on preview
+ *   upsertMatchLabel  — human label for the match key (e.g. "LinkedIn URL")
  */
-export default function CSVImportModal({ entity, onImport, onClose, accounts = [] }) {
+export default function CSVImportModal({ entity, onImport, onClose, accounts = [], supportsUpsert = false, upsertMatchLabel = 'LinkedIn URL' }) {
   const fields = useMemo(() => IMPORT_FIELDS[entity] || [], [entity]);
   const entityLabel = entity.charAt(0).toUpperCase() + entity.slice(1);
 
@@ -22,7 +25,9 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
   const [mapping, setMapping] = useState({});       // fieldKey → csvColumnIndex
   const [validationErrors, setValidationErrors] = useState([]); // [{row, field, message}]
   const [mappedRows, setMappedRows] = useState([]);  // final objects
-  const [result, setResult] = useState(null);        // { imported, errors }
+  const [result, setResult] = useState(null);        // { imported, updated, errors }
+  // 'insert' = add new only; 'upsert' = update existing matches by the match key.
+  const [mode, setMode] = useState('insert');
 
   const fileRef = useRef();
 
@@ -46,6 +51,9 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
           const hLower = h.toLowerCase().replace(/[^a-z0-9]/g, '');
           const lLower = f.label.toLowerCase().replace(/[^a-z0-9]/g, '');
           const kLower = f.key.toLowerCase().replace(/[^a-z0-9]/g, '');
+          // Very short keys (e.g. "id") only match exactly — the substring
+          // fallback would otherwise grab "paid", "candidate id", etc.
+          if (kLower.length <= 3) return hLower === lLower || hLower === kLower;
           return hLower === lLower || hLower === kLower || hLower.includes(kLower) || kLower.includes(hLower);
         });
         if (idx >= 0) autoMap[f.key] = idx;
@@ -131,7 +139,7 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
   const handleImport = useCallback(async () => {
     setStep('importing');
     try {
-      const res = await onImport(mappedRows);
+      const res = await onImport(mappedRows, { mode });
       setResult(res);
       setStep('result');
     } catch (err) {
@@ -270,6 +278,46 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
               </div>
             )}
 
+            {/* Import mode — insert vs update-existing (prospects only) */}
+            {supportsUpsert && (
+              <div style={{
+                marginBottom: 16, padding: '12px 14px', borderRadius: 8,
+                background: '#f9fafb', border: '1px solid #e5e7eb',
+              }}>
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, cursor: 'pointer' }}>
+                    <input type="radio" name="import-mode" checked={mode === 'insert'} onChange={() => setMode('insert')} />
+                    <span>Add new only</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, cursor: 'pointer' }}>
+                    <input type="radio" name="import-mode" checked={mode === 'upsert'} onChange={() => setMode('upsert')} />
+                    <span>Update existing by {upsertMatchLabel}</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, cursor: 'pointer' }}>
+                    <input type="radio" name="import-mode" checked={mode === 'update_by_id'} onChange={() => setMode('update_by_id')} />
+                    <span>Update existing by ID (exported sheet)</span>
+                  </label>
+                </div>
+                <div style={{ fontSize: 11.5, color: '#6b7280', marginTop: 6 }}>
+                  {mode === 'upsert'
+                    ? `Rows are matched to existing ${entity} by ${upsertMatchLabel}. Matches are updated in place (only non-empty cells overwrite); unmatched rows are added as new. Email is not used for matching, so a corrected email won't create a duplicate.`
+                    : mode === 'update_by_id'
+                    ? `For a sheet exported from here: rows are matched by their immutable id and verified against the read-only "do_not_edit_check" column before applying. Mismatches are flagged, not updated. Only non-empty cells overwrite; rows with an unknown id are skipped (never inserted). Leave the id and do_not_edit_check columns untouched.`
+                    : `New ${entity} are added. Rows whose email already exists are skipped.`}
+                </div>
+                {mode === 'upsert' && mapping['linkedinUrl'] === undefined && (
+                  <div style={{ fontSize: 11.5, color: '#991b1b', marginTop: 6 }}>
+                    ⚠ Map a “LinkedIn URL” column to use update mode — it’s the match key.
+                  </div>
+                )}
+                {mode === 'update_by_id' && (mapping['id'] === undefined || mapping['verifyCheck'] === undefined) && (
+                  <div style={{ fontSize: 11.5, color: '#991b1b', marginTop: 6 }}>
+                    ⚠ Map both the “id” and “do_not_edit_check” columns to use update-by-ID.
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Preview table */}
             <div style={{ maxHeight: 250, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 8 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -304,17 +352,26 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
                 padding: '8px 20px', borderRadius: 8, border: '1px solid #d1d5db',
                 background: '#fff', fontSize: 13, cursor: 'pointer',
               }}>← Back</button>
-              <button
-                onClick={handleImport}
-                disabled={mappedRows.length === 0}
-                style={{
-                  padding: '8px 24px', borderRadius: 8, border: 'none',
-                  background: mappedRows.length > 0 ? '#16a34a' : '#d1d5db',
-                  color: '#fff', fontSize: 13, fontWeight: 600, cursor: mappedRows.length > 0 ? 'pointer' : 'default',
-                }}
-              >
-                Import {mappedRows.length} {entityLabel} →
-              </button>
+              {(() => {
+                const upsertBlocked = supportsUpsert && mode === 'upsert' && mapping['linkedinUrl'] === undefined;
+                const byIdBlocked   = supportsUpsert && mode === 'update_by_id' && (mapping['id'] === undefined || mapping['verifyCheck'] === undefined);
+                const blocked = mappedRows.length === 0 || upsertBlocked || byIdBlocked;
+                const label = mode === 'insert' ? 'Import' : 'Update / add';
+                return (
+                  <button
+                    onClick={handleImport}
+                    disabled={blocked}
+                    style={{
+                      padding: '8px 24px', borderRadius: 8, border: 'none',
+                      background: blocked ? '#d1d5db' : '#16a34a',
+                      color: '#fff', fontSize: 13, fontWeight: 600,
+                      cursor: blocked ? 'default' : 'pointer',
+                    }}
+                  >
+                    {label} {mappedRows.length} {entityLabel} →
+                  </button>
+                );
+              })()}
             </div>
           </div>
         )}
@@ -331,11 +388,14 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
         {step === 'result' && result && (
           <div style={{ textAlign: 'center', padding: '30px 0' }}>
             <div style={{ fontSize: 48, marginBottom: 12 }}>
-              {result.imported > 0 ? '✅' : '⚠️'}
+              {(result.imported > 0 || result.updated > 0) ? '✅' : '⚠️'}
             </div>
             <h3 style={{ marginBottom: 8 }}>
-              {result.imported > 0
-                ? `Successfully imported ${result.imported} ${entity}`
+              {(result.imported > 0 || result.updated > 0)
+                ? [
+                    result.imported ? `Added ${result.imported}` : null,
+                    result.updated  ? `Updated ${result.updated}` : null,
+                  ].filter(Boolean).join(' · ') + ` ${entity}`
                 : 'Import completed with issues'}
             </h3>
             {result.errors?.length > 0 && (

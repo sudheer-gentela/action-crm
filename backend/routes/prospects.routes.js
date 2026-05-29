@@ -253,11 +253,39 @@ router.get('/pipeline/summary', async (req, res) => {
 });
 
 // ── POST /bulk — bulk import prospects from CSV ───────────────────────────────
-// Body: { prospects: [{ firstName, lastName, email, title, companyName, ... }] }
-// Returns: { imported, skipped, errors: [{ row, reason }] }
+// Body: {
+//   prospects: [{ firstName, lastName, email, title, companyName, linkedinUrl, ... }],
+//   source?: string,
+//   campaignId?: int,
+//   mode?: 'insert' | 'upsert' | 'update_by_id'   // default 'insert'
+//   matchField?: 'linkedin_url'     // upsert match key (only linkedin_url supported)
+// }
+//
+// mode='insert' (default, legacy behavior):
+//   Insert-only. Rows whose email already exists are skipped.
+//
+// mode='upsert':
+//   Match each row to an existing live prospect by LinkedIn URL slug
+//   (org-scoped). On match → UPDATE the mapped fields in place (this is the
+//   "re-import to fix bad data" path). On no match → INSERT as new.
+//   Email is NOT used for matching here (it may be the very field being
+//   corrected), and the email-duplicate skip is bypassed in this mode.
+//
+// mode='update_by_id':
+//   Match each row to a live prospect by its exported `id` (the immutable
+//   primary key). Verifies the row's read-only `do_not_edit_check` echo
+//   against the live record before applying — a mismatch flags the row
+//   (misaligned or changed-since-export) rather than updating blindly.
+//   Updates only mapped, non-empty fields. Never inserts: an id with no
+//   live match is an error, not a new prospect.
+//
+// Returns: { imported, updated, skipped, errors: [{ row, reason }] }
 router.post('/bulk', async (req, res) => {
   try {
-    const { prospects: rows, source = 'csv_import', campaignId = null } = req.body;
+    const { prospects: rows, source = 'csv_import', campaignId = null,
+            mode = 'insert', matchField = 'linkedin_url' } = req.body;
+    const isUpsert     = mode === 'upsert';
+    const isUpdateById = mode === 'update_by_id';
 
     if (!Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({ error: { message: 'prospects array is required and must not be empty' } });
@@ -267,9 +295,55 @@ router.post('/bulk', async (req, res) => {
       return res.status(400).json({ error: { message: 'Maximum 500 prospects per import' } });
     }
 
+    if (isUpsert && matchField !== 'linkedin_url') {
+      return res.status(400).json({ error: { message: 'Only matchField="linkedin_url" is supported for upsert' } });
+    }
+
     let imported = 0;
+    let updated  = 0;
     let skipped  = 0;
     const errors = [];
+
+    // Slug extractor — mirrors the by-linkedin-url lookup so matching is
+    // robust to www/https/trailing-slash/query-param variance.
+    const slugOf = (u) => {
+      if (!u) return null;
+      const m = String(u).match(/\/in\/([^/?#]+)/);
+      return m ? m[1].toLowerCase() : null;
+    };
+
+    // Build the SET clause for an in-place UPDATE from a CSV row. Only
+    // mapped, non-empty cells are written, so blank cells never clobber
+    // existing data. Returns { sets, vals } with positional params starting
+    // at $1. Shared by upsert and update_by_id.
+    const buildFieldSet = (row) => {
+      const sets = [];
+      const vals = [];
+      let n = 1;
+      const setIf = (col, val) => {
+        if (val !== undefined && val !== null && String(val).trim() !== '') {
+          sets.push(`${col} = $${n++}`);
+          vals.push(val);
+        }
+      };
+      setIf('first_name',        row.firstName);
+      setIf('last_name',         row.lastName);
+      setIf('email',             row.email);
+      setIf('phone',             row.phone);
+      setIf('title',             row.title);
+      setIf('location',          row.location);
+      setIf('linkedin_url',      row.linkedinUrl);
+      setIf('company_name',      row.companyName);
+      setIf('company_industry',  row.companyIndustry);
+      setIf('company_size',      row.companySize);
+      setIf('preferred_channel', row.preferredChannel);
+      return { sets, vals, nextIdx: n };
+    };
+
+    // Normalize an echo string for tolerant comparison (collapse whitespace,
+    // lowercase). Must match the export's echo format:
+    //   "First Last · Company"
+    const normEcho = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
     // Resolve default prospecting playbook once for the whole import
     const defaultPbResult = await db.query(
@@ -298,7 +372,132 @@ router.post('/bulk', async (req, res) => {
       const row = rows[i];
       const rowNum = i + 1;
 
-      // Required fields
+      // ── Update-by-ID mode: match by exported primary key, verify echo ─────
+      if (isUpdateById) {
+        const id = parseInt(row.id, 10);
+        if (!Number.isFinite(id)) {
+          errors.push({ row: rowNum, reason: 'Missing or invalid id — required for update-by-ID' });
+          skipped++;
+          continue;
+        }
+        try {
+          const match = await db.query(
+            `SELECT id, first_name, last_name, company_name
+               FROM prospects
+              WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+            [id, req.orgId]
+          );
+          if (match.rows.length === 0) {
+            errors.push({ row: rowNum, reason: `No live prospect with id ${id} in this org` });
+            skipped++;
+            continue;
+          }
+
+          // Echo verification — recompute the identity snapshot from the LIVE
+          // record and compare to the row's read-only do_not_edit_check. A
+          // mismatch means the row is misaligned or the record changed since
+          // export; flag rather than update blindly.
+          const liveEcho = `${match.rows[0].first_name || ''} ${match.rows[0].last_name || ''} · ${match.rows[0].company_name || ''}`;
+          const rowEcho  = row.verifyCheck;
+          if (rowEcho === undefined || rowEcho === null || String(rowEcho).trim() === '') {
+            errors.push({ row: rowNum, reason: 'Missing do_not_edit_check value — cannot verify row' });
+            skipped++;
+            continue;
+          }
+          if (normEcho(rowEcho) !== normEcho(liveEcho)) {
+            errors.push({ row: rowNum, reason: `Verification failed for id ${id} (row may be misaligned, or the record changed since export)` });
+            skipped++;
+            continue;
+          }
+
+          const { sets, vals, nextIdx } = buildFieldSet(row);
+          if (sets.length === 0) {
+            errors.push({ row: rowNum, reason: `id ${id} matched but no updatable fields provided` });
+            skipped++;
+            continue;
+          }
+          let n = nextIdx;
+          sets.push('updated_at = CURRENT_TIMESTAMP');
+          vals.push(id, req.orgId);
+          await db.query(
+            `UPDATE prospects SET ${sets.join(', ')}
+              WHERE id = $${n++} AND org_id = $${n}`,
+            vals
+          );
+          updated++;
+          continue;
+        } catch (idErr) {
+          console.error(`Bulk update-by-id row ${rowNum} error:`, idErr.message);
+          errors.push({ row: rowNum, reason: idErr.message });
+          skipped++;
+          continue;
+        }
+      }
+
+      // ── Upsert mode: match by LinkedIn slug, UPDATE in place if found ──────
+      if (isUpsert) {
+        const slug = slugOf(row.linkedinUrl);
+        if (!slug) {
+          errors.push({ row: rowNum, reason: 'Upsert requires a LinkedIn URL to match on' });
+          skipped++;
+          continue;
+        }
+        try {
+          const match = await db.query(
+            `SELECT id FROM prospects
+              WHERE org_id = $1
+                AND LOWER(REGEXP_REPLACE(linkedin_url, '.*/in/([^/?#]+).*', '\\1')) = $2
+                AND linkedin_url IS NOT NULL
+                AND deleted_at IS NULL`,
+            [req.orgId, slug]
+          );
+
+          if (match.rows.length === 0) {
+            // No existing prospect → fall through to the INSERT path below by
+            // NOT continuing. But insert needs first/last name.
+            if (!row.firstName || !row.lastName) {
+              errors.push({ row: rowNum, reason: `No match for LinkedIn "${slug}" and firstName/lastName missing to insert` });
+              skipped++;
+              continue;
+            }
+            // (falls through to shared INSERT block)
+          } else if (match.rows.length > 1) {
+            errors.push({ row: rowNum, reason: `Ambiguous: ${match.rows.length} live prospects share LinkedIn "${slug}" — skipped for safety` });
+            skipped++;
+            continue;
+          } else {
+            // Exactly one match → UPDATE only the fields the CSV actually
+            // provided. Undefined/empty cells never overwrite existing data,
+            // so a narrow "fix the email" CSV touches only email.
+            const id = match.rows[0].id;
+            const { sets, vals, nextIdx } = buildFieldSet(row);
+
+            if (sets.length === 0) {
+              errors.push({ row: rowNum, reason: 'Matched but no updatable fields provided' });
+              skipped++;
+              continue;
+            }
+
+            let n = nextIdx;
+            sets.push('updated_at = CURRENT_TIMESTAMP');
+            vals.push(id, req.orgId);
+            await db.query(
+              `UPDATE prospects SET ${sets.join(', ')}
+                WHERE id = $${n++} AND org_id = $${n}`,
+              vals
+            );
+            updated++;
+            continue;
+          }
+        } catch (uErr) {
+          console.error(`Bulk upsert row ${rowNum} match error:`, uErr.message);
+          errors.push({ row: rowNum, reason: uErr.message });
+          skipped++;
+          continue;
+        }
+      }
+
+      // Required fields (insert path)
       if (!row.firstName || !row.lastName) {
         errors.push({ row: rowNum, reason: 'firstName and lastName are required' });
         skipped++;
@@ -306,8 +505,9 @@ router.post('/bulk', async (req, res) => {
       }
 
       try {
-        // Duplicate check by email
-        if (row.email) {
+        // Duplicate check by email — skipped in upsert mode (email may be the
+        // field being corrected, and matching already happened by LinkedIn).
+        if (!isUpsert && row.email) {
           const dup = await db.query(
             `SELECT id FROM prospects
              WHERE org_id = $1 AND LOWER(email) = LOWER($2) AND deleted_at IS NULL`,
@@ -415,17 +615,93 @@ router.post('/bulk', async (req, res) => {
       );
     }
 
-    console.log(`📥 Bulk import: ${imported} imported, ${skipped} skipped (org ${req.orgId})`);
+    console.log(`📥 Bulk import (${mode}): ${imported} inserted, ${updated} updated, ${skipped} skipped (org ${req.orgId})`);
 
+    const parts = [];
+    if (imported) parts.push(`imported ${imported}`);
+    if (updated)  parts.push(`updated ${updated}`);
+    if (skipped)  parts.push(`skipped ${skipped}`);
     res.status(201).json({
       imported,
+      updated,
       skipped,
       errors: errors.length > 0 ? errors : undefined,
-      message: `Imported ${imported} prospect${imported !== 1 ? 's' : ''}${skipped > 0 ? `, skipped ${skipped}` : ''}.`,
+      message: parts.length
+        ? `Done — ${parts.join(', ')}.`
+        : 'No rows processed.',
     });
   } catch (error) {
     console.error('Bulk import error:', error);
     res.status(500).json({ error: { message: 'Bulk import failed: ' + error.message } });
+  }
+});
+
+// ── GET /export.csv — export prospects as an editable CSV ─────────────────────
+// Used by the "export → edit → re-import (update by ID)" round-trip. Emits a
+// stable `id` (the immutable match key), a read-only `do_not_edit_check` echo
+// column (used by the importer to detect row misalignment / stale records),
+// then the full editable field set. Optional filters: ?campaignId= and ?ids=.
+// Must be defined BEFORE /:id routes.
+router.get('/export.csv', async (req, res) => {
+  try {
+    const { campaignId, ids } = req.query;
+
+    const where = ['p.org_id = $1', 'p.deleted_at IS NULL'];
+    const params = [req.orgId];
+    let n = 2;
+    if (campaignId) { where.push(`p.campaign_id = $${n++}`); params.push(parseInt(campaignId, 10)); }
+    if (ids) {
+      const idList = String(ids).split(',').map(s => parseInt(s.trim(), 10)).filter(Number.isFinite);
+      if (idList.length) { where.push(`p.id = ANY($${n++}::int[])`); params.push(idList); }
+    }
+
+    const result = await db.query(
+      `SELECT p.id, p.first_name, p.last_name, p.email, p.phone, p.title,
+              p.company_name, p.company_industry, p.company_size,
+              p.linkedin_url, p.location, p.preferred_channel
+         FROM prospects p
+        WHERE ${where.join(' AND ')}
+        ORDER BY p.id ASC`,
+      params
+    );
+
+    // CSV cell escaper — quote when the value contains comma, quote, or newline.
+    const esc = (v) => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    // Read-only echo: snapshot of identity at export time. The importer
+    // recomputes this from the live record and compares, flagging any row
+    // where it no longer matches.
+    const echo = (r) => `${r.first_name || ''} ${r.last_name || ''} · ${r.company_name || ''}`.trim();
+
+    // Header keys are chosen to auto-map cleanly on re-import.
+    const headers = [
+      'id', 'do_not_edit_check',
+      'firstName', 'lastName', 'email', 'phone', 'title',
+      'companyName', 'companyIndustry', 'companySize',
+      'linkedinUrl', 'location', 'preferredChannel',
+    ];
+    const lines = [headers.join(',')];
+    for (const r of result.rows) {
+      lines.push([
+        r.id, echo(r),
+        r.first_name, r.last_name, r.email, r.phone, r.title,
+        r.company_name, r.company_industry, r.company_size,
+        r.linkedin_url, r.location, r.preferred_channel,
+      ].map(esc).join(','));
+    }
+    // Prepend a UTF-8 BOM so Excel opens it with correct encoding.
+    const csv = '\uFEFF' + lines.join('\r\n');
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="prospects-${stamp}.csv"`);
+    res.send(csv);
+  } catch (error) {
+    console.error('Prospect export error:', error);
+    res.status(500).json({ error: { message: 'Export failed' } });
   }
 });
 

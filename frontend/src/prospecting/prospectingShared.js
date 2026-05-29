@@ -125,6 +125,33 @@ export function apiFetch(path, options = {}, _isRetry = false) {
   });
 }
 
+/**
+ * Authenticated CSV download. apiFetch always JSON-parses, so it can't be
+ * used for file responses — this fetches with the bearer token, reads the
+ * body as text, and triggers a client-side download via a Blob URL.
+ * `path` is an API path like '/prospects/export.csv?campaignId=12'.
+ */
+export async function downloadCsv(path, filename = 'export.csv') {
+  const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const r = await fetch(`${API}${path}`, {
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  });
+  if (!r.ok) {
+    let msg = r.statusText;
+    try { msg = (await r.json())?.error?.message || msg; } catch (_) {}
+    throw new Error(msg);
+  }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export function formatDate(d) {
   if (!d) return '—';
   return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
