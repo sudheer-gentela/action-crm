@@ -146,7 +146,7 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
       setResult({ imported: 0, errors: [{ row: 0, message: err.message }] });
       setStep('result');
     }
-  }, [mappedRows, onImport]);
+  }, [mappedRows, onImport, mode]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
