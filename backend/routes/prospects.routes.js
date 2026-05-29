@@ -455,10 +455,14 @@ router.get('/by-linkedin-url', async (req, res) => {
       `SELECT p.*,
               acc.name  AS account_name,
               u.first_name AS owner_first_name,
-              u.last_name  AS owner_last_name
+              u.last_name  AS owner_last_name,
+              camp.name AS campaign_name,
+              camp.status AS campaign_status
        FROM prospects p
        LEFT JOIN accounts acc ON p.account_id = acc.id
        LEFT JOIN users    u   ON p.owner_id   = u.id
+       LEFT JOIN prospecting_campaigns camp
+              ON camp.id = p.campaign_id AND camp.org_id = p.org_id
        WHERE p.org_id = $1
          AND LOWER(REGEXP_REPLACE(p.linkedin_url, '.*/in/([^/?#]+).*', '\\1')) = $2
          AND p.linkedin_url IS NOT NULL
@@ -481,11 +485,36 @@ router.get('/by-linkedin-url', async (req, res) => {
     );
     const pendingDrafts = parseInt(draftsResult.rows[0].count);
 
+    // ── Active sequence enrollments (for extension "Sequence ·" strip and the
+    //    smart-suggest "already enrolled?" check). One row per active
+    //    (sequence_id, prospect_id). Ordered newest-first so the strip's
+    //    "first two by name" stays stable. ──────────────────────────────────
+    const seqResult = await db.query(
+      `SELECT s.id, s.name
+         FROM sequence_enrollments se
+         JOIN sequences s ON s.id = se.sequence_id
+        WHERE se.prospect_id = $1
+          AND se.org_id = $2
+          AND se.status = 'active'
+        ORDER BY se.enrolled_at DESC NULLS LAST, s.id DESC`,
+      [row.id, req.orgId]
+    );
+    const activeSequences   = seqResult.rows.map(r => ({ id: r.id, name: r.name }));
+    const activeSequenceIds = activeSequences.map(s => s.id);
+
     res.json({
       prospect: {
         ...row,
         account:       row.account_id ? { id: row.account_id, name: row.account_name } : null,
         owner:         { first_name: row.owner_first_name, last_name: row.owner_last_name },
+        // Campaign as an { id, name } object — the extension reads
+        // prospect.campaign.name for the "Campaign ·" strip and
+        // prospect.campaign_id for the smart-suggest default match.
+        campaign:      row.campaign_id ? { id: row.campaign_id, name: row.campaign_name, status: row.campaign_status } : null,
+        // Active sequence enrollments — extension reads activeSequences (for
+        // the names strip) and activeSequenceIds (for the default-match check).
+        activeSequences,
+        activeSequenceIds,
         pendingDrafts, // ← consumed by extension badge
       },
     });
