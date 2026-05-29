@@ -401,6 +401,8 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
   // The filter is sent to the API so the server doesn't return data for
   // channels we won't display.
   const [channelFilter, setChannelFilter] = useState(null);
+  // Default sequence's ai_enabled — loaded alongside campaign data below.
+  const [seqAiEnabled, setSeqAiEnabled] = useState(true);
 
   const load = useCallback(async (chFilter) => {
     setLoading(true);
@@ -408,6 +410,17 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
       const qs = chFilter ? `?channel=${chFilter}` : '';
       const r = await apiFetch(`/prospecting-campaigns/${campaignId}${qs}`);
       setData(r);
+      // Whether the campaign's default sequence uses AI — drives visibility of
+      // the AI skill config and the activate-time personalization toggle.
+      // Defaults to true (and on any fetch failure) to preserve prior behavior.
+      if (r?.campaign?.default_sequence_id) {
+        try {
+          const seq = await apiFetch(`/sequences/${r.campaign.default_sequence_id}`);
+          setSeqAiEnabled(seq?.sequence?.ai_enabled !== false);
+        } catch (_) { setSeqAiEnabled(true); }
+      } else {
+        setSeqAiEnabled(true);
+      }
       // Member preview — up to 10, via the prospects list scoped by campaign.
       const pr = await apiFetch(`/prospects?scope=org&campaignId=${campaignId}`);
       setMembers((pr.prospects || []).slice(0, 10));
@@ -861,7 +874,12 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
                 Editable by org owner/admin OR by the campaign's owner / creator.
                 The panel's GET /:id/config response also includes a server-side
                 `can_edit` boolean that the panel prefers — this prop is the
-                initial-render hint, with the server truth winning on load. */}
+                initial-render hint, with the server truth winning on load.
+
+                Hidden entirely when the default sequence has AI off — this panel
+                only configures the AI skill (hooks, products, guardrails), which
+                a non-AI sequence never invokes. */}
+            {seqAiEnabled && (
             <CampaignConfigPanel
               campaignId={campaignId}
               canEdit={(() => {
@@ -879,6 +897,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
                 } catch (_) { return false; }
               })()}
             />
+            )}
           </div>
         )}
 
@@ -900,6 +919,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
           <BatchActivateModal
             campaign={data.campaign}
             readyCount={readyToActivate}
+            aiEnabled={seqAiEnabled}
             onClose={() => setShowBatchActivate(false)}
             onActivated={() => { setShowBatchActivate(false); load(channelFilter); onChanged?.(); }}
           />
@@ -923,6 +943,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
           <PreviewDraftsModal
             sequenceId={data.campaign.default_sequence_id}
             prospectIds={previewProspectIds}
+            runSkill={seqAiEnabled}
             onClose={() => setPreviewProspectIds([])}
           />
         )}

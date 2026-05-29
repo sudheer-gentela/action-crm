@@ -119,9 +119,9 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST /api/sequences  — body: { name, description, require_approval, steps: [{channel, delay_days, subject_template, body_template, task_note, require_approval}] }
+// POST /api/sequences  — body: { name, description, require_approval, ai_enabled, steps: [{channel, delay_days, subject_template, body_template, task_note, require_approval}] }
 router.post('/', async (req, res) => {
-  const { name, description, require_approval = true, personalize_config_default = null, steps = [] } = req.body;
+  const { name, description, require_approval = true, ai_enabled = true, personalize_config_default = null, steps = [] } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: { message: 'name is required' } });
 
   const client = await pool.connect();
@@ -129,9 +129,10 @@ router.post('/', async (req, res) => {
     await client.query('BEGIN');
 
     const seqRes = await client.query(
-      `INSERT INTO sequences (org_id, name, description, created_by, require_approval, personalize_config_default)
-            VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      `INSERT INTO sequences (org_id, name, description, created_by, require_approval, ai_enabled, personalize_config_default)
+            VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
       [req.orgId, name.trim(), description || null, req.user.userId, require_approval,
+       ai_enabled !== false,
        personalize_config_default ? JSON.stringify(personalize_config_default) : null]
     );
     const seq = seqRes.rows[0];
@@ -1399,7 +1400,7 @@ router.get('/:id', async (req, res) => {
 
 // PUT /api/sequences/:id
 router.put('/:id', async (req, res) => {
-  const { name, description, require_approval, personalize_config_default } = req.body;
+  const { name, description, require_approval, ai_enabled, personalize_config_default } = req.body;
   try {
     // personalize_config_default semantics:
     //   undefined → don't touch (COALESCE keeps existing)
@@ -1413,11 +1414,13 @@ router.put('/:id', async (req, res) => {
     const { rows } = await pool.query(
       `UPDATE sequences SET name=$1, description=$2,
         require_approval=COALESCE($3, require_approval),
-        personalize_config_default = CASE WHEN $4::boolean THEN $5::jsonb ELSE personalize_config_default END,
+        ai_enabled=COALESCE($4, ai_enabled),
+        personalize_config_default = CASE WHEN $5::boolean THEN $6::jsonb ELSE personalize_config_default END,
         updated_at=NOW()
-        WHERE id=$6 AND org_id=$7 RETURNING *`,
+        WHERE id=$7 AND org_id=$8 RETURNING *`,
       [name, description || null,
        require_approval !== undefined ? require_approval : null,
+       ai_enabled !== undefined ? ai_enabled : null,
        pcdProvided, pcdParam,
        req.params.id, req.orgId]
     );
@@ -2344,8 +2347,9 @@ router.get('/health', async (req, res) => {
 //   skill_runs rows. This keeps Preview consistent with what activation will
 //   actually do for the same toggle state.
 router.post('/:id/preview', async (req, res) => {
-  const { prospectIds, runSkill = true, skipPersonalisation } = req.body || {};
-  const wantSkill = runSkill !== false && skipPersonalisation !== true;
+  const { prospectIds, runSkill, skipPersonalisation } = req.body || {};
+  // wantSkill is computed AFTER we load the sequence, so it can default to the
+  // sequence's ai_enabled when the caller doesn't pass runSkill explicitly.
   if (!Array.isArray(prospectIds) || prospectIds.length === 0) {
     return res.status(400).json({ error: { message: 'prospectIds array is required' } });
   }
@@ -2358,13 +2362,18 @@ router.post('/:id/preview', async (req, res) => {
   try {
     // Sequence existence + org scope
     const seqRes = await pool.query(
-      `SELECT id, name FROM sequences WHERE id = $1 AND org_id = $2`,
+      `SELECT id, name, ai_enabled FROM sequences WHERE id = $1 AND org_id = $2`,
       [req.params.id, req.orgId]
     );
     if (!seqRes.rows.length) {
       return res.status(404).json({ error: { message: 'Sequence not found' } });
     }
     const sequence = seqRes.rows[0];
+
+    // AI gating: explicit body flag wins; otherwise default to the sequence's
+    // ai_enabled. skipPersonalisation is an explicit "force off" alias.
+    const effectiveRunSkill = runSkill === undefined ? sequence.ai_enabled !== false : runSkill;
+    const wantSkill = effectiveRunSkill !== false && skipPersonalisation !== true;
 
     // Validate prospects belong to this org
     const ids = prospectIds.map(x => parseInt(x, 10)).filter(Number.isFinite);

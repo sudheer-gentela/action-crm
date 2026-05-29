@@ -1697,13 +1697,16 @@ router.get('/:id/research-queue', async (req, res) => {
 //   }
 router.post('/:id/bulk-activate', async (req, res) => {
   try {
-    const { count, prospectIds, runSkill = true, skipPersonalisation, enrollAll = false } = req.body || {};
+    const { count, prospectIds, runSkill, skipPersonalisation, enrollAll = false } = req.body || {};
 
     // Validate campaign + ensure it has a default sequence to enroll into.
+    // Pull the default sequence's ai_enabled so runSkill can default to it.
     const campRes = await pool.query(
-      `SELECT id, default_sequence_id, name, owner_id
-         FROM prospecting_campaigns
-        WHERE id = $1 AND org_id = $2 AND status IN ('active', 'paused')`,
+      `SELECT c.id, c.default_sequence_id, c.name, c.owner_id,
+              s.ai_enabled AS sequence_ai_enabled
+         FROM prospecting_campaigns c
+    LEFT JOIN sequences s ON s.id = c.default_sequence_id
+        WHERE c.id = $1 AND c.org_id = $2 AND c.status IN ('active', 'paused')`,
       [req.params.id, req.orgId]
     );
     if (!campRes.rows.length) {
@@ -1870,7 +1873,8 @@ router.post('/:id/bulk-activate', async (req, res) => {
     // outreach-linkedin with the inferred step_intent. The dispatcher handles
     // any sequence shape — 3 steps or 8 steps, LinkedIn-first or email-first,
     // with breakups and tasks in any position.
-    const wantSkill = runSkill !== false && skipPersonalisation !== true;
+    const effectiveRunSkill = runSkill === undefined ? campaign.sequence_ai_enabled !== false : runSkill;
+    const wantSkill = effectiveRunSkill !== false && skipPersonalisation !== true;
     const enrollments = [];
     const skipped     = [];
     let slotIndex     = 0;

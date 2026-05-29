@@ -17,9 +17,11 @@
 import React, { useState, useEffect } from 'react';
 import { apiFetch } from './prospectingShared';
 
-export default function BatchActivateModal({ campaign, readyCount, onClose, onActivated }) {
+export default function BatchActivateModal({ campaign, readyCount, aiEnabled = true, onClose, onActivated }) {
   const [count,      setCount]      = useState(0);
-  const [runSkill,   setRunSkill]   = useState(true);
+  // runSkill defaults to the sequence's AI setting. When the sequence has AI
+  // off there's nothing to run, so the toggle is forced off and hidden.
+  const [runSkill,   setRunSkill]   = useState(aiEnabled !== false);
   // Default to enrolling everything — that's the workflow you said you want.
   // The slider in 'enrollAll' mode is read-only (showing readyCount) since
   // the count is implied by the toggle.
@@ -206,7 +208,8 @@ export default function BatchActivateModal({ campaign, readyCount, onClose, onAc
               {/* Schedule preview — shows what's about to happen, per day. */}
               <SchedulePreview preview={preview} loading={previewLoading} count={count} />
 
-              {/* Skill toggle */}
+              {/* Skill toggle — only relevant when the sequence uses AI */}
+              {aiEnabled && (
               <div className="pv-form-section">
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
                   <input
@@ -222,6 +225,7 @@ export default function BatchActivateModal({ campaign, readyCount, onClose, onAc
                   Generates first email + LinkedIn note from each prospect's signal. Adds ~5s per prospect.
                 </div>
               </div>
+              )}
 
               {error && (
                 <div style={{

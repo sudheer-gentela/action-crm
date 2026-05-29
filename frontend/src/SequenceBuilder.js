@@ -97,6 +97,12 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
   const [requireApproval, setRequireApproval] = useState(
     initialSequence?.require_approval !== undefined ? initialSequence.require_approval : true
   );
+  // Master switch: does this sequence use AI personalization at all? When off,
+  // all AI config below is hidden, steps are saved as plain templates, and
+  // preview/activate default to NOT calling any skill.
+  const [aiEnabled, setAiEnabled] = useState(
+    initialSequence?.ai_enabled !== undefined ? initialSequence.ai_enabled !== false : true
+  );
   const [steps, setSteps] = useState(
     (initialSequence?.steps || []).length > 0
       ? initialSequence.steps.map(s => ({
@@ -253,13 +259,19 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
     setSaving(true);
     setError('');
 
+    // When AI is off, every step is saved as a plain manual template and all
+    // AI metadata is cleared so the dispatcher has nothing to act on and the
+    // campaign screen sees a truly non-AI sequence.
     const stepsPayload = steps.map(s => ({
       ...s,
-      mode: s.mode,
+      mode: aiEnabled ? s.mode : 'manual',
+      personalize_config: aiEnabled ? s.personalize_config : null,
       // Slice 3: empty string from the dropdown means "Auto" — send null so the
       // DB column is NULL (the dispatcher's inference branch).
-      step_intent: s.step_intent && s.step_intent.length > 0 ? s.step_intent : null,
+      step_intent: aiEnabled && s.step_intent && s.step_intent.length > 0 ? s.step_intent : null,
     }));
+    // Sequence-level personalization default is meaningless with AI off.
+    const effectivePersonalizeDefault = aiEnabled ? personalizeConfigDefault : null;
 
     try {
       let saved;
@@ -270,7 +282,8 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             name,
             description: toneGoal,
             require_approval: requireApproval,
-            personalize_config_default: personalizeConfigDefault,
+            ai_enabled: aiEnabled,
+            personalize_config_default: effectivePersonalizeDefault,
           }),
         });
         const existingIds = (initialSequence.steps || []).map(s => s.id);
@@ -310,7 +323,8 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             name,
             description: toneGoal,
             require_approval: requireApproval,
-            personalize_config_default: personalizeConfigDefault,
+            ai_enabled: aiEnabled,
+            personalize_config_default: effectivePersonalizeDefault,
             steps: stepsPayload,
           }),
         });
@@ -378,7 +392,45 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
           />
         </div>
 
+        {/* Master AI toggle — gates all AI config on this screen */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 14px', borderRadius: 8,
+          background: aiEnabled ? TEAL_LIGHT : '#f9fafb',
+          border: `1px solid ${aiEnabled ? TEAL + '40' : '#e5e7eb'}`,
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>
+              ✨ Use AI personalization
+            </div>
+            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+              {aiEnabled
+                ? 'AI writes and personalizes steps per prospect. Skill calls consume API tokens.'
+                : 'Steps send their templates as-is. No AI, no token cost.'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAiEnabled(v => !v)}
+            style={{
+              position: 'relative', width: 40, height: 22, borderRadius: 11,
+              border: 'none', cursor: 'pointer', flexShrink: 0,
+              background: aiEnabled ? TEAL : '#d1d5db',
+              transition: 'background 0.2s',
+            }}
+          >
+            <span style={{
+              position: 'absolute', top: 3,
+              left: aiEnabled ? 21 : 3,
+              width: 16, height: 16, borderRadius: '50%',
+              background: '#fff', transition: 'left 0.2s',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+            }} />
+          </button>
+        </div>
+
         {/* Tone & Goal */}
+        {aiEnabled && (
         <div>
           <label style={labelStyle}>
             Tone & Goal
@@ -394,8 +446,10 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             style={{ ...inputStyle, width: '100%', resize: 'vertical', lineHeight: 1.6 }}
           />
         </div>
+        )}
 
         {/* Sequence-level LinkedIn personalization default */}
+        {aiEnabled && (
         <div>
           <PersonalizeConfigBlock
             value={personalizeConfigDefault}
@@ -430,6 +484,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             </div>
           )}
         </div>
+        )}
 
         {/* Draft approval setting */}
         <div style={{
@@ -473,10 +528,13 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#111827' }}>Steps</div>
-            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
-              {aiStepCount} AI · {steps.length - aiStepCount} Manual
-            </div>
+            {aiEnabled && (
+              <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
+                {aiStepCount} AI · {steps.length - aiStepCount} Manual
+              </div>
+            )}
           </div>
+          {aiEnabled && (
           <button
             onClick={handleGenerate}
             disabled={generating || aiStepCount === 0}
@@ -495,6 +553,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
               ? '⟳ Generating…'
               : `✨ Generate ${aiStepCount > 0 ? aiStepCount + ' ' : ''}AI Step${aiStepCount !== 1 ? 's' : ''}`}
           </button>
+          )}
         </div>
 
         {/* Success banner */}
@@ -516,6 +575,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
               step={step}
               index={idx}
               total={steps.length}
+              aiEnabled={aiEnabled}
               expanded={expandedStep === step._id}
               seqRequireApproval={requireApproval}
               seqPersonalizeDefault={personalizeConfigDefault}
@@ -559,16 +619,19 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
 // STEP CARD
 // ─────────────────────────────────────────────────────────────────────────────
 
-function StepCard({ step, index, total, expanded, seqRequireApproval, seqPersonalizeDefault, userPersonalizePref, onToggle, onChange, onRemove, onToggleMode, onMoveUp, onMoveDown }) {
+function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireApproval, seqPersonalizeDefault, userPersonalizePref, onToggle, onChange, onRemove, onToggleMode, onMoveUp, onMoveDown }) {
   const channelCfg = CHANNEL_OPTIONS.find(c => c.value === step.channel) || CHANNEL_OPTIONS[0];
-  const isAI       = step.mode === 'ai';
+  // When the sequence's master AI switch is off, every step behaves as a plain
+  // manual template regardless of its stored mode — and the AI affordances
+  // (mode pill, intent override, personalization) are hidden.
+  const isAI       = aiEnabled && step.mode === 'ai';
   const hasContent = channelCfg.hasContent;
 
   const isEmailChannel = step.channel === 'email';
 
   // Personalization is meaningful only on channels where the AI writes copy
-  // (email + linkedin). Call/task have no body to personalize.
-  const showPersonalize = step.channel === 'email' || step.channel === 'linkedin';
+  // (email + linkedin) AND only when AI is enabled for the sequence.
+  const showPersonalize = aiEnabled && (step.channel === 'email' || step.channel === 'linkedin');
 
   // What the step inherits when its own personalize_config is null:
   //   sequence default → user pref → null (which displays as SYSTEM_DEFAULT)
@@ -621,6 +684,7 @@ function StepCard({ step, index, total, expanded, seqRequireApproval, seqPersona
         )}
 
         <div style={{ display: 'flex', gap: 4, marginLeft: 'auto', alignItems: 'center' }}>
+          {aiEnabled && (
           <div
             onClick={e => { e.stopPropagation(); onToggleMode(); }}
             style={{
@@ -633,6 +697,7 @@ function StepCard({ step, index, total, expanded, seqRequireApproval, seqPersona
           >
             {isAI ? '✨ AI' : '✏️ Manual'}
           </div>
+          )}
           {index > 0 && (
             <button onClick={e => { e.stopPropagation(); onMoveUp(); }} style={iconBtn}>▲</button>
           )}
@@ -670,7 +735,7 @@ function StepCard({ step, index, total, expanded, seqRequireApproval, seqPersona
               based on channel + position + engagement history. Explicit
               picks bypass inference — useful for forcing a breakup or
               skipping straight to a post-accept DM. */}
-          {(step.channel === 'email' || step.channel === 'linkedin') && (
+          {aiEnabled && (step.channel === 'email' || step.channel === 'linkedin') && (
             <div>
               <label style={labelStyle}>
                 Step intent <span style={{ fontWeight: 400, color: '#9ca3af', fontSize: 10 }}>
