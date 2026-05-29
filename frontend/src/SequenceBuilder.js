@@ -430,23 +430,28 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
         </div>
 
         {/* Tone & Goal */}
-        {aiEnabled && (
+        {/* Description — doubles as the AI brief (Tone & Goal) when AI is on,
+            and as free-form sequence notes when AI is off. Always available so
+            non-AI sequences still have somewhere to capture context. */}
         <div>
           <label style={labelStyle}>
-            Tone & Goal
+            {aiEnabled ? 'Tone & Goal' : 'Notes'}
             <span style={{ marginLeft: 6, fontSize: 10, color: '#9ca3af', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>
-              — AI uses this to write all AI steps
+              {aiEnabled
+                ? '— AI uses this to write all AI steps'
+                : '— internal notes about this sequence (not sent to prospects)'}
             </span>
           </label>
           <textarea
             value={toneGoal}
             onChange={e => setToneGoal(e.target.value)}
-            placeholder="e.g. Professional but conversational. Targeting VP Finance at mid-market SaaS. Focus on cost savings and reducing manual reporting time."
+            placeholder={aiEnabled
+              ? 'e.g. Professional but conversational. Targeting VP Finance at mid-market SaaS. Focus on cost savings and reducing manual reporting time.'
+              : 'e.g. Pain-led outreach for VP Sales. Manual templates reviewed by RevOps. Use for Q3 dogfood test cohort.'}
             rows={3}
             style={{ ...inputStyle, width: '100%', resize: 'vertical', lineHeight: 1.6 }}
           />
         </div>
-        )}
 
         {/* Sequence-level LinkedIn personalization default */}
         {aiEnabled && (
