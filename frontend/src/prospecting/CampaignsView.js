@@ -460,11 +460,18 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
     }
   };
 
-  const handleImport = async (rows) => {
-    // Reuse the bulk endpoint, scoped to this campaign.
+  const handleImport = async (rows, opts = {}) => {
+    // Reuse the bulk endpoint, scoped to this campaign. opts.moveExistingIds
+    // carries any existing prospects the user chose (in the conflicts step) to
+    // move into this campaign rather than skip.
     const res = await apiFetch('/prospects/bulk', {
       method: 'POST',
-      body: JSON.stringify({ prospects: rows, source: 'csv_import', campaignId }),
+      body: JSON.stringify({
+        prospects: rows,
+        source: 'csv_import',
+        campaignId,
+        ...(opts.moveExistingIds?.length ? { moveExistingIds: opts.moveExistingIds } : {}),
+      }),
     });
     await load(channelFilter);
     onChanged?.();
@@ -905,6 +912,12 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
           <CSVImportModal
             entity="prospects"
             onImport={handleImport}
+            campaignId={campaignId}
+            campaignName={data?.campaign?.name}
+            onPreflight={async (rows, cid) => apiFetch('/prospects/bulk-preflight', {
+              method: 'POST',
+              body: JSON.stringify({ prospects: rows, campaignId: cid }),
+            })}
             onClose={() => setShowImport(false)}
           />
         )}

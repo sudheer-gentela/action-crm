@@ -7,17 +7,22 @@ import { csvParse, IMPORT_FIELDS } from './csvUtils';
  * Props:
  *   entity      — 'accounts' | 'contacts' | 'deals' | 'prospects'
  *   onImport    — async (rows, opts) => { imported, updated, errors } — calls bulk API.
- *                 opts = { mode: 'insert' | 'upsert' }
+ *                 opts = { mode, moveExistingIds }
  *   onClose     — () => void
  *   accounts    — array of existing accounts (for name→id matching in contacts/deals)
  *   supportsUpsert    — when true, shows an "update existing" toggle on preview
  *   upsertMatchLabel  — human label for the match key (e.g. "LinkedIn URL")
+ *   campaignId        — when set, enables the conflicts step (already-in-campaign /
+ *                       already-in-sequence check) before import
+ *   campaignName      — display name of the target campaign
+ *   onPreflight       — async (rows, campaignId) => { rows:[...], summary } — calls
+ *                       /prospects/bulk-preflight. Required for the conflicts step.
  */
-export default function CSVImportModal({ entity, onImport, onClose, accounts = [], supportsUpsert = false, upsertMatchLabel = 'LinkedIn URL' }) {
+export default function CSVImportModal({ entity, onImport, onClose, accounts = [], supportsUpsert = false, upsertMatchLabel = 'LinkedIn URL', campaignId = null, campaignName = '', onPreflight = null }) {
   const fields = useMemo(() => IMPORT_FIELDS[entity] || [], [entity]);
   const entityLabel = entity.charAt(0).toUpperCase() + entity.slice(1);
 
-  // Steps: 'upload' → 'mapping' → 'preview' → 'importing' → 'result'
+  // Steps: 'upload' → 'mapping' → 'preview' → ['conflicts'] → 'importing' → 'result'
   const [step, setStep] = useState('upload');
   const [fileName, setFileName] = useState('');
   const [csvHeaders, setCsvHeaders] = useState([]);
@@ -28,6 +33,14 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
   const [result, setResult] = useState(null);        // { imported, updated, errors }
   // 'insert' = add new only; 'upsert' = update existing matches by the match key.
   const [mode, setMode] = useState('insert');
+  // Conflicts step state.
+  const [preflight, setPreflight] = useState(null);      // { rows, summary } from API
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [decisions, setDecisions] = useState({});        // existingId → 'skip' | 'move'
+
+  // Whether the conflicts step applies: targeting a campaign, in insert mode,
+  // with a preflight function available.
+  const conflictsEnabled = !!campaignId && !!onPreflight && mode === 'insert';
 
   const fileRef = useRef();
 
@@ -135,11 +148,11 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
     setStep('preview');
   }, [csvRows, mapping, fields, accounts]);
 
-  // ── Step 3: Import ────────────────────────────────────────────────────────
-  const handleImport = useCallback(async () => {
+  // ── Step 4: Import ────────────────────────────────────────────────────────
+  const doImport = useCallback(async (opts) => {
     setStep('importing');
     try {
-      const res = await onImport(mappedRows, { mode });
+      const res = await onImport(mappedRows, { mode, ...opts });
       setResult(res);
       setStep('result');
     } catch (err) {
@@ -147,6 +160,49 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
       setStep('result');
     }
   }, [mappedRows, onImport, mode]);
+
+  // ── Optional Step 3.5: Conflicts preflight ───────────────────────────────
+  // Runs when leaving preview if a campaign is targeted. Classifies each row
+  // and lands on the conflicts step if any rows already exist in another
+  // campaign or active sequence; otherwise proceeds straight to import.
+  const runPreflight = useCallback(async () => {
+    setPreflightLoading(true);
+    try {
+      const pf = await onPreflight(mappedRows, campaignId);
+      setPreflight(pf);
+      const conflictRows = (pf?.rows || []).filter(
+        r => r.status === 'in_other_campaign' || (r.activeSequences && r.activeSequences.length > 0)
+      );
+      if (conflictRows.length === 0) {
+        // Nothing to decide — go import.
+        return doImport({});
+      }
+      // Default every conflict to "skip" (safe); user can flip to "move".
+      const initial = {};
+      for (const r of conflictRows) if (r.existingId) initial[r.existingId] = 'skip';
+      setDecisions(initial);
+      setStep('conflicts');
+    } catch (err) {
+      // Preflight failure shouldn't block import — fall back to plain import.
+      console.error('preflight failed, importing without conflict check:', err);
+      return doImport({});
+    } finally {
+      setPreflightLoading(false);
+    }
+  }, [mappedRows, campaignId, onPreflight, doImport]);
+
+  const handleImport = useCallback(() => {
+    if (conflictsEnabled) return runPreflight();
+    return doImport({});
+  }, [conflictsEnabled, runPreflight, doImport]);
+
+  // Confirm from the conflicts step: collect ids marked 'move'.
+  const confirmConflicts = useCallback(() => {
+    const moveExistingIds = Object.entries(decisions)
+      .filter(([, d]) => d === 'move')
+      .map(([id]) => parseInt(id, 10));
+    return doImport({ moveExistingIds });
+  }, [decisions, doImport]);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -169,7 +225,9 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
         <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
           {['Upload', 'Map Columns', 'Preview', 'Import'].map((s, i) => {
             const stepKeys = ['upload', 'mapping', 'preview', 'importing'];
-            const current = stepKeys.indexOf(step === 'result' ? 'importing' : step);
+            // 'conflicts' sits between preview and importing — show it as Preview-complete.
+            const effStep = step === 'result' ? 'importing' : (step === 'conflicts' ? 'preview' : step);
+            const current = stepKeys.indexOf(effStep);
             const active = i <= current;
             return (
               <div key={s} style={{
@@ -356,25 +414,108 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
                 const upsertBlocked = supportsUpsert && mode === 'upsert' && mapping['linkedinUrl'] === undefined;
                 const byIdBlocked   = supportsUpsert && mode === 'update_by_id' && (mapping['id'] === undefined || mapping['verifyCheck'] === undefined);
                 const blocked = mappedRows.length === 0 || upsertBlocked || byIdBlocked;
-                const label = mode === 'insert' ? 'Import' : 'Update / add';
+                const label = conflictsEnabled
+                  ? (preflightLoading ? 'Checking…' : 'Check & continue')
+                  : (mode === 'insert' ? 'Import' : 'Update / add');
                 return (
                   <button
                     onClick={handleImport}
-                    disabled={blocked}
+                    disabled={blocked || preflightLoading}
                     style={{
                       padding: '8px 24px', borderRadius: 8, border: 'none',
-                      background: blocked ? '#d1d5db' : '#16a34a',
+                      background: (blocked || preflightLoading) ? '#d1d5db' : '#16a34a',
                       color: '#fff', fontSize: 13, fontWeight: 600,
-                      cursor: blocked ? 'default' : 'pointer',
+                      cursor: (blocked || preflightLoading) ? 'default' : 'pointer',
                     }}
                   >
-                    {label} {mappedRows.length} {entityLabel} →
+                    {label}{conflictsEnabled ? '' : ` ${mappedRows.length} ${entityLabel}`} →
                   </button>
                 );
               })()}
             </div>
           </div>
         )}
+
+        {/* ── STEP: Conflicts (already in another campaign / sequence) ── */}
+        {step === 'conflicts' && preflight && (() => {
+          const rows = preflight.rows || [];
+          const conflicts = rows.filter(r => r.status === 'in_other_campaign' || (r.activeSequences && r.activeSequences.length > 0));
+          const newCount = rows.filter(r => r.status === 'new').length;
+          const inThis   = rows.filter(r => r.status === 'in_this_campaign').length;
+          const moveCount = Object.values(decisions).filter(d => d === 'move').length;
+          return (
+            <div>
+              <div style={{ marginBottom: 14, fontSize: 13, color: '#374151' }}>
+                <strong>{conflicts.length}</strong> of {rows.length} already belong to another campaign or an active sequence.
+                Decide per contact. <span style={{ color: '#6b7280' }}>{newCount} new will be added{inThis ? `, ${inThis} already in this campaign (skipped)` : ''}.</span>
+              </div>
+
+              <div style={{ maxHeight: 340, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 8 }}>
+                {conflicts.map((r) => {
+                  const d = decisions[r.existingId] || 'skip';
+                  return (
+                    <div key={r.existingId || r.index} style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '10px 12px', borderBottom: '1px solid #f1f5f9',
+                    }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{r.name || `Row ${r.index + 1}`}</div>
+                        <div style={{ fontSize: 11.5, color: '#6b7280', marginTop: 2 }}>
+                          {r.currentCampaign && <span>In campaign: <strong style={{ color: '#c2410c' }}>{r.currentCampaign.name}</strong>. </span>}
+                          {r.activeSequences && r.activeSequences.length > 0 && (
+                            <span>In sequence{r.activeSequences.length > 1 ? 's' : ''}: <strong style={{ color: '#7c3aed' }}>{r.activeSequences.map(s => s.name).join(', ')}</strong>.</span>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                        <button
+                          onClick={() => setDecisions(prev => ({ ...prev, [r.existingId]: 'skip' }))}
+                          style={{
+                            padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                            border: d === 'skip' ? '1px solid #94a3b8' : '1px solid #e5e7eb',
+                            background: d === 'skip' ? '#f1f5f9' : '#fff', color: '#334155',
+                          }}
+                        >Skip</button>
+                        <button
+                          onClick={() => setDecisions(prev => ({ ...prev, [r.existingId]: 'move' }))}
+                          style={{
+                            padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                            border: d === 'move' ? '1px solid #0F9D8E' : '1px solid #e5e7eb',
+                            background: d === 'move' ? '#ecfdf5' : '#fff', color: d === 'move' ? '#065f46' : '#334155',
+                          }}
+                        >Move here</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, marginTop: 12, fontSize: 12 }}>
+                <button onClick={() => { const all = {}; conflicts.forEach(r => { if (r.existingId) all[r.existingId] = 'skip'; }); setDecisions(all); }}
+                  style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer' }}>
+                  Skip all
+                </button>
+                <button onClick={() => { const all = {}; conflicts.forEach(r => { if (r.existingId) all[r.existingId] = 'move'; }); setDecisions(all); }}
+                  style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer' }}>
+                  Move all here
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 18 }}>
+                <button onClick={() => setStep('preview')} style={{
+                  padding: '8px 20px', borderRadius: 8, border: '1px solid #d1d5db',
+                  background: '#fff', fontSize: 13, cursor: 'pointer',
+                }}>← Back</button>
+                <button onClick={confirmConflicts} style={{
+                  padding: '8px 24px', borderRadius: 8, border: 'none',
+                  background: '#16a34a', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+                }}>
+                  Import {newCount} new{moveCount ? ` · move ${moveCount}` : ''} →
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ── STEP: Importing ──────────────────────────────────── */}
         {step === 'importing' && (
@@ -388,13 +529,14 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
         {step === 'result' && result && (
           <div style={{ textAlign: 'center', padding: '30px 0' }}>
             <div style={{ fontSize: 48, marginBottom: 12 }}>
-              {(result.imported > 0 || result.updated > 0) ? '✅' : '⚠️'}
+              {(result.imported > 0 || result.updated > 0 || result.moved > 0) ? '✅' : '⚠️'}
             </div>
             <h3 style={{ marginBottom: 8 }}>
-              {(result.imported > 0 || result.updated > 0)
+              {(result.imported > 0 || result.updated > 0 || result.moved > 0)
                 ? [
                     result.imported ? `Added ${result.imported}` : null,
                     result.updated  ? `Updated ${result.updated}` : null,
+                    result.moved    ? `Moved ${result.moved}` : null,
                   ].filter(Boolean).join(' · ') + ` ${entity}`
                 : 'Import completed with issues'}
             </h3>

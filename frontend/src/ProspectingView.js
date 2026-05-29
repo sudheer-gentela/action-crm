@@ -187,6 +187,37 @@ export default function ProspectingView() {
     });
   };
 
+  // Remove the selected prospects from the campaign currently in view. Only
+  // available when a campaign filter is active. Changes campaign membership
+  // only — does NOT disqualify or change stage (unlike Discard).
+  const [removingCampaign, setRemovingCampaign] = useState(false);
+  const handleRemoveFromCampaign = async () => {
+    if (!campaignFilter || selectedIds.size === 0) return;
+    const ids = [...selectedIds];
+    const ok = window.confirm(
+      `Remove ${ids.length} prospect${ids.length === 1 ? '' : 's'} from "${campaignFilter.campaignName}"? ` +
+      `They stay in your prospect list and are not disqualified.`
+    );
+    if (!ok) return;
+    setRemovingCampaign(true);
+    try {
+      const res = await apiFetch('/prospects/bulk-campaign', {
+        method: 'POST',
+        body: JSON.stringify({ prospectIds: ids, campaignId: null }),
+      });
+      clearSelection();
+      fetchProspects();
+      if (res?.updated != null) {
+        // Light, non-blocking confirmation.
+        console.log(`Removed ${res.updated} from campaign`);
+      }
+    } catch (err) {
+      alert(`Could not remove from campaign: ${err.message}`);
+    } finally {
+      setRemovingCampaign(false);
+    }
+  };
+
   // Clear selection when the user switches views or changes the search query.
   // Prevents stale selections (prospect might be filtered out of the current
   // view) from lingering invisibly and confusing the rep.
@@ -707,6 +738,21 @@ export default function ProspectingView() {
           >
             📨 Enroll in sequence
           </button>
+          {campaignFilter && (
+            <button
+              onClick={handleRemoveFromCampaign}
+              disabled={removingCampaign}
+              title={`Remove selected from "${campaignFilter.campaignName}" (does not disqualify)`}
+              style={{
+                padding: '7px 14px', borderRadius: 7, border: '1px solid #fed7aa',
+                background: '#fff7ed', color: '#c2410c',
+                fontSize: 13, fontWeight: 600, cursor: removingCampaign ? 'default' : 'pointer',
+                opacity: removingCampaign ? 0.6 : 1,
+              }}
+            >
+              {removingCampaign ? '⟳ Removing…' : '↩ Remove from campaign'}
+            </button>
+          )}
           <button
             onClick={() => setShowBulkDiscardModal(true)}
             style={{

@@ -283,9 +283,15 @@ router.get('/pipeline/summary', async (req, res) => {
 router.post('/bulk', async (req, res) => {
   try {
     const { prospects: rows, source = 'csv_import', campaignId = null,
-            mode = 'insert', matchField = 'linkedin_url' } = req.body;
+            mode = 'insert', matchField = 'linkedin_url',
+            moveExistingIds = [] } = req.body;
     const isUpsert     = mode === 'upsert';
     const isUpdateById = mode === 'update_by_id';
+    // Ids the user explicitly chose (after preflight) to MOVE into this
+    // campaign rather than skip as a duplicate. Only meaningful with a
+    // campaignId target.
+    const moveSet = new Set((Array.isArray(moveExistingIds) ? moveExistingIds : []).map(x => parseInt(x, 10)));
+    let moved = 0;
 
     if (!Array.isArray(rows) || rows.length === 0) {
       return res.status(400).json({ error: { message: 'prospects array is required and must not be empty' } });
@@ -516,7 +522,7 @@ router.post('/bulk', async (req, res) => {
           const rowSlug = slugOf(row.linkedinUrl);
           if (rowSlug) {
             const dupLi = await db.query(
-              `SELECT id FROM prospects
+              `SELECT id, campaign_id FROM prospects
                 WHERE org_id = $1
                   AND LOWER(REGEXP_REPLACE(linkedin_url, '.*/in/([^/?#]+).*', '\\1')) = $2
                   AND linkedin_url IS NOT NULL
@@ -524,6 +530,18 @@ router.post('/bulk', async (req, res) => {
               [req.orgId, rowSlug]
             );
             if (dupLi.rows.length > 0) {
+              const existingId = dupLi.rows[0].id;
+              // If the user reviewed conflicts and chose to MOVE this existing
+              // person into the target campaign, do that instead of skipping.
+              if (campaignId != null && moveSet.has(existingId)) {
+                await db.query(
+                  `UPDATE prospects SET campaign_id = $1, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = $2 AND org_id = $3 AND deleted_at IS NULL`,
+                  [parseInt(campaignId, 10), existingId, req.orgId]
+                );
+                moved++;
+                continue;
+              }
               errors.push({ row: rowNum, reason: `Already exists (LinkedIn: ${rowSlug}) — skipped` });
               skipped++;
               continue;
@@ -640,15 +658,17 @@ router.post('/bulk', async (req, res) => {
       );
     }
 
-    console.log(`📥 Bulk import (${mode}): ${imported} inserted, ${updated} updated, ${skipped} skipped (org ${req.orgId})`);
+    console.log(`📥 Bulk import (${mode}): ${imported} inserted, ${updated} updated, ${moved} moved, ${skipped} skipped (org ${req.orgId})`);
 
     const parts = [];
     if (imported) parts.push(`imported ${imported}`);
     if (updated)  parts.push(`updated ${updated}`);
+    if (moved)    parts.push(`moved ${moved}`);
     if (skipped)  parts.push(`skipped ${skipped}`);
     res.status(201).json({
       imported,
       updated,
+      moved,
       skipped,
       errors: errors.length > 0 ? errors : undefined,
       message: parts.length
@@ -1785,6 +1805,113 @@ router.post('/:id/stage', async (req, res) => {
   } catch (error) {
     console.error('Stage change error:', error);
     res.status(500).json({ error: { message: 'Failed to change stage' } });
+  }
+});
+
+// ── POST /bulk-preflight — classify CSV rows before importing ─────────────────
+// Read-only. Given the same rows you'd POST to /bulk (and the target
+// campaignId), returns a per-row classification so the UI can show conflicts
+// and let the user decide per-contact. Inserts nothing.
+//
+// Body: { prospects: [...], campaignId?: int }
+// Returns: { rows: [{ index, slug, name, status, existingId?, currentCampaign?,
+//                      activeSequences? }] }
+//   status ∈ 'new' | 'in_this_campaign' | 'in_other_campaign' | 'no_match_email_dupe'
+//   activeSequences: [{id,name}] present when the existing record is enrolled.
+// Must be defined BEFORE /:id routes.
+router.post('/bulk-preflight', async (req, res) => {
+  try {
+    const { prospects: rows, campaignId = null } = req.body || {};
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: { message: 'prospects array is required' } });
+    }
+    if (rows.length > 500) {
+      return res.status(400).json({ error: { message: 'Maximum 500 rows' } });
+    }
+
+    const slugOf = (u) => {
+      if (!u) return null;
+      const m = String(u).match(/\/in\/([^/?#]+)/);
+      return m ? m[1].toLowerCase() : null;
+    };
+    const targetCampaignId = campaignId != null ? parseInt(campaignId, 10) : null;
+
+    const out = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const name = `${row.firstName || ''} ${row.lastName || ''}`.trim();
+      const slug = slugOf(row.linkedinUrl);
+
+      // Resolve existing live prospect: by slug first, else by email.
+      let existing = null;
+      if (slug) {
+        const r = await db.query(
+          `SELECT p.id, p.campaign_id, c.name AS campaign_name
+             FROM prospects p
+             LEFT JOIN prospecting_campaigns c ON c.id = p.campaign_id AND c.org_id = p.org_id
+            WHERE p.org_id = $1
+              AND LOWER(REGEXP_REPLACE(p.linkedin_url, '.*/in/([^/?#]+).*', '\\1')) = $2
+              AND p.linkedin_url IS NOT NULL AND p.deleted_at IS NULL
+            LIMIT 1`,
+          [req.orgId, slug]
+        );
+        if (r.rows.length) existing = r.rows[0];
+      }
+      if (!existing && row.email) {
+        const r = await db.query(
+          `SELECT p.id, p.campaign_id, c.name AS campaign_name
+             FROM prospects p
+             LEFT JOIN prospecting_campaigns c ON c.id = p.campaign_id AND c.org_id = p.org_id
+            WHERE p.org_id = $1 AND LOWER(p.email) = LOWER($2) AND p.deleted_at IS NULL
+            LIMIT 1`,
+          [req.orgId, row.email]
+        );
+        if (r.rows.length) existing = r.rows[0];
+      }
+
+      if (!existing) {
+        out.push({ index: i, slug, name, status: 'new' });
+        continue;
+      }
+
+      // Active sequence enrollments for the existing record.
+      const seqR = await db.query(
+        `SELECT s.id, s.name
+           FROM sequence_enrollments se
+           JOIN sequences s ON s.id = se.sequence_id
+          WHERE se.prospect_id = $1 AND se.org_id = $2 AND se.status = 'active'`,
+        [existing.id, req.orgId]
+      );
+      const activeSequences = seqR.rows.map(r => ({ id: r.id, name: r.name }));
+
+      let status;
+      if (existing.campaign_id != null && targetCampaignId != null && existing.campaign_id === targetCampaignId) {
+        status = 'in_this_campaign';
+      } else if (existing.campaign_id != null) {
+        status = 'in_other_campaign';
+      } else {
+        // Exists but unassigned (or email-dupe with no campaign).
+        status = 'no_match_email_dupe';
+      }
+
+      out.push({
+        index: i,
+        slug,
+        name,
+        status,
+        existingId: existing.id,
+        currentCampaign: existing.campaign_id
+          ? { id: existing.campaign_id, name: existing.campaign_name }
+          : null,
+        activeSequences,
+      });
+    }
+
+    const summary = out.reduce((acc, r) => { acc[r.status] = (acc[r.status] || 0) + 1; return acc; }, {});
+    res.json({ rows: out, summary });
+  } catch (error) {
+    console.error('bulk-preflight error:', error);
+    res.status(500).json({ error: { message: 'Preflight failed: ' + error.message } });
   }
 });
 
