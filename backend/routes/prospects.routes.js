@@ -831,6 +831,98 @@ router.post('/duplicates/resolve', async (req, res) => {
   }
 });
 
+// ── POST /duplicates/restore-campaign — backfill campaign tag from deleted twin
+// After a dedup that kept the wrong copy w.r.t. campaign membership: for each
+// LIVE prospect that shares a LinkedIn slug with a recently SOFT-DELETED
+// prospect, copy campaign_id (and stage) from the deleted twin onto the live
+// survivor where the survivor is missing it. Reversible-friendly (only writes
+// campaign_id/stage; never un-deletes or deletes).
+//
+// Body: { dryRun?: boolean (default true), sinceMinutes?: int (default 120),
+//         overwrite?: boolean (default false) }
+//   overwrite=false → only fills when the live record's campaign_id IS NULL.
+//   overwrite=true  → also overwrites a non-null live campaign_id when it
+//                     differs from the deleted twin (use with care).
+// Must be defined BEFORE /:id routes.
+router.post('/duplicates/restore-campaign', async (req, res) => {
+  const { dryRun = true, sinceMinutes = 120, overwrite = false } = req.body || {};
+  const client = await (db.pool ? db.pool.connect() : db.connect());
+  try {
+    // Live survivors keyed by slug.
+    const live = await client.query(
+      `SELECT id, campaign_id, stage, first_name, last_name,
+              LOWER(REGEXP_REPLACE(linkedin_url, '.*/in/([^/?#]+).*', '\\1')) AS slug
+         FROM prospects
+        WHERE org_id = $1 AND deleted_at IS NULL AND linkedin_url IS NOT NULL`,
+      [req.orgId]
+    );
+    // Recently soft-deleted twins that HAD a campaign, keyed by slug. Newest
+    // deletion wins if multiple.
+    const dead = await client.query(
+      `SELECT DISTINCT ON (slug) id, campaign_id, stage, slug FROM (
+         SELECT id, campaign_id, stage, deleted_at,
+                LOWER(REGEXP_REPLACE(linkedin_url, '.*/in/([^/?#]+).*', '\\1')) AS slug
+           FROM prospects
+          WHERE org_id = $1
+            AND deleted_at IS NOT NULL
+            AND deleted_at >= NOW() - ($2 || ' minutes')::interval
+            AND linkedin_url IS NOT NULL
+            AND campaign_id IS NOT NULL
+       ) t
+       ORDER BY slug, deleted_at DESC`,
+      [req.orgId, String(parseInt(sinceMinutes, 10) || 120)]
+    );
+
+    const deadBySlug = {};
+    for (const d of dead.rows) deadBySlug[d.slug] = d;
+
+    const plan = [];
+    const updates = []; // { id, campaign_id, stage }
+    for (const l of live.rows) {
+      const twin = deadBySlug[l.slug];
+      if (!twin) continue;
+      const needsCampaign = overwrite
+        ? (l.campaign_id !== twin.campaign_id)
+        : (l.campaign_id == null && twin.campaign_id != null);
+      if (!needsCampaign) continue;
+      // Bring stage along only if the survivor is at the default 'target' (i.e.
+      // hasn't progressed on its own) and the twin had moved further.
+      const newStage = (l.stage === 'target' && twin.stage && twin.stage !== 'target') ? twin.stage : l.stage;
+      updates.push({ id: l.id, campaign_id: twin.campaign_id, stage: newStage });
+      plan.push({
+        slug: l.slug,
+        name: `${l.first_name || ''} ${l.last_name || ''}`.trim(),
+        liveId: l.id,
+        fromCampaign: l.campaign_id,
+        toCampaign: twin.campaign_id,
+        stage: newStage,
+      });
+    }
+
+    let updatedCount = 0;
+    if (!dryRun && updates.length > 0) {
+      await client.query('BEGIN');
+      for (const u of updates) {
+        const r = await client.query(
+          `UPDATE prospects SET campaign_id = $1, stage = $2, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $3 AND org_id = $4 AND deleted_at IS NULL`,
+          [u.campaign_id, u.stage, u.id, req.orgId]
+        );
+        updatedCount += r.rowCount;
+      }
+      await client.query('COMMIT');
+    }
+
+    res.json({ dryRun, matched: plan.length, updatedCount, plan });
+  } catch (error) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('restore-campaign error:', error);
+    res.status(500).json({ error: { message: 'restore-campaign failed: ' + error.message } });
+  } finally {
+    client.release();
+  }
+});
+
 // ── GET /export.csv — export prospects as an editable CSV ─────────────────────
 // Used by the "export → edit → re-import (update by ID)" round-trip. Emits a
 // stable `id` (the immutable match key), a read-only `do_not_edit_check` echo
