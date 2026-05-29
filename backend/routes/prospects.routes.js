@@ -505,18 +505,43 @@ router.post('/bulk', async (req, res) => {
       }
 
       try {
-        // Duplicate check by email — skipped in upsert mode (email may be the
-        // field being corrected, and matching already happened by LinkedIn).
-        if (!isUpsert && row.email) {
-          const dup = await db.query(
-            `SELECT id FROM prospects
-             WHERE org_id = $1 AND LOWER(email) = LOWER($2) AND deleted_at IS NULL`,
-            [req.orgId, row.email]
-          );
-          if (dup.rows.length > 0) {
-            errors.push({ row: rowNum, reason: `Duplicate email: ${row.email}` });
-            skipped++;
-            continue;
+        // Duplicate check — skipped in upsert mode (matching already happened
+        // by LinkedIn there, and email may be the field being corrected).
+        if (!isUpsert) {
+          // (a) LinkedIn slug: the strongest identity signal. If a live
+          // prospect already shares this row's LinkedIn URL, it's the same
+          // person — skip regardless of email. This is what prevents a
+          // re-add / double-import from creating duplicate people when the
+          // email is blank, changed, or wrong.
+          const rowSlug = slugOf(row.linkedinUrl);
+          if (rowSlug) {
+            const dupLi = await db.query(
+              `SELECT id FROM prospects
+                WHERE org_id = $1
+                  AND LOWER(REGEXP_REPLACE(linkedin_url, '.*/in/([^/?#]+).*', '\\1')) = $2
+                  AND linkedin_url IS NOT NULL
+                  AND deleted_at IS NULL`,
+              [req.orgId, rowSlug]
+            );
+            if (dupLi.rows.length > 0) {
+              errors.push({ row: rowNum, reason: `Already exists (LinkedIn: ${rowSlug}) — skipped` });
+              skipped++;
+              continue;
+            }
+          }
+
+          // (b) Email fallback: catches dupes for rows that have no LinkedIn URL.
+          if (row.email) {
+            const dup = await db.query(
+              `SELECT id FROM prospects
+               WHERE org_id = $1 AND LOWER(email) = LOWER($2) AND deleted_at IS NULL`,
+              [req.orgId, row.email]
+            );
+            if (dup.rows.length > 0) {
+              errors.push({ row: rowNum, reason: `Duplicate email: ${row.email}` });
+              skipped++;
+              continue;
+            }
           }
         }
 
@@ -633,6 +658,176 @@ router.post('/bulk', async (req, res) => {
   } catch (error) {
     console.error('Bulk import error:', error);
     res.status(500).json({ error: { message: 'Bulk import failed: ' + error.message } });
+  }
+});
+
+// ── GET /duplicates — read-only report of prospects sharing a LinkedIn slug ───
+// Groups live prospects by their normalized LinkedIn slug and returns every
+// group with 2+ members, so duplicates can be reviewed before cleanup. Does
+// NOT modify anything. Optional ?campaignId= to scope to one campaign.
+// Must be defined BEFORE /:id routes.
+router.get('/duplicates', async (req, res) => {
+  try {
+    const { campaignId } = req.query;
+    const where = [
+      'p.org_id = $1',
+      'p.deleted_at IS NULL',
+      'p.linkedin_url IS NOT NULL',
+    ];
+    const params = [req.orgId];
+    let n = 2;
+    if (campaignId) { where.push(`p.campaign_id = $${n++}`); params.push(parseInt(campaignId, 10)); }
+
+    // slug = lowercased /in/<slug> capture, matching the bulk importer.
+    const result = await db.query(
+      `WITH norm AS (
+         SELECT p.id, p.first_name, p.last_name, p.email, p.title,
+                p.company_name, p.campaign_id, p.stage, p.source,
+                p.linkedin_url, p.created_at, p.updated_at,
+                LOWER(REGEXP_REPLACE(p.linkedin_url, '.*/in/([^/?#]+).*', '\\1')) AS slug,
+                EXISTS (
+                  SELECT 1 FROM sequence_enrollments se
+                   WHERE se.prospect_id = p.id AND se.org_id = p.org_id
+                     AND se.status = 'active'
+                ) AS has_active_sequence
+           FROM prospects p
+          WHERE ${where.join(' AND ')}
+       ),
+       dup_slugs AS (
+         SELECT slug FROM norm GROUP BY slug HAVING COUNT(*) > 1
+       )
+       SELECT n.* FROM norm n
+        WHERE n.slug IN (SELECT slug FROM dup_slugs)
+        ORDER BY n.slug, n.created_at ASC`,
+      params
+    );
+
+    // Group rows by slug for an easy-to-render shape.
+    const groups = {};
+    for (const r of result.rows) {
+      (groups[r.slug] = groups[r.slug] || []).push(r);
+    }
+    const duplicateGroups = Object.entries(groups).map(([slug, members]) => ({
+      slug,
+      count: members.length,
+      members,
+    }));
+
+    res.json({
+      duplicateGroups,
+      groupCount: duplicateGroups.length,
+      prospectCount: result.rows.length,
+    });
+  } catch (error) {
+    console.error('Prospect duplicates report error:', error);
+    res.status(500).json({ error: { message: 'Duplicates report failed' } });
+  }
+});
+
+// ── POST /duplicates/resolve — collapse LinkedIn-slug duplicate groups ────────
+// For each LinkedIn slug with 2+ live prospects, KEEP one and soft-delete the
+// rest. Keep-rule (deterministic, in priority order):
+//   1. has an active sequence enrollment   (don't orphan live outreach)
+//   2. has a real email (contains '@')
+//   3. oldest created_at                    (the original record)
+//   4. lowest id                            (final tie-break)
+//
+// Body: { dryRun?: boolean (default true), campaignId?: int }
+//   dryRun=true  → returns the plan (keep/delete ids per group), changes NOTHING.
+//   dryRun=false → soft-deletes the losers (deleted_at=NOW()) and returns the
+//                  same plan plus a deletedCount. Soft delete is reversible.
+//
+// Note: child rows (enrollments, step logs, activities, actions) are left on
+// the deleted prospects; because the keep-rule prefers the enrolled record,
+// the kept prospect retains active outreach. This does not merge field data —
+// it removes redundant copies. Must be defined BEFORE /:id routes.
+router.post('/duplicates/resolve', async (req, res) => {
+  const { dryRun = true, campaignId = null } = req.body || {};
+  const client = await (db.pool ? db.pool.connect() : db.connect());
+  try {
+    const where = [
+      'p.org_id = $1',
+      'p.deleted_at IS NULL',
+      'p.linkedin_url IS NOT NULL',
+    ];
+    const params = [req.orgId];
+    let n = 2;
+    if (campaignId) { where.push(`p.campaign_id = $${n++}`); params.push(parseInt(campaignId, 10)); }
+
+    const { rows } = await client.query(
+      `SELECT p.id, p.first_name, p.last_name, p.email, p.created_at,
+              LOWER(REGEXP_REPLACE(p.linkedin_url, '.*/in/([^/?#]+).*', '\\1')) AS slug,
+              EXISTS (
+                SELECT 1 FROM sequence_enrollments se
+                 WHERE se.prospect_id = p.id AND se.org_id = p.org_id
+                   AND se.status = 'active'
+              ) AS has_active_sequence
+         FROM prospects p
+        WHERE ${where.join(' AND ')}`,
+      params
+    );
+
+    // Group by slug; keep only groups with 2+ members.
+    const groups = {};
+    for (const r of rows) (groups[r.slug] = groups[r.slug] || []).push(r);
+
+    const plan = [];
+    const toDelete = [];
+    for (const [slug, members] of Object.entries(groups)) {
+      if (members.length < 2) continue;
+      // Sort by keep-rule; index 0 is the keeper.
+      const sorted = [...members].sort((a, b) => {
+        if (a.has_active_sequence !== b.has_active_sequence) return a.has_active_sequence ? -1 : 1;
+        const aEmail = a.email && a.email.includes('@');
+        const bEmail = b.email && b.email.includes('@');
+        if (aEmail !== bEmail) return aEmail ? -1 : 1;
+        const at = new Date(a.created_at).getTime();
+        const bt = new Date(b.created_at).getTime();
+        if (at !== bt) return at - bt;
+        return a.id - b.id;
+      });
+      const keep = sorted[0];
+      const drop = sorted.slice(1);
+      drop.forEach(d => toDelete.push(d.id));
+      plan.push({
+        slug,
+        keep:   { id: keep.id, name: `${keep.first_name || ''} ${keep.last_name || ''}`.trim(), email: keep.email, has_active_sequence: keep.has_active_sequence },
+        delete: drop.map(d => ({ id: d.id, name: `${d.first_name || ''} ${d.last_name || ''}`.trim(), email: d.email, has_active_sequence: d.has_active_sequence })),
+      });
+    }
+
+    let deletedCount = 0;
+    if (!dryRun && toDelete.length > 0) {
+      // Extra guard: never delete a record that has an active sequence if its
+      // keeper does NOT — the sort already prevents this, but assert it so a
+      // future rule change can't silently orphan live outreach.
+      const enrolledToDelete = plan.flatMap(g => g.delete.filter(d => d.has_active_sequence && !g.keep.has_active_sequence));
+      if (enrolledToDelete.length > 0) {
+        return res.status(409).json({ error: {
+          message: 'Aborted: some records slated for deletion have active sequences while their keeper does not.',
+          details: enrolledToDelete,
+        } });
+      }
+      const del = await client.query(
+        `UPDATE prospects SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ANY($1::int[]) AND org_id = $2 AND deleted_at IS NULL`,
+        [toDelete, req.orgId]
+      );
+      deletedCount = del.rowCount;
+    }
+
+    res.json({
+      dryRun,
+      groupCount: plan.length,
+      wouldDeleteCount: toDelete.length,
+      deletedCount,
+      plan,
+    });
+  } catch (error) {
+    console.error('Resolve duplicates error:', error);
+    res.status(500).json({ error: { message: 'Resolve duplicates failed: ' + error.message } });
+  } finally {
+    client.release();
   }
 });
 
