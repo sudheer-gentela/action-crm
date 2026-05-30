@@ -9,7 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect } from 'react';
-import { apiService } from './apiService';
+import { apiFetch } from './prospecting/prospectingShared';
 import SendingScheduleSettings from './SendingScheduleSettings';
 
 export default function OrgSendingScheduleSettings({ readOnly }) {
@@ -22,7 +22,7 @@ export default function OrgSendingScheduleSettings({ readOnly }) {
   useEffect(() => {
     (async () => {
       try {
-        const r = await apiService.fetch('/org/outreach-limits');
+        const r = await apiFetch('/org/outreach-limits');
         const limits = r?.limits || {};
         setSettings({
           startMode:             limits.startMode      ?? 'fixed_or_now',
@@ -47,7 +47,7 @@ export default function OrgSendingScheduleSettings({ readOnly }) {
     setSaving(true);
     setError('');
     try {
-      await apiService.fetch('/org/outreach-limits', {
+      await apiFetch('/org/outreach-limits', {
         method: 'PUT',
         body: JSON.stringify(settings),
       });
