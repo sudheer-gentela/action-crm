@@ -786,7 +786,7 @@ router.patch('/drafts/:logId', async (req, res) => {
 // Rep approves and sends the draft email via their prospecting sender account.
 // Mirrors the logic in POST /prospecting-actions/outreach-send.
 router.post('/drafts/:logId/send', async (req, res) => {
-  const { senderAccountId } = req.body; // optional — omit for auto-rotation
+  const { senderAccountId, confirmOverLimit } = req.body; // confirmOverLimit: send past the cap
   const client = await pool.connect();
   try {
     // ── 1. Load draft + enrollment + prospect ──────────────────────────────
@@ -891,7 +891,14 @@ router.post('/drafts/:logId/send', async (req, res) => {
       sender.emails_sent_today = 0;
     }
 
-    // ── 4. Enforce daily limit ─────────────────────────────────────────────
+    // ── 4. Daily limit — SOFT gate ─────────────────────────────────────────
+    // Caps are pacing guidance, not a hard wall: a human can deliberately send
+    // past the limit. First attempt at/over the cap returns a 409 warning with
+    // the current count; the client re-submits with confirmOverLimit=true to
+    // proceed. The send still increments emails_sent_today, so the counter can
+    // climb past daily_limit — that overage IS the "sent more than my pace
+    // today" signal. (Auto-send, by contrast, stops at the cap — see
+    // SequenceStepFirer.pickEmailSenderWithCapacity.)
     const limitsRes = await client.query(
       `SELECT config FROM org_integrations
         WHERE org_id=$1 AND integration_type='prospecting_email'`,
@@ -900,9 +907,19 @@ router.post('/drafts/:logId/send', async (req, res) => {
     const orgConfig = limitsRes.rows[0]?.config || {};
     const dailyLimit = Math.min(sender.daily_limit ?? (orgConfig.defaultDailyLimit || 50), orgConfig.dailyLimitCeiling || 100);
 
-    if (sender.emails_sent_today >= dailyLimit) {
-      return res.status(429).json({
-        error: { message: `Daily send limit reached for ${sender.email} (${dailyLimit}/day). Resets tomorrow.`, code: 'DAILY_LIMIT_REACHED' }
+    if (sender.emails_sent_today >= dailyLimit && !confirmOverLimit) {
+      return res.status(409).json({
+        error: {
+          message: `${sender.email} has sent ${sender.emails_sent_today}/${dailyLimit} today (daily pace reached). You can still send — confirm to go over.`,
+          code: 'OVER_DAILY_LIMIT',
+        },
+        overLimit: {
+          senderEmail:  sender.email,
+          sentToday:    sender.emails_sent_today,
+          dailyLimit,
+          // Client should re-POST with { confirmOverLimit: true } to proceed.
+          confirmField: 'confirmOverLimit',
+        },
       });
     }
 

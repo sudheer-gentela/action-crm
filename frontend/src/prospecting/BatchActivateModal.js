@@ -40,7 +40,8 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
     (async () => {
       try {
         const r = await apiFetch('/prospecting-senders/org-limits');
-        const orgCap = r?.linkedinDailyActivationCap || r?.limits?.linkedinDailyActivationCap || 25;
+        const orgCap = r?.linkedinReleaseCap || r?.limits?.linkedinReleaseCap
+                    || r?.linkedinDailyActivationCap || r?.limits?.linkedinDailyActivationCap || 25;
         setCap({ orgCap, userTarget: null, effective: orgCap });
         // Initial count: if enrollAll, all ready prospects; else min(cap, ready).
         setCount(enrollAll ? (readyCount || 0) : Math.min(orgCap, readyCount || 0));
@@ -81,6 +82,16 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
     return () => clearTimeout(t);
   }, [count, loading, campaign.id]);
 
+  // Today's room for the first step's channel, from the live preview. Drives
+  // the "Today's batch only" sizing. Falls back to the org cap pre-preview.
+  const liveCap = preview?.capacity || null;
+  const todayRoom = liveCap
+    ? (liveCap.kind === 'email'
+        ? (Number.isFinite(liveCap.todayRemaining) ? Math.max(0, liveCap.todayRemaining) : (readyCount || 0))
+        : (liveCap.kind === 'linkedin' ? (liveCap.perDayFull || 0) : (readyCount || 0)))
+    : (cap?.orgCap || 25);
+  const todayMax = Math.max(1, Math.min(todayRoom || (readyCount || 1), Math.max(readyCount, 1)));
+
   const handleActivate = async () => {
     setActivating(true);
     setError('');
@@ -118,19 +129,38 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                 land in the rep's inbox as a draft.
               </p>
 
-              {/* Cap info — daily cap reframed for clarity in the new model */}
-              <div style={{
-                background: '#f8fafc', borderRadius: 6, padding: '8px 12px',
-                fontSize: 12, color: '#374151', marginBottom: 14, lineHeight: 1.6,
-              }}>
-                <div>📊 Ready in research stage: <strong>{readyCount}</strong></div>
-                <div>📋 Daily activation cap: <strong>{cap.orgCap}</strong> per day</div>
-                <div style={{ color: '#6b7280', fontSize: 11, marginTop: 4 }}>
-                  {enrollAll
-                    ? `Enrolling everything: ${readyCount} prospects will be pre-scheduled across days.`
-                    : `Today's batch only: at most ${cap.effective} will fire in the next 24h.`}
-                </div>
-              </div>
+              {/* Capacity info — derived from the live schedule preview. Email
+                  capacity = Σ active sender daily limits; LinkedIn = soft
+                  release cap; call/task = uncapped. */}
+              {(() => {
+                const capInfo = preview?.capacity || null;
+                const ch = preview?.channel || 'email';
+                return (
+                  <div style={{
+                    background: '#f8fafc', borderRadius: 6, padding: '8px 12px',
+                    fontSize: 12, color: '#374151', marginBottom: 14, lineHeight: 1.6,
+                  }}>
+                    <div>📊 Ready in research stage: <strong>{readyCount}</strong></div>
+                    {capInfo && capInfo.kind === 'email' && (
+                      <div>✉️ Email capacity: <strong>{capInfo.label}</strong>
+                        {Number.isFinite(capInfo.todayRemaining) && capInfo.activeSenders > 0 &&
+                          <> · {capInfo.todayRemaining} left today</>}
+                      </div>
+                    )}
+                    {capInfo && capInfo.kind === 'linkedin' && (
+                      <div>🔗 LinkedIn release cap: <strong>{capInfo.perDayFull}/day</strong> (sent manually)</div>
+                    )}
+                    {capInfo && capInfo.kind === 'uncapped' && (
+                      <div>📅 No daily cap for {ch} — limited only by the active days/window</div>
+                    )}
+                    <div style={{ color: '#6b7280', fontSize: 11, marginTop: 4 }}>
+                      {enrollAll
+                        ? `Enrolling everything: ${readyCount} prospects pre-scheduled across days, respecting capacity.`
+                        : `Today's batch only — the rest stay in research for later.`}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Mode toggle: enrollAll vs today's batch only */}
               <div className="pv-form-section">
@@ -156,7 +186,7 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                       onChange={() => setEnrollAll(false)}
                     />
                     <span>
-                      <strong>Today's batch only</strong> (up to {cap.effective})
+                      <strong>Today's batch only</strong> (up to {todayMax})
                       <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
                         Manual control — you'll come back tomorrow to activate the next batch.
                       </div>
@@ -174,7 +204,7 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                     <input
                       type="range"
                       min={1}
-                      max={Math.min(cap.effective, Math.max(readyCount, 1))}
+                      max={todayMax}
                       value={count}
                       onChange={e => setCount(parseInt(e.target.value, 10))}
                       style={{ flex: 1 }}
@@ -183,11 +213,11 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                     <input
                       type="number"
                       min={1}
-                      max={Math.min(cap.effective, Math.max(readyCount, 1))}
+                      max={todayMax}
                       value={count}
                       onChange={e => {
                         const v = parseInt(e.target.value, 10) || 0;
-                        const max = Math.min(cap.effective, Math.max(readyCount, 1));
+                        const max = todayMax;
                         setCount(Math.max(1, Math.min(max, v)));
                       }}
                       style={{
@@ -197,7 +227,7 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                       disabled={readyCount === 0}
                     />
                   </div>
-                  {count >= cap.effective && (
+                  {count >= todayMax && (
                     <div style={{ fontSize: 11, color: '#92400e', marginTop: 6 }}>
                       ⚠ Hitting the daily cap. Save the rest for tomorrow.
                     </div>
@@ -270,6 +300,15 @@ function ResultView({ result, onDone }) {
         </div>
       </div>
 
+      {result.warning && (
+        <div style={{
+          background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e',
+          padding: '10px 14px', borderRadius: 6, fontSize: 13, marginBottom: 12,
+        }}>
+          ⚠ {result.warning.message}
+        </div>
+      )}
+
       {result.skipped.length > 0 && (
         <div style={{
           background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e',
@@ -332,8 +371,12 @@ function SchedulePreview({ preview, loading, count }) {
       <h4 style={{ marginBottom: 4 }}>Schedule preview</h4>
       <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 8 }}>
         {channel === 'email'
-          ? `Emails spread across ${formatHour(settings.sendWindowStartHour)}–${formatHour(settings.sendWindowEndHour)} ${tzAbbrev(tz)}.`
-          : `LinkedIn tasks released at ${formatHour(settings.sendWindowStartHour)} ${tzAbbrev(tz)}; you'll work them throughout the day.`}
+          ? (settings?.pacingMode === 'spread'
+              ? `Emails spread across ${formatHour(settings.sendWindowStartHour)}–${formatHour(settings.sendWindowEndHour)} ${tzAbbrev(tz)}.`
+              : `Emails sent every ${settings?.cadenceMinutes || 5} min from ${formatHour(settings.sendWindowStartHour)} ${tzAbbrev(tz)}.`)
+          : (channel === 'linkedin'
+              ? `LinkedIn tasks released from ${formatHour(settings.sendWindowStartHour)} ${tzAbbrev(tz)}; you send the requests manually.`
+              : `${channel} tasks released from ${formatHour(settings.sendWindowStartHour)} ${tzAbbrev(tz)}; work them through the day.`)}
         {' '}First fires {fmtRelativeDateTime(summary.firstAt, tz)}; last fires {fmtRelativeDateTime(summary.lastAt, tz)}.
       </div>
       <div style={{

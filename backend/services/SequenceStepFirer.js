@@ -113,7 +113,7 @@ async function resolveSender(dbClient, orgId, userId, clientId) {
   const r = await dbClient.query(
     `SELECT id, email, provider, display_name, signature, linkedin_signature,
             access_token, refresh_token,
-            emails_sent_today, last_reset_at
+            daily_limit, emails_sent_today, last_reset_at
        FROM prospecting_sender_accounts
       WHERE org_id    = $1
         AND user_id   = $2
@@ -126,6 +126,69 @@ async function resolveSender(dbClient, orgId, userId, clientId) {
     [orgId, userId]
   );
   return r.rows[0] || null;
+}
+
+// ── Capacity-aware sender pick (AUTO-SEND ONLY) ───────────────────────────────
+// Used by the auto-send branch to honor the per-account daily limit as a SOFT
+// gate: pick the active sender with the most remaining headroom; if every
+// account is at/over its effective limit, return status 'all_maxed' so the
+// firer DEFERS (retries next tick) instead of overshooting on autopilot.
+// Manual sends (sequences.routes.js draft send) are NOT routed through here —
+// a human can deliberately exceed the cap with a soft warning.
+//
+// Effective per-account limit = min(daily_limit ?? defaultDailyLimit, ceiling).
+// A stale counter (last_reset_at < today) counts as 0 sent.
+//
+// Returns: { sender, status: 'ok' | 'all_maxed' | 'no_accounts' }
+async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, settings, now = new Date()) {
+  const defaultLimit = settings?.defaultDailyLimit ?? 50;
+  const ceiling      = settings?.dailyLimitCeiling ?? 100;
+
+  const cols = `id, email, provider, display_name, signature, linkedin_signature,
+                access_token, refresh_token,
+                daily_limit, emails_sent_today, last_reset_at`;
+  let rows = [];
+  if (clientId) {
+    const r = await dbClient.query(
+      `SELECT ${cols} FROM prospecting_sender_accounts
+        WHERE org_id=$1 AND client_id=$2 AND is_active=true`,
+      [orgId, clientId]
+    );
+    rows = r.rows;
+    // Fall back to rep senders if the client has none (mirrors resolveSender).
+    if (!rows.length) {
+      const rr = await dbClient.query(
+        `SELECT ${cols} FROM prospecting_sender_accounts
+          WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true`,
+        [orgId, userId]
+      );
+      rows = rr.rows;
+    }
+  } else {
+    const r = await dbClient.query(
+      `SELECT ${cols} FROM prospecting_sender_accounts
+        WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true`,
+      [orgId, userId]
+    );
+    rows = r.rows;
+  }
+
+  if (!rows.length) return { sender: null, status: 'no_accounts' };
+
+  const todayStr = now.toDateString();
+  let best = null, bestRemaining = 0;
+  for (const row of rows) {
+    const effLimit = Math.min(
+      (row.daily_limit != null && row.daily_limit > 0) ? row.daily_limit : defaultLimit,
+      ceiling
+    );
+    const resetToday = row.last_reset_at && new Date(row.last_reset_at).toDateString() === todayStr;
+    const sentToday  = resetToday ? (row.emails_sent_today || 0) : 0;
+    const remaining  = effLimit - sentToday;
+    if (remaining > 0 && remaining > bestRemaining) { best = row; bestRemaining = remaining; }
+  }
+  if (!best) return { sender: null, status: 'all_maxed' };
+  return { sender: best, status: 'ok' };
 }
 
 // ── Append signature helper ───────────────────────────────────────────────────
@@ -407,8 +470,24 @@ const SequenceStepFirer = {
           let sendError = null;
 
           if (step.channel === 'email' && prospect?.email) {
-            // Resolve sender: client sender for agency prospects, rep sender otherwise
-            const sender = await resolveSender(client, enrollment.org_id, enrollment.enrolled_by, clientId);
+            // Resolve sender with capacity awareness. Auto-send respects the
+            // per-account daily limit as a SOFT gate: if every active sender is
+            // at/over its limit, DEFER (retry next tick) rather than overshoot.
+            const pick = await pickEmailSenderWithCapacity(
+              client, enrollment.org_id, enrollment.enrolled_by, clientId, settings, new Date()
+            );
+            if (pick.status === 'all_maxed') {
+              // All of this user's senders have hit their daily limit. Leave the
+              // step queued (no advance, no counter bump); the next tick after a
+              // counter resets — or after a manual send frees nothing but the
+              // day rolls over — will pick it up. This is the auto-send cap.
+              console.log(
+                `SequenceStepFirer: deferring enrollment ${enrollment.id} — ` +
+                `all senders for user ${enrollment.enrolled_by} at daily limit`
+              );
+              continue;
+            }
+            const sender = pick.sender; // null only when status === 'no_accounts'
 
             if (sender) {
               // Reset daily counter if it's a new day

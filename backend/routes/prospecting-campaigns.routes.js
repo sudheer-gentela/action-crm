@@ -94,18 +94,26 @@ function validateAndCoerceSchedule(body) {
   const out = {
     daily_activation_cap:    null,
     send_window_start_hour:  null,
+    send_window_start_minute: null,
     send_window_end_hour:    null,
     send_window_days:        null,
     send_window_timezone:    null,
+    start_mode:              null,
+    pacing_mode:             null,
+    cadence_minutes:         null,
   };
 
   // Accept both camelCase (frontend) and snake_case (idiomatic API) names.
   const raw = {
-    daily_activation_cap:    body.daily_activation_cap    ?? body.dailyActivationCap,
+    daily_activation_cap:    body.daily_activation_cap    ?? body.dailyActivationCap ?? body.linkedinReleaseCap,
     send_window_start_hour:  body.send_window_start_hour  ?? body.sendWindowStartHour,
+    send_window_start_minute: body.send_window_start_minute ?? body.sendWindowStartMinute,
     send_window_end_hour:    body.send_window_end_hour    ?? body.sendWindowEndHour,
     send_window_days:        body.send_window_days        ?? body.sendWindowDays,
     send_window_timezone:    body.send_window_timezone    ?? body.sendWindowTimezone,
+    start_mode:              body.start_mode              ?? body.startMode,
+    pacing_mode:             body.pacing_mode             ?? body.pacingMode,
+    cadence_minutes:         body.cadence_minutes         ?? body.cadenceMinutes,
   };
 
   if (raw.daily_activation_cap !== undefined && raw.daily_activation_cap !== null && raw.daily_activation_cap !== '') {
@@ -119,6 +127,28 @@ function validateAndCoerceSchedule(body) {
     if (!Number.isFinite(n) || n < 0 || n > 23) {
       errors.push('send_window_start_hour must be 0-23');
     } else out.send_window_start_hour = n;
+  }
+  if (raw.send_window_start_minute !== undefined && raw.send_window_start_minute !== null && raw.send_window_start_minute !== '') {
+    const n = parseInt(raw.send_window_start_minute, 10);
+    if (!Number.isFinite(n) || n < 0 || n > 59) {
+      errors.push('send_window_start_minute must be 0-59');
+    } else out.send_window_start_minute = n;
+  }
+  if (raw.start_mode !== undefined && raw.start_mode !== null && raw.start_mode !== '') {
+    if (!['on_activate', 'fixed', 'fixed_or_now'].includes(raw.start_mode)) {
+      errors.push('start_mode must be on_activate, fixed, or fixed_or_now');
+    } else out.start_mode = raw.start_mode;
+  }
+  if (raw.pacing_mode !== undefined && raw.pacing_mode !== null && raw.pacing_mode !== '') {
+    if (!['cadence', 'spread'].includes(raw.pacing_mode)) {
+      errors.push('pacing_mode must be cadence or spread');
+    } else out.pacing_mode = raw.pacing_mode;
+  }
+  if (raw.cadence_minutes !== undefined && raw.cadence_minutes !== null && raw.cadence_minutes !== '') {
+    const n = parseInt(raw.cadence_minutes, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 240) {
+      errors.push('cadence_minutes must be 1-240');
+    } else out.cadence_minutes = n;
   }
   if (raw.send_window_end_hour !== undefined && raw.send_window_end_hour !== null && raw.send_window_end_hour !== '') {
     const n = parseInt(raw.send_window_end_hour, 10);
@@ -159,6 +189,59 @@ function validateAndCoerceSchedule(body) {
   }
 
   return { values: out, errors };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: resolve the effective sending schedule for a campaign plus the
+// per-channel daily capacity for a given user (the one who would activate).
+// Returns { settings, firstChannel, channelCap, emailCapacity }.
+//   - emailCapacity is null unless firstChannel === 'email'.
+//   - channelCap.todayRemaining is Infinity for call/task (uncapped).
+// Used by GET /:id, schedule-preview, and bulk-activate so all three agree.
+// ─────────────────────────────────────────────────────────────────────────────
+async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenceId) {
+  const settings = await SendingSchedule.resolveSettings({ orgId, campaignId });
+  let firstChannel = 'email';
+  if (defaultSequenceId) {
+    const r = await pool.query(
+      `SELECT channel FROM sequence_steps
+        WHERE sequence_id = $1 ORDER BY step_order LIMIT 1`,
+      [defaultSequenceId]
+    );
+    firstChannel = r.rows[0]?.channel || 'email';
+  }
+  const emailCapacity = firstChannel === 'email'
+    ? await SendingSchedule.resolveEmailCapacity({ orgId, userId, settings })
+    : null;
+  const channelCap = SendingSchedule.resolveChannelDailyCap(firstChannel, { emailCapacity, settings });
+  return { settings, firstChannel, channelCap, emailCapacity };
+}
+
+// Build a UI-friendly capacity descriptor (e.g. "2 × 50 = 100/day").
+function describeCapacity(firstChannel, channelCap, emailCapacity, settings) {
+  if (firstChannel === 'email' && emailCapacity) {
+    const perAccount = emailCapacity.perAccount.map(a => a.limit);
+    const label = emailCapacity.activeSenders > 0
+      ? `${emailCapacity.activeSenders} sender${emailCapacity.activeSenders === 1 ? '' : 's'} → ${emailCapacity.perDayFull}/day`
+      : 'No active email senders connected';
+    return {
+      kind: 'email',
+      perDayFull:     emailCapacity.perDayFull,
+      todayRemaining: emailCapacity.todayRemaining,
+      activeSenders:  emailCapacity.activeSenders,
+      perAccountLimits: perAccount,
+      label,
+    };
+  }
+  if (firstChannel === 'linkedin') {
+    return {
+      kind: 'linkedin',
+      perDayFull:     channelCap.perDayFull,
+      todayRemaining: channelCap.todayRemaining,
+      label: `${channelCap.perDayFull} LinkedIn requests/day (release cap — sent manually)`,
+    };
+  }
+  return { kind: 'uncapped', perDayFull: null, todayRemaining: null, label: 'No daily cap (window-limited)' };
 }
 
 // ── GET / — list campaigns with live prospect counts ─────────────────────────
@@ -354,8 +437,9 @@ router.post('/', async (req, res) => {
              (org_id, name, description, solution, playbook_id, default_sequence_id,
               goal_qualified, start_date, end_date, status, owner_id, created_by,
               daily_activation_cap, send_window_start_hour, send_window_end_hour,
-              send_window_days, send_window_timezone)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+              send_window_days, send_window_timezone,
+              send_window_start_minute, start_mode, pacing_mode, cadence_minutes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
        RETURNING *`,
       [
         req.orgId, name.trim(), description || null, solution || null,
@@ -369,6 +453,10 @@ router.post('/', async (req, res) => {
         sched.values.send_window_end_hour,
         sched.values.send_window_days,
         sched.values.send_window_timezone,
+        sched.values.send_window_start_minute,
+        sched.values.start_mode,
+        sched.values.pacing_mode,
+        sched.values.cadence_minutes,
       ]
     );
 
@@ -589,10 +677,28 @@ router.get('/:id', async (req, res) => {
       [req.orgId, req.params.id]
     );
 
+    // Effective sending schedule + computed per-channel capacity for the
+    // viewing user (the likely activator). Powers the "2 × 50 = 100/day" hint
+    // and the unified schedule panel's read-only capacity line.
+    let scheduleBlock = null;
+    try {
+      const cap = await resolveCampaignCapacity(
+        req.orgId, parseInt(req.params.id, 10), req.user.userId, campaign.default_sequence_id
+      );
+      scheduleBlock = {
+        settings:     cap.settings,
+        firstChannel: cap.firstChannel,
+        capacity:     describeCapacity(cap.firstChannel, cap.channelCap, cap.emailCapacity, cap.settings),
+      };
+    } catch (capErr) {
+      console.warn('campaigns GET /:id capacity compute failed:', capErr.message);
+    }
+
     res.json({
       campaign,
       funnel,
       terminal,
+      schedule: scheduleBlock,
       metrics: {
         totalProspects,
         qualified,
@@ -688,11 +794,15 @@ router.put('/:id', async (req, res) => {
       return res.status(400).json({ error: { message: sched.errors.join('; ') } });
     }
     const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
-    const incomingDailyCap = has('daily_activation_cap') || has('dailyActivationCap');
+    const incomingDailyCap = has('daily_activation_cap') || has('dailyActivationCap') || has('linkedinReleaseCap');
     const incomingStart    = has('send_window_start_hour') || has('sendWindowStartHour');
+    const incomingStartMin = has('send_window_start_minute') || has('sendWindowStartMinute');
     const incomingEnd      = has('send_window_end_hour')   || has('sendWindowEndHour');
     const incomingDays     = has('send_window_days')       || has('sendWindowDays');
     const incomingTz       = has('send_window_timezone')   || has('sendWindowTimezone');
+    const incomingStartMode = has('start_mode')  || has('startMode');
+    const incomingPacing    = has('pacing_mode')  || has('pacingMode');
+    const incomingCadence   = has('cadence_minutes') || has('cadenceMinutes');
 
     // Build a COALESCE-style partial update: only provided fields change.
     const { rows } = await pool.query(
@@ -711,7 +821,11 @@ router.put('/:id', async (req, res) => {
          send_window_end_hour   = $14,
          send_window_days       = $15,
          send_window_timezone   = $16,
-         owner_id               = $17
+         owner_id               = $17,
+         send_window_start_minute = $18,
+         start_mode             = $19,
+         pacing_mode            = $20,
+         cadence_minutes        = $21
        WHERE id = $1 AND org_id = $2
        RETURNING id`,
       [
@@ -734,6 +848,10 @@ router.put('/:id', async (req, res) => {
         // owner_id: resolvedOwnerId is existing.owner_id unless an admin
         // explicitly reassigned via owner_id in the body (validated above).
         resolvedOwnerId,
+        incomingStartMin  ? sched.values.send_window_start_minute : existing.send_window_start_minute,
+        incomingStartMode ? sched.values.start_mode              : existing.start_mode,
+        incomingPacing    ? sched.values.pacing_mode             : existing.pacing_mode,
+        incomingCadence   ? sched.values.cadence_minutes         : existing.cadence_minutes,
       ]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Campaign not found' } });
@@ -1730,6 +1848,23 @@ router.post('/:id/bulk-activate', async (req, res) => {
     // beyond 10,000 enrollments in a single call (operational sanity).
     const HARD_BATCH_CEILING = 10000;
 
+    // ── Per-channel capacity — keyed on the ACTIVATING user ────────────────
+    // The firer sends from the enrolled_by user's sender accounts, and
+    // enrolled_by = req.user.userId here, so capacity must be computed for the
+    // same user (NOT the campaign owner) to keep the soft gate (scheduler) and
+    // hard gate (firer) consistent. Email → live sender headroom; LinkedIn →
+    // soft per-day release cap; call/task → uncapped (window-limited only).
+    const capInfo = await resolveCampaignCapacity(
+      req.orgId, parseInt(req.params.id, 10), req.user.userId, campaign.default_sequence_id
+    );
+    const firstChannel  = capInfo.firstChannel;
+    const channelCap    = capInfo.channelCap;
+    const emailCapacity = capInfo.emailCapacity;
+    const scheduleSettings = capInfo.settings;
+    // Today's room for this channel; default batch size for "today's batch only".
+    const todayRoom    = channelCap.todayRemaining;
+    const defaultBatch = Number.isFinite(todayRoom) ? Math.max(1, todayRoom) : 25;
+
     // Determine candidate set.
     let candidates;
     if (Array.isArray(prospectIds) && prospectIds.length > 0) {
@@ -1754,12 +1889,14 @@ router.post('/:id/bulk-activate', async (req, res) => {
       );
       candidates = r.rows.map(row => row.id);
     } else {
-      // Default n: if enrollAll, take everything eligible (capped by safety).
-      // Else use count if provided, else limits.effective (legacy default).
-      const cap = enrollAll ? HARD_BATCH_CEILING : limits.effective;
+      // enrollAll → everything eligible (scheduler spreads across days,
+      // respecting capacity). Else "today's batch only": count if provided,
+      // else today's room for this channel. Capacity no longer hard-limits the
+      // candidate count — the scheduler rolls overflow forward and we warn.
+      const cap = enrollAll ? HARD_BATCH_CEILING : (parseInt(count, 10) || defaultBatch);
       const requested = enrollAll
         ? HARD_BATCH_CEILING
-        : (parseInt(count, 10) || limits.effective);
+        : (parseInt(count, 10) || defaultBatch);
       const n = Math.max(1, Math.min(requested, cap));
       const r = await pool.query(
         `SELECT p.id
@@ -1781,10 +1918,10 @@ router.post('/:id/bulk-activate', async (req, res) => {
       candidates = r.rows.map(row => row.id);
     }
 
-    // Hard ceiling enforcement. In enrollAll mode the ceiling is the safety
-    // value (10k); else it's the per-day cap. Same logic as before, just
-    // parameterised by enrollAll.
-    const effectiveCeiling = enrollAll ? HARD_BATCH_CEILING : limits.effective;
+    // Secondary clamp: only the operational safety ceiling. Per-channel
+    // capacity is handled by the scheduler (rolls overflow forward) + the
+    // warning below — it does NOT truncate the candidate set.
+    const effectiveCeiling = HARD_BATCH_CEILING;
     if (candidates.length > effectiveCeiling) {
       candidates = candidates.slice(0, effectiveCeiling);
     }
@@ -1820,39 +1957,46 @@ router.post('/:id/bulk-activate', async (req, res) => {
     }
     const seq = seqRes.rows[0];
     const firstDelay   = parseInt(seq.first_delay, 10) || 0;
-    const firstChannel = seq.first_channel || 'email';
+    // firstChannel was resolved earlier (capInfo) — reused below.
 
     // ── Slice 1: pre-schedule all N enrollments across days ────────────────
     //
     // Compute one next_step_due per candidate, spread across valid days/hours
-    // respecting the configured daily cap + send window. The cascade
-    // (default → org → campaign) is resolved here once for the whole batch.
+    // respecting the per-channel daily capacity + send window. Settings +
+    // capacity were resolved once above (capInfo).
     //
-    // existingByDay counts already-scheduled enrollments for the campaign's
-    // default sequence, grouped by their next_step_due's local-tz day. This
-    // prevents the new batch from doubling up on days that already have
-    // enrollments from prior bulk-activate runs.
-    const scheduleSettings = await SendingSchedule.resolveSettings({
-      orgId:      req.orgId,
-      campaignId: parseInt(req.params.id, 10),
-    });
+    // existingByDay is OWNER-WIDE and CHANNEL-FILTERED: it counts every active,
+    // future-due enrollment for THIS activating user (enrolled_by) whose
+    // CURRENT step is the same channel — across all their campaigns/sequences.
+    // That makes the shared budget real: a second campaign owned by the same
+    // user sees the capacity the first already booked. (Uncapped channels skip
+    // this — there's no budget to share.)
     const tz = scheduleSettings.sendWindowTimezone;
-    const existingRes = await pool.query(
-      `SELECT next_step_due FROM sequence_enrollments
-        WHERE org_id = $1 AND sequence_id = $2 AND status = 'active'
-          AND next_step_due > NOW()`,
-      [req.orgId, campaign.default_sequence_id]
-    );
     const existingByDay = {};
-    for (const r of existingRes.rows) {
-      // Bucket each existing next_step_due by its local-tz calendar day.
-      const local = SendingSchedule._internal.getLocalCalendarDate(new Date(r.next_step_due), tz);
-      existingByDay[local.dayKey] = (existingByDay[local.dayKey] || 0) + 1;
+    if (Number.isFinite(channelCap.perDayFull)) {
+      const existingRes = await pool.query(
+        `SELECT se.next_step_due
+           FROM sequence_enrollments se
+           JOIN sequence_steps ss
+             ON ss.sequence_id = se.sequence_id
+            AND ss.step_order  = se.current_step
+          WHERE se.org_id      = $1
+            AND se.enrolled_by = $2
+            AND se.status      = 'active'
+            AND se.next_step_due > NOW()
+            AND ss.channel     = $3`,
+        [req.orgId, req.user.userId, firstChannel]
+      );
+      for (const r of existingRes.rows) {
+        const local = SendingSchedule._internal.getLocalCalendarDate(new Date(r.next_step_due), tz);
+        existingByDay[local.dayKey] = (existingByDay[local.dayKey] || 0) + 1;
+      }
     }
     const scheduledSlots = SendingSchedule.scheduleBatchSlots({
       count: candidates.length,
       settings: scheduleSettings,
       channel: firstChannel,
+      dayCap: channelCap,
       existingByDay,
       now: new Date(),
     });
@@ -1994,11 +2138,41 @@ router.post('/:id/bulk-activate', async (req, res) => {
       }
     }
 
+    // ── Capacity warning (Q-D) ─────────────────────────────────────────────
+    // Activation always proceeds; if email capacity is exhausted or the batch
+    // exceeds today's room, surface a warning naming the real lever (sender
+    // daily limit). Slots roll forward to the next available day automatically.
+    let warning = null;
+    if (firstChannel === 'email' && emailCapacity) {
+      if (emailCapacity.activeSenders === 0) {
+        warning = {
+          code: 'NO_SENDERS',
+          message: 'No active email sender accounts. Connect a Gmail or Outlook account in Settings → Outreach before sends can fire.',
+        };
+      } else if (emailCapacity.todayRemaining <= 0) {
+        warning = {
+          code: 'NO_CAPACITY_TODAY',
+          message: `Your sending accounts have hit today's limit (${emailCapacity.perDayFull}/day across ${emailCapacity.activeSenders} account${emailCapacity.activeSenders === 1 ? '' : 's'}). These prospects are scheduled starting the next available day. To send more today, raise a sender's daily limit or activate another sender.`,
+          perDayFull: emailCapacity.perDayFull,
+          activeSenders: emailCapacity.activeSenders,
+        };
+      } else if (enrollments.length > emailCapacity.todayRemaining) {
+        warning = {
+          code: 'OVER_CAPACITY_TODAY',
+          message: `${enrollments.length} prospects enrolled; about ${emailCapacity.todayRemaining} fit today (${emailCapacity.perDayFull}/day). The rest are scheduled across the following days. Raise a sender's daily limit to send more per day.`,
+          perDayFull: emailCapacity.perDayFull,
+          todayRemaining: emailCapacity.todayRemaining,
+        };
+      }
+    }
+
     res.json({
       activated: enrollments.length,
       enrollments,
       skipped,
       cap: { ...limits, used: enrollments.length },
+      capacity: describeCapacity(firstChannel, channelCap, emailCapacity, scheduleSettings),
+      warning,
       campaignId: parseInt(req.params.id, 10),
       sequenceName: seq.name,
     });
@@ -2044,37 +2218,44 @@ router.get('/:id/schedule-preview', async (req, res) => {
       } });
     }
 
-    // First step's channel determines email-spread vs task-released-at-start.
-    const firstStepRes = await pool.query(
-      `SELECT channel FROM sequence_steps
-        WHERE sequence_id = $1
-     ORDER BY step_order LIMIT 1`,
-      [campaign.default_sequence_id]
+    // Resolve effective schedule + per-channel capacity for the activating
+    // user (req.user.userId) — same basis as bulk-activate so the preview
+    // matches what activation will actually do.
+    const capInfo = await resolveCampaignCapacity(
+      req.orgId, parseInt(req.params.id, 10), req.user.userId, campaign.default_sequence_id
     );
-    const channel = firstStepRes.rows[0]?.channel || 'email';
-
-    // Resolve settings + load already-scheduled enrollments for this sequence.
-    const settings = await SendingSchedule.resolveSettings({
-      orgId:      req.orgId,
-      campaignId: parseInt(req.params.id, 10),
-    });
+    const settings    = capInfo.settings;
+    const channel     = capInfo.firstChannel;
+    const channelCap  = capInfo.channelCap;
     const tz = settings.sendWindowTimezone;
-    const existingRes = await pool.query(
-      `SELECT next_step_due FROM sequence_enrollments
-        WHERE org_id = $1 AND sequence_id = $2 AND status = 'active'
-          AND next_step_due > NOW()`,
-      [req.orgId, campaign.default_sequence_id]
-    );
+
+    // Owner-wide, channel-filtered already-booked slots (shared budget).
     const existingByDay = {};
-    for (const r of existingRes.rows) {
-      const local = SendingSchedule._internal.getLocalCalendarDate(new Date(r.next_step_due), tz);
-      existingByDay[local.dayKey] = (existingByDay[local.dayKey] || 0) + 1;
+    if (Number.isFinite(channelCap.perDayFull)) {
+      const existingRes = await pool.query(
+        `SELECT se.next_step_due
+           FROM sequence_enrollments se
+           JOIN sequence_steps ss
+             ON ss.sequence_id = se.sequence_id
+            AND ss.step_order  = se.current_step
+          WHERE se.org_id      = $1
+            AND se.enrolled_by = $2
+            AND se.status      = 'active'
+            AND se.next_step_due > NOW()
+            AND ss.channel     = $3`,
+        [req.orgId, req.user.userId, channel]
+      );
+      for (const r of existingRes.rows) {
+        const local = SendingSchedule._internal.getLocalCalendarDate(new Date(r.next_step_due), tz);
+        existingByDay[local.dayKey] = (existingByDay[local.dayKey] || 0) + 1;
+      }
     }
 
     const slots = SendingSchedule.scheduleBatchSlots({
       count,
       settings,
       channel,
+      dayCap: channelCap,
       existingByDay,
       now: new Date(),
     });
@@ -2103,6 +2284,7 @@ router.get('/:id/schedule-preview', async (req, res) => {
       requestedCount: count,
       channel,
       settings,
+      capacity: describeCapacity(channel, channelCap, capInfo.emailCapacity, settings),
       existingScheduled: Object.values(existingByDay).reduce((a, b) => a + b, 0),
       summary: slots.length > 0 ? {
         days:    byDay.length,

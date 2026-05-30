@@ -25,11 +25,15 @@ export default function OrgSendingScheduleSettings({ readOnly }) {
         const r = await apiService.fetch('/org/outreach-limits');
         const limits = r?.limits || {};
         setSettings({
-          dailyActivationCap:  limits.dailyActivationCap   ?? 25,
-          sendWindowStartHour: limits.sendWindowStartHour  ?? 9,
-          sendWindowEndHour:   limits.sendWindowEndHour    ?? 11,
-          sendWindowDays:      Array.isArray(limits.sendWindowDays) ? limits.sendWindowDays : [1,2,3,4,5],
-          sendWindowTimezone:  limits.sendWindowTimezone   ?? 'America/New_York',
+          startMode:             limits.startMode      ?? 'fixed_or_now',
+          pacingMode:            limits.pacingMode      ?? 'cadence',
+          cadenceMinutes:        limits.cadenceMinutes  ?? 5,
+          sendWindowStartHour:   limits.sendWindowStartHour   ?? 8,
+          sendWindowStartMinute: limits.sendWindowStartMinute ?? 0,
+          sendWindowEndHour:     limits.sendWindowEndHour      ?? 11,
+          sendWindowDays:        Array.isArray(limits.sendWindowDays) ? limits.sendWindowDays : [1,2,3,4,5],
+          sendWindowTimezone:    limits.sendWindowTimezone     ?? 'America/New_York',
+          linkedinReleaseCap:    limits.linkedinReleaseCap     ?? 25,
         });
         setLoading(false);
       } catch (err) {
@@ -123,21 +127,26 @@ export default function OrgSendingScheduleSettings({ readOnly }) {
         <strong style={{ display: 'block', marginBottom: 6 }}>How this works</strong>
         <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.6 }}>
           <li>
-            <strong>Email steps</strong> fire within the send window, spread evenly
-            across the configured hours.
+            <strong>Email steps</strong> fire on the chosen days, starting per the
+            start mode, paced by cadence (every N minutes) or even spread.
           </li>
           <li>
-            <strong>LinkedIn / task / call steps</strong> all release at the
-            window start hour — the rep then works through them throughout the day.
+            <strong>Email volume</strong> is governed per sending account
+            (Settings → Outreach → daily limit), not here. A campaign's capacity
+            is the sum across its sender's active accounts.
           </li>
           <li>
-            <strong>Daily cap</strong> applies to new activations (bulk-activate).
-            When you activate more than the cap, the rest are pre-scheduled
-            for future days.
+            <strong>LinkedIn</strong> requests use a soft per-day release cap —
+            tasks are handed to the rep at that rate, but the actual connection
+            request is sent manually on LinkedIn.
           </li>
           <li>
-            <strong>Outside window?</strong> Email sends pause until the next
-            valid time. LinkedIn tasks are unaffected (they're always queued).
+            <strong>Auto-send stops at the cap;</strong> a rep can still send a
+            drafted email past it (with a confirm) when they choose to.
+          </li>
+          <li>
+            <strong>Call / task</strong> steps have no daily cap — they're limited
+            only by the active days/window and released for the rep to action.
           </li>
         </ul>
       </div>

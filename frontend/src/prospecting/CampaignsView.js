@@ -1419,13 +1419,22 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
   // the org default, or a value when it overrides. The campaign object from
   // the backend has snake_case column names; map them in here.
   const [schedule, setSchedule] = useState({
-    dailyActivationCap:  campaign?.daily_activation_cap   ?? null,
-    sendWindowStartHour: campaign?.send_window_start_hour ?? null,
-    sendWindowEndHour:   campaign?.send_window_end_hour   ?? null,
-    sendWindowDays:      campaign?.send_window_days       ?? null,
-    sendWindowTimezone:  campaign?.send_window_timezone   ?? null,
+    startMode:             campaign?.start_mode               ?? null,
+    pacingMode:            campaign?.pacing_mode              ?? null,
+    cadenceMinutes:        campaign?.cadence_minutes          ?? null,
+    sendWindowStartHour:   campaign?.send_window_start_hour   ?? null,
+    sendWindowStartMinute: campaign?.send_window_start_minute ?? null,
+    sendWindowEndHour:     campaign?.send_window_end_hour     ?? null,
+    sendWindowDays:        campaign?.send_window_days         ?? null,
+    sendWindowTimezone:    campaign?.send_window_timezone     ?? null,
+    // daily_activation_cap is repurposed as the LinkedIn release cap.
+    linkedinReleaseCap:    campaign?.daily_activation_cap     ?? null,
   });
   const [orgDefaults, setOrgDefaults] = useState(null);
+  // Derived per-channel email capacity for the saved campaign (edit only) —
+  // powers the read-only "N senders → X/day" line. Reflects the CURRENTLY
+  // saved default sequence; refreshes after save.
+  const [capacity, setCapacity] = useState(null);
   // Section expanded by default if any overrides exist on the campaign.
   const hasAnyOverride = Object.values(schedule).some(v => v != null);
   const [scheduleOpen, setScheduleOpen] = useState(hasAnyOverride);
@@ -1450,15 +1459,28 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
         const ol = await apiFetch('/org/outreach-limits');
         if (ol?.limits) {
           setOrgDefaults({
-            dailyActivationCap:  ol.limits.dailyActivationCap   ?? 25,
-            sendWindowStartHour: ol.limits.sendWindowStartHour  ?? 9,
-            sendWindowEndHour:   ol.limits.sendWindowEndHour    ?? 11,
-            sendWindowDays:      Array.isArray(ol.limits.sendWindowDays) ? ol.limits.sendWindowDays : [1,2,3,4,5],
-            sendWindowTimezone:  ol.limits.sendWindowTimezone   ?? 'America/New_York',
+            startMode:             ol.limits.startMode      ?? 'fixed_or_now',
+            pacingMode:            ol.limits.pacingMode      ?? 'cadence',
+            cadenceMinutes:        ol.limits.cadenceMinutes  ?? 5,
+            sendWindowStartHour:   ol.limits.sendWindowStartHour   ?? 8,
+            sendWindowStartMinute: ol.limits.sendWindowStartMinute ?? 0,
+            sendWindowEndHour:     ol.limits.sendWindowEndHour      ?? 11,
+            sendWindowDays:        Array.isArray(ol.limits.sendWindowDays) ? ol.limits.sendWindowDays : [1,2,3,4,5],
+            sendWindowTimezone:    ol.limits.sendWindowTimezone     ?? 'America/New_York',
+            linkedinReleaseCap:    ol.limits.linkedinReleaseCap     ?? 25,
           });
         }
       } catch { /* non-fatal */ }
+      // Capacity hint (edit only) — the campaign-detail response carries the
+      // computed per-channel capacity for the current user + saved sequence.
+      if (campaign?.id) {
+        try {
+          const det = await apiFetch(`/prospecting-campaigns/${campaign.id}`);
+          if (det?.schedule?.capacity) setCapacity(det.schedule.capacity);
+        } catch { /* non-fatal */ }
+      }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const set = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
@@ -1478,12 +1500,17 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
       end_date:            form.end_date || null,
       status:              form.status,
       // Schedule overrides — backend treats null as "inherit from org".
-      // We always send all 5 fields so PUT can clear overrides cleanly.
-      daily_activation_cap:    schedule.dailyActivationCap,
-      send_window_start_hour:  schedule.sendWindowStartHour,
-      send_window_end_hour:    schedule.sendWindowEndHour,
-      send_window_days:        schedule.sendWindowDays,
-      send_window_timezone:    schedule.sendWindowTimezone,
+      // We always send all fields so PUT can clear overrides cleanly.
+      // linkedinReleaseCap persists into the repurposed daily_activation_cap.
+      daily_activation_cap:     schedule.linkedinReleaseCap,
+      send_window_start_hour:   schedule.sendWindowStartHour,
+      send_window_start_minute: schedule.sendWindowStartMinute,
+      send_window_end_hour:     schedule.sendWindowEndHour,
+      send_window_days:         schedule.sendWindowDays,
+      send_window_timezone:     schedule.sendWindowTimezone,
+      start_mode:               schedule.startMode,
+      pacing_mode:              schedule.pacingMode,
+      cadence_minutes:          schedule.cadenceMinutes,
     };
     try {
       if (isEdit) {
@@ -1592,6 +1619,7 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
                   value={schedule}
                   orgDefaults={orgDefaults}
                   onChange={setSchedule}
+                  capacity={capacity}
                 />
               </div>
             ) : (

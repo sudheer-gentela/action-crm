@@ -60,10 +60,17 @@ router.get('/', requireAdmin, async (req, res) => {
         // dailyActivationCap is the canonical name going forward. Defaults
         // match SendingScheduleResolver.DEFAULTS so the cascade is consistent.
         dailyActivationCap:    effectiveDailyCap,
-        sendWindowStartHour:   config.sendWindowStartHour ?? 9,
+        sendWindowStartHour:   config.sendWindowStartHour ?? 8,
+        sendWindowStartMinute: config.sendWindowStartMinute ?? 0,
         sendWindowEndHour:     config.sendWindowEndHour   ?? 11,
         sendWindowDays:        Array.isArray(config.sendWindowDays) ? config.sendWindowDays : [1,2,3,4,5],
         sendWindowTimezone:    config.sendWindowTimezone  ?? 'America/New_York',
+        // Unified sending schedule (2026_13)
+        startMode:             config.startMode      ?? 'fixed_or_now',
+        pacingMode:            config.pacingMode      ?? 'cadence',
+        cadenceMinutes:        config.cadenceMinutes  ?? 5,
+        // Soft per-day LinkedIn release cap (manual connection requests).
+        linkedinReleaseCap:    config.linkedinReleaseCap ?? config.dailyActivationCap ?? 25,
       },
       updatedAt: result.rows[0]?.updated_at || null,
     });
@@ -91,6 +98,12 @@ router.put('/', requireAdmin, async (req, res) => {
       sendWindowEndHour,
       sendWindowDays,
       sendWindowTimezone,
+      // Unified sending schedule (2026_13)
+      sendWindowStartMinute,
+      startMode,
+      pacingMode,
+      cadenceMinutes,
+      linkedinReleaseCap,
     } = req.body;
 
     // Validation
@@ -164,6 +177,25 @@ router.put('/', requireAdmin, async (req, res) => {
         }
       }
     }
+    // Unified sending schedule validations
+    if (sendWindowStartMinute !== undefined) {
+      const v = parseInt(sendWindowStartMinute);
+      if (isNaN(v) || v < 0 || v > 59) errors.push('sendWindowStartMinute must be between 0 and 59');
+    }
+    if (startMode !== undefined && !['on_activate', 'fixed', 'fixed_or_now'].includes(startMode)) {
+      errors.push('startMode must be on_activate, fixed, or fixed_or_now');
+    }
+    if (pacingMode !== undefined && !['cadence', 'spread'].includes(pacingMode)) {
+      errors.push('pacingMode must be cadence or spread');
+    }
+    if (cadenceMinutes !== undefined) {
+      const v = parseInt(cadenceMinutes);
+      if (isNaN(v) || v < 1 || v > 240) errors.push('cadenceMinutes must be between 1 and 240');
+    }
+    if (linkedinReleaseCap !== undefined) {
+      const v = parseInt(linkedinReleaseCap);
+      if (isNaN(v) || v < 1 || v > 200) errors.push('linkedinReleaseCap must be between 1 and 200');
+    }
     if (errors.length > 0) {
       return res.status(400).json({ error: { message: errors.join('; ') } });
     }
@@ -205,6 +237,14 @@ router.put('/', requireAdmin, async (req, res) => {
       sendWindowTimezone:  (typeof sendWindowTimezone === 'string' && sendWindowTimezone.trim())
                              ? sendWindowTimezone.trim()
                              : (existing.sendWindowTimezone || 'America/New_York'),
+      // Unified sending schedule (2026_13)
+      sendWindowStartMinute: coalesceInt(sendWindowStartMinute, existing.sendWindowStartMinute, 0),
+      startMode:  ['on_activate', 'fixed', 'fixed_or_now'].includes(startMode)
+                    ? startMode : (existing.startMode || 'fixed_or_now'),
+      pacingMode: ['cadence', 'spread'].includes(pacingMode)
+                    ? pacingMode : (existing.pacingMode || 'cadence'),
+      cadenceMinutes:     coalesceInt(cadenceMinutes,     existing.cadenceMinutes,     5),
+      linkedinReleaseCap: coalesceInt(linkedinReleaseCap, existing.linkedinReleaseCap ?? existing.dailyActivationCap, 25),
     };
 
     if (merged.defaultDailyLimit > merged.dailyLimitCeiling) {
