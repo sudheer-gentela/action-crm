@@ -129,24 +129,29 @@ async function resolveSender(dbClient, orgId, userId, clientId) {
 }
 
 // ── Capacity-aware sender pick (AUTO-SEND ONLY) ───────────────────────────────
-// Used by the auto-send branch to honor the per-account daily limit as a SOFT
-// gate: pick the active sender with the most remaining headroom; if every
-// account is at/over its effective limit, return status 'all_maxed' so the
-// firer DEFERS (retries next tick) instead of overshooting on autopilot.
-// Manual sends (sequences.routes.js draft send) are NOT routed through here —
-// a human can deliberately exceed the cap with a soft warning.
+// Used by the auto-send branch to honor two SOFT gates on autopilot:
+//   1. Daily limit — effective per-account = min(daily_limit ?? default, ceiling).
+//      A stale counter (last_reset_at < today) counts as 0 sent.
+//   2. Min-delay cooldown — an account is eligible only if it hasn't sent within
+//      its effective min-delay window. Effective min-delay =
+//      max(account.min_delay_minutes ?? defaultMinDelayMinutes, floor).
+// Picks the eligible account (has capacity AND cooled down) with the most
+// headroom. If accounts have capacity but are all still cooling down, returns
+// 'cooling_down'; if all are at their daily limit, 'all_maxed'. Both make the
+// firer DEFER to the next tick. Manual sends (sequences.routes.js draft send)
+// are NOT routed through here — a human sends whenever they choose.
 //
-// Effective per-account limit = min(daily_limit ?? defaultDailyLimit, ceiling).
-// A stale counter (last_reset_at < today) counts as 0 sent.
-//
-// Returns: { sender, status: 'ok' | 'all_maxed' | 'no_accounts' }
+// Returns: { sender, status: 'ok' | 'all_maxed' | 'cooling_down' | 'no_accounts' }
 async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, settings, now = new Date()) {
-  const defaultLimit = settings?.defaultDailyLimit ?? 50;
-  const ceiling      = settings?.dailyLimitCeiling ?? 100;
+  const defaultLimit    = settings?.defaultDailyLimit ?? 50;
+  const ceiling         = settings?.dailyLimitCeiling ?? 100;
+  const defaultMinDelay = settings?.defaultMinDelayMinutes ?? 5;
+  const minDelayFloor   = settings?.minDelayMinutesFloor ?? 2;
 
   const cols = `id, email, provider, display_name, signature, linkedin_signature,
                 access_token, refresh_token,
-                daily_limit, emails_sent_today, last_reset_at`;
+                daily_limit, emails_sent_today, last_reset_at,
+                min_delay_minutes, last_sent_at`;
   let rows = [];
   if (clientId) {
     const r = await dbClient.query(
@@ -177,6 +182,7 @@ async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, se
 
   const todayStr = now.toDateString();
   let best = null, bestRemaining = 0;
+  let anyCapacityButCooling = false;
   for (const row of rows) {
     const effLimit = Math.min(
       (row.daily_limit != null && row.daily_limit > 0) ? row.daily_limit : defaultLimit,
@@ -185,10 +191,24 @@ async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, se
     const resetToday = row.last_reset_at && new Date(row.last_reset_at).toDateString() === todayStr;
     const sentToday  = resetToday ? (row.emails_sent_today || 0) : 0;
     const remaining  = effLimit - sentToday;
-    if (remaining > 0 && remaining > bestRemaining) { best = row; bestRemaining = remaining; }
+    if (remaining <= 0) continue; // at/over daily limit
+
+    // Cooldown: effective min-delay, never below the org floor.
+    const effMinDelay = Math.max(
+      (row.min_delay_minutes != null ? row.min_delay_minutes : defaultMinDelay),
+      minDelayFloor
+    );
+    const cooledDown = effMinDelay <= 0 || !row.last_sent_at ||
+      (now.getTime() - new Date(row.last_sent_at).getTime()) >= effMinDelay * 60000;
+    if (!cooledDown) { anyCapacityButCooling = true; continue; }
+
+    if (remaining > bestRemaining) { best = row; bestRemaining = remaining; }
   }
-  if (!best) return { sender: null, status: 'all_maxed' };
-  return { sender: best, status: 'ok' };
+  if (best) return { sender: best, status: 'ok' };
+  // No eligible account: distinguish "still cooling down" (capacity exists, just
+  // too soon) from "all maxed" (no capacity left today). Both defer.
+  if (anyCapacityButCooling) return { sender: null, status: 'cooling_down' };
+  return { sender: null, status: 'all_maxed' };
 }
 
 // ── Append signature helper ───────────────────────────────────────────────────
@@ -476,14 +496,14 @@ const SequenceStepFirer = {
             const pick = await pickEmailSenderWithCapacity(
               client, enrollment.org_id, enrollment.enrolled_by, clientId, settings, new Date()
             );
-            if (pick.status === 'all_maxed') {
-              // All of this user's senders have hit their daily limit. Leave the
-              // step queued (no advance, no counter bump); the next tick after a
-              // counter resets — or after a manual send frees nothing but the
-              // day rolls over — will pick it up. This is the auto-send cap.
+            if (pick.status === 'all_maxed' || pick.status === 'cooling_down') {
+              // Defer (no advance, no counter bump); next tick retries.
+              //  - all_maxed:    every sender hit its daily limit → wait for reset
+              //  - cooling_down: capacity exists but every sender sent too
+              //    recently (min-delay) → wait for the cooldown to clear
               console.log(
                 `SequenceStepFirer: deferring enrollment ${enrollment.id} — ` +
-                `all senders for user ${enrollment.enrolled_by} at daily limit`
+                `senders for user ${enrollment.enrolled_by} ${pick.status === 'cooling_down' ? 'within min-delay cooldown' : 'at daily limit'}`
               );
               continue;
             }

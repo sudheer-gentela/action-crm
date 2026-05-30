@@ -66,6 +66,9 @@ const DEFAULTS = Object.freeze({
   // Email fallbacks (used when a sender's daily_limit is NULL).
   defaultDailyLimit:    50,
   dailyLimitCeiling:    100,
+  // Per-account send spacing (auto-send cooldown). Floor behaves as a minimum.
+  defaultMinDelayMinutes: 5,
+  minDelayMinutesFloor:   2,
   // Cadence safety ceiling when no sendWindowEndHour is resolvable.
   cadenceSafetyEndHour: 18,
 });
@@ -163,6 +166,13 @@ async function resolveSettings({ orgId, campaignId = null }) {
       coerceInt(orgConfig.defaultDailyLimit) ?? DEFAULTS.defaultDailyLimit,
     dailyLimitCeiling:
       coerceInt(orgConfig.dailyLimitCeiling) ?? DEFAULTS.dailyLimitCeiling,
+
+    // Per-account send spacing (auto-send cooldown). The ceiling is a FLOOR:
+    // an account's effective min-delay is never below it. Both allow 0.
+    defaultMinDelayMinutes:
+      coerceNonNegInt(orgConfig.defaultMinDelayMinutes) ?? DEFAULTS.defaultMinDelayMinutes,
+    minDelayMinutesFloor:
+      coerceNonNegInt(orgConfig.minDelayMinutesCeiling) ?? DEFAULTS.minDelayMinutesFloor,
   });
 }
 
@@ -424,6 +434,11 @@ function coerceInt(v) {
   if (v === null || v === undefined) return null;
   const n = parseInt(v, 10);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+function coerceNonNegInt(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : null;
 }
 function coerceRange(v, min, max) {
   if (v === null || v === undefined || v === '') return null;
