@@ -63,8 +63,17 @@ function DealHealthSettings({ readOnly = false }) {
   const [error, setError]         = useState('');
   const [success, setSuccess]     = useState('');
 
-  const activeRole = sessionStorage.getItem('activeRole') || 'member';
-  const canEdit    = !readOnly && (activeRole === 'org-admin' || activeRole === 'super-admin');
+  // canEdit derives from the DURABLE org capability (stored user object), not
+  // the transient activeRole shell toggle. When SettingsView passes
+  // readOnly=false it has already confirmed admin; when this component is used
+  // standalone, fall back to the same durable check. (Previously this ANDed an
+  // activeRole === 'org-admin' test that is always false while the personal
+  // Settings shell is open, forcing permanent view-only.)
+  let _u = {};
+  try { _u = JSON.parse(localStorage.getItem('user') || '{}'); } catch (_) { _u = {}; }
+  const _orgRole = _u.org_role || _u.role || 'member';
+  const _isAdmin = _orgRole === 'owner' || _orgRole === 'admin' || _u.is_super_admin === true;
+  const canEdit  = !readOnly && _isAdmin;
 
   // State
   const [aiEnabled, setAiEnabled]         = useState(true);

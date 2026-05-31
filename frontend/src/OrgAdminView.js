@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import './OrgAdminView.css';
 import DealHealthSettings from './DealHealthSettings';
+import OrgSendingScheduleSettings from './OrgSendingScheduleSettings';
 import OAStages from './OAStages';
 import PlaybookPlaysEditor from './PlaybookPlaysEditor';
 import OAProducts from './OAProducts';
@@ -5926,7 +5927,7 @@ function OAProspectingModule() {
       </div>
 
       <ModuleSubTabs
-        tabs={[['general', 'General'], ['ai', 'AI Settings'], ['skill-inputs', 'Skill inputs'], ['calls', 'Call Settings'], ['twilio', 'Twilio'], ['escalation', 'Escalation'], ['enrichment', 'Enrichment'], ['playbook', 'Playbook']]}
+        tabs={[['general', 'General'], ['ai', 'AI Settings'], ['skill-inputs', 'Skill inputs'], ['calls', 'Call Settings'], ['twilio', 'Twilio'], ['sending-schedule', 'Sending Schedule'], ['escalation', 'Escalation'], ['enrichment', 'Enrichment'], ['playbook', 'Playbook']]}
         active={subTab}
         onChange={setSubTab}
 
@@ -5946,6 +5947,10 @@ function OAProspectingModule() {
 
       {/* ── Skill inputs sub-tab ── */}
       {subTab === 'skill-inputs' && <OAProspectingSkillConfig />}
+
+      {/* ── Sending Schedule sub-tab — org-wide send window, pacing, budget
+            split. Rendered editable here (admin console); readOnly=false. ── */}
+      {subTab === 'sending-schedule' && <OrgSendingScheduleSettings readOnly={false} />}
 
       {/* ── Playbook seed sub-tab ── */}
       {subTab === 'playbook' && (

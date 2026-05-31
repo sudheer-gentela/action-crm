@@ -67,8 +67,17 @@ NAV_GROUPS.forEach(g => g.items.forEach(item => {
 }));
 
 export default function SettingsView({ initialTab }) {
-  const orgRole  = sessionStorage.getItem('activeRole') || 'member';
-  const isAdmin  = orgRole === 'org-admin' || orgRole === 'super-admin';
+  // Admin gating is based on the user's DURABLE org capability (org_users.role
+  // via the stored user object), NOT the transient `activeRole` shell toggle.
+  // The shell toggle decides which app surface you're viewing; it shouldn't
+  // strip edit rights on admin-gated Settings pages. (Previously this read
+  // `activeRole`, which is always 'member' while the personal Settings shell is
+  // open — making every Admin-badged item permanently read-only. Mirrors
+  // App.js: isOrgAdmin = org_role in (owner, admin).)
+  let _u = {};
+  try { _u = JSON.parse(localStorage.getItem('user') || '{}'); } catch (_) { _u = {}; }
+  const orgRole  = _u.org_role || _u.role || 'member';
+  const isAdmin  = orgRole === 'owner' || orgRole === 'admin' || _u.is_super_admin === true;
   const readOnly = !isAdmin;
 
   // Default to 'alerts' unless a specific tab is requested
@@ -145,10 +154,23 @@ export default function SettingsView({ initialTab }) {
           </button>
         </div>
 
-        {NAV_GROUPS.map(group => (
+        {NAV_GROUPS.map(group => {
+          // Admin-only items now live in the Org Admin console (OrgAdminView),
+          // not the personal Settings list — keeps personal Settings personal
+          // and avoids showing admin functions where they can't be the user's
+          // org policy home. Strip adminOnly items (and their adminOnly
+          // children), and hide any group left empty.
+          const visibleItems = group.items
+            .map(item => item.children
+              ? { ...item, children: item.children.filter(c => !c.adminOnly) }
+              : item)
+            .filter(item => !item.adminOnly)
+            .filter(item => !item.children || item.children.length > 0);
+          if (visibleItems.length === 0) return null;
+          return (
           <div key={group.group} className="sv2-nav-group">
             {!collapsed && <div className="sv2-nav-group-label">{group.group}</div>}
-            {group.items.map(item => {
+            {visibleItems.map(item => {
               const isParentActive = item.id === activeId || (item.children && item.children.some(c => c.id === activeId));
               const isExpanded     = expanded[item.id];
               return (
@@ -189,7 +211,8 @@ export default function SettingsView({ initialTab }) {
               );
             })}
           </div>
-        ))}
+          );
+        })}
       </nav>
 
       {/* ── Main content ── */}
@@ -555,8 +578,11 @@ function MyConnectionsSettings() {
 // ── OrgConnectionsSettings — org-level integrations (admin view) ──────────────
 // Rendered under Personal > Connections > Org Connections
 function OrgConnectionsSettings() {
-  const orgRole = sessionStorage.getItem('activeRole') || 'member';
-  const isAdmin = orgRole === 'org-admin' || orgRole === 'super-admin';
+  // Durable org capability (see note in SettingsView) — not the shell toggle.
+  let _u = {};
+  try { _u = JSON.parse(localStorage.getItem('user') || '{}'); } catch (_) { _u = {}; }
+  const orgRole = _u.org_role || _u.role || 'member';
+  const isAdmin = orgRole === 'owner' || orgRole === 'admin' || _u.is_super_admin === true;
   const [orgIntegrations, setOrgIntegrations] = useState(null);
 
   useEffect(() => {
