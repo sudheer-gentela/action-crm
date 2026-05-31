@@ -1647,11 +1647,11 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
                   // by its leading step channel. We infer from budgetAllocation
                   // (the campaign appears in exactly one channel pool once saved);
                   // before save we can't know, so we show a generic note.
-                  let poolKey = null, pool = null, thisMember = null;
+                  let poolKey = null, pool = null;
                   if (budgetAllocation?.pools && campaign?.id) {
                     for (const k of Object.keys(budgetAllocation.pools)) {
                       const m = budgetAllocation.pools[k].members.find(x => x.id === campaign.id);
-                      if (m) { poolKey = k; pool = budgetAllocation.pools[k]; thisMember = m; break; }
+                      if (m) { poolKey = k; pool = budgetAllocation.pools[k]; break; }
                     }
                   }
                   const w = shareWeight === '' ? null : parseInt(shareWeight, 10);
