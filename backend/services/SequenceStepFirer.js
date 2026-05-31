@@ -264,6 +264,7 @@ const SequenceStepFirer = {
                  AND ss.step_order  = se.current_step
           WHERE se.status = 'active'
             AND se.next_step_due <= NOW()
+          ORDER BY se.next_step_due ASC, se.id ASC
           LIMIT 100`
       );
 

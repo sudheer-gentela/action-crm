@@ -34,6 +34,7 @@ export default function OrgSendingScheduleSettings({ readOnly }) {
           sendWindowDays:        Array.isArray(limits.sendWindowDays) ? limits.sendWindowDays : [1,2,3,4,5],
           sendWindowTimezone:    limits.sendWindowTimezone     ?? 'America/New_York',
           linkedinReleaseCap:    limits.linkedinReleaseCap     ?? 25,
+          budgetMode:            limits.budgetMode             ?? 'shared',
         });
         setLoading(false);
       } catch (err) {
@@ -91,6 +92,37 @@ export default function OrgSendingScheduleSettings({ readOnly }) {
         onChange={setSettings}
         disabled={readOnly || saving}
       />
+
+      {/* Budget split policy — org-level only */}
+      <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid #e5e7eb' }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
+          Budget split across campaigns
+        </div>
+        <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 10 }}>
+          How your daily LinkedIn / email budget is divided when you run several
+          campaigns at once.
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {[
+            { v: 'shared',   t: 'Shared pool', h: 'All campaigns draw from one daily budget, first-come-first-served. The campaign you activate first uses it first.' },
+            { v: 'weighted', t: 'Weighted split', h: 'Each campaign gets a % share of its channel\'s daily budget, so campaigns advance in parallel. Set each campaign\'s % in its sending schedule.' },
+          ].map(opt => (
+            <label key={opt.v} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, color: readOnly ? '#9ca3af' : '#374151', cursor: readOnly ? 'not-allowed' : 'pointer' }}>
+              <input
+                type="radio" name="budgetMode" value={opt.v}
+                checked={(settings.budgetMode || 'shared') === opt.v}
+                disabled={readOnly || saving}
+                onChange={() => setSettings({ ...settings, budgetMode: opt.v })}
+                style={{ marginTop: 2 }}
+              />
+              <span>
+                <span style={{ fontWeight: (settings.budgetMode || 'shared') === opt.v ? 600 : 400 }}>{opt.t}</span>
+                <span style={{ display: 'block', fontSize: 11, color: '#9ca3af' }}>{opt.h}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
 
       {error && (
         <div style={{

@@ -71,6 +71,8 @@ router.get('/', requireAdmin, async (req, res) => {
         cadenceMinutes:        config.cadenceMinutes  ?? 5,
         // Soft per-day LinkedIn release cap (manual connection requests).
         linkedinReleaseCap:    config.linkedinReleaseCap ?? config.dailyActivationCap ?? 25,
+        // Budget split policy across the owner's campaigns: 'shared' | 'weighted'.
+        budgetMode:            config.budgetMode ?? 'shared',
       },
       updatedAt: result.rows[0]?.updated_at || null,
     });
@@ -104,6 +106,7 @@ router.put('/', requireAdmin, async (req, res) => {
       pacingMode,
       cadenceMinutes,
       linkedinReleaseCap,
+      budgetMode,
     } = req.body;
 
     // Validation
@@ -196,6 +199,9 @@ router.put('/', requireAdmin, async (req, res) => {
       const v = parseInt(linkedinReleaseCap);
       if (isNaN(v) || v < 1 || v > 200) errors.push('linkedinReleaseCap must be between 1 and 200');
     }
+    if (budgetMode !== undefined && !['shared', 'weighted'].includes(budgetMode)) {
+      errors.push('budgetMode must be shared or weighted');
+    }
     if (errors.length > 0) {
       return res.status(400).json({ error: { message: errors.join('; ') } });
     }
@@ -245,6 +251,8 @@ router.put('/', requireAdmin, async (req, res) => {
                     ? pacingMode : (existing.pacingMode || 'cadence'),
       cadenceMinutes:     coalesceInt(cadenceMinutes,     existing.cadenceMinutes,     5),
       linkedinReleaseCap: coalesceInt(linkedinReleaseCap, existing.linkedinReleaseCap ?? existing.dailyActivationCap, 25),
+      budgetMode: ['shared', 'weighted'].includes(budgetMode)
+                    ? budgetMode : (existing.budgetMode || 'shared'),
     };
 
     if (merged.defaultDailyLimit > merged.dailyLimitCeiling) {

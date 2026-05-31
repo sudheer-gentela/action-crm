@@ -63,6 +63,8 @@ const DEFAULTS = Object.freeze({
   sendWindowTimezone:   'America/New_York',
   // Soft per-day LinkedIn/manual release cap (no sender account exists for it).
   linkedinReleaseCap:   25,
+  // Budget split policy: 'shared' (pooled FCFS) or 'weighted' (per-campaign).
+  budgetMode:           'shared',
   // Email fallbacks (used when a sender's daily_limit is NULL).
   defaultDailyLimit:    50,
   dailyLimitCeiling:    100,
@@ -153,6 +155,13 @@ async function resolveSettings({ orgId, campaignId = null }) {
       coerceTimezone(camp.send_window_timezone) ??
       coerceTimezone(orgConfig.sendWindowTimezone) ??
       DEFAULTS.sendWindowTimezone,
+
+    // Budget split policy across the owner's campaigns in a channel pool.
+    //   'shared'   → one pool, first-come-first-served (existingByDay owner-wide)
+    //   'weighted' → each campaign gets share_weight-normalized slice of the pool
+    // Org-level only (no per-campaign override — it's a global policy choice).
+    budgetMode:
+      coerceEnum(orgConfig.budgetMode, ['shared', 'weighted']) ?? DEFAULTS.budgetMode,
 
     // LinkedIn/manual soft release cap (repurposed daily_activation_cap).
     linkedinReleaseCap:
@@ -284,6 +293,13 @@ function scheduleBatchSlots({
   const capToday = isUncapped ? count + (sumExisting(existingByDay)) : (dayCap ? dayCap.todayRemaining : 0);
   const capFull  = isUncapped ? count + (sumExisting(existingByDay)) : (dayCap ? dayCap.perDayFull   : 0);
 
+  // on_activate means "start now": today's first batch is released immediately,
+  // bypassing BOTH the send-day and start-hour gating for TODAY ONLY. All
+  // future/overflow slots respect the normal window again. This makes "Start
+  // now, when I activate" do what it says even on a weekend or before the
+  // window opens — applies to every channel (manual tasks and email alike).
+  const startNow = settings.startMode === 'on_activate';
+
   let cursor = new Date(now.getTime());
   let safety = 730; // refuse to schedule > ~2 years out
   while (slots.length < count && safety-- > 0) {
@@ -291,12 +307,13 @@ function scheduleBatchSlots({
     const localDayKey = tzDate.dayKey;
     const localDow    = tzDate.dayOfWeek;
 
-    if (!settings.sendWindowDays.includes(localDow)) {
+    const isToday = isSameLocalDay(cursor, now, tz);
+    // Skip non-send days — EXCEPT today when startNow (explicit "start now").
+    if (!settings.sendWindowDays.includes(localDow) && !(isToday && startNow)) {
       cursor = advanceToNextDayLocal(cursor, tz);
       continue;
     }
 
-    const isToday   = isSameLocalDay(cursor, now, tz);
     const dayCapN   = isToday ? capToday : capFull;
     const usedToday = consumed[localDayKey] || 0;
     if (usedToday >= dayCapN) {
@@ -315,11 +332,13 @@ function scheduleBatchSlots({
     let effStartMin;
     if (!isToday) {
       effStartMin = startOfWindowMin;
+    } else if (startNow) {
+      // on_activate: release the first batch right now, regardless of channel,
+      // day, or window start hour.
+      effStartMin = nowMinIntoDay + 1;
     } else if (isManual) {
       // Manual channels: released at window start, or now if start passed.
       effStartMin = Math.max(startOfWindowMin, nowMinIntoDay + 1);
-    } else if (settings.startMode === 'on_activate') {
-      effStartMin = nowMinIntoDay + 1;
     } else if (settings.startMode === 'fixed') {
       // Fixed start: if today's start already passed, today gets no slots.
       if (nowMinIntoDay >= startOfWindowMin) {

@@ -141,16 +141,27 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                     fontSize: 12, color: '#374151', marginBottom: 14, lineHeight: 1.6,
                   }}>
                     <div>📊 Ready in research stage: <strong>{readyCount}</strong></div>
-                    {capInfo && capInfo.kind === 'email' && (
+                    {capInfo && capInfo.excluded && (
+                      <div style={{ color: '#b45309' }}>
+                        ⚠ No share % assigned — this campaign won't release in weighted mode.
+                        Set its share in the campaign's sending schedule.
+                      </div>
+                    )}
+                    {capInfo && capInfo.weighted && !capInfo.excluded && (
+                      <div>⚖️ Weighted allocation: <strong>{capInfo.label}</strong>
+                        {Number.isFinite(capInfo.todayRemaining) && <> · {capInfo.todayRemaining} left today</>}
+                      </div>
+                    )}
+                    {capInfo && !capInfo.weighted && capInfo.kind === 'email' && (
                       <div>✉️ Email capacity: <strong>{capInfo.label}</strong>
                         {Number.isFinite(capInfo.todayRemaining) && capInfo.activeSenders > 0 &&
                           <> · {capInfo.todayRemaining} left today</>}
                       </div>
                     )}
-                    {capInfo && capInfo.kind === 'linkedin' && (
+                    {capInfo && !capInfo.weighted && capInfo.kind === 'linkedin' && (
                       <div>🔗 LinkedIn release cap: <strong>{capInfo.perDayFull}/day</strong> (sent manually)</div>
                     )}
-                    {capInfo && capInfo.kind === 'uncapped' && (
+                    {capInfo && !capInfo.weighted && capInfo.kind === 'uncapped' && (
                       <div>📅 No daily cap for {ch} — limited only by the active days/window</div>
                     )}
                     <div style={{ color: '#6b7280', fontSize: 11, marginTop: 4 }}>

@@ -191,34 +191,128 @@ function validateAndCoerceSchedule(body) {
   return { values: out, errors };
 }
 
+// Resolve a campaign's leading (first-step) channel from its default sequence.
+async function leadingChannelOf(defaultSequenceId) {
+  if (!defaultSequenceId) return 'email';
+  const r = await pool.query(
+    `SELECT channel FROM sequence_steps
+      WHERE sequence_id = $1 ORDER BY step_order LIMIT 1`,
+    [defaultSequenceId]
+  );
+  return r.rows[0]?.channel || 'email';
+}
+
+// Load the weighted-split pool for a given user + channel: every ACTIVE campaign
+// owned by the user whose leading channel matches, with its share_weight. Used to
+// normalize a campaign's slice of the channel budget. Returns:
+//   { members: [{ id, name, weight }], totalWeight, assignedCount, unsetCount }
+// (weight null = unset; excluded from totalWeight and flagged.)
+async function loadChannelPool(orgId, userId, channel) {
+  const { rows } = await pool.query(
+    `SELECT c.id, c.name, c.share_weight,
+            (SELECT ss.channel FROM sequence_steps ss
+              WHERE ss.sequence_id = c.default_sequence_id
+              ORDER BY ss.step_order LIMIT 1) AS leading_channel
+       FROM prospecting_campaigns c
+      WHERE c.org_id   = $1
+        AND c.owner_id = $2
+        AND c.status   = 'active'
+        AND c.default_sequence_id IS NOT NULL`,
+    [orgId, userId]
+  );
+  const members = [];
+  let totalWeight = 0, assignedCount = 0, unsetCount = 0;
+  for (const r of rows) {
+    const lead = r.leading_channel || 'email';
+    if (lead !== channel) continue;
+    const w = (r.share_weight != null) ? r.share_weight : null;
+    if (w != null && w > 0) { totalWeight += w; assignedCount++; }
+    else { unsetCount++; }
+    members.push({ id: r.id, name: r.name, weight: w });
+  }
+  return { members, totalWeight, assignedCount, unsetCount };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper: resolve the effective sending schedule for a campaign plus the
 // per-channel daily capacity for a given user (the one who would activate).
-// Returns { settings, firstChannel, channelCap, emailCapacity }.
+// Returns { settings, firstChannel, channelCap, emailCapacity, allocation }.
 //   - emailCapacity is null unless firstChannel === 'email'.
 //   - channelCap.todayRemaining is Infinity for call/task (uncapped).
+//   - allocation describes the weighted slice when budgetMode='weighted'
+//     (null in shared mode). channelCap is REDUCED to the campaign's slice
+//     when weighted so the scheduler lays only that many slots/day.
 // Used by GET /:id, schedule-preview, and bulk-activate so all three agree.
 // ─────────────────────────────────────────────────────────────────────────────
 async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenceId) {
   const settings = await SendingSchedule.resolveSettings({ orgId, campaignId });
-  let firstChannel = 'email';
-  if (defaultSequenceId) {
-    const r = await pool.query(
-      `SELECT channel FROM sequence_steps
-        WHERE sequence_id = $1 ORDER BY step_order LIMIT 1`,
-      [defaultSequenceId]
-    );
-    firstChannel = r.rows[0]?.channel || 'email';
-  }
+  const firstChannel = await leadingChannelOf(defaultSequenceId);
+
   const emailCapacity = firstChannel === 'email'
     ? await SendingSchedule.resolveEmailCapacity({ orgId, userId, settings })
     : null;
-  const channelCap = SendingSchedule.resolveChannelDailyCap(firstChannel, { emailCapacity, settings });
-  return { settings, firstChannel, channelCap, emailCapacity };
+  let channelCap = SendingSchedule.resolveChannelDailyCap(firstChannel, { emailCapacity, settings });
+
+  // ── Weighted split ──────────────────────────────────────────────────────
+  // In weighted mode, divide the channel's full daily budget by this campaign's
+  // normalized share. Uncapped channels (call/task) are never split.
+  let allocation = null;
+  if (settings.budgetMode === 'weighted' && Number.isFinite(channelCap.perDayFull)) {
+    const pool_ = await loadChannelPool(orgId, userId, firstChannel);
+    const thisRow = pool_.members.find(m => m.id === Number(campaignId));
+    const thisWeight = thisRow ? thisRow.weight : null;
+    const totalWeight = pool_.totalWeight;
+
+    if (thisWeight == null || thisWeight <= 0 || totalWeight <= 0) {
+      // Unset (or nobody in the pool has a weight) → excluded: 0 capacity.
+      allocation = {
+        mode: 'weighted', excluded: true, sharePct: 0,
+        poolMembers: pool_.assignedCount, unsetMembers: pool_.unsetCount,
+        fullChannelPerDay: channelCap.perDayFull,
+      };
+      channelCap = { ...channelCap, todayRemaining: 0, perDayFull: 0 };
+    } else {
+      const sharePct  = thisWeight / totalWeight;            // normalized 0..1
+      const perDay    = Math.max(0, Math.floor(channelCap.perDayFull   * sharePct));
+      const today     = Number.isFinite(channelCap.todayRemaining)
+        ? Math.max(0, Math.floor(channelCap.todayRemaining * sharePct))
+        : channelCap.todayRemaining;
+      allocation = {
+        mode: 'weighted', excluded: false,
+        sharePct: Math.round(sharePct * 100),
+        weight: thisWeight, totalWeight,
+        poolMembers: pool_.assignedCount, unsetMembers: pool_.unsetCount,
+        fullChannelPerDay: channelCap.perDayFull,
+        allocatedPerDay: perDay,
+      };
+      channelCap = { ...channelCap, perDayFull: perDay, todayRemaining: today };
+    }
+  }
+
+  return { settings, firstChannel, channelCap, emailCapacity, allocation };
 }
 
 // Build a UI-friendly capacity descriptor (e.g. "2 × 50 = 100/day").
-function describeCapacity(firstChannel, channelCap, emailCapacity, settings) {
+function describeCapacity(firstChannel, channelCap, emailCapacity, settings, allocation = null) {
+  // Weighted split — show the campaign's slice and the basis.
+  if (allocation && allocation.mode === 'weighted') {
+    if (allocation.excluded) {
+      return {
+        kind: firstChannel, weighted: true, excluded: true,
+        perDayFull: 0, todayRemaining: 0,
+        label: `No share assigned — this campaign won't release in weighted mode until you set a percentage. (${allocation.unsetMembers} unset in this ${firstChannel} pool)`,
+      };
+    }
+    const base = firstChannel === 'linkedin' ? 'LinkedIn requests' : 'emails';
+    return {
+      kind: firstChannel, weighted: true, excluded: false,
+      sharePct:       allocation.sharePct,
+      perDayFull:     allocation.allocatedPerDay,
+      todayRemaining: channelCap.todayRemaining,
+      fullChannelPerDay: allocation.fullChannelPerDay,
+      label: `${allocation.sharePct}% of ${allocation.fullChannelPerDay} ${base}/day = ${allocation.allocatedPerDay}/day`,
+    };
+  }
   if (firstChannel === 'email' && emailCapacity) {
     const perAccount = emailCapacity.perAccount.map(a => a.limit);
     const label = emailCapacity.activeSenders > 0
@@ -366,6 +460,7 @@ router.post('/', async (req, res) => {
     goal_qualified, start_date, end_date,
     status = 'active',
     owner_id: bodyOwnerId,
+    share_weight: bodyShareWeight,
   } = req.body;
 
   if (!name || !name.trim()) {
@@ -432,14 +527,25 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // Validate share_weight (0..100) if provided.
+    let shareWeightVal = null;
+    if (bodyShareWeight !== undefined && bodyShareWeight !== null && bodyShareWeight !== '') {
+      const w = parseInt(bodyShareWeight, 10);
+      if (!Number.isFinite(w) || w < 0 || w > 100) {
+        return res.status(400).json({ error: { message: 'share_weight must be 0..100' } });
+      }
+      shareWeightVal = w;
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO prospecting_campaigns
              (org_id, name, description, solution, playbook_id, default_sequence_id,
               goal_qualified, start_date, end_date, status, owner_id, created_by,
               daily_activation_cap, send_window_start_hour, send_window_end_hour,
               send_window_days, send_window_timezone,
-              send_window_start_minute, start_mode, pacing_mode, cadence_minutes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+              send_window_start_minute, start_mode, pacing_mode, cadence_minutes,
+              share_weight)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        RETURNING *`,
       [
         req.orgId, name.trim(), description || null, solution || null,
@@ -457,6 +563,7 @@ router.post('/', async (req, res) => {
         sched.values.start_mode,
         sched.values.pacing_mode,
         sched.values.cadence_minutes,
+        shareWeightVal,
       ]
     );
 
@@ -465,6 +572,55 @@ router.post('/', async (req, res) => {
   } catch (err) {
     console.error('campaigns POST /', err);
     res.status(500).json({ error: { message: 'Failed to create campaign' } });
+  }
+});
+
+// ── GET /budget-allocation — per-channel pool overview for the current user ──
+// Shows, for each capped channel (email, linkedin), every ACTIVE campaign the
+// user owns that leads with that channel, its share weight + normalized
+// effective %, and which campaigns are unset (excluded in weighted mode).
+// Powers the schedule panel's running-total display + "won't run" warning.
+// MUST be registered before GET '/:id' so it isn't captured as an :id param.
+router.get('/budget-allocation', async (req, res) => {
+  try {
+    const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId });
+    const channels = ['email', 'linkedin'];
+    const out = { budgetMode: settings.budgetMode, pools: {} };
+
+    for (const channel of channels) {
+      const pool_ = await loadChannelPool(req.orgId, req.user.userId, channel);
+      let channelTotal = null;
+      if (channel === 'email') {
+        const cap = await SendingSchedule.resolveEmailCapacity({ orgId: req.orgId, userId: req.user.userId, settings });
+        channelTotal = cap.perDayFull;
+      } else if (channel === 'linkedin') {
+        channelTotal = settings.linkedinReleaseCap;
+      }
+      const members = pool_.members.map(m => {
+        const hasWeight = m.weight != null && m.weight > 0;
+        const effPct = (hasWeight && pool_.totalWeight > 0)
+          ? Math.round((m.weight / pool_.totalWeight) * 100) : 0;
+        return {
+          id: m.id, name: m.name, weight: m.weight,
+          excluded: !hasWeight,
+          effectivePct: effPct,
+          allocatedPerDay: (channelTotal != null && hasWeight)
+            ? Math.floor(channelTotal * (m.weight / pool_.totalWeight)) : 0,
+        };
+      });
+      out.pools[channel] = {
+        channelTotalPerDay: channelTotal,
+        totalWeight: pool_.totalWeight,
+        sumPct: members.reduce((a, b) => a + b.effectivePct, 0),
+        assignedCount: pool_.assignedCount,
+        unsetCount: pool_.unsetCount,
+        members,
+      };
+    }
+    res.json(out);
+  } catch (err) {
+    console.error('budget-allocation error:', err);
+    res.status(500).json({ error: { message: 'Failed to compute budget allocation' } });
   }
 });
 
@@ -688,7 +844,8 @@ router.get('/:id', async (req, res) => {
       scheduleBlock = {
         settings:     cap.settings,
         firstChannel: cap.firstChannel,
-        capacity:     describeCapacity(cap.firstChannel, cap.channelCap, cap.emailCapacity, cap.settings),
+        capacity:     describeCapacity(cap.firstChannel, cap.channelCap, cap.emailCapacity, cap.settings, cap.allocation),
+        allocation:   cap.allocation,
       };
     } catch (capErr) {
       console.warn('campaigns GET /:id capacity compute failed:', capErr.message);
@@ -804,6 +961,22 @@ router.put('/:id', async (req, res) => {
     const incomingPacing    = has('pacing_mode')  || has('pacingMode');
     const incomingCadence   = has('cadence_minutes') || has('cadenceMinutes');
 
+    // share_weight: validate if present in the body.
+    const incomingShareWeight = has('share_weight') || has('shareWeight');
+    let shareWeightUpd = existing.share_weight;
+    if (incomingShareWeight) {
+      const raw = req.body.share_weight ?? req.body.shareWeight;
+      if (raw === null || raw === '' || raw === undefined) {
+        shareWeightUpd = null; // explicit clear → unset (excluded in weighted mode)
+      } else {
+        const w = parseInt(raw, 10);
+        if (!Number.isFinite(w) || w < 0 || w > 100) {
+          return res.status(400).json({ error: { message: 'share_weight must be 0..100' } });
+        }
+        shareWeightUpd = w;
+      }
+    }
+
     // Build a COALESCE-style partial update: only provided fields change.
     const { rows } = await pool.query(
       `UPDATE prospecting_campaigns SET
@@ -825,7 +998,8 @@ router.put('/:id', async (req, res) => {
          send_window_start_minute = $18,
          start_mode             = $19,
          pacing_mode            = $20,
-         cadence_minutes        = $21
+         cadence_minutes        = $21,
+         share_weight           = $22
        WHERE id = $1 AND org_id = $2
        RETURNING id`,
       [
@@ -852,6 +1026,7 @@ router.put('/:id', async (req, res) => {
         incomingStartMode ? sched.values.start_mode              : existing.start_mode,
         incomingPacing    ? sched.values.pacing_mode             : existing.pacing_mode,
         incomingCadence   ? sched.values.cadence_minutes         : existing.cadence_minutes,
+        shareWeightUpd,
       ]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Campaign not found' } });
@@ -867,13 +1042,118 @@ router.put('/:id', async (req, res) => {
 // ── DELETE /:id — archive (default) or hard-delete (?hard=true) ───────────────
 // Archive keeps the campaign + un-assigns nothing (members stay linked).
 // Hard delete relies on the FK ON DELETE SET NULL to un-assign prospects.
+//
+// CASCADE (?withProspects=true) — ADMIN ONLY. Tears the campaign down for a
+// clean redo: cancels active/paused enrollments for the campaign's prospects
+// (so the firer stops sending), soft-deletes those prospects (deleted_at —
+// recoverable), then archives or hard-deletes the campaign. Always preview
+// first with ?dryRun=true to see the counts before committing.
 router.delete('/:id', async (req, res) => {
   try {
     const existing = await loadCampaign(req.orgId, req.params.id);
     if (!existing) return res.status(404).json({ error: { message: 'Campaign not found' } });
     if (!(await CampaignAccess.requireCanMutate(req, res, existing))) return;
 
-    if (req.query.hard === 'true') {
+    const hard          = req.query.hard === 'true';
+    const withProspects = req.query.withProspects === 'true';
+    const dryRun        = req.query.dryRun === 'true';
+
+    // ── Cascade path ────────────────────────────────────────────────────────
+    if (withProspects) {
+      // Admin-only: a clean teardown that removes prospects + stops sends is a
+      // destructive org action, not something a regular member should do.
+      if (!(await CampaignAccess.isAdmin(req))) {
+        return res.status(403).json({ error: {
+          message: 'Only an org admin can delete a campaign together with its prospects.',
+          code: 'ADMIN_REQUIRED',
+        } });
+      }
+
+      // Count what would be affected.
+      const [pRes, eRes] = await Promise.all([
+        pool.query(
+          `SELECT COUNT(*)::int AS n FROM prospects
+            WHERE org_id = $1 AND campaign_id = $2 AND deleted_at IS NULL`,
+          [req.orgId, req.params.id]
+        ),
+        pool.query(
+          `SELECT COUNT(*)::int AS n
+             FROM sequence_enrollments se
+             JOIN prospects p ON p.id = se.prospect_id
+            WHERE p.org_id = $1 AND p.campaign_id = $2
+              AND se.status IN ('active', 'paused')`,
+          [req.orgId, req.params.id]
+        ),
+      ]);
+      const prospectCount   = pRes.rows[0]?.n || 0;
+      const enrollmentCount = eRes.rows[0]?.n || 0;
+
+      if (dryRun) {
+        return res.json({
+          dryRun: true,
+          campaign:  { id: existing.id, name: existing.name },
+          wouldDelete: {
+            prospects:         prospectCount,   // soft-deleted (recoverable)
+            activeEnrollments: enrollmentCount, // cancelled (sending stops)
+            campaign:          hard ? 'hard-deleted' : 'archived',
+          },
+          message: `Will stop ${enrollmentCount} enrollment(s), soft-delete ${prospectCount} prospect(s), and ${hard ? 'permanently delete' : 'archive'} the campaign. Re-send without dryRun to confirm.`,
+        });
+      }
+
+      // Commit atomically.
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        // 1. Stop active/paused enrollments for this campaign's prospects so the
+        //    firer no longer processes them.
+        const stopRes = await client.query(
+          `UPDATE sequence_enrollments se
+              SET status = 'stopped', stopped_at = NOW(), stop_reason = 'campaign_deleted'
+             FROM prospects p
+            WHERE se.prospect_id = p.id
+              AND p.org_id = $1 AND p.campaign_id = $2
+              AND se.status IN ('active', 'paused')`,
+          [req.orgId, req.params.id]
+        );
+        // 2. Soft-delete the prospects (recoverable — deleted_at only).
+        const delRes = await client.query(
+          `UPDATE prospects SET deleted_at = NOW()
+            WHERE org_id = $1 AND campaign_id = $2 AND deleted_at IS NULL`,
+          [req.orgId, req.params.id]
+        );
+        // 3. Remove or archive the campaign.
+        if (hard) {
+          await client.query(
+            `DELETE FROM prospecting_campaigns WHERE id = $1 AND org_id = $2`,
+            [req.params.id, req.orgId]
+          );
+        } else {
+          await client.query(
+            `UPDATE prospecting_campaigns SET status = 'archived'
+              WHERE id = $1 AND org_id = $2`,
+            [req.params.id, req.orgId]
+          );
+        }
+        await client.query('COMMIT');
+        return res.json({
+          ok: true,
+          cascade: true,
+          campaign: hard ? 'deleted' : 'archived',
+          enrollmentsStopped: stopRes.rowCount,
+          prospectsDeleted:   delRes.rowCount,
+        });
+      } catch (txErr) {
+        await client.query('ROLLBACK');
+        console.error('campaigns DELETE cascade', txErr);
+        return res.status(500).json({ error: { message: 'Cascade delete failed: ' + txErr.message } });
+      } finally {
+        client.release();
+      }
+    }
+
+    // ── Campaign-only path (unchanged) ────────────────────────────────────────
+    if (hard) {
       await pool.query(
         `DELETE FROM prospecting_campaigns WHERE id = $1 AND org_id = $2`,
         [req.params.id, req.orgId]
@@ -1965,27 +2245,33 @@ router.post('/:id/bulk-activate', async (req, res) => {
     // respecting the per-channel daily capacity + send window. Settings +
     // capacity were resolved once above (capInfo).
     //
-    // existingByDay is OWNER-WIDE and CHANNEL-FILTERED: it counts every active,
-    // future-due enrollment for THIS activating user (enrolled_by) whose
-    // CURRENT step is the same channel — across all their campaigns/sequences.
-    // That makes the shared budget real: a second campaign owned by the same
-    // user sees the capacity the first already booked. (Uncapped channels skip
-    // this — there's no budget to share.)
+    // existingByDay counts already-booked, future-due slots so the new batch
+    // doesn't double up on days that already have work.
+    //   - SHARED mode: OWNER-WIDE + channel-filtered — every active enrollment
+    //     for this user whose current step is this channel, across all their
+    //     campaigns. Makes the shared pool real (a 2nd campaign sees the 1st's
+    //     bookings).
+    //   - WEIGHTED mode: scoped to THIS CAMPAIGN only — each campaign has its
+    //     own allocated slice, so it should only net against its own bookings.
+    // (Uncapped channels skip this — there's no budget to share.)
     const tz = scheduleSettings.sendWindowTimezone;
     const existingByDay = {};
     if (Number.isFinite(channelCap.perDayFull)) {
+      const weighted = scheduleSettings.budgetMode === 'weighted';
       const existingRes = await pool.query(
         `SELECT se.next_step_due
            FROM sequence_enrollments se
            JOIN sequence_steps ss
              ON ss.sequence_id = se.sequence_id
             AND ss.step_order  = se.current_step
+           JOIN prospects p ON p.id = se.prospect_id
           WHERE se.org_id      = $1
             AND se.enrolled_by = $2
             AND se.status      = 'active'
             AND se.next_step_due > NOW()
-            AND ss.channel     = $3`,
-        [req.orgId, req.user.userId, firstChannel]
+            AND ss.channel     = $3
+            AND ($4::int IS NULL OR p.campaign_id = $4)`,
+        [req.orgId, req.user.userId, firstChannel, weighted ? parseInt(req.params.id, 10) : null]
       );
       for (const r of existingRes.rows) {
         const local = SendingSchedule._internal.getLocalCalendarDate(new Date(r.next_step_due), tz);
@@ -2143,7 +2429,12 @@ router.post('/:id/bulk-activate', async (req, res) => {
     // exceeds today's room, surface a warning naming the real lever (sender
     // daily limit). Slots roll forward to the next available day automatically.
     let warning = null;
-    if (firstChannel === 'email' && emailCapacity) {
+    if (capInfo.allocation && capInfo.allocation.excluded) {
+      warning = {
+        code: 'NO_SHARE_ASSIGNED',
+        message: `This campaign has no share % assigned, so in weighted mode it won't release ${firstChannel} work. Assign it a percentage in the campaign's sending schedule, or switch the org budget mode back to shared.`,
+      };
+    } else if (firstChannel === 'email' && emailCapacity) {
       if (emailCapacity.activeSenders === 0) {
         warning = {
           code: 'NO_SENDERS',
@@ -2171,7 +2462,7 @@ router.post('/:id/bulk-activate', async (req, res) => {
       enrollments,
       skipped,
       cap: { ...limits, used: enrollments.length },
-      capacity: describeCapacity(firstChannel, channelCap, emailCapacity, scheduleSettings),
+      capacity: describeCapacity(firstChannel, channelCap, emailCapacity, scheduleSettings, capInfo.allocation),
       warning,
       campaignId: parseInt(req.params.id, 10),
       sequenceName: seq.name,
@@ -2229,21 +2520,25 @@ router.get('/:id/schedule-preview', async (req, res) => {
     const channelCap  = capInfo.channelCap;
     const tz = settings.sendWindowTimezone;
 
-    // Owner-wide, channel-filtered already-booked slots (shared budget).
+    // Already-booked slots: owner-wide in shared mode, per-campaign in weighted
+    // mode (matches bulk-activate so the preview equals what activation does).
     const existingByDay = {};
     if (Number.isFinite(channelCap.perDayFull)) {
+      const weighted = settings.budgetMode === 'weighted';
       const existingRes = await pool.query(
         `SELECT se.next_step_due
            FROM sequence_enrollments se
            JOIN sequence_steps ss
              ON ss.sequence_id = se.sequence_id
             AND ss.step_order  = se.current_step
+           JOIN prospects p ON p.id = se.prospect_id
           WHERE se.org_id      = $1
             AND se.enrolled_by = $2
             AND se.status      = 'active'
             AND se.next_step_due > NOW()
-            AND ss.channel     = $3`,
-        [req.orgId, req.user.userId, channel]
+            AND ss.channel     = $3
+            AND ($4::int IS NULL OR p.campaign_id = $4)`,
+        [req.orgId, req.user.userId, channel, weighted ? parseInt(req.params.id, 10) : null]
       );
       for (const r of existingRes.rows) {
         const local = SendingSchedule._internal.getLocalCalendarDate(new Date(r.next_step_due), tz);
@@ -2284,7 +2579,7 @@ router.get('/:id/schedule-preview', async (req, res) => {
       requestedCount: count,
       channel,
       settings,
-      capacity: describeCapacity(channel, channelCap, capInfo.emailCapacity, settings),
+      capacity: describeCapacity(channel, channelCap, capInfo.emailCapacity, settings, capInfo.allocation),
       existingScheduled: Object.values(existingByDay).reduce((a, b) => a + b, 0),
       summary: slots.length > 0 ? {
         days:    byDay.length,
