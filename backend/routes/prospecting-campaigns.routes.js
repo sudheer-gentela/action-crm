@@ -256,8 +256,21 @@ async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenc
   // ── Weighted split ──────────────────────────────────────────────────────
   // In weighted mode, divide the channel's full daily budget by this campaign's
   // normalized share. Uncapped channels (call/task) are never split.
+  //
+  // Model A: the pool total is the ORG-LEVEL channel budget — NOT the campaign's
+  // own per-campaign cap. Otherwise a campaign's LinkedIn-cap override would
+  // shrink the pool it's splitting (e.g. "50% of 20" when the org budget is 25),
+  // which double-counts the two knobs. So for LinkedIn we re-resolve the
+  // org-level cap (campaignId omitted) and use that as the base. Email is
+  // already org-level (sender accounts), so it's unchanged.
   let allocation = null;
   if (settings.budgetMode === 'weighted' && Number.isFinite(channelCap.perDayFull)) {
+    // Org-level channel total (ignores this campaign's per-campaign override).
+    let poolTotal = channelCap.perDayFull;
+    if (firstChannel === 'linkedin') {
+      const orgSettings = await SendingSchedule.resolveSettings({ orgId }); // no campaignId
+      poolTotal = orgSettings.linkedinReleaseCap;
+    }
     const pool_ = await loadChannelPool(orgId, userId, firstChannel);
     const thisRow = pool_.members.find(m => m.id === Number(campaignId));
     const thisWeight = thisRow ? thisRow.weight : null;
@@ -268,21 +281,24 @@ async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenc
       allocation = {
         mode: 'weighted', excluded: true, sharePct: 0,
         poolMembers: pool_.assignedCount, unsetMembers: pool_.unsetCount,
-        fullChannelPerDay: channelCap.perDayFull,
+        fullChannelPerDay: poolTotal,
       };
       channelCap = { ...channelCap, todayRemaining: 0, perDayFull: 0 };
     } else {
       const sharePct  = thisWeight / totalWeight;            // normalized 0..1
-      const perDay    = Math.max(0, Math.floor(channelCap.perDayFull   * sharePct));
-      const today     = Number.isFinite(channelCap.todayRemaining)
-        ? Math.max(0, Math.floor(channelCap.todayRemaining * sharePct))
-        : channelCap.todayRemaining;
+      const perDay    = Math.max(0, Math.floor(poolTotal * sharePct));
+      // today's remaining is capped by both the org pool share and any
+      // already-consumed capacity reflected in channelCap.todayRemaining.
+      const todayBase = Number.isFinite(channelCap.todayRemaining)
+        ? Math.min(channelCap.todayRemaining, poolTotal)
+        : poolTotal;
+      const today     = Math.max(0, Math.floor(todayBase * sharePct));
       allocation = {
         mode: 'weighted', excluded: false,
         sharePct: Math.round(sharePct * 100),
         weight: thisWeight, totalWeight,
         poolMembers: pool_.assignedCount, unsetMembers: pool_.unsetCount,
-        fullChannelPerDay: channelCap.perDayFull,
+        fullChannelPerDay: poolTotal,
         allocatedPerDay: perDay,
       };
       channelCap = { ...channelCap, perDayFull: perDay, todayRemaining: today };
@@ -575,52 +591,112 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Compute the per-channel budget allocation overview for a user (shared by
+// the GET overview and the PUT save-and-return).
+async function computeBudgetAllocation(orgId, userId) {
+  const settings = await SendingSchedule.resolveSettings({ orgId });
+  const channels = ['email', 'linkedin'];
+  const out = { budgetMode: settings.budgetMode, pools: {} };
+  for (const channel of channels) {
+    const pool_ = await loadChannelPool(orgId, userId, channel);
+    let channelTotal = null;
+    if (channel === 'email') {
+      const cap = await SendingSchedule.resolveEmailCapacity({ orgId, userId, settings });
+      channelTotal = cap.perDayFull;
+    } else if (channel === 'linkedin') {
+      channelTotal = settings.linkedinReleaseCap;
+    }
+    const members = pool_.members.map(m => {
+      const hasWeight = m.weight != null && m.weight > 0;
+      const effPct = (hasWeight && pool_.totalWeight > 0)
+        ? Math.round((m.weight / pool_.totalWeight) * 100) : 0;
+      return {
+        id: m.id, name: m.name, weight: m.weight,
+        excluded: !hasWeight,
+        effectivePct: effPct,
+        allocatedPerDay: (channelTotal != null && hasWeight)
+          ? Math.floor(channelTotal * (m.weight / pool_.totalWeight)) : 0,
+      };
+    });
+    out.pools[channel] = {
+      channelTotalPerDay: channelTotal,
+      totalWeight: pool_.totalWeight,
+      sumPct: members.reduce((a, b) => a + b.effectivePct, 0),
+      assignedCount: pool_.assignedCount,
+      unsetCount: pool_.unsetCount,
+      members,
+    };
+  }
+  return out;
+}
+
 // ── GET /budget-allocation — per-channel pool overview for the current user ──
 // Shows, for each capped channel (email, linkedin), every ACTIVE campaign the
 // user owns that leads with that channel, its share weight + normalized
 // effective %, and which campaigns are unset (excluded in weighted mode).
-// Powers the schedule panel's running-total display + "won't run" warning.
+// Powers the schedule panel's running-total display + "won't run" warning, and
+// the one-screen allocation editor.
 // MUST be registered before GET '/:id' so it isn't captured as an :id param.
 router.get('/budget-allocation', async (req, res) => {
   try {
-    const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId });
-    const channels = ['email', 'linkedin'];
-    const out = { budgetMode: settings.budgetMode, pools: {} };
-
-    for (const channel of channels) {
-      const pool_ = await loadChannelPool(req.orgId, req.user.userId, channel);
-      let channelTotal = null;
-      if (channel === 'email') {
-        const cap = await SendingSchedule.resolveEmailCapacity({ orgId: req.orgId, userId: req.user.userId, settings });
-        channelTotal = cap.perDayFull;
-      } else if (channel === 'linkedin') {
-        channelTotal = settings.linkedinReleaseCap;
-      }
-      const members = pool_.members.map(m => {
-        const hasWeight = m.weight != null && m.weight > 0;
-        const effPct = (hasWeight && pool_.totalWeight > 0)
-          ? Math.round((m.weight / pool_.totalWeight) * 100) : 0;
-        return {
-          id: m.id, name: m.name, weight: m.weight,
-          excluded: !hasWeight,
-          effectivePct: effPct,
-          allocatedPerDay: (channelTotal != null && hasWeight)
-            ? Math.floor(channelTotal * (m.weight / pool_.totalWeight)) : 0,
-        };
-      });
-      out.pools[channel] = {
-        channelTotalPerDay: channelTotal,
-        totalWeight: pool_.totalWeight,
-        sumPct: members.reduce((a, b) => a + b.effectivePct, 0),
-        assignedCount: pool_.assignedCount,
-        unsetCount: pool_.unsetCount,
-        members,
-      };
-    }
-    res.json(out);
+    res.json(await computeBudgetAllocation(req.orgId, req.user.userId));
   } catch (err) {
-    console.error('budget-allocation error:', err);
+    console.error('budget-allocation GET error:', err);
     res.status(500).json({ error: { message: 'Failed to compute budget allocation' } });
+  }
+});
+
+// ── PUT /budget-allocation — set share_weight for several campaigns at once ───
+// Body: { allocations: [{ campaignId, shareWeight }] }. shareWeight 0..100, or
+// null/'' to clear (unset → excluded). Only the caller's OWN campaigns are
+// touched (owner_id = caller). Returns the recomputed allocation.
+// MUST be registered before PUT '/:id'.
+router.put('/budget-allocation', async (req, res) => {
+  const { allocations } = req.body;
+  if (!Array.isArray(allocations)) {
+    return res.status(400).json({ error: { message: 'allocations must be an array' } });
+  }
+  // Validate all before writing any.
+  const normalized = [];
+  for (const a of allocations) {
+    const cid = parseInt(a.campaignId, 10);
+    if (!Number.isFinite(cid)) {
+      return res.status(400).json({ error: { message: 'each allocation needs a numeric campaignId' } });
+    }
+    let w = null;
+    if (a.shareWeight !== null && a.shareWeight !== undefined && a.shareWeight !== '') {
+      w = parseInt(a.shareWeight, 10);
+      if (!Number.isFinite(w) || w < 0 || w > 100) {
+        return res.status(400).json({ error: { message: `shareWeight for campaign ${cid} must be 0..100` } });
+      }
+    }
+    normalized.push({ cid, w });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const { cid, w } of normalized) {
+      // Scoped to the caller's own campaigns in this org — can't edit others'.
+      await client.query(
+        `UPDATE prospecting_campaigns
+            SET share_weight = $1
+          WHERE id = $2 AND org_id = $3 AND owner_id = $4`,
+        [w, cid, req.orgId, req.user.userId]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (txErr) {
+    await client.query('ROLLBACK');
+    console.error('budget-allocation PUT error:', txErr);
+    return res.status(500).json({ error: { message: 'Failed to save allocations: ' + txErr.message } });
+  } finally {
+    client.release();
+  }
+  try {
+    res.json(await computeBudgetAllocation(req.orgId, req.user.userId));
+  } catch (err) {
+    res.json({ ok: true }); // saved; recompute failed (non-fatal)
   }
 });
 
