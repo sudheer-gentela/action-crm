@@ -15,6 +15,7 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
   // widen to accommodate the drawer. Only relevant when the card is itself
   // expanded (isOpen) — collapsing the card auto-closes the drawer.
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const bodyRef = useRef(null);
 
   const linkedinUrl = draft.prospect?.linkedinUrl || draft.prospect?.linkedin_url || null;
@@ -310,16 +311,37 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
                   {body && (
                     <button
                       type="button"
-                      onClick={() => {
-                        navigator.clipboard?.writeText(body);
+                      onClick={async () => {
+                        try {
+                          if (navigator.clipboard?.writeText) {
+                            await navigator.clipboard.writeText(body);
+                          } else {
+                            // Fallback for non-secure contexts / older browsers.
+                            const ta = document.createElement('textarea');
+                            ta.value = body;
+                            ta.style.position = 'fixed';
+                            ta.style.opacity = '0';
+                            document.body.appendChild(ta);
+                            ta.select();
+                            document.execCommand('copy');
+                            document.body.removeChild(ta);
+                          }
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        } catch (e) {
+                          // Leave the label unchanged if copy genuinely failed.
+                        }
                       }}
                       style={{
-                        padding: '3px 10px', borderRadius: 6, border: '1px solid #bae6fd',
-                        background: '#fff', color: '#0369a1', fontSize: 11, fontWeight: 600,
-                        cursor: 'pointer',
+                        padding: '3px 10px', borderRadius: 6,
+                        border: `1px solid ${copied ? '#86efac' : '#bae6fd'}`,
+                        background: copied ? '#f0fdf4' : '#fff',
+                        color: copied ? '#15803d' : '#0369a1',
+                        fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                        transition: 'all 0.15s ease',
                       }}
                     >
-                      📋 Copy message
+                      {copied ? '✓ Copied' : '📋 Copy message'}
                     </button>
                   )}
                 </div>
