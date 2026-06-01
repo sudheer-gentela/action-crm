@@ -261,6 +261,7 @@ app.use('/api/org/outreach-limits', require('./routes/outreach-limits.routes'));
 // they're conceptually paired — org ceiling + per-user override).
 app.use('/api/me/activation-target', require('./routes/user-activation-target.routes'));
 app.use('/api/prospecting/inbox',   require('./routes/prospecting-inbox.routes'));
+app.use('/api/prospecting/activity', require('./routes/prospecting-activity.routes'));
 
 // ── Twilio (Phase 3) ──────────────────────────────────────────────────────
 // Admin endpoints — orgs admin/owner only (enforced inside the routes file).

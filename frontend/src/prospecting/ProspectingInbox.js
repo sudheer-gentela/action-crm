@@ -1,10 +1,393 @@
-// ProspectingInbox.js — extracted from ProspectingView.js (2026 module split).
-// Verbatim component bodies; only imports added. No behavior changes.
+// ProspectingInbox.js — multi-channel inbox shell.
+//
+// Sub-tab structure (Option A, agreed with product):
+//   [ Activity | Email Inbox ]   (Drafts will slot in as a third tab next)
+//
+//   • Activity     — NEW unified multi-channel feed (email + LinkedIn + call +
+//                    sequence events) from GET /prospecting/activity, with
+//                    type-filter chips driven by server counts.
+//   • Email Inbox  — the previous email-only view, preserved verbatim and
+//                    honestly labeled (it is email-only).
+//
+// The component still takes a `scope` prop and passes it through to both tabs.
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from './prospectingShared';
 
+const TEAL = '#0F9D8E';
+
+// Shared date-range options (used by both tabs).
+const RANGE_OPTS = [
+  { value: '7',   label: '7 days' },
+  { value: '14',  label: '14 days' },
+  { value: '30',  label: '30 days' },
+  { value: '90',  label: '90 days' },
+  { value: '',    label: 'All time' },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shell: sub-tab bar + active tab.
+// ─────────────────────────────────────────────────────────────────────────────
 function ProspectingInbox({ scope }) {
+  const [tab, setTab] = useState('activity'); // 'activity' | 'email'
+
+  const TABS = [
+    { value: 'activity', label: 'Activity' },
+    { value: 'email',    label: 'Email Inbox' },
+  ];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0, height: '100%' }}>
+      {/* ── Sub-tab bar ──────────────────────────────────────────────────────── */}
+      <div style={{
+        display: 'flex', gap: 4, alignItems: 'center', padding: '0 16px',
+        borderBottom: '1px solid #e5e7eb', background: '#fff', flexShrink: 0,
+      }}>
+        {TABS.map(t => {
+          const active = tab === t.value;
+          return (
+            <button
+              key={t.value}
+              onClick={() => setTab(t.value)}
+              style={{
+                padding: '11px 14px 9px', fontSize: 13, fontWeight: 600,
+                border: 'none', background: 'transparent', cursor: 'pointer',
+                color: active ? TEAL : '#6b7280',
+                borderBottom: active ? `2px solid ${TEAL}` : '2px solid transparent',
+                marginBottom: -1,
+              }}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Active tab ───────────────────────────────────────────────────────── */}
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        {tab === 'activity'
+          ? <ActivityFeed scope={scope} />
+          : <EmailInbox scope={scope} />}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Activity feed — unified multi-channel stream.
+// ─────────────────────────────────────────────────────────────────────────────
+function ActivityFeed({ scope }) {
+  const [items, setItems]       = useState([]);
+  const [counts, setCounts]     = useState({});
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
+  const [type, setType]         = useState('all');     // category filter
+  const [direction, setDirection] = useState('');      // '' | 'outbound' | 'inbound'
+  const [dateRange, setDateRange] = useState('30');
+  const [offset, setOffset]     = useState(0);
+  const [total, setTotal]       = useState(0);
+
+  const LIMIT = 50;
+
+  const fromDate = () => {
+    if (!dateRange) return undefined;
+    const d = new Date();
+    d.setDate(d.getDate() - parseInt(dateRange));
+    return d.toISOString();
+  };
+
+  const load = useCallback(async (newOffset = 0) => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = {
+        scope,
+        type,
+        limit: LIMIT,
+        offset: newOffset,
+        ...(direction && { direction }),
+        ...(dateRange && { from: fromDate() }),
+      };
+      const res = await apiFetch(`/prospecting/activity?${new URLSearchParams(params)}`);
+      setItems(res.items   || []);
+      setCounts(res.counts || {});
+      setTotal(res.total   || 0);
+      setOffset(newOffset);
+    } catch (err) {
+      setError(err.message || 'Failed to load activity');
+    } finally {
+      setLoading(false);
+    }
+  }, [scope, type, direction, dateRange]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { load(0); }, [load]);
+
+  // Refresh when the tab/window becomes visible again.
+  useEffect(() => {
+    const onVisibility = () => { if (document.visibilityState === 'visible') load(offset); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [load, offset]);
+
+  const TYPE_CHIPS = [
+    { value: 'all',      label: 'All' },
+    { value: 'email',    label: '✉️ Email' },
+    { value: 'linkedin', label: '🔗 LinkedIn' },
+    { value: 'call',     label: '📞 Calls' },
+    { value: 'sequence', label: '🔁 Sequence' },
+  ];
+
+  const DIRECTION_OPTS = [
+    { value: '',         label: 'All' },
+    { value: 'outbound', label: 'Outbound' },
+    { value: 'inbound',  label: 'Inbound' },
+  ];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+
+      {/* ── Type-filter chips ──────────────────────────────────────────────── */}
+      <div style={{
+        display: 'flex', gap: 6, alignItems: 'center', padding: '10px 16px',
+        borderBottom: '1px solid #f3f4f6', background: '#fff', flexShrink: 0, flexWrap: 'wrap',
+      }}>
+        {TYPE_CHIPS.map(chip => {
+          const active = type === chip.value;
+          const n = counts[chip.value];
+          return (
+            <button
+              key={chip.value}
+              onClick={() => setType(chip.value)}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '5px 12px', fontSize: 12, fontWeight: 600,
+                border: `1px solid ${active ? TEAL : '#e5e7eb'}`, borderRadius: 16,
+                background: active ? TEAL : '#fff',
+                color: active ? '#fff' : '#6b7280', cursor: 'pointer',
+                transition: 'all 0.12s ease',
+              }}
+            >
+              {chip.label}
+              {typeof n === 'number' && (
+                <span style={{
+                  fontSize: 11, fontWeight: 700,
+                  padding: '0 6px', borderRadius: 9, minWidth: 18, textAlign: 'center',
+                  background: active ? 'rgba(255,255,255,0.25)' : '#f3f4f6',
+                  color: active ? '#fff' : '#9ca3af',
+                }}>{n}</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Secondary filter bar (direction + date) ────────────────────────── */}
+      <div style={{
+        display: 'flex', gap: 8, alignItems: 'center', padding: '8px 16px',
+        borderBottom: '1px solid #e5e7eb', background: '#f9fafb', flexShrink: 0, flexWrap: 'wrap',
+      }}>
+        <div style={{ display: 'flex', borderRadius: 6, overflow: 'hidden', border: '1px solid #e5e7eb' }}>
+          {DIRECTION_OPTS.map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => setDirection(opt.value)}
+              style={{
+                padding: '5px 12px', fontSize: 12, fontWeight: 500, border: 'none',
+                background: direction === opt.value ? TEAL : '#fff',
+                color:      direction === opt.value ? '#fff' : '#6b7280',
+                cursor: 'pointer', borderRight: '1px solid #e5e7eb',
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        <select
+          value={dateRange}
+          onChange={e => setDateRange(e.target.value)}
+          style={{
+            padding: '5px 10px', border: '1px solid #e5e7eb', borderRadius: 6,
+            fontSize: 12, color: '#374151', background: '#fff', cursor: 'pointer',
+          }}
+        >
+          {RANGE_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 12, color: '#94a3b8' }}>
+            {total} event{total !== 1 ? 's' : ''}
+          </span>
+          <button
+            onClick={() => load(offset)}
+            disabled={loading}
+            title="Refresh activity"
+            style={{
+              padding: '5px 9px', fontSize: 13, border: '1px solid #e5e7eb',
+              borderRadius: 6, background: '#fff', color: '#6b7280',
+              cursor: loading ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {loading ? '⏳' : '🔄'}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Feed list ──────────────────────────────────────────────────────── */}
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {error && (
+          <div style={{ padding: '16px 20px', color: '#dc2626', fontSize: 13 }}>⚠️ {error}</div>
+        )}
+
+        {loading && items.length === 0 ? (
+          <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>Loading…</div>
+        ) : items.length === 0 ? (
+          <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>
+            <div style={{ fontSize: 28, marginBottom: 8 }}>📭</div>
+            <div style={{ fontWeight: 600, color: '#374151', marginBottom: 4 }}>No activity yet</div>
+            <div style={{ fontSize: 13 }}>
+              Emails, LinkedIn events, and calls will appear here as you work prospects.
+            </div>
+          </div>
+        ) : (
+          <>
+            <div>
+              {items.map((it, i) => (
+                <ActivityRow key={`${it.refTable}-${it.refId}-${i}`} item={it} />
+              ))}
+            </div>
+
+            {/* Pagination */}
+            {total > LIMIT && (
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 8, padding: '12px 16px', borderTop: '1px solid #f3f4f6' }}>
+                <button
+                  disabled={offset === 0 || loading}
+                  onClick={() => load(Math.max(0, offset - LIMIT))}
+                  style={{ padding: '5px 14px', border: '1px solid #e5e7eb', borderRadius: 6, background: offset === 0 ? '#f9fafb' : '#fff', color: '#374151', cursor: offset === 0 ? 'default' : 'pointer', fontSize: 12 }}
+                >
+                  ← Prev
+                </button>
+                <span style={{ fontSize: 12, color: '#6b7280', padding: '5px 8px' }}>
+                  {offset + 1}–{Math.min(offset + LIMIT, total)} of {total}
+                </span>
+                <button
+                  disabled={offset + LIMIT >= total || loading}
+                  onClick={() => load(offset + LIMIT)}
+                  style={{ padding: '5px 14px', border: '1px solid #e5e7eb', borderRadius: 6, background: offset + LIMIT >= total ? '#f9fafb' : '#fff', color: '#374151', cursor: offset + LIMIT >= total ? 'default' : 'pointer', fontSize: 12 }}
+                >
+                  Next →
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Per-channel row rendering ─────────────────────────────────────────────────
+const CHANNEL_VISUAL = {
+  email:    { icon: '✉️', tint: '#eff6ff', accent: '#1d4ed8' },
+  linkedin: { icon: '🔗', tint: '#eff8fc', accent: '#0077B5' },
+  call:     { icon: '📞', tint: '#f0fdf4', accent: '#15803d' },
+  sequence: { icon: '🔁', tint: '#fdf4ff', accent: '#a21caf' },
+  system:   { icon: '•',  tint: '#f9fafb', accent: '#6b7280' },
+};
+
+function ActivityRow({ item }) {
+  const visual = CHANNEL_VISUAL[item.category] || CHANNEL_VISUAL.system;
+  const p = item.prospect || {};
+  const actor = item.actor;
+  const isInbound = item.direction === 'received';
+
+  const when = item.occurredAt
+    ? new Date(item.occurredAt).toLocaleString(undefined, {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+      })
+    : '—';
+
+  return (
+    <div style={{
+      display: 'flex', gap: 12, padding: '12px 16px',
+      borderBottom: '1px solid #f3f4f6',
+      background: isInbound ? '#f0fdf4' : '#fff',
+    }}>
+      {/* Channel icon */}
+      <div style={{
+        flexShrink: 0, width: 34, height: 34, borderRadius: 8,
+        background: visual.tint, display: 'flex', alignItems: 'center',
+        justifyContent: 'center', fontSize: 16,
+      }}>
+        {visual.icon}
+      </div>
+
+      {/* Body */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 600, color: '#1a202c', fontSize: 13 }}>
+            {p.firstName} {p.lastName}
+          </span>
+          {p.companyName && (
+            <span style={{ fontSize: 12, color: '#94a3b8' }}>· {p.companyName}</span>
+          )}
+          <span style={{
+            fontSize: 11, fontWeight: 600, color: visual.accent,
+            padding: '1px 8px', borderRadius: 10, background: visual.tint,
+          }}>
+            {item.label}
+          </span>
+          {isInbound && (
+            <span style={{ fontSize: 11, padding: '1px 8px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
+              ↩ Inbound
+            </span>
+          )}
+        </div>
+
+        {item.summary && (
+          <div style={{
+            marginTop: 3, fontSize: 13, color: '#374151',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {item.category === 'email' && isInbound ? '↩ ' : ''}{item.summary}
+          </div>
+        )}
+
+        {item.snippet && (
+          <div style={{
+            marginTop: 2, fontSize: 12, color: '#9ca3af',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {item.snippet}
+          </div>
+        )}
+
+        {/* Call rows link out to the Calls inbox for full detail. */}
+        {item.category === 'call' && (
+          <div style={{ marginTop: 3, fontSize: 11, color: visual.accent }}>
+            View detail in the Calls tab
+          </div>
+        )}
+      </div>
+
+      {/* Meta */}
+      <div style={{ flexShrink: 0, textAlign: 'right' }}>
+        <div style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>{when}</div>
+        {actor && (actor.firstName || actor.lastName) && (
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+            {actor.firstName} {actor.lastName}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Email Inbox — the prior email-only view, preserved verbatim (only renamed
+// from the component default to make the sub-tab honest).
+// ─────────────────────────────────────────────────────────────────────────────
+function EmailInbox({ scope }) {
   const [emails, setEmails]       = useState([]);
   const [stats, setStats]         = useState(null);
   const [loading, setLoading]     = useState(true);
@@ -81,14 +464,6 @@ function ProspectingInbox({ scope }) {
     { value: '',          label: 'All' },
     { value: 'outbound',  label: 'Sent' },
     { value: 'inbound',   label: 'Replies' },
-  ];
-
-  const RANGE_OPTS = [
-    { value: '7',   label: '7 days' },
-    { value: '14',  label: '14 days' },
-    { value: '30',  label: '30 days' },
-    { value: '90',  label: '90 days' },
-    { value: '',    label: 'All time' },
   ];
 
   return (
