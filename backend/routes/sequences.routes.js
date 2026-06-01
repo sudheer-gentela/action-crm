@@ -786,7 +786,7 @@ router.patch('/drafts/:logId', async (req, res) => {
 // Rep approves and sends the draft email via their prospecting sender account.
 // Mirrors the logic in POST /prospecting-actions/outreach-send.
 router.post('/drafts/:logId/send', async (req, res) => {
-  const { senderAccountId, confirmOverLimit } = req.body; // confirmOverLimit: send past the cap
+  const { senderAccountId } = req.body; // optional — omit for auto-rotation
   const client = await pool.connect();
   try {
     // ── 1. Load draft + enrollment + prospect ──────────────────────────────
@@ -891,14 +891,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
       sender.emails_sent_today = 0;
     }
 
-    // ── 4. Daily limit — SOFT gate ─────────────────────────────────────────
-    // Caps are pacing guidance, not a hard wall: a human can deliberately send
-    // past the limit. First attempt at/over the cap returns a 409 warning with
-    // the current count; the client re-submits with confirmOverLimit=true to
-    // proceed. The send still increments emails_sent_today, so the counter can
-    // climb past daily_limit — that overage IS the "sent more than my pace
-    // today" signal. (Auto-send, by contrast, stops at the cap — see
-    // SequenceStepFirer.pickEmailSenderWithCapacity.)
+    // ── 4. Enforce daily limit ─────────────────────────────────────────────
     const limitsRes = await client.query(
       `SELECT config FROM org_integrations
         WHERE org_id=$1 AND integration_type='prospecting_email'`,
@@ -907,19 +900,9 @@ router.post('/drafts/:logId/send', async (req, res) => {
     const orgConfig = limitsRes.rows[0]?.config || {};
     const dailyLimit = Math.min(sender.daily_limit ?? (orgConfig.defaultDailyLimit || 50), orgConfig.dailyLimitCeiling || 100);
 
-    if (sender.emails_sent_today >= dailyLimit && !confirmOverLimit) {
-      return res.status(409).json({
-        error: {
-          message: `${sender.email} has sent ${sender.emails_sent_today}/${dailyLimit} today (daily pace reached). You can still send — confirm to go over.`,
-          code: 'OVER_DAILY_LIMIT',
-        },
-        overLimit: {
-          senderEmail:  sender.email,
-          sentToday:    sender.emails_sent_today,
-          dailyLimit,
-          // Client should re-POST with { confirmOverLimit: true } to proceed.
-          confirmField: 'confirmOverLimit',
-        },
+    if (sender.emails_sent_today >= dailyLimit) {
+      return res.status(429).json({
+        error: { message: `Daily send limit reached for ${sender.email} (${dailyLimit}/day). Resets tomorrow.`, code: 'DAILY_LIMIT_REACHED' }
       });
     }
 
@@ -2553,123 +2536,106 @@ router.post('/:id/preview', async (req, res) => {
 // The rep can re-enroll the prospect fresh after undo (the bulk-activate
 // candidate query filters out 'active'/'paused' enrollments, so 'stopped'
 // enrollments don't block re-enrollment).
+// Per-enrollment undo, run inside an already-open transaction (caller owns
+// BEGIN/COMMIT). Mirrors the single-undo behavior exactly so bulk and single
+// can't drift: lock row, discard unsent drafts, stop enrollment (stop_reason=
+// 'undone'), revert stage if still in 'outreach', log audit row. Returns a
+// per-enrollment result. Throws on hard failure (caller rolls back).
+async function undoEnrollmentTx(client, orgId, userId, enrollId) {
+  const eRes = await client.query(
+    `SELECT id, prospect_id, sequence_id, status
+       FROM sequence_enrollments
+      WHERE id = $1 AND org_id = $2
+      FOR UPDATE`,
+    [enrollId, orgId]
+  );
+  if (!eRes.rows.length) {
+    return { enrollmentId: Number(enrollId), notFound: true };
+  }
+  const enrollment = eRes.rows[0];
+
+  if (['stopped', 'completed'].includes(enrollment.status)) {
+    return {
+      enrollmentId: enrollment.id, wasAlreadyTerminal: true,
+      status: enrollment.status, draftsDiscarded: 0, stageReverted: null,
+    };
+  }
+
+  const draftRes = await client.query(
+    `DELETE FROM sequence_step_logs
+      WHERE enrollment_id = $1 AND org_id = $2 AND status = 'draft'
+    RETURNING id`,
+    [enrollment.id, orgId]
+  );
+  const draftsDiscarded = draftRes.rowCount;
+
+  await client.query(
+    `UPDATE sequence_enrollments
+        SET status = 'stopped', stopped_at = NOW(), stop_reason = 'undone'
+      WHERE id = $1 AND org_id = $2`,
+    [enrollment.id, orgId]
+  );
+
+  const pRes = await client.query(
+    `SELECT id, stage, research_notes, research_meta
+       FROM prospects WHERE id = $1 AND org_id = $2`,
+    [enrollment.prospect_id, orgId]
+  );
+  let stageReverted = null;
+  if (pRes.rows.length && pRes.rows[0].stage === 'outreach') {
+    const hadResearch = !!(
+      pRes.rows[0].research_notes ||
+      (pRes.rows[0].research_meta && (
+        pRes.rows[0].research_meta.signal_summary ||
+        pRes.rows[0].research_meta.researchBullets
+      ))
+    );
+    const newStage = hadResearch ? 'research' : 'target';
+    await client.query(
+      `UPDATE prospects
+          SET stage = $3, stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND org_id = $2`,
+      [enrollment.prospect_id, orgId, newStage]
+    );
+    stageReverted = newStage;
+  }
+
+  try {
+    await client.query(
+      `INSERT INTO prospecting_activities
+                   (org_id, prospect_id, user_id, activity_type, description, metadata)
+            VALUES ($1, $2, $3, 'enrollment_undone', $4, $5::jsonb)`,
+      [
+        orgId, enrollment.prospect_id, userId,
+        `Enrollment undone — ${draftsDiscarded} draft(s) discarded` +
+          (stageReverted ? `, stage reverted to '${stageReverted}'` : ''),
+        JSON.stringify({
+          enrollmentId: enrollment.id, sequenceId: enrollment.sequence_id,
+          draftsDiscarded, stageReverted,
+        }),
+      ]
+    );
+  } catch (actErr) {
+    console.warn('undo: activity log failed:', actErr.message);
+  }
+
+  return {
+    enrollmentId: enrollment.id, wasAlreadyTerminal: false,
+    status: 'stopped', draftsDiscarded, stageReverted,
+  };
+}
+
 router.post('/enrollments/:enrollId/undo', async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-
-    // Load enrollment, scope to org. Lock the row to prevent races with
-    // the firer picking up the same enrollment.
-    const eRes = await client.query(
-      `SELECT id, prospect_id, sequence_id, status
-         FROM sequence_enrollments
-        WHERE id = $1 AND org_id = $2
-        FOR UPDATE`,
-      [req.params.enrollId, req.orgId]
-    );
-    if (!eRes.rows.length) {
+    const result = await undoEnrollmentTx(client, req.orgId, req.user.userId, req.params.enrollId);
+    if (result.notFound) {
       await client.query('ROLLBACK');
       return res.status(404).json({ error: { message: 'Enrollment not found' } });
     }
-    const enrollment = eRes.rows[0];
-
-    if (['stopped', 'completed'].includes(enrollment.status)) {
-      // Already terminal — no-op. Return current state.
-      await client.query('ROLLBACK');
-      return res.json({
-        enrollmentId: enrollment.id,
-        wasAlreadyTerminal: true,
-        status: enrollment.status,
-        draftsDiscarded: 0,
-        stageReverted: null,
-      });
-    }
-
-    // Count + discard unsent drafts. Sent steps stay (audit trail).
-    const draftRes = await client.query(
-      `DELETE FROM sequence_step_logs
-        WHERE enrollment_id = $1 AND org_id = $2 AND status = 'draft'
-      RETURNING id`,
-      [enrollment.id, req.orgId]
-    );
-    const draftsDiscarded = draftRes.rowCount;
-
-    // Stop the enrollment with explicit stop_reason='undone' so audit
-    // queries can distinguish manual undo from other stops.
-    await client.query(
-      `UPDATE sequence_enrollments
-          SET status = 'stopped',
-              stopped_at = NOW(),
-              stop_reason = 'undone'
-        WHERE id = $1 AND org_id = $2`,
-      [enrollment.id, req.orgId]
-    );
-
-    // Revert prospect stage. The rule:
-    //   - had research_notes (or research_meta.signal_summary) → 'research'
-    //   - else → 'target'
-    //
-    // Only revert if the prospect is currently in 'outreach' — if they've
-    // already advanced beyond outreach (engaged, qualified, etc.) we leave
-    // the stage alone; undoing one enrollment shouldn't push them backwards
-    // through engagement.
-    const pRes = await client.query(
-      `SELECT id, stage, research_notes, research_meta
-         FROM prospects
-        WHERE id = $1 AND org_id = $2`,
-      [enrollment.prospect_id, req.orgId]
-    );
-    let stageReverted = null;
-    if (pRes.rows.length && pRes.rows[0].stage === 'outreach') {
-      const hadResearch = !!(
-        pRes.rows[0].research_notes ||
-        (pRes.rows[0].research_meta && (
-          pRes.rows[0].research_meta.signal_summary ||
-          pRes.rows[0].research_meta.researchBullets
-        ))
-      );
-      const newStage = hadResearch ? 'research' : 'target';
-      await client.query(
-        `UPDATE prospects
-            SET stage = $3,
-                stage_changed_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-          WHERE id = $1 AND org_id = $2`,
-        [enrollment.prospect_id, req.orgId, newStage]
-      );
-      stageReverted = newStage;
-    }
-
-    // Audit activity row. Non-fatal if it fails.
-    try {
-      await client.query(
-        `INSERT INTO prospecting_activities
-                     (org_id, prospect_id, user_id, activity_type, description, metadata)
-              VALUES ($1, $2, $3, 'enrollment_undone', $4, $5::jsonb)`,
-        [
-          req.orgId, enrollment.prospect_id, req.user.userId,
-          `Enrollment undone — ${draftsDiscarded} draft(s) discarded` +
-            (stageReverted ? `, stage reverted to '${stageReverted}'` : ''),
-          JSON.stringify({
-            enrollmentId:    enrollment.id,
-            sequenceId:      enrollment.sequence_id,
-            draftsDiscarded,
-            stageReverted,
-          }),
-        ]
-      );
-    } catch (actErr) {
-      console.warn('undo: activity log failed:', actErr.message);
-    }
-
     await client.query('COMMIT');
-    res.json({
-      enrollmentId:        enrollment.id,
-      wasAlreadyTerminal:  false,
-      status:              'stopped',
-      draftsDiscarded,
-      stageReverted,
-    });
+    res.json(result);
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('enrollment undo error:', err);
@@ -2678,5 +2644,49 @@ router.post('/enrollments/:enrollId/undo', async (req, res) => {
     client.release();
   }
 });
+
+// ── POST /enrollments/bulk-undo ──────────────────────────────────────────────
+// Bulk version of /undo. Body: { enrollmentIds: [1,2,3] }. Each is undone with
+// the SAME per-enrollment logic. All in ONE transaction — if any hard-fails,
+// nothing commits (all-or-nothing), so the rep never lands in a half-undone
+// state. Already-terminal enrollments are skipped (reported, not errored).
+router.post('/enrollments/bulk-undo', async (req, res) => {
+  const { enrollmentIds } = req.body;
+  if (!Array.isArray(enrollmentIds) || enrollmentIds.length === 0) {
+    return res.status(400).json({ error: { message: 'enrollmentIds must be a non-empty array' } });
+  }
+  if (enrollmentIds.length > 500) {
+    return res.status(400).json({ error: { message: 'Too many at once (max 500)' } });
+  }
+  const ids = [...new Set(enrollmentIds.map(n => parseInt(n, 10)).filter(Number.isFinite))];
+  if (!ids.length) {
+    return res.status(400).json({ error: { message: 'No valid enrollmentIds' } });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const results = [];
+    for (const id of ids) {
+      results.push(await undoEnrollmentTx(client, req.orgId, req.user.userId, id));
+    }
+    await client.query('COMMIT');
+    const undone          = results.filter(r => !r.notFound && !r.wasAlreadyTerminal).length;
+    const skipped         = results.filter(r => r.wasAlreadyTerminal).length;
+    const notFound        = results.filter(r => r.notFound).length;
+    const draftsDiscarded = results.reduce((a, r) => a + (r.draftsDiscarded || 0), 0);
+    res.json({
+      requested: ids.length, undone, skippedAlreadyTerminal: skipped, notFound,
+      draftsDiscarded, results,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('bulk-undo error:', err);
+    res.status(500).json({ error: { message: 'Bulk undo failed (nothing was changed): ' + err.message } });
+  } finally {
+    client.release();
+  }
+});
+
 
 module.exports = router;

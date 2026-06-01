@@ -49,6 +49,9 @@ function SequencesView({ prospects }) {
 
   // Draft inline-edit state: { [draftId]: { subject, body, editing, sending, error } }
   const [draftEdits,   setDraftEdits]   = useState({});
+  // Bulk-select state for the drafts list (Set of enrollmentIds).
+  const [selectedEnrollIds, setSelectedEnrollIds] = useState(() => new Set());
+  const [bulkUndoing, setBulkUndoing] = useState(false);
 
   // Open builder in edit mode — fetches full sequence (with steps) before opening.
   // The list endpoint only returns step_count, not the steps array.
@@ -208,6 +211,55 @@ function SequencesView({ prospects }) {
       );
     } catch (err) {
       setError('Failed to undo enrollment: ' + err.message);
+    }
+  };
+
+  // ── Bulk unenroll (drafts list) ──────────────────────────────────────────
+  // Distinct enrollmentIds currently shown (a single enrollment can have
+  // multiple draft steps; we de-dupe so the checkbox represents the enrollment).
+  const draftEnrollIds = [...new Set(drafts.map(d => d.enrollmentId).filter(Boolean))];
+  const allSelected = draftEnrollIds.length > 0 && draftEnrollIds.every(id => selectedEnrollIds.has(id));
+
+  const toggleSelectEnroll = (enrollmentId) => {
+    if (!enrollmentId) return;
+    setSelectedEnrollIds(prev => {
+      const next = new Set(prev);
+      if (next.has(enrollmentId)) next.delete(enrollmentId); else next.add(enrollmentId);
+      return next;
+    });
+  };
+  const toggleSelectAll = () => {
+    setSelectedEnrollIds(prev => {
+      if (draftEnrollIds.length > 0 && draftEnrollIds.every(id => prev.has(id))) return new Set();
+      return new Set(draftEnrollIds);
+    });
+  };
+
+  const handleBulkUndo = async () => {
+    const ids = [...selectedEnrollIds];
+    if (!ids.length) return;
+    if (!window.confirm(
+      `Stop ${ids.length} enrollment${ids.length === 1 ? '' : 's'} and discard all their unsent drafts?\n\n` +
+      'Sent emails and LinkedIn touches cannot be recalled — they stay in history.'
+    )) return;
+    setBulkUndoing(true);
+    try {
+      const result = await apiFetch('/sequences/enrollments/bulk-undo', {
+        method: 'POST',
+        body: JSON.stringify({ enrollmentIds: ids }),
+      });
+      // Drop all drafts whose enrollment was in the selection.
+      const removed = new Set(ids);
+      setDrafts(prev => prev.filter(d => !removed.has(d.enrollmentId)));
+      setSelectedEnrollIds(new Set());
+      window.alert(
+        `Stopped ${result.undone || 0} enrollment(s). ${result.draftsDiscarded || 0} draft(s) discarded.` +
+        (result.skippedAlreadyTerminal ? ` ${result.skippedAlreadyTerminal} already stopped.` : '')
+      );
+    } catch (err) {
+      setError('Bulk unenroll failed: ' + err.message);
+    } finally {
+      setBulkUndoing(false);
     }
   };
 
@@ -549,29 +601,72 @@ function SequencesView({ prospects }) {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {/* Bulk-select bar */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 12,
+                padding: '8px 12px', background: '#f8fafc',
+                border: '1px solid #e5e7eb', borderRadius: 8,
+                position: 'sticky', top: 0, zIndex: 1,
+              }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#374151', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} />
+                  Select all ({draftEnrollIds.length} enrollment{draftEnrollIds.length === 1 ? '' : 's'})
+                </label>
+                {selectedEnrollIds.size > 0 && (
+                  <>
+                    <span style={{ fontSize: 13, color: '#6b7280' }}>
+                      {selectedEnrollIds.size} selected
+                    </span>
+                    <button
+                      onClick={handleBulkUndo}
+                      disabled={bulkUndoing}
+                      style={{
+                        marginLeft: 'auto', padding: '6px 14px', borderRadius: 6,
+                        border: '1px solid #fca5a5', background: bulkUndoing ? '#fee2e2' : '#fff',
+                        color: '#b91c1c', fontSize: 13, fontWeight: 600,
+                        cursor: bulkUndoing ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      {bulkUndoing ? 'Unenrolling…' : `⏹ Unenroll ${selectedEnrollIds.size} selected`}
+                    </button>
+                  </>
+                )}
+              </div>
               {drafts.map(draft => {
                 const edit    = draftEdits[draft.id] || {};
                 const subject = edit.subject !== undefined ? edit.subject : draft.subject;
                 const body    = edit.body    !== undefined ? edit.body    : draft.body;
                 const isOpen  = !!edit.open;
+                const checked = !!draft.enrollmentId && selectedEnrollIds.has(draft.enrollmentId);
                 return (
-                  <DraftCard
-                    key={draft.id}
-                    draft={draft}
-                    subject={subject}
-                    body={body}
-                    isOpen={isOpen}
-                    sending={!!edit.sending}
-                    sendError={edit.error || null}
-                    onToggle={() => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], open: !isOpen } }))}
-                    onSubjectChange={v => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], subject: v } }))}
-                    onBodyChange={v => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], body: v } }))}
-                    onSend={() => handleSendDraft(draft)}
-                    onComplete={() => handleMarkDoneDraft(draft.id)}
-                    onDiscard={() => handleDiscardDraft(draft.id)}
-                    onConvertAndSend={() => handleConvertAndSendDraft(draft)}
-                    onUndoEnrollment={() => handleUndoEnrollment(draft)}
-                  />
+                  <div key={draft.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={!draft.enrollmentId}
+                      onChange={() => toggleSelectEnroll(draft.enrollmentId)}
+                      title={draft.enrollmentId ? 'Select this enrollment for bulk unenroll' : 'No enrollment linked'}
+                      style={{ marginTop: 16 }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <DraftCard
+                        draft={draft}
+                        subject={subject}
+                        body={body}
+                        isOpen={isOpen}
+                        sending={!!edit.sending}
+                        sendError={edit.error || null}
+                        onToggle={() => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], open: !isOpen } }))}
+                        onSubjectChange={v => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], subject: v } }))}
+                        onBodyChange={v => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], body: v } }))}
+                        onSend={() => handleSendDraft(draft)}
+                        onComplete={() => handleMarkDoneDraft(draft.id)}
+                        onDiscard={() => handleDiscardDraft(draft.id)}
+                        onConvertAndSend={() => handleConvertAndSendDraft(draft)}
+                        onUndoEnrollment={() => handleUndoEnrollment(draft)}
+                      />
+                    </div>
+                  </div>
                 );
               })}
             </div>
