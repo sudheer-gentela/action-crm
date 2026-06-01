@@ -53,6 +53,10 @@ export default function ProspectingView() {
   // and a dismissible banner is shown.
   const [campaignFilter, setCampaignFilter] = useState(null);
 
+  // Drafts deep-link context, set when arriving from a campaign's "Preview
+  // drafts". { campaignId, campaignName } | null.
+  const [draftsDeepLink, setDraftsDeepLink] = useState(null);
+
   // Slice 5: list of active campaigns the user can switch between from the
   // filter banner. Loaded once on mount and on campaign-filter changes so the
   // dropdown always reflects the current set. Pinned campaigns surface first.
@@ -149,6 +153,21 @@ export default function ProspectingView() {
     }
     window.addEventListener('campaign-filter', onCampaignFilter);
     return () => window.removeEventListener('campaign-filter', onCampaignFilter);
+  }, []);
+
+  // Drafts deep-link bridge: CampaignsView's "Preview drafts" dispatches a
+  // 'drafts-deep-link' window event. We catch it, store the campaign context,
+  // and switch to the Inbox so the user lands on Drafts pre-filtered to that
+  // campaign (with a back-to-campaign breadcrumb).
+  useEffect(() => {
+    function onDraftsDeepLink(e) {
+      const detail = e.detail || {};
+      if (!detail.campaignId) return;
+      setDraftsDeepLink({ campaignId: detail.campaignId, campaignName: detail.campaignName });
+      setViewMode('inbox');
+    }
+    window.addEventListener('drafts-deep-link', onDraftsDeepLink);
+    return () => window.removeEventListener('drafts-deep-link', onDraftsDeepLink);
   }, []);
 
   const isSelected = (id) => selectedIds.has(id);
@@ -369,12 +388,20 @@ export default function ProspectingView() {
 
   const totalActive = prospects.filter(p => !['converted', 'disqualified'].includes(p.stage)).length;
 
-  // LinkedIn funnel metrics (computed from channel_data on loaded prospects)
+  // LinkedIn funnel metrics (computed from channel_data on loaded prospects).
+  // Status vocabulary must match what the backend writes (sequences.routes.js
+  // and prospects.routes.js): the canonical ladder is
+  //   connection_request_sent → connection_accepted → message_sent
+  //   → reply_received → meeting_booked
+  // Each funnel stage counts that status plus everything downstream of it.
   const liMetrics = React.useMemo(() => {
+    const CONNECTED_PLUS = ['connection_accepted', 'message_sent', 'reply_received', 'meeting_booked'];
+    const MESSAGED_PLUS  = ['message_sent', 'reply_received', 'meeting_booked'];
+    const REPLIED_PLUS   = ['reply_received', 'meeting_booked'];
     const sent      = prospects.filter(p => p.channel_data?.linkedin?.connection_status).length;
-    const connected = prospects.filter(p => ['connected','message_sent','replied'].includes(p.channel_data?.linkedin?.connection_status)).length;
-    const messaged  = prospects.filter(p => ['message_sent','replied'].includes(p.channel_data?.linkedin?.connection_status)).length;
-    const replied   = prospects.filter(p => p.channel_data?.linkedin?.connection_status === 'replied').length;
+    const connected = prospects.filter(p => CONNECTED_PLUS.includes(p.channel_data?.linkedin?.connection_status)).length;
+    const messaged  = prospects.filter(p => MESSAGED_PLUS.includes(p.channel_data?.linkedin?.connection_status)).length;
+    const replied   = prospects.filter(p => REPLIED_PLUS.includes(p.channel_data?.linkedin?.connection_status)).length;
     const acceptRate = sent > 0 ? Math.round((connected / sent) * 100) : null;
     const replyRate  = messaged > 0 ? Math.round((replied / messaged) * 100) : null;
     return { sent, connected, messaged, replied, acceptRate, replyRate };
@@ -659,7 +686,14 @@ export default function ProspectingView() {
           }}
         />
       ) : (
-        <ProspectingInbox scope={scope} />
+        <ProspectingInbox
+          key={draftsDeepLink ? `dl-${draftsDeepLink.campaignId}` : 'inbox'}
+          scope={scope}
+          initialTab={draftsDeepLink ? 'drafts' : undefined}
+          initialCampaignId={draftsDeepLink?.campaignId}
+          campaignName={draftsDeepLink?.campaignName}
+          onBackToCampaign={draftsDeepLink ? () => { setDraftsDeepLink(null); setViewMode('campaigns'); } : undefined}
+        />
       )}
 
       {/* ── Bulk Enroll Modal ──────────────────────────────────────────────── */}
