@@ -248,6 +248,21 @@ async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenc
   const settings = await SendingSchedule.resolveSettings({ orgId, campaignId });
   const firstChannel = await leadingChannelOf(defaultSequenceId);
 
+  // The campaign's OWN per-campaign daily cap (raw daily_activation_cap), read
+  // directly so it can act as a hard per-campaign ceiling in BOTH modes:
+  //   release/day = min(computed allocation, campaignCap).
+  // (resolveSettings collapses campaign override + org default into one value,
+  // so we read the raw campaign column here to distinguish them.)
+  let campaignCap = null;
+  if (campaignId && firstChannel === 'linkedin') {
+    const cr = await pool.query(
+      `SELECT daily_activation_cap FROM prospecting_campaigns WHERE id=$1 AND org_id=$2`,
+      [campaignId, orgId]
+    );
+    const raw = cr.rows[0]?.daily_activation_cap;
+    if (raw != null && raw > 0) campaignCap = raw;
+  }
+
   const emailCapacity = firstChannel === 'email'
     ? await SendingSchedule.resolveEmailCapacity({ orgId, userId, settings })
     : null;
@@ -286,13 +301,21 @@ async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenc
       channelCap = { ...channelCap, todayRemaining: 0, perDayFull: 0 };
     } else {
       const sharePct  = thisWeight / totalWeight;            // normalized 0..1
-      const perDay    = Math.max(0, Math.floor(poolTotal * sharePct));
-      // today's remaining is capped by both the org pool share and any
-      // already-consumed capacity reflected in channelCap.todayRemaining.
-      const todayBase = Number.isFinite(channelCap.todayRemaining)
-        ? Math.min(channelCap.todayRemaining, poolTotal)
-        : poolTotal;
-      const today     = Math.max(0, Math.floor(todayBase * sharePct));
+      let perDay      = Math.max(0, Math.floor(poolTotal * sharePct));
+      const todayBase = (firstChannel === 'linkedin')
+        ? poolTotal
+        : (Number.isFinite(channelCap.todayRemaining)
+            ? Math.min(channelCap.todayRemaining, poolTotal)
+            : poolTotal);
+      let today       = Math.max(0, Math.floor(todayBase * sharePct));
+      // Per-campaign hard ceiling (option i — no redistribution of the slack):
+      // the campaign never releases more than its own cap/day, even if its
+      // share would allow more. Unused budget is simply not released.
+      let cappedBy = null;
+      if (campaignCap != null) {
+        if (perDay > campaignCap) { perDay = campaignCap; cappedBy = campaignCap; }
+        if (today  > campaignCap) { today  = campaignCap; cappedBy = campaignCap; }
+      }
       allocation = {
         mode: 'weighted', excluded: false,
         sharePct: Math.round(sharePct * 100),
@@ -300,9 +323,23 @@ async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenc
         poolMembers: pool_.assignedCount, unsetMembers: pool_.unsetCount,
         fullChannelPerDay: poolTotal,
         allocatedPerDay: perDay,
+        campaignCap: cappedBy,   // non-null when the cap actually bound
       };
       channelCap = { ...channelCap, perDayFull: perDay, todayRemaining: today };
     }
+  } else if (campaignCap != null && Number.isFinite(channelCap.perDayFull)) {
+    // SHARED mode (or any non-weighted capped channel): the per-campaign cap is
+    // still a hard ceiling. resolveSettings already lets a campaign override win
+    // for linkedinReleaseCap, so channelCap is usually == campaignCap here, but
+    // clamp explicitly so the guarantee holds regardless of how it was resolved.
+    const cap = campaignCap;
+    channelCap = {
+      ...channelCap,
+      perDayFull:     Math.min(channelCap.perDayFull, cap),
+      todayRemaining: Number.isFinite(channelCap.todayRemaining)
+        ? Math.min(channelCap.todayRemaining, cap)
+        : channelCap.todayRemaining,
+    };
   }
 
   return { settings, firstChannel, channelCap, emailCapacity, allocation };
@@ -320,13 +357,17 @@ function describeCapacity(firstChannel, channelCap, emailCapacity, settings, all
       };
     }
     const base = firstChannel === 'linkedin' ? 'LinkedIn requests' : 'emails';
+    const capped = allocation.campaignCap != null;
     return {
       kind: firstChannel, weighted: true, excluded: false,
       sharePct:       allocation.sharePct,
       perDayFull:     allocation.allocatedPerDay,
       todayRemaining: channelCap.todayRemaining,
       fullChannelPerDay: allocation.fullChannelPerDay,
-      label: `${allocation.sharePct}% of ${allocation.fullChannelPerDay} ${base}/day = ${allocation.allocatedPerDay}/day`,
+      campaignCap:    allocation.campaignCap,
+      label: capped
+        ? `Capped at ${allocation.campaignCap}/day (share would allow more of ${allocation.fullChannelPerDay} ${base}/day)`
+        : `${allocation.sharePct}% of ${allocation.fullChannelPerDay} ${base}/day = ${allocation.allocatedPerDay}/day`,
     };
   }
   if (firstChannel === 'email' && emailCapacity) {
