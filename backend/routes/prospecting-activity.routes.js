@@ -134,6 +134,7 @@ router.get('/', async (req, res) => {
       sequenceId,
       from,
       to,
+      search,
       includeSystem = 'false',
       limit         = 50,
       offset        = 0,
@@ -255,6 +256,26 @@ router.get('/', async (req, res) => {
       )`;
     };
 
+    // Prospect-name search predicate (joins prospects p in each branch). Mirrors
+    // the canonical /prospects predicate: name OR email OR company, ANDed after
+    // the existing scope/date/campaign predicates so it only narrows. Pushed
+    // BEFORE limit/offset so it's also carried by the counts query (countParams
+    // slices off only the trailing limit/offset), keeping chip counts consistent
+    // with the filtered feed. One param, referenced in both UNION branches.
+    let searchIdx = null;
+    const searchTerm = (search != null && String(search).trim() !== '')
+      ? `%${String(search).toLowerCase()}%`
+      : null;
+    if (searchTerm) { params.push(searchTerm); searchIdx = params.length; }
+    const searchPredicate = () => {
+      if (!searchIdx) return '';
+      return ` AND (
+        LOWER(p.first_name || ' ' || p.last_name) LIKE $${searchIdx}
+        OR LOWER(p.email) LIKE $${searchIdx}
+        OR LOWER(p.company_name) LIKE $${searchIdx}
+      )`;
+    };
+
     // ── Branch 1: emails ──────────────────────────────────────────────────────
     // direction filter applies here (sent/received). When the coarse type
     // filter is set to a non-email category, this branch is dropped entirely.
@@ -293,6 +314,7 @@ router.get('/', async (req, res) => {
         ${datePredicate('e.sent_at')}
         ${campaignPredicate()}
         ${sequenceExists()}
+        ${searchPredicate()}
     `;
 
     // ── Branch 2: prospecting_activities ──────────────────────────────────────
@@ -339,6 +361,7 @@ router.get('/', async (req, res) => {
         ${datePredicate('a.created_at')}
         ${campaignPredicate()}
         ${sequenceExists()}
+        ${searchPredicate()}
     `;
 
     // ── Assemble the UNION, applying the coarse `type` (category) filter on the

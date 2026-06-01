@@ -603,7 +603,7 @@ router.post('/enrollments/:enrollId/resume', async (req, res) => {
 // List all draft step logs for the current user.
 // Returns everything the UI needs to render + send the email.
 router.get('/drafts', async (req, res) => {
-  const { prospectId } = req.query;
+  const { prospectId, search } = req.query;
   try {
     // Sender resolution mirrors SequenceStepFirer.resolveSender():
     //   1. If prospect.client_id is set, prefer a client-owned sender.
@@ -688,6 +688,16 @@ router.get('/drafts', async (req, res) => {
     if (prospectId) {
       params.push(parseInt(prospectId));
       query += ` AND ssl.prospect_id = $${params.length}`;
+    }
+    // Prospect-name search filter (name OR email OR company), mirroring the
+    // canonical /prospects predicate. ANDed so it only narrows the draft list.
+    if (search != null && String(search).trim() !== '') {
+      params.push(`%${String(search).toLowerCase()}%`);
+      query += ` AND (
+        LOWER(p.first_name || ' ' || p.last_name) LIKE $${params.length}
+        OR LOWER(p.email) LIKE $${params.length}
+        OR LOWER(p.company_name) LIKE $${params.length}
+      )`;
     }
     query += ' ORDER BY ssl.scheduled_send_at ASC';
 

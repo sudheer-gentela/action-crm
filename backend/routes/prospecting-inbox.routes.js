@@ -35,6 +35,7 @@ router.get('/', async (req, res) => {
       direction = 'all',
       from,
       to,
+      search,
       limit     = 100,
       offset    = 0,
     } = req.query;
@@ -84,6 +85,20 @@ router.get('/', async (req, res) => {
       toDate.setHours(23, 59, 59, 999);
       dateFilter += ` AND e.sent_at <= $${params.length + 1}`;
       params.push(toDate);
+    }
+
+    // ── Prospect-name search filter ───────────────────────────────────────────
+    // Mirrors the canonical /prospects predicate (name OR email OR company).
+    // Pushed BEFORE pagination so the count query (which slices off the trailing
+    // limit/offset) carries it too. ANDed after scope/date so it only narrows.
+    let searchFilter = '';
+    if (search != null && String(search).trim() !== '') {
+      params.push(`%${String(search).toLowerCase()}%`);
+      searchFilter = ` AND (
+        LOWER(p.first_name || ' ' || p.last_name) LIKE $${params.length}
+        OR LOWER(p.email) LIKE $${params.length}
+        OR LOWER(p.company_name) LIKE $${params.length}
+      )`;
     }
 
     // ── Pagination ────────────────────────────────────────────────────────────
@@ -153,6 +168,7 @@ router.get('/', async (req, res) => {
         ${userFilter}
         ${directionFilter}
         ${dateFilter}
+        ${searchFilter}
         ${solicitedFilter}
 
       ORDER BY e.sent_at DESC
@@ -231,7 +247,7 @@ router.get('/', async (req, res) => {
 // Same filters as GET / but returns counts only — used by the stats bar
 router.get('/stats', async (req, res) => {
   try {
-    const { scope = 'mine', from, to } = req.query;
+    const { scope = 'mine', from, to, search } = req.query;
 
     const params = [req.orgId];
     let userFilter = '';
@@ -266,6 +282,19 @@ router.get('/stats', async (req, res) => {
       }
     }
 
+    // Same prospect-name search filter as the inbox GET, so the stats bar
+    // (total / sent / received / replyRate) stays consistent with the filtered
+    // list when a search is active.
+    let searchFilter = '';
+    if (search != null && String(search).trim() !== '') {
+      params.push(`%${String(search).toLowerCase()}%`);
+      searchFilter = ` AND (
+        LOWER(p.first_name || ' ' || p.last_name) LIKE $${params.length}
+        OR LOWER(p.email) LIKE $${params.length}
+        OR LOWER(p.company_name) LIKE $${params.length}
+      )`;
+    }
+
     const statsQuery = `
       SELECT
         COUNT(*)                                          AS total,
@@ -285,6 +314,7 @@ router.get('/stats', async (req, res) => {
         AND e.prospect_id IS NOT NULL
         ${userFilter}
         ${dateFilter}
+        ${searchFilter}
         -- Same solicited-reply filter as the inbox GET: inbound counts in
         -- stats only if a preceding outbound to the same prospect exists.
         AND (

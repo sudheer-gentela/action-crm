@@ -28,7 +28,7 @@ const RANGE_OPTS = [
 // ─────────────────────────────────────────────────────────────────────────────
 // Shell: sub-tab bar + active tab.
 // ─────────────────────────────────────────────────────────────────────────────
-function ProspectingInbox({ scope }) {
+function ProspectingInbox({ scope, search }) {
   const [tab, setTab] = useState('activity'); // 'activity' | 'email'
 
   const TABS = [
@@ -66,8 +66,8 @@ function ProspectingInbox({ scope }) {
       {/* ── Active tab ───────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {tab === 'activity'
-          ? <ActivityFeed scope={scope} />
-          : <EmailInbox scope={scope} />}
+          ? <ActivityFeed scope={scope} search={search} />
+          : <EmailInbox scope={scope} search={search} />}
       </div>
     </div>
   );
@@ -76,7 +76,7 @@ function ProspectingInbox({ scope }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Activity feed — unified multi-channel stream.
 // ─────────────────────────────────────────────────────────────────────────────
-function ActivityFeed({ scope }) {
+function ActivityFeed({ scope, search }) {
   const [items, setItems]       = useState([]);
   const [counts, setCounts]     = useState({});
   const [loading, setLoading]   = useState(true);
@@ -107,6 +107,7 @@ function ActivityFeed({ scope }) {
         offset: newOffset,
         ...(direction && { direction }),
         ...(dateRange && { from: fromDate() }),
+        ...(search && { search }),
       };
       const res = await apiFetch(`/prospecting/activity?${new URLSearchParams(params)}`);
       setItems(res.items   || []);
@@ -118,7 +119,7 @@ function ActivityFeed({ scope }) {
     } finally {
       setLoading(false);
     }
-  }, [scope, type, direction, dateRange]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scope, type, direction, dateRange, search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(0); }, [load]);
 
@@ -387,7 +388,7 @@ function ActivityRow({ item }) {
 // Email Inbox — the prior email-only view, preserved verbatim (only renamed
 // from the component default to make the sub-tab honest).
 // ─────────────────────────────────────────────────────────────────────────────
-function EmailInbox({ scope }) {
+function EmailInbox({ scope, search }) {
   const [emails, setEmails]       = useState([]);
   const [stats, setStats]         = useState(null);
   const [loading, setLoading]     = useState(true);
@@ -419,10 +420,11 @@ function EmailInbox({ scope }) {
         offset: newOffset,
         ...(direction && { direction }),
         ...(dateRange  && { from: fromDate() }),
+        ...(search && { search }),
       };
       const [emailsRes, statsRes] = await Promise.all([
         apiFetch(`/prospecting/inbox?${new URLSearchParams(params)}`),
-        apiFetch(`/prospecting/inbox/stats?${new URLSearchParams({ scope, ...(dateRange && { from: fromDate() }) })}`),
+        apiFetch(`/prospecting/inbox/stats?${new URLSearchParams({ scope, ...(dateRange && { from: fromDate() }), ...(search && { search }) })}`),
       ]);
       setEmails(emailsRes.emails || []);
       setTotal(emailsRes.total  || 0);
@@ -433,7 +435,7 @@ function EmailInbox({ scope }) {
     } finally {
       setLoading(false);
     }
-  }, [scope, direction, dateRange]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scope, direction, dateRange, search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(0); }, [load]);
 

@@ -5,7 +5,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from './prospectingShared';
 import LogCallModal from './LogCallModal';
 
-function CallsInboxView({ scope, onSelectProspect }) {
+function CallsInboxView({ scope, onSelectProspect, search }) {
   const [items, setItems]         = useState([]);
   const [counts, setCounts]       = useState({ all: 0, pending: 0, overdue: 0, completed: 0 });
   const [loading, setLoading]     = useState(true);
@@ -46,6 +46,7 @@ function CallsInboxView({ scope, onSelectProspect }) {
         filter,
         limit: 100,
         ...(dateRange && { from: fromDate() }),
+        ...(search && { search }),
       };
       const res = await apiFetch(`/prospect-calls/inbox?${new URLSearchParams(params)}`);
       setItems(res.items || []);
@@ -55,7 +56,7 @@ function CallsInboxView({ scope, onSelectProspect }) {
     } finally {
       setLoading(false);
     }
-  }, [scope, filter, dateRange]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scope, filter, dateRange, search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [load]);
 

@@ -8,7 +8,7 @@ import SequenceBuilder from '../SequenceBuilder';
 import SequenceEnrollModal from '../SequenceEnrollModal';
 import EntityIdHint from '../EntityIdHint';
 
-function SequencesView({ prospects }) {
+function SequencesView({ prospects, search }) {
   const [subTab,       setSubTab]       = useState('library');   // library | drafts | enrollments | stats
   const [sequences,    setSequences]    = useState([]);
   const [enrollments,  setEnrollments]  = useState([]);
@@ -112,14 +112,17 @@ function SequencesView({ prospects }) {
   const loadDrafts = useCallback(async () => {
     setLoadingDrafts(true);
     try {
-      const r = await apiFetch('/sequences/drafts');
+      const qs = (search && String(search).trim() !== '')
+        ? `?${new URLSearchParams({ search })}`
+        : '';
+      const r = await apiFetch(`/sequences/drafts${qs}`);
       setDrafts(r.drafts || []);
     } catch (err) {
       setError('Failed to load drafts: ' + err.message);
     } finally {
       setLoadingDrafts(false);
     }
-  }, []);
+  }, [search]);
 
   const handleConvertAndSendDraft = async (draft) => {
     const edit = draftEdits[draft.id] || {};
