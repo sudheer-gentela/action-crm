@@ -121,8 +121,8 @@ async function _processRevisitProspect({ orgId, prospectId, userId, meta }) {
     // 2. Create a notification in the notifications table
     await db.query(
       `INSERT INTO notifications
-         (org_id, user_id, type, title, body, entity_type, entity_id, metadata, is_read)
-       VALUES ($1, $2, 'revisit_prospect', $3, $4, 'prospect', $5, $6, false)`,
+         (org_id, user_id, type, title, body, entity_type, entity_id, metadata)
+       VALUES ($1, $2, 'revisit_prospect', $3, $4, 'prospect', $5, $6)`,
       [
         orgId,
         ownerUserId,
@@ -208,8 +208,8 @@ async function _processRevisitAccount({ orgId, accountId, userId, meta }) {
     // 2. Create notification
     await db.query(
       `INSERT INTO notifications
-         (org_id, user_id, type, title, body, entity_type, entity_id, metadata, is_read)
-       VALUES ($1, $2, 'revisit_account', $3, $4, 'account', $5, $6, false)`,
+         (org_id, user_id, type, title, body, entity_type, entity_id, metadata)
+       VALUES ($1, $2, 'revisit_account', $3, $4, 'account', $5, $6)`,
       [
         orgId,
         ownerUserId,

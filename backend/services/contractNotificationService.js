@@ -7,8 +7,8 @@ const { pool } = require('../config/database');
 async function insert(userId, orgId, type, title, body, refId) {
   try {
     await pool.query(
-      `INSERT INTO notifications (user_id,org_id,type,title,body,reference_id,reference_type,is_read,created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,'contract',FALSE,NOW()) ON CONFLICT DO NOTHING`,
+      `INSERT INTO notifications (user_id,org_id,type,title,body,entity_id,entity_type)
+       VALUES ($1,$2,$3,$4,$5,$6,'contract') ON CONFLICT DO NOTHING`,
       [userId, orgId, type, title, body, refId]
     );
   } catch (err) { console.error('CLM notify:', err.message); }
