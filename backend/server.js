@@ -410,8 +410,11 @@ app.listen(PORT, () => {
       }
     });
 
-    // Every 15 min: fire due sequence steps
-    cron.schedule('*/15 * * * *', async () => {
+    // Every 1 min: fire due sequence steps. The real send throttle is the
+    // per-sender min-delay cooldown (default 5 min) inside fireDueSteps —
+    // each tick sends at most one email per sender, so the cron must run
+    // MORE often than the cooldown for the cooldown to be the binding limit.
+    cron.schedule('* * * * *', async () => {
       try {
         const { fired, stopped, errors } = await require('./services/SequenceStepFirer').fireDueSteps();
         if (fired > 0 || stopped > 0) {
@@ -471,7 +474,7 @@ app.listen(PORT, () => {
     });
 
 
-    console.log('✅ Cron jobs initialized (proposals hourly, CLM hourly+daily, sequences 15m, SF write-back 04:30 UTC, stuck calls 30m, campaign SLA 09:00 UTC)');
+    console.log('✅ Cron jobs initialized (proposals hourly, CLM hourly+daily, sequences 1m, SF write-back 04:30 UTC, stuck calls 30m, campaign SLA 09:00 UTC)');
   } catch (err) {
     console.error('⚠️  Failed to initialize cron jobs:', err.message);
   }
