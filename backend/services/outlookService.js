@@ -33,7 +33,17 @@ async function getAuthUrl(state) {
     scopes:       SCOPES,
     redirectUri:  process.env.MICROSOFT_REDIRECT_URI,
     state,
-    prompt:       'consent',
+    // NOTE: do NOT use prompt: 'consent' here.
+    // On the Microsoft v2 endpoint the refresh_token is obtained via the
+    // 'offline_access' scope (already in SCOPES) — prompt=consent is NOT needed
+    // for that. Forcing prompt=consent re-shows the consent dialog on every
+    // sign-in; for a non-admin user in a tenant where this app requires admin
+    // consent, that forced re-consent renders as "Approval required" even when
+    // tenant-wide admin consent already exists. Omitting prompt lets Azure honor
+    // the existing admin consent and sign the user in silently.
+    // (This is the key difference from Google, where access_type=offline +
+    //  prompt=consent IS the documented way to force a refresh token.)
+    prompt:       'select_account',
     responseMode: 'query',
     responseType: 'code'
   };
