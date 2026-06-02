@@ -1471,7 +1471,7 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
             cadenceMinutes:        ol.limits.cadenceMinutes  ?? 5,
             sendWindowStartHour:   ol.limits.sendWindowStartHour   ?? 8,
             sendWindowStartMinute: ol.limits.sendWindowStartMinute ?? 0,
-            sendWindowEndHour:     ol.limits.sendWindowEndHour      ?? 11,
+            sendWindowEndHour:     ol.limits.sendWindowEndHour      ?? 18,
             sendWindowDays:        Array.isArray(ol.limits.sendWindowDays) ? ol.limits.sendWindowDays : [1,2,3,4,5],
             sendWindowTimezone:    ol.limits.sendWindowTimezone     ?? 'America/New_York',
             linkedinReleaseCap:    ol.limits.linkedinReleaseCap     ?? 25,

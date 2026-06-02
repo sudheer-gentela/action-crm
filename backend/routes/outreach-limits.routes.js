@@ -62,7 +62,7 @@ router.get('/', requireAdmin, async (req, res) => {
         dailyActivationCap:    effectiveDailyCap,
         sendWindowStartHour:   config.sendWindowStartHour ?? 8,
         sendWindowStartMinute: config.sendWindowStartMinute ?? 0,
-        sendWindowEndHour:     config.sendWindowEndHour   ?? 11,
+        sendWindowEndHour:     config.sendWindowEndHour   ?? 18,
         sendWindowDays:        Array.isArray(config.sendWindowDays) ? config.sendWindowDays : [1,2,3,4,5],
         sendWindowTimezone:    config.sendWindowTimezone  ?? 'America/New_York',
         // Unified sending schedule (2026_13)
@@ -236,7 +236,7 @@ router.put('/', requireAdmin, async (req, res) => {
       researchSlaDays:   coalesceInt(researchSlaDays,   existing.researchSlaDays,   14),
       // Sending schedule
       sendWindowStartHour: coalesceInt(sendWindowStartHour, existing.sendWindowStartHour, 9),
-      sendWindowEndHour:   coalesceInt(sendWindowEndHour,   existing.sendWindowEndHour,   11),
+      sendWindowEndHour:   coalesceInt(sendWindowEndHour,   existing.sendWindowEndHour,   18),
       sendWindowDays:      Array.isArray(sendWindowDays)
                              ? [...new Set(sendWindowDays.map(d => parseInt(d, 10)))].sort()
                              : (Array.isArray(existing.sendWindowDays) ? existing.sendWindowDays : [1,2,3,4,5]),

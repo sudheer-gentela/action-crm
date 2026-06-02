@@ -58,7 +58,7 @@ const DEFAULTS = Object.freeze({
   cadenceMinutes:       5,
   sendWindowStartHour:  8,            // 08:00 — configurable per org/campaign
   sendWindowStartMinute: 0,
-  sendWindowEndHour:    11,           // used as spread end + cadence safety ceiling
+  sendWindowEndHour:    18,           // 18:00 — used as spread end + cadence safety ceiling
   sendWindowDays:       [1, 2, 3, 4, 5],   // Mon–Fri
   sendWindowTimezone:   'America/New_York',
   // Soft per-day LinkedIn/manual release cap (no sender account exists for it).

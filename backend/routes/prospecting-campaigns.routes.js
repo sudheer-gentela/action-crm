@@ -291,8 +291,19 @@ async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenc
     const thisWeight = thisRow ? thisRow.weight : null;
     const totalWeight = pool_.totalWeight;
 
-    if (thisWeight == null || thisWeight <= 0 || totalWeight <= 0) {
-      // Unset (or nobody in the pool has a weight) → excluded: 0 capacity.
+    // No-contention case: this campaign is the ONLY member of its channel pool
+    // (e.g. a single user with a single active campaign in this channel). There
+    // is nothing to split against, so it owns 100% of the channel budget —
+    // regardless of whether a share_weight was ever assigned. Weighted-split
+    // semantics only start to matter once 2+ campaigns contend for the same
+    // budget, so a lone campaign must NOT be excluded for an unset weight.
+    const isSolePoolMember =
+      thisRow != null &&
+      pool_.members.length === 1 &&
+      pool_.members[0].id === Number(campaignId);
+
+    if (!isSolePoolMember && (thisWeight == null || thisWeight <= 0 || totalWeight <= 0)) {
+      // Unset AND contended (≥2 in the pool) → excluded: 0 capacity.
       allocation = {
         mode: 'weighted', excluded: true, sharePct: 0,
         poolMembers: pool_.assignedCount, unsetMembers: pool_.unsetCount,
@@ -300,7 +311,9 @@ async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenc
       };
       channelCap = { ...channelCap, todayRemaining: 0, perDayFull: 0 };
     } else {
-      const sharePct  = thisWeight / totalWeight;            // normalized 0..1
+      // sharePct = 1.0 when this campaign is the sole pool member (100% of the
+      // budget); otherwise its weight normalized over the pool's total weight.
+      const sharePct  = isSolePoolMember ? 1 : (thisWeight / totalWeight); // normalized 0..1
       let perDay      = Math.max(0, Math.floor(poolTotal * sharePct));
       const todayBase = (firstChannel === 'linkedin')
         ? poolTotal
@@ -317,7 +330,7 @@ async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenc
         if (today  > campaignCap) { today  = campaignCap; cappedBy = campaignCap; }
       }
       allocation = {
-        mode: 'weighted', excluded: false,
+        mode: 'weighted', excluded: false, soleMember: isSolePoolMember,
         sharePct: Math.round(sharePct * 100),
         weight: thisWeight, totalWeight,
         poolMembers: pool_.assignedCount, unsetMembers: pool_.unsetCount,

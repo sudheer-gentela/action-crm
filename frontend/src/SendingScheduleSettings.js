@@ -192,7 +192,7 @@ export default function SendingScheduleSettings({ mode = 'org', value, orgDefaul
 
   const DEF = {
     startMode: 'fixed_or_now', pacingMode: 'cadence', cadenceMinutes: 5,
-    sendWindowStartHour: 8, sendWindowStartMinute: 0, sendWindowEndHour: 11,
+    sendWindowStartHour: 8, sendWindowStartMinute: 0, sendWindowEndHour: 18,
     sendWindowDays: [1, 2, 3, 4, 5], sendWindowTimezone: 'America/New_York',
     linkedinReleaseCap: 25,
   };

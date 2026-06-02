@@ -30,7 +30,7 @@ export default function OrgSendingScheduleSettings({ readOnly }) {
           cadenceMinutes:        limits.cadenceMinutes  ?? 5,
           sendWindowStartHour:   limits.sendWindowStartHour   ?? 8,
           sendWindowStartMinute: limits.sendWindowStartMinute ?? 0,
-          sendWindowEndHour:     limits.sendWindowEndHour      ?? 11,
+          sendWindowEndHour:     limits.sendWindowEndHour      ?? 18,
           sendWindowDays:        Array.isArray(limits.sendWindowDays) ? limits.sendWindowDays : [1,2,3,4,5],
           sendWindowTimezone:    limits.sendWindowTimezone     ?? 'America/New_York',
           linkedinReleaseCap:    limits.linkedinReleaseCap     ?? 25,
