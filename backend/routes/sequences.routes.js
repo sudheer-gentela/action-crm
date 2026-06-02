@@ -2432,12 +2432,18 @@ router.get('/:id/stats', async (req, res) => {
     const totalEnrolled = Object.values(statusMap).reduce((a, b) => a + b, 0);
     const totalReplied  = statusMap['replied'] || 0;
 
+    // 'sent' must count BOTH 'sent' (email) and 'completed' (LinkedIn/call/task
+    // steps — /drafts/:logId/complete marks manual steps 'completed', not
+    // 'sent'). Counting only 'sent' here under-reported every non-email step to
+    // zero, so a LinkedIn-led sequence's funnel looked empty. This matches the
+    // Health endpoint and the byUser block below, which both use IN
+    // ('sent','completed').
     const stepFunnelRes = await pool.query(
       `SELECT
          ss.step_order,
-         COUNT(*) FILTER (WHERE ssl.status = 'sent')    AS sent,
-         COUNT(*) FILTER (WHERE ssl.status = 'skipped') AS skipped,
-         COUNT(*) FILTER (WHERE ssl.status = 'failed')  AS failed
+         COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed')) AS sent,
+         COUNT(*) FILTER (WHERE ssl.status = 'skipped')             AS skipped,
+         COUNT(*) FILTER (WHERE ssl.status = 'failed')              AS failed
        FROM sequence_step_logs ssl
        JOIN sequence_steps ss       ON ss.id = ssl.sequence_step_id
        JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
