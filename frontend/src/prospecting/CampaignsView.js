@@ -203,15 +203,30 @@ export default function CampaignsView() {
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState('');
   const [statusFilter, setStatusFilter] = useState('active'); // active|paused|completed|all
+  const [scope,       setScope]       = useState('mine');     // mine|team|org
+  const [caps,        setCaps]        = useState({ isAdmin: false, hasSubordinates: false });
   const [showCreate,  setShowCreate]  = useState(false);
   const [editing,     setEditing]     = useState(null);   // campaign being edited (or null)
   const [detailId,    setDetailId]    = useState(null);   // campaign id open in drawer
 
+  // Capability flags — server-authoritative (do NOT infer role client-side).
+  // Drives which scope tabs are offered: Team when the user has reports, Org
+  // when they're an admin/owner. Until this resolves, only "Mine" is shown.
+  useEffect(() => {
+    apiFetch('/prospecting-campaigns/me/context')
+      .then(c => setCaps({
+        isAdmin:         !!c?.isAdmin,
+        hasSubordinates: !!c?.hasSubordinates,
+      }))
+      .catch(() => {});  // non-fatal — list still works in "Mine" scope
+  }, []);
+
   const fetchCampaigns = useCallback(async () => {
     setLoading(true);
     try {
-      const qs = statusFilter === 'all' ? '' : `?status=${statusFilter}`;
-      const r = await apiFetch(`/prospecting-campaigns${qs}`);
+      const params = [`scope=${scope}`];
+      if (statusFilter !== 'all') params.push(`status=${statusFilter}`);
+      const r = await apiFetch(`/prospecting-campaigns?${params.join('&')}`);
       setCampaigns(r.campaigns || []);
       setError('');
     } catch (err) {
@@ -219,9 +234,15 @@ export default function CampaignsView() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter]);
+  }, [statusFilter, scope]);
 
   useEffect(() => { fetchCampaigns(); }, [fetchCampaigns]);
+
+  // Scope tabs offered to this user. "Mine" is always present; "Team" and
+  // "Org" appear only when the server says the user has that capability.
+  const scopeTabs = [{ key: 'mine', label: 'Mine' }];
+  if (caps.hasSubordinates) scopeTabs.push({ key: 'team', label: 'Team' });
+  if (caps.isAdmin)         scopeTabs.push({ key: 'org',  label: 'Org' });
 
   const handleSaved = () => {
     setShowCreate(false);
@@ -231,6 +252,38 @@ export default function CampaignsView() {
 
   return (
     <div className="pv-campaigns">
+      {/* Scope switcher — only shown when the user has more than one scope
+          available (i.e. they're a manager and/or an admin). Lets a manager
+          open a team member's campaign (Team) or an admin any campaign (Org)
+          to use the per-campaign delete lock in the detail drawer. */}
+      {scopeTabs.length > 1 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <span style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+            View
+          </span>
+          <div style={{ display: 'inline-flex', border: '1px solid #e5e7eb', borderRadius: 6, overflow: 'hidden' }}>
+            {scopeTabs.map((s, i) => (
+              <button
+                key={s.key}
+                onClick={() => setScope(s.key)}
+                style={{
+                  fontSize: 12, padding: '4px 14px', cursor: 'pointer', fontWeight: 600,
+                  border: 'none',
+                  borderLeft: i === 0 ? 'none' : '1px solid #e5e7eb',
+                  background: scope === s.key ? EMBER : '#fff',
+                  color: scope === s.key ? '#fff' : '#6b7280',
+                }}
+              >{s.label}</button>
+            ))}
+          </div>
+          <span style={{ fontSize: 11, color: '#9ca3af' }}>
+            {scope === 'mine' ? 'Your campaigns'
+              : scope === 'team' ? "Your team's campaigns"
+              : 'All campaigns in the org'}
+          </span>
+        </div>
+      )}
+
       {/* Sub-header */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -275,12 +328,18 @@ export default function CampaignsView() {
           textAlign: 'center', padding: '48px 20px', color: '#9ca3af', fontSize: 14,
         }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>🚀</div>
-          No {statusFilter !== 'all' ? statusFilter : ''} campaigns yet.
-          <div style={{ marginTop: 8 }}>
-            <button className="pv-btn-secondary" onClick={() => setShowCreate(true)}>
-              Create your first campaign
-            </button>
-          </div>
+          {scope === 'mine'
+            ? <>No {statusFilter !== 'all' ? statusFilter : ''} campaigns yet.</>
+            : scope === 'team'
+              ? <>No {statusFilter !== 'all' ? statusFilter : ''} campaigns in your team.</>
+              : <>No {statusFilter !== 'all' ? statusFilter : ''} campaigns in your org.</>}
+          {scope === 'mine' && (
+            <div style={{ marginTop: 8 }}>
+              <button className="pv-btn-secondary" onClick={() => setShowCreate(true)}>
+                Create your first campaign
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div style={{
@@ -390,6 +449,10 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
   const [deleteBusy,    setDeleteBusy]    = useState(false);
   const [deleteErr,     setDeleteErr]     = useState('');
   const [deleteTypedName, setDeleteTypedName] = useState('');  // must match name to confirm
+  // Per-campaign delete lock (set/cleared by admins/owners, or a manager for a
+  // team campaign). Visibility driven by server flag data.campaign.can_set_lock.
+  const [lockBusy, setLockBusy] = useState(false);
+  const [lockErr,  setLockErr]  = useState('');
   const [showImport,   setShowImport]   = useState(false);
   const [showEnroll,   setShowEnroll]   = useState(false);
   // Slice 2: batch-activation modal + pacing-driven CTA.
@@ -510,10 +573,10 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
       );
       setDeletePreview(r.wouldDelete || {});
     } catch (err) {
-      const msg = err.message || '';
-      setDeleteErr(/admin/i.test(msg) || err.code === 'ADMIN_REQUIRED'
-        ? 'Only an org admin can delete a campaign together with its prospects.'
-        : 'Could not prepare delete: ' + (msg || 'unknown error'));
+      // The server returns a specific, user-facing reason (owner-delete off,
+      // campaign locked, not the owner, …). Surface it as-is. The Delete
+      // button is normally gated on can_delete so users rarely land here.
+      setDeleteErr('Could not prepare delete: ' + (err.message || 'unknown error'));
     } finally {
       setDeleteBusy(false);
     }
@@ -537,6 +600,30 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
   };
 
   const cancelDelete = () => { setDeletePreview(null); setDeleteErr(''); setDeleteTypedName(''); };
+
+  // ── Per-campaign delete lock ─────────────────────────────────────────────
+  // Sets or clears delete_locked. Server enforces who may do this
+  // (canSetCampaignLock); the control is only rendered when can_set_lock.
+  const toggleLock = async () => {
+    if (!data) return;
+    const next = !(data.campaign?.delete_locked === true);
+    setLockErr('');
+    setLockBusy(true);
+    try {
+      await apiFetch(`/prospecting-campaigns/${campaignId}/delete-lock`, {
+        method: 'PUT', body: JSON.stringify({ locked: next }),
+      });
+      // Cancel any in-flight delete preview — the gate may have just changed.
+      setDeletePreview(null);
+      setDeleteTypedName('');
+      await load(channelFilter);
+      onChanged?.();
+    } catch (err) {
+      setLockErr('Could not update lock: ' + (err.message || 'unknown error'));
+    } finally {
+      setLockBusy(false);
+    }
+  };
 
   const deleteNameMatch = !!data &&
     deleteTypedName.trim() === (data.campaign?.name || '').trim();
@@ -573,7 +660,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
           <div style={{ padding: 20, overflowY: 'auto' }}>
 
             {/* Action buttons */}
-            <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap', alignItems: 'center' }}>
               <button className="pv-btn-secondary" disabled={busy}
                 onClick={() => onEdit?.(data.campaign)}>✎ Edit</button>
               <button className="pv-btn-secondary" disabled={busy} onClick={togglePause}>
@@ -582,12 +669,59 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
               <button className="pv-btn-secondary" onClick={() => setShowImport(true)}>
                 ⬆ Import prospects
               </button>
-              <button className="pv-btn-secondary" disabled={busy || deleteBusy}
-                style={{ color: '#b91c1c', borderColor: '#fca5a5', marginLeft: 'auto' }}
+
+              {/* Lock / unlock deletion — only when the server says this user
+                  may set the lock (admins/owners always; a manager for a team
+                  campaign). The owner of the campaign does NOT see this. */}
+              {data.campaign.can_set_lock && (
+                <button className="pv-btn-secondary" disabled={busy || lockBusy}
+                  style={{ marginLeft: 'auto' }}
+                  title={data.campaign.delete_locked
+                    ? 'Allow this campaign to be deleted'
+                    : 'Prevent this campaign from being deleted'}
+                  onClick={toggleLock}>
+                  {lockBusy
+                    ? 'Saving…'
+                    : (data.campaign.delete_locked ? '🔓 Unlock deletion' : '🔒 Lock deletion')}
+                </button>
+              )}
+
+              {/* Delete — gated on can_delete. When blocked, the button is
+                  disabled and the server-provided reason is shown as a tooltip
+                  (and inline below). If can_set_lock pushed nothing to the
+                  right, this button keeps the auto margin so it right-aligns. */}
+              <button className="pv-btn-secondary"
+                disabled={busy || deleteBusy || !data.campaign.can_delete}
+                style={{
+                  color: data.campaign.can_delete ? '#b91c1c' : '#d1a3a3',
+                  borderColor: data.campaign.can_delete ? '#fca5a5' : '#f0d4d4',
+                  cursor: data.campaign.can_delete ? 'pointer' : 'not-allowed',
+                  marginLeft: data.campaign.can_set_lock ? 0 : 'auto',
+                }}
+                title={data.campaign.can_delete
+                  ? undefined
+                  : (data.campaign.delete_blocked_reason || 'You cannot delete this campaign.')}
                 onClick={startDelete}>
                 🗑 Delete campaign
               </button>
             </div>
+
+            {/* Lock error (if a lock/unlock attempt failed) */}
+            {lockErr && (
+              <div style={{ fontSize: 12, color: '#b91c1c', marginBottom: 14 }}>{lockErr}</div>
+            )}
+
+            {/* Why delete is blocked — shown inline so it's discoverable even
+                on touch devices where the tooltip isn't available. */}
+            {!data.campaign.can_delete && data.campaign.delete_blocked_reason && (
+              <div style={{
+                fontSize: 12, color: '#92400e', background: '#fffbeb',
+                border: '1px solid #fde68a', borderRadius: 6,
+                padding: '8px 10px', marginBottom: 14,
+              }}>
+                {data.campaign.delete_blocked_reason}
+              </div>
+            )}
 
             {/* Cascade-delete: pre-preview error (e.g. admin-required) */}
             {deleteErr && !deletePreview && (

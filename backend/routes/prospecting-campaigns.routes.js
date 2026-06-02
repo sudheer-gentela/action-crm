@@ -51,6 +51,10 @@ const SendingSchedule = require('../services/SendingScheduleResolver');
 // requireCanAccess (read) or requireCanMutate (write). See
 // services/CampaignAccess.js for the rules.
 const CampaignAccess = require('../services/CampaignAccess');
+// Per-org campaign settings (campaign_settings JSONB on org_action_config).
+// Source of truth for the org-wide "owners may delete their own campaigns"
+// switch used by the delete-permission model.
+const CampaignSettings = require('../services/campaignSettings.service');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -509,12 +513,17 @@ router.get('/me/context', async (req, res) => {
     }
     const callerIsAdmin = await CampaignAccess.isAdmin(req);
     const subs = req.subordinateIds || [];
+    // Org-wide capability: whether campaign owners may delete their own
+    // campaigns. Surfaced here so the frontend can explain a blocked delete
+    // without inferring policy client-side.
+    const { owner_delete_enabled } = await CampaignSettings.getForOrg(req.orgId);
     res.json({
       userId:           req.userId,
       role,
       isAdmin:          callerIsAdmin,
       hasSubordinates:  subs.length > 0,
       subordinateCount: subs.length,
+      campaign_owner_delete_enabled: owner_delete_enabled,
     });
   } catch (err) {
     console.error('campaigns GET /me/context', err);
@@ -754,6 +763,52 @@ router.put('/budget-allocation', async (req, res) => {
   }
 });
 
+// ── Org-wide campaign-delete switch ──────────────────────────────────────────
+// GET  /org/delete-policy → { enabled }  — current org switch value.
+// PUT  /org/delete-policy { enabled }    — set it. Admin/owner only.
+//
+// Registered here (a two-segment static path) ABOVE the parameterised /:id
+// routes. Stored in org_action_config.campaign_settings.owner_delete_enabled
+// via CampaignSettingsService.
+router.get('/org/delete-policy', async (req, res) => {
+  try {
+    if (!(await CampaignAccess.isAdmin(req))) {
+      return res.status(403).json({ error: {
+        message: "You don't have permission to view the campaign-delete policy. Admins only.",
+      } });
+    }
+    const { owner_delete_enabled } = await CampaignSettings.getForOrg(req.orgId);
+    res.json({ enabled: owner_delete_enabled });
+  } catch (err) {
+    console.error('campaigns GET /org/delete-policy', err);
+    res.status(500).json({ error: { message: 'Failed to load campaign-delete policy' } });
+  }
+});
+
+router.put('/org/delete-policy', async (req, res) => {
+  try {
+    if (!(await CampaignAccess.isAdmin(req))) {
+      return res.status(403).json({ error: {
+        message: "You don't have permission to change the campaign-delete policy. Admins only.",
+      } });
+    }
+    const { enabled } = req.body || {};
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: { message: 'enabled must be a boolean' } });
+    }
+    const saved = await CampaignSettings.setForOrg(
+      req.orgId, { owner_delete_enabled: enabled }, req.user.userId
+    );
+    res.json({ enabled: saved.owner_delete_enabled });
+  } catch (err) {
+    if (err.status === 400) {
+      return res.status(400).json({ error: { message: err.message } });
+    }
+    console.error('campaigns PUT /org/delete-policy', err);
+    res.status(500).json({ error: { message: 'Failed to update campaign-delete policy' } });
+  }
+});
+
 // ── GET /:id — one campaign + funnel + multi-channel outreach metrics ────────
 //
 // Outreach metrics now span three channels:
@@ -981,6 +1036,30 @@ router.get('/:id', async (req, res) => {
       console.warn('campaigns GET /:id capacity compute failed:', capErr.message);
     }
 
+    // ── Delete-permission flags for the drawer ───────────────────────────────
+    // Server-authoritative so the frontend never infers role/policy itself.
+    //   delete_locked        — already present on `campaign` via SELECT c.*
+    //   can_delete           — may the CURRENT user cascade-delete this campaign
+    //   delete_blocked_reason— why not (null when can_delete is true)
+    //   can_set_lock         — may the current user lock/unlock this campaign
+    try {
+      const { owner_delete_enabled } = await CampaignSettings.getForOrg(req.orgId);
+      const del  = await CampaignAccess.canDeleteCampaign(
+        req, campaign, { ownerDeleteEnabled: owner_delete_enabled }
+      );
+      const lock = await CampaignAccess.canSetCampaignLock(req, campaign);
+      campaign.delete_locked         = campaign.delete_locked === true; // normalise NULL→false
+      campaign.can_delete            = del.allowed;
+      campaign.delete_blocked_reason = del.allowed ? null : del.reason;
+      campaign.can_set_lock          = lock.allowed;
+    } catch (permErr) {
+      console.warn('campaigns GET /:id delete-flags compute failed:', permErr.message);
+      // Fail safe: hide the destructive affordances rather than expose them.
+      campaign.can_delete            = false;
+      campaign.delete_blocked_reason = null;
+      campaign.can_set_lock          = false;
+    }
+
     res.json({
       campaign,
       funnel,
@@ -1190,13 +1269,19 @@ router.delete('/:id', async (req, res) => {
 
     // ── Cascade path ────────────────────────────────────────────────────────
     if (withProspects) {
-      // Admin-only: a clean teardown that removes prospects + stops sends is a
-      // destructive org action, not something a regular member should do.
-      if (!(await CampaignAccess.isAdmin(req))) {
-        return res.status(403).json({ error: {
-          message: 'Only an org admin can delete a campaign together with its prospects.',
-          code: 'ADMIN_REQUIRED',
-        } });
+      // Layered delete permission (replaces the old admin-only gate):
+      //   • admin/owner            → always allowed
+      //   • the campaign owner     → allowed iff the org switch is ON and the
+      //                              campaign is not delete_locked
+      //   • managers / anyone else → denied
+      // This single gate sits before BOTH the dryRun branch and the commit
+      // branch below, so it covers preview and commit alike.
+      const { owner_delete_enabled } = await CampaignSettings.getForOrg(req.orgId);
+      const { allowed, reason } = await CampaignAccess.canDeleteCampaign(
+        req, existing, { ownerDeleteEnabled: owner_delete_enabled }
+      );
+      if (!allowed) {
+        return res.status(403).json({ error: { message: reason } });
       }
 
       // Count what would be affected.
@@ -1300,6 +1385,47 @@ router.delete('/:id', async (req, res) => {
   } catch (err) {
     console.error('campaigns DELETE /:id', err);
     res.status(500).json({ error: { message: 'Failed to delete campaign' } });
+  }
+});
+
+// ── PUT /:id/delete-lock — set/clear a campaign's delete lock ─────────────────
+// body: { locked: boolean }
+//
+// Gated by CampaignAccess.canSetCampaignLock (NOT requireCanMutate): admins/
+// owners may lock any campaign; a manager may lock/unlock only campaigns owned
+// by someone in their team (req.subordinateIds); the campaign owner may NOT
+// lock/unlock their own. Stamps delete_locked_by / delete_locked_at for audit.
+router.put('/:id/delete-lock', async (req, res) => {
+  try {
+    const existing = await loadCampaign(req.orgId, req.params.id);
+    if (!existing) return res.status(404).json({ error: { message: 'Campaign not found' } });
+
+    const { allowed, reason } = await CampaignAccess.canSetCampaignLock(req, existing);
+    if (!allowed) {
+      return res.status(403).json({ error: { message: reason } });
+    }
+
+    const { locked } = req.body || {};
+    if (typeof locked !== 'boolean') {
+      return res.status(400).json({ error: { message: 'locked must be a boolean' } });
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE prospecting_campaigns
+          SET delete_locked    = $1,
+              delete_locked_by = CASE WHEN $1 THEN $2 ELSE NULL END,
+              delete_locked_at = CASE WHEN $1 THEN NOW() ELSE NULL END
+        WHERE id = $3 AND org_id = $4
+      RETURNING id, delete_locked, delete_locked_by, delete_locked_at`,
+      [locked, req.user.userId, req.params.id, req.orgId]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Campaign not found' } });
+    }
+    res.json({ ok: true, ...rows[0] });
+  } catch (err) {
+    console.error('campaigns PUT /:id/delete-lock', err);
+    res.status(500).json({ error: { message: 'Failed to update delete lock' } });
   }
 });
 

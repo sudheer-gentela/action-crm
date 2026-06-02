@@ -123,6 +123,122 @@ async function canMutateCampaign(req, campaign) {
 }
 
 /**
+ * Delete-access check for the CASCADE delete (campaign + its prospects).
+ * This is the layered permission model:
+ *
+ *   • Admin / owner (org role)        → always allowed. They manage the
+ *                                       constraints; the org switch and the
+ *                                       per-campaign lock do NOT restrict them.
+ *   • The campaign owner              → allowed IFF the org switch is ON
+ *                                       (ownerDeleteEnabled) AND the campaign
+ *                                       is not delete_locked.
+ *   • Managers / everyone else        → denied (managers oversee but don't
+ *                                       mutate their team's work).
+ *
+ * `opts.ownerDeleteEnabled` is the org-wide switch
+ * (campaign_settings.owner_delete_enabled), resolved by the caller via
+ * CampaignSettingsService.getForOrg(). It defaults to true if omitted so a
+ * caller that forgets to pass it fails OPEN only for owners — but callers
+ * here always pass it.
+ *
+ * `campaign.delete_locked` is read straight off the loaded row (loadCampaign
+ * does SELECT c.*). Coerced to boolean so a NULL (legacy row) reads as false.
+ *
+ * Returns { allowed, reason } — reason is human-readable for the 403 body and,
+ * critically, MUST NOT equal 'Invalid or expired token' (apiFetch refresh
+ * trap). All strings here start with "You don't have permission…".
+ */
+async function canDeleteCampaign(req, campaign, opts = {}) {
+  if (!campaign) return { allowed: false, reason: 'Campaign not found' };
+
+  const ownerDeleteEnabled = opts.ownerDeleteEnabled !== false; // default true
+  const isLocked           = campaign.delete_locked === true;
+
+  if (await isAdmin(req)) {
+    return { allowed: true, reason: null };
+  }
+
+  if (campaign.owner_id === req.userId) {
+    if (!ownerDeleteEnabled) {
+      return {
+        allowed: false,
+        reason:
+          "You don't have permission to delete this campaign. Campaign-owner deletion has been turned off for your organisation — ask an admin to delete it or to re-enable owner deletion.",
+      };
+    }
+    if (isLocked) {
+      return {
+        allowed: false,
+        reason:
+          "You don't have permission to delete this campaign. It has been locked against deletion — ask an admin (or your manager) to unlock it first.",
+      };
+    }
+    return { allowed: true, reason: null };
+  }
+
+  // Managers can READ a subordinate's campaign but cannot delete it; give them
+  // the clearer "you can see but not delete" message.
+  const subs = req.subordinateIds || [];
+  if (subs.includes(campaign.owner_id)) {
+    return {
+      allowed: false,
+      reason:
+        "You don't have permission to delete this campaign. As a manager you can view your team's campaigns and lock/unlock deletion, but only the owner or an admin can delete one.",
+    };
+  }
+
+  return {
+    allowed: false,
+    reason:
+      "You don't have permission to delete this campaign. Only the owner or an admin can delete it.",
+  };
+}
+
+/**
+ * Lock-management check: who may set/clear a campaign's delete_locked flag.
+ *
+ *   • Admin / owner (org role) → may lock/unlock ANY campaign in the org.
+ *   • Manager                  → may lock/unlock ONLY campaigns owned by
+ *                                someone in req.subordinateIds (their team).
+ *   • The campaign owner       → may NOT lock/unlock their own campaign
+ *                                (otherwise they could defeat a manager's
+ *                                constraint by simply unlocking).
+ *   • Everyone else            → denied.
+ *
+ * Note: an admin/owner whose role grants the bypass is allowed even on their
+ * own campaign — the "owner cannot unlock" rule is specifically about a
+ * NON-admin owner. The admin check runs first, so that ordering is correct.
+ *
+ * Returns { allowed, reason }.
+ */
+async function canSetCampaignLock(req, campaign) {
+  if (!campaign) return { allowed: false, reason: 'Campaign not found' };
+
+  if (await isAdmin(req)) {
+    return { allowed: true, reason: null };
+  }
+
+  const subs = req.subordinateIds || [];
+  if (subs.includes(campaign.owner_id)) {
+    return { allowed: true, reason: null };
+  }
+
+  if (campaign.owner_id === req.userId) {
+    return {
+      allowed: false,
+      reason:
+        "You don't have permission to lock or unlock deletion on your own campaign. Only an admin or your manager can set that constraint.",
+    };
+  }
+
+  return {
+    allowed: false,
+    reason:
+      "You don't have permission to change the delete-lock on this campaign. Only an admin or the owner's manager can.",
+  };
+}
+
+/**
  * Convenience: check + respond with 403 in one call. Returns true if the
  * caller is allowed to proceed; returns false (after writing the response)
  * if not. Handlers do:
@@ -150,6 +266,8 @@ module.exports = {
   isAdmin,
   canAccessCampaign,
   canMutateCampaign,
+  canDeleteCampaign,
+  canSetCampaignLock,
   requireCanAccess,
   requireCanMutate,
   ADMIN_ROLES,
