@@ -1170,21 +1170,27 @@ function ErrorBanner({ message, onDismiss }) {
 function ProspectListPanel({ context, enrollmentId, onPickEnrollment, onBackToList, onClose }) {
   // ── List-mode state ──────────────────────────────────────────────────
   const [enrollments, setEnrollments] = useState(null);
+  const [listTotal,   setListTotal]   = useState(0);
   const [listLoading, setListLoading] = useState(false);
+  const [listLoadingMore, setListLoadingMore] = useState(false);
   const [listError,   setListError]   = useState(null);
+
+  const LIST_PAGE_SIZE = 200;
+  const listParams = context.sequenceId
+    ? `sequenceId=${context.sequenceId}`
+    : `campaignId=${context.campaignId}`;
 
   useEffect(() => {
     if (enrollmentId) return;   // timeline mode handles its own fetch
     let cancelled = false;
     setListLoading(true);
     setListError(null);
-    const params = context.sequenceId
-      ? `sequenceId=${context.sequenceId}`
-      : `campaignId=${context.campaignId}`;
-    apiFetch(`/sequences/enrollments?${params}`)
+    apiFetch(`/sequences/enrollments?${listParams}&limit=${LIST_PAGE_SIZE}&offset=0`)
       .then(res => {
         if (cancelled) return;
-        setEnrollments(res?.enrollments || []);
+        const page = res?.enrollments || [];
+        setListTotal(typeof res?.total === 'number' ? res.total : page.length);
+        setEnrollments(page);
       })
       .catch(err => {
         if (cancelled) return;
@@ -1192,7 +1198,23 @@ function ProspectListPanel({ context, enrollmentId, onPickEnrollment, onBackToLi
       })
       .finally(() => { if (!cancelled) setListLoading(false); });
     return () => { cancelled = true; };
-  }, [context.sequenceId, context.campaignId, enrollmentId]);
+  }, [enrollmentId, listParams]);
+
+  // Append the next page. Offset = how many we already hold, so it walks
+  // forward regardless of page size. Stable ordering on the server (enrolled_at
+  // DESC, id DESC) guarantees no skips/dupes across pages.
+  const loadMore = () => {
+    const offset = enrollments?.length || 0;
+    setListLoadingMore(true);
+    apiFetch(`/sequences/enrollments?${listParams}&limit=${LIST_PAGE_SIZE}&offset=${offset}`)
+      .then(res => {
+        const page = res?.enrollments || [];
+        setListTotal(typeof res?.total === 'number' ? res.total : offset + page.length);
+        setEnrollments(prev => ([...(prev || []), ...page]));
+      })
+      .catch(err => setListError(err.message))
+      .finally(() => setListLoadingMore(false));
+  };
 
   // ── Timeline-mode state ──────────────────────────────────────────────
   const [timeline, setTimeline] = useState(null);
@@ -1254,6 +1276,9 @@ function ProspectListPanel({ context, enrollmentId, onPickEnrollment, onBackToLi
               loading={listLoading}
               error={listError}
               enrollments={enrollments}
+              total={listTotal}
+              loadingMore={listLoadingMore}
+              onLoadMore={loadMore}
               onPick={onPickEnrollment}
             />
           )}
@@ -1274,15 +1299,21 @@ function ProspectListPanel({ context, enrollmentId, onPickEnrollment, onBackToLi
 // ──────────────────────────────────────────────────────────────────────────
 // ProspectListBody — table of enrollments rendered inside the panel
 // ──────────────────────────────────────────────────────────────────────────
-function ProspectListBody({ loading, error, enrollments, onPick }) {
+function ProspectListBody({ loading, error, enrollments, total, loadingMore, onLoadMore, onPick }) {
   if (loading && !enrollments) return <LoadingState />;
   if (error) return <ErrorBanner message={error} />;
   if (!enrollments || enrollments.length === 0) {
     return <EmptyState message="No enrolled prospects." />;
   }
+  const totalCount = typeof total === 'number' && total > 0 ? total : enrollments.length;
+  const hasMore = enrollments.length < totalCount;
   return (
     <div className="trv-pp-list">
-      <div className="trv-pp-count">{enrollments.length} prospect{enrollments.length === 1 ? '' : 's'}</div>
+      <div className="trv-pp-count">
+        {enrollments.length === totalCount
+          ? `${totalCount} prospect${totalCount === 1 ? '' : 's'}`
+          : `Showing ${enrollments.length} of ${totalCount} prospects`}
+      </div>
       {enrollments.map(e => {
         const name = [e.first_name, e.last_name].filter(Boolean).join(' ').trim() || e.email;
         const stepLabel = e.total_steps
@@ -1311,6 +1342,22 @@ function ProspectListBody({ loading, error, enrollments, onPick }) {
           </button>
         );
       })}
+      {hasMore && (
+        <button
+          className="trv-pp-loadmore"
+          onClick={onLoadMore}
+          disabled={loadingMore}
+          style={{
+            width: '100%', padding: '10px 0', marginTop: 8,
+            border: '1px solid #d1d5db', borderRadius: 8,
+            background: loadingMore ? '#f3f4f6' : '#fff',
+            color: '#374151', fontSize: 12, fontWeight: 600,
+            cursor: loadingMore ? 'default' : 'pointer',
+          }}
+        >
+          {loadingMore ? 'Loading…' : `Load more (${totalCount - enrollments.length} left)`}
+        </button>
+      )}
     </div>
   );
 }

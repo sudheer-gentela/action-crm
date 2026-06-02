@@ -368,6 +368,18 @@ router.post('/enroll', async (req, res) => {
 router.get('/enrollments', async (req, res) => {
   const { prospectId, status, enrolledBy, depth, sequenceId, campaignId } = req.query;
   try {
+    // Pagination (Phase 5): ?limit= & ?offset=. Backward compatible — callers
+    // that pass neither get the original first-page behavior (200 rows). The
+    // response now also carries { total, limit, offset } so the UI can page
+    // through campaigns/sequences larger than one page (e.g. 396 enrollments).
+    // limit is clamped to [1, 500] per page; total reflects the full filtered
+    // set regardless of limit/offset.
+    const PAGE_MAX = 500;
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 200, 1),
+      PAGE_MAX
+    );
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
     // Phase 3: optional ?enrolledBy=csv and ?depth= filter the enrollments
     // by the rep who enrolled the prospect, intersected with the viewer's
     // resolved scope (silently drops out-of-scope IDs).
@@ -392,11 +404,43 @@ router.get('/enrollments', async (req, res) => {
       scopedUserIds = scope.userIds;
     }
 
+    // Build the shared filter clause once so the COUNT and the data query can
+    // never drift apart. $1 is always org_id; subsequent placeholders are
+    // appended in lockstep with `params`.
+    let whereClause = ' WHERE se.org_id = $1';
+    const params = [req.orgId];
+
+    if (prospectId) { params.push(prospectId); whereClause += ` AND se.prospect_id = $${params.length}`; }
+    if (status)     { params.push(status);     whereClause += ` AND se.status = $${params.length}`; }
+    if (sequenceId) { params.push(sequenceId); whereClause += ` AND se.sequence_id = $${params.length}`; }
+    if (campaignId) { params.push(campaignId); whereClause += ` AND p.campaign_id = $${params.length}`; }
+    if (scopedUserIds !== null) {
+      params.push(scopedUserIds);
+      whereClause += ` AND se.enrolled_by = ANY($${params.length}::int[])`;
+    }
+
+    // Total over the full filtered set (independent of limit/offset) so the UI
+    // knows how many pages remain. Same FROM/JOIN/WHERE as the data query.
+    const countRes = await pool.query(
+      `SELECT COUNT(*)::int AS total
+         FROM sequence_enrollments se
+         JOIN sequences s ON s.id = se.sequence_id
+         JOIN prospects p ON p.id = se.prospect_id
+        ${whereClause}`,
+      params
+    );
+    const total = countRes.rows[0]?.total || 0;
+
     // Phase 4: enriched response. The reporting view needs per-enrollment
     // step progress (current step, total steps, last log activity) without
     // a per-row follow-up fetch. We compute these inline via subqueries on
     // sequence_steps and sequence_step_logs.
-    let query = `
+    //
+    // ORDER BY enrolled_at DESC, id DESC — the id tiebreaker keeps ordering
+    // stable across pages when many rows share an enrolled_at (e.g. a single
+    // bulk-activate stamps near-identical timestamps); without it, rows could
+    // shift between pages and be skipped or duplicated.
+    const dataQuery = `
       SELECT se.*,
              s.name AS sequence_name,
              p.first_name, p.last_name, p.email, p.company_name,
@@ -411,21 +455,12 @@ router.get('/enrollments', async (req, res) => {
         FROM sequence_enrollments se
         JOIN sequences s ON s.id = se.sequence_id
         JOIN prospects p ON p.id = se.prospect_id
-       WHERE se.org_id = $1`;
-    const params = [req.orgId];
+        ${whereClause}
+       ORDER BY se.enrolled_at DESC, se.id DESC
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
 
-    if (prospectId) { params.push(prospectId); query += ` AND se.prospect_id = $${params.length}`; }
-    if (status)     { params.push(status);     query += ` AND se.status = $${params.length}`; }
-    if (sequenceId) { params.push(sequenceId); query += ` AND se.sequence_id = $${params.length}`; }
-    if (campaignId) { params.push(campaignId); query += ` AND p.campaign_id = $${params.length}`; }
-    if (scopedUserIds !== null) {
-      params.push(scopedUserIds);
-      query += ` AND se.enrolled_by = ANY($${params.length}::int[])`;
-    }
-
-    query += ' ORDER BY se.enrolled_at DESC LIMIT 200';
-    const { rows } = await pool.query(query, params);
-    res.json({ enrollments: rows });
+    const { rows } = await pool.query(dataQuery, [...params, limit, offset]);
+    res.json({ enrollments: rows, total, limit, offset });
   } catch (err) {
     console.error('enrollments GET', err);
     res.status(500).json({ error: { message: 'Failed to load enrollments' } });
@@ -936,17 +971,7 @@ router.patch('/scheduled/:logId', async (req, res) => {
     if (!rows.length) {
       return res.status(409).json({ error: { message: 'Not editable — already sending or sent.' } });
     }
-    // Return the SAME camelCase shape the GET uses — the API boundary speaks one
-    // dialect (camelCase); snake_case stays in the DB layer.
-    const r = rows[0];
-    res.json({ scheduled: {
-      id:              r.id,
-      subject:         r.subject || '',
-      body:            r.body || '',
-      scheduledSendAt: r.scheduled_send_at,
-      status:          r.status,
-      canEdit:         r.status === 'scheduled',
-    }});
+    res.json({ scheduled: rows[0] });
   } catch (err) {
     console.error('PATCH /sequences/scheduled/:logId', err);
     res.status(500).json({ error: { message: 'Failed to update scheduled send' } });

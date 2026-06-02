@@ -10,13 +10,16 @@ import SequenceEnrollModal from '../SequenceEnrollModal';
 import EntityIdHint from '../EntityIdHint';
 
 function SequencesView({ prospects, search }) {
-  const [subTab,       setSubTab]       = useState('library');   // library | drafts | scheduled | enrollments | stats | health
-  const [scheduledCount, setScheduledCount] = useState(0);
+  const [subTab,       setSubTab]       = useState('library');   // library | drafts | enrollments | stats
   const [sequences,    setSequences]    = useState([]);
   const [enrollments,  setEnrollments]  = useState([]);
+  const [enrTotal,     setEnrTotal]     = useState(0);
+  const [enrLoadingMore, setEnrLoadingMore] = useState(false);
   const [drafts,       setDrafts]       = useState([]);
   const [loadingSeq,   setLoadingSeq]   = useState(true);
   const [loadingEnr,   setLoadingEnr]   = useState(false);
+
+  const ENR_PAGE_SIZE = 200;
   const [loadingDrafts,setLoadingDrafts]= useState(false);
   const [showBuilder,  setShowBuilder]  = useState(false);
   const [editingSeq,   setEditingSeq]   = useState(null);
@@ -317,17 +320,26 @@ function SequencesView({ prospects, search }) {
     }
   }, []);
 
-  const loadEnrollments = useCallback(async () => {
-    setLoadingEnr(true);
+  const loadEnrollments = useCallback(async ({ offset = 0 } = {}) => {
+    const append = offset > 0;
+    if (append) setEnrLoadingMore(true);
+    else        setLoadingEnr(true);
     try {
-      const r = await apiFetch('/sequences/enrollments');
-      setEnrollments(r.enrollments || []);
+      const r = await apiFetch(`/sequences/enrollments?limit=${ENR_PAGE_SIZE}&offset=${offset}`);
+      const page = r.enrollments || [];
+      setEnrTotal(typeof r.total === 'number' ? r.total : page.length);
+      setEnrollments(prev => (append ? [...prev, ...page] : page));
     } catch (err) {
       setError('Failed to load enrollments: ' + err.message);
     } finally {
-      setLoadingEnr(false);
+      if (append) setEnrLoadingMore(false);
+      else        setLoadingEnr(false);
     }
   }, []);
+
+  const loadMoreEnrollments = useCallback(() => {
+    loadEnrollments({ offset: enrollments.length });
+  }, [enrollments.length, loadEnrollments]);
 
   useEffect(() => { loadSequences(); }, [loadSequences]);
   useEffect(() => {
@@ -418,7 +430,7 @@ function SequencesView({ prospects, search }) {
           {[
             { key: 'library',     label: `📚 Library (${sequences.length})` },
             { key: 'drafts',      label: `📋 Drafts${drafts.length > 0 ? ` (${drafts.length})` : ''}` },
-            { key: 'scheduled',   label: `🕒 Scheduled${scheduledCount > 0 ? ` (${scheduledCount})` : ''}` },
+            { key: 'scheduled',   label: '🕒 Scheduled' },
             { key: 'enrollments', label: '🗓 Enrollments' },
             { key: 'stats',       label: '📊 Stats' },
             { key: 'health',      label: '❤️ Health' },
@@ -683,10 +695,7 @@ function SequencesView({ prospects, search }) {
       {/* ── Scheduled tab ───────────────────────────────────────────────── */}
       {subTab === 'scheduled' && (
         <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-          <ScheduledQueue
-            onCount={setScheduledCount}
-            onChanged={() => { if (subTab === 'enrollments') loadEnrollments(); }}
-          />
+          <ScheduledQueue onChanged={() => { if (subTab === 'enrollments') loadEnrollments(); }} />
         </div>
       )}
 
@@ -970,6 +979,28 @@ function SequencesView({ prospects, search }) {
                 })}
               </tbody>
             </table>
+          )}
+
+          {!loadingEnr && enrollments.length > 0 && (
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              gap: 12, padding: '14px 0 20px', fontSize: 12, color: '#6b7280',
+            }}>
+              <span>Showing {enrollments.length} of {enrTotal}</span>
+              {enrollments.length < enrTotal && (
+                <button
+                  onClick={loadMoreEnrollments}
+                  disabled={enrLoadingMore}
+                  style={{
+                    padding: '5px 14px', borderRadius: 7, fontSize: 12, fontWeight: 600,
+                    border: '1px solid #d1d5db', background: enrLoadingMore ? '#f3f4f6' : '#fff',
+                    color: '#374151', cursor: enrLoadingMore ? 'default' : 'pointer',
+                  }}
+                >
+                  {enrLoadingMore ? 'Loading…' : `Load more (${enrTotal - enrollments.length} left)`}
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
