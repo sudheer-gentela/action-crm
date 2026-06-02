@@ -287,6 +287,16 @@ function SequencesView({ prospects, search }) {
   const [stats,        setStats]        = useState(null);
   const [loadingStats, setLoadingStats] = useState(false);
 
+  // Status drill-down: click an Enrollment Status pill to list the prospects
+  // in that status for the selected sequence. Reuses the paginated
+  // /sequences/enrollments?sequenceId=&status= endpoint.
+  const [statusDrill,  setStatusDrill]  = useState(null);   // { status, label } | null
+  const [drillRows,    setDrillRows]    = useState([]);
+  const [drillTotal,   setDrillTotal]   = useState(0);
+  const [drillLoading, setDrillLoading] = useState(false);
+  const [drillMore,    setDrillMore]    = useState(false);
+  const DRILL_PAGE = 200;
+
   const loadStats = useCallback(async (seqId) => {
     setLoadingStats(true);
     setStats(null);
@@ -301,9 +311,36 @@ function SequencesView({ prospects, search }) {
     }
   }, []);
 
+  const loadStatusDrill = useCallback(async (status, { offset = 0 } = {}) => {
+    if (!statsSeqId) return;
+    const append = offset > 0;
+    if (append) setDrillMore(true); else setDrillLoading(true);
+    try {
+      const r = await apiFetch(
+        `/sequences/enrollments?sequenceId=${statsSeqId}&status=${status}&limit=${DRILL_PAGE}&offset=${offset}`
+      );
+      const page = r.enrollments || [];
+      setDrillTotal(typeof r.total === 'number' ? r.total : page.length);
+      setDrillRows(prev => (append ? [...prev, ...page] : page));
+    } catch (err) {
+      setError('Failed to load prospects: ' + err.message);
+    } finally {
+      if (append) setDrillMore(false); else setDrillLoading(false);
+    }
+  }, [statsSeqId]);
+
+  const openStatusDrill = (status, label) => {
+    setStatusDrill({ status, label });
+    setDrillRows([]);
+    setDrillTotal(0);
+    loadStatusDrill(status, { offset: 0 });
+  };
+  const closeStatusDrill = () => { setStatusDrill(null); setDrillRows([]); setDrillTotal(0); };
+
   const openStats = (seqId) => {
     setStatsSeqId(seqId);
     setSubTab('stats');
+    closeStatusDrill();
     loadStats(seqId);
   };
 
@@ -1015,7 +1052,7 @@ function SequencesView({ prospects, search }) {
             </label>
             <select
               value={statsSeqId || ''}
-              onChange={e => { const v = parseInt(e.target.value); setStatsSeqId(v); loadStats(v); }}
+              onChange={e => { const v = parseInt(e.target.value); setStatsSeqId(v); closeStatusDrill(); loadStats(v); }}
               style={{ padding: '7px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, background: '#fff', minWidth: 260 }}
             >
               <option value="">— choose a sequence —</option>
@@ -1066,16 +1103,87 @@ function SequencesView({ prospects, search }) {
                     { key: 'completed', label: 'Completed', bg: '#eff6ff', color: '#1d4ed8' },
                     { key: 'paused',    label: 'Paused',    bg: '#fef3c7', color: '#92400e' },
                     { key: 'stopped',   label: 'Stopped',   bg: '#fee2e2', color: '#991b1b' },
-                  ].map(({ key, label, bg, color }) => (
-                    <div key={key} style={{
-                      padding: '6px 14px', borderRadius: 20, background: bg,
-                      fontSize: 12, fontWeight: 600, color,
-                    }}>
-                      {label}: {stats.statusBreakdown[key] || 0}
-                    </div>
-                  ))}
+                  ].map(({ key, label, bg, color }) => {
+                    const count     = stats.statusBreakdown[key] || 0;
+                    const clickable = count > 0;
+                    const isActive  = statusDrill?.status === key;
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => clickable && openStatusDrill(key, label)}
+                        disabled={!clickable}
+                        title={clickable ? `View ${label.toLowerCase()} prospects` : undefined}
+                        style={{
+                          padding: '6px 14px', borderRadius: 20, background: bg,
+                          fontSize: 12, fontWeight: 600, color,
+                          border: isActive ? `2px solid ${color}` : '2px solid transparent',
+                          cursor: clickable ? 'pointer' : 'default',
+                          opacity: clickable ? 1 : 0.55,
+                        }}
+                      >
+                        {label}: {count}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
+
+              {/* Status drill-down — prospects in the clicked status */}
+              {statusDrill && (
+                <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '14px 16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#374151' }}>
+                      {statusDrill.label} prospects{drillTotal ? ` (${drillTotal})` : ''}
+                    </div>
+                    <button
+                      onClick={closeStatusDrill}
+                      style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#9ca3af', fontSize: 12, fontWeight: 600 }}
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
+                  {drillLoading ? (
+                    <div style={{ padding: 16, color: '#9ca3af', fontSize: 12 }}>Loading…</div>
+                  ) : drillRows.length === 0 ? (
+                    <div style={{ padding: 16, color: '#9ca3af', fontSize: 12 }}>No prospects in this status.</div>
+                  ) : (
+                    <>
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        {drillRows.map(e => (
+                          <div key={e.id} style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            padding: '7px 0', borderBottom: '1px solid #f3f4f6', fontSize: 13,
+                          }}>
+                            <div style={{ minWidth: 0 }}>
+                              <span style={{ fontWeight: 600, color: '#1a202c' }}>{e.first_name} {e.last_name}</span>
+                              {e.company_name && <span style={{ color: '#94a3b8', marginLeft: 8 }}>{e.company_name}</span>}
+                              {e.email && <div style={{ fontSize: 11, color: '#cbd5e1' }}>{e.email}</div>}
+                            </div>
+                            <div style={{ color: '#6b7280', fontSize: 12, whiteSpace: 'nowrap', marginLeft: 12 }}>
+                              {e.status === 'active' && e.total_steps
+                                ? `step ${e.current_step} of ${e.total_steps}`
+                                : (e.stop_reason || e.status)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {drillRows.length < drillTotal && (
+                        <button
+                          onClick={() => loadStatusDrill(statusDrill.status, { offset: drillRows.length })}
+                          disabled={drillMore}
+                          style={{
+                            marginTop: 10, padding: '6px 14px', borderRadius: 7, fontSize: 12, fontWeight: 600,
+                            border: '1px solid #d1d5db', background: drillMore ? '#f3f4f6' : '#fff',
+                            color: '#374151', cursor: drillMore ? 'default' : 'pointer',
+                          }}
+                        >
+                          {drillMore ? 'Loading…' : `Load more (${drillTotal - drillRows.length} left)`}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
 
               {/* Step funnel */}
               {stats.stepFunnel && stats.stepFunnel.length > 0 && (
