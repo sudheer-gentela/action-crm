@@ -30,12 +30,15 @@ function fmtWhen(iso) {
   }
 }
 
-export default function ScheduledQueue({ onChanged }) {
+export default function ScheduledQueue({ onChanged, onCount }) {
   const [items,   setItems]   = useState([]);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
   // Per-row UI state: { [logId]: { open, subject, body, busy, error, savedAt } }
   const [edits,   setEdits]   = useState({});
+
+  // Report the current count up so the tab label can show it.
+  useEffect(() => { if (onCount) onCount(items.length); }, [items.length, onCount]);
 
   const load = useCallback(async () => {
     setLoading(true);

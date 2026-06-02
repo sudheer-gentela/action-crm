@@ -936,7 +936,17 @@ router.patch('/scheduled/:logId', async (req, res) => {
     if (!rows.length) {
       return res.status(409).json({ error: { message: 'Not editable — already sending or sent.' } });
     }
-    res.json({ scheduled: rows[0] });
+    // Return the SAME camelCase shape the GET uses — the API boundary speaks one
+    // dialect (camelCase); snake_case stays in the DB layer.
+    const r = rows[0];
+    res.json({ scheduled: {
+      id:              r.id,
+      subject:         r.subject || '',
+      body:            r.body || '',
+      scheduledSendAt: r.scheduled_send_at,
+      status:          r.status,
+      canEdit:         r.status === 'scheduled',
+    }});
   } catch (err) {
     console.error('PATCH /sequences/scheduled/:logId', err);
     res.status(500).json({ error: { message: 'Failed to update scheduled send' } });

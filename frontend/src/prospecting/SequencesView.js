@@ -10,7 +10,8 @@ import SequenceEnrollModal from '../SequenceEnrollModal';
 import EntityIdHint from '../EntityIdHint';
 
 function SequencesView({ prospects, search }) {
-  const [subTab,       setSubTab]       = useState('library');   // library | drafts | enrollments | stats
+  const [subTab,       setSubTab]       = useState('library');   // library | drafts | scheduled | enrollments | stats | health
+  const [scheduledCount, setScheduledCount] = useState(0);
   const [sequences,    setSequences]    = useState([]);
   const [enrollments,  setEnrollments]  = useState([]);
   const [drafts,       setDrafts]       = useState([]);
@@ -417,7 +418,7 @@ function SequencesView({ prospects, search }) {
           {[
             { key: 'library',     label: `📚 Library (${sequences.length})` },
             { key: 'drafts',      label: `📋 Drafts${drafts.length > 0 ? ` (${drafts.length})` : ''}` },
-            { key: 'scheduled',   label: '🕒 Scheduled' },
+            { key: 'scheduled',   label: `🕒 Scheduled${scheduledCount > 0 ? ` (${scheduledCount})` : ''}` },
             { key: 'enrollments', label: '🗓 Enrollments' },
             { key: 'stats',       label: '📊 Stats' },
             { key: 'health',      label: '❤️ Health' },
@@ -682,7 +683,10 @@ function SequencesView({ prospects, search }) {
       {/* ── Scheduled tab ───────────────────────────────────────────────── */}
       {subTab === 'scheduled' && (
         <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-          <ScheduledQueue onChanged={() => { if (subTab === 'enrollments') loadEnrollments(); }} />
+          <ScheduledQueue
+            onCount={setScheduledCount}
+            onChanged={() => { if (subTab === 'enrollments') loadEnrollments(); }}
+          />
         </div>
       )}
 
