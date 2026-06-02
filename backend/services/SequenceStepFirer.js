@@ -234,6 +234,232 @@ function appendSignature(body, signature) {
   return body + `\n\n${trimmedSig}`;
 }
 
+// ── Auto-send scheduling helpers (Level 2: pre-materialized scheduled rows) ────
+//
+// In auto-send mode (email step, effective require_approval = false) we create a
+// sequence_step_logs row with status='scheduled' AHEAD of its send time so the
+// rep can see — and edit — the queued email and its scheduled_send_at. The firer
+// then atomically claims it (scheduled → sending), sends, and finalizes
+// (sending → sent | failed). The partial unique index uq_seq_step_logs_pending
+// guarantees at most one pending row per (enrollment, step).
+//
+// Signature/From are applied at SEND time (the stored body stays plain and
+// signature-free so the editor and the GET /scheduled preview render cleanly).
+
+// A step is auto-send when it is an email step AND
+// COALESCE(step.require_approval, sequence.require_approval) is false.
+const AUTO_SEND_PREDICATE = `
+  ss.channel = 'email'
+  AND COALESCE(ss.require_approval, s.require_approval) = false
+`;
+
+/**
+ * Create 'scheduled' rows for active auto-send enrollments whose CURRENT step
+ * has no pending (scheduled/sending) or sent row yet. Idempotent via
+ * uq_seq_step_logs_pending. Pure top-up — never sends, never advances.
+ *
+ * @param {object} client                pg client
+ * @param {number[]|null} enrollmentIds   scope to these enrollments, or null = all
+ * @returns {Promise<number>}             rows inserted
+ */
+async function materializeRows(client, enrollmentIds = null) {
+  const scoped = Array.isArray(enrollmentIds) && enrollmentIds.length > 0;
+  const params = [];
+  let scopeSql = '';
+  if (scoped) {
+    params.push(enrollmentIds);
+    scopeSql = `AND se.id = ANY($${params.length}::int[])`;
+  }
+
+  const candRes = await client.query(
+    `SELECT se.id              AS enrollment_id,
+            se.org_id,
+            se.prospect_id,
+            se.current_step,
+            se.next_step_due,
+            se.personalised_steps,
+            ss.id              AS step_id,
+            ss.subject_template,
+            ss.body_template,
+            p.first_name, p.last_name, p.title,
+            p.company_name, p.company_industry, p.company_domain,
+            a.name AS account_name, a.industry AS account_industry,
+            a.domain AS account_domain
+       FROM sequence_enrollments se
+       JOIN sequences s       ON s.id  = se.sequence_id
+       JOIN sequence_steps ss ON ss.sequence_id = se.sequence_id
+                             AND ss.step_order   = se.current_step
+       JOIN prospects p       ON p.id  = se.prospect_id
+  LEFT JOIN accounts a        ON a.id  = p.account_id
+      WHERE se.status = 'active'
+        AND se.next_step_due IS NOT NULL
+        AND ${AUTO_SEND_PREDICATE}
+        AND NOT EXISTS (
+          SELECT 1 FROM sequence_step_logs l
+           WHERE l.enrollment_id    = se.id
+             AND l.sequence_step_id = ss.id
+             AND l.status IN ('scheduled','sending','sent')
+        )
+        ${scopeSql}`,
+    params
+  );
+
+  let inserted = 0;
+  for (const row of candRes.rows) {
+    const prospect = {
+      first_name: row.first_name, last_name: row.last_name, title: row.title,
+      company_name: row.company_name, company_industry: row.company_industry,
+      company_domain: row.company_domain,
+    };
+    const account = {
+      name: row.account_name, industry: row.account_industry, domain: row.account_domain,
+    };
+    const ps           = row.personalised_steps || {};
+    const personalised = ps[row.current_step] || ps[String(row.current_step)] || null;
+
+    const subject = personalised?.subject ?? renderTemplate(row.subject_template, prospect, account);
+    const body    = personalised?.body    ?? renderTemplate(row.body_template,    prospect, account);
+    const personalizeSourcesJson = personalised?.personalize_sources
+      ? JSON.stringify(personalised.personalize_sources)
+      : null;
+
+    try {
+      await client.query(
+        `INSERT INTO sequence_step_logs
+                     (org_id, enrollment_id, sequence_step_id, prospect_id,
+                      channel, status, subject, body, scheduled_send_at, fired_at,
+                      personalize_sources)
+              VALUES ($1, $2, $3, $4, 'email', 'scheduled', $5, $6, $7, NULL, $8::jsonb)`,
+        [row.org_id, row.enrollment_id, row.step_id, row.prospect_id,
+         subject, body, row.next_step_due, personalizeSourcesJson]
+      );
+      inserted++;
+    } catch (e) {
+      // 23505 = unique_violation on uq_seq_step_logs_pending: a pending row was
+      // created concurrently (another tick / bulk-activate). Benign — skip.
+      if (e.code !== '23505') {
+        console.warn(`materializeRows: insert failed for enrollment ${row.enrollment_id}:`, e.message);
+      }
+    }
+  }
+  return inserted;
+}
+
+/**
+ * Mark a step's pending row failed, PAUSE the enrollment, and surface an action
+ * for the campaign owner. No auto-retry (per design): the person running the
+ * campaign fixes the cause (reconnect sender, correct the address) and resumes;
+ * resume re-stamps next_step_due and the top-up re-materializes a fresh row.
+ *
+ * Keyed on (enrollment_id, sequence_step_id) so it works whether or not a
+ * pending row already exists (pre-claim precondition failures vs post-claim
+ * send failures). If no pending row exists, one is inserted as 'failed'.
+ */
+async function failAndPause(client, info) {
+  const {
+    orgId, enrollmentId, stepId, prospectId, enrolledBy,
+    seqName, stepOrder, channel = 'email', message,
+  } = info;
+  const errMsg = String(message || 'send failed').slice(0, 1000);
+
+  // 1. Fail the pending row, or insert a failed row if none exists.
+  const upd = await client.query(
+    `UPDATE sequence_step_logs
+        SET status='failed', error_message=$3, fired_at=NOW()
+      WHERE enrollment_id=$1 AND sequence_step_id=$2
+        AND status IN ('scheduled','sending')`,
+    [enrollmentId, stepId, errMsg]
+  );
+  if (upd.rowCount === 0) {
+    await client.query(
+      `INSERT INTO sequence_step_logs
+                   (org_id, enrollment_id, sequence_step_id, prospect_id,
+                    channel, status, error_message, scheduled_send_at, fired_at)
+            VALUES ($1, $2, $3, $4, $5, 'failed', $6, NOW(), NOW())`,
+      [orgId, enrollmentId, stepId, prospectId, channel, errMsg]
+    );
+  }
+
+  // 2. Pause (no advance, no retry).
+  await client.query(
+    `UPDATE sequence_enrollments
+        SET status='paused', stop_reason='send_failed'
+      WHERE id=$1 AND status='active'`,
+    [enrollmentId]
+  );
+
+  // 3. Activity feed.
+  try {
+    await client.query(
+      `INSERT INTO prospecting_activities
+                   (org_id, prospect_id, user_id, activity_type, description, metadata)
+            VALUES ($1, $2, $3, 'sequence_send_failed', $4, $5)`,
+      [orgId, prospectId, enrolledBy,
+       `Auto-send paused — ${seqName || 'sequence'} step ${stepOrder ?? '?'}: ${errMsg}`,
+       JSON.stringify({ enrollmentId, stepId, stepOrder: stepOrder ?? null, reason: errMsg })]
+    );
+  } catch (e) {
+    console.warn(`failAndPause: activity log failed for enrollment ${enrollmentId}:`, e.message);
+  }
+
+  // 4. Action for the campaign owner (idempotent — one open action per step).
+  try {
+    await client.query(
+      `INSERT INTO prospecting_actions
+                   (org_id, user_id, prospect_id, title, description,
+                    action_type, channel, status, priority, due_date, source, metadata)
+       SELECT $1, $2, $3,
+              'Auto-send paused — fix & resume',
+              $4, 'outreach', 'email', 'pending', 'high', NOW(),
+              'sequence_send_failed',
+              jsonb_build_object('enrollmentId', $5::int, 'stepId', $6::int,
+                                 'stepOrder', $7::int, 'reason', $8::text)
+        WHERE NOT EXISTS (
+          SELECT 1 FROM prospecting_actions pa
+           WHERE pa.source = 'sequence_send_failed'
+             AND (pa.metadata->>'enrollmentId')::int = $5::int
+             AND (pa.metadata->>'stepId')::int       = $6::int
+             AND pa.status != 'completed'
+        )`,
+      [orgId, enrolledBy, prospectId,
+       `Sequence "${seqName || ''}" step ${stepOrder ?? '?'} could not be sent: ${errMsg}. `
+         + `Reconnect the sender or fix the prospect, then resume the enrollment.`,
+       enrollmentId, stepId, stepOrder ?? 0, errMsg]
+    );
+  } catch (e) {
+    console.warn(`failAndPause: action insert failed for enrollment ${enrollmentId}:`, e.message);
+  }
+}
+
+/**
+ * Reclaim rows stuck in 'sending' (worker crashed between claim and finalize).
+ * Per the no-auto-retry policy a possibly-half-sent email is treated as a
+ * failure needing human verification — NOT silently retried.
+ *
+ * @returns {Promise<number>} rows reaped
+ */
+async function reapStaleSending(client, staleMinutes = 30) {
+  const stale = await client.query(
+    `SELECT l.id, l.org_id, l.enrollment_id, l.sequence_step_id, l.prospect_id,
+            se.enrolled_by, se.current_step, s.name AS seq_name
+       FROM sequence_step_logs l
+       JOIN sequence_enrollments se ON se.id = l.enrollment_id
+       JOIN sequences s             ON s.id  = se.sequence_id
+      WHERE l.status = 'sending'
+        AND l.fired_at < NOW() - ($1 || ' minutes')::interval`,
+    [String(staleMinutes)]
+  );
+  for (const r of stale.rows) {
+    await failAndPause(client, {
+      orgId: r.org_id, enrollmentId: r.enrollment_id, stepId: r.sequence_step_id,
+      prospectId: r.prospect_id, enrolledBy: r.enrolled_by,
+      seqName: r.seq_name, stepOrder: r.current_step, channel: 'email',
+      message: 'Send interrupted (worker restarted mid-send). Verify in your mailbox before resuming.',
+    });
+  }
+  return stale.rowCount || 0;
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 const SequenceStepFirer = {
@@ -247,6 +473,14 @@ const SequenceStepFirer = {
 
     const client = await pool.connect();
     try {
+      // ── Level 2 housekeeping (before processing due steps) ────────────────
+      // 1) Reclaim rows stuck in 'sending' (worker crash mid-send) → failed+pause.
+      // 2) Top-up: create 'scheduled' rows for active auto-send enrollments that
+      //    don't have one yet (covers manual-advance, resume, and backfill of
+      //    pre-existing enrollments). Both are non-fatal.
+      try { await reapStaleSending(client, 30); } catch (e) { console.warn('📨 reapStaleSending:', e.message); }
+      try { await materializeRows(client, null); } catch (e) { console.warn('📨 materializeRows top-up:', e.message); }
+
       // Include sequence-level require_approval, name, prospect.campaign_id
       // (per-campaign send-window override resolution), and the CURRENT step's
       // channel (channel-aware window: email-only steps gate on the window,
@@ -315,6 +549,12 @@ const SequenceStepFirer = {
               `UPDATE sequence_enrollments
                   SET status='replied', stopped_at=NOW(), stop_reason='replied'
                 WHERE id=$1`,
+              [enrollment.id]
+            );
+            // Cancel any pending auto-send rows so nothing fires after a reply.
+            await client.query(
+              `UPDATE sequence_step_logs SET status='skipped'
+                WHERE enrollment_id=$1 AND status IN ('scheduled','sending')`,
               [enrollment.id]
             );
             stopped++;
@@ -486,168 +726,181 @@ const SequenceStepFirer = {
             continue; // Do NOT advance — enrollment stays on this step until rep sends
           }
 
-          // ── SEND BRANCH (auto-send, no approval required) ─────────────────
-          let emailId   = null;
-          let sendError = null;
+          // ── SEND BRANCH (auto-send, no approval required) ─────────
+          // Level 2: send by atomically CLAIMING the pre-materialized
+          // 'scheduled' row (scheduled → sending → sent|failed). The claim
+          // re-reads subject/body so any rep edits are honored. On ANY failure
+          // we fail the row, PAUSE the enrollment (no auto-retry), and surface an
+          // action for the campaign owner. Signature + HTML are applied here at
+          // send time; the stored body stays plain/signature-free.
 
-          if (step.channel === 'email' && prospect?.email) {
-            // Resolve sender with capacity awareness. Auto-send respects the
-            // per-account daily limit as a SOFT gate: if every active sender is
-            // at/over its limit, DEFER (retry next tick) rather than overshoot.
-            const pick = await pickEmailSenderWithCapacity(
-              client, enrollment.org_id, enrollment.enrolled_by, clientId, settings, new Date()
-            );
-            if (pick.status === 'all_maxed' || pick.status === 'cooling_down') {
-              // Defer (no advance, no counter bump); next tick retries.
-              //  - all_maxed:    every sender hit its daily limit → wait for reset
-              //  - cooling_down: capacity exists but every sender sent too
-              //    recently (min-delay) → wait for the cooldown to clear
-              console.log(
-                `SequenceStepFirer: deferring enrollment ${enrollment.id} — ` +
-                `senders for user ${enrollment.enrolled_by} ${pick.status === 'cooling_down' ? 'within min-delay cooldown' : 'at daily limit'}`
-              );
-              continue;
-            }
-            const sender = pick.sender; // null only when status === 'no_accounts'
-
-            if (sender) {
-              // Reset daily counter if it's a new day
-              if (new Date(sender.last_reset_at).toDateString() !== new Date().toDateString()) {
-                await client.query(
-                  `UPDATE prospecting_sender_accounts
-                      SET emails_sent_today=0, last_reset_at=CURRENT_DATE, updated_at=CURRENT_TIMESTAMP
-                    WHERE id=$1`,
-                  [sender.id]
-                );
-                sender.emails_sent_today = 0;
-              }
-
-              // Append signature, then convert plain text to HTML so paragraph
-              // breaks and line breaks render correctly in Gmail and Outlook.
-              const sendBodyPlain = appendSignature(body, sender.signature);
-              const sendBody      = plainTextToHtml(sendBodyPlain);
-
-              // Dispatch via Gmail or Outlook
-              try {
-                if (sender.provider === 'gmail') {
-                  await sendGmailEmail(enrollment.enrolled_by, {
-                    to:           prospect.email,
-                    subject,
-                    body:         sendBody,
-                    isHtml:       true,
-                    senderEmail:  sender.email,
-                    accessToken:  sender.access_token,
-                    refreshToken: sender.refresh_token,
-                  });
-                } else if (sender.provider === 'outlook') {
-                  await sendOutlookEmail(enrollment.enrolled_by, {
-                    to:           prospect.email,
-                    subject,
-                    body:         sendBody,
-                    isHtml:       true,
-                    senderEmail:  sender.email,
-                    accessToken:  sender.access_token,
-                    refreshToken: sender.refresh_token,
-                  });
-                }
-              } catch (err) {
-                sendError = err.message;
-                console.warn(`SequenceStepFirer: send failed for enrollment ${enrollment.id}:`, err.message);
-              }
-
-              // Persist email record with full sender metadata
-              const emailRes = await client.query(
-                `INSERT INTO emails
-                             (org_id, user_id, direction, subject, body,
-                              to_address, from_address, sent_at,
-                              prospect_id, sender_account_id, provider)
-                      VALUES ($1, $2, 'sent', $3, $4, $5, $6, NOW(), $7, $8, $9)
-                   RETURNING id`,
-                [
-                  enrollment.org_id, enrollment.enrolled_by,
-                  subject, sendBody,
-                  prospect.email, sender.email,
-                  enrollment.prospect_id, sender.id, sender.provider,
-                ]
-              );
-              emailId = emailRes.rows[0].id;
-
-              // Update sender counters
-              await client.query(
-                `UPDATE prospecting_sender_accounts
-                    SET emails_sent_today=emails_sent_today+1,
-                        last_sent_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
-                  WHERE id=$1`,
-                [sender.id]
-              );
-            } else {
-              console.warn(
-                `SequenceStepFirer: no active sender for enrollment ${enrollment.id} ` +
-                `(user ${enrollment.enrolled_by}${clientId ? `, client ${clientId}` : ''}) — email not sent`
-              );
-            }
+          // Precondition: a prospect email is required.
+          if (!prospect?.email) {
+            await failAndPause(client, {
+              orgId: enrollment.org_id, enrollmentId: enrollment.id, stepId: step.id,
+              prospectId: enrollment.prospect_id, enrolledBy: enrollment.enrolled_by,
+              seqName: enrollment.seq_name, stepOrder: enrollment.current_step,
+              channel: 'email', message: 'Prospect has no email address.',
+            });
+            errors++;
+            continue;
           }
 
-          // ── Log sent step ─────────────────────────────────────────────────
+          // Capacity gate (soft): pick an eligible sender BEFORE claiming. If all
+          // senders are maxed or cooling down, DEFER — leave the scheduled row
+          // untouched and retry next tick. scheduled_send_at stays fixed so the
+          // rep keeps seeing the original promised time.
+          const pick = await pickEmailSenderWithCapacity(
+            client, enrollment.org_id, enrollment.enrolled_by, clientId, settings, new Date()
+          );
+          if (pick.status === 'all_maxed' || pick.status === 'cooling_down') {
+            console.log(
+              `SequenceStepFirer: deferring enrollment ${enrollment.id} — ` +
+              `senders ${pick.status === 'cooling_down' ? 'within min-delay cooldown' : 'at daily limit'}`
+            );
+            continue;
+          }
+          if (pick.status === 'no_accounts' || !pick.sender) {
+            await failAndPause(client, {
+              orgId: enrollment.org_id, enrollmentId: enrollment.id, stepId: step.id,
+              prospectId: enrollment.prospect_id, enrolledBy: enrollment.enrolled_by,
+              seqName: enrollment.seq_name, stepOrder: enrollment.current_step,
+              channel: 'email',
+              message: 'No active email sender connected — connect Gmail or Outlook in Settings → Outreach.',
+            });
+            errors++;
+            continue;
+          }
+          const sender = pick.sender;
+
+          // Ensure a pending scheduled row exists (the top-up normally created it
+          // ahead of time; this INSERT is the race/backfill backstop). A unique
+          // violation (23505) means one already exists — fine, we'll claim it.
+          try {
+            await client.query(
+              `INSERT INTO sequence_step_logs
+                           (org_id, enrollment_id, sequence_step_id, prospect_id,
+                            channel, status, subject, body, scheduled_send_at, fired_at,
+                            personalize_sources)
+                    VALUES ($1, $2, $3, $4, 'email', 'scheduled', $5, $6, $7, NULL, $8::jsonb)`,
+              [enrollment.org_id, enrollment.id, step.id, enrollment.prospect_id,
+               subject, body, enrollment.next_step_due, personalizeSourcesJson]
+            );
+          } catch (insErr) {
+            if (insErr.code !== '23505') throw insErr;
+          }
+
+          // Atomic claim: scheduled → sending. RETURNING the (possibly edited)
+          // content. Zero rows ⇒ another tick claimed/cancelled it.
+          const claim = await client.query(
+            `UPDATE sequence_step_logs
+                SET status='sending', fired_at=NOW()
+              WHERE enrollment_id=$1 AND sequence_step_id=$2 AND status='scheduled'
+              RETURNING id, subject, body`,
+            [enrollment.id, step.id]
+          );
+          if (claim.rowCount === 0) {
+            continue; // claimed or cancelled elsewhere
+          }
+          const logId       = claim.rows[0].id;
+          const sendSubject = claim.rows[0].subject || '';
+          const sendBodyRaw = claim.rows[0].body || '';
+
+          // Reset the sender's daily counter on a new day.
+          if (!sender.last_reset_at ||
+              new Date(sender.last_reset_at).toDateString() !== new Date().toDateString()) {
+            await client.query(
+              `UPDATE prospecting_sender_accounts
+                  SET emails_sent_today=0, last_reset_at=CURRENT_DATE, updated_at=CURRENT_TIMESTAMP
+                WHERE id=$1`,
+              [sender.id]
+            );
+            sender.emails_sent_today = 0;
+          }
+
+          // Signature + HTML applied at send time (stored body stays plain).
+          const sendBodyPlain = appendSignature(sendBodyRaw, sender.signature);
+          const sendBodyHtml  = plainTextToHtml(sendBodyPlain);
+
+          // Dispatch. On throw → fail + pause (no retry), then defer to owner.
+          try {
+            if (sender.provider === 'gmail') {
+              await sendGmailEmail(enrollment.enrolled_by, {
+                to: prospect.email, subject: sendSubject, body: sendBodyHtml, isHtml: true,
+                senderEmail: sender.email, accessToken: sender.access_token, refreshToken: sender.refresh_token,
+              });
+            } else if (sender.provider === 'outlook') {
+              await sendOutlookEmail(enrollment.enrolled_by, {
+                to: prospect.email, subject: sendSubject, body: sendBodyHtml, isHtml: true,
+                senderEmail: sender.email, accessToken: sender.access_token, refreshToken: sender.refresh_token,
+              });
+            } else {
+              throw new Error(`Unsupported sender provider: ${sender.provider}`);
+            }
+          } catch (sendErr) {
+            await failAndPause(client, {
+              orgId: enrollment.org_id, enrollmentId: enrollment.id, stepId: step.id,
+              prospectId: enrollment.prospect_id, enrolledBy: enrollment.enrolled_by,
+              seqName: enrollment.seq_name, stepOrder: enrollment.current_step,
+              channel: 'email', message: sendErr.message,
+            });
+            errors++;
+            continue;
+          }
+
+          // ── Success: persist the sent email ────────────────────────
+          const emailRes = await client.query(
+            `INSERT INTO emails
+                         (org_id, user_id, direction, subject, body,
+                          to_address, from_address, sent_at,
+                          prospect_id, sender_account_id, provider)
+                  VALUES ($1, $2, 'sent', $3, $4, $5, $6, NOW(), $7, $8, $9)
+               RETURNING id`,
+            [enrollment.org_id, enrollment.enrolled_by, sendSubject, sendBodyHtml,
+             prospect.email, sender.email, enrollment.prospect_id, sender.id, sender.provider]
+          );
+          const emailId = emailRes.rows[0].id;
+
           await client.query(
-            `INSERT INTO sequence_step_logs
-                         (org_id, enrollment_id, sequence_step_id, prospect_id,
-                          channel, status, subject, body, email_id, fired_at,
-                          personalize_sources)
-                  VALUES ($1, $2, $3, $4, $5, 'sent', $6, $7, $8, NOW(), $9::jsonb)`,
-            [
-              enrollment.org_id,
-              enrollment.id,
-              step.id,
-              enrollment.prospect_id,
-              step.channel,
-              subject,
-              body,
-              emailId,
-              personalizeSourcesJson,
-            ]
+            `UPDATE prospecting_sender_accounts
+                SET emails_sent_today=emails_sent_today+1,
+                    last_sent_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+              WHERE id=$1`,
+            [sender.id]
           );
 
-          // ── Write activity ────────────────────────────────────────────────
-          try {
-            const channelLabel = step.channel.charAt(0).toUpperCase() + step.channel.slice(1);
-            const description  = step.channel === 'email'
-              ? `Sequence step ${enrollment.current_step} sent — ${subject || '(no subject)'}`
-              : `Sequence step ${enrollment.current_step} fired (${channelLabel})${step.task_note ? ': ' + step.task_note : ''}`;
+          // Finalize the claimed row: sending → sent.
+          await client.query(
+            `UPDATE sequence_step_logs
+                SET status='sent', fired_at=NOW(), email_id=$2
+              WHERE id=$1`,
+            [logId, emailId]
+          );
 
+          // Activity.
+          try {
             await client.query(
               `INSERT INTO prospecting_activities
                            (org_id, prospect_id, user_id, activity_type, description, metadata)
                     VALUES ($1, $2, $3, 'sequence_step_sent', $4, $5)`,
-              [
-                enrollment.org_id,
-                enrollment.prospect_id,
-                enrollment.enrolled_by,
-                description,
-                JSON.stringify({
-                  enrollmentId: enrollment.id,
-                  sequenceId:   enrollment.seq_id,
-                  stepOrder:    enrollment.current_step,
-                  stepId:       step.id,
-                  channel:      step.channel,
-                  subject:      subject   || null,
-                  emailId:      emailId   || null,
-                  sendError:    sendError || null,
-                  clientId:     clientId  || null,
-                }),
-              ]
+              [enrollment.org_id, enrollment.prospect_id, enrollment.enrolled_by,
+               `Sequence step ${enrollment.current_step} sent — ${sendSubject || '(no subject)'}`,
+               JSON.stringify({
+                 enrollmentId: enrollment.id, sequenceId: enrollment.seq_id,
+                 stepOrder: enrollment.current_step, stepId: step.id,
+                 channel: 'email', subject: sendSubject || null,
+                 emailId, senderId: sender.id, clientId: clientId || null,
+               })]
             );
           } catch (actErr) {
             console.warn(`SequenceStepFirer: activity log failed for enrollment ${enrollment.id}:`, actErr.message);
           }
 
-          // ── Advance enrollment ────────────────────────────────────────────
+          // ── Advance enrollment ──────────────────────────────────
           const nextStepRes = await client.query(
-            `SELECT * FROM sequence_steps
-              WHERE sequence_id=$1 AND step_order=$2`,
+            `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
             [enrollment.seq_id, enrollment.current_step + 1]
           );
-
           if (nextStepRes.rows.length) {
             const nextStep = nextStepRes.rows[0];
             await client.query(
@@ -677,22 +930,36 @@ const SequenceStepFirer = {
           // throws — that would just hide the original error behind a
           // schema problem. Swallow and log.
           try {
-            await client.query(
-              `INSERT INTO sequence_step_logs
-                 (org_id, enrollment_id, sequence_step_id, prospect_id,
-                  channel, status, error_message, scheduled_send_at, fired_at)
-               VALUES ($1, $2, $3, $4, $5, 'failed', $6, NOW(), NOW())`,
-              [
-                enrollment.org_id,
-                enrollment.id,
-                // sequence_step_id may not be known if the failure happened
-                // before we resolved the step; null it out gracefully.
-                null,
-                enrollment.prospect_id,
-                null,  // channel unknown at catch level — failure could be pre-channel
-                String(stepErr.message || 'unknown error').slice(0, 1000),
-              ]
+            // sequence_step_id and channel are NOT NULL. Resolve the current
+            // step so the failed-log row actually persists (previously this
+            // passed NULLs and silently violated the constraint, so firer-level
+            // errors never reached the health view). If the step can't be
+            // resolved (failure before the step was known), skip the insert
+            // rather than throw a new violation.
+            const stepLookup = await client.query(
+              `SELECT id FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
+              [enrollment.seq_id, enrollment.current_step]
             );
+            const failStepId  = stepLookup.rows[0]?.id || null;
+            const failChannel = enrollment.current_step_channel || 'email';
+            if (failStepId) {
+              await client.query(
+                `INSERT INTO sequence_step_logs
+                   (org_id, enrollment_id, sequence_step_id, prospect_id,
+                    channel, status, error_message, scheduled_send_at, fired_at)
+                 VALUES ($1, $2, $3, $4, $5, 'failed', $6, NOW(), NOW())`,
+                [
+                  enrollment.org_id,
+                  enrollment.id,
+                  failStepId,
+                  enrollment.prospect_id,
+                  failChannel,
+                  String(stepErr.message || 'unknown error').slice(0, 1000),
+                ]
+              );
+            } else {
+              console.warn(`📨 SequenceStepFirer: could not resolve step for failed-log on enrollment ${enrollment.id} — skipping failed row`);
+            }
           } catch (logErr) {
             console.warn('📨 SequenceStepFirer: failed-log write also failed:', logErr.message);
           }
@@ -704,6 +971,30 @@ const SequenceStepFirer = {
 
     console.log(`📨 SequenceStepFirer: fired=${fired} drafted=${drafted} stopped=${stopped} errors=${errors}`);
     return { fired, stopped, errors, drafted };
+  },
+
+  /**
+   * Materialize pending auto-send 'scheduled' rows for the given enrollments
+   * (or all active auto-send enrollments when no ids are passed). Called
+   * synchronously at the end of bulk-activate so the queue is visible
+   * immediately; also used by the cron top-up.
+   * @param {number[]|null} enrollmentIds
+   * @returns {{ inserted: number }}
+   */
+  async materializePendingAutoSends(enrollmentIds = null) {
+    const client = await pool.connect();
+    try {
+      const inserted = await materializeRows(client, enrollmentIds);
+      if (inserted > 0) {
+        console.log(`📨 SequenceStepFirer.materializePendingAutoSends: ${inserted} scheduled row(s) created`);
+      }
+      return { inserted };
+    } catch (err) {
+      console.error('SequenceStepFirer.materializePendingAutoSends error:', err.message);
+      return { inserted: 0 };
+    } finally {
+      client.release();
+    }
   },
 
   /**

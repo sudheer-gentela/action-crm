@@ -2541,6 +2541,20 @@ router.post('/:id/bulk-activate', async (req, res) => {
       }
     }
 
+    // ── Level 2: materialize 'scheduled' rows for the just-activated, auto-send
+    // enrollments so the rep immediately sees the queued emails and their send
+    // times. Non-fatal — the cron top-up would create them within a tick anyway.
+    // Only email auto-send steps produce rows; draft/manual steps are untouched.
+    try {
+      const newEnrollmentIds = enrollments.map(e => e.enrollmentId).filter(Boolean);
+      if (newEnrollmentIds.length) {
+        await require('../services/SequenceStepFirer')
+          .materializePendingAutoSends(newEnrollmentIds);
+      }
+    } catch (matErr) {
+      console.warn('bulk-activate: materializePendingAutoSends failed (non-fatal):', matErr.message);
+    }
+
     // ── Capacity warning (Q-D) ─────────────────────────────────────────────
     // Activation always proceeds; if email capacity is exhausted or the batch
     // exceeds today's room, surface a warning naming the real lever (sender

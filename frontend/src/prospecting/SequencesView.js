@@ -4,16 +4,15 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiFetch, stripHtml } from './prospectingShared';
 import DraftCard from './DraftCard';
+import ScheduledQueue from './ScheduledQueue';
 import SequenceBuilder from '../SequenceBuilder';
 import SequenceEnrollModal from '../SequenceEnrollModal';
 import EntityIdHint from '../EntityIdHint';
-import EnrollmentActionModal from './EnrollmentActionModal';
 
 function SequencesView({ prospects, search }) {
   const [subTab,       setSubTab]       = useState('library');   // library | drafts | enrollments | stats
   const [sequences,    setSequences]    = useState([]);
   const [enrollments,  setEnrollments]  = useState([]);
-  const [enrollAction, setEnrollAction] = useState(null);   // { mode:'stop'|'remove', enrollment } | null
   const [drafts,       setDrafts]       = useState([]);
   const [loadingSeq,   setLoadingSeq]   = useState(true);
   const [loadingEnr,   setLoadingEnr]   = useState(false);
@@ -381,12 +380,15 @@ function SequencesView({ prospects, search }) {
     }
   };
 
-  // Stop (pause sends, keep stage) and Remove (stop + discard drafts + move
-  // stage, keep campaign) both go through EnrollmentActionModal so a reason is
-  // always captured. Remove works on any status; Stop only makes sense while
-  // the enrollment is still live.
-  const openStopEnrollment   = (enrollment) => setEnrollAction({ mode: 'stop',   enrollment });
-  const openRemoveEnrollment = (enrollment) => setEnrollAction({ mode: 'remove', enrollment });
+  const handleStopEnrollment = async (enrollId) => {
+    if (!window.confirm('Stop this enrollment? No further steps will fire.')) return;
+    try {
+      await apiFetch(`/sequences/enrollments/${enrollId}/stop`, { method: 'POST', body: JSON.stringify({ reason: 'manual' }) });
+      loadEnrollments();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
 
   const openEnroll = (seqId) => {
     setEnrollSeqId(seqId);
@@ -415,6 +417,7 @@ function SequencesView({ prospects, search }) {
           {[
             { key: 'library',     label: `📚 Library (${sequences.length})` },
             { key: 'drafts',      label: `📋 Drafts${drafts.length > 0 ? ` (${drafts.length})` : ''}` },
+            { key: 'scheduled',   label: '🕒 Scheduled' },
             { key: 'enrollments', label: '🗓 Enrollments' },
             { key: 'stats',       label: '📊 Stats' },
             { key: 'health',      label: '❤️ Health' },
@@ -676,6 +679,13 @@ function SequencesView({ prospects, search }) {
         </div>
       )}
 
+      {/* ── Scheduled tab ───────────────────────────────────────────────── */}
+      {subTab === 'scheduled' && (
+        <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+          <ScheduledQueue onChanged={() => { if (subTab === 'enrollments') loadEnrollments(); }} />
+        </div>
+      )}
+
       {/* ── Enrollments tab ─────────────────────────────────────────────── */}
       {subTab === 'enrollments' && (
         <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -739,27 +749,16 @@ function SequencesView({ prospects, search }) {
                         <td style={{ padding: '9px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
                           {e.status === 'active' && (
                             <button
-                              onClick={(ev) => { ev.stopPropagation(); openStopEnrollment(e); }}
+                              onClick={(ev) => { ev.stopPropagation(); handleStopEnrollment(e.id); }}
                               style={{
                                 padding: '3px 10px', borderRadius: 6, fontSize: 11,
-                                border: '1px solid #fed7aa', background: '#fff7ed',
-                                color: '#b45309', cursor: 'pointer', fontWeight: 500,
+                                border: '1px solid #fecaca', background: '#fef2f2',
+                                color: '#dc2626', cursor: 'pointer', fontWeight: 500,
                               }}
                             >
                               Stop
                             </button>
                           )}
-                          <button
-                            onClick={(ev) => { ev.stopPropagation(); openRemoveEnrollment(e); }}
-                            title="Stop, discard unsent drafts, and move the prospect out of the campaign (you choose the stage)"
-                            style={{
-                              padding: '3px 10px', borderRadius: 6, fontSize: 11,
-                              border: '1px solid #fecaca', background: '#fef2f2',
-                              color: '#dc2626', cursor: 'pointer', fontWeight: 500,
-                            }}
-                          >
-                            Remove
-                          </button>
                           <span style={{ fontSize: 11, color: '#9ca3af' }}>{isExpanded ? '▲' : '▼'}</span>
                         </td>
                       </tr>
@@ -1287,16 +1286,6 @@ function SequencesView({ prospects, search }) {
             setSubTab('enrollments');
           }}
           onClose={() => setShowEnroll(false)}
-        />
-      )}
-
-      {/* ── Enrollment stop / remove (with reason capture) ──────────────── */}
-      {enrollAction && (
-        <EnrollmentActionModal
-          mode={enrollAction.mode}
-          enrollment={enrollAction.enrollment}
-          onClose={() => setEnrollAction(null)}
-          onDone={() => { setEnrollAction(null); loadEnrollments(); }}
         />
       )}
 

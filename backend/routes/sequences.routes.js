@@ -558,6 +558,12 @@ router.post('/enrollments/:enrollId/stop', async (req, res) => {
       [reason, req.params.enrollId, req.orgId]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+    // Cancel any pending auto-send rows so nothing fires after a stop.
+    await pool.query(
+      `UPDATE sequence_step_logs SET status='skipped'
+        WHERE enrollment_id=$1 AND org_id=$2 AND status IN ('scheduled','sending')`,
+      [req.params.enrollId, req.orgId]
+    );
     res.json({ enrollment: rows[0] });
   } catch (err) {
     console.error('enrollment stop', err);
@@ -574,6 +580,14 @@ router.post('/enrollments/:enrollId/pause', async (req, res) => {
       [req.params.enrollId, req.orgId]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Not found or not active' } });
+    // Cancel pending auto-send rows while paused so the queue doesn't show a
+    // send that won't happen. Resume re-stamps next_step_due and the firer
+    // top-up re-materializes a fresh scheduled row.
+    await pool.query(
+      `UPDATE sequence_step_logs SET status='skipped'
+        WHERE enrollment_id=$1 AND org_id=$2 AND status IN ('scheduled','sending')`,
+      [req.params.enrollId, req.orgId]
+    );
     res.json({ enrollment: rows[0] });
   } catch (err) {
     res.status(500).json({ error: { message: 'Failed to pause' } });
@@ -789,6 +803,289 @@ router.patch('/drafts/:logId', async (req, res) => {
   } catch (err) {
     console.error('PATCH /sequences/drafts/:logId', err);
     res.status(500).json({ error: { message: 'Failed to update draft' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SCHEDULED AUTO-SEND ROUTES (Level 2)
+//   GET    /scheduled                 list pending auto-send rows (+ signature preview)
+//   PATCH  /scheduled/:logId          edit subject/body (timer is NEVER changed)
+//   POST   /scheduled/:logId/cancel   cancel → full unenroll (same as /undo)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /api/sequences/scheduled  (?prospectId=X&search=Y)
+// Lists pending auto-send rows (status 'scheduled' or in-flight 'sending') for
+// the current rep. Resolves the LIKELY sender at read time to preview the
+// signature + From that will be applied AT SEND (the stored body is plain and
+// signature-free). For single-sender orgs the preview is exact; for multi-sender
+// orgs it is best-effort, since the actual account is chosen by capacity at send.
+router.get('/scheduled', async (req, res) => {
+  const { prospectId, search } = req.query;
+  try {
+    let query = `
+      SELECT
+        ssl.id, ssl.enrollment_id, ssl.subject, ssl.body,
+        ssl.scheduled_send_at, ssl.status, ssl.personalize_sources,
+        ss.step_order,
+        se.sequence_id, se.enrolled_by,
+        s.name AS sequence_name,
+        p.id AS prospect_id, p.first_name, p.last_name,
+        p.email AS prospect_email, p.company_name, p.client_id AS prospect_client_id,
+        psa.email              AS sender_email,
+        psa.display_name       AS sender_display_name,
+        psa.signature          AS sender_signature
+      FROM sequence_step_logs ssl
+      JOIN sequence_enrollments se ON se.id  = ssl.enrollment_id
+      JOIN sequences s             ON s.id   = se.sequence_id
+      JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
+      JOIN prospects p             ON p.id   = ssl.prospect_id
+      LEFT JOIN LATERAL (
+        SELECT email, display_name, signature
+        FROM (
+          SELECT email, display_name, signature, 1 AS priority,
+                 last_reset_at, emails_sent_today, last_sent_at
+            FROM prospecting_sender_accounts
+           WHERE org_id = ssl.org_id AND client_id IS NOT NULL
+             AND client_id = p.client_id AND is_active = true
+          UNION ALL
+          SELECT email, display_name, signature, 2 AS priority,
+                 last_reset_at, emails_sent_today, last_sent_at
+            FROM prospecting_sender_accounts
+           WHERE org_id = ssl.org_id AND user_id = se.enrolled_by
+             AND client_id IS NULL AND is_active = true
+        ) candidates
+        ORDER BY priority ASC,
+          (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+          last_sent_at ASC NULLS FIRST
+        LIMIT 1
+      ) psa ON true
+      WHERE ssl.org_id = $1
+        AND ssl.status IN ('scheduled','sending')
+        AND se.enrolled_by = $2
+    `;
+    const params = [req.orgId, req.user.userId];
+    if (prospectId) {
+      params.push(parseInt(prospectId));
+      query += ` AND ssl.prospect_id = $${params.length}`;
+    }
+    if (search != null && String(search).trim() !== '') {
+      params.push(`%${String(search).toLowerCase()}%`);
+      query += ` AND (
+        LOWER(p.first_name || ' ' || p.last_name) LIKE $${params.length}
+        OR LOWER(p.email) LIKE $${params.length}
+        OR LOWER(p.company_name) LIKE $${params.length}
+      )`;
+    }
+    query += ' ORDER BY ssl.scheduled_send_at ASC';
+
+    const { rows } = await pool.query(query, params);
+
+    const scheduled = rows.map(r => ({
+      id:              r.id,
+      enrollmentId:    r.enrollment_id,
+      sequenceId:      r.sequence_id,
+      sequenceName:    r.sequence_name,
+      stepOrder:       r.step_order,
+      channel:         'email',
+      status:          r.status,            // 'scheduled' | 'sending'
+      canEdit:         r.status === 'scheduled', // in-flight rows are locked
+      canSkip:         r.status === 'scheduled', // skip just this step, keep the sequence
+      subject:         r.subject || '',
+      body:            r.body || '',
+      scheduledSendAt: r.scheduled_send_at,
+      isOverdue:       r.scheduled_send_at ? new Date(r.scheduled_send_at) < new Date() : false,
+      prospect: {
+        id:          r.prospect_id,
+        firstName:   r.first_name,
+        lastName:    r.last_name,
+        email:       r.prospect_email,
+        companyName: r.company_name,
+      },
+      // Applied at send time — shown so the rep sees the full email that will go out.
+      fromPreview:      r.sender_email ? { email: r.sender_email, displayName: r.sender_display_name } : null,
+      signaturePreview: r.sender_signature || null,
+      signatureAppliedOnSend: true,
+      personalizeSources: r.personalize_sources || null,
+    }));
+
+    res.json({ scheduled });
+  } catch (err) {
+    console.error('GET /sequences/scheduled', err);
+    res.status(500).json({ error: { message: 'Failed to load scheduled sends' } });
+  }
+});
+
+// ── PATCH /api/sequences/scheduled/:logId
+// Edits subject/body of a pending scheduled send. Per design, this NEVER changes
+// scheduled_send_at — the email still goes out at its originally scheduled time.
+// Only 'scheduled' rows are editable; once the firer claims a row ('sending') or
+// it has sent, edits are rejected.
+router.patch('/scheduled/:logId', async (req, res) => {
+  const { subject, body } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE sequence_step_logs
+          SET subject = COALESCE($1, subject),
+              body    = COALESCE($2, body)
+        WHERE id = $3
+          AND org_id = $4
+          AND status = 'scheduled'
+        RETURNING id, subject, body, scheduled_send_at, status`,
+      [subject ?? null, body ?? null, req.params.logId, req.orgId]
+    );
+    if (!rows.length) {
+      return res.status(409).json({ error: { message: 'Not editable — already sending or sent.' } });
+    }
+    res.json({ scheduled: rows[0] });
+  } catch (err) {
+    console.error('PATCH /sequences/scheduled/:logId', err);
+    res.status(500).json({ error: { message: 'Failed to update scheduled send' } });
+  }
+});
+
+// ── POST /api/sequences/scheduled/:logId/cancel
+// Rep cancels a scheduled send. Routes through the SAME unenroll process as a
+// manual draft undo: stop the enrollment, discard pending rows (draft+scheduled),
+// revert the prospect stage, and write an audit row. (To cancel just one step
+// while keeping the sequence running, a separate skip endpoint would be needed.)
+router.post('/scheduled/:logId/cancel', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const lookup = await client.query(
+      `SELECT enrollment_id
+         FROM sequence_step_logs
+        WHERE id = $1 AND org_id = $2 AND status IN ('scheduled','sending')`,
+      [req.params.logId, req.orgId]
+    );
+    if (!lookup.rows.length) {
+      return res.status(404).json({ error: { message: 'Scheduled send not found or already sent' } });
+    }
+    const enrollmentId = lookup.rows[0].enrollment_id;
+
+    await client.query('BEGIN');
+    const result = await undoEnrollmentTx(client, req.orgId, req.user.userId, enrollmentId);
+    if (result.notFound) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: { message: 'Enrollment not found' } });
+    }
+    await client.query('COMMIT');
+    res.json(result);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('POST /sequences/scheduled/:logId/cancel', err);
+    res.status(500).json({ error: { message: 'Cancel failed: ' + err.message } });
+  } finally {
+    client.release();
+  }
+});
+
+// ── POST /api/sequences/scheduled/:logId/skip
+// Skip JUST this scheduled email and let the sequence continue — discards the
+// pending row and advances the enrollment to the next step (or completes it if
+// this was the last step). Mirrors the "discard a draft and advance" behavior
+// (DELETE /drafts/:logId) so the two paths can't drift.
+//
+// Race-safe vs the firer: the skip is a CONDITIONAL update on status='scheduled'.
+// If the firer has already claimed the row (status='sending') or it has sent,
+// the update matches 0 rows and we return 409 — we never skip an email that is
+// already on its way out, and we never double-advance (the firer's claim is
+// likewise conditional on status='scheduled').
+router.post('/scheduled/:logId/skip', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    // Load for 404 + ownership + step context (status checked again, inside txn).
+    const rowRes = await client.query(
+      `SELECT ssl.id, ssl.enrollment_id, ssl.prospect_id, ssl.sequence_step_id,
+              ss.step_order, se.enrolled_by, se.current_step, se.status AS enrollment_status,
+              s.id AS seq_id, s.name AS sequence_name
+         FROM sequence_step_logs ssl
+         JOIN sequence_steps ss       ON ss.id = ssl.sequence_step_id
+         JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
+         JOIN sequences s             ON s.id  = se.sequence_id
+        WHERE ssl.id = $1 AND ssl.org_id = $2 AND ssl.status = 'scheduled'`,
+      [req.params.logId, req.orgId]
+    );
+    if (!rowRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Scheduled send not found, already sending, or already sent' } });
+    }
+    const row = rowRes.rows[0];
+    if (row.enrolled_by !== req.user.userId) {
+      return res.status(403).json({ error: { message: 'Only the enrolling rep can skip this step' } });
+    }
+
+    await client.query('BEGIN');
+
+    // Conditional skip — loses gracefully to a concurrent firer claim.
+    const skipRes = await client.query(
+      `UPDATE sequence_step_logs SET status='skipped', fired_at=NOW()
+        WHERE id=$1 AND org_id=$2 AND status='scheduled'
+        RETURNING id`,
+      [row.id, req.orgId]
+    );
+    if (skipRes.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: { message: 'This email is already sending or sent — too late to skip.' } });
+    }
+
+    // Lock the enrollment and re-read authoritative state before advancing.
+    const eRes = await client.query(
+      `SELECT current_step, status, sequence_id
+         FROM sequence_enrollments
+        WHERE id=$1 AND org_id=$2 FOR UPDATE`,
+      [row.enrollment_id, req.orgId]
+    );
+    const enrollment = eRes.rows[0];
+
+    let advancedToStep = null;
+    let completed      = false;
+
+    // Only advance an ACTIVE enrollment whose current step is the one we skipped.
+    // (If it isn't active, the row is still correctly skipped; we just don't move
+    // the pointer — resume handles re-materializing the right step.)
+    if (enrollment && enrollment.status === 'active' && enrollment.current_step === row.current_step) {
+      const nextStepRes = await client.query(
+        `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
+        [enrollment.sequence_id, row.current_step + 1]
+      );
+      if (nextStepRes.rows.length) {
+        const ns = nextStepRes.rows[0];
+        const nextDue = new Date();
+        nextDue.setDate(nextDue.getDate() + (parseInt(ns.delay_days) || 0));
+        await client.query(
+          `UPDATE sequence_enrollments SET current_step=$1, next_step_due=$2 WHERE id=$3`,
+          [row.current_step + 1, nextDue, row.enrollment_id]
+        );
+        advancedToStep = row.current_step + 1;
+      } else {
+        await client.query(
+          `UPDATE sequence_enrollments SET status='completed', completed_at=NOW() WHERE id=$1`,
+          [row.enrollment_id]
+        );
+        completed = true;
+      }
+    }
+
+    await client.query(
+      `INSERT INTO prospecting_activities
+         (org_id, prospect_id, user_id, activity_type, description, metadata)
+       VALUES ($1, $2, $3, 'sequence_step_skipped', $4, $5)`,
+      [req.orgId, row.prospect_id, req.user.userId,
+       `Scheduled send skipped — ${row.sequence_name} step ${row.step_order}` +
+         (completed ? ' (sequence completed)' : advancedToStep ? ` (advanced to step ${advancedToStep})` : ''),
+       JSON.stringify({
+         enrollmentId: row.enrollment_id, logId: row.id, stepOrder: row.step_order,
+         advancedToStep, completed,
+       })]
+    );
+
+    await client.query('COMMIT');
+    res.json({ ok: true, enrollmentId: row.enrollment_id, advancedToStep, completed });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('POST /sequences/scheduled/:logId/skip', err);
+    res.status(500).json({ error: { message: 'Skip failed: ' + err.message } });
+  } finally {
+    client.release();
   }
 });
 
@@ -2534,7 +2831,7 @@ router.post('/:id/preview', async (req, res) => {
 //     prospect stage (the rep is saying "I made a mistake, undo")
 //
 // What gets undone:
-//   - sequence_step_logs WHERE enrollment_id = X AND status = 'draft' → deleted
+//   - sequence_step_logs WHERE enrollment_id = X AND status IN ('draft','scheduled') → deleted
 //   - prospects.stage reverts to 'research' (or 'target' if no research_notes)
 //   - sequence_enrollments.status = 'stopped' with stop_reason = 'undone'
 //
@@ -2573,7 +2870,7 @@ async function undoEnrollmentTx(client, orgId, userId, enrollId) {
 
   const draftRes = await client.query(
     `DELETE FROM sequence_step_logs
-      WHERE enrollment_id = $1 AND org_id = $2 AND status = 'draft'
+      WHERE enrollment_id = $1 AND org_id = $2 AND status IN ('draft','scheduled')
     RETURNING id`,
     [enrollment.id, orgId]
   );
@@ -2693,161 +2990,6 @@ router.post('/enrollments/bulk-undo', async (req, res) => {
     await client.query('ROLLBACK');
     console.error('bulk-undo error:', err);
     res.status(500).json({ error: { message: 'Bulk undo failed (nothing was changed): ' + err.message } });
-  } finally {
-    client.release();
-  }
-});
-
-// ── POST /enrollments/:enrollId/remove — remove a prospect from the campaign ─
-//
-// Distinct from /stop and /undo:
-//   - /stop  just flips enrollment status → 'stopped'. Stage is untouched, so
-//            the prospect KEEPS sitting in the 'outreach' pipeline stage and
-//            keeps counting toward the campaign's outreach number. This is the
-//            gap that left a stopped prospect (e.g. deliberately stopped, but
-//            never moved out of outreach) still showing as "in outreach".
-//   - /undo  is the MISTAKE path: reverts stage to research/target so the
-//            prospect is re-addable, and it refuses already-terminal rows.
-//   - /remove is the DELIBERATE path: works on ANY enrollment status
-//            (including an already-'stopped' one), stops it if still live,
-//            discards unsent drafts, and moves the prospect to a caller-chosen
-//            terminal/early stage (default 'disqualified') WITH a reason.
-//
-// What it deliberately does NOT do:
-//   - It does not touch prospects.campaign_id. Campaign membership (and thus
-//     the attribution "this prospect was worked in campaign X") is preserved;
-//     the prospect simply leaves the active/outreach counts via its stage.
-//   - It does not delete the enrollment row (kept for audit, like /stop).
-//
-// Body: { toStage = 'disqualified', reasonCode?, reason? }
-//   toStage    ∈ REMOVE_DESTINATIONS (validated)
-//   reasonCode ∈ DQ reason codes when toStage='disqualified' (validated if sent)
-//   reason     free-text note, stored on the prospect + activity
-//
-// Stage is set with a direct UPDATE (bypassing STAGE_TRANSITIONS) because a
-// removal is a deliberate operator override — same approach /undo uses to
-// revert an outreach-stage prospect back to research/target.
-const REMOVE_DESTINATIONS = ['disqualified', 'nurture', 'research', 'target'];
-const REMOVE_DQ_REASON_CODES = [
-  'account_not_fit', 'contact_not_fit', 'timing',
-  'competitor', 'no_budget', 'duplicate', 'other',
-];
-
-async function removeEnrollmentTx(client, orgId, userId, enrollId, opts) {
-  const toStage    = opts.toStage || 'disqualified';
-  const reasonCode = opts.reasonCode || null;
-  const reason     = opts.reason || null;
-
-  const eRes = await client.query(
-    `SELECT id, prospect_id, sequence_id, status
-       FROM sequence_enrollments
-      WHERE id = $1 AND org_id = $2
-      FOR UPDATE`,
-    [enrollId, orgId]
-  );
-  if (!eRes.rows.length) {
-    return { enrollmentId: Number(enrollId), notFound: true };
-  }
-  const enrollment = eRes.rows[0];
-
-  // Stop the enrollment if it's still live. If it's already stopped/completed
-  // we leave the original status + stop_reason intact (audit) and just proceed
-  // to the stage move — this is what makes /remove work on Jonathan-style rows
-  // that were already stopped.
-  const wasLive = ['active', 'paused'].includes(enrollment.status);
-  if (wasLive) {
-    await client.query(
-      `UPDATE sequence_enrollments
-          SET status = 'stopped', stopped_at = NOW(), stop_reason = $3
-        WHERE id = $1 AND org_id = $2`,
-      [enrollment.id, orgId, reasonCode || 'removed']
-    );
-  }
-
-  // Discard any unsent drafts so nothing fires after removal.
-  const draftRes = await client.query(
-    `DELETE FROM sequence_step_logs
-      WHERE enrollment_id = $1 AND org_id = $2 AND status = 'draft'
-    RETURNING id`,
-    [enrollment.id, orgId]
-  );
-  const draftsDiscarded = draftRes.rowCount;
-
-  // Move the prospect to the chosen stage. campaign_id is intentionally left
-  // untouched. disqualified_reason/_code are written only when disqualifying.
-  const pRes = await client.query(`SELECT stage FROM prospects WHERE id = $1 AND org_id = $2`,
-    [enrollment.prospect_id, orgId]);
-  const fromStage = pRes.rows[0]?.stage || null;
-
-  await client.query(
-    `UPDATE prospects
-        SET stage = $3,
-            stage_changed_at = CURRENT_TIMESTAMP,
-            disqualified_reason      = CASE WHEN $3 = 'disqualified' THEN COALESCE($4, disqualified_reason) ELSE disqualified_reason END,
-            disqualified_reason_code = CASE WHEN $3 = 'disqualified' THEN COALESCE($5, disqualified_reason_code) ELSE disqualified_reason_code END,
-            updated_at = CURRENT_TIMESTAMP
-      WHERE id = $1 AND org_id = $2`,
-    [enrollment.prospect_id, orgId, toStage, reason, reasonCode]
-  );
-
-  try {
-    await client.query(
-      `INSERT INTO prospecting_activities
-                   (org_id, prospect_id, user_id, activity_type, description, metadata)
-            VALUES ($1, $2, $3, 'enrollment_removed', $4, $5::jsonb)`,
-      [
-        orgId, enrollment.prospect_id, userId,
-        `Removed from campaign — moved to '${toStage}'` +
-          (reasonCode ? ` (${reasonCode})` : '') +
-          (draftsDiscarded ? `, ${draftsDiscarded} draft(s) discarded` : ''),
-        JSON.stringify({
-          enrollmentId: enrollment.id, sequenceId: enrollment.sequence_id,
-          fromStage, toStage, reasonCode, reason, draftsDiscarded,
-          wasLive,
-        }),
-      ]
-    );
-  } catch (actErr) {
-    console.warn('remove: activity log failed:', actErr.message);
-  }
-
-  return {
-    enrollmentId: enrollment.id, notFound: false,
-    fromStage, toStage, reasonCode, reason, draftsDiscarded, wasLive,
-  };
-}
-
-router.post('/enrollments/:enrollId/remove', async (req, res) => {
-  const { toStage = 'disqualified', reasonCode = null, reason = null } = req.body || {};
-
-  if (!REMOVE_DESTINATIONS.includes(toStage)) {
-    return res.status(400).json({
-      error: { message: `toStage must be one of: ${REMOVE_DESTINATIONS.join(', ')}` },
-    });
-  }
-  if (toStage === 'disqualified' && reasonCode != null && !REMOVE_DQ_REASON_CODES.includes(reasonCode)) {
-    return res.status(400).json({
-      error: { message: `reasonCode must be one of: ${REMOVE_DQ_REASON_CODES.join(', ')}` },
-    });
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const result = await removeEnrollmentTx(
-      client, req.orgId, req.user.userId, req.params.enrollId,
-      { toStage, reasonCode, reason }
-    );
-    if (result.notFound) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: { message: 'Enrollment not found' } });
-    }
-    await client.query('COMMIT');
-    res.json(result);
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('enrollment remove error:', err);
-    res.status(500).json({ error: { message: 'Remove failed: ' + err.message } });
   } finally {
     client.release();
   }
