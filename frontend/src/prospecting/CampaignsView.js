@@ -384,6 +384,12 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState('');
   const [busy,     setBusy]     = useState(false);
+  // Cascade-delete (campaign + prospects): two-step — dry-run preview, then
+  // an explicit confirm that commits. deletePreview holds the dry-run counts.
+  const [deletePreview, setDeletePreview] = useState(null);
+  const [deleteBusy,    setDeleteBusy]    = useState(false);
+  const [deleteErr,     setDeleteErr]     = useState('');
+  const [deleteTypedName, setDeleteTypedName] = useState('');  // must match name to confirm
   const [showImport,   setShowImport]   = useState(false);
   const [showEnroll,   setShowEnroll]   = useState(false);
   // Slice 2: batch-activation modal + pacing-driven CTA.
@@ -488,6 +494,53 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
 
   const totalProspects = data?.metrics?.totalProspects || 0;
 
+  // ── Cascade delete: campaign + its prospects ────────────────────────────
+  // Step 1 (startDelete): dry-run — fetch the counts, change nothing. The
+  // admin-only gate fires here too, so a non-admin sees the message now.
+  // Step 2 (confirmDelete): commit — stops enrollments, soft-deletes the
+  // prospects (recoverable), hard-deletes the campaign, atomically.
+  const startDelete = async () => {
+    setDeleteErr('');
+    setDeleteTypedName('');
+    setDeleteBusy(true);
+    try {
+      const r = await apiFetch(
+        `/prospecting-campaigns/${campaignId}?withProspects=true&hard=true&dryRun=true`,
+        { method: 'DELETE' }
+      );
+      setDeletePreview(r.wouldDelete || {});
+    } catch (err) {
+      const msg = err.message || '';
+      setDeleteErr(/admin/i.test(msg) || err.code === 'ADMIN_REQUIRED'
+        ? 'Only an org admin can delete a campaign together with its prospects.'
+        : 'Could not prepare delete: ' + (msg || 'unknown error'));
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    setDeleteErr('');
+    setDeleteBusy(true);
+    try {
+      await apiFetch(
+        `/prospecting-campaigns/${campaignId}?withProspects=true&hard=true`,
+        { method: 'DELETE' }
+      );
+      onChanged?.();
+      onClose();
+    } catch (err) {
+      // Keep the panel open so the error is visible.
+      setDeleteErr('Delete failed: ' + (err.message || 'unknown error'));
+      setDeleteBusy(false);
+    }
+  };
+
+  const cancelDelete = () => { setDeletePreview(null); setDeleteErr(''); setDeleteTypedName(''); };
+
+  const deleteNameMatch = !!data &&
+    deleteTypedName.trim() === (data.campaign?.name || '').trim();
+
   return (
     <div className="pv-detail-overlay" onClick={onClose}>
       <div className="pv-detail-panel" onClick={e => e.stopPropagation()}>
@@ -529,7 +582,71 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
               <button className="pv-btn-secondary" onClick={() => setShowImport(true)}>
                 ⬆ Import prospects
               </button>
+              <button className="pv-btn-secondary" disabled={busy || deleteBusy}
+                style={{ color: '#b91c1c', borderColor: '#fca5a5', marginLeft: 'auto' }}
+                onClick={startDelete}>
+                🗑 Delete campaign
+              </button>
             </div>
+
+            {/* Cascade-delete: pre-preview error (e.g. admin-required) */}
+            {deleteErr && !deletePreview && (
+              <div style={{ fontSize: 12, color: '#b91c1c', marginBottom: 14 }}>{deleteErr}</div>
+            )}
+
+            {/* Cascade-delete: confirm panel (shown after dry-run preview) */}
+            {deletePreview && (
+              <div style={{
+                border: '1px solid #fca5a5', background: '#fef2f2', borderRadius: 8,
+                padding: '12px 14px', marginBottom: 18,
+              }}>
+                <div style={{ fontWeight: 700, color: '#991b1b', fontSize: 13, marginBottom: 6 }}>
+                  Delete this campaign and its prospects?
+                </div>
+                <div style={{ fontSize: 12, color: '#7f1d1d', marginBottom: 10, lineHeight: 1.5 }}>
+                  This will stop <strong>{deletePreview.activeEnrollments ?? 0}</strong> active/paused
+                  enrollment(s), delete <strong>{deletePreview.prospects ?? 0}</strong> prospect(s)
+                  {' '}(recoverable), and permanently delete the campaign. The campaign itself cannot be recovered.
+                </div>
+                {deleteErr && (
+                  <div style={{ fontSize: 12, color: '#b91c1c', marginBottom: 8 }}>{deleteErr}</div>
+                )}
+                <div style={{ marginBottom: 10 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: '#7f1d1d', display: 'block', marginBottom: 4 }}>
+                    Type the campaign name to confirm: <span style={{ fontWeight: 700 }}>{data.campaign.name}</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={deleteTypedName}
+                    onChange={e => setDeleteTypedName(e.target.value)}
+                    placeholder={data.campaign.name}
+                    autoFocus
+                    style={{
+                      width: '100%', boxSizing: 'border-box', padding: '7px 10px',
+                      border: `1px solid ${deleteNameMatch ? '#16a34a' : '#fca5a5'}`,
+                      borderRadius: 6, fontSize: 13,
+                    }}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="pv-btn-secondary" disabled={deleteBusy} onClick={cancelDelete}>
+                    Cancel
+                  </button>
+                  <button
+                    className="pv-btn-primary"
+                    disabled={deleteBusy || !deleteNameMatch}
+                    title={deleteNameMatch ? undefined : 'Type the exact campaign name to enable'}
+                    style={{
+                      background: deleteNameMatch ? '#b91c1c' : '#e5a3a3',
+                      borderColor: deleteNameMatch ? '#b91c1c' : '#e5a3a3',
+                      cursor: (deleteBusy || !deleteNameMatch) ? 'not-allowed' : 'pointer',
+                    }}
+                    onClick={confirmDelete}>
+                    {deleteBusy ? 'Deleting…' : 'Permanently delete'}
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Metric cards — top row: prospects + total touches + in-sequences */}
             <div style={{
