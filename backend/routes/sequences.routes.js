@@ -2698,5 +2698,160 @@ router.post('/enrollments/bulk-undo', async (req, res) => {
   }
 });
 
+// ── POST /enrollments/:enrollId/remove — remove a prospect from the campaign ─
+//
+// Distinct from /stop and /undo:
+//   - /stop  just flips enrollment status → 'stopped'. Stage is untouched, so
+//            the prospect KEEPS sitting in the 'outreach' pipeline stage and
+//            keeps counting toward the campaign's outreach number. This is the
+//            gap that left a stopped prospect (e.g. deliberately stopped, but
+//            never moved out of outreach) still showing as "in outreach".
+//   - /undo  is the MISTAKE path: reverts stage to research/target so the
+//            prospect is re-addable, and it refuses already-terminal rows.
+//   - /remove is the DELIBERATE path: works on ANY enrollment status
+//            (including an already-'stopped' one), stops it if still live,
+//            discards unsent drafts, and moves the prospect to a caller-chosen
+//            terminal/early stage (default 'disqualified') WITH a reason.
+//
+// What it deliberately does NOT do:
+//   - It does not touch prospects.campaign_id. Campaign membership (and thus
+//     the attribution "this prospect was worked in campaign X") is preserved;
+//     the prospect simply leaves the active/outreach counts via its stage.
+//   - It does not delete the enrollment row (kept for audit, like /stop).
+//
+// Body: { toStage = 'disqualified', reasonCode?, reason? }
+//   toStage    ∈ REMOVE_DESTINATIONS (validated)
+//   reasonCode ∈ DQ reason codes when toStage='disqualified' (validated if sent)
+//   reason     free-text note, stored on the prospect + activity
+//
+// Stage is set with a direct UPDATE (bypassing STAGE_TRANSITIONS) because a
+// removal is a deliberate operator override — same approach /undo uses to
+// revert an outreach-stage prospect back to research/target.
+const REMOVE_DESTINATIONS = ['disqualified', 'nurture', 'research', 'target'];
+const REMOVE_DQ_REASON_CODES = [
+  'account_not_fit', 'contact_not_fit', 'timing',
+  'competitor', 'no_budget', 'duplicate', 'other',
+];
+
+async function removeEnrollmentTx(client, orgId, userId, enrollId, opts) {
+  const toStage    = opts.toStage || 'disqualified';
+  const reasonCode = opts.reasonCode || null;
+  const reason     = opts.reason || null;
+
+  const eRes = await client.query(
+    `SELECT id, prospect_id, sequence_id, status
+       FROM sequence_enrollments
+      WHERE id = $1 AND org_id = $2
+      FOR UPDATE`,
+    [enrollId, orgId]
+  );
+  if (!eRes.rows.length) {
+    return { enrollmentId: Number(enrollId), notFound: true };
+  }
+  const enrollment = eRes.rows[0];
+
+  // Stop the enrollment if it's still live. If it's already stopped/completed
+  // we leave the original status + stop_reason intact (audit) and just proceed
+  // to the stage move — this is what makes /remove work on Jonathan-style rows
+  // that were already stopped.
+  const wasLive = ['active', 'paused'].includes(enrollment.status);
+  if (wasLive) {
+    await client.query(
+      `UPDATE sequence_enrollments
+          SET status = 'stopped', stopped_at = NOW(), stop_reason = $3
+        WHERE id = $1 AND org_id = $2`,
+      [enrollment.id, orgId, reasonCode || 'removed']
+    );
+  }
+
+  // Discard any unsent drafts so nothing fires after removal.
+  const draftRes = await client.query(
+    `DELETE FROM sequence_step_logs
+      WHERE enrollment_id = $1 AND org_id = $2 AND status = 'draft'
+    RETURNING id`,
+    [enrollment.id, orgId]
+  );
+  const draftsDiscarded = draftRes.rowCount;
+
+  // Move the prospect to the chosen stage. campaign_id is intentionally left
+  // untouched. disqualified_reason/_code are written only when disqualifying.
+  const pRes = await client.query(`SELECT stage FROM prospects WHERE id = $1 AND org_id = $2`,
+    [enrollment.prospect_id, orgId]);
+  const fromStage = pRes.rows[0]?.stage || null;
+
+  await client.query(
+    `UPDATE prospects
+        SET stage = $3,
+            stage_changed_at = CURRENT_TIMESTAMP,
+            disqualified_reason      = CASE WHEN $3 = 'disqualified' THEN COALESCE($4, disqualified_reason) ELSE disqualified_reason END,
+            disqualified_reason_code = CASE WHEN $3 = 'disqualified' THEN COALESCE($5, disqualified_reason_code) ELSE disqualified_reason_code END,
+            updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1 AND org_id = $2`,
+    [enrollment.prospect_id, orgId, toStage, reason, reasonCode]
+  );
+
+  try {
+    await client.query(
+      `INSERT INTO prospecting_activities
+                   (org_id, prospect_id, user_id, activity_type, description, metadata)
+            VALUES ($1, $2, $3, 'enrollment_removed', $4, $5::jsonb)`,
+      [
+        orgId, enrollment.prospect_id, userId,
+        `Removed from campaign — moved to '${toStage}'` +
+          (reasonCode ? ` (${reasonCode})` : '') +
+          (draftsDiscarded ? `, ${draftsDiscarded} draft(s) discarded` : ''),
+        JSON.stringify({
+          enrollmentId: enrollment.id, sequenceId: enrollment.sequence_id,
+          fromStage, toStage, reasonCode, reason, draftsDiscarded,
+          wasLive,
+        }),
+      ]
+    );
+  } catch (actErr) {
+    console.warn('remove: activity log failed:', actErr.message);
+  }
+
+  return {
+    enrollmentId: enrollment.id, notFound: false,
+    fromStage, toStage, reasonCode, reason, draftsDiscarded, wasLive,
+  };
+}
+
+router.post('/enrollments/:enrollId/remove', async (req, res) => {
+  const { toStage = 'disqualified', reasonCode = null, reason = null } = req.body || {};
+
+  if (!REMOVE_DESTINATIONS.includes(toStage)) {
+    return res.status(400).json({
+      error: { message: `toStage must be one of: ${REMOVE_DESTINATIONS.join(', ')}` },
+    });
+  }
+  if (toStage === 'disqualified' && reasonCode != null && !REMOVE_DQ_REASON_CODES.includes(reasonCode)) {
+    return res.status(400).json({
+      error: { message: `reasonCode must be one of: ${REMOVE_DQ_REASON_CODES.join(', ')}` },
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await removeEnrollmentTx(
+      client, req.orgId, req.user.userId, req.params.enrollId,
+      { toStage, reasonCode, reason }
+    );
+    if (result.notFound) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: { message: 'Enrollment not found' } });
+    }
+    await client.query('COMMIT');
+    res.json(result);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('enrollment remove error:', err);
+    res.status(500).json({ error: { message: 'Remove failed: ' + err.message } });
+  } finally {
+    client.release();
+  }
+});
+
 
 module.exports = router;

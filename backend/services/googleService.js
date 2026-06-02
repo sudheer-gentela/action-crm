@@ -19,10 +19,24 @@ function getOAuth2Client() {
 }
 
 // ── Scopes ────────────────────────────────────────────────────────────────────
-// Single consent covers Gmail + Calendar + Drive
+// Single consent covers Gmail + Calendar + Drive.
+//
+// gmail.modify  : read + compose + send + labels (NOT permanent delete).
+//                 Replaces the former gmail.readonly + gmail.send pair — one
+//                 token grant covers both reading inboxes (fetchEmails / reply
+//                 detection) and sending sequence mail (sendEmail). RESTRICTED
+//                 scope → triggers Google's annual CASA security assessment
+//                 before production. Unavoidable for API-based inbox reading;
+//                 gmail.send alone (sensitive, no CASA) cannot read.
+// drive.readonly: RESTRICTED. Required by listDriveFiles (drive.files.list with
+//                 name/folder queries). Do NOT narrow to drive.file — that scope
+//                 only sees app-created or user-picked files and cannot list or
+//                 search the user's Drive.
+// NOTE: keep this array in sync with the scopes declared on the Google Cloud
+//       Console (Data access). A runtime scope not declared there is rejected at
+//       consent in production.
 const SCOPES = [
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/calendar.readonly',
   'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/userinfo.email',
