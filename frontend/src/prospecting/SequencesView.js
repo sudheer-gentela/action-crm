@@ -1438,7 +1438,7 @@ function SequencesView({ prospects, search }) {
           last 24h and 7d, plus stalled-enrollment counts and top error
           messages. Mirrors the campaign-scoped tile, but covers ALL active
           sequences in the org. */}
-      {subTab === 'health' && <OrgSequenceHealthPanel />}
+      {subTab === 'health' && <OrgSequenceHealthPanel onOpenSequence={openStats} />}
     </div>
   );
 }
@@ -1453,7 +1453,7 @@ function SequencesView({ prospects, search }) {
 // that we render this as a full-screen list rather than a compact tile —
 // the global view is the place to triage health issues across the org.
 // ─────────────────────────────────────────────────────────────────────────────
-function OrgSequenceHealthPanel() {
+function OrgSequenceHealthPanel({ onOpenSequence }) {
   const [health,   setHealth]   = useState(null);
   const [loading,  setLoading]  = useState(true);
   const [expanded, setExpanded] = useState({});
@@ -1520,10 +1520,11 @@ function OrgSequenceHealthPanel() {
             <div key={h.sequenceId} style={{
               borderTop: idx === 0 ? 'none' : '1px solid #f3f4f6',
             }}>
+              <div style={{ display: 'flex', alignItems: 'stretch' }}>
               <button
                 onClick={() => setExpanded(prev => ({ ...prev, [h.sequenceId]: !isExpanded }))}
                 style={{
-                  width: '100%', padding: '12px 14px', background: '#fff',
+                  flex: 1, padding: '12px 14px', background: '#fff',
                   border: 'none', cursor: 'pointer', textAlign: 'left',
                   display: 'flex', alignItems: 'center', gap: 12,
                 }}
@@ -1549,6 +1550,18 @@ function OrgSequenceHealthPanel() {
                   {isExpanded ? '▾' : '▸'}
                 </span>
               </button>
+              <button
+                onClick={() => onOpenSequence && onOpenSequence(h.sequenceId)}
+                title="Open this sequence's stats"
+                style={{
+                  padding: '0 16px', background: '#fff', border: 'none',
+                  borderLeft: '1px solid #f3f4f6', cursor: 'pointer',
+                  color: '#0F9D8E', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+                }}
+              >
+                View →
+              </button>
+              </div>
 
               {isExpanded && (
                 <div style={{ padding: '4px 14px 14px', fontSize: 12, color: '#374151' }}>
