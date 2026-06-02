@@ -1407,8 +1407,8 @@ function LinkedInPanel({ prospect, onEventLogged }) {
   const [error, setError] = useState(null);
 
   const TIMELINE_STEPS = [
-    { key: 'request_sent', label: 'Connection request sent',    tsField: 'request_sent_at' },
-    { key: 'connected',    label: 'Connection accepted',        tsField: 'connected_at',     extra: () => {
+    { key: 'connection_request_sent', label: 'Connection request sent',    tsField: 'request_sent_at' },
+    { key: 'connection_accepted',     label: 'Connection accepted',        tsField: 'connected_at',     extra: () => {
       if (li.request_sent_at && li.connected_at) {
         const days = Math.round((new Date(li.connected_at) - new Date(li.request_sent_at)) / 86400000);
         return days === 0 ? 'same day' : `${days}d to accept`;
@@ -1416,11 +1416,14 @@ function LinkedInPanel({ prospect, onEventLogged }) {
       return null;
     }},
     { key: 'message_sent', label: 'Follow-up message sent',     tsField: 'last_message_at',  extra: () => li.message_count > 1 ? `${li.message_count} messages sent` : null },
-    { key: 'replied',      label: 'Reply received',             tsField: 'last_reply_at' },
+    { key: 'reply_received', label: 'Reply received',             tsField: 'last_reply_at' },
   ];
 
   // Which steps are done — a step is done if status is at or past it
-  const ORDER = ['request_sent', 'connected', 'message_sent', 'replied'];
+  // Canonical milestone order — matches backend STATUS_ORDER. currentStatus
+  // (li.connection_status) is canonical, so ORDER must be too, otherwise
+  // indexOf returns -1 and no steps render as done.
+  const ORDER = ['connection_request_sent', 'connection_accepted', 'message_sent', 'reply_received', 'meeting_booked'];
   const currentIdx = ORDER.indexOf(currentStatus);
   const isDone = (key) => currentIdx >= ORDER.indexOf(key);
 
@@ -1446,7 +1449,7 @@ function LinkedInPanel({ prospect, onEventLogged }) {
   const nextIdx = currentIdx + 1;
   const nextEvent = nextIdx < ORDER.length ? ORDER[nextIdx] : null;
   // If nothing logged yet, next is request_sent
-  const promptedEvent = currentStatus ? nextEvent : 'request_sent';
+  const promptedEvent = currentStatus ? nextEvent : 'connection_request_sent';
 
 
   return (

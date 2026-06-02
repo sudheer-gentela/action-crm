@@ -43,21 +43,6 @@ export default function ProspectingView() {
   const [scope, setScope] = useState('mine');
   const [viewMode, setViewMode] = useState('pipeline'); // pipeline | list | account
   const [searchQuery, setSearchQuery] = useState('');
-  // Debounced mirror of searchQuery. The input stays bound to searchQuery for
-  // responsiveness; the data fetches (prospects + the Inbox/Sequences/Calls
-  // views) key off debouncedSearch so we don't fire a request per keystroke.
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(searchQuery), 250);
-    return () => clearTimeout(t);
-  }, [searchQuery]);
-
-  // Ask #2: clickable stage-chip filter for the flat List/Accounts views.
-  // null = "All active" (no stage filter). The Pipeline board is already
-  // columnar, so it is intentionally NOT filtered by this (no-op there).
-  const [stageFilter, setStageFilter] = useState(null);
-  // Whether the "Later stages ▾" dropdown (collapsed zero-count stages) is open.
-  const [laterStagesOpen, setLaterStagesOpen] = useState(false);
   const [selectedProspect, setSelectedProspect] = useState(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -67,10 +52,6 @@ export default function ProspectingView() {
   // When active, the Pipeline/List/Account boards are scoped to that campaign
   // and a dismissible banner is shown.
   const [campaignFilter, setCampaignFilter] = useState(null);
-
-  // Drafts deep-link context, set when arriving from a campaign's "Preview
-  // drafts". { campaignId, campaignName } | null.
-  const [draftsDeepLink, setDraftsDeepLink] = useState(null);
 
   // Slice 5: list of active campaigns the user can switch between from the
   // filter banner. Loaded once on mount and on campaign-filter changes so the
@@ -168,21 +149,6 @@ export default function ProspectingView() {
     }
     window.addEventListener('campaign-filter', onCampaignFilter);
     return () => window.removeEventListener('campaign-filter', onCampaignFilter);
-  }, []);
-
-  // Drafts deep-link bridge: CampaignsView's "Preview drafts" dispatches a
-  // 'drafts-deep-link' window event. We catch it, store the campaign context,
-  // and switch to the Inbox so the user lands on Drafts pre-filtered to that
-  // campaign (with a back-to-campaign breadcrumb).
-  useEffect(() => {
-    function onDraftsDeepLink(e) {
-      const detail = e.detail || {};
-      if (!detail.campaignId) return;
-      setDraftsDeepLink({ campaignId: detail.campaignId, campaignName: detail.campaignName });
-      setViewMode('inbox');
-    }
-    window.addEventListener('drafts-deep-link', onDraftsDeepLink);
-    return () => window.removeEventListener('drafts-deep-link', onDraftsDeepLink);
   }, []);
 
   const isSelected = (id) => selectedIds.has(id);
@@ -327,7 +293,7 @@ export default function ProspectingView() {
       const campaignQS = campaignFilter ? `&campaignId=${campaignFilter.campaignId}` : '';
 
       const [prospectsRes, summaryRes] = await Promise.all([
-        apiFetch(`/prospects?scope=${scope}${debouncedSearch ? `&search=${encodeURIComponent(debouncedSearch)}` : ''}${campaignQS}`),
+        apiFetch(`/prospects?scope=${scope}${searchQuery ? `&search=${encodeURIComponent(searchQuery)}` : ''}${campaignQS}`),
         apiFetch(`/prospects/pipeline/summary?scope=${scope}`),
       ]);
 
@@ -338,7 +304,7 @@ export default function ProspectingView() {
     } finally {
       setLoading(false);
     }
-  }, [scope, debouncedSearch, campaignFilter]);
+  }, [scope, searchQuery, campaignFilter]);
 
   useEffect(() => { fetchProspects(); }, [fetchProspects]);
 
@@ -383,19 +349,10 @@ export default function ProspectingView() {
   const disqualifiedCount = prospects.filter(p => p.stage === 'disqualified').length;
   const nurtureCount = prospects.filter(p => p.stage === 'nurture').length;
 
-  // ── Stage-filtered set for the flat List/Accounts views ────────────────────
-  // groupedByStage (above) and the metrics chips (below) intentionally stay on
-  // the FULL prospects set so chip counts reflect the whole scope; only the
-  // List/Accounts data path narrows when a stage chip is active. This composes
-  // (ANDs) with scope + campaignFilter, which are already applied server-side.
-  const visibleProspects = stageFilter
-    ? prospects.filter(p => p.stage === stageFilter)
-    : prospects;
-
   // ── Group by account for account view ──────────────────────────────────────
 
   const groupedByAccount = {};
-  visibleProspects.forEach(p => {
+  prospects.forEach(p => {
     const key = p.account_id || p.company_name || 'Unlinked';
     if (!groupedByAccount[key]) {
       groupedByAccount[key] = {
@@ -412,20 +369,21 @@ export default function ProspectingView() {
 
   const totalActive = prospects.filter(p => !['converted', 'disqualified'].includes(p.stage)).length;
 
-  // LinkedIn funnel metrics (computed from channel_data on loaded prospects).
-  // Status vocabulary must match what the backend writes (sequences.routes.js
-  // and prospects.routes.js): the canonical ladder is
-  //   connection_request_sent → connection_accepted → message_sent
-  //   → reply_received → meeting_booked
-  // Each funnel stage counts that status plus everything downstream of it.
+  // LinkedIn funnel metrics (computed from channel_data on loaded prospects)
   const liMetrics = React.useMemo(() => {
-    const CONNECTED_PLUS = ['connection_accepted', 'message_sent', 'reply_received', 'meeting_booked'];
-    const MESSAGED_PLUS  = ['message_sent', 'reply_received', 'meeting_booked'];
-    const REPLIED_PLUS   = ['reply_received', 'meeting_booked'];
-    const sent      = prospects.filter(p => p.channel_data?.linkedin?.connection_status).length;
-    const connected = prospects.filter(p => CONNECTED_PLUS.includes(p.channel_data?.linkedin?.connection_status)).length;
-    const messaged  = prospects.filter(p => MESSAGED_PLUS.includes(p.channel_data?.linkedin?.connection_status)).length;
-    const replied   = prospects.filter(p => REPLIED_PLUS.includes(p.channel_data?.linkedin?.connection_status)).length;
+    const li = p => p.channel_data?.linkedin || {};
+    // "sent" = a connection request was logged (status pointer set, or a
+    // request timestamp exists).
+    const sent      = prospects.filter(p => li(p).connection_status || li(p).request_sent_at).length;
+    // "connected" = an acceptance was EXPLICITLY logged. connected_at is set
+    // only by the connection_accepted event — never by the sequence step
+    // firer — so it can't be inflated by a follow-up that leapfrogged the
+    // status pointer straight to message_sent without an actual acceptance.
+    const connected = prospects.filter(p => li(p).connected_at).length;
+    // "messaged" = at least one LinkedIn message/InMail actually went out.
+    const messaged  = prospects.filter(p => li(p).last_message_at || (li(p).message_count || 0) > 0).length;
+    // "replied" = a reply was logged (timestamp, counter, or status pointer).
+    const replied   = prospects.filter(p => li(p).last_reply_at || (li(p).reply_count || 0) > 0 || li(p).connection_status === 'reply_received').length;
     const acceptRate = sent > 0 ? Math.round((connected / sent) * 100) : null;
     const replyRate  = messaged > 0 ? Math.round((replied / messaged) * 100) : null;
     return { sent, connected, messaged, replied, acceptRate, replyRate };
@@ -434,19 +392,6 @@ export default function ProspectingView() {
   // ─────────────────────────────────────────────────────────────────────────────
   // RENDER
   // ─────────────────────────────────────────────────────────────────────────────
-
-  // Stage-chip click. Toggles the filter (clicking the active chip clears it).
-  // The chip filter only affects the flat List/Accounts views; if the user is
-  // on a view that can't show it (Pipeline is columnar; Campaigns/Research/
-  // Inbox/Sequences/Calls are unrelated), switch to List so the click has a
-  // visible effect. "All active" (key = null) never switches the view.
-  const handleStageChipClick = (key) => {
-    setLaterStagesOpen(false);
-    if (key == null) { setStageFilter(null); return; }
-    const next = stageFilter === key ? null : key;
-    setStageFilter(next);
-    if (next && !['list', 'account'].includes(viewMode)) setViewMode('list');
-  };
 
   const stagesCtx = { prospectStages: PROSPECT_STAGES, terminalStages: TERMINAL_STAGES, allStages: ALL_STAGES };
 
@@ -545,134 +490,37 @@ export default function ProspectingView() {
         </div>
       </div>
 
-      {/* ── Metrics Bar (clickable stage chips + performance group) ─────────── */}
-      <div className="pv-metrics-bar" style={{ gap: 8 }}>
-        {(() => {
-          const EMBER = '#E8630A';
-          const chipStyle = (active) => ({
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            padding: '5px 11px', borderRadius: 16, cursor: 'pointer',
-            fontSize: 12, fontWeight: active ? 700 : 500, lineHeight: 1.4,
-            border: active ? `1px solid ${EMBER}` : '1px solid #e5e7eb',
-            background: active ? '#FEF1E7' : '#fff',
-            color: active ? EMBER : '#374151',
-            whiteSpace: 'nowrap',
-          });
-          const countStyle = (active, accent) => ({
-            fontWeight: 700, color: active ? EMBER : (accent || '#6b7280'),
-          });
-
-          // Split the (non-terminal) stages into visible (count > 0, or the one
-          // currently filtered) and collapsed (zero-count) — dynamic, not a
-          // fixed list, since stages are org-configurable.
-          const visible = [];
-          const collapsed = [];
-          PROSPECT_STAGES.forEach(s => {
-            const count = (groupedByStage[s.key] || []).length;
-            if (count > 0 || s.key === stageFilter) visible.push({ s, count });
-            else collapsed.push({ s, count });
-          });
-
+      {/* ── Metrics Bar ────────────────────────────────────────────────────── */}
+      <div className="pv-metrics-bar">
+        <div className="pv-metric">
+          <span className="pv-metric-value">{totalActive}</span>
+          <span className="pv-metric-label">Active</span>
+        </div>
+        {PROSPECT_STAGES.map(s => {
+          const count = (groupedByStage[s.key] || []).length;
           return (
-            <>
-              {/* All active */}
-              <button
-                type="button"
-                onClick={() => handleStageChipClick(null)}
-                style={chipStyle(stageFilter === null, TEAL)}
-                title="Show all active prospects"
-              >
-                <span>All active</span>
-                <span style={countStyle(stageFilter === null, TEAL)}>{totalActive}</span>
-              </button>
-
-              {/* Visible stage chips */}
-              {visible.map(({ s, count }) => {
-                const active = stageFilter === s.key;
-                return (
-                  <button
-                    type="button"
-                    key={s.key}
-                    onClick={() => handleStageChipClick(s.key)}
-                    style={chipStyle(active, s.color)}
-                    title={`Filter List/Accounts to ${s.label}`}
-                  >
-                    <span>{s.label}</span>
-                    <span style={countStyle(active, s.color)}>{count}</span>
-                  </button>
-                );
-              })}
-
-              {/* Later stages (collapsed zero-count stages) */}
-              {collapsed.length > 0 && (
-                <div style={{ position: 'relative', display: 'inline-block' }}>
-                  <button
-                    type="button"
-                    onClick={() => setLaterStagesOpen(o => !o)}
-                    style={{
-                      ...chipStyle(false),
-                      color: '#6b7280', borderStyle: 'dashed',
-                    }}
-                    title="Show later stages with no prospects yet"
-                  >
-                    <span>Later stages</span>
-                    <span style={{ fontSize: 10 }}>{laterStagesOpen ? '▴' : '▾'}</span>
-                  </button>
-                  {laterStagesOpen && (
-                    <div style={{
-                      position: 'absolute', top: '100%', left: 0, marginTop: 6,
-                      background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10,
-                      boxShadow: '0 6px 18px rgba(0,0,0,0.10)', padding: 8, zIndex: 50,
-                      display: 'flex', flexDirection: 'column', gap: 6, minWidth: 160,
-                    }}>
-                      {collapsed.map(({ s, count }) => {
-                        const active = stageFilter === s.key;
-                        return (
-                          <button
-                            type="button"
-                            key={s.key}
-                            onClick={() => handleStageChipClick(s.key)}
-                            style={{ ...chipStyle(active, s.color), justifyContent: 'space-between', width: '100%' }}
-                          >
-                            <span>{s.label}</span>
-                            <span style={countStyle(active, s.color)}>{count}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
+            <div className="pv-metric" key={s.key}>
+              <span className="pv-metric-value" style={{ color: s.color }}>{count}</span>
+              <span className="pv-metric-label">{s.label}</span>
+            </div>
           );
-        })()}
-
-        {/* Divider before the performance group */}
-        <div className="pv-metric-separator" style={{ marginLeft: 'auto' }} />
-
-        {/* This-week performance group — visually separated so these read as
-            rates/throughput, not pipeline stage counts. */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <span style={{
-            fontSize: 10, fontWeight: 700, color: '#9ca3af',
-            textTransform: 'uppercase', letterSpacing: 0.5, alignSelf: 'center',
-          }}>This week</span>
-          <div className="pv-metric">
-            <span className="pv-metric-value" style={{ color: '#f59e0b' }}>
-              {pipelineSummary.metrics?.outreachThisWeek || 0}
-            </span>
-            <span className="pv-metric-label">Outreach</span>
-          </div>
-          <div className="pv-metric">
-            <span className="pv-metric-value" style={{ color: TEAL }}>
-              {pipelineSummary.metrics?.responsesThisWeek || 0}
-            </span>
-            <span className="pv-metric-label">Responses</span>
-          </div>
-          <div className="pv-metric">
-            <span className="pv-metric-value" style={{ color: '#059669' }}>{convertedCount}</span>
-            <span className="pv-metric-label">Converted</span>
-          </div>
+        })}
+        <div className="pv-metric-separator" />
+        <div className="pv-metric">
+          <span className="pv-metric-value" style={{ color: '#059669' }}>{convertedCount}</span>
+          <span className="pv-metric-label">Converted</span>
+        </div>
+        <div className="pv-metric">
+          <span className="pv-metric-value" style={{ color: '#f59e0b' }}>
+            {pipelineSummary.metrics?.outreachThisWeek || 0}
+          </span>
+          <span className="pv-metric-label">Outreach / wk</span>
+        </div>
+        <div className="pv-metric">
+          <span className="pv-metric-value" style={{ color: TEAL }}>
+            {pipelineSummary.metrics?.responsesThisWeek || 0}
+          </span>
+          <span className="pv-metric-label">Responses / wk</span>
         </div>
       </div>
 
@@ -781,7 +629,7 @@ export default function ProspectingView() {
         />
       ) : viewMode === 'list' ? (
         <ListView
-          prospects={visibleProspects}
+          prospects={prospects}
           onSelect={setSelectedProspect}
           isSelected={isSelected}
           onToggleSelect={toggleSelect}
@@ -805,7 +653,7 @@ export default function ProspectingView() {
           onDiscard={setDiscardTargetProspect}
         />
       ) : viewMode === 'sequences' ? (
-        <SequencesView prospects={prospects} search={debouncedSearch} />
+        <SequencesView prospects={prospects} />
       ) : viewMode === 'campaigns' ? (
         <CampaignsView />
       ) : viewMode === 'research' ? (
@@ -813,7 +661,6 @@ export default function ProspectingView() {
       ) : viewMode === 'calls' ? (
         <CallsInboxView
           scope={scope}
-          search={debouncedSearch}
           onSelectProspect={(prospectId) => {
             // Open the prospect drawer at the Calls tab
             const p = prospects.find(x => x.id === prospectId);
@@ -821,15 +668,7 @@ export default function ProspectingView() {
           }}
         />
       ) : (
-        <ProspectingInbox
-          key={draftsDeepLink ? `dl-${draftsDeepLink.campaignId}` : 'inbox'}
-          scope={scope}
-          search={debouncedSearch}
-          initialTab={draftsDeepLink ? 'drafts' : undefined}
-          initialCampaignId={draftsDeepLink?.campaignId}
-          campaignName={draftsDeepLink?.campaignName}
-          onBackToCampaign={draftsDeepLink ? () => { setDraftsDeepLink(null); setViewMode('campaigns'); } : undefined}
-        />
+        <ProspectingInbox scope={scope} />
       )}
 
       {/* ── Bulk Enroll Modal ──────────────────────────────────────────────── */}

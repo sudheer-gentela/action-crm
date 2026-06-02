@@ -48,18 +48,25 @@ export const TEAL = '#0F9D8E';
 
 // ── LinkedIn constants ───────────────────────────────────────────────────────
 
+// Canonical LinkedIn event/status vocabulary. These keys MUST match the
+// backend exactly — both the `connection_status` pointer written to
+// prospects.channel_data.linkedin AND the `event` values accepted by
+// POST /prospects/:id/linkedin-event (VALID_EVENTS in prospects.routes.js).
+// Earlier these used short aliases (request_sent / connected / replied),
+// which caused the Connected button to 400 and broke status dots/labels.
 export const LI_EVENTS = [
-  { key: 'request_sent', label: 'Request Sent',   color: '#2563eb', bg: '#eff6ff', dot: '#2563eb' },
-  { key: 'connected',    label: 'Connected',      color: '#059669', bg: '#ecfdf5', dot: '#059669' },
-  { key: 'message_sent', label: 'Message Sent',   color: '#d97706', bg: '#fffbeb', dot: '#d97706' },
-  { key: 'replied',      label: 'Reply Received', color: '#0F9D8E', bg: '#f0fdfa', dot: '#0F9D8E' },
+  { key: 'connection_request_sent', label: 'Request Sent',   color: '#2563eb', bg: '#eff6ff', dot: '#2563eb' },
+  { key: 'connection_accepted',     label: 'Connected',      color: '#059669', bg: '#ecfdf5', dot: '#059669' },
+  { key: 'message_sent',            label: 'Message Sent',   color: '#d97706', bg: '#fffbeb', dot: '#d97706' },
+  { key: 'reply_received',          label: 'Reply Received', color: '#0F9D8E', bg: '#f0fdfa', dot: '#0F9D8E' },
 ];
 
 export const LI_STATUS_LABELS = {
-  request_sent: 'Request sent',
-  connected:    'Connected',
-  message_sent: 'Messaged',
-  replied:      'Replied',
+  connection_request_sent: 'Request sent',
+  connection_accepted:     'Connected',
+  message_sent:            'Messaged',
+  reply_received:          'Replied',
+  meeting_booked:          'Meeting booked',
 };
 
 export function getLiStatus(prospect) {

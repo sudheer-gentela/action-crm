@@ -857,6 +857,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
     const ccEnroll = campaignClause ? `AND p_enroll.campaign_id = ANY(${campaignClause})` : '';
     const ccStall  = campaignClause ? `AND p_stall.campaign_id  = ANY(${campaignClause})` : '';
     const ccAct    = campaignClause ? `AND p_act.campaign_id    = ANY(${campaignClause})` : '';
+    const ccConn   = campaignClause ? `AND p_conn.campaign_id   = ANY(${campaignClause})` : '';
 
     // Per-sequence filter predicates for each CTE (applies the
     // user-supplied sequenceIds intersected with scope).
@@ -864,6 +865,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
     const sfEnroll = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
     const sfStall  = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
     const sfAct    = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
+    const sfConn   = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
     const sfOuter  = sequenceIdFilter !== null ? `AND s.id = ANY($${seqIdParamIdx}::int[])` : '';
 
     // ── Per-sequence aggregates ─────────────────────────────────────
@@ -938,6 +940,29 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
            ${sfStall}
          GROUP BY se.sequence_id
        ),
+       connected_agg AS (
+         -- LinkedIn acceptances attributed per sequence. A prospect is
+         -- "connected" iff an acceptance was EXPLICITLY logged, which sets
+         -- channel_data.linkedin.connected_at. We deliberately key off
+         -- connected_at (not connection_status) because the sequence step
+         -- firer can advance the status pointer straight to 'message_sent'
+         -- without an acceptance ever occurring — counting status >=
+         -- connection_accepted would over-count those leapfroggers. Window-
+         -- bounded by connected_at to stay consistent with sent/replied.
+         SELECT
+           se.sequence_id,
+           COUNT(DISTINCT se.prospect_id)::int AS connected
+         FROM sequence_enrollments se
+         JOIN prospects p_conn ON p_conn.id = se.prospect_id
+         WHERE se.org_id     = $1
+           AND se.enrolled_by = ANY($2::int[])
+           AND (p_conn.channel_data->'linkedin'->>'connected_at') IS NOT NULL
+           AND (p_conn.channel_data->'linkedin'->>'connected_at')::timestamptz >= $3::timestamptz
+           AND (p_conn.channel_data->'linkedin'->>'connected_at')::timestamptz <= $4::timestamptz
+           ${ccConn}
+           ${sfConn}
+         GROUP BY se.sequence_id
+       ),
        active_state AS (
          -- Whole-history state: which sequences currently have at least one
          -- active enrollment by someone in scope. Independent of the window.
@@ -963,6 +988,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
          COALESCE(e.enrolled, 0)            AS enrolled,
          COALESCE(e.distinct_campaigns, 0)  AS distinct_campaigns,
          COALESCE(st.stalled, 0)            AS stalled,
+         COALESCE(cn.connected, 0)          AS connected,
          l.last_fired_at,
          (a.sequence_id IS NOT NULL)        AS is_active
        FROM sequences s
@@ -970,6 +996,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
        LEFT JOIN log_agg      l  ON l.sequence_id = s.id
        LEFT JOIN enroll_agg   e  ON e.sequence_id = s.id
        LEFT JOIN stalled_agg  st ON st.sequence_id = s.id
+       LEFT JOIN connected_agg cn ON cn.sequence_id = s.id
        LEFT JOIN active_state a  ON a.sequence_id = s.id
        WHERE s.org_id = $1
          AND (
@@ -981,6 +1008,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
            l.sequence_id  IS NOT NULL
            OR e.sequence_id  IS NOT NULL
            OR st.sequence_id IS NOT NULL
+           OR cn.sequence_id IS NOT NULL
            OR a.sequence_id  IS NOT NULL
          )
          ${sfOuter}
@@ -1073,6 +1101,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
         enrolled:       r.enrolled,
         drafts:         r.drafts,
         sent:           r.sent,
+        connected:      r.connected,
         replied:        r.replied,
         failed:         r.failed,
         stalled:        r.stalled,
@@ -1092,6 +1121,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
       acc.enrolled += s.enrolled;
       acc.drafts   += s.drafts;
       acc.sent     += s.sent;
+      acc.connected += s.connected;
       acc.replied  += s.replied;
       acc.failed   += s.failed;
       acc.stalled  += s.stalled;
@@ -1171,6 +1201,7 @@ function _emptyTotals() {
     enrolled:          0,
     drafts:            0,
     sent:              0,
+    connected:         0,
     replied:           0,
     failed:            0,
     stalled:           0,

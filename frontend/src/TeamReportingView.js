@@ -853,6 +853,7 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenPro
           { label: 'Active sequences', value: fmtNum(totals.activeSequences) },
           { label: 'Enrolled',         value: fmtNum(totals.enrolled) },
           { label: 'Sent',             value: fmtNum(totals.sent) },
+          { label: 'Connected',        value: fmtNum(totals.connected) },
           { label: 'Reply rate',       value: fmtPct(totals.repliedRate) },
         ]}
       />
@@ -868,6 +869,7 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenPro
                 <th>Owner</th>
                 <th className="num">Enrolled</th>
                 <th className="num">Sent</th>
+                <th className="num">Connected</th>
                 <th className="num">Replied</th>
                 <th className="num">Stalled</th>
                 <th>Top users</th>
@@ -891,6 +893,11 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenPro
                       </td>
                       <td className="num">{fmtNum(s.enrolled)}</td>
                       <td className="num">{fmtNum(s.sent)}</td>
+                      <td className="num" title={s.enrolled > 0 ? `${Math.round((s.connected / s.enrolled) * 100)}% of enrolled accepted` : undefined}>
+                        {s.connected > 0
+                          ? <span style={{ color: '#059669', fontWeight: 600 }}>{fmtNum(s.connected)}</span>
+                          : fmtNum(s.connected)}
+                      </td>
                       <td className="num">{fmtNum(s.replied)}</td>
                       <td className={`num ${s.stalled > 0 ? 'trv-warning' : ''}`}>{fmtNum(s.stalled)}</td>
                       <td className="trv-topusers">
@@ -903,7 +910,7 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenPro
                     </tr>
                     {expanded && (
                       <tr className="trv-expand-row">
-                        <td colSpan={8}>
+                        <td colSpan={9}>
                           <div className="trv-expand-grid">
                             <div className="trv-expand-block">
                               <div className="trv-expand-label">Last activity</div>
