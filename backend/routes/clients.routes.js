@@ -514,7 +514,7 @@ router.get('/:id/dashboard', async (req, res) => {
          COUNT(DISTINCT se.id) FILTER (WHERE se.status = 'active')::int         AS active,
          COUNT(DISTINCT se.id) FILTER (WHERE se.status = 'completed')::int      AS completed,
          COUNT(DISTINCT se.id) FILTER (WHERE se.status = 'stopped')::int        AS stopped,
-         COUNT(DISTINCT ssl.id) FILTER (WHERE ssl.status = 'sent')::int         AS steps_sent
+         COUNT(DISTINCT ssl.id) FILTER (WHERE ssl.status IN ('sent','completed'))::int AS steps_sent
        FROM sequences s
        JOIN sequence_enrollments se ON se.sequence_id = s.id
        JOIN prospects p             ON p.id = se.prospect_id
