@@ -1410,14 +1410,20 @@ router.put('/:id/delete-lock', async (req, res) => {
       return res.status(400).json({ error: { message: 'locked must be a boolean' } });
     }
 
+    // delete_locked_by is INTEGER; null it out when unlocking. Computed in JS
+    // (rather than a CASE) so the parameter is assigned directly to the column
+    // and Postgres types it correctly — a CASE with two untyped branches
+    // ($2 + NULL) collapses to text and fails against the integer column.
+    const actorId = locked ? req.userId : null;
+
     const { rows } = await pool.query(
       `UPDATE prospecting_campaigns
           SET delete_locked    = $1,
-              delete_locked_by = CASE WHEN $1 THEN $2 ELSE NULL END,
+              delete_locked_by = $2,
               delete_locked_at = CASE WHEN $1 THEN NOW() ELSE NULL END
         WHERE id = $3 AND org_id = $4
       RETURNING id, delete_locked, delete_locked_by, delete_locked_at`,
-      [locked, req.user.userId, req.params.id, req.orgId]
+      [locked, actorId, req.params.id, req.orgId]
     );
     if (rows.length === 0) {
       return res.status(404).json({ error: { message: 'Campaign not found' } });
