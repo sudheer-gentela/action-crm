@@ -78,21 +78,23 @@ export default function ProspectingView() {
   const [draftsDeepLink, setDraftsDeepLink] = useState(null);
 
   // Slice 5: list of active campaigns the user can switch between from the
-  // filter banner. Loaded once on mount and on campaign-filter changes so the
-  // dropdown always reflects the current set. Pinned campaigns surface first.
+  // filter banner. Loaded at the board's current scope (so a manager in Team
+  // scope sees subordinates' active campaigns too) and reloaded on scope
+  // change. Without the scope match, a subordinate's active campaign would be
+  // absent here and the banner would mislabel it as "(not active)".
   const [activeCampaigns, setActiveCampaigns] = useState([]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const r = await apiFetch('/prospecting-campaigns?status=active');
+        const r = await apiFetch(`/prospecting-campaigns?status=active&scope=${scope}`);
         if (!cancelled) setActiveCampaigns(r.campaigns || []);
       } catch (_) {
         if (!cancelled) setActiveCampaigns([]);
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [scope]);
 
   // Phase 2: set of prospect_ids that have an overdue call task (either a
   // sequence step past scheduled_send_at, or a callback_requested past its
