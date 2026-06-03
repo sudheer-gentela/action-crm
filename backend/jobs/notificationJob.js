@@ -93,7 +93,7 @@ async function _processRevisitProspect({ orgId, prospectId, userId, meta }) {
   try {
     // 1. Verify prospect is still disqualified and revisit_date hasn't been cleared
     const prospectRes = await db.query(
-      `SELECT id, stage, disqualified_reason, revisit_date, owner_id,
+      `SELECT id, stage, revisit_disposition, revisit_date, owner_id,
               first_name, last_name, company_name, playbook_id
        FROM prospects
        WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
@@ -114,7 +114,7 @@ async function _processRevisitProspect({ orgId, prospectId, userId, meta }) {
     const ownerUserId = prospect.owner_id;
     const prospectName = `${prospect.first_name} ${prospect.last_name}`;
     const companyName  = prospect.company_name || 'their company';
-    const reasonLabel  = prospect.disqualified_reason === 'long_term'
+    const reasonLabel  = prospect.revisit_disposition === 'long_term'
       ? 'marked for long-term follow-up'
       : 'could not decide at the time';
 
@@ -132,7 +132,7 @@ async function _processRevisitProspect({ orgId, prospectId, userId, meta }) {
         JSON.stringify({
           prospectId,
           companyName,
-          disqualifiedReason: prospect.disqualified_reason,
+          revisitDisposition: prospect.revisit_disposition,
           revisitDate:        prospect.revisit_date,
         }),
       ]
@@ -157,7 +157,7 @@ async function _processRevisitProspect({ orgId, prospectId, userId, meta }) {
         ownerUserId,
         prospectId,
         `Revisit ${prospectName} at ${companyName}`,
-        `Revisit date has arrived. This prospect was disqualified with reason "${prospect.disqualified_reason}". ` +
+        `Revisit date has arrived. This prospect was marked for revisit (disposition: "${prospect.revisit_disposition}"). ` +
         `Review their current situation and decide: move to outreach, extend the revisit date, or disqualify permanently.`,
       ]
     );

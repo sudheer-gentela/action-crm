@@ -282,7 +282,7 @@ const PLAYS = {
       stage_key: 'sales_discovery_call', sort_order: 6, is_gate: true,
       title: 'AE decides — advance to SAL or route to Disqualified/Nurture',
       description: 'Gate: the AE makes a formal decision on the lead based on the MEDDIC scorecard. This is the most important gate in the prospecting pipeline — it determines whether a deal enters Sales.',
-      suggested_action: 'Review the complete MEDDIC scorecard and discovery call notes. If all criteria are credibly met, advance to SAL. If the prospect is not ready but may be in future, route to Nurture. If fundamentally unqualified, route to Disqualified and select the appropriate disqualified_reason (kill / long_term / unable_to_decide).',
+      suggested_action: 'Review the complete MEDDIC scorecard and discovery call notes. If all criteria are credibly met, advance to SAL. If the prospect is not ready but may be in future, route to Nurture. If fundamentally unqualified, route to Disqualified and set the revisit disposition (kill / long_term / unable_to_decide) along with the disqualification reason.',
       channel: 'internal_task', due_offset_days: 1, priority: 'high', trigger_mode: 'stage_change', generation_mode: 'template', execution_type: 'manual',
     },
 
@@ -321,7 +321,7 @@ const PLAYS = {
       stage_key: 'disqualified', sort_order: 1, is_gate: false,
       title: 'Record disqualification reason',
       description: 'Capture the specific reason for disqualification using the standard taxonomy. Accurate disqualification data improves ICP definition and targeting over time.',
-      suggested_action: 'Set disqualified_reason on the prospect record: "kill" (fundamentally not a fit), "long_term" (good fit but no near-term need), or "unable_to_decide" (no decision-making authority or process). Add detail to research_notes.',
+      suggested_action: 'On the prospect record, set the revisit disposition — "kill" (fundamentally not a fit, no revisit), "long_term" (good fit but no near-term need), or "unable_to_decide" (no decision-making authority or process) — and capture the specific disqualification reason (wrong role, wrong account, timing, competitor, no budget, etc.). Add any extra detail to research_notes.',
       channel: 'internal_task', due_offset_days: 1, priority: 'high', trigger_mode: 'stage_change', generation_mode: 'template', execution_type: 'manual',
     },
     {
@@ -334,15 +334,15 @@ const PLAYS = {
     {
       stage_key: 'disqualified', sort_order: 3, is_gate: false,
       title: 'Set revisit date',
-      description: 'If the disqualification reason is "long_term" or "unable_to_decide", set a specific revisit date rather than leaving the record dormant.',
-      suggested_action: 'If disqualified_reason is "long_term" or "unable_to_decide", set revisit_date on the prospect record to a specific future date (typically 3–6 months). If reason is "kill", leave revisit_date blank.',
+      description: 'If the revisit disposition is "long_term" or "unable_to_decide", set a specific revisit date rather than leaving the record dormant.',
+      suggested_action: 'If the revisit disposition is "long_term" or "unable_to_decide", set revisit_date on the prospect record to a specific future date (typically 3–6 months). If the disposition is "kill", leave revisit_date blank.',
       channel: 'internal_task', due_offset_days: 1, priority: 'medium', trigger_mode: 'stage_change', generation_mode: 'template', execution_type: 'manual',
     },
     {
       stage_key: 'disqualified', sort_order: 4, is_gate: false,
       title: 'Send graceful exit message',
       description: 'Send a brief, professional message acknowledging the outcome. Leave the relationship in a positive state — many disqualified prospects become customers later.',
-      suggested_action: 'Send a short email thanking the prospect for their time. Do not express frustration or push back. If disqualified_reason is "long_term", acknowledge you will be in touch at the right time. Keep the tone warm and leave the door open.',
+      suggested_action: 'Send a short email thanking the prospect for their time. Do not express frustration or push back. If the revisit disposition is "long_term", acknowledge you will be in touch at the right time. Keep the tone warm and leave the door open.',
       channel: 'email', due_offset_days: 1, priority: 'low', trigger_mode: 'stage_change', generation_mode: 'template', execution_type: 'manual',
     },
 

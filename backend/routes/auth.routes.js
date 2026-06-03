@@ -4,6 +4,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const db = require('../config/database');
 const Joi = require('joi');
+const { isValidTimeZone } = require('../utils/repTimezone');
 
 // ─────────────────────────────────────────────────────────────
 // Validation schemas (unchanged)
@@ -12,12 +13,14 @@ const registerSchema = Joi.object({
   email:     Joi.string().email().required(),
   password:  Joi.string().min(8).required(),
   firstName: Joi.string().required(),
-  lastName:  Joi.string().required()
+  lastName:  Joi.string().required(),
+  timezone:  Joi.string().optional()
 });
 
 const loginSchema = Joi.object({
   email:    Joi.string().email().required(),
-  password: Joi.string().required()
+  password: Joi.string().required(),
+  timezone: Joi.string().optional()
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -75,6 +78,7 @@ router.post('/register', async (req, res) => {
     }
 
     const { email, password, firstName, lastName } = req.body;
+    const regTz = isValidTimeZone(req.body.timezone) ? req.body.timezone : null;
 
     // Check if user exists
     const existingUser = await db.query(
@@ -90,10 +94,10 @@ router.post('/register', async (req, res) => {
 
     // Create user — org_id defaults to seed org (1) from migration
     const result = await db.query(
-      `INSERT INTO users (email, password_hash, first_name, last_name, org_id)
-       VALUES ($1, $2, $3, $4, 1)
-       RETURNING id, email, first_name, last_name, role, created_at`,
-      [email, passwordHash, firstName, lastName]
+      `INSERT INTO users (email, password_hash, first_name, last_name, org_id, timezone)
+       VALUES ($1, $2, $3, $4, 1, $5)
+       RETURNING id, email, first_name, last_name, role, timezone, created_at`,
+      [email, passwordHash, firstName, lastName, regTz]
     );
     const user = result.rows[0];
 
@@ -127,6 +131,7 @@ router.post('/register', async (req, res) => {
         firstName:      user.first_name,
         lastName:       user.last_name,
         role:           user.role,
+        timezone:       user.timezone,
         org_id:         orgPayload.org_id,
         org_role:       orgPayload.role,
         org_name:       orgPayload.org_name,
@@ -173,7 +178,20 @@ router.post('/login', async (req, res) => {
     const orgPayload = await getOrgPayload(user.id);
     const superAdmin = await isSuperAdmin(user.id);
 
-    // Build JWT — org_id now included
+    // First-login timezone capture: only set if not already stored, so a
+    // value the rep later edits in settings is never overwritten by a login
+    // from a differently-configured device.
+    if (!user.timezone && isValidTimeZone(req.body.timezone)) {
+      try {
+        await db.query(
+          `UPDATE users SET timezone = $1, updated_at = NOW() WHERE id = $2 AND timezone IS NULL`,
+          [req.body.timezone, user.id]
+        );
+        user.timezone = req.body.timezone;
+      } catch (tzErr) {
+        console.warn('Timezone capture on login failed (non-fatal):', tzErr.message);
+      }
+    }
     const token = jwt.sign(
       {
         userId: user.id,        // kept as userId to match existing convention
@@ -192,6 +210,7 @@ router.post('/login', async (req, res) => {
         firstName:      user.first_name,
         lastName:       user.last_name,
         role:           user.role,
+        timezone:       user.timezone,
         org_id:         orgPayload.org_id,
         org_role:       orgPayload.role,
         org_name:       orgPayload.org_name,
@@ -221,7 +240,7 @@ router.get('/verify', async (req, res) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     const result = await db.query(
-      'SELECT id, email, first_name, last_name, role FROM users WHERE id = $1',
+      'SELECT id, email, first_name, last_name, role, timezone FROM users WHERE id = $1',
       [decoded.userId]
     );
     if (result.rows.length === 0) {
@@ -241,6 +260,7 @@ router.get('/verify', async (req, res) => {
         firstName:      user.first_name,
         lastName:       user.last_name,
         role:           user.role,
+        timezone:       user.timezone,
         org_id:         orgPayload.org_id,
         org_role:       orgPayload.role,
         org_name:       orgPayload.org_name,

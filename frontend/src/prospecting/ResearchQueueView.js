@@ -137,9 +137,9 @@ export default function ResearchQueueView() {
     const prospect = queue[idx];
     if (!window.confirm(`Disqualify ${prospect.firstName} ${prospect.lastName}? They will be removed from outreach.`)) return;
     try {
-      await apiFetch(`/prospects/${prospect.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ stage: 'disqualified', reason_code: reason || 'researcher_disqualified' }),
+      await apiFetch(`/prospects/${prospect.id}/stage`, {
+        method: 'POST',
+        body: JSON.stringify({ stage: 'disqualified', reasonCode: reason || 'other' }),
       });
       showFlash('success', `${prospect.firstName} ${prospect.lastName} disqualified`);
       setQueue(q => q.filter((_, i) => i !== idx));

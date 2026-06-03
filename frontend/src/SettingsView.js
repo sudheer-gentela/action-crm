@@ -827,6 +827,8 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
   const [phone,       setPhone]       = useState('');
   const [phoneSaving, setPhoneSaving] = useState(false);
   const [phoneError,  setPhoneError]  = useState('');
+  const [tz,        setTz]        = useState('');
+  const [tzSaving,  setTzSaving]  = useState(false);
 
   // ── Prospecting AI preferences ────────────────────────────────────────────
   const [aiPrefs, setAiPrefs]         = useState({
@@ -853,13 +855,14 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
       const token = localStorage.getItem('token') || localStorage.getItem('authToken');
       const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
-      const [sendersRes, limitsRes, prefsRes, orgCfgRes, userPromptsRes, phoneRes] = await Promise.all([
+      const [sendersRes, limitsRes, prefsRes, orgCfgRes, userPromptsRes, phoneRes, tzRes] = await Promise.all([
         apiService.prospectingSenders.getAll(),
         apiService.prospectingSenders.getOrgLimits(),
         fetch(`${API}/users/me/preferences/prospecting`, { headers }).then(r => r.json()),
         fetch(`${API}/org/admin/prospecting/ai-config`, { headers }).then(r => r.json()),
         fetch(`${API}/prompts/user/prospecting`, { headers }).then(r => r.json()),
         fetch(`${API}/users/me/phone`, { headers }).then(r => r.json()),
+        fetch(`${API}/users/me/timezone`, { headers }).then(r => r.json()),
       ]);
 
       setSenders(sendersRes.data?.senders || []);
@@ -867,6 +870,9 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
 
       // Phone (Phase 3 — Twilio click-to-dial)
       setPhone(phoneRes?.phone || '');
+
+      // Personal timezone
+      setTz(tzRes?.timezone || '');
 
       // AI preferences
       const prospPrefs = prefsRes?.preferences || {};
@@ -919,6 +925,31 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
       setPhoneError(err.message);
     } finally {
       setPhoneSaving(false);
+    }
+  };
+
+  const saveTimezone = async (nextTz) => {
+    setTzSaving(true);
+    try {
+      const API     = process.env.REACT_APP_API_URL;
+      const token   = localStorage.getItem('token') || localStorage.getItem('authToken');
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+      const r = await fetch(`${API}/users/me/timezone`, {
+        method:  'PATCH',
+        headers,
+        body: JSON.stringify({ timezone: nextTz || null }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        throw new Error(body?.error?.message || 'Failed to save timezone');
+      }
+      setTz(body.timezone || '');
+      showFlash('success', 'Timezone saved ✓');
+    } catch (err) {
+      showFlash('error', err.message);
+    } finally {
+      setTzSaving(false);
     }
   };
 
@@ -1121,6 +1152,56 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
                 No phone set. You won't be able to use Twilio click-to-dial until you add one here.
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── Personal timezone ────────────────────────────────────────────── */}
+        {!showAIOnly && !showSendersOnly && (
+          <div className="sv-section">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <div>
+                <h3 className="sv-section-heading" style={{ margin: 0 }}>🕐 Timezone</h3>
+                <p className="sv-hint" style={{ margin: '4px 0 0' }}>
+                  Auto-detected when you sign in — change it here if it's wrong. Used to stamp your actions
+                  (e.g. when you discard a prospect) in your local time. If unset, times are shown in UTC.
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', maxWidth: 480 }}>
+              <select
+                value={tz}
+                onChange={e => saveTimezone(e.target.value)}
+                disabled={tzSaving}
+                style={{
+                  flex: 1,
+                  padding: '8px 12px',
+                  border: '1px solid #d1d5db',
+                  borderRadius: 6,
+                  fontSize: 13,
+                  background: '#fff',
+                }}
+              >
+                <option value="">UTC (default — not set)</option>
+                {(() => {
+                  let list = [];
+                  try {
+                    if (typeof Intl.supportedValuesOf === 'function') list = Intl.supportedValuesOf('timeZone');
+                  } catch (_) { /* older browser — fall through to a short list */ }
+                  if (!list.length) {
+                    list = ['UTC', 'America/New_York', 'America/Chicago', 'America/Denver',
+                            'America/Los_Angeles', 'Europe/London', 'Europe/Berlin', 'Asia/Kolkata',
+                            'Asia/Singapore', 'Asia/Tokyo', 'Australia/Sydney'];
+                  }
+                  // The canonical list omits browser aliases (e.g. Asia/Kolkata,
+                  // which resolvedOptions() returns) — prepend the saved value so
+                  // it shows and stays selected.
+                  if (tz && !list.includes(tz)) list = [tz, ...list];
+                  return list.map(z => <option key={z} value={z}>{z}</option>);
+                })()}
+              </select>
+              {tzSaving && <span style={{ fontSize: 12, color: '#9ca3af' }}>⏳ Saving…</span>}
+            </div>
           </div>
         )}
 

@@ -132,13 +132,13 @@ async function enqueueRevisitAlerts() {
               p.first_name,
               p.last_name,
               p.company_name,
-              p.disqualified_reason,
+              p.revisit_disposition,
               p.stage
        FROM prospects p
        WHERE p.deleted_at IS NULL
          AND p.revisit_date::date = $1
          AND p.stage = 'disqualified'
-         AND p.disqualified_reason IN ('long_term', 'unable_to_decide')`,
+         AND p.revisit_disposition IN ('long_term', 'unable_to_decide')`,
       [today]
     );
 
@@ -152,7 +152,7 @@ async function enqueueRevisitAlerts() {
           firstName:            row.first_name,
           lastName:             row.last_name,
           companyName:          row.company_name,
-          disqualifiedReason:   row.disqualified_reason,
+          revisitDisposition:   row.revisit_disposition,
         },
       }, {
         // One alert per prospect per day

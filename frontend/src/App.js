@@ -105,7 +105,7 @@ const useAuth = () => {
       const response = await fetch(`${API_URL}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
       });
 
       if (!response.ok) {
@@ -140,7 +140,7 @@ const useAuth = () => {
       const response = await fetch(`${API_URL}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, firstName, lastName }),
+        body: JSON.stringify({ email, password, firstName, lastName, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
       });
 
       if (!response.ok) {

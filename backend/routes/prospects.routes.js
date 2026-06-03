@@ -14,6 +14,7 @@ const { enrichAccountForProspect } = require('../services/enrichmentService');
 // prevents reps from moving prospects in another rep's campaign. See
 // services/CampaignAccess.js for the rules.
 const CampaignAccess = require('../services/CampaignAccess');
+const { formatStampInZone } = require('../utils/repTimezone');
 
 
 router.use(authenticateToken);
@@ -1768,30 +1769,46 @@ router.post('/:id/stage', async (req, res) => {
       });
     }
 
-    // Persist both free-text reason and structured code. Both are only written
-    // on a disqualified transition; other stage changes leave them unchanged.
+    // Persist the structured fit reason only. The free-text note is NOT stored
+    // on the prospect row — it goes into the activity description below, in the
+    // rep's timezone, so it's visible in the Activity feed. revisit_disposition
+    // is deliberately left untouched here: scheduling a revisit is the job of
+    // the full /:id/disqualify flow, not a lightweight discard.
     const result = await db.query(
       `UPDATE prospects
        SET stage = $1, stage_changed_at = CURRENT_TIMESTAMP,
-           disqualified_reason      = COALESCE($2, disqualified_reason),
-           disqualified_reason_code = COALESCE($3, disqualified_reason_code),
+           disqualified_reason_code = COALESCE($2, disqualified_reason_code),
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $4 AND org_id = $5
+       WHERE id = $3 AND org_id = $4
        RETURNING *`,
       [
         stage,
-        stage === 'disqualified' ? (reason     || null) : null,
         stage === 'disqualified' ? (reasonCode || null) : null,
         req.params.id, req.orgId,
       ]
     );
+
+    // Build the activity description. For a disqualify, embed the rep's local
+    // timestamp and the free-text note so it's readable in the feed (which
+    // renders `description`, not `metadata`).
+    let description = `Stage changed from ${currentStage} to ${stage}`;
+    if (stage === 'disqualified') {
+      const tzRes = await db.query(
+        `SELECT timezone FROM users WHERE id = $1`,
+        [req.user.userId]
+      );
+      const stamp = formatStampInZone(new Date(), tzRes.rows[0]?.timezone);
+      const code  = reasonCode ? ` (${reasonCode})` : '';
+      const note  = (reason && reason.trim()) ? `: ${reason.trim()}` : '';
+      description = `Disqualified from ${currentStage}${code} — ${stamp}${note}`;
+    }
 
     await db.query(
       `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
        VALUES ($1, $2, $3, 'stage_change', $4, $5)`,
       [req.orgId, 
         req.params.id, req.user.userId,
-        `Stage changed from ${currentStage} to ${stage}`,
+        description,
         JSON.stringify({
           from:       currentStage,
           to:         stage,
@@ -2145,7 +2162,7 @@ router.post('/:id/disqualify', async (req, res) => {
       `UPDATE prospects
        SET stage               = 'disqualified',
            stage_changed_at    = CURRENT_TIMESTAMP,
-           disqualified_reason = $1,
+           revisit_disposition = $1,
            revisit_date        = $2,
            updated_at          = CURRENT_TIMESTAMP
        WHERE id = $3 AND org_id = $4
@@ -2175,6 +2192,12 @@ router.post('/:id/disqualify', async (req, res) => {
       updatedAccount = accResult.rows[0] || null;
     }
 
+    const tzRes = await client.query(
+      `SELECT timezone FROM users WHERE id = $1`,
+      [req.user.userId]
+    );
+    const stamp = formatStampInZone(new Date(), tzRes.rows[0]?.timezone);
+
     await client.query(
       `INSERT INTO prospecting_activities
          (org_id, prospect_id, user_id, activity_type, description, metadata)
@@ -2182,7 +2205,7 @@ router.post('/:id/disqualify', async (req, res) => {
       [req.orgId, 
         req.params.id,
         req.user.userId,
-        `Disqualified from ${currentStage} — reason: ${reason}`,
+        `Disqualified from ${currentStage} — disposition: ${reason} — ${stamp}`,
         JSON.stringify({
           from:               currentStage,
           to:                 'disqualified',
