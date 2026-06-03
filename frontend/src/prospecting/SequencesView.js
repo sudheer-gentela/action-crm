@@ -46,6 +46,12 @@ function SequencesView({ prospects, search }) {
   }, []);
   const isAdmin = !!userContext?.isAdmin;
 
+  // Mine/Team scope for the activity tabs (Library / Health / Enrollments /
+  // Stats). Members always see only their own; the toggle is shown to managers
+  // and admins. 'team' maps to depth=all (whole subtree; admins → all org).
+  const [scope, setScope] = useState('mine');
+  const canTeam = !!(userContext?.hasSubordinates || userContext?.isAdmin);
+
   // Enrollment drill-down
   const [expandedEnrollId,   setExpandedEnrollId]   = useState(null);
   const [expandedLogs,       setExpandedLogs]       = useState([]);
@@ -302,22 +308,24 @@ function SequencesView({ prospects, search }) {
     setStats(null);
     setError('');
     try {
-      const r = await apiFetch(`/sequences/${seqId}/stats`);
+      const qs = scope === 'mine' ? 'scope=mine' : 'depth=all';
+      const r = await apiFetch(`/sequences/${seqId}/stats?${qs}`);
       setStats(r);
     } catch (err) {
       setError('Failed to load stats: ' + err.message);
     } finally {
       setLoadingStats(false);
     }
-  }, []);
+  }, [scope]);
 
   const loadStatusDrill = useCallback(async (status, { offset = 0 } = {}) => {
     if (!statsSeqId) return;
     const append = offset > 0;
     if (append) setDrillMore(true); else setDrillLoading(true);
     try {
+      const qs = scope === 'mine' ? 'scope=mine' : 'depth=all';
       const r = await apiFetch(
-        `/sequences/enrollments?sequenceId=${statsSeqId}&status=${status}&limit=${DRILL_PAGE}&offset=${offset}`
+        `/sequences/enrollments?sequenceId=${statsSeqId}&status=${status}&limit=${DRILL_PAGE}&offset=${offset}&${qs}`
       );
       const page = r.enrollments || [];
       setDrillTotal(typeof r.total === 'number' ? r.total : page.length);
@@ -327,7 +335,7 @@ function SequencesView({ prospects, search }) {
     } finally {
       if (append) setDrillMore(false); else setDrillLoading(false);
     }
-  }, [statsSeqId]);
+  }, [statsSeqId, scope]);
 
   const openStatusDrill = (status, label) => {
     setStatusDrill({ status, label });
@@ -348,21 +356,23 @@ function SequencesView({ prospects, search }) {
     setLoadingSeq(true);
     setError('');
     try {
-      const r = await apiFetch('/sequences');
+      const qs = scope === 'mine' ? 'scope=mine' : 'depth=all';
+      const r = await apiFetch(`/sequences?${qs}`);
       setSequences(r.sequences || []);
     } catch (err) {
       setError('Failed to load sequences: ' + err.message);
     } finally {
       setLoadingSeq(false);
     }
-  }, []);
+  }, [scope]);
 
   const loadEnrollments = useCallback(async ({ offset = 0 } = {}) => {
     const append = offset > 0;
     if (append) setEnrLoadingMore(true);
     else        setLoadingEnr(true);
     try {
-      const r = await apiFetch(`/sequences/enrollments?limit=${ENR_PAGE_SIZE}&offset=${offset}`);
+      const qs = scope === 'mine' ? 'scope=mine' : 'depth=all';
+      const r = await apiFetch(`/sequences/enrollments?limit=${ENR_PAGE_SIZE}&offset=${offset}&${qs}`);
       const page = r.enrollments || [];
       setEnrTotal(typeof r.total === 'number' ? r.total : page.length);
       setEnrollments(prev => (append ? [...prev, ...page] : page));
@@ -372,7 +382,7 @@ function SequencesView({ prospects, search }) {
       if (append) setEnrLoadingMore(false);
       else        setLoadingEnr(false);
     }
-  }, []);
+  }, [scope]);
 
   const loadMoreEnrollments = useCallback(() => {
     loadEnrollments({ offset: enrollments.length });
@@ -383,6 +393,14 @@ function SequencesView({ prospects, search }) {
     if (subTab === 'enrollments') loadEnrollments();
     if (subTab === 'drafts')      loadDrafts();
   }, [subTab, loadEnrollments, loadDrafts]);
+  // Re-load the open Stats view when the Mine/Team scope changes.
+  useEffect(() => {
+    if (subTab === 'stats' && statsSeqId) {
+      closeStatusDrill();
+      loadStats(statsSeqId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope]);
 
   const handleArchive = async (seq) => {
     // Backwards-compat: the click handler used to take just an id. We now
@@ -488,18 +506,40 @@ function SequencesView({ prospects, search }) {
           ))}
         </div>
 
-        {subTab === 'library' && (
-          <button
-            onClick={() => { setEditingSeq(null); setShowBuilder(true); }}
-            style={{
-              padding: '7px 16px', borderRadius: 7, border: 'none',
-              background: '#0F9D8E', color: '#fff',
-              fontSize: 12, fontWeight: 600, cursor: 'pointer',
-            }}
-          >
-            + New Sequence
-          </button>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {canTeam && ['library', 'enrollments', 'stats', 'health'].includes(subTab) && (
+            <div style={{ display: 'inline-flex', border: '1px solid #e5e7eb', borderRadius: 7, overflow: 'hidden' }}
+                 title="Whose sequences and activity to show">
+              {['mine', 'team'].map(s => (
+                <button
+                  key={s}
+                  onClick={() => setScope(s)}
+                  style={{
+                    padding: '5px 12px', border: 'none', cursor: 'pointer',
+                    fontSize: 12, fontWeight: 600,
+                    background: scope === s ? '#0F9D8E' : '#fff',
+                    color: scope === s ? '#fff' : '#6b7280',
+                  }}
+                >
+                  {s === 'mine' ? 'Mine' : 'Team'}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {subTab === 'library' && (
+            <button
+              onClick={() => { setEditingSeq(null); setShowBuilder(true); }}
+              style={{
+                padding: '7px 16px', borderRadius: 7, border: 'none',
+                background: '#0F9D8E', color: '#fff',
+                fontSize: 12, fontWeight: 600, cursor: 'pointer',
+              }}
+            >
+              + New Sequence
+            </button>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -542,6 +582,11 @@ function SequencesView({ prospects, search }) {
                     <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
                       <div style={{ fontWeight: 700, fontSize: 14, color: '#111827', lineHeight: 1.3 }}>
                         {seq.name}
+                        {seq.visibility === 'private' && (
+                          <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: '#E8630A', background: '#fef3e9', padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap' }}>
+                            🔒 Private
+                          </span>
+                        )}
                       </div>
                       <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                         <button
@@ -551,31 +596,35 @@ function SequencesView({ prospects, search }) {
                         >
                           👁
                         </button>
-                        <button
-                          onClick={() => openBuilderForEdit(seq)}
-                          title="Edit"
-                          style={{ padding: '3px 8px', borderRadius: 5, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', fontSize: 11, cursor: 'pointer' }}
-                        >
-                          ✏️
-                        </button>
-                        <button
-                          onClick={() => handleArchive(seq)}
-                          title={seq.enrollment_count > 0
-                            ? (isAdmin
-                                ? `Archive (admin force — ${seq.enrollment_count} active)`
-                                : `Cannot archive — ${seq.enrollment_count} active enrollment${seq.enrollment_count === 1 ? '' : 's'}`)
-                            : 'Archive'}
-                          style={{
-                            padding: '3px 8px', borderRadius: 5,
-                            border: '1px solid #e5e7eb',
-                            background: '#fff',
-                            color: (seq.enrollment_count > 0 && !isAdmin) ? '#d1d5db' : '#9ca3af',
-                            fontSize: 11,
-                            cursor: (seq.enrollment_count > 0 && !isAdmin) ? 'not-allowed' : 'pointer',
-                          }}
-                        >
-                          🗃
-                        </button>
+                        {seq.can_edit && (
+                          <>
+                            <button
+                              onClick={() => openBuilderForEdit(seq)}
+                              title="Edit"
+                              style={{ padding: '3px 8px', borderRadius: 5, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', fontSize: 11, cursor: 'pointer' }}
+                            >
+                              ✏️
+                            </button>
+                            <button
+                              onClick={() => handleArchive(seq)}
+                              title={seq.enrollment_count > 0
+                                ? (isAdmin
+                                    ? `Archive (admin force — ${seq.enrollment_count} active)`
+                                    : `Cannot archive — ${seq.enrollment_count} active enrollment${seq.enrollment_count === 1 ? '' : 's'}`)
+                                : 'Archive'}
+                              style={{
+                                padding: '3px 8px', borderRadius: 5,
+                                border: '1px solid #e5e7eb',
+                                background: '#fff',
+                                color: (seq.enrollment_count > 0 && !isAdmin) ? '#d1d5db' : '#9ca3af',
+                                fontSize: 11,
+                                cursor: (seq.enrollment_count > 0 && !isAdmin) ? 'not-allowed' : 'pointer',
+                              }}
+                            >
+                              🗃
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                     {seq.description && (
@@ -1438,7 +1487,7 @@ function SequencesView({ prospects, search }) {
           last 24h and 7d, plus stalled-enrollment counts and top error
           messages. Mirrors the campaign-scoped tile, but covers ALL active
           sequences in the org. */}
-      {subTab === 'health' && <OrgSequenceHealthPanel onOpenSequence={openStats} />}
+      {subTab === 'health' && <OrgSequenceHealthPanel onOpenSequence={openStats} scope={scope} />}
     </div>
   );
 }
@@ -1453,7 +1502,7 @@ function SequencesView({ prospects, search }) {
 // that we render this as a full-screen list rather than a compact tile —
 // the global view is the place to triage health issues across the org.
 // ─────────────────────────────────────────────────────────────────────────────
-function OrgSequenceHealthPanel({ onOpenSequence }) {
+function OrgSequenceHealthPanel({ onOpenSequence, scope = 'mine' }) {
   const [health,   setHealth]   = useState(null);
   const [loading,  setLoading]  = useState(true);
   const [expanded, setExpanded] = useState({});
@@ -1461,12 +1510,13 @@ function OrgSequenceHealthPanel({ onOpenSequence }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    apiFetch('/sequences/health')
+    const qs = scope === 'mine' ? 'scope=mine' : 'depth=all';
+    apiFetch(`/sequences/health?${qs}`)
       .then(r => { if (!cancelled) setHealth(r.health || []); })
       .catch(() => { if (!cancelled) setHealth([]); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, []);
+  }, [scope]);
 
   const statusFor = (h) => {
     if (h.last24h.failed > 0)     return { bg: '#fef2f2', fg: '#991b1b', label: 'Failing' };

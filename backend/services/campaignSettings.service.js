@@ -31,6 +31,11 @@ const db = require('../config/database');
 // ── System-level defaults — apply when an org has no per-org override ────────
 const SYSTEM_DEFAULTS = {
   owner_delete_enabled: true,
+  // Prospecting ownership model: when TRUE, a manager may edit items owned by
+  // their subordinates without a per-owner grant. ABSENT ⇒ FALSE (managers are
+  // view-only on subordinates' items unless the owner grants access). Read by
+  // services/AccessPolicy.js canEditItem.
+  manager_can_edit: false,
 };
 
 class CampaignSettingsService {
@@ -100,6 +105,13 @@ class CampaignSettingsService {
         case 'owner_delete_enabled':
           if (typeof val !== 'boolean') {
             throw _err('owner_delete_enabled must be a boolean');
+          }
+          out[key] = val;
+          break;
+
+        case 'manager_can_edit':
+          if (typeof val !== 'boolean') {
+            throw _err('manager_can_edit must be a boolean');
           }
           out[key] = val;
           break;

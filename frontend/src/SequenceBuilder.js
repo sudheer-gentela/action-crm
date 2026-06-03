@@ -97,6 +97,17 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
   const [requireApproval, setRequireApproval] = useState(
     initialSequence?.require_approval !== undefined ? initialSequence.require_approval : true
   );
+  // Visibility: 'shared' (in the org Library for everyone) or 'private' (only
+  // the owner sees it; a manager/admin can still see it via their read scope).
+  // Default shared. Server enforces; this just sets the flag on save.
+  const [visibility, setVisibility] = useState(
+    initialSequence?.visibility === 'private' ? 'private' : 'shared'
+  );
+  // Per-sequence opt-in: let the owner's manager edit THIS sequence even when
+  // the org-wide "managers can edit" policy is off. Default off.
+  const [allowManagerEdit, setAllowManagerEdit] = useState(
+    initialSequence?.allow_manager_edit === true
+  );
   // Master switch: does this sequence use AI personalization at all? When off,
   // all AI config below is hidden, steps are saved as plain templates, and
   // preview/activate default to NOT calling any skill.
@@ -283,6 +294,8 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             description: toneGoal,
             require_approval: requireApproval,
             ai_enabled: aiEnabled,
+            visibility,
+            allow_manager_edit: allowManagerEdit,
             personalize_config_default: effectivePersonalizeDefault,
           }),
         });
@@ -324,6 +337,8 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             description: toneGoal,
             require_approval: requireApproval,
             ai_enabled: aiEnabled,
+            visibility,
+            allow_manager_edit: allowManagerEdit,
             personalize_config_default: effectivePersonalizeDefault,
             steps: stepsPayload,
           }),
@@ -520,6 +535,78 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             <span style={{
               position: 'absolute', top: 3,
               left: requireApproval ? 21 : 3,
+              width: 16, height: 16, borderRadius: '50%',
+              background: '#fff', transition: 'left 0.2s',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+            }} />
+          </button>
+        </div>
+
+        {/* Visibility — shared to the org Library, or private to the owner */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '10px 14px', borderRadius: 8,
+          background: visibility === 'private' ? '#fef9f5' : '#f9fafb',
+          border: `1px solid ${visibility === 'private' ? '#f5d6bd' : '#e5e7eb'}`,
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>
+              {visibility === 'private' ? '🔒 Private to me' : '👥 Shared with the org'}
+            </div>
+            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+              {visibility === 'private'
+                ? "Hidden from the org Library — only you (and your manager/admin) can see it"
+                : 'Listed in the org Library for everyone to use (default)'}
+            </div>
+          </div>
+          <button
+            onClick={() => setVisibility(v => (v === 'private' ? 'shared' : 'private'))}
+            style={{
+              position: 'relative', width: 40, height: 22, borderRadius: 11,
+              border: 'none', cursor: 'pointer', flexShrink: 0,
+              background: visibility === 'private' ? '#E8630A' : '#d1d5db',
+              transition: 'background 0.2s',
+            }}
+          >
+            <span style={{
+              position: 'absolute', top: 3,
+              left: visibility === 'private' ? 21 : 3,
+              width: 16, height: 16, borderRadius: '50%',
+              background: '#fff', transition: 'left 0.2s',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+            }} />
+          </button>
+        </div>
+
+        {/* Per-sequence manager edit opt-in */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '10px 14px', borderRadius: 8,
+          background: allowManagerEdit ? '#eef6ff' : '#f9fafb',
+          border: `1px solid ${allowManagerEdit ? '#bfdbfe' : '#e5e7eb'}`,
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>
+              🧑‍💼 Let my manager edit this sequence
+            </div>
+            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+              {allowManagerEdit
+                ? 'Your manager can edit this specific sequence'
+                : 'Only you (and admins) can edit it — managers are view-only'}
+            </div>
+          </div>
+          <button
+            onClick={() => setAllowManagerEdit(v => !v)}
+            style={{
+              position: 'relative', width: 40, height: 22, borderRadius: 11,
+              border: 'none', cursor: 'pointer', flexShrink: 0,
+              background: allowManagerEdit ? '#3b82f6' : '#d1d5db',
+              transition: 'background 0.2s',
+            }}
+          >
+            <span style={{
+              position: 'absolute', top: 3,
+              left: allowManagerEdit ? 21 : 3,
               width: 16, height: 16, borderRadius: '50%',
               background: '#fff', transition: 'left 0.2s',
               boxShadow: '0 1px 3px rgba(0,0,0,0.2)',

@@ -809,6 +809,49 @@ router.put('/org/delete-policy', async (req, res) => {
   }
 });
 
+// GET  /org/manager-edit-policy → { enabled }  — org-wide "managers may edit
+//   subordinates' prospecting items" switch (manager_can_edit). Admin/owner
+//   only. Stored in org_action_config.campaign_settings.manager_can_edit via
+//   CampaignSettingsService. Read by services/AccessPolicy.js. Default OFF —
+//   managers are view-only unless this is on or the item opts in per-row.
+router.get('/org/manager-edit-policy', async (req, res) => {
+  try {
+    if (!(await CampaignAccess.isAdmin(req))) {
+      return res.status(403).json({ error: {
+        message: "You don't have permission to view the manager-edit policy. Admins only.",
+      } });
+    }
+    const { manager_can_edit } = await CampaignSettings.getForOrg(req.orgId);
+    res.json({ enabled: manager_can_edit === true });
+  } catch (err) {
+    console.error('campaigns GET /org/manager-edit-policy', err);
+    res.status(500).json({ error: { message: 'Failed to load manager-edit policy' } });
+  }
+});
+router.put('/org/manager-edit-policy', async (req, res) => {
+  try {
+    if (!(await CampaignAccess.isAdmin(req))) {
+      return res.status(403).json({ error: {
+        message: "You don't have permission to change the manager-edit policy. Admins only.",
+      } });
+    }
+    const { enabled } = req.body || {};
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: { message: 'enabled must be a boolean' } });
+    }
+    const saved = await CampaignSettings.setForOrg(
+      req.orgId, { manager_can_edit: enabled }, req.user.userId
+    );
+    res.json({ enabled: saved.manager_can_edit === true });
+  } catch (err) {
+    if (err.status === 400) {
+      return res.status(400).json({ error: { message: err.message } });
+    }
+    console.error('campaigns PUT /org/manager-edit-policy', err);
+    res.status(500).json({ error: { message: 'Failed to update manager-edit policy' } });
+  }
+});
+
 // ── GET /:id — one campaign + funnel + multi-channel outreach metrics ────────
 //
 // Outreach metrics now span three channels:

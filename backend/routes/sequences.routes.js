@@ -50,6 +50,7 @@ const AIClientResolver = require('../services/ai/AIClientResolver');
 // Phase 3 — sequence reporting: per-rep filters on /enrollments and /:id/stats
 // go through the scope service for auth (silently drop out-of-scope userIds).
 const ReportingScopeService = require('../services/ReportingScopeService');
+const AccessPolicy          = require('../services/AccessPolicy');
 
 // ── Auth middleware on all routes ─────────────────────────────────────────────
 router.use(authenticateToken, orgContext);
@@ -95,8 +96,42 @@ function renderPreviewTemplate(template, p) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // GET /api/sequences
+// Shared ownership gate for sequence mutations. Loads the sequence's owner and
+// enforces AccessPolicy.requireCanEdit (owner / admin / permitted manager).
+// Sends the 404 or 403 and returns false when the caller may not proceed.
+async function gateSequenceEdit(req, res, seqId) {
+  const r = await pool.query(
+    `SELECT created_by, allow_manager_edit FROM sequences WHERE id = $1 AND org_id = $2`,
+    [seqId, req.orgId]
+  );
+  if (!r.rows.length) {
+    res.status(404).json({ error: { message: 'Not found' } });
+    return false;
+  }
+  return AccessPolicy.requireCanEdit(req, res, r.rows[0].created_by, {
+    allowManagerEdit: r.rows[0].allow_manager_edit,
+  });
+}
+
 router.get('/', async (req, res) => {
   try {
+    // Visibility scope: shared sequences are listed for everyone; private
+    // sequences only for their owner and — via the resolved scope — that
+    // owner's manager / an admin. Optional ?scope=mine|team and ?depth= drive
+    // the Mine/Team toggle; default resolves by role (member→self,
+    // manager→team, admin→all).
+    const explicitUserIds = req.query.scope === 'mine' ? [req.userId] : undefined;
+    const { userIds } = await AccessPolicy.resolveScope(req, {
+      depth: req.query.depth,
+      explicitUserIds,
+    });
+
+    const params = [req.orgId];
+    const visClause = AccessPolicy.visibilityClause(
+      { alias: 's', ownerCol: 'created_by', scopeUserIds: userIds },
+      params
+    );
+
     const { rows } = await pool.query(
       `SELECT s.*,
               COUNT(DISTINCT ss.id)::int  AS step_count,
@@ -108,11 +143,17 @@ router.get('/', async (req, res) => {
     LEFT JOIN sequence_enrollments se ON se.sequence_id = s.id AND se.status = 'active'
     LEFT JOIN users           cu      ON cu.id = s.created_by
         WHERE s.org_id = $1 AND s.status != 'archived'
+          AND ${visClause}
      GROUP BY s.id, cu.first_name, cu.last_name
      ORDER BY s.created_at DESC`,
-      [req.orgId]
+      params
     );
-    res.json({ sequences: rows });
+    // Per-row editability for the UI (owner / admin / permitted manager),
+    // resolved with a single batch context — no N+1 queries.
+    const editCtx = await AccessPolicy.editContext(req);
+    res.json({
+      sequences: rows.map(r => ({ ...r, can_edit: AccessPolicy.canEditWith(editCtx, r.created_by, r.allow_manager_edit) })),
+    });
   } catch (err) {
     console.error('sequences GET /', err);
     res.status(500).json({ error: { message: 'Failed to load sequences' } });
@@ -121,19 +162,21 @@ router.get('/', async (req, res) => {
 
 // POST /api/sequences  — body: { name, description, require_approval, ai_enabled, steps: [{channel, delay_days, subject_template, body_template, task_note, require_approval}] }
 router.post('/', async (req, res) => {
-  const { name, description, require_approval = true, ai_enabled = true, personalize_config_default = null, steps = [] } = req.body;
+  const { name, description, require_approval = true, ai_enabled = true, personalize_config_default = null, steps = [], visibility = 'shared', allow_manager_edit = false } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: { message: 'name is required' } });
+  const vis = visibility === 'private' ? 'private' : 'shared';
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
     const seqRes = await client.query(
-      `INSERT INTO sequences (org_id, name, description, created_by, require_approval, ai_enabled, personalize_config_default)
-            VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      `INSERT INTO sequences (org_id, name, description, created_by, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [req.orgId, name.trim(), description || null, req.user.userId, require_approval,
        ai_enabled !== false,
-       personalize_config_default ? JSON.stringify(personalize_config_default) : null]
+       personalize_config_default ? JSON.stringify(personalize_config_default) : null,
+       vis, allow_manager_edit === true]
     );
     const seq = seqRes.rows[0];
 
@@ -391,18 +434,19 @@ router.get('/enrollments', async (req, res) => {
     // Backward compat: callers without enrolledBy/depth see the original
     // behavior (no per-rep filter). All other filters are independently
     // applied.
-    let scopedUserIds = null;   // null = no enrolled_by predicate
-    if (enrolledBy !== undefined || depth !== undefined) {
-      const explicitUserIds = enrolledBy !== undefined
-        ? String(enrolledBy).split(',').map(s => parseInt(s.trim(), 10)).filter(Number.isInteger)
-        : null;
-      const scope = await ReportingScopeService.resolveReportingScope(
-        req.user.userId,
-        req.orgId,
-        { depth, explicitUserIds }
-      );
-      scopedUserIds = scope.userIds;
-    }
+    // Deny-by-default: ALWAYS scope by the viewer's reporting scope (member →
+    // self, manager → team, admin → all), even when no enrolledBy/depth is
+    // passed. ?enrolledBy= or ?scope=mine narrow within that scope; out-of-
+    // scope IDs are silently dropped by the service.
+    const explicitUserIds = enrolledBy !== undefined
+      ? String(enrolledBy).split(',').map(s => parseInt(s.trim(), 10)).filter(Number.isInteger)
+      : (req.query.scope === 'mine' ? [req.user.userId] : null);
+    const scope = await ReportingScopeService.resolveReportingScope(
+      req.user.userId,
+      req.orgId,
+      { depth, explicitUserIds }
+    );
+    const scopedUserIds = scope.userIds;   // always non-null now
 
     // Build the shared filter clause once so the COUNT and the data query can
     // never drift apart. $1 is always org_id; subsequent placeholders are
@@ -418,6 +462,7 @@ router.get('/enrollments', async (req, res) => {
       params.push(scopedUserIds);
       whereClause += ` AND se.enrolled_by = ANY($${params.length}::int[])`;
     }
+
 
     // Total over the full filtered set (independent of limit/offset) so the UI
     // knows how many pages remain. Same FROM/JOIN/WHERE as the data query.
@@ -1742,6 +1787,15 @@ router.get('/health', async (req, res) => {
     const day  = `'24 hours'::interval`;
     const week = `'7 days'::interval`;
 
+    // Deny-by-default scope: list only sequences visible to the viewer, and
+    // count only activity from reps in their scope (member → self, manager →
+    // team, admin → all). ?scope=mine / ?depth= drive the Mine/Team toggle.
+    const explicitUserIds = req.query.scope === 'mine' ? [req.userId] : undefined;
+    const { userIds } = await AccessPolicy.resolveScope(req, {
+      depth: req.query.depth,
+      explicitUserIds,
+    });
+
     // Per-sequence aggregates over the last 7d, including last24h via FILTER.
     // Joining sequences ensures we list every active sequence even if it has
     // no recent logs (drafts=sent=failed=0).
@@ -1764,12 +1818,14 @@ router.get('/health', async (req, res) => {
              AND EXISTS (
                    SELECT 1 FROM sequence_enrollments se2
                     WHERE se2.id = ssl.enrollment_id AND se2.sequence_id = s.id
+                      AND se2.enrolled_by = ANY($2::int[])
                  )
       WHERE s.org_id = $1
         AND s.status = 'active'
+        AND (s.visibility = 'shared' OR s.created_by = ANY($2::int[]))
       GROUP BY s.id, s.name
       ORDER BY s.id ASC`,
-      [req.orgId]
+      [req.orgId, userIds]
     );
 
     // Top error messages over the last 7d, grouped per sequence. We collect
@@ -1785,9 +1841,10 @@ router.get('/health', async (req, res) => {
           AND ssl.status = 'failed'
           AND ssl.fired_at >= NOW() - ${week}
           AND ssl.error_message IS NOT NULL
+          AND se.enrolled_by = ANY($2::int[])
      GROUP BY se.sequence_id, ssl.error_message
      ORDER BY se.sequence_id, count DESC`,
-      [req.orgId]
+      [req.orgId, userIds]
     );
     const errorsBySeq = {};
     for (const row of errRes.rows) {
@@ -1812,8 +1869,9 @@ router.get('/health', async (req, res) => {
         WHERE se.org_id = $1
           AND se.status = 'active'
           AND COALESCE(ssl.last_fired, se.enrolled_at) < NOW() - ${week}
+          AND se.enrolled_by = ANY($2::int[])
      GROUP BY se.sequence_id`,
-      [req.orgId]
+      [req.orgId, userIds]
     );
     const stalledBySeq = {};
     for (const row of stalledRes.rows) stalledBySeq[row.sequence_id] = row.stalled;
@@ -1874,8 +1932,19 @@ router.get('/:id', async (req, res) => {
 
 // PUT /api/sequences/:id
 router.put('/:id', async (req, res) => {
-  const { name, description, require_approval, ai_enabled, personalize_config_default } = req.body;
+  const { name, description, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit } = req.body;
   try {
+    // Ownership gate — only the owner (or an admin, or a permitted manager) may
+    // edit. Peers can view a shared sequence but not change it.
+    const ownerRes = await pool.query(
+      `SELECT created_by, allow_manager_edit FROM sequences WHERE id = $1 AND org_id = $2`,
+      [req.params.id, req.orgId]
+    );
+    if (!ownerRes.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+    if (!(await AccessPolicy.requireCanEdit(req, res, ownerRes.rows[0].created_by, {
+      allowManagerEdit: ownerRes.rows[0].allow_manager_edit,
+    }))) return;
+
     // personalize_config_default semantics:
     //   undefined → don't touch (COALESCE keeps existing)
     //   null      → explicitly clear (revert to user/system default in cascade)
@@ -1885,17 +1954,29 @@ router.put('/:id', async (req, res) => {
       : (personalize_config_default === null ? null : JSON.stringify(personalize_config_default));
     const pcdProvided = personalize_config_default !== undefined;
 
+    // visibility: undefined → leave as-is; otherwise normalize to shared|private.
+    const visProvided = visibility !== undefined;
+    const visParam = visibility === 'private' ? 'private' : 'shared';
+
+    // allow_manager_edit: undefined → leave as-is; otherwise set boolean.
+    const ameProvided = allow_manager_edit !== undefined;
+    const ameParam = allow_manager_edit === true;
+
     const { rows } = await pool.query(
       `UPDATE sequences SET name=$1, description=$2,
         require_approval=COALESCE($3, require_approval),
         ai_enabled=COALESCE($4, ai_enabled),
         personalize_config_default = CASE WHEN $5::boolean THEN $6::jsonb ELSE personalize_config_default END,
+        visibility = CASE WHEN $7::boolean THEN $8 ELSE visibility END,
+        allow_manager_edit = CASE WHEN $9::boolean THEN $10::boolean ELSE allow_manager_edit END,
         updated_at=NOW()
-        WHERE id=$7 AND org_id=$8 RETURNING *`,
+        WHERE id=$11 AND org_id=$12 RETURNING *`,
       [name, description || null,
        require_approval !== undefined ? require_approval : null,
        ai_enabled !== undefined ? ai_enabled : null,
        pcdProvided, pcdParam,
+       visProvided, visParam,
+       ameProvided, ameParam,
        req.params.id, req.orgId]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
@@ -1919,6 +2000,17 @@ router.put('/:id', async (req, res) => {
 // real consequence visible.
 router.delete('/:id', async (req, res) => {
   try {
+    // Ownership gate — only the owner (or admin, or a permitted manager) may
+    // archive. This runs before the active-enrollment safety check below.
+    const ownerRes = await pool.query(
+      `SELECT created_by, allow_manager_edit FROM sequences WHERE id = $1 AND org_id = $2`,
+      [req.params.id, req.orgId]
+    );
+    if (!ownerRes.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+    if (!(await AccessPolicy.requireCanEdit(req, res, ownerRes.rows[0].created_by, {
+      allowManagerEdit: ownerRes.rows[0].allow_manager_edit,
+    }))) return;
+
     // Count active enrollments first — if any, gate by role.
     const enrollRes = await pool.query(
       `SELECT COUNT(*)::int AS active_count
@@ -1976,6 +2068,7 @@ router.post('/:id/steps', async (req, res) => {
   const { channel, delay_days, subject_template, body_template, task_note,
           require_approval, personalize_config, step_intent } = req.body;
   try {
+    if (!(await gateSequenceEdit(req, res, req.params.id))) return;
     const maxRes = await pool.query(
       `SELECT COALESCE(MAX(step_order), 0) AS max_order FROM sequence_steps WHERE sequence_id=$1`,
       [req.params.id]
@@ -2006,6 +2099,7 @@ router.put('/:id/steps/:stepId', async (req, res) => {
   const { channel, delay_days, subject_template, body_template, task_note,
           require_approval, personalize_config, step_intent } = req.body;
   try {
+    if (!(await gateSequenceEdit(req, res, req.params.id))) return;
     // personalize_config: undefined → don't touch; null → clear (inherit); obj → set
     const pcParam = personalize_config === undefined
       ? null
@@ -2046,6 +2140,7 @@ router.put('/:id/steps/:stepId', async (req, res) => {
 
 // DELETE /api/sequences/:id/steps/:stepId
 router.delete('/:id/steps/:stepId', async (req, res) => {
+  if (!(await gateSequenceEdit(req, res, req.params.id))) return;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -2078,6 +2173,7 @@ router.delete('/:id/steps/:stepId', async (req, res) => {
 router.post('/:id/steps/reorder', async (req, res) => {
   const { steps } = req.body; // [{ id, step_order }]
   if (!Array.isArray(steps)) return res.status(400).json({ error: { message: 'steps[] required' } });
+  if (!(await gateSequenceEdit(req, res, req.params.id))) return;
 
   const client = await pool.connect();
   try {
@@ -2384,34 +2480,23 @@ router.get('/:id/stats', async (req, res) => {
       ? req.query.groupBy
       : 'sequence';
 
-    const hasUserFilter = req.query.userIds !== undefined || req.query.depth !== undefined;
-    let scope = null;     // resolved when needed
-    let userFilterIds = null;
-    if (hasUserFilter || groupBy !== 'sequence') {
-      const explicitUserIds = req.query.userIds !== undefined
-        ? String(req.query.userIds).split(',').map(s => parseInt(s.trim(), 10)).filter(Number.isInteger)
-        : null;
-      scope = await ReportingScopeService.resolveReportingScope(
-        req.user.userId,
-        req.orgId,
-        { depth: req.query.depth, explicitUserIds }
-      );
-      userFilterIds = scope.userIds;
-    }
+    // Deny-by-default: ALWAYS resolve the viewer's scope and filter the state
+    // queries by it (member → self, manager → team, admin → all), even when no
+    // userIds/depth is passed. ?userIds= or ?scope=mine narrow within scope.
+    const explicitUserIds = req.query.userIds !== undefined
+      ? String(req.query.userIds).split(',').map(s => parseInt(s.trim(), 10)).filter(Number.isInteger)
+      : (req.query.scope === 'mine' ? [req.user.userId] : null);
+    const scope = await ReportingScopeService.resolveReportingScope(
+      req.user.userId,
+      req.orgId,
+      { depth: req.query.depth, explicitUserIds }
+    );
+    const userFilterIds = scope.userIds;   // always non-null now
 
-    // Build the rep-filter SQL fragment for the state queries below.
-    // Only applied when the caller explicitly opted into a user filter.
-    // When groupBy !== 'sequence' but no userIds/depth was passed, the
-    // scope service still ran (to enable the byUser block) but the state
-    // queries should remain unfiltered for back-compat.
-    let repFilterClause = '';
-    let repFilterParam  = null;
-    if (hasUserFilter && userFilterIds) {
-      repFilterParam = userFilterIds;
-      // Will be appended as the third param below.
-    }
+    // Rep-filter fragment for the state queries — always applied.
+    const repFilterParam = userFilterIds;
 
-    // ── Original (state) queries — params + optional rep filter ──────
+    // ── Original (state) queries — params + rep filter ──────
     const stateParams = [req.params.id, req.orgId];
     let stateRepClause = '';
     if (repFilterParam) {
