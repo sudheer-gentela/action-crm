@@ -490,6 +490,8 @@ router.get('/enrollments', async (req, res) => {
              s.name AS sequence_name,
              p.first_name, p.last_name, p.email, p.company_name,
              p.campaign_id,
+             eu.first_name AS enrolled_by_first_name,
+             eu.last_name  AS enrolled_by_last_name,
              (SELECT COUNT(*)::int FROM sequence_steps
                 WHERE sequence_id = se.sequence_id) AS total_steps,
              (SELECT MAX(fired_at) FROM sequence_step_logs
@@ -500,6 +502,7 @@ router.get('/enrollments', async (req, res) => {
         FROM sequence_enrollments se
         JOIN sequences s ON s.id = se.sequence_id
         JOIN prospects p ON p.id = se.prospect_id
+   LEFT JOIN users     eu ON eu.id = se.enrolled_by
         ${whereClause}
        ORDER BY se.enrolled_at DESC, se.id DESC
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;

@@ -799,7 +799,7 @@ function SequencesView({ prospects, search }) {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
-                  {['Prospect', 'Sequence', 'Status', 'Step', 'Next Due', 'Enrolled', ''].map(h => (
+                  {['Prospect', 'Sequence', 'Enrolled by', 'Status', 'Step', 'Next Due', 'Enrolled', ''].map(h => (
                     <th key={h} style={{
                       padding: '9px 14px', textAlign: 'left', fontSize: 11,
                       fontWeight: 700, color: '#6b7280', textTransform: 'uppercase',
@@ -823,6 +823,9 @@ function SequencesView({ prospects, search }) {
                           {e.email && <div style={{ fontSize: 11, color: '#94a3b8' }}>{e.email}</div>}
                         </td>
                         <td style={{ padding: '9px 14px', color: '#374151' }}>{e.sequence_name}</td>
+                        <td style={{ padding: '9px 14px', color: '#374151', whiteSpace: 'nowrap' }}>
+                          {[e.enrolled_by_first_name, e.enrolled_by_last_name].filter(Boolean).join(' ') || '—'}
+                        </td>
                         <td style={{ padding: '9px 14px' }}>
                           <span style={{
                             padding: '2px 9px', borderRadius: 10, fontSize: 11, fontWeight: 600,
@@ -865,7 +868,7 @@ function SequencesView({ prospects, search }) {
                       {/* ── Step timeline drill-down ──────────────────────── */}
                       {isExpanded && (
                         <tr style={{ borderBottom: '1px solid #f3f4f6' }}>
-                          <td colSpan={7} style={{ padding: '0 14px 14px 40px', background: '#f9fafb' }}>
+                          <td colSpan={8} style={{ padding: '0 14px 14px 40px', background: '#f9fafb' }}>
                             {loadingLogs ? (
                               <div style={{ padding: '12px 0', fontSize: 12, color: '#9ca3af' }}>Loading timeline…</div>
                             ) : expandedLogs.length === 0 ? (
