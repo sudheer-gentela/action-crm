@@ -128,7 +128,9 @@ export function apiFetch(path, options = {}, _isRetry = false) {
         return new Promise(() => {});
       }
     }
-    return Promise.reject(new Error(errMsg));
+    const err = new Error(errMsg);
+    err.status = r.status;
+    return Promise.reject(err);
   });
 }
 

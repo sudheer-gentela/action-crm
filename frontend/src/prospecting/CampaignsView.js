@@ -368,6 +368,7 @@ export default function CampaignsView() {
       {detailId && (
         <CampaignDetailDrawer
           campaignId={detailId}
+          scope={scope}
           onClose={() => setDetailId(null)}
           onChanged={fetchCampaigns}
           onEdit={(c) => { setDetailId(null); setEditing(c); }}
@@ -437,7 +438,7 @@ function Stat({ value, label, color }) {
 // CAMPAIGN DETAIL DRAWER
 // ═════════════════════════════════════════════════════════════════════════════
 
-function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
+function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope }) {
   const [data,     setData]     = useState(null);   // { campaign, funnel, terminal, metrics }
   const [members,  setMembers]  = useState([]);
   const [loading,  setLoading]  = useState(true);
@@ -490,8 +491,9 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
       } else {
         setSeqAiEnabled(true);
       }
-      // Member preview — up to 10, via the prospects list scoped by campaign.
-      const pr = await apiFetch(`/prospects?scope=org&campaignId=${campaignId}`);
+      // Member preview — up to 10. Scoped by campaign on the server, which
+      // authorizes by campaign access (owner / manager / admin).
+      const pr = await apiFetch(`/prospects?campaignId=${campaignId}`);
       setMembers((pr.prospects || []).slice(0, 10));
       // Slice 2: fetch pacing to drive the "Activate next N" button.
       try {
@@ -550,7 +552,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit }) {
   const viewInPipeline = () => {
     if (!data) return;
     window.dispatchEvent(new CustomEvent('campaign-filter', {
-      detail: { campaignId, campaignName: data.campaign.name },
+      detail: { campaignId, campaignName: data.campaign.name, scope },
     }));
     onClose();
   };
@@ -1234,7 +1236,7 @@ function PreviewPickerModal({ campaignId, sequenceId, sequenceName, members, onC
     (async () => {
       setLoadingMore(true);
       try {
-        const r = await apiFetch(`/prospects?scope=org&campaignId=${campaignId}&limit=200`);
+        const r = await apiFetch(`/prospects?campaignId=${campaignId}&limit=200`);
         if (!cancelled) setAllMembers(r.prospects || []);
       } catch (_) {
         // Keep the 10 we already have

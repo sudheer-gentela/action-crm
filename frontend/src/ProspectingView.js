@@ -68,6 +68,11 @@ export default function ProspectingView() {
   // and a dismissible banner is shown.
   const [campaignFilter, setCampaignFilter] = useState(null);
 
+  // Set when a campaign filter targets a campaign the user isn't allowed to
+  // view (server returns 403). Drives a visible empty-state message instead of
+  // a silent failure. Cleared at the start of every prospects fetch.
+  const [campaignAccessError, setCampaignAccessError] = useState(null);
+
   // Drafts deep-link context, set when arriving from a campaign's "Preview
   // drafts". { campaignId, campaignName } | null.
   const [draftsDeepLink, setDraftsDeepLink] = useState(null);
@@ -164,6 +169,8 @@ export default function ProspectingView() {
       const detail = e.detail || {};
       if (!detail.campaignId) return;
       setCampaignFilter({ campaignId: detail.campaignId, campaignName: detail.campaignName });
+      if (detail.scope) setScope(detail.scope);
+      setCampaignAccessError(null);
       setViewMode('pipeline');
     }
     window.addEventListener('campaign-filter', onCampaignFilter);
@@ -323,18 +330,28 @@ export default function ProspectingView() {
   const fetchProspects = useCallback(async () => {
     try {
       setLoading(true);
+      setCampaignAccessError(null);
 
       const campaignQS = campaignFilter ? `&campaignId=${campaignFilter.campaignId}` : '';
 
       const [prospectsRes, summaryRes] = await Promise.all([
         apiFetch(`/prospects?scope=${scope}${debouncedSearch ? `&search=${encodeURIComponent(debouncedSearch)}` : ''}${campaignQS}`),
-        apiFetch(`/prospects/pipeline/summary?scope=${scope}`),
+        apiFetch(`/prospects/pipeline/summary?scope=${scope}${campaignQS}`),
       ]);
 
       setProspects(prospectsRes.prospects || []);
       setPipelineSummary(summaryRes);
     } catch (err) {
       console.error('Failed to fetch prospects:', err);
+      if (err?.status === 403 && campaignFilter) {
+        // Filtered to a campaign this user isn't allowed to see — surface a
+        // clear message instead of failing silently, and empty the board.
+        setProspects([]);
+        setPipelineSummary({ pipeline: [], metrics: {} });
+        setCampaignAccessError(
+          err.message || "You don't have permission to view this campaign's prospects."
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -765,6 +782,17 @@ export default function ProspectingView() {
               color: '#92400e', fontSize: 13, fontWeight: 600,
             }}
           >✕ Clear filter</button>
+        </div>
+      )}
+
+      {campaignAccessError && ['pipeline', 'list', 'account'].includes(viewMode) && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 8,
+          padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#b91c1c',
+        }}>
+          <span>⚠</span>
+          <span>{campaignAccessError} Use “Clear filter” above to return to your prospects.</span>
         </div>
       )}
 
