@@ -623,8 +623,23 @@ const SequenceStepFirer = {
             ? JSON.stringify(personalisedStep.personalize_sources)
             : null;
 
+          // Has the rep approved this email step for paced sending? An approved
+          // draft is flipped to a pending 'scheduled' row by /drafts/approve.
+          // If one exists, take the SEND branch (paced) regardless of
+          // require_approval — the human already approved it. Email only.
+          let hasApprovedSchedule = false;
+          if (step.channel === 'email') {
+            const appr = await client.query(
+              `SELECT 1 FROM sequence_step_logs
+                WHERE enrollment_id=$1 AND sequence_step_id=$2
+                  AND status IN ('scheduled','sending') LIMIT 1`,
+              [enrollment.id, step.id]
+            );
+            hasApprovedSchedule = appr.rows.length > 0;
+          }
+
           // ── DRAFT BRANCH ──────────────────────────────────────────────────
-          if (step.channel !== 'email' || effectiveRequireApproval) {
+          if (step.channel !== 'email' || (effectiveRequireApproval && !hasApprovedSchedule)) {
             // Idempotency: don't create a second draft for this step
             const existingDraft = await client.query(
               `SELECT id FROM sequence_step_logs
@@ -796,6 +811,7 @@ const SequenceStepFirer = {
             `UPDATE sequence_step_logs
                 SET status='sending', fired_at=NOW()
               WHERE enrollment_id=$1 AND sequence_step_id=$2 AND status='scheduled'
+                AND scheduled_send_at <= NOW()
               RETURNING id, subject, body`,
             [enrollment.id, step.id]
           );

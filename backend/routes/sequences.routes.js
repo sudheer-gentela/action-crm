@@ -1508,6 +1508,86 @@ router.post('/drafts/:logId/send', async (req, res) => {
   }
 });
 
+// ── Approve drafts → queue for PACED sending ──────────────────────────────
+// Flips email drafts ('draft') to pending 'scheduled' rows so the firer's
+// auto-send branch delivers them honoring per-account min-delay cooldown,
+// daily limit, and send window (rotating senders). Manual 'Send Now' is
+// unchanged — it stays an immediate human override.
+//
+// Scope mirrors GET /drafts: the rep's own org-scoped email drafts only.
+// The NOT EXISTS guard keeps us from violating uq_seq_step_logs_pending if a
+// pending row somehow already exists for the step.
+async function approveDraftLogs(orgId, userId, logIds, sendAt) {
+  const ids = (logIds || []).map(Number).filter(Number.isInteger);
+  if (!ids.length) return { approved: 0, skipped: 0, approvedIds: [] };
+
+  const upd = await pool.query(
+    `UPDATE sequence_step_logs ssl
+        SET status            = 'scheduled',
+            scheduled_send_at = COALESCE($4::timestamptz, NOW()),
+            approved_at       = NOW(),
+            approved_by       = $3
+       FROM sequence_enrollments se
+      WHERE ssl.enrollment_id = se.id
+        AND ssl.id         = ANY($1::int[])
+        AND ssl.org_id     = $2
+        AND se.enrolled_by = $3
+        AND ssl.status     = 'draft'
+        AND ssl.channel    = 'email'
+        AND NOT EXISTS (
+              SELECT 1 FROM sequence_step_logs x
+               WHERE x.enrollment_id    = ssl.enrollment_id
+                 AND x.sequence_step_id = ssl.sequence_step_id
+                 AND x.status IN ('scheduled','sending'))
+      RETURNING ssl.id`,
+    [ids, orgId, userId, sendAt || null]
+  );
+  const approvedIds = upd.rows.map(r => r.id);
+
+  // Best-effort audit trail.
+  if (approvedIds.length) {
+    try {
+      await pool.query(
+        `INSERT INTO prospecting_activities
+                     (org_id, prospect_id, user_id, activity_type, description, metadata)
+         SELECT ssl.org_id, ssl.prospect_id, $2, 'sequence_draft_approved',
+                'Approved & queued for paced send',
+                jsonb_build_object('logId', ssl.id, 'enrollmentId', ssl.enrollment_id)
+           FROM sequence_step_logs ssl
+          WHERE ssl.id = ANY($1::int[])`,
+        [approvedIds, userId]
+      );
+    } catch (e) { console.warn('drafts/approve activity log failed:', e.message); }
+  }
+
+  return { approved: approvedIds.length, skipped: ids.length - approvedIds.length, approvedIds };
+}
+
+// ── POST /api/sequences/drafts/approve  (bulk)
+// Body { logIds: number[], sendAt?: ISO8601 }   (sendAt defaults to now)
+router.post('/drafts/approve', async (req, res) => {
+  const { logIds, sendAt } = req.body || {};
+  if (!Array.isArray(logIds) || logIds.length === 0) {
+    return res.status(400).json({ error: { message: 'logIds (non-empty array) required' } });
+  }
+  try {
+    res.json(await approveDraftLogs(req.orgId, req.user.userId, logIds, sendAt));
+  } catch (err) {
+    console.error('POST /sequences/drafts/approve', err);
+    res.status(500).json({ error: { message: 'Failed to approve drafts' } });
+  }
+});
+
+// ── POST /api/sequences/drafts/:logId/approve  (single convenience wrapper)
+router.post('/drafts/:logId/approve', async (req, res) => {
+  try {
+    res.json(await approveDraftLogs(req.orgId, req.user.userId, [req.params.logId], req.body?.sendAt));
+  } catch (err) {
+    console.error('POST /sequences/drafts/:logId/approve', err);
+    res.status(500).json({ error: { message: 'Failed to approve draft' } });
+  }
+});
+
 // ── DELETE /api/sequences/drafts/:logId
 // Rep discards a draft — step is consumed and enrollment advances.
 // ── POST /api/sequences/drafts/:logId/complete

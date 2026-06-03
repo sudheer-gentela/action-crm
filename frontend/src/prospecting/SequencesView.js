@@ -63,6 +63,7 @@ function SequencesView({ prospects, search }) {
   // Bulk-select state for the drafts list (Set of enrollmentIds).
   const [selectedEnrollIds, setSelectedEnrollIds] = useState(() => new Set());
   const [bulkUndoing, setBulkUndoing] = useState(false);
+  const [bulkApproving, setBulkApproving] = useState(false);
 
   // Open builder in edit mode — fetches full sequence (with steps) before opening.
   // The list endpoint only returns step_count, not the steps array.
@@ -274,6 +275,48 @@ function SequencesView({ prospects, search }) {
       setError('Bulk unenroll failed: ' + err.message);
     } finally {
       setBulkUndoing(false);
+    }
+  };
+
+  const handleBulkApprove = async () => {
+    const targets = drafts.filter(d => d.enrollmentId && selectedEnrollIds.has(d.enrollmentId));
+    const logIds = targets.map(d => d.id);
+    if (!logIds.length) return;
+    if (!window.confirm(
+      `Approve and queue ${logIds.length} email${logIds.length === 1 ? '' : 's'} for paced sending?\n\n` +
+      'They move to the Scheduled queue and send automatically — respecting your per-account ' +
+      'delay, daily limit, and send window. Non-email drafts are skipped.'
+    )) return;
+    setBulkApproving(true);
+    try {
+      // Persist unsaved inline edits before queuing so the queued copy matches.
+      for (const d of targets) {
+        const e = draftEdits[d.id];
+        if (e && (e.subject !== undefined || e.body !== undefined)) {
+          await apiFetch(`/sequences/drafts/${d.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              subject: e.subject !== undefined ? e.subject : d.subject,
+              body:    e.body    !== undefined ? e.body    : d.body,
+            }),
+          });
+        }
+      }
+      const result = await apiFetch('/sequences/drafts/approve', {
+        method: 'POST',
+        body: JSON.stringify({ logIds }),
+      });
+      const approved = new Set(result.approvedIds || []);
+      setDrafts(prev => prev.filter(d => !approved.has(d.id)));
+      setSelectedEnrollIds(new Set());
+      window.alert(
+        `Queued ${result.approved || 0} email(s) for paced sending.` +
+        (result.skipped ? ` ${result.skipped} skipped (not an email draft or already queued).` : '')
+      );
+    } catch (err) {
+      setError('Approve & queue failed: ' + err.message);
+    } finally {
+      setBulkApproving(false);
     }
   };
 
@@ -722,10 +765,22 @@ function SequencesView({ prospects, search }) {
                       {selectedEnrollIds.size} selected
                     </span>
                     <button
+                      onClick={handleBulkApprove}
+                      disabled={bulkApproving}
+                      style={{
+                        marginLeft: 'auto', padding: '6px 14px', borderRadius: 6,
+                        border: '1px solid #6ee7b7', background: bulkApproving ? '#d1fae5' : '#fff',
+                        color: '#047857', fontSize: 13, fontWeight: 600,
+                        cursor: bulkApproving ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      {bulkApproving ? 'Queuing…' : `✅ Approve & queue ${selectedEnrollIds.size}`}
+                    </button>
+                    <button
                       onClick={handleBulkUndo}
                       disabled={bulkUndoing}
                       style={{
-                        marginLeft: 'auto', padding: '6px 14px', borderRadius: 6,
+                        padding: '6px 14px', borderRadius: 6,
                         border: '1px solid #fca5a5', background: bulkUndoing ? '#fee2e2' : '#fff',
                         color: '#b91c1c', fontSize: 13, fontWeight: 600,
                         cursor: bulkUndoing ? 'not-allowed' : 'pointer',
