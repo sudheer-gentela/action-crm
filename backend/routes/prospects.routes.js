@@ -1827,19 +1827,21 @@ router.post('/:id/stage', async (req, res) => {
       });
     }
 
-    // Persist both free-text reason and structured code. Both are only written
-    // on a disqualified transition; other stage changes leave them unchanged.
+    // Persist the structured fit reason on a disqualified transition; other
+    // stage changes leave it unchanged. The free-text `reason` is a note, not a
+    // disposition — there is no longer a column for it on the prospect row
+    // (the old `disqualified_reason` column was renamed to `revisit_disposition`
+    // and constrained to kill/long_term/unable_to_decide). The note is still
+    // captured below in prospecting_activities.metadata.
     const result = await db.query(
       `UPDATE prospects
        SET stage = $1, stage_changed_at = CURRENT_TIMESTAMP,
-           disqualified_reason      = COALESCE($2, disqualified_reason),
-           disqualified_reason_code = COALESCE($3, disqualified_reason_code),
+           disqualified_reason_code = COALESCE($2, disqualified_reason_code),
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $4 AND org_id = $5
+       WHERE id = $3 AND org_id = $4
        RETURNING *`,
       [
         stage,
-        stage === 'disqualified' ? (reason     || null) : null,
         stage === 'disqualified' ? (reasonCode || null) : null,
         req.params.id, req.orgId,
       ]
@@ -2204,7 +2206,7 @@ router.post('/:id/disqualify', async (req, res) => {
       `UPDATE prospects
        SET stage               = 'disqualified',
            stage_changed_at    = CURRENT_TIMESTAMP,
-           disqualified_reason = $1,
+           revisit_disposition = $1,
            revisit_date        = $2,
            updated_at          = CURRENT_TIMESTAMP
        WHERE id = $3 AND org_id = $4
