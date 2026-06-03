@@ -204,7 +204,7 @@ export default function CampaignsView() {
   const [error,       setError]       = useState('');
   const [statusFilter, setStatusFilter] = useState('active'); // active|paused|completed|all
   const [scope,       setScope]       = useState('mine');     // mine|team|org
-  const [caps,        setCaps]        = useState({ isAdmin: false, hasSubordinates: false });
+  const [caps,        setCaps]        = useState({ isAdmin: false, hasSubordinates: false, userId: null });
   const [showCreate,  setShowCreate]  = useState(false);
   const [editing,     setEditing]     = useState(null);   // campaign being edited (or null)
   const [detailId,    setDetailId]    = useState(null);   // campaign id open in drawer
@@ -217,6 +217,7 @@ export default function CampaignsView() {
       .then(c => setCaps({
         isAdmin:         !!c?.isAdmin,
         hasSubordinates: !!c?.hasSubordinates,
+        userId:          c?.userId ?? null,
       }))
       .catch(() => {});  // non-fatal — list still works in "Mine" scope
   }, []);
@@ -351,6 +352,7 @@ export default function CampaignsView() {
               key={c.id}
               campaign={c}
               isLast={idx === campaigns.length - 1}
+              currentUserId={caps.userId}
               onClick={() => setDetailId(c.id)}
             />
           ))}
@@ -369,6 +371,7 @@ export default function CampaignsView() {
         <CampaignDetailDrawer
           campaignId={detailId}
           scope={scope}
+          currentUserId={caps.userId}
           onClose={() => setDetailId(null)}
           onChanged={fetchCampaigns}
           onEdit={(c) => { setDetailId(null); setEditing(c); }}
@@ -379,11 +382,17 @@ export default function CampaignsView() {
 }
 
 // ── CampaignRow ──────────────────────────────────────────────────────────────
-function CampaignRow({ campaign: c, isLast, onClick }) {
+function CampaignRow({ campaign: c, isLast, onClick, currentUserId }) {
   const prospectCount = parseInt(c.prospect_count || 0, 10);
   const qualified     = parseInt(c.qualified_count || 0, 10);
   const goal          = c.goal_qualified || null;
   const pct = goal ? Math.min(100, Math.round((qualified / goal) * 100)) : 0;
+
+  // Show the owner only when it isn't the current user (e.g. a manager viewing
+  // a team member's campaign in Team/Org scope). Hidden until currentUserId
+  // resolves so we never mislabel your own campaigns during load.
+  const ownerName = [c.owner_first_name, c.owner_last_name].filter(Boolean).join(' ');
+  const showOwner = currentUserId != null && c.owner_id !== currentUserId && ownerName;
 
   return (
     <div
@@ -405,6 +414,7 @@ function CampaignRow({ campaign: c, isLast, onClick }) {
           📋 {c.playbook_name || 'No playbook'}
           {'  ·  '}
           📨 {c.default_sequence_name || 'No default sequence'}
+          {showOwner && <span style={{ marginLeft: 10 }}>👤 {ownerName}</span>}
         </div>
       </div>
       <div style={{ display: 'flex', gap: 20, textAlign: 'right', alignItems: 'center' }}>
@@ -438,7 +448,7 @@ function Stat({ value, label, color }) {
 // CAMPAIGN DETAIL DRAWER
 // ═════════════════════════════════════════════════════════════════════════════
 
-function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope }) {
+function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, currentUserId }) {
   const [data,     setData]     = useState(null);   // { campaign, funnel, terminal, metrics }
   const [members,  setMembers]  = useState([]);
   const [loading,  setLoading]  = useState(true);
@@ -647,6 +657,12 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope })
                 <StatusPill status={data.campaign.status} />
                 {data.campaign.solution && (
                   <span style={{ marginLeft: 8 }}>{data.campaign.solution}</span>
+                )}
+                {currentUserId != null && data.campaign.owner_id !== currentUserId &&
+                  [data.campaign.owner_first_name, data.campaign.owner_last_name].filter(Boolean).length > 0 && (
+                  <span style={{ marginLeft: 8, color: '#6b7280' }}>
+                    · 👤 Owned by {[data.campaign.owner_first_name, data.campaign.owner_last_name].filter(Boolean).join(' ')}
+                  </span>
                 )}
               </span>
             )}
