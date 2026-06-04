@@ -262,6 +262,58 @@ const AUTO_SEND_PREDICATE = `
  * @param {number[]|null} enrollmentIds   scope to these enrollments, or null = all
  * @returns {Promise<number>}             rows inserted
  */
+/**
+ * Normalize manual-channel (linkedin/task/call) due times to the configured
+ * release hour (manualReleaseHour, default 04:00 local). The advance paths
+ * already do this on transition, but a couple of paths re-stamp next_step_due
+ * without channel awareness — notably resume (/enrollments/:id/resume sets
+ * NOW()) and first-step-LinkedIn bulk-activate (uses an email-window slot).
+ * This pass snaps any active manual step that isn't already at the release
+ * hour, so those paths self-correct and the backfill never has to be re-run by
+ * hand. Idempotent: a step already at the release hour recomputes to itself.
+ * Runs in the firer housekeeping each tick — cheap (no-op once everything is
+ * normalized; only mismatches issue an UPDATE).
+ */
+async function normalizeManualDueTimes(client) {
+  const SendingSchedule = require('./SendingScheduleResolver');
+  const candRes = await client.query(
+    `SELECT se.id, se.org_id, se.next_step_due
+       FROM sequence_enrollments se
+       JOIN sequence_steps ss
+         ON ss.sequence_id = se.sequence_id
+        AND ss.step_order  = se.current_step
+      WHERE se.status = 'active'
+        AND se.next_step_due IS NOT NULL
+        AND ss.channel IN ('linkedin','task','call')`
+  );
+  if (!candRes.rows.length) return 0;
+
+  const settingsByOrg = new Map();
+  let fixed = 0;
+  for (const row of candRes.rows) {
+    let settings = settingsByOrg.get(row.org_id);
+    if (!settings) {
+      settings = await SendingSchedule.resolveSettings({ orgId: row.org_id });
+      settingsByOrg.set(row.org_id, settings);
+    }
+    const cur    = new Date(row.next_step_due);
+    // delayDays=0 → snap to the release hour on the SAME local day (rolled
+    // forward to the next configured send day, matching nextStepDue()).
+    const target = SendingSchedule.manualReleaseFor(cur, 0, settings);
+    if (Math.abs(target.getTime() - cur.getTime()) >= 1000) {
+      await client.query(
+        `UPDATE sequence_enrollments SET next_step_due=$1 WHERE id=$2`,
+        [target, row.id]
+      );
+      fixed++;
+    }
+  }
+  if (fixed > 0) {
+    console.log(`📨 normalizeManualDueTimes: snapped ${fixed} manual step(s) to release hour`);
+  }
+  return fixed;
+}
+
 async function materializeRows(client, enrollmentIds = null) {
   const scoped = Array.isArray(enrollmentIds) && enrollmentIds.length > 0;
   const params = [];
@@ -479,6 +531,7 @@ const SequenceStepFirer = {
       //    don't have one yet (covers manual-advance, resume, and backfill of
       //    pre-existing enrollments). Both are non-fatal.
       try { await reapStaleSending(client, 30); } catch (e) { console.warn('📨 reapStaleSending:', e.message); }
+      try { await normalizeManualDueTimes(client); } catch (e) { console.warn('📨 normalizeManualDueTimes:', e.message); }
       try { await materializeRows(client, null); } catch (e) { console.warn('📨 materializeRows top-up:', e.message); }
 
       // Include sequence-level require_approval, name, prospect.campaign_id
