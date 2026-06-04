@@ -466,4 +466,94 @@ router.get('/', async (req, res) => {
   }
 });
 
+// ── GET /detail — full content behind a single feed row ──────────────────────
+// Lazy-loaded when a row is expanded in the UI, so the list stays lightweight.
+//   refTable = emails | prospecting_activities   (the row's ref_table)
+//   refId    = <int>                             (the row's ref_id)
+//   scope    = mine | team | org                 (same visibility model as the feed)
+// Returns the full email body, or the full activity description + metadata
+// (LinkedIn message/connection-note text, sentiment, event).
+router.get('/detail', async (req, res) => {
+  try {
+    const refTable = String(req.query.refTable || '');
+    const refId    = parseInt(req.query.refId, 10);
+    if (!['emails', 'prospecting_activities'].includes(refTable)) {
+      return res.status(400).json({ error: { message: 'Invalid refTable' } });
+    }
+    if (!Number.isInteger(refId)) {
+      return res.status(400).json({ error: { message: 'Invalid refId' } });
+    }
+
+    // Visibility: mirror the feed. allowedUserIds === null means org-wide (admins).
+    const scope = req.query.scope || 'mine';
+    let allowedUserIds = [req.user.userId];
+    if (scope === 'team' && req.subordinateIds?.length > 0) {
+      allowedUserIds = [req.user.userId, ...req.subordinateIds];
+    } else if (scope === 'org') {
+      if (req.user.role !== 'admin' && req.user.role !== 'org_admin') {
+        return res.status(403).json({ error: { message: 'Org scope requires admin access' } });
+      }
+      allowedUserIds = null;
+    }
+    const ownerOk = (uid) => allowedUserIds === null || allowedUserIds.includes(uid);
+
+    if (refTable === 'emails') {
+      const r = await db.query(
+        `SELECT e.id, e.subject, e.body, e.direction, e.sent_at,
+                e.from_address, e.to_address, e.user_id,
+                p.first_name, p.last_name, p.company_name, p.email AS prospect_email
+           FROM emails e
+           JOIN prospects p ON p.id = e.prospect_id
+          WHERE e.id = $1 AND e.org_id = $2`,
+        [refId, req.orgId]
+      );
+      const row = r.rows[0];
+      if (!row || !ownerOk(row.user_id)) {
+        return res.status(404).json({ error: { message: 'Not found' } });
+      }
+      return res.json({
+        refTable, refId, kind: 'email',
+        subject:    row.subject || '(no subject)',
+        body:       row.body || '',
+        direction:  row.direction,
+        from:       row.from_address || null,
+        to:         row.to_address || row.prospect_email || null,
+        occurredAt: row.sent_at,
+        prospect: { firstName: row.first_name, lastName: row.last_name, companyName: row.company_name },
+      });
+    }
+
+    // prospecting_activities
+    const r = await db.query(
+      `SELECT a.id, a.activity_type, a.description, a.metadata, a.created_at, a.user_id,
+              p.first_name, p.last_name, p.company_name
+         FROM prospecting_activities a
+         JOIN prospects p ON p.id = a.prospect_id
+        WHERE a.id = $1 AND a.org_id = $2`,
+      [refId, req.orgId]
+    );
+    const row = r.rows[0];
+    if (!row || !ownerOk(row.user_id)) {
+      return res.status(404).json({ error: { message: 'Not found' } });
+    }
+    const md = row.metadata || {};
+    return res.json({
+      refTable, refId, kind: 'activity',
+      activityType: row.activity_type,
+      description:  row.description || '',
+      // Full LinkedIn message / connection-note text is stored in metadata.note
+      // going forward; older rows fall back to the (capped) description.
+      body:         md.note || md.body || row.description || '',
+      event:        md.event || null,
+      sentiment:    md.sentiment || null,
+      metadata:     md,
+      occurredAt:   row.created_at,
+      prospect: { firstName: row.first_name, lastName: row.last_name, companyName: row.company_name },
+    });
+  } catch (err) {
+    console.error('GET /prospecting/activity/detail', err);
+    return res.status(500).json({ error: { message: 'Failed to load detail' } });
+  }
+});
+
 module.exports = router;

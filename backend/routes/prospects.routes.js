@@ -2856,7 +2856,14 @@ router.post('/:id/linkedin-event', async (req, res) => {
       [req.orgId, 
         req.params.id, req.user.userId,
         descParts.join(' '),
-        JSON.stringify({ event, channel: 'linkedin', sentiment: sentiment || null }),
+        JSON.stringify({
+          event,
+          channel: 'linkedin',
+          sentiment: sentiment || null,
+          // Full message / connection-note text for the expandable feed detail.
+          // (description is capped short; this keeps the complete copy.)
+          note: note ? String(note).slice(0, 4000) : null,
+        }),
       ]
     );
 

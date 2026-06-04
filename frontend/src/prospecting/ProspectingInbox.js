@@ -254,7 +254,7 @@ function ActivityFeed({ scope, search }) {
           <>
             <div>
               {items.map((it, i) => (
-                <ActivityRow key={`${it.refTable}-${it.refId}-${i}`} item={it} />
+                <ActivityRow key={`${it.refTable}-${it.refId}-${i}`} item={it} scope={scope} />
               ))}
             </div>
 
@@ -296,11 +296,50 @@ const CHANNEL_VISUAL = {
   system:   { icon: '•',  tint: '#f9fafb', accent: '#6b7280' },
 };
 
-function ActivityRow({ item }) {
+// Strip HTML to readable plain text, preserving line breaks.
+function htmlToText(html) {
+  return String(html || '')
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\/\s*(p|div|li|tr|h[1-6])\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function ActivityRow({ item, scope }) {
   const visual = CHANNEL_VISUAL[item.category] || CHANNEL_VISUAL.system;
   const p = item.prospect || {};
   const actor = item.actor;
   const isInbound = item.direction === 'received';
+
+  // Calls have their own dedicated inbox; everything else expands inline.
+  const expandable = item.category !== 'call' && item.refId != null;
+
+  const [open, setOpen]       = useState(false);
+  const [detail, setDetail]   = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr]         = useState('');
+
+  const toggle = async () => {
+    if (!expandable) return;
+    const next = !open;
+    setOpen(next);
+    if (next && !detail && !loading) {
+      setLoading(true); setErr('');
+      try {
+        const qs = new URLSearchParams({ refTable: item.refTable, refId: String(item.refId), scope: scope || 'mine' });
+        setDetail(await apiFetch(`/prospecting/activity/detail?${qs}`));
+      } catch (e) {
+        setErr(e.message || 'Failed to load details');
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
 
   const when = item.occurredAt
     ? new Date(item.occurredAt).toLocaleString(undefined, {
@@ -308,78 +347,135 @@ function ActivityRow({ item }) {
       })
     : '—';
 
+  const isEmail = item.category === 'email';
+  const fullText = detail ? (isEmail ? htmlToText(detail.body) : (detail.body || detail.description || '')) : '';
+
   return (
     <div style={{
-      display: 'flex', gap: 12, padding: '12px 16px',
       borderBottom: '1px solid #f3f4f6',
       background: isInbound ? '#f0fdf4' : '#fff',
     }}>
-      {/* Channel icon */}
-      <div style={{
-        flexShrink: 0, width: 34, height: 34, borderRadius: 8,
-        background: visual.tint, display: 'flex', alignItems: 'center',
-        justifyContent: 'center', fontSize: 16,
-      }}>
-        {visual.icon}
-      </div>
+      {/* Header (clickable when expandable) */}
+      <div
+        onClick={toggle}
+        style={{
+          display: 'flex', gap: 12, padding: '12px 16px',
+          cursor: expandable ? 'pointer' : 'default',
+        }}
+      >
+        {/* Channel icon */}
+        <div style={{
+          flexShrink: 0, width: 34, height: 34, borderRadius: 8,
+          background: visual.tint, display: 'flex', alignItems: 'center',
+          justifyContent: 'center', fontSize: 16,
+        }}>
+          {visual.icon}
+        </div>
 
-      {/* Body */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 600, color: '#1a202c', fontSize: 13 }}>
-            {p.firstName} {p.lastName}
-          </span>
-          {p.companyName && (
-            <span style={{ fontSize: 12, color: '#94a3b8' }}>· {p.companyName}</span>
-          )}
-          <span style={{
-            fontSize: 11, fontWeight: 600, color: visual.accent,
-            padding: '1px 8px', borderRadius: 10, background: visual.tint,
-          }}>
-            {item.label}
-          </span>
-          {isInbound && (
-            <span style={{ fontSize: 11, padding: '1px 8px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
-              ↩ Inbound
+        {/* Body */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 600, color: '#1a202c', fontSize: 13 }}>
+              {p.firstName} {p.lastName}
             </span>
+            {p.companyName && (
+              <span style={{ fontSize: 12, color: '#94a3b8' }}>· {p.companyName}</span>
+            )}
+            <span style={{
+              fontSize: 11, fontWeight: 600, color: visual.accent,
+              padding: '1px 8px', borderRadius: 10, background: visual.tint,
+            }}>
+              {item.label}
+            </span>
+            {isInbound && (
+              <span style={{ fontSize: 11, padding: '1px 8px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
+                ↩ Inbound
+              </span>
+            )}
+          </div>
+
+          {item.summary && (
+            <div style={{
+              marginTop: 3, fontSize: 13, color: '#374151',
+              ...(open ? {} : { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }),
+            }}>
+              {isEmail && isInbound ? '↩ ' : ''}{item.summary}
+            </div>
+          )}
+
+          {/* Collapsed snippet preview (hidden once expanded) */}
+          {!open && item.snippet && (
+            <div style={{
+              marginTop: 2, fontSize: 12, color: '#9ca3af',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {item.snippet}
+            </div>
+          )}
+
+          {item.category === 'call' && (
+            <div style={{ marginTop: 3, fontSize: 11, color: visual.accent }}>
+              View detail in the Calls tab
+            </div>
           )}
         </div>
 
-        {item.summary && (
-          <div style={{
-            marginTop: 3, fontSize: 13, color: '#374151',
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>
-            {item.category === 'email' && isInbound ? '↩ ' : ''}{item.summary}
+        {/* Meta */}
+        <div style={{ flexShrink: 0, textAlign: 'right' }}>
+          <div style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>
+            {expandable && <span style={{ color: '#cbd5e1', marginRight: 6 }}>{open ? '▾' : '▸'}</span>}
+            {when}
           </div>
-        )}
-
-        {item.snippet && (
-          <div style={{
-            marginTop: 2, fontSize: 12, color: '#9ca3af',
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>
-            {item.snippet}
-          </div>
-        )}
-
-        {/* Call rows link out to the Calls inbox for full detail. */}
-        {item.category === 'call' && (
-          <div style={{ marginTop: 3, fontSize: 11, color: visual.accent }}>
-            View detail in the Calls tab
-          </div>
-        )}
+          {actor && (actor.firstName || actor.lastName) && (
+            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+              {actor.firstName} {actor.lastName}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Meta */}
-      <div style={{ flexShrink: 0, textAlign: 'right' }}>
-        <div style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>{when}</div>
-        {actor && (actor.firstName || actor.lastName) && (
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
-            {actor.firstName} {actor.lastName}
-          </div>
-        )}
-      </div>
+      {/* Expanded detail */}
+      {open && (
+        <div style={{ padding: '0 16px 14px 62px' }}>
+          {loading && <div style={{ fontSize: 12, color: '#9ca3af' }}>Loading…</div>}
+          {err && <div style={{ fontSize: 12, color: '#b91c1c' }}>{err}</div>}
+          {detail && (
+            <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {isEmail && (
+                <div style={{ display: 'flex', gap: 16, fontSize: 11, color: '#6b7280', flexWrap: 'wrap' }}>
+                  {detail.from && <span><strong>From:</strong> {detail.from}</span>}
+                  {detail.to   && <span><strong>To:</strong> {detail.to}</span>}
+                  {detail.subject && <span><strong>Subject:</strong> {detail.subject}</span>}
+                </div>
+              )}
+              {!isEmail && (detail.event || detail.sentiment) && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {detail.event && (
+                    <span style={{ fontSize: 11, fontWeight: 600, color: visual.accent, padding: '1px 8px', borderRadius: 10, background: visual.tint }}>
+                      {detail.event.replace(/_/g, ' ')}
+                    </span>
+                  )}
+                  {detail.sentiment && (
+                    <span style={{ fontSize: 11, padding: '1px 8px', borderRadius: 10, background: '#eef2ff', color: '#4338ca', fontWeight: 600 }}>
+                      {detail.sentiment}
+                    </span>
+                  )}
+                </div>
+              )}
+              <div style={{
+                background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
+                padding: '12px 16px', fontSize: 13, color: '#374151',
+                lineHeight: 1.7, whiteSpace: 'pre-wrap', maxHeight: 400,
+                overflowY: 'auto', fontFamily: 'inherit',
+              }}>
+                {fullText
+                  ? fullText
+                  : <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>No further detail stored for this activity.</span>}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
