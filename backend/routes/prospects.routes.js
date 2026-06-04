@@ -2734,7 +2734,31 @@ router.post('/:id/linkedin-event', async (req, res) => {
     const p           = prospectRes.rows[0];
     const channelData = p.channel_data || {};
     const li          = channelData.linkedin || {};
-    const now         = new Date().toISOString();
+
+    // ── Event timestamp ───────────────────────────────────────────────────────
+    // The extension may supply `occurred_at` (UTC ISO) when the rep logs an
+    // action after the fact, so a late capture doesn't get a wrong auto-stamp.
+    // `now` drives every li.*_at field below and is always stored as UTC ISO.
+    // `loggedAt` records when the row was actually entered (kept in metadata).
+    const loggedAt = new Date().toISOString();
+    let   now      = loggedAt;
+    const manualTime = req.body.occurred_at != null && req.body.occurred_at !== '';
+    if (manualTime) {
+      const d = new Date(req.body.occurred_at);
+      if (isNaN(d.getTime())) {
+        return res.status(400).json({ error: { message: 'occurred_at is not a valid date/time' } });
+      }
+      if (d.getUTCFullYear() < 2000) {
+        return res.status(400).json({ error: { message: 'occurred_at is implausibly old — please check the date' } });
+      }
+      // A booked meeting may legitimately be scheduled in the future; every
+      // other event happened in the past, so a future time is almost always a
+      // typo that would poison velocity metrics. Allow a 1-minute clock skew.
+      if (event !== 'meeting_booked' && d.getTime() > Date.now() + 60 * 1000) {
+        return res.status(400).json({ error: { message: 'occurred_at cannot be in the future for this event' } });
+      }
+      now = d.toISOString();
+    }
 
     const STATUS_ORDER = [
       'connection_request_sent', 'connection_accepted',
@@ -2824,13 +2848,17 @@ router.post('/:id/linkedin-event', async (req, res) => {
     await db.query(
       `UPDATE prospects SET
          channel_data     = $1::jsonb,
-         last_outreach_at = CASE WHEN $2 THEN CURRENT_TIMESTAMP ELSE last_outreach_at END,
+         last_outreach_at = CASE WHEN $2
+                              THEN GREATEST(COALESCE(last_outreach_at, to_timestamp(0)), LEAST($6::timestamptz, CURRENT_TIMESTAMP))
+                              ELSE last_outreach_at END,
          outreach_count   = CASE WHEN $2 THEN COALESCE(outreach_count, 0) + 1 ELSE outreach_count END,
-         last_response_at = CASE WHEN $3 THEN CURRENT_TIMESTAMP ELSE last_response_at END,
+         last_response_at = CASE WHEN $3
+                              THEN GREATEST(COALESCE(last_response_at, to_timestamp(0)), LEAST($6::timestamptz, CURRENT_TIMESTAMP))
+                              ELSE last_response_at END,
          response_count   = CASE WHEN $3 THEN COALESCE(response_count, 0) + 1 ELSE response_count END,
          updated_at       = CURRENT_TIMESTAMP
        WHERE id = $4 AND org_id = $5`,
-      [JSON.stringify(channelData), countOutreach, countResponse, req.params.id, req.orgId]
+      [JSON.stringify(channelData), countOutreach, countResponse, req.params.id, req.orgId, now]
     );
 
     const EVENT_LABELS = {
@@ -2851,8 +2879,8 @@ router.post('/:id/linkedin-event', async (req, res) => {
     ].filter(Boolean);
 
     await db.query(
-      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, $3, 'linkedin_event', $4, $5)`,
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata, created_at)
+       VALUES ($1, $2, $3, 'linkedin_event', $4, $5, $6)`,
       [req.orgId, 
         req.params.id, req.user.userId,
         descParts.join(' '),
@@ -2863,7 +2891,14 @@ router.post('/:id/linkedin-event', async (req, res) => {
           // Full message / connection-note text for the expandable feed detail.
           // (description is capped short; this keeps the complete copy.)
           note: note ? String(note).slice(0, 4000) : null,
+          // Time audit: occurred_at is the action's real time (drives created_at
+          // and the timeline); logged_at is when the rep entered it. time_source
+          // distinguishes a manual back-date from an automatic stamp.
+          occurred_at: now,
+          logged_at:   loggedAt,
+          time_source: manualTime ? 'manual' : 'auto',
         }),
+        now,
       ]
     );
 
@@ -2962,13 +2997,18 @@ router.post('/:id/link-contact', async (req, res) => {
 // ── GET /:id/activities — activity timeline ──────────────────────────────────
 router.get('/:id/activities', async (req, res) => {
   try {
+    // Scope by org_id so a prospect_id from another tenant can't surface this
+    // org's activity feed (IDOR guard). LIMIT bounds the payload for prospects
+    // with very long histories; raise via ?limit= up to 500.
+    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 500);
     const result = await db.query(
       `SELECT pa.*, u.first_name AS user_first_name, u.last_name AS user_last_name
        FROM prospecting_activities pa
        LEFT JOIN users u ON pa.user_id = u.id
-       WHERE pa.prospect_id = $1
-       ORDER BY pa.created_at DESC`,
-      [req.params.id]
+       WHERE pa.prospect_id = $1 AND pa.org_id = $2
+       ORDER BY pa.created_at DESC
+       LIMIT $3`,
+      [req.params.id, req.orgId, limit]
     );
     res.json({ activities: result.rows });
   } catch (error) {
