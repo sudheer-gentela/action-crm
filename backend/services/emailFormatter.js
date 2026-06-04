@@ -22,7 +22,8 @@
  * Rules:
  *   - \n\n (double newline) → <p> paragraph with 14px bottom margin
  *   - \n  (single newline)  → <br> within a paragraph
- *   - http/https URLs       → clickable <a> links
+ *   - http/https URLs, www. hosts, and bare domains (known TLDs) → clickable <a>
+ *   - email addresses       → mailto: links
  *   - HTML special chars    → escaped (&amp; &lt; &gt; &quot;)
  *
  * @param {string} text  Plain-text body (may contain \n\n paragraphs)
@@ -38,11 +39,25 @@ function plainTextToHtml(text) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-  // 2. Convert bare URLs to clickable links
-  const linked = escaped.replace(
-    /(https?:\/\/[^\s<>"]+)/g,
-    '<a href="$1" style="color:#1a6fc4;text-decoration:none;">$1</a>'
-  );
+  // 2. Convert links to clickable anchors. One combined pass (so we never
+  //    double-link), matching in priority order:
+  //      a) explicit http/https URLs        → as-is
+  //      b) email addresses                 → mailto:
+  //      c) www.-prefixed hosts             → https:// prepended
+  //      d) bare domains (e.g. Aquarient.com) with a known TLD → https://
+  //    The bare-domain branch uses a TLD allow-list + a lookbehind so it won't
+  //    grab the host out of an email, a version string (v1.2), or node.js, and
+  //    fixes signatures that list a domain without a scheme.
+  const LINK_STYLE = 'color:#1a6fc4;text-decoration:none;';
+  const TOKEN_RE =
+    /(https?:\/\/[^\s<>"]+)|([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})|(\bwww\.[^\s<>"]+)|((?<![@\w.])(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+(?:com|net|org|io|ai|co|dev|app|info|biz|us|uk|in|me|xyz|tech|so|gg|edu|gov)\b(?:\/[^\s<>"]*)?)/g;
+  const linked = escaped.replace(TOKEN_RE, (m, http, email, www, bare) => {
+    if (http)  return `<a href="${http}" style="${LINK_STYLE}">${http}</a>`;
+    if (email) return `<a href="mailto:${email}" style="${LINK_STYLE}">${email}</a>`;
+    if (www)   return `<a href="https://${www}" style="${LINK_STYLE}">${www}</a>`;
+    if (bare)  return `<a href="https://${bare}" style="${LINK_STYLE}">${bare}</a>`;
+    return m;
+  });
 
   // 3. Split on double newlines → paragraphs
   const paragraphs = linked.split(/\n\n+/);
