@@ -103,8 +103,16 @@ const LABEL_CASE = `
 const ACTIVITY_DIRECTION_CASE = `
   CASE
     WHEN a.activity_type IN ('response_received', 'email_received') THEN 'received'
+    WHEN a.activity_type = 'linkedin_event' THEN
+      CASE
+        WHEN a.metadata->>'event' IN ('connection_request_sent', 'message_sent',
+                                      'inmail_sent', 'voice_note_sent')        THEN 'sent'
+        WHEN a.metadata->>'event' IN ('reply_received', 'meeting_booked',
+                                      'connection_accepted')                   THEN 'received'
+        ELSE 'neutral'
+      END
     WHEN a.activity_type IN ('outreach_sent', 'sequence_step_sent',
-                             'linkedin_connection_sent')           THEN 'sent'
+                             'linkedin_connection_sent', 'call_logged')        THEN 'sent'
     ELSE 'neutral'
   END
 `;
