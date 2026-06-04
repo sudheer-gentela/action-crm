@@ -551,6 +551,18 @@ const SequenceStepFirer = {
                  AND ss.step_order  = se.current_step
           WHERE se.status = 'active'
             AND se.next_step_due <= NOW()
+            -- Park enrollments whose current step already has a draft awaiting
+            -- the rep (manual channels, or approval-required email). Creating a
+            -- draft does NOT advance the enrollment, so without this they stay
+            -- perpetually 'due' and — sorted oldest-first — monopolize the
+            -- LIMIT batch, starving email auto-sends. They re-enter the queue
+            -- the moment the rep actions the draft (status leaves 'draft').
+            AND NOT EXISTS (
+              SELECT 1 FROM sequence_step_logs l
+               WHERE l.enrollment_id    = se.id
+                 AND l.sequence_step_id = ss.id
+                 AND l.status           = 'draft'
+            )
           ORDER BY se.next_step_due ASC, se.id ASC
           LIMIT 100`
       );
