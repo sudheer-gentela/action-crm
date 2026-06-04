@@ -188,6 +188,37 @@ function SequencesView({ prospects, search }) {
     }
   };
 
+  // Approve a single draft → queue for PACED sending (vs. Send Now's immediate
+  // dispatch). Flips the draft to a 'scheduled' row; the firer delivers it
+  // honoring per-account delay, daily limit, and send window.
+  const handleApproveDraft = async (draft) => {
+    if (draft.channel && draft.channel !== 'email') { console.error(`handleApproveDraft called on ${draft.channel} draft — blocked`); return; }
+    const edit = draftEdits[draft.id] || {};
+    setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], approving: true, error: null } }));
+    try {
+      // Save edits first so the queued copy matches what the rep sees.
+      if (edit.subject !== undefined || edit.body !== undefined) {
+        await apiFetch(`/sequences/drafts/${draft.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            subject: edit.subject !== undefined ? edit.subject : draft.subject,
+            body:    edit.body    !== undefined ? edit.body    : draft.body,
+          }),
+        });
+      }
+      const res = await apiFetch(`/sequences/drafts/${draft.id}/approve`, { method: 'POST', body: JSON.stringify({}) });
+      if (!res || !res.approved) {
+        setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], approving: false, error: 'Could not queue (already queued or not an email draft).' } }));
+        return;
+      }
+      setDrafts(prev => prev.filter(d => d.id !== draft.id));
+      setDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
+    } catch (err) {
+      setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], approving: false, error: err.message } }));
+    }
+  };
+
+
   const handleDiscardDraft = async (draftId) => {
     if (!window.confirm('Discard this draft? The step will be skipped and the sequence will advance.')) return;
     try {
@@ -819,6 +850,8 @@ function SequencesView({ prospects, search }) {
                         onSubjectChange={v => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], subject: v } }))}
                         onBodyChange={v => setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], body: v } }))}
                         onSend={() => handleSendDraft(draft)}
+                        onApprove={() => handleApproveDraft(draft)}
+                        approving={!!edit.approving}
                         onComplete={() => handleMarkDoneDraft(draft.id)}
                         onDiscard={() => handleDiscardDraft(draft.id)}
                         onConvertAndSend={() => handleConvertAndSendDraft(draft)}

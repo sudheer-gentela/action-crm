@@ -5,7 +5,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import LinkedInDataDrawer from '../LinkedInDataDrawer';
 import PersonalizeProvenanceFooter from '../PersonalizeProvenanceFooter';
 
-function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle, onSubjectChange, onBodyChange, onSend, onComplete, onDiscard, onConvertAndSend, onUndoEnrollment, compact = false, onDrawerToggle }) {
+function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle, onSubjectChange, onBodyChange, onSend, onApprove, approving, onComplete, onDiscard, onConvertAndSend, onUndoEnrollment, compact = false, onDrawerToggle }) {
   const overdue  = draft.isOverdue || (draft.scheduledSendAt && new Date(draft.scheduledSendAt) < new Date());
   const channel  = draft.channel || 'email';
   const isEmail  = channel === 'email';
@@ -428,18 +428,38 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
               🗑 Discard
             </button>
             {isEmail ? (
-              <button
-                onClick={onSend}
-                disabled={sending || !subject}
-                title={!subject ? 'Enter a subject line first' : ''}
-                style={{
-                  padding: '7px 18px', borderRadius: 7, border: 'none',
-                  background: (sending || !subject) ? '#9ca3af' : '#0F9D8E', color: '#fff',
-                  fontSize: 12, fontWeight: 600, cursor: (sending || !subject) ? 'not-allowed' : 'pointer',
-                }}
-              >
-                {sending ? '⏳ Sending…' : '📤 Send Now'}
-              </button>
+              <>
+                {onApprove && (
+                  <button
+                    onClick={onApprove}
+                    disabled={sending || approving || !subject}
+                    title={!subject ? 'Enter a subject line first'
+                                    : 'Queue for paced sending — respects your per-account delay, daily limit, and send window'}
+                    style={{
+                      padding: '7px 14px', borderRadius: 7,
+                      border: '1px solid #6ee7b7',
+                      background: (sending || approving || !subject) ? '#f3f4f6' : '#ecfdf5',
+                      color: (sending || approving || !subject) ? '#9ca3af' : '#047857',
+                      fontSize: 12, fontWeight: 600,
+                      cursor: (sending || approving || !subject) ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {approving ? '⏳ Queuing…' : '✅ Approve & queue'}
+                  </button>
+                )}
+                <button
+                  onClick={onSend}
+                  disabled={sending || approving || !subject}
+                  title={!subject ? 'Enter a subject line first' : 'Send immediately, bypassing the queue delay'}
+                  style={{
+                    padding: '7px 18px', borderRadius: 7, border: 'none',
+                    background: (sending || approving || !subject) ? '#9ca3af' : '#0F9D8E', color: '#fff',
+                    fontSize: 12, fontWeight: 600, cursor: (sending || approving || !subject) ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {sending ? '⏳ Sending…' : '📤 Send Now'}
+                </button>
+              </>
             ) : (
               <button
                 onClick={onComplete}
