@@ -43,6 +43,7 @@ const { resolvePersonalizeConfig } = require('../services/personalizeConfig');
 // sequence step and calls per-channel skills with the right step_intent.
 const PersonalizationDispatcher = require('../services/PersonalizationDispatcher');
 const { buildLinkedInArtifacts }   = require('../services/linkedinSnippets');
+const SendingSchedule              = require('../services/SendingScheduleResolver');
 
 // ── AI provider chain (same pattern as ProspectingAIEnhancer) ─────────────────
 const AIClientResolver = require('../services/ai/AIClientResolver');
@@ -1132,8 +1133,8 @@ router.post('/scheduled/:logId/skip', async (req, res) => {
       );
       if (nextStepRes.rows.length) {
         const ns = nextStepRes.rows[0];
-        const nextDue = new Date();
-        nextDue.setDate(nextDue.getDate() + (parseInt(ns.delay_days) || 0));
+        const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId, campaignId: null });
+        const nextDue  = SendingSchedule.nextStepDue(ns, settings);
         await client.query(
           `UPDATE sequence_enrollments SET current_step=$1, next_step_due=$2 WHERE id=$3`,
           [row.current_step + 1, nextDue, row.enrollment_id]
@@ -1442,8 +1443,8 @@ router.post('/drafts/:logId/send', async (req, res) => {
       );
       if (nextStepRes.rows.length) {
         const ns = nextStepRes.rows[0];
-        const nextDue = new Date();
-        nextDue.setDate(nextDue.getDate() + (parseInt(ns.delay_days) || 0));
+        const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId, campaignId: null });
+        const nextDue  = SendingSchedule.nextStepDue(ns, settings);
         await client.query(
           `UPDATE sequence_enrollments SET current_step=$1, next_step_due=$2 WHERE id=$3`,
           [enrollment.current_step + 1, nextDue, enrollment.id]
@@ -1702,8 +1703,8 @@ router.post('/drafts/:logId/complete', async (req, res) => {
     );
     if (nextStepRes.rows.length) {
       const ns = nextStepRes.rows[0];
-      const nextDue = new Date();
-      nextDue.setDate(nextDue.getDate() + (parseInt(ns.delay_days) || 0));
+      const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId, campaignId: null });
+      const nextDue  = SendingSchedule.nextStepDue(ns, settings);
       await client.query(
         `UPDATE sequence_enrollments
             SET current_step=$1, next_step_due=$2
@@ -1792,8 +1793,8 @@ router.delete('/drafts/:logId', async (req, res) => {
     );
     if (nextStepRes.rows.length) {
       const ns = nextStepRes.rows[0];
-      const nextDue = new Date();
-      nextDue.setDate(nextDue.getDate() + (parseInt(ns.delay_days) || 0));
+      const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId, campaignId: null });
+      const nextDue  = SendingSchedule.nextStepDue(ns, settings);
       await client.query(
         `UPDATE sequence_enrollments SET current_step=$1, next_step_due=$2 WHERE id=$3`,
         [draft.current_step + 1, nextDue, draft.enrollment_id]

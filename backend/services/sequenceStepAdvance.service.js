@@ -25,6 +25,8 @@
  *     handling here.
  */
 
+const SendingSchedule = require('./SendingScheduleResolver');
+
 class SequenceStepAdvanceService {
 
   // ── Public: advance a sequence step ──────────────────────────────────────
@@ -117,8 +119,12 @@ class SequenceStepAdvanceService {
     );
     if (nextStepRes.rows.length) {
       const ns = nextStepRes.rows[0];
-      const nextDue = new Date();
-      nextDue.setDate(nextDue.getDate() + (parseInt(ns.delay_days) || 0));
+      // Manual channels (linkedin/task/call) are released at the top of the day
+      // (manualReleaseHour) rather than inheriting the current clock time. Email
+      // keeps now + delay_days. Org-level window settings (campaignId omitted —
+      // this manual-completion path doesn't carry campaign context).
+      const settings = await SendingSchedule.resolveSettings({ orgId, campaignId: null });
+      const nextDue  = SendingSchedule.nextStepDue(ns, settings);
       await client.query(
         `UPDATE sequence_enrollments
             SET current_step=$1, next_step_due=$2

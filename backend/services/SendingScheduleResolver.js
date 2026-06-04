@@ -61,6 +61,12 @@ const DEFAULTS = Object.freeze({
   sendWindowEndHour:    18,           // 18:00 — used as spread end + cadence safety ceiling
   sendWindowDays:       [1, 2, 3, 4, 5],   // Mon–Fri
   sendWindowTimezone:   'America/New_York',
+  // Manual-channel (linkedin/task/call) release time. These steps don't "send"
+  // at fire time — they materialize a draft/task. We release them at the START
+  // of the local day rather than inheriting the prior step's clock time, so reps
+  // find them queued first thing. Independent of the email send window.
+  manualReleaseHour:    4,            // 04:00 local — configurable per org
+  manualReleaseMinute:  0,
   // Soft per-day LinkedIn/manual release cap (no sender account exists for it).
   linkedinReleaseCap:   25,
   // Budget split policy: 'shared' (pooled FCFS) or 'weighted' (per-campaign).
@@ -155,6 +161,16 @@ async function resolveSettings({ orgId, campaignId = null }) {
       coerceTimezone(camp.send_window_timezone) ??
       coerceTimezone(orgConfig.sendWindowTimezone) ??
       DEFAULTS.sendWindowTimezone,
+
+    // Manual-channel release time (linkedin/task/call). Org-level only — there's
+    // no per-campaign column for it yet. Falls back to the 04:00 default.
+    manualReleaseHour:
+      coerceRange(orgConfig.manualReleaseHour, 0, 23) ??
+      DEFAULTS.manualReleaseHour,
+
+    manualReleaseMinute:
+      coerceRange(orgConfig.manualReleaseMinute, 0, 59) ??
+      DEFAULTS.manualReleaseMinute,
 
     // Budget split policy across the owner's campaigns in a channel pool.
     //   'shared'   → one pool, first-come-first-served (existingByDay owner-wide)
@@ -430,6 +446,63 @@ function isWithinWindow(when, settings, channel = 'email') {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Manual-channel due-time resolution
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * UTC instant at which a manual-channel step that is `delayDays` out should be
+ * released. Release time = manualReleaseHour:manualReleaseMinute in
+ * sendWindowTimezone, on the local day `delayDays` after `from`, rolled forward
+ * to the next configured send day (sendWindowDays).
+ *
+ * Manual steps (linkedin/task/call) don't send anything at fire time — the firer
+ * just materializes a draft/task — so releasing at the top of the day means reps
+ * see the queued touch first thing instead of at whatever time the prior step
+ * happened to fire.
+ */
+function manualReleaseFor(from, delayDays, settings) {
+  const tz = settings.sendWindowTimezone;
+  const fromDay = getLocalCalendarDate(from, tz).dayKey;
+  // Anchor at local noon so whole-day shifts stay clear of DST/midnight edges.
+  let cursor = new Date(buildLocalTimestamp(fromDay, 12, 0, tz).getTime()
+                        + (parseInt(delayDays, 10) || 0) * 86400000);
+  let cal = getLocalCalendarDate(cursor, tz);
+  const days = (settings.sendWindowDays && settings.sendWindowDays.length)
+    ? settings.sendWindowDays : [0, 1, 2, 3, 4, 5, 6];
+  let guard = 0;
+  while (!days.includes(cal.dayOfWeek) && guard < 7) {
+    cursor = new Date(buildLocalTimestamp(cal.dayKey, 12, 0, tz).getTime() + 86400000);
+    cal = getLocalCalendarDate(cursor, tz);
+    guard++;
+  }
+  return buildLocalTimestamp(
+    cal.dayKey,
+    settings.manualReleaseHour,
+    settings.manualReleaseMinute || 0,
+    tz
+  );
+}
+
+/**
+ * Channel-aware next_step_due for a sequence advance.
+ *   - manual channels (linkedin/task/call) → manualReleaseFor() (top of day)
+ *   - email → now + delay_days (unchanged; the send-window gate still applies
+ *     at send time, and the pre-scheduler still snaps email into its window)
+ *
+ * `settings` must come from resolveSettings(). Synchronous on purpose so the
+ * firer can call it with the settings it already resolved per tick.
+ */
+function nextStepDue(nextStep, settings) {
+  const delay = parseInt(nextStep.delay_days, 10) || 0;
+  if (MANUAL_CHANNELS.has(nextStep.channel)) {
+    return manualReleaseFor(new Date(), delay, settings);
+  }
+  const d = new Date();
+  d.setDate(d.getDate() + delay);
+  return d;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -534,6 +607,8 @@ module.exports = {
   resolveChannelDailyCap,
   scheduleBatchSlots,
   isWithinWindow,
+  manualReleaseFor,
+  nextStepDue,
   _internal: {
     getLocalCalendarDate,
     buildLocalTimestamp,

@@ -923,7 +923,7 @@ const SequenceStepFirer = {
               `UPDATE sequence_enrollments
                   SET current_step=$1, next_step_due=$2
                 WHERE id=$3`,
-              [enrollment.current_step + 1, calcDueDate(nextStep.delay_days), enrollment.id]
+              [enrollment.current_step + 1, SendingSchedule.nextStepDue(nextStep, settings), enrollment.id]
             );
           } else {
             await client.query(
