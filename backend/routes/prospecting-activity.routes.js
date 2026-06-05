@@ -395,11 +395,14 @@ router.get('/', async (req, res) => {
 
     // ── Assemble the UNION, applying the coarse `type` (category) filter and the
     // optional per-sender narrow on the outer wrapper so they apply uniformly.
+    let typeCond = null;
+    if (type === 'task')        typeCond = `feed.category = 'task'`;   // reserved; no rows today
+    else if (type === 'system') typeCond = `feed.category = 'system'`;
+    else if (type !== 'all')    typeCond = `feed.category = '${type}'`; // type is whitelisted above
+
     const outerConds = [];
-    if (type === 'task')        outerConds.push(`feed.category = 'task'`);   // reserved; no rows today
-    else if (type === 'system') outerConds.push(`feed.category = 'system'`);
-    else if (type !== 'all')    outerConds.push(`feed.category = '${type}'`); // type is whitelisted above
-    if (senderOuterCond)        outerConds.push(senderOuterCond);
+    if (typeCond)        outerConds.push(typeCond);
+    if (senderOuterCond) outerConds.push(senderOuterCond);
     const feedWhere = outerConds.length ? `WHERE ${outerConds.join(' AND ')}` : '';
 
     // Pagination params (outer).
@@ -436,9 +439,13 @@ router.get('/', async (req, res) => {
       GROUP BY feed.category
     `;
 
-    // ── Per-sender breakdown (scope/date/campaign/sequence/search — NOT sender,
-    // NOT type). Lists every actor in the current view with their total count,
-    // powering the "who is sending" filter bar. Uses baseParams (no senderId).
+    // ── Per-sender breakdown — every actor in the current view with their count.
+    // Respects the active category pill (typeCond) so the chips reconcile with
+    // the selected pill (e.g. LinkedIn pill 25 → each person's LinkedIn count),
+    // but NOT the senderId narrow, so all senders stay listed. Uses baseParams
+    // (no senderId, no pagination).
+    const bySenderConds = ['feed.actor_user_id IS NOT NULL'];
+    if (typeCond) bySenderConds.push(typeCond);
     const bySenderQuery = `
       SELECT feed.actor_user_id    AS user_id,
              feed.actor_first_name AS first_name,
@@ -449,7 +456,7 @@ router.get('/', async (req, res) => {
         UNION ALL
         ${activityBranch}
       ) feed
-      WHERE feed.actor_user_id IS NOT NULL
+      WHERE ${bySenderConds.join(' AND ')}
       GROUP BY feed.actor_user_id, feed.actor_first_name, feed.actor_last_name
       ORDER BY n DESC
     `;
