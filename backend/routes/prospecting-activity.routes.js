@@ -57,6 +57,15 @@ const CATEGORY_CASE = `
   CASE
     WHEN a.activity_type IN ('linkedin_event', 'linkedin_connection_sent') THEN 'linkedin'
     WHEN a.activity_type IN ('call_logged')                                THEN 'call'
+    -- A completed sequence touch on a non-email channel surfaces under that
+    -- channel, mirroring how email sequence sends already show under Email
+    -- (they live in the emails table). Email-channel sequence rows stay
+    -- 'sequence' so we don't double-count against the emails table. Pending
+    -- 'sequence_draft_created' tasks stay 'sequence' until actually completed.
+    WHEN a.activity_type IN ('sequence_step_sent', 'sequence_step_completed')
+         AND a.metadata->>'channel' = 'linkedin'                           THEN 'linkedin'
+    WHEN a.activity_type IN ('sequence_step_sent', 'sequence_step_completed')
+         AND a.metadata->>'channel' = 'call'                               THEN 'call'
     WHEN a.activity_type IN ('outreach_sent', 'response_received', 'email_received')
                                                                            THEN 'email'
     WHEN a.activity_type IN ('sequence_step_sent', 'sequence_step_completed',
