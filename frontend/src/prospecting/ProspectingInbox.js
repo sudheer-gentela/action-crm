@@ -537,8 +537,13 @@ function EmailInbox({ scope, search }) {
   const [syncing, setSyncing]     = useState(false);
   const [syncMsg, setSyncMsg]     = useState('');
   const [expandedId, setExpandedId] = useState(null); // id of expanded email row
+  const [senderId, setSenderId]   = useState(null);   // filter by one team member
+  const [bySender, setBySender]   = useState([]);     // per-person counts
 
   const LIMIT = 50;
+
+  // Clear the per-person filter whenever the scope changes (Mine/Team/Org).
+  useEffect(() => { setSenderId(null); }, [scope]);
 
   const fromDate = () => {
     if (!dateRange) return undefined;
@@ -558,6 +563,7 @@ function EmailInbox({ scope, search }) {
         ...(direction && { direction }),
         ...(dateRange  && { from: fromDate() }),
         ...(search && { search }),
+        ...(senderId && { senderId }),
       };
       const [emailsRes, statsRes] = await Promise.all([
         apiFetch(`/prospecting/inbox?${new URLSearchParams(params)}`),
@@ -565,6 +571,7 @@ function EmailInbox({ scope, search }) {
       ]);
       setEmails(emailsRes.emails || []);
       setTotal(emailsRes.total  || 0);
+      setBySender(emailsRes.bySender || []);
       setStats(statsRes.stats   || null);
       setOffset(newOffset);
     } catch (err) {
@@ -572,7 +579,7 @@ function EmailInbox({ scope, search }) {
     } finally {
       setLoading(false);
     }
-  }, [scope, direction, dateRange, search]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scope, direction, dateRange, search, senderId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(0); }, [load]);
 
@@ -629,6 +636,48 @@ function EmailInbox({ scope, search }) {
               <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.3 }}>{s.label}</div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* ── Per-sender bar (team/org only) — shows each person's count and
+            doubles as a "who is sending" filter. ─────────────────────────── */}
+      {scope !== 'mine' && bySender.length > 0 && (
+        <div style={{
+          display: 'flex', gap: 6, alignItems: 'center', padding: '8px 16px',
+          borderBottom: '1px solid #e5e7eb', background: '#fff', flexShrink: 0, flexWrap: 'wrap',
+        }}>
+          <span style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: 0.3, marginRight: 2 }}>
+            Sender
+          </span>
+          {(() => {
+            const allCount = bySender.reduce((s, p) => s + p.count, 0);
+            const chip = (active, label, count, onClick) => (
+              <button
+                onClick={onClick}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '4px 10px', borderRadius: 14, cursor: 'pointer',
+                  border: `1px solid ${active ? '#0F9D8E' : '#e5e7eb'}`,
+                  background: active ? '#0F9D8E' : '#fff',
+                  color: active ? '#fff' : '#374151', fontSize: 12, fontWeight: 600,
+                }}
+              >
+                {label}
+                <span style={{
+                  fontSize: 11, fontWeight: 700,
+                  padding: '0 6px', borderRadius: 8,
+                  background: active ? 'rgba(255,255,255,0.25)' : '#f3f4f6',
+                  color: active ? '#fff' : '#6b7280',
+                }}>{count}</span>
+              </button>
+            );
+            return (
+              <>
+                {chip(senderId === null, 'All', allCount, () => setSenderId(null))}
+                {bySender.map(p => chip(senderId === p.userId, p.name, p.count, () => setSenderId(p.userId)))}
+              </>
+            );
+          })()}
         </div>
       )}
 

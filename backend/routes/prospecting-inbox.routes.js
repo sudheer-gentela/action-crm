@@ -101,6 +101,23 @@ router.get('/', async (req, res) => {
       )`;
     }
 
+    // Snapshot the params behind the scope/direction/date/search filters BEFORE
+    // we add the per-sender narrow + pagination. The by-sender breakdown reuses
+    // these so it always reflects EVERY sender in the current view (not just the
+    // one being filtered to).
+    const baseParams = [...params];
+
+    // ── Sender filter (optional) ──────────────────────────────────────────────
+    // Narrows to one team member. Safe because the scope filter above already
+    // restricts user_id to the allowed set, so an out-of-scope senderId yields
+    // no rows rather than leaking data.
+    let senderFilter = '';
+    const senderId = req.query.senderId ? parseInt(req.query.senderId, 10) : null;
+    if (Number.isInteger(senderId)) {
+      params.push(senderId);
+      senderFilter = `AND e.user_id = $${params.length}`;
+    }
+
     // ── Pagination ────────────────────────────────────────────────────────────
     const effectiveLimit  = Math.min(parseInt(limit)  || 100, 200);
     const effectiveOffset = parseInt(offset) || 0;
@@ -169,6 +186,7 @@ router.get('/', async (req, res) => {
         ${directionFilter}
         ${dateFilter}
         ${searchFilter}
+        ${senderFilter}
         ${solicitedFilter}
 
       ORDER BY e.sent_at DESC
@@ -188,12 +206,34 @@ router.get('/', async (req, res) => {
         ${userFilter}
         ${directionFilter}
         ${dateFilter}
+        ${searchFilter}
+        ${senderFilter}
         ${solicitedFilter}
     `;
 
-    const [emailResult, countResult] = await Promise.all([
+    // ── Per-sender breakdown (scope/direction/date/search — NOT senderId) ─────
+    // Powers the "who is sending" filter bar: every team member in the current
+    // view with their count, so the totals are per-person and clickable.
+    const bySenderQuery = `
+      SELECT e.user_id AS user_id, u.first_name, u.last_name, COUNT(*) AS n
+      FROM emails e
+      JOIN  prospects p ON p.id = e.prospect_id
+      JOIN  users     u ON u.id = e.user_id
+      WHERE e.org_id      = $1
+        AND e.prospect_id IS NOT NULL
+        ${userFilter}
+        ${directionFilter}
+        ${dateFilter}
+        ${searchFilter}
+        ${solicitedFilter}
+      GROUP BY e.user_id, u.first_name, u.last_name
+      ORDER BY n DESC
+    `;
+
+    const [emailResult, countResult, bySenderResult] = await Promise.all([
       db.query(query, params),
       db.query(countQuery, countParams),
+      db.query(bySenderQuery, baseParams),
     ]);
 
     const emails = emailResult.rows.map(row => ({
@@ -234,6 +274,11 @@ router.get('/', async (req, res) => {
     res.json({
       emails,
       total:  parseInt(countResult.rows[0].total),
+      bySender: bySenderResult.rows.map(r => ({
+        userId: r.user_id,
+        name:   [r.first_name, r.last_name].filter(Boolean).join(' ') || 'Unknown',
+        count:  parseInt(r.n, 10),
+      })),
       limit:  effectiveLimit,
       offset: effectiveOffset,
     });

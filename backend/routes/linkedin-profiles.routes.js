@@ -129,6 +129,16 @@ function sanitizeActivity(arr) {
       commentary:    clampStr(x.commentary, 8000),
       quoted_text:   clampStr(x.quoted_text, 8000),
       quoted_author: clampStr(x.quoted_author, 255),
+      // ── Amplification provenance (v1.15 extension) ─────────────────────────
+      // For a reposted/engaged COMPANY post, did it come from the prospect's
+      // own (current) employer? Tri-state: true (slug == current employer),
+      // false (a different company page), or 'unknown' (person/feed reposts,
+      // authored posts, or employer slug not known). source_company_slug is the
+      // /company/<slug> the item came from, when present. Lets segmentation
+      // discount own-employer amplification without re-deriving it.
+      is_own_company:      (x.is_own_company === true || x.is_own_company === false)
+                             ? x.is_own_company : 'unknown',
+      source_company_slug: clampStr(x.source_company_slug, 100),
     }));
 }
 
