@@ -41,6 +41,9 @@ export default function ProspectingView() {
   const [pipelineSummary, setPipelineSummary] = useState({ pipeline: [], metrics: {} });
   const [loading, setLoading] = useState(true);
   const [scope, setScope] = useState('mine');
+  // Scope capabilities (server-authoritative). The localStorage user does NOT
+  // carry subordinateIds, so the toggle must be gated on this, not on the user.
+  const [scopeCaps, setScopeCaps] = useState({ hasSubordinates: false, isAdmin: false });
   const [viewMode, setViewMode] = useState('pipeline'); // pipeline | list | account
   const [searchQuery, setSearchQuery] = useState('');
   // Debounced mirror of searchQuery. The input stays bound to searchQuery for
@@ -323,9 +326,18 @@ export default function ProspectingView() {
       .catch(() => { /* fallback to defaults */ });
   }, []);
 
-  // Check if user has team
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const hasTeam = user.subordinateIds?.length > 0 || user.role === 'manager' || user.role === 'admin';
+  // Scope capabilities from the server — decides whether Team/Org are offered.
+  useEffect(() => {
+    apiFetch('/prospecting-campaigns/me/context')
+      .then(c => setScopeCaps({ hasSubordinates: !!c?.hasSubordinates, isAdmin: !!c?.isAdmin }))
+      .catch(() => { /* keep defaults; only "My Prospects" shown */ });
+  }, []);
+
+  // Scope options are server-authoritative. Never infer from the localStorage
+  // user (it doesn't carry subordinateIds, so reports/managers would be hidden).
+  const canTeam = scopeCaps.hasSubordinates;
+  const canOrg  = scopeCaps.isAdmin;
+  const hasTeam = canTeam || canOrg;
 
   // ── Data fetching ──────────────────────────────────────────────────────────
 
@@ -503,15 +515,17 @@ export default function ProspectingView() {
 
           {hasTeam && (
             <div className="pv-scope-toggle">
-              {['mine', 'team', 'org'].map(s => (
-                <button
-                  key={s}
-                  onClick={() => setScope(s)}
-                  className={`pv-scope-btn ${scope === s ? 'active' : ''}`}
-                >
-                  {s === 'mine' ? 'My Prospects' : s === 'team' ? 'My Team' : 'All Org'}
-                </button>
-              ))}
+              {['mine', 'team', 'org']
+                .filter(s => s === 'mine' || (s === 'team' && canTeam) || (s === 'org' && canOrg))
+                .map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setScope(s)}
+                    className={`pv-scope-btn ${scope === s ? 'active' : ''}`}
+                  >
+                    {s === 'mine' ? 'My Prospects' : s === 'team' ? 'My Team' : 'All Org'}
+                  </button>
+                ))}
             </div>
           )}
         </div>
@@ -843,7 +857,7 @@ export default function ProspectingView() {
       ) : viewMode === 'sequences' ? (
         <SequencesView prospects={prospects} search={debouncedSearch} />
       ) : viewMode === 'campaigns' ? (
-        <CampaignsView />
+        <CampaignsView scope={scope} onScopeChange={setScope} />
       ) : viewMode === 'research' ? (
         <ResearchQueueView />
       ) : viewMode === 'calls' ? (
@@ -860,6 +874,7 @@ export default function ProspectingView() {
         <ProspectingInbox
           key={draftsDeepLink ? `dl-${draftsDeepLink.campaignId}` : 'inbox'}
           scope={scope}
+          onScopeChange={setScope}
           search={debouncedSearch}
           initialTab={draftsDeepLink ? 'drafts' : undefined}
           initialCampaignId={draftsDeepLink?.campaignId}

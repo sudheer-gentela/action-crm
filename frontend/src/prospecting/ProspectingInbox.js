@@ -28,7 +28,7 @@ const RANGE_OPTS = [
 // ─────────────────────────────────────────────────────────────────────────────
 // Shell: sub-tab bar + active tab.
 // ─────────────────────────────────────────────────────────────────────────────
-function ProspectingInbox({ scope: pageScope, search }) {
+function ProspectingInbox({ scope: pageScope, onScopeChange, search }) {
   const [tab, setTab] = useState('activity'); // 'activity' | 'email'
   const [caps, setCaps] = useState({ hasSubordinates: false, isAdmin: false });
   const [scopeLocal, setScopeLocal] = useState(pageScope || 'mine');
@@ -45,6 +45,10 @@ function ProspectingInbox({ scope: pageScope, search }) {
   useEffect(() => { if (pageScope) setScopeLocal(pageScope); }, [pageScope]);
 
   const scope = scopeLocal;
+  // Setting scope here also lifts it to the page so scope-aware things outside
+  // this view (the THIS WEEK metrics strip, the prospects board) stay in sync.
+  const setScope = (v) => { setScopeLocal(v); if (onScopeChange) onScopeChange(v); };
+
   const scopeTabs = [{ key: 'mine', label: 'Mine' }];
   if (caps.hasSubordinates) scopeTabs.push({ key: 'team', label: 'Team' });
   if (caps.isAdmin)         scopeTabs.push({ key: 'org',  label: 'Org' });
@@ -89,7 +93,7 @@ function ProspectingInbox({ scope: pageScope, search }) {
             {scopeTabs.map(s => (
               <button
                 key={s.key}
-                onClick={() => setScopeLocal(s.key)}
+                onClick={() => setScope(s.key)}
                 style={{
                   padding: '4px 12px', borderRadius: 6, border: '1px solid #e5e7eb',
                   background: scope === s.key ? TEAL : '#fff',
@@ -127,8 +131,13 @@ function ActivityFeed({ scope, search }) {
   const [dateRange, setDateRange] = useState('30');
   const [offset, setOffset]     = useState(0);
   const [total, setTotal]       = useState(0);
+  const [senderId, setSenderId] = useState(null);  // filter by one team member
+  const [bySender, setBySender] = useState([]);     // per-person counts
 
   const LIMIT = 50;
+
+  // Clear the per-person filter whenever the scope changes (Mine/Team/Org).
+  useEffect(() => { setSenderId(null); }, [scope]);
 
   const fromDate = () => {
     if (!dateRange) return undefined;
@@ -149,18 +158,20 @@ function ActivityFeed({ scope, search }) {
         ...(direction && { direction }),
         ...(dateRange && { from: fromDate() }),
         ...(search && { search }),
+        ...(senderId && { senderId }),
       };
       const res = await apiFetch(`/prospecting/activity?${new URLSearchParams(params)}`);
       setItems(res.items   || []);
       setCounts(res.counts || {});
       setTotal(res.total   || 0);
+      setBySender(res.bySender || []);
       setOffset(newOffset);
     } catch (err) {
       setError(err.message || 'Failed to load activity');
     } finally {
       setLoading(false);
     }
-  }, [scope, type, direction, dateRange, search]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scope, type, direction, dateRange, search, senderId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(0); }, [load]);
 
@@ -222,6 +233,47 @@ function ActivityFeed({ scope, search }) {
           );
         })}
       </div>
+
+      {/* ── Per-sender bar (team/org only) — each person's count, doubles as a
+            "who is sending" filter. ──────────────────────────────────────── */}
+      {scope !== 'mine' && bySender.length > 0 && (
+        <div style={{
+          display: 'flex', gap: 6, alignItems: 'center', padding: '8px 16px',
+          borderBottom: '1px solid #e5e7eb', background: '#fff', flexShrink: 0, flexWrap: 'wrap',
+        }}>
+          <span style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: 0.3, marginRight: 2 }}>
+            Sender
+          </span>
+          {(() => {
+            const allCount = bySender.reduce((s, p) => s + p.count, 0);
+            const chip = (active, label, count, onClick) => (
+              <button
+                onClick={onClick}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '4px 10px', borderRadius: 14, cursor: 'pointer',
+                  border: `1px solid ${active ? TEAL : '#e5e7eb'}`,
+                  background: active ? TEAL : '#fff',
+                  color: active ? '#fff' : '#374151', fontSize: 12, fontWeight: 600,
+                }}
+              >
+                {label}
+                <span style={{
+                  fontSize: 11, fontWeight: 700, padding: '0 6px', borderRadius: 8,
+                  background: active ? 'rgba(255,255,255,0.25)' : '#f3f4f6',
+                  color: active ? '#fff' : '#6b7280',
+                }}>{count}</span>
+              </button>
+            );
+            return (
+              <>
+                {chip(senderId === null, 'All', allCount, () => setSenderId(null))}
+                {bySender.map(p => chip(senderId === p.userId, p.name, p.count, () => setSenderId(p.userId)))}
+              </>
+            );
+          })()}
+        </div>
+      )}
 
       {/* ── Secondary filter bar (direction + date) ────────────────────────── */}
       <div style={{

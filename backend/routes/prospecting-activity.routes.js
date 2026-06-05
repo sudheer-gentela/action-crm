@@ -284,6 +284,18 @@ router.get('/', async (req, res) => {
       )`;
     };
 
+    // ── Per-sender narrow (optional) ──────────────────────────────────────────
+    // Snapshot the branch params (scope/date/campaign/sequence/search) BEFORE
+    // adding the sender id + pagination, so the by-sender breakdown can reuse
+    // them and always list EVERY actor in the current view. The sender filter is
+    // applied on the outer wrapper (feed.actor_user_id), not inside the branches.
+    const baseParams = [...params];
+    let senderIdx = null;
+    const senderIdInt = (req.query.senderId != null && req.query.senderId !== '')
+      ? parseInt(req.query.senderId, 10) : null;
+    if (senderIdInt != null && !isNaN(senderIdInt)) { params.push(senderIdInt); senderIdx = params.length; }
+    const senderOuterCond = senderIdx ? `feed.actor_user_id = $${senderIdx}` : null;
+
     // ── Branch 1: emails ──────────────────────────────────────────────────────
     // direction filter applies here (sent/received). When the coarse type
     // filter is set to a non-email category, this branch is dropped entirely.
@@ -372,15 +384,14 @@ router.get('/', async (req, res) => {
         ${searchPredicate()}
     `;
 
-    // ── Assemble the UNION, applying the coarse `type` (category) filter on the
-    // outer wrapper so it applies uniformly. When type names an email-only or
-    // activity-only category we still UNION both branches and let the outer
-    // WHERE prune — simpler and correct, volume is low (dogfooding).
-    const typeFilter =
-      type === 'all'      ? '' :
-      type === 'task'     ? `WHERE feed.category = 'task'` :   // reserved; no rows today
-      type === 'system'   ? `WHERE feed.category = 'system'` :
-      `WHERE feed.category = '${type}'`;                       // type is whitelisted above
+    // ── Assemble the UNION, applying the coarse `type` (category) filter and the
+    // optional per-sender narrow on the outer wrapper so they apply uniformly.
+    const outerConds = [];
+    if (type === 'task')        outerConds.push(`feed.category = 'task'`);   // reserved; no rows today
+    else if (type === 'system') outerConds.push(`feed.category = 'system'`);
+    else if (type !== 'all')    outerConds.push(`feed.category = '${type}'`); // type is whitelisted above
+    if (senderOuterCond)        outerConds.push(senderOuterCond);
+    const feedWhere = outerConds.length ? `WHERE ${outerConds.join(' AND ')}` : '';
 
     // Pagination params (outer).
     const effectiveLimit  = Math.min(parseInt(limit) || 50, 200);
@@ -395,15 +406,16 @@ router.get('/', async (req, res) => {
         UNION ALL
         ${activityBranch}
       ) feed
-      ${typeFilter}
+      ${feedWhere}
       ORDER BY feed.occurred_at DESC NULLS LAST
       LIMIT $${limitIdx} OFFSET $${offsetIdx}
     `;
 
     // ── Counts-by-category (for the filter chips + total). Same predicates,
-    // no pagination, no coarse type filter (we want every category's count).
-    // We reuse the same params minus the trailing limit/offset.
+    // no pagination, no coarse type filter (we want every category's count) —
+    // but the sender narrow DOES apply so chips reflect the selected person.
     const countParams = params.slice(0, params.length - 2);
+    const countWhere  = senderOuterCond ? `WHERE ${senderOuterCond}` : '';
     const countQuery = `
       SELECT feed.category, COUNT(*)::int AS n
       FROM (
@@ -411,12 +423,32 @@ router.get('/', async (req, res) => {
         UNION ALL
         ${activityBranch}
       ) feed
+      ${countWhere}
       GROUP BY feed.category
     `;
 
-    const [feedResult, countResult] = await Promise.all([
+    // ── Per-sender breakdown (scope/date/campaign/sequence/search — NOT sender,
+    // NOT type). Lists every actor in the current view with their total count,
+    // powering the "who is sending" filter bar. Uses baseParams (no senderId).
+    const bySenderQuery = `
+      SELECT feed.actor_user_id    AS user_id,
+             feed.actor_first_name AS first_name,
+             feed.actor_last_name  AS last_name,
+             COUNT(*)::int         AS n
+      FROM (
+        ${emailBranch}
+        UNION ALL
+        ${activityBranch}
+      ) feed
+      WHERE feed.actor_user_id IS NOT NULL
+      GROUP BY feed.actor_user_id, feed.actor_first_name, feed.actor_last_name
+      ORDER BY n DESC
+    `;
+
+    const [feedResult, countResult, bySenderResult] = await Promise.all([
       db.query(feedQuery, params),
       db.query(countQuery, countParams),
+      db.query(bySenderQuery, baseParams),
     ]);
 
     const items = feedResult.rows.map(row => ({
@@ -457,6 +489,11 @@ router.get('/', async (req, res) => {
       items,
       counts,
       total:  counts.all,
+      bySender: bySenderResult.rows.map(r => ({
+        userId: r.user_id,
+        name:   [r.first_name, r.last_name].filter(Boolean).join(' ') || 'Unknown',
+        count:  r.n,
+      })),
       limit:  effectiveLimit,
       offset: effectiveOffset,
     });
