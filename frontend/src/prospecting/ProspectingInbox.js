@@ -28,8 +28,26 @@ const RANGE_OPTS = [
 // ─────────────────────────────────────────────────────────────────────────────
 // Shell: sub-tab bar + active tab.
 // ─────────────────────────────────────────────────────────────────────────────
-function ProspectingInbox({ scope, search }) {
+function ProspectingInbox({ scope: pageScope, search }) {
   const [tab, setTab] = useState('activity'); // 'activity' | 'email'
+  const [caps, setCaps] = useState({ hasSubordinates: false, isAdmin: false });
+  const [scopeLocal, setScopeLocal] = useState(pageScope || 'mine');
+
+  // Server-authoritative scope capabilities (same source the campaign list uses).
+  useEffect(() => {
+    apiFetch('/prospecting-campaigns/me/context')
+      .then(c => setCaps({ hasSubordinates: !!c?.hasSubordinates, isAdmin: !!c?.isAdmin }))
+      .catch(() => { /* only "Mine" offered */ });
+  }, []);
+
+  // Follow the page-level scope when it changes, but allow a local override here
+  // so this view has its own Mine/Team/Org switch like the campaign list.
+  useEffect(() => { if (pageScope) setScopeLocal(pageScope); }, [pageScope]);
+
+  const scope = scopeLocal;
+  const scopeTabs = [{ key: 'mine', label: 'Mine' }];
+  if (caps.hasSubordinates) scopeTabs.push({ key: 'team', label: 'Team' });
+  if (caps.isAdmin)         scopeTabs.push({ key: 'org',  label: 'Org' });
 
   const TABS = [
     { value: 'activity', label: 'Activity' },
@@ -61,6 +79,29 @@ function ProspectingInbox({ scope, search }) {
             </button>
           );
         })}
+
+        {/* Scope selector — same Mine/Team/Org control the campaign list has, so
+            the feed + inbox aren't stuck on the page-level toggle. Only shown
+            when the user actually has more than one scope. */}
+        {scopeTabs.length > 1 && (
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 4, alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: '#9ca3af', marginRight: 2, letterSpacing: 0.3 }}>VIEW</span>
+            {scopeTabs.map(s => (
+              <button
+                key={s.key}
+                onClick={() => setScopeLocal(s.key)}
+                style={{
+                  padding: '4px 12px', borderRadius: 6, border: '1px solid #e5e7eb',
+                  background: scope === s.key ? TEAL : '#fff',
+                  color: scope === s.key ? '#fff' : '#6b7280',
+                  fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                }}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ── Active tab ───────────────────────────────────────────────────────── */}
