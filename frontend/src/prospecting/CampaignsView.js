@@ -1711,6 +1711,14 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
   const [shareWeight, setShareWeight] = useState(
     campaign?.share_weight != null ? campaign.share_weight : ''
   );
+  // Per-campaign sender selection (Phase 2). senders = the user's connected
+  // sender accounts; selectedSenderIds = null/[] means "all senders" (default).
+  const [senders, setSenders] = useState([]);
+  const [selectedSenderIds, setSelectedSenderIds] = useState(
+    Array.isArray(campaign?.sender_account_ids) && campaign.sender_account_ids.length
+      ? campaign.sender_account_ids
+      : null
+  );
   // Section expanded by default if any overrides exist on the campaign.
   const hasAnyOverride = Object.values(schedule).some(v => v != null);
   const [scheduleOpen, setScheduleOpen] = useState(hasAnyOverride);
@@ -1729,6 +1737,11 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
         const sq = await apiFetch('/sequences');
         setSequences((sq.sequences || []).filter(s => s.status === 'active'));
       } catch { setSequences([]); }
+      // Sender accounts for the per-campaign sender picker (Phase 2).
+      try {
+        const sd = await apiFetch('/prospecting-senders');
+        setSenders((sd.senders || []).filter(s => s.isActive));
+      } catch { setSenders([]); }
       // Org defaults for the schedule section. Best-effort — if the user
       // isn't admin, the endpoint 403s and we just show "—" for defaults.
       try {
@@ -1797,6 +1810,9 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
       // Weighted-split share (normalised within the leading channel pool).
       // Empty string → null = unset (excluded in weighted mode).
       share_weight:             shareWeight === '' ? null : parseInt(shareWeight, 10),
+      // Per-campaign sender selection (Phase 2). Empty array → backend stores
+      // NULL = "all senders". Always sent so a cleared selection persists.
+      sender_account_ids:       Array.isArray(selectedSenderIds) ? selectedSenderIds : [],
     };
     try {
       if (isEdit) {
@@ -1907,6 +1923,58 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
                   onChange={setSchedule}
                   capacity={capacity}
                 />
+
+                {/* Per-campaign sender selection (Phase 2). Default = all senders.
+                    Picking a subset restricts which mailboxes this campaign sends
+                    from, and the capacity above reflects only the chosen senders'
+                    limits. */}
+                {senders.length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 4 }}>
+                      Send from
+                    </div>
+                    <p style={{ fontSize: 12, color: '#6b7280', marginBottom: 8, lineHeight: 1.5 }}>
+                      Which connected mailboxes this campaign sends from. All senders by default;
+                      pick specific ones to dedicate or split mailboxes across campaigns. Daily
+                      capacity above reflects the selected senders.
+                    </p>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 6, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedSenderIds === null}
+                        onChange={() => setSelectedSenderIds(null)}
+                      />
+                      <span><strong>All senders</strong> (default) — {senders.length} mailbox{senders.length === 1 ? '' : 'es'}</span>
+                    </label>
+                    {senders.map(s => {
+                      const checked = Array.isArray(selectedSenderIds) && selectedSenderIds.includes(s.id);
+                      return (
+                        <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 4, marginLeft: 16, cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              setSelectedSenderIds(prev => {
+                                const cur = Array.isArray(prev) ? prev : [];
+                                const next = checked ? cur.filter(id => id !== s.id) : [...cur, s.id];
+                                return next.length ? next : null; // none selected → back to "all"
+                              });
+                            }}
+                          />
+                          <span>
+                            {s.email}{s.label ? ` — ${s.label}` : ''}
+                            <span style={{ color: '#9ca3af' }}> · {s.dailyLimit != null ? `${s.dailyLimit}/day` : 'default limit'}</span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                    {Array.isArray(selectedSenderIds) && selectedSenderIds.length === 1 && (
+                      <div style={{ fontSize: 12, color: '#b45309', marginTop: 6, marginLeft: 16 }}>
+                        Sending from a single mailbox concentrates volume — watch that sender's daily limit and warmup.
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Weighted-split share % — only shown when org budget mode is
                     'weighted'. The campaign's slice of its leading channel's

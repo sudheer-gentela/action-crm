@@ -142,7 +142,7 @@ async function resolveSender(dbClient, orgId, userId, clientId) {
 // are NOT routed through here — a human sends whenever they choose.
 //
 // Returns: { sender, status: 'ok' | 'all_maxed' | 'cooling_down' | 'no_accounts' }
-async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, settings, now = new Date()) {
+async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, settings, now = new Date(), allowedSenderIds = null) {
   const defaultLimit    = settings?.defaultDailyLimit ?? 50;
   const ceiling         = settings?.dailyLimitCeiling ?? 100;
   const defaultMinDelay = settings?.defaultMinDelayMinutes ?? 5;
@@ -152,6 +152,10 @@ async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, se
                 access_token, refresh_token,
                 daily_limit, emails_sent_today, last_reset_at,
                 min_delay_minutes, last_sent_at`;
+  // Per-campaign sender selection (Phase 2): restrict the rep's sender pool to
+  // the chosen accounts. NULL/empty = all of the rep's senders (prior behaviour).
+  // Only applies to rep-owned senders; client-scoped senders are not narrowed.
+  const allowed = (Array.isArray(allowedSenderIds) && allowedSenderIds.length) ? allowedSenderIds : null;
   let rows = [];
   if (clientId) {
     const r = await dbClient.query(
@@ -164,16 +168,18 @@ async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, se
     if (!rows.length) {
       const rr = await dbClient.query(
         `SELECT ${cols} FROM prospecting_sender_accounts
-          WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true`,
-        [orgId, userId]
+          WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true
+            AND ($3::int[] IS NULL OR id = ANY($3))`,
+        [orgId, userId, allowed]
       );
       rows = rr.rows;
     }
   } else {
     const r = await dbClient.query(
       `SELECT ${cols} FROM prospecting_sender_accounts
-        WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true`,
-      [orgId, userId]
+        WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true
+          AND ($3::int[] IS NULL OR id = ANY($3))`,
+      [orgId, userId, allowed]
     );
     rows = r.rows;
   }
@@ -581,6 +587,28 @@ const SequenceStepFirer = {
         return settingsCache.get(key);
       };
 
+      // Per-campaign sender selection (Phase 2): which sender accounts this
+      // campaign is restricted to. NULL/empty = all of the rep's senders. Cached
+      // per campaign so a batch of enrollments for one campaign hits the DB once.
+      const senderSelCache = new Map();
+      const getCampaignSenderIds = async (orgId, campaignId) => {
+        if (!campaignId) return null;
+        const key = `${orgId}:${campaignId}`;
+        if (!senderSelCache.has(key)) {
+          let ids = null;
+          try {
+            const r = await pool.query(
+              `SELECT sender_account_ids FROM prospecting_campaigns WHERE id=$1 AND org_id=$2`,
+              [campaignId, orgId]
+            );
+            const raw = r.rows[0]?.sender_account_ids;
+            ids = (Array.isArray(raw) && raw.length) ? raw : null;
+          } catch { ids = null; } // missing column / lookup failure → all senders
+          senderSelCache.set(key, ids);
+        }
+        return senderSelCache.get(key);
+      };
+
       for (const enrollment of dueRes.rows) {
         try {
           // ── Send-window gate ───────────────────────────────────────────────
@@ -830,8 +858,11 @@ const SequenceStepFirer = {
           // senders are maxed or cooling down, DEFER — leave the scheduled row
           // untouched and retry next tick. scheduled_send_at stays fixed so the
           // rep keeps seeing the original promised time.
+          const allowedSenderIds = await getCampaignSenderIds(
+            enrollment.org_id, enrollment.prospect_campaign_id
+          );
           const pick = await pickEmailSenderWithCapacity(
-            client, enrollment.org_id, enrollment.enrolled_by, clientId, settings, new Date()
+            client, enrollment.org_id, enrollment.enrolled_by, clientId, settings, new Date(), allowedSenderIds
           );
           if (pick.status === 'all_maxed' || pick.status === 'cooling_down') {
             console.log(

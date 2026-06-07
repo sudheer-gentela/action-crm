@@ -195,6 +195,45 @@ function validateAndCoerceSchedule(body) {
   return { values: out, errors };
 }
 
+// Coerce + validate a campaign's selected sender accounts (Phase 2).
+// Accepts body.sender_account_ids / senderAccountIds as an array of ids (or a
+// comma-separated string). Returns { provided, ids, error }:
+//   provided=false → the field wasn't in the body (leave existing untouched)
+//   ids=null       → explicit "all senders" (empty/cleared)
+//   ids=[...]      → validated subset (each must be one of ownerId's own active,
+//                    non-client senders in this org — prevents borrowing another
+//                    user's mailbox or a deactivated one).
+async function coerceSenderIds(body, orgId, ownerId) {
+  const has = Object.prototype.hasOwnProperty.call(body, 'sender_account_ids')
+           || Object.prototype.hasOwnProperty.call(body, 'senderAccountIds');
+  if (!has) return { provided: false, ids: null, error: null };
+
+  let raw = body.sender_account_ids ?? body.senderAccountIds;
+  if (typeof raw === 'string') raw = raw.split(',').map(s => s.trim()).filter(Boolean);
+  if (raw == null || (Array.isArray(raw) && raw.length === 0)) {
+    return { provided: true, ids: null, error: null }; // explicit "all senders"
+  }
+  if (!Array.isArray(raw)) return { provided: true, ids: null, error: 'sender_account_ids must be an array of ids' };
+
+  const ids = [...new Set(raw.map(n => parseInt(n, 10)))];
+  if (ids.some(n => !Number.isInteger(n))) {
+    return { provided: true, ids: null, error: 'sender_account_ids must be integers' };
+  }
+  // Every id must be one of this owner's own active senders.
+  const { rows } = await pool.query(
+    `SELECT id FROM prospecting_sender_accounts
+      WHERE org_id = $1 AND user_id = $2 AND client_id IS NULL AND is_active = true
+        AND id = ANY($3)`,
+    [orgId, ownerId, ids]
+  );
+  const valid = new Set(rows.map(r => r.id));
+  const bad = ids.filter(id => !valid.has(id));
+  if (bad.length) {
+    return { provided: true, ids: null, error: `Not your active sender account(s): ${bad.join(', ')}` };
+  }
+  return { provided: true, ids, error: null };
+}
+
 // Resolve a campaign's leading (first-step) channel from its default sequence.
 async function leadingChannelOf(defaultSequenceId) {
   if (!defaultSequenceId) return 'email';
@@ -267,8 +306,21 @@ async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenc
     if (raw != null && raw > 0) campaignCap = raw;
   }
 
+  // Per-campaign sender selection (Phase 2): when set, email capacity is the sum
+  // of ONLY the chosen senders' limits. NULL/empty = all of the user's senders
+  // (preserves prior behaviour). Read once and pass through.
+  let senderIds = null;
+  if (campaignId && firstChannel === 'email') {
+    const sr = await pool.query(
+      `SELECT sender_account_ids FROM prospecting_campaigns WHERE id=$1 AND org_id=$2`,
+      [campaignId, orgId]
+    );
+    const raw = sr.rows[0]?.sender_account_ids;
+    if (Array.isArray(raw) && raw.length) senderIds = raw;
+  }
+
   const emailCapacity = firstChannel === 'email'
-    ? await SendingSchedule.resolveEmailCapacity({ orgId, userId, settings })
+    ? await SendingSchedule.resolveEmailCapacity({ orgId, userId, settings, senderIds })
     : null;
   let channelCap = SendingSchedule.resolveChannelDailyCap(firstChannel, { emailCapacity, settings });
 
@@ -410,6 +462,84 @@ function describeCapacity(firstChannel, channelCap, emailCapacity, settings, all
     };
   }
   return { kind: 'uncapped', perDayFull: null, todayRemaining: null, label: 'No daily cap (window-limited)' };
+}
+
+// ── Realistic email send projection ──────────────────────────────────────────
+// The real per-day email ceiling is the SHARED sender pool (Σ the selected/active
+// senders' daily limits), consumed by EVERY email send across all of this user's
+// campaigns — including follow-up email steps inside LinkedIn-led sequences. The
+// weighted "share" only divides leading-email campaigns, so on its own it
+// overstates what one campaign actually gets. This returns a realistic min–max
+// for THIS campaign for today (firm) and the next 7 days (an estimate: it's based
+// on each active enrollment's currently-scheduled NEXT send only, so future days
+// undercount follow-ups not yet laid down — labelled as such in the UI).
+//   poolPerDay → already reflects the campaign's selected senders (Phase 2),
+//   since it's passed straight from resolveEmailCapacity(perDayFull).
+async function computeEmailProjection(orgId, userId, campaignId, settings, poolPerDay) {
+  const tz  = settings.sendWindowTimezone || 'America/New_York';
+  const now = new Date();
+  // Wide UTC window (−1d … +9d); we bucket precisely by local calendar day below.
+  const from = new Date(now.getTime() -  1 * 24 * 60 * 60 * 1000);
+  const to   = new Date(now.getTime() +  9 * 24 * 60 * 60 * 1000);
+
+  // Owner-wide email demand: every active enrollment whose CURRENT due step is an
+  // email step, across ALL campaigns (no campaign filter — that's the point).
+  const { rows } = await pool.query(
+    `SELECT se.next_step_due, p.campaign_id
+       FROM sequence_enrollments se
+       JOIN sequence_steps ss
+         ON ss.sequence_id = se.sequence_id
+        AND ss.step_order  = se.current_step
+       JOIN prospects p ON p.id = se.prospect_id
+      WHERE se.org_id        = $1
+        AND se.enrolled_by   = $2
+        AND se.status        = 'active'
+        AND ss.channel       = 'email'
+        AND se.next_step_due >= $3
+        AND se.next_step_due <  $4`,
+    [orgId, userId, from, to]
+  );
+
+  const mine = {}, others = {};
+  const competingIds = new Set();
+  for (const r of rows) {
+    const { dayKey } = SendingSchedule._internal.getLocalCalendarDate(new Date(r.next_step_due), tz);
+    if (Number(r.campaign_id) === Number(campaignId)) {
+      mine[dayKey] = (mine[dayKey] || 0) + 1;
+    } else {
+      others[dayKey] = (others[dayKey] || 0) + 1;
+      if (r.campaign_id != null) competingIds.add(Number(r.campaign_id));
+    }
+  }
+
+  // Build today + next 7 local-day buckets and the realistic slice per day:
+  //   max = min(my demand, pool)                  — best case, nothing competes
+  //   min = total ≤ pool ? my demand              — everything sends
+  //       : floor(pool × my / total)              — proportional under contention
+  const dayKeys = [];
+  let cur = new Date(now);
+  for (let i = 0; i < 8; i++) {
+    dayKeys.push(SendingSchedule._internal.getLocalCalendarDate(cur, tz).dayKey);
+    cur = new Date(cur.getTime() + 24 * 60 * 60 * 1000);
+  }
+  const perDay = dayKeys.map(dk => {
+    const my    = mine[dk] || 0;
+    const total = my + (others[dk] || 0);
+    const max   = Math.min(my, poolPerDay);
+    const min   = (total <= poolPerDay) ? my : Math.floor(poolPerDay * (my / total));
+    return { day: dk, myDemand: my, totalDemand: total, min, max };
+  });
+
+  const today    = perDay[0];
+  const weekDays = perDay.slice(1);            // next 7 days
+  const sum = (arr, k) => arr.reduce((a, d) => a + d[k], 0);
+  return {
+    poolPerDay,
+    competingCampaigns: competingIds.size,
+    today: { min: today.min, max: today.max, demand: today.myDemand },
+    week:  { totalMin: sum(weekDays, 'min'), totalMax: sum(weekDays, 'max'), demand: sum(weekDays, 'myDemand') },
+    perDay,
+  };
 }
 
 // ── GET / — list campaigns with live prospect counts ─────────────────────────
@@ -616,6 +746,13 @@ router.post('/', async (req, res) => {
       shareWeightVal = w;
     }
 
+    // Per-campaign sender selection (Phase 2) — validate against the owner's
+    // own active senders; NULL = all senders.
+    const senderSel = await coerceSenderIds(req.body, req.orgId, resolvedOwnerId);
+    if (senderSel.error) {
+      return res.status(400).json({ error: { message: senderSel.error } });
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO prospecting_campaigns
              (org_id, name, description, solution, playbook_id, default_sequence_id,
@@ -623,8 +760,8 @@ router.post('/', async (req, res) => {
               daily_activation_cap, send_window_start_hour, send_window_end_hour,
               send_window_days, send_window_timezone,
               send_window_start_minute, start_mode, pacing_mode, cadence_minutes,
-              share_weight)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+              share_weight, sender_account_ids)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
        RETURNING *`,
       [
         req.orgId, name.trim(), description || null, solution || null,
@@ -643,6 +780,7 @@ router.post('/', async (req, res) => {
         sched.values.pacing_mode,
         sched.values.cadence_minutes,
         shareWeightVal,
+        senderSel.ids,      // sender_account_ids — NULL = all senders
       ]
     );
 
@@ -1075,6 +1213,20 @@ router.get('/:id', async (req, res) => {
         capacity:     describeCapacity(cap.firstChannel, cap.channelCap, cap.emailCapacity, cap.settings, cap.allocation),
         allocation:   cap.allocation,
       };
+      // Realistic today + next-7-day projection for email-led campaigns. Pool
+      // comes from the (already sender-selection-aware) email capacity.
+      if (cap.firstChannel === 'email' && scheduleBlock.capacity && scheduleBlock.capacity.kind === 'email') {
+        const pool = cap.emailCapacity ? cap.emailCapacity.perDayFull : 0;
+        if (pool > 0) {
+          try {
+            scheduleBlock.capacity.projection = await computeEmailProjection(
+              req.orgId, req.user.userId, parseInt(req.params.id, 10), cap.settings, pool
+            );
+          } catch (pErr) {
+            console.warn('campaigns GET /:id email projection failed:', pErr.message);
+          }
+        }
+      }
     } catch (capErr) {
       console.warn('campaigns GET /:id capacity compute failed:', capErr.message);
     }
@@ -1229,6 +1381,13 @@ router.put('/:id', async (req, res) => {
       }
     }
 
+    // Per-campaign sender selection (Phase 2): only changes if present in body.
+    const senderSel = await coerceSenderIds(req.body, req.orgId, resolvedOwnerId);
+    if (senderSel.error) {
+      return res.status(400).json({ error: { message: senderSel.error } });
+    }
+    const senderIdsUpd = senderSel.provided ? senderSel.ids : existing.sender_account_ids;
+
     // Build a COALESCE-style partial update: only provided fields change.
     const { rows } = await pool.query(
       `UPDATE prospecting_campaigns SET
@@ -1251,7 +1410,8 @@ router.put('/:id', async (req, res) => {
          start_mode             = $19,
          pacing_mode            = $20,
          cadence_minutes        = $21,
-         share_weight           = $22
+         share_weight           = $22,
+         sender_account_ids     = $23
        WHERE id = $1 AND org_id = $2
        RETURNING id`,
       [
@@ -1279,6 +1439,7 @@ router.put('/:id', async (req, res) => {
         incomingPacing    ? sched.values.pacing_mode             : existing.pacing_mode,
         incomingCadence   ? sched.values.cadence_minutes         : existing.cadence_minutes,
         shareWeightUpd,
+        senderIdsUpd,       // sender_account_ids — NULL = all senders
       ]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Campaign not found' } });

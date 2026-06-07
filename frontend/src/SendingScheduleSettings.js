@@ -328,26 +328,46 @@ export default function SendingScheduleSettings({ mode = 'org', value, orgDefaul
       {/* Email capacity — derived, read-only */}
       <div style={{ marginTop: 4, padding: '12px 14px', background: '#f0fdfa', border: '1px solid #ccfbf1', borderRadius: 6 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: '#0f766e', marginBottom: 4 }}>Email daily capacity</div>
-        {capacity && capacity.kind === 'email' && capacity.weighted ? (
-          // Weighted mode: the backend descriptor carries the campaign's slice
-          // and a ready-made label (e.g. "100% of 100 emails/day = 100/day", or
-          // "No share assigned…" when excluded). It does NOT carry activeSenders,
-          // so we must NOT fall back to the sender ternary here — doing so would
-          // misreport "No active email senders connected" for every weighted
-          // email campaign regardless of real senders. Sender presence is
-          // surfaced in shared mode (below) and in Settings → Outreach.
-          <div style={{ fontSize: 12, color: capacity.excluded ? '#b45309' : '#334155' }}>
-            {capacity.label}
-          </div>
-        ) : capacity && capacity.kind === 'email' ? (
+        {capacity && capacity.kind === 'email' ? (
           <div style={{ fontSize: 12, color: '#334155' }}>
-            {capacity.activeSenders > 0
-              ? <>{capacity.activeSenders} active sender{capacity.activeSenders === 1 ? '' : 's'}
-                  {capacity.perAccountLimits && capacity.perAccountLimits.length
-                    ? ` (${capacity.perAccountLimits.join(' + ')})` : ''} = <strong>{capacity.perDayFull}/day</strong>
-                  {Number.isFinite(capacity.todayRemaining) && <> · <span style={{ color: '#0f766e' }}>{capacity.todayRemaining} left today</span></>}
-                </>
-              : <span style={{ color: '#b45309' }}>No active email senders connected. Connect Gmail/Outlook in Settings → Outreach.</span>}
+            {/* Basis line: weighted slice, or the shared-pool sender line. */}
+            {capacity.weighted ? (
+              // Weighted mode carries a ready-made label and no activeSenders, so
+              // we render the label rather than the sender ternary.
+              <div style={{ color: capacity.excluded ? '#b45309' : '#334155' }}>{capacity.label}</div>
+            ) : capacity.activeSenders > 0 ? (
+              <div>{capacity.activeSenders} active sender{capacity.activeSenders === 1 ? '' : 's'}
+                {capacity.perAccountLimits && capacity.perAccountLimits.length
+                  ? ` (${capacity.perAccountLimits.join(' + ')})` : ''} = <strong>{capacity.perDayFull}/day</strong>
+                {Number.isFinite(capacity.todayRemaining) && <> · <span style={{ color: '#0f766e' }}>{capacity.todayRemaining} left today</span></>}
+              </div>
+            ) : (
+              <span style={{ color: '#b45309' }}>No active email senders connected. Connect Gmail/Outlook in Settings → Outreach.</span>
+            )}
+
+            {/* Realistic projection: today (firm) + next 7 days (estimate). The
+                daily pool is shared across ALL email sends — every campaign and
+                every follow-up step — so this is what this campaign actually gets,
+                not the headline pool number. */}
+            {capacity.projection && capacity.projection.poolPerDay > 0 && (() => {
+              const p = capacity.projection;
+              const range = (a, b) => (a === b ? `${a}` : `${a}–${b}`);
+              const totalCampaigns = (p.competingCampaigns || 0) + 1;
+              return (
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #ccfbf1' }}>
+                  <div style={{ color: '#0f766e', fontWeight: 600 }}>
+                    Realistic sends — today {range(p.today.min, p.today.max)}/day
+                    {p.week && <>, next 7 days ~{range(p.week.totalMin, p.week.totalMax)} total{' '}
+                      <span style={{ color: '#64748b', fontWeight: 400 }}>(estimate)</span></>}
+                  </div>
+                  <div style={{ color: '#64748b', marginTop: 2 }}>
+                    {p.competingCampaigns > 0
+                      ? `Shared ${p.poolPerDay}/day pool across ${totalCampaigns} email-sending campaigns (including follow-ups). To dedicate the full pool to this campaign, set its share to 100% in weighted mode, or pause the others.`
+                      : `This campaign currently has the full ${p.poolPerDay}/day pool — no other campaigns are sending email right now.`}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         ) : (
           <div style={{ fontSize: 12, color: '#64748b' }}>

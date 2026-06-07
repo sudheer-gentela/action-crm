@@ -216,11 +216,15 @@ async function resolveSettings({ orgId, campaignId = null }) {
  *
  * `settings` supplies defaultDailyLimit / dailyLimitCeiling (resolveSettings()).
  */
-async function resolveEmailCapacity({ orgId, userId, now = new Date(), settings = null }) {
+async function resolveEmailCapacity({ orgId, userId, now = new Date(), settings = null, senderIds = null }) {
   if (!orgId || !userId) return { todayRemaining: 0, perDayFull: 0, activeSenders: 0, perAccount: [] };
   const s = settings || await resolveSettings({ orgId });
   const defaultLimit = s.defaultDailyLimit ?? DEFAULTS.defaultDailyLimit;
   const ceiling      = s.dailyLimitCeiling ?? DEFAULTS.dailyLimitCeiling;
+
+  // Optional per-campaign sender selection: NULL/empty = all of the user's
+  // senders (prior behaviour); otherwise restrict the pool to the chosen ids.
+  const filterIds = (Array.isArray(senderIds) && senderIds.length) ? senderIds : null;
 
   const { rows } = await pool.query(
     `SELECT id, email, daily_limit, emails_sent_today, last_reset_at
@@ -228,8 +232,9 @@ async function resolveEmailCapacity({ orgId, userId, now = new Date(), settings 
       WHERE org_id    = $1
         AND user_id   = $2
         AND client_id IS NULL
-        AND is_active  = true`,
-    [orgId, userId]
+        AND is_active  = true
+        AND ($3::int[] IS NULL OR id = ANY($3))`,
+    [orgId, userId, filterIds]
   );
 
   const todayStr = now.toDateString();
