@@ -47,6 +47,13 @@ code {
 /* Prevent horizontal scrolling */
 html {
   overflow-x: hidden;
+  /* Always reserve space for the vertical scrollbar, whether or not it's
+     showing. Without this, a tall page (e.g. the prospecting kanban) shows a
+     scrollbar and a short page (e.g. the campaigns list) doesn't, so the
+     content width changes by ~16px between views — enough to tip the
+     prospecting header into wrapping in one view but not the other. Reserving
+     the gutter keeps the width constant, so layout is identical across views. */
+  scrollbar-gutter: stable;
 }
 
 /* Smooth scrolling */
