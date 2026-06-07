@@ -192,6 +192,18 @@ function validateAndCoerceSchedule(body) {
     }
   }
 
+  // Cross-field guard: when BOTH window bounds are provided in this payload,
+  // the end must be after the start — otherwise the day's send window is empty
+  // and nothing sends. (When only one is provided, the other is inherited and
+  // can't be checked here; the resolver clamps that cross-layer case.)
+  if (out.send_window_start_hour !== undefined && out.send_window_end_hour !== undefined
+      && out.send_window_end_hour <= out.send_window_start_hour) {
+    errors.push(
+      `send_window_end_hour (${out.send_window_end_hour}:00) must be after ` +
+      `send_window_start_hour (${out.send_window_start_hour}:00)`
+    );
+  }
+
   return { values: out, errors };
 }
 
@@ -475,9 +487,19 @@ function describeCapacity(firstChannel, channelCap, emailCapacity, settings, all
 // undercount follow-ups not yet laid down — labelled as such in the UI).
 //   poolPerDay → already reflects the campaign's selected senders (Phase 2),
 //   since it's passed straight from resolveEmailCapacity(perDayFull).
-async function computeEmailProjection(orgId, userId, campaignId, settings, poolPerDay) {
+//   campaignCeiling → this campaign's OWN per-day email ceiling (its weighted
+//   slice in weighted mode; = pool in shared mode). It's what we advertise as
+//   "this campaign can send up to N/day" — the answer to "how many per day",
+//   independent of whether anything is enrolled yet.
+async function computeEmailProjection(orgId, userId, campaignId, settings, poolPerDay, campaignCeiling) {
   const tz  = settings.sendWindowTimezone || 'America/New_York';
   const now = new Date();
+  // The per-day rate this campaign can actually achieve: its own ceiling, but
+  // never more than the shared pool.
+  const ratePerDay = Math.max(0, Math.min(
+    Number.isFinite(campaignCeiling) ? campaignCeiling : poolPerDay,
+    poolPerDay
+  ));
   // Wide UTC window (−1d … +9d); we bucket precisely by local calendar day below.
   const from = new Date(now.getTime() -  1 * 24 * 60 * 60 * 1000);
   const to   = new Date(now.getTime() +  9 * 24 * 60 * 60 * 1000);
@@ -512,10 +534,12 @@ async function computeEmailProjection(orgId, userId, campaignId, settings, poolP
     }
   }
 
-  // Build today + next 7 local-day buckets and the realistic slice per day:
-  //   max = min(my demand, pool)                  — best case, nothing competes
-  //   min = total ≤ pool ? my demand              — everything sends
-  //       : floor(pool × my / total)              — proportional under contention
+  // Build today + next 7 local-day buckets and the realistic slice per day.
+  // The campaign can never exceed its own daily ceiling (ratePerDay), nor its
+  // proportional share of the shared pool under contention:
+  //   max = min(my demand, ratePerDay)
+  //   min = total ≤ pool ? min(my demand, ratePerDay)
+  //       : min(ratePerDay, floor(pool × my / total))
   const dayKeys = [];
   let cur = new Date(now);
   for (let i = 0; i < 8; i++) {
@@ -525,16 +549,21 @@ async function computeEmailProjection(orgId, userId, campaignId, settings, poolP
   const perDay = dayKeys.map(dk => {
     const my    = mine[dk] || 0;
     const total = my + (others[dk] || 0);
-    const max   = Math.min(my, poolPerDay);
-    const min   = (total <= poolPerDay) ? my : Math.floor(poolPerDay * (my / total));
+    const max   = Math.min(my, ratePerDay);
+    const min   = (total <= poolPerDay)
+      ? Math.min(my, ratePerDay)
+      : Math.min(ratePerDay, Math.floor(poolPerDay * (my / total)));
     return { day: dk, myDemand: my, totalDemand: total, min, max };
   });
 
   const today    = perDay[0];
   const weekDays = perDay.slice(1);            // next 7 days
   const sum = (arr, k) => arr.reduce((a, d) => a + d[k], 0);
+  const scheduledTotal = today.myDemand + sum(weekDays, 'myDemand');
   return {
     poolPerDay,
+    ratePerDay,                                 // this campaign's per-day ceiling
+    hasDemand: scheduledTotal > 0,              // false → nothing enrolled/scheduled yet
     competingCampaigns: competingIds.size,
     today: { min: today.min, max: today.max, demand: today.myDemand },
     week:  { totalMin: sum(weekDays, 'min'), totalMax: sum(weekDays, 'max'), demand: sum(weekDays, 'myDemand') },
@@ -1220,7 +1249,8 @@ router.get('/:id', async (req, res) => {
         if (pool > 0) {
           try {
             scheduleBlock.capacity.projection = await computeEmailProjection(
-              req.orgId, req.user.userId, parseInt(req.params.id, 10), cap.settings, pool
+              req.orgId, req.user.userId, parseInt(req.params.id, 10), cap.settings, pool,
+              (cap.channelCap && Number.isFinite(cap.channelCap.perDayFull)) ? cap.channelCap.perDayFull : pool
             );
           } catch (pErr) {
             console.warn('campaigns GET /:id email projection failed:', pErr.message);

@@ -353,14 +353,25 @@ export default function SendingScheduleSettings({ mode = 'org', value, orgDefaul
               const p = capacity.projection;
               const range = (a, b) => (a === b ? `${a}` : `${a}–${b}`);
               const totalCampaigns = (p.competingCampaigns || 0) + 1;
+              const rate = (p.ratePerDay != null) ? p.ratePerDay : p.poolPerDay;
               return (
                 <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #ccfbf1' }}>
                   <div style={{ color: '#0f766e', fontWeight: 600 }}>
-                    Realistic sends — today {range(p.today.min, p.today.max)}/day
-                    {p.week && <>, next 7 days ~{range(p.week.totalMin, p.week.totalMax)} total{' '}
-                      <span style={{ color: '#64748b', fontWeight: 400 }}>(estimate)</span></>}
+                    This campaign can send up to {rate}/day
                   </div>
-                  <div style={{ color: '#64748b', marginTop: 2 }}>
+                  {p.hasDemand ? (
+                    <div style={{ marginTop: 2 }}>
+                      Scheduled now — today {range(p.today.min, p.today.max)}/day
+                      {p.week && <>, next 7 days ~{range(p.week.totalMin, p.week.totalMax)} total{' '}
+                        <span style={{ color: '#64748b' }}>(estimate)</span></>}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 2, color: '#b45309' }}>
+                      No emails scheduled yet — enroll prospects into the sequence to start sending.
+                      (0 of this campaign's prospects are currently enrolled.)
+                    </div>
+                  )}
+                  <div style={{ color: '#64748b', marginTop: 4 }}>
                     {p.competingCampaigns > 0
                       ? `Shared ${p.poolPerDay}/day pool across ${totalCampaigns} email-sending campaigns (including follow-ups). To dedicate the full pool to this campaign, set its share to 100% in weighted mode, or pause the others.`
                       : `This campaign currently has the full ${p.poolPerDay}/day pool — no other campaigns are sending email right now.`}

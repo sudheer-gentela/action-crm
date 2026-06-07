@@ -119,7 +119,7 @@ async function resolveSettings({ orgId, campaignId = null }) {
   const orgConfig = orgRes.rows[0]?.config || {};
   const camp      = campRes.rows[0] || {};
 
-  return Object.freeze({
+  const resolved = {
     // Pacing / start
     startMode:
       coerceEnum(camp.start_mode, ['on_activate', 'fixed', 'fixed_or_now']) ??
@@ -198,7 +198,27 @@ async function resolveSettings({ orgId, campaignId = null }) {
       coerceNonNegInt(orgConfig.defaultMinDelayMinutes) ?? DEFAULTS.defaultMinDelayMinutes,
     minDelayMinutesFloor:
       coerceNonNegInt(orgConfig.minDelayMinutesCeiling) ?? DEFAULTS.minDelayMinutesFloor,
-  });
+  };
+
+  // Safety: a window where end ≤ start yields ZERO slots in both cadence and
+  // spread (empty interval) — the campaign would silently never send. Because
+  // start and end resolve from independent layers (a campaign start-hour
+  // override can land past the org/default end), repair to a guaranteed
+  // non-empty window so sends never silently halt, and warn so the misconfig
+  // is visible. (Save-time validation in the route rejects the explicit
+  // both-fields-provided case; this catches the cross-layer case.)
+  if (resolved.sendWindowEndHour <= resolved.sendWindowStartHour) {
+    const startH = resolved.sendWindowStartHour;
+    const repaired = Math.min(24, Math.max(startH + 1, DEFAULTS.sendWindowEndHour));
+    console.warn(
+      `[SendingSchedule] send-window end (${resolved.sendWindowEndHour}:00) <= start ` +
+      `(${startH}:00) for org=${orgId} campaign=${campaignId ?? 'org'}; ` +
+      `repaired end -> ${repaired}:00 to keep a non-empty send window.`
+    );
+    resolved.sendWindowEndHour = repaired;
+  }
+
+  return Object.freeze(resolved);
 }
 
 /**
