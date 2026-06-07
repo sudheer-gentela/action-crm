@@ -31,6 +31,12 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  /* When the header wraps to a second line (e.g. a vertical scrollbar shaves a
+     few px off the width in tall views), a lone item under justify-content:
+     space-between falls back to flex-start and the toolbar jumps left. Forcing
+     auto left-margin keeps this group right-aligned whether it's on the same
+     line as the title or wrapped onto its own — so it never shifts position. */
+  margin-left: auto;
 }
 
 .pv-title {
