@@ -16,7 +16,7 @@
  *   onClose   — close / cancel handler
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import PersonalizeConfigBlock from './PersonalizeConfigBlock';
 
 const API = process.env.REACT_APP_API_URL || '';
@@ -172,6 +172,47 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
   };
 
   const aiStepCount = steps.filter(s => s.mode === 'ai').length;
+
+  // ── Dirty-state tracking ─────────────────────────────────────────────────────
+  // The "Save Changes" button must stay disabled until the user has actually
+  // changed something. We serialize every field that handleSave persists into a
+  // canonical string, capture a baseline on first render (every piece of state
+  // is initialised synchronously from `initialSequence`, so first render === the
+  // pristine state, and the userPersonalizePref fetch in useEffect touches no
+  // field below), then compare. Reverting an edit back to its original value
+  // re-disables the button, which is the behaviour users expect.
+  const stateSnapshot = JSON.stringify({
+    name,
+    toneGoal,
+    requireApproval,
+    visibility,
+    allowManagerEdit,
+    aiEnabled,
+    personalizeConfigDefault,
+    steps: steps.map(s => ({
+      id:                 s.id ?? null,
+      step_order:         s.step_order,
+      channel:            s.channel,
+      delay_days:         s.delay_days,
+      mode:               s.mode,
+      subject_template:   s.subject_template || '',
+      body_template:      s.body_template    || '',
+      task_note:          s.task_note        || '',
+      require_approval:   s.require_approval   ?? null,
+      personalize_config: s.personalize_config ?? null,
+      step_intent:        s.step_intent        || null,
+    })),
+  });
+
+  const baselineSnapshotRef = useRef(null);
+  if (baselineSnapshotRef.current === null) {
+    baselineSnapshotRef.current = stateSnapshot;
+  }
+  const isDirty = stateSnapshot !== baselineSnapshotRef.current;
+  // Create mode keeps its original "always enabled" behaviour (a brand-new
+  // sequence has nothing to diff against); only edit mode gates on unsaved
+  // changes. Either way, we never allow a click while a save is in flight.
+  const canSave = saving ? false : (isEdit ? isDirty : true);
 
   // ── Step CRUD ──────────────────────────────────────────────────────────────
 
@@ -375,11 +416,14 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
           <button onClick={onClose} style={ghostBtn}>Cancel</button>
           <button
             onClick={handleSave}
-            disabled={saving}
+            disabled={!canSave}
+            title={isEdit && !isDirty && !saving ? 'No changes to save' : undefined}
             style={{
               padding: '8px 20px', borderRadius: 8, border: 'none',
-              background: saving ? '#9ca3af' : TEAL, color: '#fff',
-              fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer',
+              background: !canSave ? '#9ca3af' : TEAL, color: '#fff',
+              fontSize: 13, fontWeight: 600,
+              cursor: !canSave ? 'not-allowed' : 'pointer',
+              opacity: !canSave ? 0.7 : 1,
             }}
           >
             {saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Create Sequence'}
