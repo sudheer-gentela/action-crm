@@ -328,7 +328,18 @@ export default function SendingScheduleSettings({ mode = 'org', value, orgDefaul
       {/* Email capacity — derived, read-only */}
       <div style={{ marginTop: 4, padding: '12px 14px', background: '#f0fdfa', border: '1px solid #ccfbf1', borderRadius: 6 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: '#0f766e', marginBottom: 4 }}>Email daily capacity</div>
-        {capacity && capacity.kind === 'email' ? (
+        {capacity && capacity.kind === 'email' && capacity.weighted ? (
+          // Weighted mode: the backend descriptor carries the campaign's slice
+          // and a ready-made label (e.g. "100% of 100 emails/day = 100/day", or
+          // "No share assigned…" when excluded). It does NOT carry activeSenders,
+          // so we must NOT fall back to the sender ternary here — doing so would
+          // misreport "No active email senders connected" for every weighted
+          // email campaign regardless of real senders. Sender presence is
+          // surfaced in shared mode (below) and in Settings → Outreach.
+          <div style={{ fontSize: 12, color: capacity.excluded ? '#b45309' : '#334155' }}>
+            {capacity.label}
+          </div>
+        ) : capacity && capacity.kind === 'email' ? (
           <div style={{ fontSize: 12, color: '#334155' }}>
             {capacity.activeSenders > 0
               ? <>{capacity.activeSenders} active sender{capacity.activeSenders === 1 ? '' : 's'}
