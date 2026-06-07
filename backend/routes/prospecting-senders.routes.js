@@ -28,6 +28,14 @@ router.use(requireModule('prospecting'));
 // ── Row mapper ────────────────────────────────────────────────────────────────
 // Tokens are NEVER returned to the frontend
 function mapSenderRow(row) {
+  // emails_sent_today is a lazily-reset counter — it only zeroes when the firer
+  // next sends on a new day. So on a fresh day before any send, it still holds
+  // the PRIOR day's value. Mirror resolveEmailCapacity's reset check here so the
+  // UI reports today's true count (0 until something sends), consistent with the
+  // capacity/projection numbers. Keep the raw value too for "last active day".
+  const resetToday = row.last_reset_at &&
+    new Date(row.last_reset_at).toDateString() === new Date().toDateString();
+  const effectiveSentToday = resetToday ? (row.emails_sent_today || 0) : 0;
   return {
     id:                 row.id,
     orgId:              row.org_id,
@@ -38,7 +46,8 @@ function mapSenderRow(row) {
     isActive:           row.is_active,
     dailyLimit:         row.daily_limit,
     minDelayMinutes:    row.min_delay_minutes,
-    emailsSentToday:    row.emails_sent_today,
+    emailsSentToday:    effectiveSentToday,             // reset-aware: today's true count
+    emailsSentLastActiveDay: row.emails_sent_today,     // raw counter (its last active day)
     lastResetAt:        row.last_reset_at,
     lastSentAt:         row.last_sent_at,
     displayName:        row.display_name,
