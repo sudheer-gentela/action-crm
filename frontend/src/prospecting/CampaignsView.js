@@ -1287,7 +1287,7 @@ function PreviewPickerModal({ campaignId, sequenceId, sequenceName, members, onC
   if (!sequenceId) {
     return (
       <div className="pv-modal-overlay" onClick={onClose}>
-        <div className="pv-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 480 }}>
+        <div className="pv-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 'min(480px, 95vw)' }}>
           <div className="pv-modal-header">
             <h3>Preview drafts</h3>
             <button className="pv-modal-close" onClick={onClose}>×</button>
@@ -1308,7 +1308,7 @@ function PreviewPickerModal({ campaignId, sequenceId, sequenceName, members, onC
   return (
     <div className="pv-modal-overlay" onClick={onClose}>
       <div className="pv-modal" onClick={e => e.stopPropagation()}
-           style={{ maxWidth: 580, display: 'flex', flexDirection: 'column', maxHeight: '85vh' }}>
+           style={{ maxWidth: 'min(580px, 95vw)', display: 'flex', flexDirection: 'column', maxHeight: '85vh' }}>
         <div className="pv-modal-header">
           <h3>Preview drafts — pick prospects</h3>
           <button className="pv-modal-close" onClick={onClose}>×</button>
@@ -1597,7 +1597,7 @@ function EnrollAllModal({ campaign, onClose, onEnrolled }) {
 
   return (
     <div className="pv-modal-overlay" onClick={onClose}>
-      <div className="pv-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 460 }}>
+      <div className="pv-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 'min(460px, 95vw)' }}>
         <div className="pv-modal-header">
           <h3>Enroll campaign in sequence</h3>
           <button className="pv-modal-close" onClick={onClose}>×</button>

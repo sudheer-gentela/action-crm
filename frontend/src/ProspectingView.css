@@ -942,3 +942,64 @@
   color: #9ca3af;
   font-size: 14px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Responsive — Prospecting suite
+   The app shell (sidebar → off-canvas + hamburger) is already handled globally
+   in App.css / Sidebar.css. These rules adapt the Prospecting *content*: the
+   header/toolbar, metrics bar, kanban and table, so the screen is usable on
+   tablet and phone. The kanban (.pv-pipeline-columns) and table (.pv-list)
+   already scroll-x; we mainly stop the toolbar from clipping and let it stack.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Tablet and below */
+@media (max-width: 768px) {
+  .pv-container { padding: 14px; }
+
+  /* Header stacks: title/scope on one row, the toolbar group on its own full
+     width below it (so the search + icons + buttons get room to wrap instead
+     of clipping under the container's overflow-x: hidden). */
+  .pv-header { gap: 10px; }
+  .pv-header-left { width: 100%; }
+  .pv-header-right {
+    width: 100%;
+    margin-left: 0;          /* override desktop right-pin; full-width stack */
+    flex-wrap: wrap;          /* let search / toggle / buttons wrap, never clip */
+    gap: 8px;
+  }
+
+  /* Search grows to fill the row instead of a fixed 200px. */
+  .pv-search { flex: 1 1 100%; }
+  .pv-search-input { width: 100%; box-sizing: border-box; }
+
+  /* The 8-icon view switcher can exceed a phone's width — let it scroll
+     horizontally within its bordered pill rather than overflow the page. */
+  .pv-view-toggle { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Metrics bar already wraps; let it scroll if a row is still too wide. */
+  .pv-metrics-bar { gap: 12px; overflow-x: auto; }
+
+  .pv-title { font-size: 18px; }
+}
+
+/* Phone */
+@media (max-width: 480px) {
+  .pv-container { padding: 10px; }
+
+  /* Tighter, tappable toolbar buttons so a full row fits. */
+  .pv-add-btn,
+  .pv-btn-secondary {
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+  .pv-view-btn { padding: 7px 9px; }
+
+  /* Kanban: make each column ~one screen wide so the rep swipes column-by-column
+     (the columns container already scrolls-x). */
+  .pv-pipeline-col { min-width: 82vw; max-width: 88vw; }
+
+  /* Scope toggle and metrics can wrap onto their own lines cleanly. */
+  .pv-scope-toggle { font-size: 12px; }
+  .pv-metric { min-width: 52px; }
+  .pv-metric-separator { display: none; } /* dividers look odd once wrapped */
+}
