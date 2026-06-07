@@ -125,6 +125,12 @@ export default function ProspectingView() {
   const BULK_ENROLL_CAP = 20;
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [showBulkEnrollModal, setShowBulkEnrollModal] = useState(false);
+  // Bulk "Move to ▾" stage control (context-aware forward progression).
+  const [showMoveMenu, setShowMoveMenu] = useState(false);
+  const [movingStage, setMovingStage]   = useState(false);
+  // Sequence to pre-select when "Move to → Outreach" opens the enroll preview
+  // (the campaign's own default sequence, so it's one click inside a campaign).
+  const [enrollPreSeqId, setEnrollPreSeqId] = useState(null);
   const [showBulkDiscardModal, setShowBulkDiscardModal] = useState(false);
   // Single-prospect discard (from a card/row ⋯ menu). Holds the prospect
   // whose menu was used; modal opens when non-null.
@@ -173,7 +179,7 @@ export default function ProspectingView() {
     function onCampaignFilter(e) {
       const detail = e.detail || {};
       if (!detail.campaignId) return;
-      setCampaignFilter({ campaignId: detail.campaignId, campaignName: detail.campaignName });
+      setCampaignFilter({ campaignId: detail.campaignId, campaignName: detail.campaignName, defaultSequenceId: detail.defaultSequenceId ?? null });
       if (detail.scope) setScope(detail.scope);
       setCampaignAccessError(null);
       setViewMode('pipeline');
@@ -302,6 +308,65 @@ export default function ProspectingView() {
   const [PROSPECT_STAGES, setProspectStages] = useState(DEFAULT_PROSPECT_STAGES);
   const [TERMINAL_STAGES, setTerminalStages] = useState(DEFAULT_TERMINAL_STAGES);
   const ALL_STAGES = [...PROSPECT_STAGES, ...TERMINAL_STAGES];
+
+  // ── Bulk stage movement (context-aware) ──────────────────────────────────
+  // The "Move to" menu only makes sense when the whole selection sits in ONE
+  // stage, because the valid forward targets depend on where each prospect
+  // currently is. Mixed-stage selections disable the control.
+  const selectedProspects = prospects.filter(p => selectedIds.has(p.id));
+  const selectedStages = [...new Set(selectedProspects.map(p => p.stage).filter(Boolean))];
+  const selectionStage = selectedStages.length === 1 ? selectedStages[0] : null;
+
+  // Forward targets for the selection's current stage, using the org's
+  // configured pipeline order. Entering "outreach" is special: it starts real
+  // outreach, so it's routed through the enroll PREVIEW rather than a silent
+  // stage write. From "target" we also offer the skip-research jump straight
+  // to outreach.
+  const stageOrder = PROSPECT_STAGES.map(s => s.key);
+  const forwardStageOptions = (() => {
+    if (!selectionStage) return [];
+    const idx = stageOrder.indexOf(selectionStage);
+    if (idx < 0) return [];
+    const opts = [];
+    const next = stageOrder[idx + 1];
+    if (next) opts.push(next);
+    if (selectionStage === 'target' && stageOrder.includes('outreach') && !opts.includes('outreach')) {
+      opts.push('outreach');
+    }
+    return opts;
+  })();
+  const stageLabel = (key) => PROSPECT_STAGES.find(s => s.key === key)?.label || key;
+
+  // Move the current selection to a stage. "outreach" opens the enroll preview
+  // (nothing fires without an explicit confirm); everything else is a plain
+  // stage write via /prospects/bulk-stage.
+  const handleBulkStageMove = async (toStage) => {
+    if (!selectionStage || selectedIds.size === 0) return;
+    setShowMoveMenu(false);
+    if (toStage === 'outreach') {
+      setEnrollPreSeqId(campaignFilter?.defaultSequenceId ?? null);
+      setShowBulkEnrollModal(true);
+      return;
+    }
+    setMovingStage(true);
+    try {
+      await apiFetch('/prospects/bulk-stage', {
+        method: 'POST',
+        body: JSON.stringify({
+          fromStage: selectionStage,
+          toStage,
+          prospectIds: [...selectedIds],
+          campaignId: campaignFilter?.campaignId ?? null,
+        }),
+      });
+      clearSelection();
+      fetchProspects();
+    } catch (err) {
+      alert(`Move failed: ${err.message}`);
+    } finally {
+      setMovingStage(false);
+    }
+  };
 
   // Fetch org-customised prospect stages
   useEffect(() => {
@@ -769,6 +834,7 @@ export default function ProspectingView() {
                 setCampaignFilter({
                   campaignId: id,
                   campaignName: next?.name || `Campaign ${id}`,
+                  defaultSequenceId: next?.default_sequence_id ?? null,
                 });
               }}
               style={{
@@ -887,12 +953,14 @@ export default function ProspectingView() {
       {showBulkEnrollModal && (
         <SequenceEnrollModal
           prospects={prospects.filter(p => selectedIds.has(p.id))}
+          preSequenceId={enrollPreSeqId}
           onEnrolled={() => {
             setShowBulkEnrollModal(false);
+            setEnrollPreSeqId(null);
             clearSelection();
             fetchProspects();
           }}
-          onClose={() => setShowBulkEnrollModal(false)}
+          onClose={() => { setShowBulkEnrollModal(false); setEnrollPreSeqId(null); }}
         />
       )}
 
@@ -949,16 +1017,66 @@ export default function ProspectingView() {
             </span>
           )}
           <div style={{ flex: 1 }} />
-          <button
-            onClick={() => setShowBulkEnrollModal(true)}
-            style={{
-              padding: '7px 16px', borderRadius: 7, border: 'none',
-              background: '#0F9D8E', color: '#fff',
-              fontSize: 13, fontWeight: 600, cursor: 'pointer',
-            }}
-          >
-            📨 Enroll in sequence
-          </button>
+          {/* Context-aware stage movement. Disabled when the selection spans
+              multiple stages (valid targets differ per stage) or there's no
+              forward stage. "Outreach" routes through the enroll preview so
+              nothing fires without an explicit confirm. */}
+          {showMoveMenu && (
+            <div
+              onClick={() => setShowMoveMenu(false)}
+              style={{ position: 'fixed', inset: 0, zIndex: 940 }}
+            />
+          )}
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={() => setShowMoveMenu(v => !v)}
+              disabled={movingStage || !selectionStage || forwardStageOptions.length === 0}
+              title={
+                !selectionStage
+                  ? 'Select prospects in the same stage to move them'
+                  : forwardStageOptions.length === 0
+                    ? 'No forward stage available from here'
+                    : `Move selected from ${stageLabel(selectionStage)}`
+              }
+              style={{
+                padding: '7px 16px', borderRadius: 7, border: 'none',
+                background: (movingStage || !selectionStage || forwardStageOptions.length === 0) ? '#9ca3af' : '#0F9D8E',
+                color: '#fff', fontSize: 13, fontWeight: 600,
+                cursor: (movingStage || !selectionStage || forwardStageOptions.length === 0) ? 'default' : 'pointer',
+              }}
+            >
+              {movingStage ? '⟳ Moving…' : '➡ Move to ▾'}
+            </button>
+            {showMoveMenu && selectionStage && forwardStageOptions.length > 0 && (
+              <div style={{
+                position: 'absolute', bottom: '100%', left: 0, marginBottom: 6,
+                background: '#fff', border: '1px solid #e2e4ea', borderRadius: 8,
+                boxShadow: '0 8px 24px rgba(0,0,0,0.16)', overflow: 'hidden',
+                minWidth: 220, zIndex: 950,
+              }}>
+                {forwardStageOptions.map(key => (
+                  <button
+                    key={key}
+                    onClick={() => handleBulkStageMove(key)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+                      padding: '10px 14px', border: 'none', background: '#fff',
+                      color: '#111827', fontSize: 13, textAlign: 'left', cursor: 'pointer',
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.background = '#f3f4f6')}
+                    onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
+                  >
+                    <span>{stageLabel(key)}</span>
+                    {key === 'outreach' && (
+                      <span style={{ marginLeft: 'auto', fontSize: 11, color: '#92400e', background: '#fef3c7', padding: '1px 7px', borderRadius: 4, whiteSpace: 'nowrap' }}>
+                        starts outreach · preview
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           {campaignFilter && (
             <button
               onClick={handleRemoveFromCampaign}
