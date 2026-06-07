@@ -307,6 +307,40 @@ export default function SendingScheduleSettings({ mode = 'org', value, orgDefaul
               min={1} max={24} disabled={disabled || (isCampaign && !isOvr('pacingMode'))} />
           </div>
         )}
+
+        {/* Effective send-window note. Surfaces the resolved end hour (which is
+            otherwise invisible in cadence mode) and cautions on short/inverted
+            windows. The backend clamps an inverted window so sends never silently
+            stop, but we still flag it so the misconfiguration is visible here. */}
+        {(() => {
+          const fmtHour = (h) => {
+            if (h == null) return '—';
+            if (h === 24) return 'midnight';
+            const am = h < 12; const hr = (h % 12) === 0 ? 12 : (h % 12);
+            return `${hr} ${am ? 'AM' : 'PM'}`;
+          };
+          const startH = eff('sendWindowStartHour');
+          const endH   = eff('sendWindowEndHour');
+          const span   = (typeof startH === 'number' && typeof endH === 'number') ? (endH - startH) : null;
+          if (span == null) return null;
+          if (span <= 0) {
+            return (
+              <div style={{ marginTop: 8, fontSize: 12, color: '#b45309' }}>
+                ⚠ Send window ends ({fmtHour(endH)}) at or before it starts ({fmtHour(startH)}) — there's no time to send.
+                This is auto-corrected to a valid window so sends don't stall, but set an end time after the start to control it.
+              </div>
+            );
+          }
+          const short = span < 2;
+          return (
+            <div style={{ marginTop: 8, fontSize: 12, color: short ? '#b45309' : '#64748b' }}>
+              {pacingMode === 'cadence'
+                ? <>Sends run from <strong>{fmtHour(startH)}</strong>, every {eff('cadenceMinutes') ?? 5} min, until the day's volume is sent or <strong>{fmtHour(endH)}</strong> (safety cutoff — anything left rolls to the next day).</>
+                : <>Sends are spread evenly between <strong>{fmtHour(startH)}</strong> and <strong>{fmtHour(endH)}</strong>.</>}
+              {short && <> {' '}This is only ~{span}h — the day's volume gets compressed{pacingMode === 'cadence' ? ', and any overflow rolls to the next day' : ''}. Consider widening the window.</>}
+            </div>
+          );
+        })()}
       </Row>
 
       {/* LinkedIn release cap */}
