@@ -2978,6 +2978,16 @@ router.post('/:id/preview', async (req, res) => {
 
       try {
 
+        // Run the dispatcher in-memory for this prospect. Mirrors the
+        // bulk-activate call in prospecting-campaigns.routes.js, but the result
+        // is only previewed — nothing is enrolled or sent.
+        const dispatch = await PersonalizationDispatcher.personaliseEnrollment({
+          orgId:      req.orgId,
+          userId:     req.user.userId,
+          sequenceId: req.params.id,
+          prospectId,
+        });
+
         // Flatten dispatcher's keyed map → array sorted by step_order, with
         // channel/intent metadata attached from sequence_steps for display.
         const stepOrders = Object.keys(dispatch.personalisedSteps || {})
