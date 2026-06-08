@@ -601,7 +601,10 @@ async function runProspectSkill({
   // Decide fit deterministically, in code, BEFORE the model call. function +
   // seniority are derived from the title (zero external data); industry + size
   // come from the ENRICHED account block already in the payload.
-  const cls = ProspectClassifier.classifyTitle(contextPayload.prospect && contextPayload.prospect.title);
+  const cls = ProspectClassifier.classifyTitle(
+    contextPayload.prospect && contextPayload.prospect.title,
+    contextPayload._meta && contextPayload._meta.title_classifier
+  );
   const facts = {
     title:          (contextPayload.prospect && contextPayload.prospect.title) || null,
     function:       cls.function,

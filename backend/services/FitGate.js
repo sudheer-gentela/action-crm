@@ -85,6 +85,37 @@ function quote(v) {
   return v === null || v === undefined ? '∅' : `'${v}'`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveFitRules — layer fit-rule sets into one effective set.
+//
+// Additive with later layers prevailing: starting from the built-in defaults,
+// each subsequent layer (org → user → campaign) OVERRIDES an earlier rule that
+// shares the same (field + requirement) key, and ADDS rules with new keys. So a
+// user can retune one dimension (e.g. the size band) or add an exclude while
+// inheriting the rest of the org/default ICP. Pass layers most-general first:
+//   resolveFitRules([DEFAULT_FIT_RULES, orgRules, userRules, campaignRules])
+// Empty/absent layers are skipped. Returns a fresh array (never mutates input).
+// ─────────────────────────────────────────────────────────────────────────────
+function ruleKey(r) {
+  return `${r.field}|${r.requirement}`;
+}
+
+function resolveFitRules(layers) {
+  const merged = new Map();   // key -> rule, insertion order preserved
+  const ordered = [];
+  const apply = (rules) => {
+    if (!Array.isArray(rules)) return;
+    for (const r of rules) {
+      if (!r || typeof r !== 'object' || !r.field || !r.requirement) continue;
+      const k = ruleKey(r);
+      if (!merged.has(k)) ordered.push(k);
+      merged.set(k, r);
+    }
+  };
+  for (const layer of (Array.isArray(layers) ? layers : [])) apply(layer);
+  return ordered.map(k => merged.get(k));
+}
+
 function assessFit(facts, fitRules) {
   const f = facts || {};
   const rules = Array.isArray(fitRules) && fitRules.length ? fitRules : DEFAULT_FIT_RULES;
@@ -163,6 +194,7 @@ function assessFit(facts, fitRules) {
 
 module.exports = {
   assessFit,
+  resolveFitRules,
   DEFAULT_FIT_RULES,
   // exported for unit testing
   matchRule,

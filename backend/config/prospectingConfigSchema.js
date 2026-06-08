@@ -99,6 +99,18 @@ const HOOK_CATEGORIES = [
   'account_event', 'tech_stack', 'role_curiosity',
 ];
 
+// ── Enums for the org-configurable enforcement surfaces (fit gate + title
+// classifier + caps). Kept here (not imported from ProspectClassifier/FitGate)
+// so the sanitizer has no service dependency. Must stay in sync with
+// ProspectClassifier's function/seniority enums and FitGate's rule shape.
+const CLASSIFIER_FUNCTION_VALUES  = ['revenue', 'sales', 'marketing', 'exec_founder', 'ops', 'product', 'other'];
+const CLASSIFIER_SENIORITY_VALUES = ['c_level', 'vp', 'director', 'manager', 'ic'];
+const CLASSIFIER_MATCH_MODES      = ['word', 'substring'];   // how a keyword compiles to regex
+const FIT_MATCH_TYPES             = ['one_of', 'contains_any', 'contains_text'];
+const FIT_REQUIREMENTS            = ['must', 'should', 'exclude'];
+const EMAIL_CAP_INTENTS           = ['default', 'first_touch', 'follow_up', 'breakup'];
+const LINKEDIN_CAP_INTENTS        = ['default', 'connection_request', 'post_accept', 'nurture_dm'];
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -193,6 +205,117 @@ function cleanCaseStudyArray(v) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Fit rules (org-configurable hard gate). Each rule must be coherent or it is
+// dropped — a malformed rule must never silently widen or block the gate.
+//   { field, match: one_of|contains_any|contains_text, values: string[],
+//     requirement: must|should|exclude, label? }
+// An empty/invalid array sanitizes to [] which the resolver reads as "inherit".
+// ─────────────────────────────────────────────────────────────────────────────
+function cleanFitRule(r) {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+  const field = typeof r.field === 'string' ? r.field.trim() : '';
+  const match = typeof r.match === 'string' ? r.match.trim() : '';
+  const requirement = typeof r.requirement === 'string' ? r.requirement.trim() : '';
+  const values = cleanStringArray(r.values);
+  if (!field) return null;
+  if (!FIT_MATCH_TYPES.includes(match)) return null;
+  if (!FIT_REQUIREMENTS.includes(requirement)) return null;
+  if (values.length === 0) return null;             // a rule with no values can't match
+  const label = typeof r.label === 'string' && r.label.trim() ? r.label.trim() : field;
+  return { field, match, values, requirement, label };
+}
+
+function cleanFitRules(v) {
+  if (!Array.isArray(v)) return [];
+  return v.map(cleanFitRule).filter(Boolean);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Title classifier (org/user-configurable function + seniority maps).
+//
+// The config surface is KEYWORDS, not regex — keywords are human-editable and
+// the classifier compiles them to word/substring regex at match time (see
+// ProspectClassifier.compilePattern). Each rule:
+//   { patterns: string[], value: <enum>, match?: 'word'|'substring' }
+// Rules are evaluated in order, first match wins, and sit ABOVE the built-in
+// defaults (additive: config rules are tried before defaults; user before org).
+// ─────────────────────────────────────────────────────────────────────────────
+function cleanClassifierRule(r, allowedValues) {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+  const patterns = cleanStringArray(r.patterns);
+  const value = typeof r.value === 'string' ? r.value.trim() : '';
+  if (patterns.length === 0) return null;
+  if (!allowedValues.includes(value)) return null;
+  const match = CLASSIFIER_MATCH_MODES.includes(r.match) ? r.match : 'word';
+  return { patterns, value, match };
+}
+
+function cleanClassifierRules(v, allowedValues) {
+  if (!Array.isArray(v)) return [];
+  return v.map(r => cleanClassifierRule(r, allowedValues)).filter(Boolean);
+}
+
+function cleanDecisionMaker(input) {
+  const dm = (input && typeof input === 'object') ? input : {};
+  const seniorities = cleanStringArray(dm.seniorities).filter(s => CLASSIFIER_SENIORITY_VALUES.includes(s));
+  const functions   = cleanStringArray(dm.functions).filter(f => CLASSIFIER_FUNCTION_VALUES.includes(f));
+  // Empty arrays mean "inherit the built-in decision_maker definition".
+  return { seniorities, functions };
+}
+
+function cleanTitleClassifier(input) {
+  const c = (input && typeof input === 'object') ? input : {};
+  return {
+    function_rules:  cleanClassifierRules(c.function_rules,  CLASSIFIER_FUNCTION_VALUES),
+    seniority_rules: cleanClassifierRules(c.seniority_rules, CLASSIFIER_SENIORITY_VALUES),
+    decision_maker:  cleanDecisionMaker(c.decision_maker),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Outreach caps (org/user-configurable length limits). Email caps are word
+// counts per intent; LinkedIn caps are character counts per intent. Absent /
+// invalid entries are dropped and the validator falls back to its built-ins.
+// ─────────────────────────────────────────────────────────────────────────────
+function posInt(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+function cleanEmailCapEntry(e) {
+  if (!e || typeof e !== 'object') return null;
+  const out = {};
+  for (const k of ['bodyWords', 'subjectWords', 'previewWords']) {
+    const n = posInt(e[k]);
+    if (n != null) out[k] = n;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function cleanOutreachCaps(input) {
+  const c = (input && typeof input === 'object') ? input : {};
+  const emailIn = (c.email && typeof c.email === 'object') ? c.email : {};
+  const liIn    = (c.linkedin && typeof c.linkedin === 'object') ? c.linkedin : {};
+  const email = {};
+  for (const intent of EMAIL_CAP_INTENTS) {
+    const cleaned = cleanEmailCapEntry(emailIn[intent]);
+    if (cleaned) email[intent] = cleaned;
+  }
+  const linkedin = {};
+  for (const intent of LINKEDIN_CAP_INTENTS) {
+    const n = posInt(liIn[intent]);
+    if (n != null) linkedin[intent] = n;
+  }
+  return { email, linkedin };
+}
+
+function cleanRecencyDays(v) {
+  const n = posInt(v);
+  if (n == null) return null;
+  return Math.min(n, 365);     // hard ceiling; null means "inherit / default"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // sanitizeOrgConfig — takes arbitrary input, returns a clean org config object.
 // Always returns the full shape (empty arrays/objects rather than missing
 // keys) so buildOrgContext never has to null-guard.
@@ -214,6 +337,12 @@ function sanitizeOrgConfig(input) {
       banned_phrasings:     cleanStringArray(g.banned_phrasings),
       required_disclaimers: cleanStringArray(g.required_disclaimers),
     },
+    // Org-configurable enforcement surfaces (additive; user layer prevails over
+    // these, which prevail over built-in defaults). Empty/absent = inherit.
+    fit_rules:         cleanFitRules(c.fit_rules),
+    title_classifier:  cleanTitleClassifier(c.title_classifier),
+    outreach_caps:     cleanOutreachCaps(c.outreach_caps),
+    hook_recency_days: cleanRecencyDays(c.hook_recency_days),
   };
 }
 
@@ -260,6 +389,13 @@ function sanitizeUserConfig(input) {
     hook_preferences: {
       preferred_categories: cleanHookCategories(hp.preferred_categories),
     },
+    // User-level overrides of the enforcement surfaces. These take precedence
+    // over the org defaults (and built-ins) per the resolver in
+    // SkillContextService. Empty/absent = fall back to org/built-in.
+    fit_rules:         cleanFitRules(c.fit_rules),
+    title_classifier:  cleanTitleClassifier(c.title_classifier),
+    outreach_caps:     cleanOutreachCaps(c.outreach_caps),
+    hook_recency_days: cleanRecencyDays(c.hook_recency_days),
   };
 }
 

@@ -32,6 +32,8 @@ const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
 const requireModule     = require('../middleware/requireModule.middleware');
 const SkillRunnerService = require('../services/SkillRunnerService');
+const ProspectClassifier = require('../services/ProspectClassifier');
+const { sanitizeOrgConfig } = require('../config/prospectingConfigSchema');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -170,6 +172,43 @@ router.post('/discovery-call-prep/run', async (req, res) => {
   } catch (err) {
     return sendSkillError(res, err, 'Discovery call prep skill failed');
   }
+});
+
+// ── POST /classify/preview ───────────────────────────────────────────────────
+// Title-classifier keyword tuning loop. The config surface is KEYWORDS; this
+// endpoint runs them (after the SAME sanitization a save applies) against
+// sample titles and returns the resulting function/seniority/decision_maker
+// plus a trace showing which keyword matched and the regex it compiled to — so
+// an operator can correct their keywords until the output is right, BEFORE
+// saving. Pure: no model call, no writes.
+//
+// body: { titles: string[] (1..50), classifier?: {function_rules, seniority_rules, decision_maker} }
+//   classifier omitted -> previews the built-in defaults only.
+router.post('/classify/preview', requireModule('prospecting'), (req, res) => {
+  const { titles, classifier } = req.body || {};
+  if (!Array.isArray(titles) || titles.length === 0) {
+    return res.status(400).json({ error: { message: 'titles must be a non-empty array of strings' } });
+  }
+  if (titles.length > 50) {
+    return res.status(400).json({ error: { message: 'titles is capped at 50 per preview' } });
+  }
+  // Validate/normalize the draft classifier through the org sanitizer so the
+  // preview reflects exactly what would be stored and enforced (bad enum values
+  // / empty keyword lists are dropped here, visibly).
+  const sanitized = sanitizeOrgConfig({ title_classifier: classifier || {} }).title_classifier;
+
+  const results = titles.map(title => {
+    const r = ProspectClassifier.classifyTitleTrace(String(title || ''), sanitized);
+    return {
+      title: String(title || ''),
+      function: r.function,
+      seniority: r.seniority,
+      decision_maker: r.decision_maker,
+      trace: r.trace,
+    };
+  });
+
+  return res.json({ classifier: sanitized, results });
 });
 
 module.exports = router;

@@ -36,6 +36,79 @@
 // ============================================================================
 
 const { pool } = require('../config/database');
+const FitGate  = require('./FitGate');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config resolvers for the org-configurable enforcement surfaces. Precedence is
+// campaign > user > org > built-in default. These read the RAW stored configs
+// (already loaded in buildProspectSkillContext) and produce the resolved shapes
+// the runner / validator consume. Absent layers are skipped so a zero-config
+// org behaves exactly as the built-in defaults.
+// ─────────────────────────────────────────────────────────────────────────────
+function _tc(c) { return (c && typeof c.title_classifier === 'object' && c.title_classifier) ? c.title_classifier : {}; }
+function _arr(v) { return Array.isArray(v) ? v : []; }
+
+// Title classifier: additive stack. function_rules / seniority_rules are
+// concatenated campaign→user→org (first match wins downstream, so the more
+// specific layer's keywords win). decision_maker is the union across layers
+// (empty union => classifier falls back to its built-in definition).
+function resolveTitleClassifierConfig(orgC, userC, campC) {
+  const o = _tc(orgC), u = _tc(userC), k = _tc(campC);
+  const function_rules  = [..._arr(k.function_rules),  ..._arr(u.function_rules),  ..._arr(o.function_rules)];
+  const seniority_rules = [..._arr(k.seniority_rules), ..._arr(u.seniority_rules), ..._arr(o.seniority_rules)];
+  const unionField = (field) => {
+    const set = new Set();
+    for (const x of [k, u, o]) {
+      const dm = (x && typeof x.decision_maker === 'object') ? x.decision_maker : {};
+      for (const v of _arr(dm[field])) set.add(v);
+    }
+    return [...set];
+  };
+  const decision_maker = { seniorities: unionField('seniorities'), functions: unionField('functions') };
+  if (!function_rules.length && !seniority_rules.length &&
+      !decision_maker.seniorities.length && !decision_maker.functions.length) {
+    return null;   // nothing configured -> pure built-in classifier
+  }
+  return { function_rules, seniority_rules, decision_maker };
+}
+
+// Fit rules: layered keyed-merge (default -> org -> user -> campaign), later
+// layers override by (field+requirement) and add new. Always returns a
+// non-empty resolved set (defaults included).
+function resolveFitRulesConfig(orgC, userC, campC) {
+  const fr = (c) => (c && Array.isArray(c.fit_rules)) ? c.fit_rules : [];
+  return FitGate.resolveFitRules([FitGate.DEFAULT_FIT_RULES, fr(orgC), fr(userC), fr(campC)]);
+}
+
+// Outreach caps: deep-ish merge org < user < campaign. email caps merge per
+// intent (word fields); linkedin caps replace per intent (single number).
+function resolveOutreachCapsConfig(orgC, userC, campC) {
+  const pick = (c) => (c && typeof c.outreach_caps === 'object' && c.outreach_caps) ? c.outreach_caps : {};
+  const email = {}; const linkedin = {};
+  for (const L of [pick(orgC), pick(userC), pick(campC)]) {
+    if (L.email && typeof L.email === 'object') {
+      for (const [intent, caps] of Object.entries(L.email)) {
+        if (caps && typeof caps === 'object') email[intent] = { ...(email[intent] || {}), ...caps };
+      }
+    }
+    if (L.linkedin && typeof L.linkedin === 'object') {
+      for (const [intent, n] of Object.entries(L.linkedin)) {
+        if (Number.isFinite(Number(n))) linkedin[intent] = Number(n);
+      }
+    }
+  }
+  if (!Object.keys(email).length && !Object.keys(linkedin).length) return null;
+  return { email, linkedin };
+}
+
+// Hook recency days: campaign ?? user ?? org ?? null (null => splitLinkedIn
+// activity uses the built-in POST_RECENCY_DAYS).
+function resolveRecencyDays(orgC, userC, campC) {
+  for (const c of [campC, userC, orgC]) {
+    if (c && Number.isInteger(c.hook_recency_days) && c.hook_recency_days > 0) return c.hook_recency_days;
+  }
+  return null;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // safeQuery — only for queries against tables that may legitimately be absent
@@ -146,13 +219,14 @@ function isOwnAuthoredPost(action) {
   return OWN_POST_ACTIONS.has(action);
 }
 
-function isRecentPost(occurredAt) {
+function isRecentPost(occurredAt, recencyDays) {
   if (!occurredAt) return false;
   const t = new Date(occurredAt).getTime();
   if (!Number.isFinite(t)) return false;
   const ageMs = Date.now() - t;
   if (ageMs < 0) return true;   // future-dated (clock skew) — treat as recent
-  return ageMs <= POST_RECENCY_DAYS * 24 * 60 * 60 * 1000;
+  const days = Number.isInteger(recencyDays) && recencyDays > 0 ? recencyDays : POST_RECENCY_DAYS;
+  return ageMs <= days * 24 * 60 * 60 * 1000;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -163,14 +237,14 @@ function isRecentPost(occurredAt) {
 // (returned empty) — they are never valid hook material. The keys are kept for
 // schema stability (gowarm-prospect.json still lists comments/reactions).
 // ─────────────────────────────────────────────────────────────────────────────
-function splitLinkedInActivity(activity) {
+function splitLinkedInActivity(activity, recencyDays) {
   const out = { posts: [], comments: [], reactions: [] };
   if (!Array.isArray(activity)) return out;
 
   for (const item of activity) {
     if (!item || item.kind !== 'post') continue;       // drop comments + reactions
     if (!isOwnAuthoredPost(item.action)) continue;     // drop plain reposts
-    if (!isRecentPost(item.occurred_at)) continue;     // drop posts older than 14 days
+    if (!isRecentPost(item.occurred_at, recencyDays)) continue;  // drop stale posts
 
     out.posts.push({
       id: item.id,
@@ -977,6 +1051,16 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId, explain 
       provenanceOut: provenance,
     });
 
+    // Resolve the org-configurable enforcement surfaces (campaign > user > org
+    // > built-in). title_classifier + fit_rules ride on _meta (skills ignore
+    // _meta); outreach_caps rides on org_context for OutreachValidator; recency
+    // feeds splitLinkedInActivity below.
+    const resolvedTitleClassifier = resolveTitleClassifierConfig(orgConfig, userConfig, campaignConfig);
+    const resolvedFitRules        = resolveFitRulesConfig(orgConfig, userConfig, campaignConfig);
+    const resolvedOutreachCaps    = resolveOutreachCapsConfig(orgConfig, userConfig, campaignConfig);
+    const resolvedRecencyDays     = resolveRecencyDays(orgConfig, userConfig, campaignConfig);
+    if (resolvedOutreachCaps) orgContext.outreach_caps = resolvedOutreachCaps;
+
     // ── Researcher note (from prospects.research_meta) ──────────────────
     //
     // The Research Queue lets the researcher type an optional note about
@@ -1066,7 +1150,7 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId, explain 
       },
       signals: {
         account_events: buildAccountEvents(account),
-        linkedin_activity: splitLinkedInActivity(liActivity),
+        linkedin_activity: splitLinkedInActivity(liActivity, resolvedRecencyDays),
         // null when the researcher left the queue note blank. The skill
         // checks for non-null and acts per the rules in
         // reference/hook-patterns.md → Pattern 7.
@@ -1090,15 +1174,12 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId, explain 
         // came from and catch a wrong-org sender before send.
         rep_source: campaignSender ? 'campaign_sender' : 'executing_user',
         sender_account_id: campaignSender ? campaignSender.id : null,
-        // Piece 3: resolved fit rules for the runner's gate. Campaign override
-        // fit_rules → org config fit_rules → null (runner falls back to the
-        // built-in FitGate.DEFAULT_FIT_RULES). _meta is ignored by skills.
-        fit_rules:
-          (campaignConfig && Array.isArray(campaignConfig.fit_rules) && campaignConfig.fit_rules.length)
-            ? campaignConfig.fit_rules
-            : ((orgConfig && Array.isArray(orgConfig.fit_rules) && orgConfig.fit_rules.length)
-                ? orgConfig.fit_rules
-                : null),
+        // Resolved enforcement config for the runner (campaign > user > org >
+        // built-in). _meta is ignored by skills.
+        //   fit_rules        — fully merged rule set (always includes defaults)
+        //   title_classifier — org/user keyword overrides; null => built-ins only
+        fit_rules: resolvedFitRules,
+        title_classifier: resolvedTitleClassifier,
       },
     };
 

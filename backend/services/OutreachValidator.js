@@ -104,6 +104,10 @@ function validateOutreach(output, opts = {}) {
 
   const out = (output && typeof output === 'object') ? output : {};
   const banned = [...UNIVERSAL_BANNED, ...bannedExtra.map(b => String(b))];
+  // Org/user-configurable length caps (campaign>user>org already resolved by
+  // SkillContextService into org_context.outreach_caps). Falls back per-field
+  // to the built-in caps below.
+  const capsCfg = (opts.caps && typeof opts.caps === 'object') ? opts.caps : {};
 
   // ---- Fit / skip routing (channel-agnostic) -------------------------------
   // These do not block a send, but they pull the draft into the review lane.
@@ -120,7 +124,8 @@ function validateOutreach(output, opts = {}) {
   // ---- Channel-specific length + content checks ----------------------------
   if (channel === 'email') {
     const email = (out.email && typeof out.email === 'object') ? out.email : {};
-    const caps  = EMAIL_CAPS[intent] || EMAIL_CAPS.default;
+    const caps  = { ...(EMAIL_CAPS[intent] || EMAIL_CAPS.default),
+                    ...((capsCfg.email && capsCfg.email[intent]) || {}) };
 
     const bodyW    = wordCount(email.body);
     const subjW    = wordCount(email.subject);
@@ -150,7 +155,8 @@ function validateOutreach(output, opts = {}) {
     }
   } else if (channel === 'linkedin') {
     const li  = (out.linkedin && typeof out.linkedin === 'object') ? out.linkedin : {};
-    const cap = LINKEDIN_CAPS[intent] || LINKEDIN_CAPS.default;
+    const cap = (capsCfg.linkedin && capsCfg.linkedin[intent])
+                || LINKEDIN_CAPS[intent] || LINKEDIN_CAPS.default;
 
     const body = typeof li.body === 'string' ? li.body : '';
     // Trust the measured length, not the model's self-reported character_count.
@@ -205,6 +211,7 @@ function validateForSkill(skillName, output, orgContext) {
     intent,
     bannedExtra:         Array.isArray(ge.banned_phrasings) ? ge.banned_phrasings : [],
     requiredDisclaimers: Array.isArray(ge.required_disclaimers) ? ge.required_disclaimers : [],
+    caps:                (oc.outreach_caps && typeof oc.outreach_caps === 'object') ? oc.outreach_caps : null,
   });
 }
 

@@ -1,25 +1,39 @@
 // ============================================================================
 // services/ProspectClassifier.js
 //
-// Pure, dependency-free title classifier. The single highest-signal fitment
-// dimension (function + seniority) is derivable from the prospect's title with
-// zero external data, so it must never depend on enrichment, DB, or network.
+// Title classifier. Pure / dependency-free: no DB, no network. The single
+// highest-signal fitment dimension (function + seniority) is derived from the
+// title with zero external data and must never depend on enrichment.
+//
+// Org/user-configurable: callers may pass a classifierConfig whose keyword
+// rules are evaluated BEFORE the built-in defaults (additive — config rules sit
+// on top, first match wins; the SkillContextService resolver stacks user rules
+// above org rules above these defaults). The config surface is KEYWORDS, not
+// regex: each keyword is compiled here to a word-boundary (or substring) regex,
+// so a non-technical operator edits plain phrases and can preview the result
+// (see classifyTitleTrace) and correct the keywords until the output is right.
 //
 // Public API:
-//   classifyTitle(title) -> { function, seniority, decision_maker }
+//   classifyTitle(title, classifierConfig?) -> { function, seniority, decision_maker }
+//   classifyTitleTrace(title, classifierConfig?) -> { ...above, trace }
+//     trace exposes which layer/rule/keyword matched and the compiled regex,
+//     so a config UI can show "your keyword 'head of growth' compiled to
+//     \\bhead of growth\\b and matched".
 //
 //   seniority : 'c_level' | 'vp' | 'director' | 'manager' | 'ic' | 'unknown'
 //   function  : 'revenue' | 'sales' | 'marketing' | 'exec_founder'
 //             | 'ops' | 'product' | 'other' | 'unknown'
-//   decision_maker : boolean  (C-suite / VP / Head-of / Founder)
+//   decision_maker : boolean
 //
-// 'unknown' is a deliberate THIRD state for both function and seniority: when
-// there is no title (or nothing recognizable), the gate must treat the field as
-// unknown rather than as a known value. Never invent a classification.
+// 'unknown' is the deliberate THIRD state (no/unrecognized title) the fit gate
+// treats as missing rather than as a value.
 //
-// Case-insensitive. Ordered checks — more specific titles are matched before
-// generic ones (e.g. "managing director" before plain "director"; founder/CEO
-// before the generic exec words).
+// classifierConfig shape (all optional; absent => built-in defaults only):
+//   {
+//     function_rules:  [ { patterns: string[], value: <fn enum>,  match?: 'word'|'substring' } ],
+//     seniority_rules: [ { patterns: string[], value: <sen enum>, match?: 'word'|'substring' } ],
+//     decision_maker:  { seniorities: <sen enum>[], functions: <fn enum>[] }
+//   }
 // ============================================================================
 
 'use strict';
@@ -30,154 +44,135 @@ function norm(title) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Seniority. Ordered most-senior → least-senior. "head of" is a director-level
-// signal. "managing director" is matched as c_level before the plain director
-// rule can grab the word "director".
+// Built-in default rules. Ordered, first-match-wins. Each entry's regex is the
+// OR of that category's keyword alternatives — kept identical to the previous
+// if-ladder so the zero-config path is byte-for-byte unchanged in behaviour.
 // ─────────────────────────────────────────────────────────────────────────────
-function classifySeniority(t) {
-  if (!t) return 'unknown';
+const DEFAULT_FUNCTION_RULES = [
+  { value: 'exec_founder', re: /\b(founder|co-?founder|owner|proprietor)\b|\bceo\b|\bchief executive\b|\bpresident\b|\bmanaging director\b/ },
+  { value: 'revenue',      re: /\bcro\b|\bchief revenue\b|\bcco\b|\bchief commercial\b|\bchief customer\b|\brevenue\b/ },
+  { value: 'sales',        re: /\bsales\b|\baccount exec(utive)?\b|\bae\b|\bsdr\b|\bbdr\b|\bbusiness development\b|\bbiz dev\b|\bgrowth\b/ },
+  { value: 'marketing',    re: /\bcmo\b|\bchief marketing\b|\bmarketing\b|\bdemand gen\b|\bbrand\b|\bcontent\b/ },
+  { value: 'product',      re: /\bcpo\b|\bchief product\b|\bproduct\b|\bpm\b|\bproduct manager\b/ },
+  { value: 'ops',          re: /\bcoo\b|\bchief operating\b|\boperations\b|\bops\b|\brevops\b|\brev ops\b|\bsales ops\b|\bsales operations\b/ },
+  { value: 'other',        re: /\b(cto|cio|ciso|chief technology|chief information)\b|\b(engineer|engineering|developer|architect|technical|technology)\b|\b(cfo|chief financial|finance|controller|accounting|treasur)\b|\b(chro|people|human resources|hr|talent|recruit)\b|\b(legal|counsel|attorney|compliance)\b|\b(it|information technology|infosec|security)\b|\b(data|analytics|research|design|support|success|customer service)\b/ },
+];
 
-  // C-suite: spelled-out "chief ... officer", common CxO acronyms, and the
-  // founder/owner/president family (which are also c-level by authority).
-  if (
-    /\bchief\b/.test(t) ||
-    /\bc[eorftpidm]o\b/.test(t) ||                 // ceo cfo cro cto cpo cio cmo cdo (2-letter middle)
-    /\b(cco|ciso|chro|cino|cgo|cso|cxo)\b/.test(t) ||
-    /\b(founder|co-?founder|owner|president|proprietor)\b/.test(t) ||
-    /\bmanaging director\b/.test(t) ||
-    /\bmanaging partner\b/.test(t)
-  ) {
-    return 'c_level';
-  }
+const DEFAULT_SENIORITY_RULES = [
+  { value: 'c_level',  re: /\bchief\b|\bc[eorftpidm]o\b|\b(cco|ciso|chro|cino|cgo|cso|cxo)\b|\b(founder|co-?founder|owner|president|proprietor)\b|\bmanaging director\b|\bmanaging partner\b/ },
+  { value: 'vp',       re: /\b(svp|evp|vp|vice president)\b/ },
+  { value: 'director', re: /\b(director|head of|head,)\b|\bhead$/ },
+  { value: 'manager',  re: /\b(manager|mgr)\b/ },
+];
 
-  if (/\b(svp|evp|vp|vice president)\b/.test(t)) return 'vp';
-  if (/\b(director|head of|head,)\b/.test(t) || /\bhead$/.test(t)) return 'director';
-  if (/\b(manager|mgr)\b/.test(t)) return 'manager';
+const DEFAULT_DM_SENIORITIES = ['c_level', 'vp', 'director'];
+const DEFAULT_DM_FUNCTIONS   = ['exec_founder'];
 
-  // Anything else that is a recognizable working title is an individual
-  // contributor; a blank/garbage title already returned 'unknown' above.
-  return 'ic';
+// ─────────────────────────────────────────────────────────────────────────────
+// Keyword -> regex compilation. Keywords are escaped (no ReDoS / no invalid
+// regex from operator input) and wrapped in word boundaries by default, or
+// matched as a substring when the rule asks for it.
+// ─────────────────────────────────────────────────────────────────────────────
+function escapeRe(s) {
+  return String(s).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Function. Ordered: founder/exec family first (so a "CEO & Founder" is
-// exec_founder, not swept up by a stray "sales" token), then the revenue/sales
-// split, then marketing / product / ops, then a catch-all of recognized-but-
-// out-of-ICP functions ('other'), then 'unknown'.
-//
-// revenue vs sales is a reporting nicety only — the default fit rule accepts
-// either via one_of. CRO / "chief revenue" / "revenue" / CCO -> revenue.
-// Sales / AE / SDR / BDR / business development / growth -> sales.
-// ─────────────────────────────────────────────────────────────────────────────
-function classifyFunction(t) {
-  if (!t) return 'unknown';
-
-  // Founder / owner / top-of-house executive. Explicitly per the handover:
-  // CEO, Founder, Co-Founder, President, Owner, Managing Director, Proprietor.
-  if (
-    /\b(founder|co-?founder|owner|proprietor)\b/.test(t) ||
-    /\bceo\b/.test(t) || /\bchief executive\b/.test(t) ||
-    /\bpresident\b/.test(t) ||
-    /\bmanaging director\b/.test(t)
-  ) {
-    return 'exec_founder';
+function compilePattern(pattern, match) {
+  const esc = escapeRe(pattern);
+  if (!esc) return null;
+  try {
+    return match === 'substring'
+      ? new RegExp(esc, 'i')
+      : new RegExp('\\b' + esc + '\\b', 'i');
+  } catch (_) {
+    return null;   // defensive: escaped input should never throw
   }
-
-  // Revenue (chief revenue / commercial / customer officer family).
-  if (
-    /\bcro\b/.test(t) || /\bchief revenue\b/.test(t) ||
-    /\bcco\b/.test(t) || /\bchief commercial\b/.test(t) || /\bchief customer\b/.test(t) ||
-    /\brevenue\b/.test(t)
-  ) {
-    return 'revenue';
-  }
-
-  // Sales.
-  if (
-    /\bsales\b/.test(t) ||
-    /\b(account exec|account executive|\bae\b)\b/.test(t) ||
-    /\b(sdr|bdr)\b/.test(t) ||
-    /\bbusiness development\b/.test(t) || /\bbiz dev\b/.test(t) ||
-    /\bgrowth\b/.test(t)
-  ) {
-    return 'sales';
-  }
-
-  // Marketing.
-  if (
-    /\bcmo\b/.test(t) || /\bchief marketing\b/.test(t) ||
-    /\bmarketing\b/.test(t) || /\bdemand gen\b/.test(t) ||
-    /\bbrand\b/.test(t) || /\bcontent\b/.test(t)
-  ) {
-    return 'marketing';
-  }
-
-  // Product.
-  if (
-    /\bcpo\b/.test(t) || /\bchief product\b/.test(t) ||
-    /\bproduct\b/.test(t) || /\b(pm|product manager)\b/.test(t)
-  ) {
-    return 'product';
-  }
-
-  // Operations (incl. COO, RevOps, Sales Ops). COO is c_level by seniority but
-  // an ops function per the handover's explicit exec_founder list (COO not in
-  // it). RevOps/SalesOps land here too.
-  if (
-    /\bcoo\b/.test(t) || /\bchief operating\b/.test(t) ||
-    /\boperations\b/.test(t) || /\bops\b/.test(t) ||
-    /\brevops\b/.test(t) || /\brev ops\b/.test(t) ||
-    /\bsales ops\b/.test(t) || /\bsales operations\b/.test(t)
-  ) {
-    return 'ops';
-  }
-
-  // Recognized but out-of-ICP functions: engineering, finance, people/HR,
-  // legal, IT, etc. Known (not 'unknown') so the gate evaluates rules against a
-  // concrete non-matching value rather than treating the field as missing.
-  if (
-    /\b(cto|cio|ciso|chief technology|chief information)\b/.test(t) ||
-    /\b(engineer|engineering|developer|architect|technical|technology)\b/.test(t) ||
-    /\b(cfo|chief financial|finance|controller|accounting|treasur)\b/.test(t) ||
-    /\b(chro|people|human resources|\bhr\b|talent|recruit)\b/.test(t) ||
-    /\b(legal|counsel|attorney|compliance)\b/.test(t) ||
-    /\b(\bit\b|information technology|infosec|security)\b/.test(t) ||
-    /\b(data|analytics|research|design|support|success|customer service)\b/.test(t)
-  ) {
-    return 'other';
-  }
-
-  return 'unknown';
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Decision-maker: C-suite / VP / Head-of(director) / Founder. Mirrors the
-// seniority 'must' band {c_level, vp, director} plus the founder function.
-// ─────────────────────────────────────────────────────────────────────────────
-function isDecisionMaker(seniority, fn) {
-  return (
-    seniority === 'c_level' ||
-    seniority === 'vp' ||
-    seniority === 'director' ||
-    fn === 'exec_founder'
-  );
+// Compile a config rule list into [{ value, patterns:[{keyword, re}] }].
+function compileConfigRules(rules) {
+  if (!Array.isArray(rules)) return [];
+  const out = [];
+  for (const rule of rules) {
+    if (!rule || typeof rule !== 'object') continue;
+    const value = typeof rule.value === 'string' ? rule.value : null;
+    const kws = Array.isArray(rule.patterns) ? rule.patterns : [];
+    if (!value || kws.length === 0) continue;
+    const patterns = [];
+    for (const kw of kws) {
+      const re = compilePattern(kw, rule.match);
+      if (re) patterns.push({ keyword: String(kw).trim(), re });
+    }
+    if (patterns.length) out.push({ value, patterns });
+  }
+  return out;
 }
 
-function classifyTitle(title) {
+// Evaluate compiled CONFIG rules first, then built-in DEFAULT rules. Returns a
+// trace object describing the winning match (or the fallback).
+function evaluateOrdered(t, configRules, defaultRules, emptyValue, noMatchValue) {
+  if (!t) return { value: emptyValue, source: 'empty', keyword: null, regex: null };
+
+  for (const rule of configRules) {
+    for (const p of rule.patterns) {
+      if (p.re.test(t)) {
+        return { value: rule.value, source: 'config', keyword: p.keyword, regex: p.re.source };
+      }
+    }
+  }
+  for (const rule of defaultRules) {
+    if (rule.re.test(t)) {
+      return { value: rule.value, source: 'default', keyword: null, regex: rule.re.source };
+    }
+  }
+  return { value: noMatchValue, source: 'none', keyword: null, regex: null };
+}
+
+function resolveDmSets(dm) {
+  const cfg = (dm && typeof dm === 'object') ? dm : {};
+  const sen = Array.isArray(cfg.seniorities) && cfg.seniorities.length ? cfg.seniorities : DEFAULT_DM_SENIORITIES;
+  const fns = Array.isArray(cfg.functions)   && cfg.functions.length   ? cfg.functions   : DEFAULT_DM_FUNCTIONS;
+  return { seniorities: sen, functions: fns };
+}
+
+function classifyTitleTrace(title, classifierConfig) {
   const t = norm(title);
-  const seniority = classifySeniority(t);
-  const fn        = classifyFunction(t);
+  const cfg = (classifierConfig && typeof classifierConfig === 'object') ? classifierConfig : {};
+
+  const fnConfig  = compileConfigRules(cfg.function_rules);
+  const senConfig = compileConfigRules(cfg.seniority_rules);
+
+  const fnT  = evaluateOrdered(t, fnConfig,  DEFAULT_FUNCTION_RULES,  'unknown', 'unknown');
+  const senT = evaluateOrdered(t, senConfig, DEFAULT_SENIORITY_RULES, 'unknown', 'ic');
+
+  const dm = resolveDmSets(cfg.decision_maker);
+  const decision_maker = dm.seniorities.includes(senT.value) || dm.functions.includes(fnT.value);
+
   return {
-    function: fn,
-    seniority,
-    decision_maker: isDecisionMaker(seniority, fn),
+    function: fnT.value,
+    seniority: senT.value,
+    decision_maker,
+    trace: {
+      function:  fnT,
+      seniority: senT,
+      decision_maker: { ...dm, result: decision_maker },
+    },
   };
+}
+
+function classifyTitle(title, classifierConfig) {
+  const r = classifyTitleTrace(title, classifierConfig);
+  return { function: r.function, seniority: r.seniority, decision_maker: r.decision_maker };
 }
 
 module.exports = {
   classifyTitle,
-  // exported for unit testing
-  classifySeniority,
-  classifyFunction,
-  isDecisionMaker,
+  classifyTitleTrace,
+  // exported for unit testing / config tooling
+  compilePattern,
+  compileConfigRules,
+  DEFAULT_FUNCTION_RULES,
+  DEFAULT_SENIORITY_RULES,
+  DEFAULT_DM_SENIORITIES,
+  DEFAULT_DM_FUNCTIONS,
 };
