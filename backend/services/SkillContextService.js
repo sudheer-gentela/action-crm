@@ -306,7 +306,7 @@ function resolveCampaignReplacement(orgItems, campaignItems) {
   return Array.isArray(orgItems) ? orgItems : [];
 }
 
-function buildOrgContext({ orgConfig, campaignConfig, userConfig, repUser, competitors }) {
+function buildOrgContext({ orgConfig, campaignConfig, userConfig, repUser, competitors, campaignSender }) {
   const oc = orgConfig      || {};
   const cc = campaignConfig || {};
   const uc = userConfig     || {};
@@ -363,15 +363,32 @@ function buildOrgContext({ orgConfig, campaignConfig, userConfig, repUser, compe
   });
   const competitorNames = competitorObjs.map(c => c.name).filter(Boolean);
 
-  const repFromUser = uc.rep || {};
-  const fallbackName = repUser
-    ? [repUser.first_name, repUser.last_name].filter(Boolean).join(' ')
-    : '';
-  const rep = {
-    name: fallbackName || 'Sales rep',
-    title: repFromUser.title_for_signature || null,
-    email_signature: repFromUser.email_signature_block || null,
-  };
+  // Rep / sender identity. Preferred source is the campaign's configured
+  // sender account (already org-scoped by the caller); fallback is the
+  // executing user's prospecting_config signature + users-table name.
+  let rep;
+  if (campaignSender) {
+    rep = {
+      name: campaignSender.display_name
+            || campaignSender.label
+            || campaignSender.email
+            || 'Sales rep',
+      title: null,                                  // signature text is self-contained
+      email_signature: campaignSender.signature || null,
+      linkedin_signature: campaignSender.linkedin_signature || null,
+    };
+  } else {
+    const repFromUser = uc.rep || {};
+    const fallbackName = repUser
+      ? [repUser.first_name, repUser.last_name].filter(Boolean).join(' ')
+      : '';
+    rep = {
+      name: fallbackName || 'Sales rep',
+      title: repFromUser.title_for_signature || null,
+      email_signature: repFromUser.email_signature_block || null,
+      linkedin_signature: null,
+    };
+  }
 
   // ── Guardrails: additive across org, campaign, and user ───────────────────
   const orgBanned      = Array.isArray(oc.guardrails?.banned_phrasings) ? oc.guardrails.banned_phrasings : [];
@@ -678,6 +695,35 @@ async function buildSequenceState(client, prospect) {
 // ─────────────────────────────────────────────────────────────────────────────
 // buildProspectSkillContext — main entry.
 // ─────────────────────────────────────────────────────────────────────────────
+// ----------------------------------------------------------------------------
+// buildPriorSteps -- prior outbound steps already generated for this prospect,
+// oldest-first, so the skill can make each follow-up differ from EVERY earlier
+// step (kills the "two steps anchored to the same post" repetition). Sourced
+// from skill_runs, which already stores hook_category + output per run.
+// ----------------------------------------------------------------------------
+async function buildPriorSteps(client, prospect, orgId) {
+  if (!prospect) return [];
+  const rows = await safeQuery(client,
+    `SELECT skill_name, hook_category, output, created_at
+       FROM skill_runs
+      WHERE prospect_id = $1 AND org_id = $2 AND status = 'ok'
+        AND skill_name IN ('outreach-email', 'outreach-linkedin')
+      ORDER BY created_at ASC
+      LIMIT 20`,
+    [prospect.id, orgId]
+  );
+  return rows.map((r, i) => {
+    const out = (r.output && typeof r.output === 'object') ? r.output : null;
+    const angle = out ? (out.rationale || (out.hook && out.hook.primary_signal_id) || null) : null;
+    return {
+      step_order: i + 1,
+      channel: r.skill_name === 'outreach-linkedin' ? 'linkedin' : 'email',
+      hook_category: r.hook_category || null,
+      angle,
+    };
+  });
+}
+
 async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
   let client;
   try {
@@ -749,6 +795,40 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
       campaignConfig = ccRes[0]?.prospecting_config_override || null;
     }
 
+    // -- Campaign sender identity --------------------------------------------
+    // The rep / signature for a campaign run comes from the campaign's
+    // configured sender account (prospecting_sender_accounts), NOT the
+    // executing user. This is what makes "an operator runs a campaign on a
+    // client's behalf" sign as the client. Org-scoped + is_active so a stale
+    // or cross-org sender can never surface. Loaded via its own safeQuery so
+    // an unmigrated env (sender_account_ids column absent) just falls back to
+    // user-based rep resolution.
+    let campaignSender = null;
+    if (prospect.campaign_id) {
+      const sidRows = await safeQuery(client,
+        `SELECT sender_account_ids
+           FROM prospecting_campaigns
+          WHERE id = $1 AND org_id = $2`,
+        [prospect.campaign_id, orgId]
+      );
+      const senderIds = Array.isArray(sidRows[0]?.sender_account_ids)
+        ? sidRows[0].sender_account_ids : [];
+      if (senderIds.length > 0) {
+        // Deterministic pick: lowest-id active sender. Campaigns that rotate
+        // multiple senders should keep signatures consistent; the draft
+        // anchors on that one sender's identity.
+        const saRows = await safeQuery(client,
+          `SELECT id, email, label, display_name, signature, linkedin_signature
+             FROM prospecting_sender_accounts
+            WHERE id = ANY($1::int[]) AND org_id = $2 AND is_active = true
+            ORDER BY id ASC
+            LIMIT 1`,
+          [senderIds, orgId]
+        );
+        campaignSender = saRows[0] || null;
+      }
+    }
+
     // ── User preferences → prospecting_config (only if asUserId provided) ──
     let userConfig = null;
     let repUser = null;
@@ -808,6 +888,7 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
 
     // ── Engagement + sequence state ─────────────────────────────────────
     const engagementHistory = await buildEngagementHistory(client, prospect, orgId);
+    const priorSteps = await buildPriorSteps(client, prospect, orgId);
     const sequenceState = await buildSequenceState(client, prospect);
 
     // ── Org context ─────────────────────────────────────────────────────
@@ -817,6 +898,7 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
       userConfig,
       repUser,
       competitors,
+      campaignSender,
     });
 
     // ── Researcher note (from prospects.research_meta) ──────────────────
@@ -915,6 +997,7 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
         researcher_note: researcherNote,
       },
       engagement_history: engagementHistory,
+      prior_steps: priorSteps,
       sequence_state: sequenceState,
       reply_payload: null,  // populated only by reply-event-triggered skills
       org_context: finalOrgContext,
@@ -927,6 +1010,10 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
         org_id: orgId,
         prospect_id: prospect.id,
         rep_user_id: asUserId || prospect.owner_id || null,
+        // Rep provenance — lets the runner / dry-run show where the signature
+        // came from and catch a wrong-org sender before send.
+        rep_source: campaignSender ? 'campaign_sender' : 'executing_user',
+        sender_account_id: campaignSender ? campaignSender.id : null,
       },
     };
 

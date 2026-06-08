@@ -27,6 +27,7 @@ const crypto = require('crypto');
 const { pool }            = require('../config/database');
 const AIClientResolver    = require('./ai/AIClientResolver');
 const TokenTrackingService = require('./TokenTrackingService');
+const OutreachValidator    = require('./OutreachValidator');
 const {
   buildProspectSkillContext,
   buildDealSkillContext,
@@ -378,6 +379,21 @@ async function runSkill({
     throw e;
   }
 
+  // Org-scope guard. The assembled payload carries its org in _meta.org_id.
+  // If it doesn't match the org this run was invoked for, refuse — a cross-org
+  // rep/signature (e.g. org 112 leaking into an org 111 run) must never reach
+  // the model or a prospect. This is org-provenance only; it does NOT inspect
+  // who the signer is, so a campaign run on someone's behalf is unaffected.
+  if (contextPayload && contextPayload._meta &&
+      contextPayload._meta.org_id != null &&
+      String(contextPayload._meta.org_id) !== String(orgId)) {
+    const e = new Error(
+      `Org scope mismatch: payload _meta.org_id=${contextPayload._meta.org_id} ` +
+      `but run invoked for org ${orgId}. Refusing to run.`);
+    e.statusCode = 409;
+    throw e;
+  }
+
   const bundle = loadSkill(skillName, methodology);
   const system = buildSystemPrompt(bundle);
 
@@ -477,9 +493,20 @@ async function runSkill({
       status: 'ok', errorDetail: null,
     });
 
+    // Deterministic post-validation: length caps, banned phrasings, and
+    // fit/skip routing the model can't be trusted to self-enforce. The caller
+    // (dispatcher / step firer) gates auto-send on validation.route:
+    //   'send'   -> ok to send
+    //   'review' -> recommend_skip / disqualified -> manual lane
+    //   'reject' -> a hard cap or banned phrasing was hit -> regenerate
+    const validation = OutreachValidator.validateForSkill(
+      skillName, parseResult.value, contextPayload.org_context || {}
+    );
+
     return {
       ok: true, status: 'ok', runId,
       output: parseResult.value,
+      validation,
       methodology: methodology || 'default',
       usage: aiResult.usage,
     };
@@ -494,7 +521,7 @@ async function runSkill({
 // Builds prospect context in-process, optionally injects per-run hook
 // preferences, then runs the skill.
 // ─────────────────────────────────────────────────────────────────────────────
-async function runProspectSkill({ orgId, userId, prospectId, skillName, hookPreferences, stepIntent }) {
+async function runProspectSkill({ orgId, userId, prospectId, skillName, hookPreferences, stepIntent, dryRun }) {
   if (!orgId || !userId || !prospectId) {
     const e = new Error('orgId, userId and prospectId are required');
     e.statusCode = 400;
@@ -526,6 +553,14 @@ async function runProspectSkill({ orgId, userId, prospectId, skillName, hookPref
   if (stepIntent && typeof stepIntent === 'string') {
     contextPayload.org_context = contextPayload.org_context || {};
     contextPayload.org_context.step_intent = stepIntent;
+  }
+
+  if (dryRun) {
+    // Inspect-before-send: return the EXACT payload the model would receive
+    // (rep, signature, org_context, _meta.org_id) without calling the AI.
+    // Wire a 'Preview payload' button to this so org-context errors are
+    // ruled out before a single send.
+    return { ok: true, dryRun: true, status: 'dry_run', payload: contextPayload };
   }
 
   return runSkill({
