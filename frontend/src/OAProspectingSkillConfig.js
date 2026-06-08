@@ -18,6 +18,7 @@
 // auto-migration — re-enter affected items with the new fields.
 
 import React, { useState, useEffect, useCallback } from 'react';
+import ProspectingFitGateConfig from './ProspectingFitGateConfig';
 
 const API = process.env.REACT_APP_API_URL;
 
@@ -33,6 +34,11 @@ const EMPTY = {
   default_target_personas: [],
   default_case_study_summaries: [],
   guardrails: { banned_phrasings: [], required_disclaimers: [] },
+  // Org-configurable enforcement surfaces (fit gate / classifier / caps / recency).
+  fit_rules: [],
+  title_classifier: { function_rules: [], seniority_rules: [], decision_maker: { seniorities: [], functions: [] } },
+  outreach_caps: { email: {}, linkedin: {} },
+  hook_recency_days: null,
 };
 
 export default function OAProspectingSkillConfig() {
@@ -155,6 +161,20 @@ export default function OAProspectingSkillConfig() {
           onChange={(v) => updateGuardrails({ required_disclaimers: v })}
           placeholder="Add a required disclaimer…"
           nested
+        />
+      </div>
+
+      {/* Fit gate / title classifier / caps / recency */}
+      <div style={{ borderTop: '1px solid #e5e7eb', marginTop: 8, paddingTop: 18 }}>
+        <ProspectingFitGateConfig
+          fitRules={config.fit_rules}
+          onFitRules={(v) => update({ fit_rules: v })}
+          titleClassifier={config.title_classifier}
+          onTitleClassifier={(v) => update({ title_classifier: v })}
+          outreachCaps={config.outreach_caps}
+          onOutreachCaps={(v) => update({ outreach_caps: v })}
+          hookRecencyDays={config.hook_recency_days}
+          onHookRecencyDays={(v) => update({ hook_recency_days: v })}
         />
       </div>
 
