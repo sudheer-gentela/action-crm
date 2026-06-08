@@ -23,6 +23,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from './prospectingShared';
+import ProspectingFitGateConfig from '../ProspectingFitGateConfig';
 
 const HOOK_CATEGORY_OPTIONS = [
   { value: 'prospect_post',   label: "Prospect's own post / comment" },
@@ -280,6 +281,22 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
             additive
           />
         </div>
+
+        {/* Campaign-level fit / classification overrides (campaign > user > org) */}
+        {effectiveCanEdit && (
+          <div style={{ borderTop: '1px solid #f1f5f9', marginTop: 16, paddingTop: 14 }}>
+            <ProspectingFitGateConfig
+              fitRules={draft.fit_rules}
+              onFitRules={(v) => setDraft({ ...draft, fit_rules: v })}
+              titleClassifier={draft.title_classifier}
+              onTitleClassifier={(v) => setDraft({ ...draft, title_classifier: v })}
+              outreachCaps={draft.outreach_caps}
+              onOutreachCaps={(v) => setDraft({ ...draft, outreach_caps: v })}
+              hookRecencyDays={draft.hook_recency_days}
+              onHookRecencyDays={(v) => setDraft({ ...draft, hook_recency_days: v })}
+            />
+          </div>
+        )}
 
         {/* Resolved preview — what the skill will actually see */}
         <details style={{ marginTop: 18, fontSize: 12 }}>

@@ -23,6 +23,7 @@
 //     Same pattern as custom_case_studies which has always been exclusion-only.
 
 import React, { useState, useEffect, useCallback } from 'react';
+import ProspectingFitGateConfig from './ProspectingFitGateConfig';
 
 const API = process.env.REACT_APP_API_URL;
 
@@ -47,6 +48,11 @@ const EMPTY_USER = {
   rep: { title_for_signature: '', email_signature_block: '' },
   voice: { avoid_phrases: [] },
   hook_preferences: { preferred_categories: [] },
+  // Personal overrides of the enforcement surfaces — these win over org defaults.
+  fit_rules: [],
+  title_classifier: { function_rules: [], seniority_rules: [], decision_maker: { seniorities: [], functions: [] } },
+  outreach_caps: { email: {}, linkedin: {} },
+  hook_recency_days: null,
 };
 
 const EMPTY_ORG = {
@@ -265,6 +271,20 @@ export default function MyOutreachStyleSettings() {
         >
           {HOOK_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+      </div>
+
+      {/* Personal fit / classification overrides (win over org defaults) */}
+      <div style={{ borderTop: '1px solid #e5e7eb', marginTop: 8, paddingTop: 18 }}>
+        <ProspectingFitGateConfig
+          fitRules={config.fit_rules}
+          onFitRules={(v) => update({ fit_rules: v })}
+          titleClassifier={config.title_classifier}
+          onTitleClassifier={(v) => update({ title_classifier: v })}
+          outreachCaps={config.outreach_caps}
+          onOutreachCaps={(v) => update({ outreach_caps: v })}
+          hookRecencyDays={config.hook_recency_days}
+          onHookRecencyDays={(v) => update({ hook_recency_days: v })}
+        />
       </div>
 
       {/* Save bar */}
