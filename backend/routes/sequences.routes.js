@@ -3116,11 +3116,17 @@ router.post('/:id/preview', async (req, res) => {
     const allRunIds = [];
     for (const pv of previews) {
       for (const st of (pv.steps || [])) {
-        const rid = st.personalize_sources?.runId;
-        if (Number.isFinite(rid)) {
-          allRunIds.push(rid);
-          (runIdByProspect[pv.prospectId] = runIdByProspect[pv.prospectId] || []).push(rid);
-        }
+        // runId comes back as a STRING — skill_runs.id is a bigint and
+        // node-postgres returns bigint columns as strings. So normalise to a
+        // numeric string and validate (Number.isFinite('71') is false, which
+        // is the bug this replaces). Keys are kept as strings throughout so the
+        // costById lookup matches the (also-string) id the cost query returns.
+        const raw = st.personalize_sources?.runId;
+        if (raw == null) continue;
+        const rid = String(raw).trim();
+        if (!/^\d+$/.test(rid)) continue;
+        allRunIds.push(rid);
+        (runIdByProspect[pv.prospectId] = runIdByProspect[pv.prospectId] || []).push(rid);
       }
     }
 
@@ -3129,18 +3135,18 @@ router.post('/:id/preview', async (req, res) => {
       const costRes = await pool.query(
         `SELECT id, cost_usd, input_tokens, output_tokens
            FROM skill_runs
-          WHERE id = ANY($1::int[]) AND org_id = $2`,
+          WHERE id = ANY($1::bigint[]) AND org_id = $2`,
         [allRunIds, req.orgId]
       );
       const costById = {};
-      for (const r of costRes.rows) costById[r.id] = r;
+      for (const r of costRes.rows) costById[String(r.id)] = r;
 
       // Per-prospect rollup, attached to each preview entry.
       for (const pv of previews) {
         const rids = runIdByProspect[pv.prospectId] || [];
         let c = 0, it = 0, ot = 0;
         for (const rid of rids) {
-          const row = costById[rid];
+          const row = costById[String(rid)];
           if (!row) continue;
           c  += Number(row.cost_usd)      || 0;
           it += Number(row.input_tokens)  || 0;
