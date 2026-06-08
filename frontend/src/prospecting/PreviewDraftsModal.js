@@ -37,6 +37,37 @@ const CHANNEL_ICON = {
   task:     '📋',
 };
 
+// Hook categories the skill can emit. The "generic" set means no prospect-
+// specific signal was available and the draft fell back to role/segment-level
+// framing — the rep should know that before sending.
+const HOOK_LABEL = {
+  prospect_post:      'Recent post',
+  prospect_bio:       'Profile / experience',
+  account_post:       'Company post',
+  account_event:      'Company event',
+  tech_stack:         'Tech stack',
+  role_curiosity:     'Role curiosity',
+  researcher_override: 'Researcher note',
+  none_available:     'No signal',
+};
+const GENERIC_HOOKS = new Set(['tech_stack', 'role_curiosity', 'none_available']);
+
+// Cost is small per preview; show enough precision to be meaningful without
+// pretending to bill-grade accuracy. Under a tenth of a cent reads as "<$0.001".
+function formatUsd(n) {
+  const v = Number(n) || 0;
+  if (v === 0) return '$0.00';
+  if (v < 0.001) return '<$0.001';
+  if (v < 1) return `$${v.toFixed(4)}`;
+  return `$${v.toFixed(2)}`;
+}
+
+function formatTokens(n) {
+  const v = Number(n) || 0;
+  if (v < 1000) return String(v);
+  return `${(v / 1000).toFixed(1)}k`;
+}
+
 export default function PreviewDraftsModal({ sequenceId, prospectIds, runSkill: runSkillProp = true, onClose }) {
   const [loading, setLoading] = useState(true);
   const [data, setData]       = useState(null);
@@ -146,6 +177,11 @@ export default function PreviewDraftsModal({ sequenceId, prospectIds, runSkill: 
                           ? <span style={{ color: '#991b1b' }}>⚠ 0 steps</span>
                           : `${p.steps?.length || 0} step${p.steps.length === 1 ? '' : 's'}${runSkill ? ' personalised' : ''}`}
                     </div>
+                    {runSkill && !hasError && p.cost && p.cost.runCount > 0 && (
+                      <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>
+                        {formatUsd(p.cost.costUsd)} · {formatTokens(p.cost.inputTokens + p.cost.outputTokens)} tokens
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -169,6 +205,12 @@ export default function PreviewDraftsModal({ sequenceId, prospectIds, runSkill: 
               <>
                 ✓ {data.summary.succeeded} of {data.summary.requested} previewed
                 {data.summary.failed > 0 && <span style={{ color: '#991b1b', marginLeft: 6 }}>· {data.summary.failed} failed</span>}
+                {runSkill && data.costSummary && data.costSummary.runCount > 0 && (
+                  <span style={{ marginLeft: 6 }}>
+                    · this preview cost {formatUsd(data.costSummary.totalCostUsd)}
+                    {' '}({formatTokens(data.costSummary.inputTokens + data.costSummary.outputTokens)} tokens, {data.costSummary.runCount} skill {data.costSummary.runCount === 1 ? 'call' : 'calls'})
+                  </span>
+                )}
               </>
             )}
           </div>
@@ -300,6 +342,10 @@ function PreviewStepCard({ step }) {
   const intentColor = step.intent ? INTENT_COLOR[step.intent] : null;
   const isEmail = step.channel === 'email';
 
+  const hookCategory = step.personalize_sources?.hook?.category || null;
+  const hookLabel = hookCategory ? (HOOK_LABEL[hookCategory] || hookCategory) : null;
+  const isGenericHook = hookCategory ? GENERIC_HOOKS.has(hookCategory) : false;
+
   return (
     <div style={{
       background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
@@ -326,6 +372,21 @@ function PreviewStepCard({ step }) {
             {step.intent_source === 'override' && (
               <span style={{ marginLeft: 4, opacity: 0.7 }}>●</span>
             )}
+          </span>
+        )}
+        {hookLabel && (
+          <span
+            title={isGenericHook
+              ? 'No prospect-specific signal — generic fallback. Consider capturing a recent post or adding a research note.'
+              : `Hook: ${hookLabel}`}
+            style={{
+              fontSize: 10, fontWeight: 600, marginLeft: 'auto',
+              padding: '2px 8px', borderRadius: 10,
+              background: isGenericHook ? '#fef3c7' : '#dcfce7',
+              color: isGenericHook ? '#92400e' : '#166534',
+            }}
+          >
+            {isGenericHook ? '⚠ ' : ''}{hookLabel}
           </span>
         )}
       </div>

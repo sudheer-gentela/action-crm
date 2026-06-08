@@ -16,6 +16,8 @@ The dispatcher calls this skill when a sequence step has `channel='linkedin'`. T
 The caller passes a prospect payload (shape defined in `schema/gowarm-prospect.json`). The fields this skill consumes:
 
 - `org_context.step_intent` — required. One of `connection_request`, `post_accept_message`, `nurture_dm`. If missing or invalid, default to `connection_request` and flag in `confidence_notes`.
+- `signals.linkedin_activity.posts` — the prospect's OWN posts from the last 14 days only (Pattern 1). Comments and reactions arrive empty by design and are never hooks. If `posts` is empty, the prospect has no recent post to anchor on — move down the hook hierarchy.
+- `prospect.about` and `prospect.experience` — the prospect's profile summary and role history. Valid hook material when there is no recent post (Pattern 1b): anchor on a stated mandate, current-role tenure, or a recent role move. Prospect-stated facts only — do not infer intent.
 - `engagement_history` — for `post_accept_message`, find the most recent `linkedin_connection_accepted` event. For `nurture_dm`, find prior `linkedin_message_sent` and `linkedin_message_replied` events.
 - `signals.researcher_note` — optional. When present, a human researcher in the Research Queue captured an explicit note. Shape: `{ text, category, source_url, override }`. When `override` is `true`, you MUST anchor the artifact on this note (see Pattern 6 in `reference/hook-patterns.md`). When `override` is `false`, treat it as additional context you MAY use to inform the hook — your call. When this field is `null`, ignore it and pick a hook from auto-detected signals as usual.
 
@@ -111,7 +113,7 @@ Return a single JSON object. Do NOT wrap in markdown fences. Do NOT include pros
     "character_count": <number>
   },
   "hook": {
-    "category": "prospect_post" | "prospect_comment" | "account_post" | "account_event" | "tech_stack" | "role_curiosity" | "researcher_override" | "none_available",
+    "category": "prospect_post" | "prospect_bio" | "account_post" | "account_event" | "tech_stack" | "role_curiosity" | "researcher_override" | "none_available",
     "primary_signal_id": "..."
   },
   "step_intent": "connection_request" | "post_accept_message" | "nurture_dm",

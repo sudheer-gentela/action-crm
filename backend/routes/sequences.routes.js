@@ -3032,6 +3032,58 @@ router.post('/:id/preview', async (req, res) => {
       }
     }
 
+    // ── Cost rollup ──────────────────────────────────────────────────────
+    // Each personalised step carries the skill_runs id that produced it
+    // (personalize_sources.runId). skill_runs already stores the authoritative
+    // per-run cost_usd + token counts (SkillRunnerService.persistSkillRun), so
+    // we sum those rather than re-deriving pricing here. AI-OFF previews have
+    // no runIds and therefore cost exactly $0.
+    const runIdByProspect = {};
+    const allRunIds = [];
+    for (const pv of previews) {
+      for (const st of (pv.steps || [])) {
+        const rid = st.personalize_sources?.runId;
+        if (Number.isFinite(rid)) {
+          allRunIds.push(rid);
+          (runIdByProspect[pv.prospectId] = runIdByProspect[pv.prospectId] || []).push(rid);
+        }
+      }
+    }
+
+    const costSummary = { totalCostUsd: 0, inputTokens: 0, outputTokens: 0, runCount: 0 };
+    if (allRunIds.length > 0) {
+      const costRes = await pool.query(
+        `SELECT id, cost_usd, input_tokens, output_tokens
+           FROM skill_runs
+          WHERE id = ANY($1::int[]) AND org_id = $2`,
+        [allRunIds, req.orgId]
+      );
+      const costById = {};
+      for (const r of costRes.rows) costById[r.id] = r;
+
+      // Per-prospect rollup, attached to each preview entry.
+      for (const pv of previews) {
+        const rids = runIdByProspect[pv.prospectId] || [];
+        let c = 0, it = 0, ot = 0;
+        for (const rid of rids) {
+          const row = costById[rid];
+          if (!row) continue;
+          c  += Number(row.cost_usd)      || 0;
+          it += Number(row.input_tokens)  || 0;
+          ot += Number(row.output_tokens) || 0;
+        }
+        pv.cost = { costUsd: c, inputTokens: it, outputTokens: ot, runCount: rids.length };
+      }
+
+      // Org-wide totals for this whole preview.
+      for (const row of costRes.rows) {
+        costSummary.totalCostUsd += Number(row.cost_usd)      || 0;
+        costSummary.inputTokens  += Number(row.input_tokens)  || 0;
+        costSummary.outputTokens += Number(row.output_tokens) || 0;
+      }
+      costSummary.runCount = costRes.rows.length;
+    }
+
     res.json({
       sequenceId:   parseInt(req.params.id, 10),
       sequenceName: sequence.name,
@@ -3041,6 +3093,7 @@ router.post('/:id/preview', async (req, res) => {
         succeeded,
         failed,
       },
+      costSummary,
     });
   } catch (err) {
     console.error('preview error:', err);

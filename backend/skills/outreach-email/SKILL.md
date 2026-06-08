@@ -97,7 +97,7 @@ Return a single JSON object. Do NOT wrap in markdown fences. Do NOT include any 
     "body": "..."
   },
   "hook": {
-    "category": "prospect_post" | "prospect_comment" | "account_post" | "account_event" | "tech_stack" | "role_curiosity" | "researcher_override" | "none_available",
+    "category": "prospect_post" | "prospect_bio" | "account_post" | "account_event" | "tech_stack" | "role_curiosity" | "researcher_override" | "none_available",
     "primary_signal_id": "..."
   },
   "step_intent": "first_touch" | "follow_up" | "breakup",

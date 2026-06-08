@@ -12,11 +12,13 @@ Every cold email has three parts:
 
 Total: 3-4 sentences, under 75 words.
 
-## Pattern 1 — Prospect's own words
+## Pattern 1 — Prospect's own recent post
 
-When the prospect has authored a recent post or substantive comment stating a view, problem, or question the product addresses.
+When the prospect has **authored a post in the last two weeks** stating a view, problem, or question the product addresses.
 
-**Opener**: Reference the post or comment specifically, with a short verbatim quote if the line lands. Cite timing if recent.
+Eligibility is strict, and the context layer already enforces it — `signals.linkedin_activity.posts` contains ONLY the prospect's own posts (original, or their own commentary on a quoted repost) from the last 14 days. `comments` and `reactions` arrive empty and are **never** a hook: do not anchor on something the prospect commented on, replied to, liked, or otherwise engaged with — only on what they themselves posted. If `posts` is empty, this pattern does not apply; fall through to the next pattern.
+
+**Opener**: Reference the post specifically, with a short verbatim quote (under 15 words) if the line lands. Cite timing — it is recent by construction ("your post this week", "saw what you posted a few days ago").
 
 **Bridge**: Connect the prospect's stated view to the product — not as a pitch ("we solve that!") but as a relevance signal ("the thing you described is specifically what [product] is built for").
 
@@ -33,6 +35,26 @@ When the prospect has authored a recent post or substantive comment stating a vi
 - Don't quote more than one fragment from the post — one is specific, two is stalking.
 - Don't tell the prospect what they "really meant" in their post.
 - Don't add "I've been thinking about this problem for years" or similar credibility-seeking — let the relevance speak for itself.
+
+## Pattern 1b — Prospect's profile (about + experience)
+
+When there is no recent post but the prospect's own profile gives something specific to anchor on. Two sources, both prospect-stated (not inferred):
+
+- `prospect.about` — the prospect's own summary/headline narrative. Use a stated focus, mandate, or priority ("you describe your remit as building repeatable revenue motion").
+- `prospect.experience` — their role history. The current role's tenure ("six months into the CRO seat at [company]"), a recent move into the role, or a trajectory pattern (operator → leadership) are all legitimate, prospect-stated anchors.
+
+This is genuinely personalized — it's their words and their record — but it is **static**, not timely, so it ranks below a fresh post (Pattern 1) and a recent account event (Pattern 2). Prefer it over the generic fallbacks (tech stack, role-and-stage curiosity) because it is specific to *this* person rather than their role/segment.
+
+**Opener**: Anchor on the specific bio fact. "Six months into the CRO role at [company]" or "you frame your focus as [stated mandate from about]." Do NOT read motives into it ("you must be looking to…") — state the fact, then bridge.
+
+**Bridge**: Connect the stated mandate/tenure to the predictable challenge the product addresses, flagged as the common pattern ("the first two quarters in seat usually surface…").
+
+**Ask**: Curiosity-framed, same as Pattern 1.
+
+**What to avoid**:
+- Don't quote the about section verbatim at length — paraphrase the one relevant idea.
+- Don't infer seniority or intent the profile doesn't state.
+- Don't use this if `about` and `experience` are both empty — fall through.
 
 ## Pattern 2 — Account trigger event
 
@@ -166,9 +188,17 @@ When `signals.researcher_note` is non-null but `override` is false — i.e. hint
 When multiple hooks are available, the tiebreakers:
 
 - **Researcher override wins absolutely** when `signals.researcher_note.override` is true. No other pattern overrides this.
-- **Recency wins.** A post from last week beats an account event from 3 months ago.
-- **Specificity wins.** A quote from the prospect beats a firmographic generality.
+- **Recency + specificity, in this order:** a fresh own-post (Pattern 1) > a recent account event (Pattern 2) > the prospect's bio/experience (Pattern 1b) > the generic fallbacks (case-study parallel, tech stack, role-and-stage curiosity).
+- **Specificity wins** within a tier. A quote from the prospect beats a firmographic generality.
 - **Concreteness wins.** A tech stack fact beats a persona inference.
 - **Honesty wins.** A weak hook you can fully defend beats a strong hook you partially fabricated.
+
+## When nothing specific qualifies — flag it
+
+The fallbacks (Patterns 2–5) exist so the queue keeps moving and every prospect gets a usable draft. But the rep needs to know when a draft is *generic* rather than *specifically personalized*. So:
+
+- If the chosen hook is `role_curiosity`, `tech_stack`, or `none_available` — i.e. there was no fresh own-post, no recent account event, no usable bio anchor, and no researcher note — you MUST say so plainly in `confidence_notes`, e.g. `"No recent prospect post, account event, or bio anchor — generic role-curiosity fallback."` This is the signal the rep uses to decide whether to send as-is or hold the prospect for research.
+- If literally nothing supports even a role-curiosity opener (no role, no company, no stage), set `hook.category = "none_available"`, still produce the most honest short artifact you can, and flag in `confidence_notes` that personalization data was absent.
+- Never manufacture specificity to avoid the flag. A flagged generic draft is correct; a fabricated "specific" one is a failure.
 
 Log the chosen hook in the `hook` field of the output, with the signal `id` so the rep can trace back to the source. For Pattern 6, use `category: "researcher_override"` and set `primary_signal_id` to the researcher_note's source_url when present, or to `"researcher_note"` literally when no URL exists.

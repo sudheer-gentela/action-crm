@@ -120,64 +120,79 @@ function computeTenureMonths(currentRole) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Split linkedin_profiles.activity into the three buckets the skill expects.
+// Eligibility for a post to be used as a personalization hook.
 //
-// Each item in the activity array is {id, kind, occurred_at, text, ...}.
+// Outreach must anchor on what the PROSPECT THEMSELVES recently said — not on
+// things they commented on or merely reacted to, and not on stale activity.
+// Two rules, both enforced here at the source so the skill physically cannot
+// reach for ineligible activity regardless of prompt wording:
+//
+//   1. Authorship — only the prospect's own posts. action='posted' (original)
+//      and action='quoted_repost' (their own commentary on someone else's post)
+//      both contain the prospect's words and qualify. action='reposted' (a
+//      plain share with no commentary) is someone else's content and is
+//      EXCLUDED. action=null is a legacy capture (pre extension v2) where
+//      authorship cannot be confirmed, so it is also EXCLUDED — we require an
+//      explicit own-post action rather than assuming originality.
+//
+//   2. Recency — posted within the last POST_RECENCY_DAYS. A post whose
+//      occurred_at is missing or unparseable cannot be proven recent, so it is
+//      EXCLUDED (strict: when in doubt, leave it out).
+// ─────────────────────────────────────────────────────────────────────────────
+const POST_RECENCY_DAYS  = 14;
+const OWN_POST_ACTIONS   = new Set(['posted', 'quoted_repost']);
+
+function isOwnAuthoredPost(action) {
+  return OWN_POST_ACTIONS.has(action);
+}
+
+function isRecentPost(occurredAt) {
+  if (!occurredAt) return false;
+  const t = new Date(occurredAt).getTime();
+  if (!Number.isFinite(t)) return false;
+  const ageMs = Date.now() - t;
+  if (ageMs < 0) return true;   // future-dated (clock skew) — treat as recent
+  return ageMs <= POST_RECENCY_DAYS * 24 * 60 * 60 * 1000;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Build the prospect's LinkedIn activity for hook selection.
+//
+// Each raw item is {id, kind, occurred_at, text, ...}. We surface ONLY the
+// prospect's own recent posts. comments and reactions are deliberately dropped
+// (returned empty) — they are never valid hook material. The keys are kept for
+// schema stability (gowarm-prospect.json still lists comments/reactions).
 // ─────────────────────────────────────────────────────────────────────────────
 function splitLinkedInActivity(activity) {
   const out = { posts: [], comments: [], reactions: [] };
   if (!Array.isArray(activity)) return out;
 
   for (const item of activity) {
-    if (!item || !item.kind) continue;
+    if (!item || item.kind !== 'post') continue;       // drop comments + reactions
+    if (!isOwnAuthoredPost(item.action)) continue;     // drop plain reposts
+    if (!isRecentPost(item.occurred_at)) continue;     // drop posts older than 14 days
 
-    if (item.kind === 'post') {
-      out.posts.push({
-        id: item.id,
-        posted_at: item.occurred_at,
-        text: item.text,
-        engagement_count: item.engagement_count ?? null,
-        topic_tags: item.topic_tags || [],
-        // ── Repost-detection fields (extension v2) ───────────────────────
-        // action distinguishes 'posted' (original), 'reposted' (plain),
-        // and 'quoted_repost' (commentary on someone else's post). Older
-        // captures may have action=null — downstream consumers should
-        // treat null as "unknown / assume original" given the bias of
-        // most profile activity items.
-        action: item.action ?? null,
-        // For quoted reposts: the prospect's own commentary above the
-        // embedded original. Use this as the personalization hook —
-        // it's their actual words, not the original post's body.
-        commentary: item.commentary ?? null,
-        // The body of the embedded original post being amplified. Do
-        // NOT cite this as the prospect's own words.
-        quoted_text: item.quoted_text ?? null,
-        // The author of the embedded original post. Lets the skill
-        // attribute correctly ("saw you share Satyajeet's take on...").
-        quoted_author: item.quoted_author ?? null,
-      });
-    } else if (item.kind === 'comment') {
-      out.comments.push({
-        id: item.id,
-        commented_at: item.occurred_at,
-        text: item.text,
-        parent_post_summary: item.parent_post_summary,
-        parent_author: item.parent_author ?? null,
-      });
-    } else if (item.kind === 'reaction') {
-      out.reactions.push({
-        id: item.id,
-        reacted_at: item.occurred_at,
-        reaction_type: item.reaction_type ?? null,
-        parent_post_summary: item.parent_post_summary,
-        parent_author: item.parent_author ?? null,
-      });
-    }
+    out.posts.push({
+      id: item.id,
+      posted_at: item.occurred_at,
+      text: item.text,
+      engagement_count: item.engagement_count ?? null,
+      topic_tags: item.topic_tags || [],
+      // action is one of 'posted' | 'quoted_repost' after filtering.
+      action: item.action ?? null,
+      // For quoted reposts: the prospect's own commentary above the embedded
+      // original. Use this as the personalization hook — their actual words.
+      commentary: item.commentary ?? null,
+      // The body of the embedded original post being amplified. Do NOT cite
+      // this as the prospect's own words.
+      quoted_text: item.quoted_text ?? null,
+      // The author of the embedded original post, for correct attribution
+      // ("saw you share Satyajeet's take on...").
+      quoted_author: item.quoted_author ?? null,
+    });
   }
 
   out.posts.sort((a, b) => new Date(b.posted_at) - new Date(a.posted_at));
-  out.comments.sort((a, b) => new Date(b.commented_at) - new Date(a.commented_at));
-  out.reactions.sort((a, b) => new Date(b.reacted_at) - new Date(a.reacted_at));
 
   return out;
 }
