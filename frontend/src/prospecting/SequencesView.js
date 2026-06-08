@@ -64,6 +64,7 @@ function SequencesView({ prospects, search }) {
   const [selectedEnrollIds, setSelectedEnrollIds] = useState(() => new Set());
   const [bulkUndoing, setBulkUndoing] = useState(false);
   const [bulkApproving, setBulkApproving] = useState(false);
+  const [bulkDiscarding, setBulkDiscarding] = useState(false);
 
   // Open builder in edit mode — fetches full sequence (with steps) before opening.
   // The list endpoint only returns step_count, not the steps array.
@@ -274,6 +275,13 @@ function SequencesView({ prospects, search }) {
     .map(d => d.id);
   const selectedEmailCount = selectedEmailLogIds.length;
 
+  // "Discard" applies to ALL channels (it just skips the step + advances the
+  // sequence), so unlike Approve it counts every selected draft, not only email.
+  const selectedDraftLogIds = drafts
+    .filter(d => d.enrollmentId && selectedEnrollIds.has(d.enrollmentId))
+    .map(d => d.id);
+  const selectedDraftCount = selectedDraftLogIds.length;
+
   const toggleSelectEnroll = (enrollmentId) => {
     if (!enrollmentId) return;
     setSelectedEnrollIds(prev => {
@@ -360,6 +368,42 @@ function SequencesView({ prospects, search }) {
       setError('Approve & queue failed: ' + err.message);
     } finally {
       setBulkApproving(false);
+    }
+  };
+
+  // Bulk version of the per-card 🗑 Discard. Skips each selected draft step and
+  // advances its sequence — it does NOT stop the enrollment (that's Unenroll).
+  // Applies to every channel, not just email.
+  const handleBulkDiscard = async () => {
+    const logIds = selectedDraftLogIds;
+    if (!logIds.length) return;
+    if (!window.confirm(
+      `Discard ${logIds.length} draft${logIds.length === 1 ? '' : 's'}?\n\n` +
+      'Each step is skipped and its sequence advances to the next step. This does ' +
+      'NOT stop the enrollment — use "Unenroll" for that. Already-sent touches are unaffected.'
+    )) return;
+    setBulkDiscarding(true);
+    try {
+      const result = await apiFetch('/sequences/drafts/bulk-discard', {
+        method: 'POST',
+        body: JSON.stringify({ logIds }),
+      });
+      const removed = new Set(result.discardedIds || []);
+      setDrafts(prev => prev.filter(d => !removed.has(d.id)));
+      setDraftEdits(prev => {
+        const n = { ...prev };
+        for (const id of removed) delete n[id];
+        return n;
+      });
+      setSelectedEnrollIds(new Set());
+      window.alert(
+        `Discarded ${result.discarded || 0} draft(s).` +
+        (result.skipped ? ` ${result.skipped} skipped (already actioned or enrolled by someone else).` : '')
+      );
+    } catch (err) {
+      setError('Bulk discard failed: ' + err.message);
+    } finally {
+      setBulkDiscarding(false);
     }
   };
 
@@ -822,11 +866,26 @@ function SequencesView({ prospects, search }) {
                         {bulkApproving ? 'Queuing…' : `✅ Approve & queue ${selectedEmailCount} email${selectedEmailCount === 1 ? '' : 's'}`}
                       </button>
                     )}
+                    {selectedDraftCount > 0 && (
+                      <button
+                        onClick={handleBulkDiscard}
+                        disabled={bulkDiscarding}
+                        style={{
+                          ...(selectedEmailCount > 0 ? {} : { marginLeft: 'auto' }),
+                          padding: '6px 14px', borderRadius: 6,
+                          border: '1px solid #fcd34d', background: bulkDiscarding ? '#fef3c7' : '#fff',
+                          color: '#92400e', fontSize: 13, fontWeight: 600,
+                          cursor: bulkDiscarding ? 'not-allowed' : 'pointer',
+                        }}
+                        title="Skip these draft steps and advance each sequence. Does not stop the enrollment."
+                      >
+                        {bulkDiscarding ? 'Discarding…' : `🗑 Discard ${selectedDraftCount} draft${selectedDraftCount === 1 ? '' : 's'}`}
+                      </button>
+                    )}
                     <button
                       onClick={handleBulkUndo}
                       disabled={bulkUndoing}
                       style={{
-                        ...(selectedEmailCount > 0 ? {} : { marginLeft: 'auto' }),
                         padding: '6px 14px', borderRadius: 6,
                         border: '1px solid #fca5a5', background: bulkUndoing ? '#fee2e2' : '#fff',
                         color: '#b91c1c', fontSize: 13, fontWeight: 600,

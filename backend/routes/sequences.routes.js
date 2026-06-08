@@ -1758,81 +1758,155 @@ router.post('/drafts/:logId/complete', async (req, res) => {
   }
 });
 
+// ── discardDraftTx — skip ONE draft step + advance its enrollment ────────────
+// Shared by DELETE /drafts/:logId (single) and POST /drafts/bulk-discard so the
+// two paths can't drift. The CALLER owns the transaction (BEGIN/COMMIT/ROLLBACK).
+// The draft row is locked (FOR UPDATE) so concurrent discards of the same step
+// can't double-advance. Returns exactly one of:
+//   { logId, notFound: true }   — no 'draft'-status row for this id in the org
+//   { logId, forbidden: true }  — row exists but the caller isn't the enroller
+//   { logId, discarded: true, prospectId, enrollmentId, enrollmentCompleted }
+async function discardDraftTx(client, orgId, userId, logId) {
+  const draftRes = await client.query(
+    `SELECT ssl.*, ss.step_order, se.enrolled_by, se.current_step,
+            s.id AS seq_id, s.name AS sequence_name
+       FROM sequence_step_logs ssl
+       JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
+       JOIN sequence_enrollments se ON se.id  = ssl.enrollment_id
+       JOIN sequences s             ON s.id   = se.sequence_id
+      WHERE ssl.id=$1 AND ssl.org_id=$2 AND ssl.status='draft'
+      FOR UPDATE OF ssl`,
+    [logId, orgId]
+  );
+  if (!draftRes.rows.length) return { logId: Number(logId), notFound: true };
+  const draft = draftRes.rows[0];
+
+  if (draft.enrolled_by !== userId) return { logId: Number(logId), forbidden: true };
+
+  await client.query(
+    `UPDATE sequence_step_logs SET status='skipped', fired_at=NOW() WHERE id=$1`,
+    [draft.id]
+  );
+
+  let enrollmentCompleted = false;
+  const nextStepRes = await client.query(
+    `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
+    [draft.seq_id, draft.current_step + 1]
+  );
+  if (nextStepRes.rows.length) {
+    const ns = nextStepRes.rows[0];
+    const settings = await SendingSchedule.resolveSettings({ orgId, campaignId: null });
+    const nextDue  = SendingSchedule.nextStepDue(ns, settings);
+    await client.query(
+      `UPDATE sequence_enrollments SET current_step=$1, next_step_due=$2 WHERE id=$3`,
+      [draft.current_step + 1, nextDue, draft.enrollment_id]
+    );
+  } else {
+    await client.query(
+      `UPDATE sequence_enrollments SET status='completed', completed_at=NOW() WHERE id=$1`,
+      [draft.enrollment_id]
+    );
+    enrollmentCompleted = true;
+  }
+
+  await client.query(
+    `UPDATE prospecting_actions
+        SET status='completed', completed_at=CURRENT_TIMESTAMP,
+            completed_by=$1, outcome='skipped', updated_at=CURRENT_TIMESTAMP
+      WHERE org_id=$2 AND source='sequence_draft'
+        AND (metadata->>'draftLogId')::int=$3
+        AND status != 'completed'`,
+    [userId, orgId, draft.id]
+  );
+
+  await client.query(
+    `INSERT INTO prospecting_activities
+       (org_id, prospect_id, user_id, activity_type, description, metadata)
+     VALUES ($1, $2,$3,'sequence_step_skipped',$4,$5)`,
+    [orgId,
+      draft.prospect_id, userId,
+      `Draft discarded — ${draft.sequence_name} step ${draft.step_order}`,
+      JSON.stringify({ enrollmentId: draft.enrollment_id, draftLogId: draft.id, stepOrder: draft.step_order }),
+    ]
+  );
+
+  return {
+    logId: Number(logId), discarded: true,
+    prospectId: draft.prospect_id, enrollmentId: draft.enrollment_id,
+    enrollmentCompleted,
+  };
+}
+
 router.delete('/drafts/:logId', async (req, res) => {
   const client = await pool.connect();
   try {
-    const draftRes = await client.query(
-      `SELECT ssl.*, ss.step_order, se.enrolled_by, se.current_step,
-              s.id AS seq_id, s.name AS sequence_name
-         FROM sequence_step_logs ssl
-         JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
-         JOIN sequence_enrollments se ON se.id  = ssl.enrollment_id
-         JOIN sequences s             ON s.id   = se.sequence_id
-        WHERE ssl.id=$1 AND ssl.org_id=$2 AND ssl.status='draft'`,
-      [req.params.logId, req.orgId]
-    );
-    if (!draftRes.rows.length) {
+    await client.query('BEGIN');
+    const r = await discardDraftTx(client, req.orgId, req.user.userId, req.params.logId);
+    if (r.notFound) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: { message: 'Draft not found or already actioned' } });
     }
-    const draft = draftRes.rows[0];
-
-    if (draft.enrolled_by !== req.user.userId) {
+    if (r.forbidden) {
+      await client.query('ROLLBACK');
       return res.status(403).json({ error: { message: 'Only the enrolling rep can discard this draft' } });
     }
-
-    await client.query('BEGIN');
-
-    await client.query(
-      `UPDATE sequence_step_logs SET status='skipped', fired_at=NOW() WHERE id=$1`,
-      [draft.id]
-    );
-
-    const nextStepRes = await client.query(
-      `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
-      [draft.seq_id, draft.current_step + 1]
-    );
-    if (nextStepRes.rows.length) {
-      const ns = nextStepRes.rows[0];
-      const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId, campaignId: null });
-      const nextDue  = SendingSchedule.nextStepDue(ns, settings);
-      await client.query(
-        `UPDATE sequence_enrollments SET current_step=$1, next_step_due=$2 WHERE id=$3`,
-        [draft.current_step + 1, nextDue, draft.enrollment_id]
-      );
-    } else {
-      await client.query(
-        `UPDATE sequence_enrollments SET status='completed', completed_at=NOW() WHERE id=$1`,
-        [draft.enrollment_id]
-      );
-    }
-
-    await client.query(
-      `UPDATE prospecting_actions
-          SET status='completed', completed_at=CURRENT_TIMESTAMP,
-              completed_by=$1, outcome='skipped', updated_at=CURRENT_TIMESTAMP
-        WHERE org_id=$2 AND source='sequence_draft'
-          AND (metadata->>'draftLogId')::int=$3
-          AND status != 'completed'`,
-      [req.user.userId, req.orgId, draft.id]
-    );
-
-    await client.query(
-      `INSERT INTO prospecting_activities
-         (org_id, prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2,$3,'sequence_step_skipped',$4,$5)`,
-      [req.orgId, 
-        draft.prospect_id, req.user.userId,
-        `Draft discarded — ${draft.sequence_name} step ${draft.step_order}`,
-        JSON.stringify({ enrollmentId: draft.enrollment_id, draftLogId: draft.id, stepOrder: draft.step_order }),
-      ]
-    );
-
     await client.query('COMMIT');
     res.json({ ok: true });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('DELETE /sequences/drafts/:logId', err);
     res.status(500).json({ error: { message: 'Failed to discard draft: ' + err.message } });
+  } finally {
+    client.release();
+  }
+});
+
+// ── POST /api/sequences/drafts/bulk-discard ──────────────────────────────────
+// Bulk version of DELETE /drafts/:logId. Body: { logIds: [1,2,3] }. Each draft
+// is skipped and its enrollment advanced using the SAME per-draft logic
+// (discardDraftTx). All in ONE transaction — if any hard-fails, nothing commits
+// (all-or-nothing), matching bulk-undo, so the rep never lands half-discarded.
+// Drafts already actioned (notFound) or owned by another rep (forbidden) are
+// reported, not errored. This advances each sequence; it does NOT stop the
+// enrollment — that's what bulk-undo is for.
+router.post('/drafts/bulk-discard', async (req, res) => {
+  const { logIds } = req.body || {};
+  if (!Array.isArray(logIds) || logIds.length === 0) {
+    return res.status(400).json({ error: { message: 'logIds must be a non-empty array' } });
+  }
+  if (logIds.length > 500) {
+    return res.status(400).json({ error: { message: 'Too many at once (max 500)' } });
+  }
+  const ids = [...new Set(logIds.map(n => parseInt(n, 10)).filter(Number.isFinite))];
+  if (!ids.length) {
+    return res.status(400).json({ error: { message: 'No valid logIds' } });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const results = [];
+    for (const id of ids) {
+      results.push(await discardDraftTx(client, req.orgId, req.user.userId, id));
+    }
+    await client.query('COMMIT');
+    const discarded    = results.filter(r => r.discarded).length;
+    const notFound     = results.filter(r => r.notFound).length;
+    const forbidden    = results.filter(r => r.forbidden).length;
+    const discardedIds = results.filter(r => r.discarded).map(r => r.logId);
+    res.json({
+      requested: ids.length,
+      discarded,
+      skipped: notFound + forbidden,
+      notFound,
+      forbidden,
+      discardedIds,
+      results,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('POST /sequences/drafts/bulk-discard', err);
+    res.status(500).json({ error: { message: 'Bulk discard failed (nothing was changed): ' + err.message } });
   } finally {
     client.release();
   }
