@@ -79,6 +79,10 @@ router.post(
         skillName: 'outreach-email',
         hookPreferences: hookPreferences || null,
         stepIntent: intent,
+        // Inspect-before-send + manual override + provenance/lint preview.
+        dryRun:        req.query.dryRun === 'true',
+        forceGenerate: req.query.forceGenerate === 'true',
+        explain:       req.query.explain === 'true',
       });
       return res.json(result);
     } catch (err) {
@@ -115,6 +119,10 @@ router.post(
         skillName: 'outreach-linkedin',
         hookPreferences: hookPreferences || null,
         stepIntent: intent,
+        // Inspect-before-send + manual override + provenance/lint preview.
+        dryRun:        req.query.dryRun === 'true',
+        forceGenerate: req.query.forceGenerate === 'true',
+        explain:       req.query.explain === 'true',
       });
       return res.json(result);
     } catch (err) {

@@ -216,10 +216,20 @@ class IcpScoringService {
 
     switch (rule.match_type) {
       case 'contains_any':
-        matched = targets.length === 0 || targets.some(t => strVal === String(t).toLowerCase());
+        // Empty target set = no opinion. Previously this auto-matched (every
+        // prospect got full points), inflating the composite toward mid-range
+        // and making icp_score useless as a signal. Treat as a skip: 0 points,
+        // no match. (The hard fit gate does NOT depend on this — see FitGate.)
+        if (targets.length === 0) {
+          return { match: 'skip', points: 0, detail: `${label}: no targets configured (skipped)` };
+        }
+        matched = targets.some(t => strVal === String(t).toLowerCase());
         break;
       case 'contains_text':
-        matched = targets.length === 0 || targets.some(t => strVal.includes(String(t).toLowerCase()));
+        if (targets.length === 0) {
+          return { match: 'skip', points: 0, detail: `${label}: no targets configured (skipped)` };
+        }
+        matched = targets.some(t => strVal.includes(String(t).toLowerCase()));
         break;
       case 'greater_than': {
         const num = parseFloat(fieldValue);

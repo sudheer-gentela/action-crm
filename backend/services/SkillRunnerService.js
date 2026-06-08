@@ -28,6 +28,9 @@ const { pool }            = require('../config/database');
 const AIClientResolver    = require('./ai/AIClientResolver');
 const TokenTrackingService = require('./TokenTrackingService');
 const OutreachValidator    = require('./OutreachValidator');
+const FitGate              = require('./FitGate');
+const ProspectClassifier   = require('./ProspectClassifier');
+const ContextLint          = require('./ContextLint');
 const {
   buildProspectSkillContext,
   buildDealSkillContext,
@@ -364,6 +367,38 @@ async function persistSkillRun(client, {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// persistSkippedRun — record a skill_runs row for a prospect the fit gate
+// disqualified BEFORE any model call. Reuses persistSkillRun with status
+// 'skipped', no model/usage/prompt. The fit object is stored as the output so
+// "why was this skipped?" is answerable from skill_runs alone. Best-effort:
+// failure to persist must not block the skip decision itself.
+// ─────────────────────────────────────────────────────────────────────────────
+async function persistSkippedRun({ orgId, userId, skillName, prospectId, contextPayload, fit }) {
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query(
+      `SELECT set_config('app.current_org_id', $1::text, true)`,
+      [String(orgId)]
+    );
+    return await persistSkillRun(client, {
+      orgId, userId, skillName, prospectId, dealId: null,
+      inputPayload: contextPayload,
+      systemPrompt: `[fit-gate] disqualified before model call: ${skillName}`,
+      output: fit, rawOutput: null, methodology: null,
+      model: null, usage: { input_tokens: 0, output_tokens: 0 },
+      latencyMs: 0, status: 'skipped',
+      errorDetail: (fit && Array.isArray(fit.reasons)) ? fit.reasons.join('; ') : null,
+    });
+  } catch (err) {
+    console.warn('[skill-runner] persistSkippedRun failed:', err.message);
+    return null;
+  } finally {
+    if (client) client.release();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // runSkill — the shared execution core. Given an already-built context
 // payload, resolves a model, calls the AI, parses the output, persists the
 // run, and logs token usage.
@@ -521,16 +556,23 @@ async function runSkill({
 // Builds prospect context in-process, optionally injects per-run hook
 // preferences, then runs the skill.
 // ─────────────────────────────────────────────────────────────────────────────
-async function runProspectSkill({ orgId, userId, prospectId, skillName, hookPreferences, stepIntent, dryRun }) {
+async function runProspectSkill({
+  orgId, userId, prospectId, skillName, hookPreferences, stepIntent,
+  dryRun = false, forceGenerate = false, explain = false,
+}) {
   if (!orgId || !userId || !prospectId) {
     const e = new Error('orgId, userId and prospectId are required');
     e.statusCode = 400;
     throw e;
   }
 
-  const contextPayload = await buildProspectSkillContext({
-    prospectId, orgId, asUserId: userId,
+  const built = await buildProspectSkillContext({
+    prospectId, orgId, asUserId: userId, explain,
   });
+  // explain mode returns { payload, provenance }; the live path returns the
+  // bare payload. Normalize.
+  const contextPayload = explain ? built.payload : built;
+  const provenance     = explain ? built.provenance : null;
 
   // Per-run hook picker: the frontend passes preferred categories; the skill
   // reads org_context.hook_preferences.preferred_categories (see SKILL.md).
@@ -555,18 +597,75 @@ async function runProspectSkill({ orgId, userId, prospectId, skillName, hookPref
     contextPayload.org_context.step_intent = stepIntent;
   }
 
+  // ── Fit gate (Pieces 1–3) ──────────────────────────────────────────────
+  // Decide fit deterministically, in code, BEFORE the model call. function +
+  // seniority are derived from the title (zero external data); industry + size
+  // come from the ENRICHED account block already in the payload.
+  const cls = ProspectClassifier.classifyTitle(contextPayload.prospect && contextPayload.prospect.title);
+  const facts = {
+    title:          (contextPayload.prospect && contextPayload.prospect.title) || null,
+    function:       cls.function,
+    seniority:      cls.seniority,
+    decision_maker: cls.decision_maker,
+    industry:       (contextPayload.account && contextPayload.account.industry) || null,
+    size:           (contextPayload.account && contextPayload.account.size) || null,
+    location:       (contextPayload.account && contextPayload.account.location) || null,
+  };
+  const fitRules = (contextPayload._meta && Array.isArray(contextPayload._meta.fit_rules) && contextPayload._meta.fit_rules.length)
+    ? contextPayload._meta.fit_rules
+    : FitGate.DEFAULT_FIT_RULES;
+  const fit = FitGate.assessFit(facts, fitRules);
+
+  // Stamp fit so the skill is aware of it, and so ContextLint / the preview
+  // panel can read it from the payload.
+  contextPayload.org_context = contextPayload.org_context || {};
+  contextPayload.org_context.fit = fit;
+
   if (dryRun) {
     // Inspect-before-send: return the EXACT payload the model would receive
-    // (rep, signature, org_context, _meta.org_id) without calling the AI.
-    // Wire a 'Preview payload' button to this so org-context errors are
-    // ruled out before a single send.
-    return { ok: true, dryRun: true, status: 'dry_run', payload: contextPayload };
+    // (rep, signature, org_context, _meta.org_id, fit) without calling the AI.
+    if (explain) {
+      const lint = ContextLint.lint(contextPayload, provenance);
+      return {
+        ok: true, dryRun: true, status: 'dry_run',
+        payload: contextPayload, provenance, lint, fit,
+      };
+    }
+    return { ok: true, dryRun: true, status: 'dry_run', payload: contextPayload, fit };
   }
 
-  return runSkill({
+  // Hard gate: a disqualified prospect never reaches the model unless an
+  // explicit manual override is passed. We persist a 'skipped' skill_runs row
+  // (auditable) and short-circuit.
+  if (fit.verdict === 'disqualified' && !forceGenerate) {
+    const runId = await persistSkippedRun({
+      orgId, userId, skillName, prospectId, contextPayload, fit,
+    });
+    return {
+      ok: true, status: 'skipped', recommend_skip: true,
+      fit, reasons: fit.reasons, runId,
+    };
+  }
+
+  const result = await runSkill({
     orgId, userId, skillName, methodology: null,
     contextPayload, prospectId, dealId: null,
   });
+
+  // Pass fit through, and deterministically pull a 'weak' verdict into the
+  // review lane even if the model failed to echo it — the model is not trusted
+  // to self-route. OutreachValidator already routes a disqualified/weak
+  // output.fit to review; this is the code-side guarantee on top of it.
+  result.fit = fit;
+  if (fit.verdict === 'weak' && result.validation && result.validation.route === 'send') {
+    result.validation.route = 'review';
+    result.validation.ok = false;
+    result.validation.warnings = [
+      ...(Array.isArray(result.validation.warnings) ? result.validation.warnings : []),
+      `fit=weak (gate): ${fit.reasons.join('; ')}`,
+    ];
+  }
+  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

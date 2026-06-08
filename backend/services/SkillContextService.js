@@ -202,10 +202,20 @@ function splitLinkedInActivity(activity) {
 // products, value props, target personas, case studies, and competitors.
 // User additions can never re-add what user exclusions removed.
 // ─────────────────────────────────────────────────────────────────────────────
-function mergeAndExclude({ orgItems, userAdditions, userExclusions, keyFn }) {
+// Optional provenance: when `sink` (an array) is supplied, each surviving item
+// is also pushed as { value, source }, with `baseSource` for org/campaign items
+// and `addSource` for user additions. `displayFn` maps an item to a readable
+// value (defaults to the item itself). Omitting these args preserves the exact
+// original behaviour and return shape (used by all non-explain callers + tests).
+function mergeAndExclude({
+  orgItems, userAdditions, userExclusions, keyFn,
+  baseSource, addSource, sink, displayFn,
+}) {
   const orgArr = Array.isArray(orgItems) ? orgItems : [];
   const addArr = Array.isArray(userAdditions) ? userAdditions : [];
   const exclArr = Array.isArray(userExclusions) ? userExclusions : [];
+  const recordsTo = Array.isArray(sink) ? sink : null;
+  const display = typeof displayFn === 'function' ? displayFn : (x => x);
 
   const normKey = (item) => {
     const k = keyFn(item);
@@ -230,12 +240,14 @@ function mergeAndExclude({ orgItems, userAdditions, userExclusions, keyFn }) {
     if (!primary || seenPrimary.has(primary) || isExcluded(all)) continue;
     merged.push(item);
     seenPrimary.add(primary);
+    if (recordsTo) recordsTo.push({ value: display(item), source: baseSource || 'org' });
   }
   for (const item of addArr) {
     const { primary, all } = normKey(item);
     if (!primary || seenPrimary.has(primary) || isExcluded(all)) continue;
     merged.push(item);
     seenPrimary.add(primary);
+    if (recordsTo) recordsTo.push({ value: display(item), source: addSource || 'user' });
   }
   return merged;
 }
@@ -306,10 +318,38 @@ function resolveCampaignReplacement(orgItems, campaignItems) {
   return Array.isArray(orgItems) ? orgItems : [];
 }
 
-function buildOrgContext({ orgConfig, campaignConfig, userConfig, repUser, competitors, campaignSender }) {
+function buildOrgContext({
+  orgConfig, campaignConfig, userConfig, repUser, competitors, campaignSender,
+  // Piece 5: when an operator runs a campaign AS a client (client-owned sender),
+  // user-level custom_* ADDITIONS are suppressed for the four campaign-controlled
+  // fields. Exclusions still apply. Self-serve (clientRun=false) is UNCHANGED.
+  clientRun = false,
+  // Piece 6b: when explain is set, populate provenanceOut (a mutable object) with
+  // per-item { value, source } for the four merged fields + rep. Does NOT change
+  // the return shape — provenance is written out-of-band.
+  explain = false,
+  campaignId = null,
+  userId = null,
+  provenanceOut = null,
+}) {
   const oc = orgConfig      || {};
   const cc = campaignConfig || {};
   const uc = userConfig     || {};
+
+  // Per-field base layer source label: 'campaign:<id>' when the campaign array
+  // replaced org for that field, else 'org'. User additions are 'user:<id>'.
+  const collect = explain && provenanceOut && typeof provenanceOut === 'object';
+  const addSource = `user:${userId != null ? userId : '?'}`;
+  const baseSrc = (campaignArr) =>
+    (Array.isArray(campaignArr) && campaignArr.length > 0)
+      ? `campaign:${campaignId != null ? campaignId : '?'}`
+      : 'org';
+  const strDisplay  = (it) => (typeof it === 'string' ? it : (it && it.name) ? it.name : String(it));
+  const caseDisplay = (it) => {
+    if (typeof it === 'string') return it;
+    if (it && (it.customer || it.id)) return it.customer || it.id;
+    return String(it);
+  };
 
   // ── Replacement layer: campaign overrides org for these fields ────────────
   const effectiveProducts        = resolveCampaignReplacement(oc.products, cc.products);
@@ -325,32 +365,50 @@ function buildOrgContext({ orgConfig, campaignConfig, userConfig, repUser, compe
   const effectiveHookCats = campaignHookCats.length > 0 ? campaignHookCats : orgHookCats;
 
   // ── User add/exclude applies AFTER campaign replacement ───────────────────
+  // Piece 5: under clientRun, the user-layer ADDITIONS are dropped for these
+  // four campaign-controlled merges (exclusions retained).
   const products = mergeAndExclude({
     orgItems:       effectiveProducts,
-    userAdditions:  uc.custom_products,
+    userAdditions:  clientRun ? [] : uc.custom_products,
     userExclusions: uc.excluded_products,
     keyFn:          productKey,
+    baseSource:     baseSrc(cc.products),
+    addSource,
+    displayFn:      strDisplay,
+    sink:           collect ? (provenanceOut.products = []) : null,
   });
 
   const valueProps = mergeAndExclude({
     orgItems:       effectiveValueProps,
-    userAdditions:  uc.custom_value_props,
+    userAdditions:  clientRun ? [] : uc.custom_value_props,
     userExclusions: uc.excluded_value_props,
     keyFn:          stringKey,
+    baseSource:     baseSrc(cc.default_value_props),
+    addSource,
+    displayFn:      strDisplay,
+    sink:           collect ? (provenanceOut.value_props = []) : null,
   });
 
   const targetPersonas = mergeAndExclude({
     orgItems:       effectivePersonas,
-    userAdditions:  uc.custom_target_personas,
+    userAdditions:  clientRun ? [] : uc.custom_target_personas,
     userExclusions: uc.excluded_target_personas,
     keyFn:          stringKey,
+    baseSource:     baseSrc(cc.default_target_personas),
+    addSource,
+    displayFn:      strDisplay,
+    sink:           collect ? (provenanceOut.target_personas = []) : null,
   });
 
   const caseStudies = mergeAndExclude({
     orgItems:       effectiveCaseStudies,
-    userAdditions:  uc.custom_case_studies,
+    userAdditions:  clientRun ? [] : uc.custom_case_studies,
     userExclusions: uc.excluded_case_studies,
     keyFn:          caseKey,
+    baseSource:     baseSrc(cc.default_case_study_summaries),
+    addSource,
+    displayFn:      caseDisplay,
+    sink:           collect ? (provenanceOut.case_studies = []) : null,
   });
 
   const competitorObjs = mergeAndExclude({
@@ -387,6 +445,14 @@ function buildOrgContext({ orgConfig, campaignConfig, userConfig, repUser, compe
       title: repFromUser.title_for_signature || null,
       email_signature: repFromUser.email_signature_block || null,
       linkedin_signature: null,
+    };
+  }
+
+  if (collect) {
+    provenanceOut.rep = {
+      source: campaignSender ? 'campaign_sender' : 'executing_user',
+      sender_account_id: campaignSender ? campaignSender.id : null,
+      client_run: !!clientRun,
     };
   }
 
@@ -724,7 +790,7 @@ async function buildPriorSteps(client, prospect, orgId) {
   });
 }
 
-async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
+async function buildProspectSkillContext({ prospectId, orgId, asUserId, explain = false }) {
   let client;
   try {
     client = await pool.connect();
@@ -818,7 +884,8 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
         // multiple senders should keep signatures consistent; the draft
         // anchors on that one sender's identity.
         const saRows = await safeQuery(client,
-          `SELECT id, email, label, display_name, signature, linkedin_signature
+          `SELECT id, email, label, display_name, signature, linkedin_signature,
+                  client_id, user_id
              FROM prospecting_sender_accounts
             WHERE id = ANY($1::int[]) AND org_id = $2 AND is_active = true
             ORDER BY id ASC
@@ -892,6 +959,10 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
     const sequenceState = await buildSequenceState(client, prospect);
 
     // ── Org context ─────────────────────────────────────────────────────
+    // Piece 5: a client-owned sender (client_id set) marks an operator running
+    // a campaign AS a client → suppress user-layer custom_* additions.
+    const clientRun = !!(campaignSender && campaignSender.client_id);
+    const provenance = explain ? {} : null;
     const orgContext = buildOrgContext({
       orgConfig,
       campaignConfig,
@@ -899,6 +970,11 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
       repUser,
       competitors,
       campaignSender,
+      clientRun,
+      explain,
+      campaignId: prospect.campaign_id || null,
+      userId: asUserId || prospect.owner_id || null,
+      provenanceOut: provenance,
     });
 
     // ── Researcher note (from prospects.research_meta) ──────────────────
@@ -1014,10 +1090,22 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId }) {
         // came from and catch a wrong-org sender before send.
         rep_source: campaignSender ? 'campaign_sender' : 'executing_user',
         sender_account_id: campaignSender ? campaignSender.id : null,
+        // Piece 3: resolved fit rules for the runner's gate. Campaign override
+        // fit_rules → org config fit_rules → null (runner falls back to the
+        // built-in FitGate.DEFAULT_FIT_RULES). _meta is ignored by skills.
+        fit_rules:
+          (campaignConfig && Array.isArray(campaignConfig.fit_rules) && campaignConfig.fit_rules.length)
+            ? campaignConfig.fit_rules
+            : ((orgConfig && Array.isArray(orgConfig.fit_rules) && orgConfig.fit_rules.length)
+                ? orgConfig.fit_rules
+                : null),
       },
     };
 
-    return payload;
+    // Piece 6b: explain mode returns provenance alongside the payload. The
+    // normal path returns the bare payload (back-compat for the runner's live
+    // path and all existing callers).
+    return explain ? { payload, provenance } : payload;
   } finally {
     if (client) client.release();
   }
