@@ -18,7 +18,9 @@
 // auto-migration — re-enter affected items with the new fields.
 
 import React, { useState, useEffect, useCallback } from 'react';
-import ProspectingFitGateConfig from './ProspectingFitGateConfig';
+import {
+  TitleClassifierEditor, FitRulesEditor, OutreachCapsEditor, RecencyEditor,
+} from './ProspectingFitGateConfig';
 
 const API = process.env.REACT_APP_API_URL;
 
@@ -43,6 +45,7 @@ const EMPTY = {
 
 export default function OAProspectingSkillConfig() {
   const [config,  setConfig]  = useState(EMPTY);
+  const [tab,     setTab]     = useState('products');
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
   const [dirty,   setDirty]   = useState(false);
@@ -113,70 +116,101 @@ export default function OAProspectingSkillConfig() {
         }}>{flash.msg}</div>
       )}
 
-      {/* Products — structured {name, one_liner} */}
-      <ProductsEditor
-        title="Products"
-        hint="Priority order — the skill anchors to the first product unless a later one better matches the prospect."
-        items={config.products}
-        onChange={(products) => update({ products })}
-      />
-
-      {/* Value props */}
-      <TagListEditor
-        title="Value propositions"
-        items={config.default_value_props}
-        onChange={(v) => update({ default_value_props: v })}
-        placeholder="Add a value prop…"
-      />
-
-      {/* Target personas */}
-      <TagListEditor
-        title="Target personas"
-        items={config.default_target_personas}
-        onChange={(v) => update({ default_target_personas: v })}
-        placeholder="Add a persona…"
-      />
-
-      {/* Case studies — structured */}
-      <CaseStudyEditor
-        items={config.default_case_study_summaries}
-        onChange={(v) => update({ default_case_study_summaries: v })}
-      />
-
-      {/* Guardrails */}
-      <div style={{ marginBottom: 22 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Guardrails</div>
-        <TagListEditor
-          title="Banned phrasings"
-          hint="The skill will never use these in an email or LinkedIn note."
-          items={config.guardrails.banned_phrasings}
-          onChange={(v) => updateGuardrails({ banned_phrasings: v })}
-          placeholder="Add a phrase to ban…"
-          danger
-          nested
-        />
-        <TagListEditor
-          title="Required disclaimers"
-          items={config.guardrails.required_disclaimers}
-          onChange={(v) => updateGuardrails({ required_disclaimers: v })}
-          placeholder="Add a required disclaimer…"
-          nested
-        />
+      {/* Sub-tabs */}
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 18 }}>
+        {[
+          ['products',   'Products & Pitch'],
+          ['icp',        'ICP & Fit'],
+          ['guardrails', 'Guardrails & Limits'],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            style={{
+              padding: '8px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              border: 'none', background: 'none', marginBottom: -1,
+              color: tab === key ? '#6366f1' : '#6b7280',
+              borderBottom: '2px solid ' + (tab === key ? '#6366f1' : 'transparent'),
+            }}
+          >{label}</button>
+        ))}
       </div>
 
-      {/* Fit gate / title classifier / caps / recency */}
-      <div style={{ borderTop: '1px solid #e5e7eb', marginTop: 8, paddingTop: 18 }}>
-        <ProspectingFitGateConfig
-          fitRules={config.fit_rules}
-          onFitRules={(v) => update({ fit_rules: v })}
-          titleClassifier={config.title_classifier}
-          onTitleClassifier={(v) => update({ title_classifier: v })}
-          outreachCaps={config.outreach_caps}
-          onOutreachCaps={(v) => update({ outreach_caps: v })}
-          hookRecencyDays={config.hook_recency_days}
-          onHookRecencyDays={(v) => update({ hook_recency_days: v })}
-        />
-      </div>
+      {/* Tab 1 — Products & Pitch */}
+      {tab === 'products' && (
+        <>
+          <ProductsEditor
+            title="Products"
+            hint="Priority order — the skill anchors to the first product unless a later one better matches the prospect."
+            items={config.products}
+            onChange={(products) => update({ products })}
+          />
+          <TagListEditor
+            title="Value propositions"
+            items={config.default_value_props}
+            onChange={(v) => update({ default_value_props: v })}
+            placeholder="Add a value prop…"
+          />
+          <CaseStudyEditor
+            items={config.default_case_study_summaries}
+            onChange={(v) => update({ default_case_study_summaries: v })}
+          />
+        </>
+      )}
+
+      {/* Tab 2 — ICP & Fit */}
+      {tab === 'icp' && (
+        <>
+          <TagListEditor
+            title="Target personas"
+            hint="Who you're going after — used by the skill and a statement of who's in-ICP."
+            items={config.default_target_personas}
+            onChange={(v) => update({ default_target_personas: v })}
+            placeholder="Add a persona…"
+          />
+          <TitleClassifierEditor
+            value={config.title_classifier}
+            onChange={(v) => update({ title_classifier: v })}
+          />
+          <FitRulesEditor
+            value={config.fit_rules}
+            onChange={(v) => update({ fit_rules: v })}
+          />
+        </>
+      )}
+
+      {/* Tab 3 — Guardrails & Limits */}
+      {tab === 'guardrails' && (
+        <>
+          <div style={{ marginBottom: 22 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Guardrails</div>
+            <TagListEditor
+              title="Banned phrasings"
+              hint="The skill will never use these in an email or LinkedIn note."
+              items={config.guardrails.banned_phrasings}
+              onChange={(v) => updateGuardrails({ banned_phrasings: v })}
+              placeholder="Add a phrase to ban…"
+              danger
+              nested
+            />
+            <TagListEditor
+              title="Required disclaimers"
+              items={config.guardrails.required_disclaimers}
+              onChange={(v) => updateGuardrails({ required_disclaimers: v })}
+              placeholder="Add a required disclaimer…"
+              nested
+            />
+          </div>
+          <OutreachCapsEditor
+            value={config.outreach_caps}
+            onChange={(v) => update({ outreach_caps: v })}
+          />
+          <RecencyEditor
+            value={config.hook_recency_days}
+            onChange={(v) => update({ hook_recency_days: v })}
+          />
+        </>
+      )}
 
       {/* Save bar */}
       <div style={{

@@ -32,6 +32,34 @@ const FIT_REQ          = ['must', 'should', 'exclude'];
 const EMAIL_INTENTS    = ['first_touch', 'follow_up', 'breakup', 'default'];
 const LINKEDIN_INTENTS = ['connection_request', 'post_accept', 'nurture_dm', 'default'];
 
+// Read-only mirror of the backend built-ins (FitGate.DEFAULT_FIT_RULES and the
+// ProspectClassifier default maps) — shown so admins can SEE what they inherit
+// when a section is left empty. Keep in sync with the backend constants.
+const DEFAULT_FIT_RULES = [
+  { field: 'function',  requirement: 'must',    match: 'one_of',       values: ['revenue', 'sales', 'exec_founder'],                            label: 'Revenue/sales/founder function' },
+  { field: 'seniority', requirement: 'must',    match: 'one_of',       values: ['c_level', 'vp', 'director'],                                   label: 'Decision-maker seniority' },
+  { field: 'industry',  requirement: 'should',  match: 'contains_any', values: ['SaaS', 'Software', 'B2B', 'Technology'],                       label: 'B2B SaaS industry' },
+  { field: 'size',      requirement: 'should',  match: 'one_of',       values: ['1-10', '11-50', '51-200'],                                     label: 'Small company' },
+  { field: 'industry',  requirement: 'exclude', match: 'contains_any', values: ['Banking', 'Fintech', 'Staffing', 'Consulting', 'IT Services'], label: 'Out-of-ICP industry' },
+];
+const DEFAULT_FUNCTION_SUMMARY = [
+  ['exec_founder', 'founder, co-founder, owner, CEO, president, managing director'],
+  ['revenue', 'CRO, chief revenue / commercial / customer, "revenue"'],
+  ['sales', 'sales, AE, SDR, BDR, business development, growth'],
+  ['marketing', 'CMO, marketing, demand gen, brand, content'],
+  ['product', 'CPO, product, PM'],
+  ['ops', 'COO, operations, revops, sales ops'],
+  ['other', 'CTO/CIO, engineering, CFO/finance, HR, legal, IT, data/design/support'],
+];
+const DEFAULT_SENIORITY_SUMMARY = [
+  ['c_level', 'chief, any CxO, founder/owner/president, managing director'],
+  ['vp', 'VP, SVP, EVP, vice president'],
+  ['director', 'director, head of'],
+  ['manager', 'manager, mgr'],
+  ['ic', 'any other recognized title'],
+];
+const REQ_COLOR = { must: { bg: '#eef2ff', fg: '#3730a3' }, should: { bg: '#f3f4f6', fg: '#6b7280' }, exclude: { bg: '#fef2f2', fg: '#991b1b' } };
+
 // shared styles (kept inline to match OAProspectingSkillConfig.js)
 const S = {
   section:  { marginBottom: 22 },
@@ -92,6 +120,59 @@ function Select({ value, options, onChange }) {
     <select value={value} onChange={(e) => onChange(e.target.value)} style={S.select}>
       {options.map(o => <option key={o} value={o}>{o}</option>)}
     </select>
+  );
+}
+
+// ── Read-only "what you inherit" views ────────────────────────────────────────
+function InheritedFitRules() {
+  return (
+    <details style={{ ...S.card, background: '#f9fafb', marginBottom: 10 }}>
+      <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 600, color: '#6366f1' }}>
+        Inherited defaults — active unless you override the same field + requirement
+      </summary>
+      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 5 }}>
+        {DEFAULT_FIT_RULES.map((r, i) => {
+          const c = REQ_COLOR[r.requirement] || REQ_COLOR.should;
+          return (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 600, color: '#374151', minWidth: 64 }}>{r.field}</span>
+              <span style={{ background: c.bg, color: c.fg, borderRadius: 4, padding: '1px 6px', fontWeight: 600 }}>{r.requirement}</span>
+              <span style={{ color: '#6b7280' }}>{r.match}</span>
+              <span style={{ color: '#374151' }}>{r.values.join(', ')}</span>
+              <span style={{ color: '#9ca3af', fontStyle: 'italic' }}>· {r.label}</span>
+            </div>
+          );
+        })}
+        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+          must fails or exclude matches → disqualified · should fails or any unknown field → weak · else strong
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function InheritedClassifier() {
+  const Row = ([value, kws]) => (
+    <div key={value} style={{ display: 'flex', gap: 8, fontSize: 12, marginBottom: 2 }}>
+      <span style={{ fontWeight: 600, color: '#374151', minWidth: 92 }}>{value}</span>
+      <span style={{ color: '#6b7280' }}>{kws}</span>
+    </div>
+  );
+  return (
+    <details style={{ ...S.card, background: '#f9fafb', marginBottom: 10 }}>
+      <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 600, color: '#6366f1' }}>
+        Built-in defaults — tried after your rules (first match wins)
+      </summary>
+      <div style={{ marginTop: 8 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', margin: '2px 0 4px' }}>Function</div>
+        {DEFAULT_FUNCTION_SUMMARY.map(Row)}
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', margin: '8px 0 4px' }}>Seniority</div>
+        {DEFAULT_SENIORITY_SUMMARY.map(Row)}
+        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>
+          Decision-maker default: c_level, vp, director, or exec_founder. Unmatched title → unknown.
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -196,7 +277,7 @@ function ClassifierPreview({ classifier }) {
   );
 }
 
-function TitleClassifierEditor({ value, onChange }) {
+export function TitleClassifierEditor({ value, onChange }) {
   const tc = value || { function_rules: [], seniority_rules: [], decision_maker: { seniorities: [], functions: [] } };
   const dm = tc.decision_maker || { seniorities: [], functions: [] };
   const set = (patch) => onChange({ ...tc, ...patch });
@@ -210,6 +291,8 @@ function TitleClassifierEditor({ value, onChange }) {
         Keywords (not regex) that map a prospect's title to a function / seniority. Your rules are tried first, in order;
         anything unmatched falls back to the built-in defaults. User-level rules win over org rules.
       </div>
+
+      <InheritedClassifier />
 
       <ClassifierRuleList label="Function rules" rules={tc.function_rules} values={FUNCTION_VALUES} onChange={(r) => set({ function_rules: r })} />
       <ClassifierRuleList label="Seniority rules" rules={tc.seniority_rules} values={SENIORITY_VALUES} onChange={(r) => set({ seniority_rules: r })} />
@@ -241,7 +324,7 @@ function TitleClassifierEditor({ value, onChange }) {
 }
 
 // ── Fit rules editor ──────────────────────────────────────────────────────────
-function FitRulesEditor({ value, onChange }) {
+export function FitRulesEditor({ value, onChange }) {
   const rules = Array.isArray(value) ? value : [];
   const edit = (i, patch) => { const n = rules.slice(); n[i] = { ...n[i], ...patch }; onChange(n); };
   const remove = (i) => onChange(rules.filter((_, idx) => idx !== i));
@@ -256,6 +339,7 @@ function FitRulesEditor({ value, onChange }) {
         the same field + requirement. <strong>must</strong> fails → disqualified; <strong>exclude</strong> matches → disqualified;
         <strong> should</strong> or any unknown field → weak (manual review).
       </div>
+      <InheritedFitRules />
       {rules.length === 0 && <div style={{ fontSize: 12, color: '#9ca3af', fontStyle: 'italic', marginBottom: 6 }}>No overrides — default ICP rules apply.</div>}
       {rules.map((r, i) => (
         <div key={i} style={S.card}>
@@ -280,7 +364,7 @@ function FitRulesEditor({ value, onChange }) {
 }
 
 // ── Outreach caps + recency (compact) ─────────────────────────────────────────
-function OutreachCapsEditor({ value, onChange }) {
+export function OutreachCapsEditor({ value, onChange }) {
   const caps = value || { email: {}, linkedin: {} };
   const email = caps.email || {};
   const linkedin = caps.linkedin || {};
@@ -324,7 +408,7 @@ function OutreachCapsEditor({ value, onChange }) {
   );
 }
 
-function RecencyEditor({ value, onChange }) {
+export function RecencyEditor({ value, onChange }) {
   return (
     <div style={S.section}>
       <div style={S.h}>Hook recency window</div>
