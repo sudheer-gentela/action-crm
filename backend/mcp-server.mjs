@@ -80,15 +80,17 @@ async function safeSubordinates(orgId, userId) {
 }
 
 // Build the owner filter for the action queue, matching the /unified route.
-async function buildOwnerFilter(actor, scope, params) {
+// `alias` MUST qualify user_id to the action table (e.g. 'a' or 'pa'); both
+// queries join a second table that also has user_id, so a bare column is ambiguous.
+async function buildOwnerFilter(actor, scope, params, alias) {
   if (scope === 'team') {
     const subs = await safeSubordinates(actor.orgId, actor.userId);
     params.push([actor.userId, ...subs]);
-    return `AND user_id = ANY($${params.length}::int[])`;
+    return `AND ${alias}.user_id = ANY($${params.length}::int[])`;
   }
   if (scope === 'org') return '';
   params.push(actor.userId);
-  return `AND user_id = $${params.length}`;
+  return `AND ${alias}.user_id = $${params.length}`;
 }
 
 // ── Verify AuthKit-issued access tokens, audience-bound to this MCP server ─────
@@ -164,13 +166,12 @@ async function buildServer(auth) {
     async ({ scope, source, limit }) => {
       if (!actor) return fail('No GoWarmCRM user found for this session.');
       try {
-        const params = [actor.orgId];
-        const ownerFilter = await buildOwnerFilter(actor, scope, params);
-
         let dealActions = [];
         let prospectingActions = [];
 
         if (source === 'all' || source === 'deals') {
+          const params = [actor.orgId];
+          const ownerFilter = await buildOwnerFilter(actor, scope, params, 'a');
           const r = await db.query(
             `SELECT a.*, d.name AS deal_name, d.stage AS deal_stage, d.value AS deal_value,
                     acc.name AS account_name
@@ -197,6 +198,8 @@ async function buildServer(auth) {
         }
 
         if (source === 'all' || source === 'prospecting') {
+          const params = [actor.orgId];
+          const ownerFilter = await buildOwnerFilter(actor, scope, params, 'pa');
           const r = await db.query(
             `SELECT pa.*, p.first_name AS prospect_first_name, p.last_name AS prospect_last_name,
                     p.email AS prospect_email, p.company_name AS prospect_company_name, p.stage AS prospect_stage
