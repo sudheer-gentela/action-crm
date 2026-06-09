@@ -393,7 +393,7 @@ function resolveCampaignReplacement(orgItems, campaignItems) {
 }
 
 function buildOrgContext({
-  orgConfig, campaignConfig, userConfig, repUser, competitors, campaignSender,
+  orgConfig, campaignConfig, userConfig, repUser, competitors, campaignSender, userSender,
   // Piece 5: when an operator runs a campaign AS a client (client-owned sender),
   // user-level custom_* ADDITIONS are suppressed for the four campaign-controlled
   // fields. Exclusions still apply. Self-serve (clientRun=false) is UNCHANGED.
@@ -495,9 +495,16 @@ function buildOrgContext({
   });
   const competitorNames = competitorObjs.map(c => c.name).filter(Boolean);
 
-  // Rep / sender identity. Preferred source is the campaign's configured
-  // sender account (already org-scoped by the caller); fallback is the
-  // executing user's prospecting_config signature + users-table name.
+  // Rep / sender identity. Priority:
+  //   1. Campaign-pinned sender account (explicit per-campaign identity override)
+  //   2. The executing user's own connected sender account (My Preferences) —
+  //      the same row the firer signs with, so draft == sent identity
+  //   3. Fallback: the user's My Outreach Style signature (prospecting_config.rep)
+  //      — only when no sender account is connected
+  //   4. Last resort: the user's name from the users table, no signature
+  // Note (Policy A): the model signs off NAME-ONLY; the full signature is
+  // appended at send by SequenceStepFirer. email_signature/linkedin_signature
+  // are surfaced here for the preview ("Show with signature") and lint only.
   let rep;
   if (campaignSender) {
     rep = {
@@ -508,6 +515,16 @@ function buildOrgContext({
       title: null,                                  // signature text is self-contained
       email_signature: campaignSender.signature || null,
       linkedin_signature: campaignSender.linkedin_signature || null,
+    };
+  } else if (userSender) {
+    rep = {
+      name: userSender.display_name
+            || userSender.label
+            || userSender.email
+            || 'Sales rep',
+      title: null,
+      email_signature: userSender.signature || null,
+      linkedin_signature: userSender.linkedin_signature || null,   // fixes the prior null
     };
   } else {
     const repFromUser = uc.rep || {};
@@ -524,8 +541,10 @@ function buildOrgContext({
 
   if (collect) {
     provenanceOut.rep = {
-      source: campaignSender ? 'campaign_sender' : 'executing_user',
-      sender_account_id: campaignSender ? campaignSender.id : null,
+      source: campaignSender ? 'campaign_sender'
+            : (userSender ? 'user_sender_account' : 'executing_user'),
+      sender_account_id: campaignSender ? campaignSender.id
+                       : (userSender ? userSender.id : null),
       client_run: !!clientRun,
     };
   }
@@ -970,6 +989,31 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId, explain 
       }
     }
 
+    // Identity fallback: when no campaign sender is pinned, the prospecting
+    // module signs from the executing user's own connected sender account
+    // (Settings → My Preferences). This is the SAME row the SequenceStepFirer
+    // resolves at send time, so the draft identity matches what actually goes
+    // out. Only if the user has no active sender account does rep fall back to
+    // the My Outreach Style signature (prospecting_config.rep) inside
+    // buildOrgContext.
+    let userSender = null;
+    if (!campaignSender && asUserId) {
+      const usRows = await safeQuery(client,
+        `SELECT id, email, label, display_name, signature, linkedin_signature
+           FROM prospecting_sender_accounts
+          WHERE org_id    = $1
+            AND user_id   = $2
+            AND client_id IS NULL
+            AND is_active = true
+          ORDER BY
+            (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+            last_sent_at ASC NULLS FIRST
+          LIMIT 1`,
+        [orgId, asUserId]
+      );
+      userSender = usRows[0] || null;
+    }
+
     // ── User preferences → prospecting_config (only if asUserId provided) ──
     let userConfig = null;
     let repUser = null;
@@ -1044,6 +1088,7 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId, explain 
       repUser,
       competitors,
       campaignSender,
+      userSender,
       clientRun,
       explain,
       campaignId: prospect.campaign_id || null,

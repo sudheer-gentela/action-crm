@@ -25,7 +25,7 @@ The caller passes a prospect payload (shape defined in `schema/gowarm-prospect.j
 
 The dispatcher injects an `org_context` block into the payload:
 
-- `rep` — `{ name, title, email_signature }` for sign-off. May be partially empty. LinkedIn artifacts use first name only for sign-off.
+- `rep` — `{ name, title, email_signature, linkedin_signature }`. LinkedIn artifacts sign off with the rep's **first name only**, and **connection requests carry no sign-off at all** (they're short notes against a character cap). Never paste a signature block, email, company, or links into the body — the platform appends any signature at send. `email_signature`/`linkedin_signature` are for preview/reference only.
 - `products` — array of `{ name, one_liner }`. `name` is the customer's product label; `one_liner` is a pre-written pitch sentence you may paraphrase but should never quote verbatim. Anchor to `products[0]` unless a later product better matches the prospect's signals. If `one_liner` is empty, infer the pitch from `value_props` and `products[i].name`.
 - `value_props` — array of strings. Pick ONE per artifact. LinkedIn artifacts are short — there is no room to combine two.
 - `target_personas` — array of strings. Used for ICP fit check, NOT for direct reference in the LinkedIn body.

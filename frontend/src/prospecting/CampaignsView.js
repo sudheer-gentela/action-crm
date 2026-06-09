@@ -1931,12 +1931,13 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
                 {senders.length > 0 && (
                   <div style={{ marginTop: 16 }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 4 }}>
-                      Send from
+                      Send from &amp; sender identity
                     </div>
                     <p style={{ fontSize: 12, color: '#6b7280', marginBottom: 8, lineHeight: 1.5 }}>
-                      Which connected mailboxes this campaign sends from. All senders by default;
-                      pick specific ones to dedicate or split mailboxes across campaigns. Daily
-                      capacity above reflects the selected senders.
+                      Which connected mailbox this campaign sends from — and whose <strong>identity (name + signature)</strong> appears on every message.
+                      With <strong>All senders</strong> (default), each rep sends from and signs as their own mailbox.
+                      Picking a specific sender <strong>overrides the identity for this whole campaign</strong>: every draft and send uses that account's
+                      name and signature, regardless of who runs it. Daily capacity above reflects the selected senders.
                     </p>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 6, cursor: 'pointer' }}>
                       <input
@@ -1944,7 +1945,7 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
                         checked={selectedSenderIds === null}
                         onChange={() => setSelectedSenderIds(null)}
                       />
-                      <span><strong>All senders</strong> (default) — {senders.length} mailbox{senders.length === 1 ? '' : 'es'}</span>
+                      <span><strong>All senders</strong> (default) — each rep uses their own identity · {senders.length} mailbox{senders.length === 1 ? '' : 'es'}</span>
                     </label>
                     {senders.map(s => {
                       const checked = Array.isArray(selectedSenderIds) && selectedSenderIds.includes(s.id);
@@ -1968,6 +1969,12 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
                         </label>
                       );
                     })}
+                    {Array.isArray(selectedSenderIds) && selectedSenderIds.length >= 1 && (
+                      <div style={{ fontSize: 12, color: '#1A3A5C', marginTop: 8, marginLeft: 16, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '6px 10px' }}>
+                        <strong>Identity override on:</strong> every message in this campaign will be sent and signed as
+                        {selectedSenderIds.length === 1 ? ' this mailbox' : ' one of these mailboxes'}, even when another rep runs it.
+                      </div>
+                    )}
                     {Array.isArray(selectedSenderIds) && selectedSenderIds.length === 1 && (
                       <div style={{ fontSize: 12, color: '#b45309', marginTop: 6, marginLeft: 16 }}>
                         Sending from a single mailbox concentrates volume — watch that sender's daily limit and warmup.

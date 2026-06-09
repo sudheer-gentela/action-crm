@@ -77,6 +77,10 @@ export default function PreviewDraftsModal({ sequenceId, prospectIds, runSkill: 
   // backend renders the sequence templates verbatim (no skill calls, no
   // tokens), so a non-AI campaign previews exactly what it will send.
   const [runSkill, setRunSkill] = useState(runSkillProp !== false);
+  // Display-only toggle: drafts are stored signature-free (the platform appends
+  // the sender-account signature at send). This lets the rep preview the final
+  // signed form on demand without baking it into the draft.
+  const [showSignature, setShowSignature] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -189,7 +193,27 @@ export default function PreviewDraftsModal({ sequenceId, prospectIds, runSkill: 
 
             {/* Right: selected prospect's steps */}
             <div style={{ flex: 1, overflowY: 'auto', padding: 18 }}>
-              <PreviewStepsPanel preview={data.previews[selectedProspect]} />
+              {data.senderSignature && (data.senderSignature.email_signature || data.senderSignature.linkedin_signature) && (
+                <label style={{
+                  display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#6b7280',
+                  marginBottom: 12, cursor: 'pointer',
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={showSignature}
+                    onChange={(e) => setShowSignature(e.target.checked)}
+                  />
+                  Show with signature
+                  <span style={{ color: '#9ca3af' }}>
+                    — appended automatically at send; not part of the draft
+                  </span>
+                </label>
+              )}
+              <PreviewStepsPanel
+                preview={data.previews[selectedProspect]}
+                senderSignature={data.senderSignature}
+                showSignature={showSignature}
+              />
             </div>
           </div>
         ) : null}
@@ -221,7 +245,7 @@ export default function PreviewDraftsModal({ sequenceId, prospectIds, runSkill: 
   );
 }
 
-function PreviewStepsPanel({ preview }) {
+function PreviewStepsPanel({ preview, senderSignature, showSignature }) {
   if (!preview) return null;
 
   if (preview.error) {
@@ -316,7 +340,12 @@ function PreviewStepsPanel({ preview }) {
       </div>
 
       {preview.steps.map((step, idx) => (
-        <PreviewStepCard key={idx} step={step} />
+        <PreviewStepCard
+          key={idx}
+          step={step}
+          senderSignature={senderSignature}
+          showSignature={showSignature}
+        />
       ))}
 
       {preview.errors && preview.errors.length > 0 && (
@@ -336,7 +365,7 @@ function PreviewStepsPanel({ preview }) {
   );
 }
 
-function PreviewStepCard({ step }) {
+function PreviewStepCard({ step, senderSignature, showSignature }) {
   const channelIcon = CHANNEL_ICON[step.channel] || '📋';
   const intentLabel = step.intent ? INTENT_LABEL[step.intent] : null;
   const intentColor = step.intent ? INTENT_COLOR[step.intent] : null;
@@ -345,6 +374,22 @@ function PreviewStepCard({ step }) {
   const hookCategory = step.personalize_sources?.hook?.category || null;
   const hookLabel = hookCategory ? (HOOK_LABEL[hookCategory] || hookCategory) : null;
   const isGenericHook = hookCategory ? GENERIC_HOOKS.has(hookCategory) : false;
+
+  // Mirror SequenceStepFirer's append rule, for display only:
+  //   email                       → email signature
+  //   linkedin (not connection)   → linkedin signature, else email signature
+  //   connection_request/call/task→ none
+  let appendedSig = '';
+  if (showSignature && senderSignature) {
+    if (step.channel === 'email') {
+      appendedSig = senderSignature.email_signature || '';
+    } else if (step.channel === 'linkedin' && step.intent !== 'connection_request') {
+      appendedSig = senderSignature.linkedin_signature || senderSignature.email_signature || '';
+    }
+  }
+  const displayedBody = appendedSig
+    ? `${step.body || ''}\n\n${appendedSig}`
+    : (step.body || '');
 
   return (
     <div style={{
@@ -409,11 +454,15 @@ function PreviewStepCard({ step }) {
           fontSize: 13, color: '#374151', lineHeight: 1.6,
           whiteSpace: 'pre-wrap', fontFamily: 'inherit',
         }}>
-          {step.body || <span style={{ color: '#9ca3af', fontStyle: 'italic' }}>(empty)</span>}
+          {displayedBody
+            ? (appendedSig
+                ? <>{step.body}<span style={{ color: '#9ca3af' }}>{'\n\n'}{appendedSig}</span></>
+                : displayedBody)
+            : <span style={{ color: '#9ca3af', fontStyle: 'italic' }}>(empty)</span>}
         </div>
         {!isEmail && (
           <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>
-            {(step.body || '').length} characters
+            {(displayedBody || '').length} characters
           </div>
         )}
       </div>

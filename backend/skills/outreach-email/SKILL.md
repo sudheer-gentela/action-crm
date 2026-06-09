@@ -23,7 +23,7 @@ The caller passes a prospect payload (shape defined in `schema/gowarm-prospect.j
 
 The dispatcher injects an `org_context` block into the payload:
 
-- `rep` — `{ name, title, email_signature }` for sign-off. May be partially empty.
+- `rep` — `{ name, title, email_signature }`. **Sign off with `rep.name` only** (a simple "— {first name}" is ideal). Do NOT render `email_signature`, the title, the company, a URL, or any signature block in the body — the platform appends the official signature automatically when the email is sent. `email_signature` is provided for preview/reference only; never paste it into the body.
 - `products` — array of `{ name, one_liner }`. `name` is the customer's product label; `one_liner` is a pre-written pitch sentence you may paraphrase but should never quote verbatim. Anchor to `products[0]` unless a later product better matches the prospect's signals. If `one_liner` is empty, infer the pitch from `value_props` and `products[i].name`.
 - `value_props` — array of strings. Pick ONE per email. Never combine two value props in a single email body.
 - `target_personas` — array of strings. Used for ICP fit check, NOT for direct reference in the email body ("you're a perfect persona for us" is a sycophancy violation).
@@ -121,6 +121,7 @@ The hard rules live in `reference/outreach-principles.md` and apply universally.
 - Every quote under 15 words; one quote per source maximum.
 - No fabricated case studies or statistics.
 - No sycophancy openers, no fake commonalities, no surveilling language about reactions.
+- Sign off with the rep's name only — never paste a signature block, email address, company line, or links. The platform appends the official signature at send; including one in the body causes a duplicate.
 - Posts are quotable verbatim; reactions never citable in the email body.
 - Sparse payload → short honest question-led email, not an error (unless ALL of title, industry, AND company name are missing).
 - If ICP fit is low or critical criteria are missed, surface this in `confidence_notes` — do not silently produce a draft for a bad-fit prospect.

@@ -339,6 +339,7 @@ async function materializeRows(client, enrollmentIds = null) {
             ss.id              AS step_id,
             ss.subject_template,
             ss.body_template,
+            ss.step_intent,
             p.first_name, p.last_name, p.title,
             p.company_name, p.company_industry, p.company_domain,
             a.name AS account_name, a.industry AS account_industry,
@@ -755,12 +756,14 @@ const SequenceStepFirer = {
 
             // Channel-aware signature:
             //   email    → sender.signature
-            //   linkedin → sender.linkedin_signature if set, else sender.signature
+            //   linkedin → sender.linkedin_signature if set, else sender.signature,
+            //              EXCEPT connection requests (short notes, 280-char cap)
+            //              which never carry a signature
             //   call/task → no signature
             if (sender) {
               if (step.channel === 'email' && sender.signature) {
                 body = appendSignature(body, sender.signature);
-              } else if (step.channel === 'linkedin') {
+              } else if (step.channel === 'linkedin' && step.step_intent !== 'connection_request') {
                 const liSig = sender.linkedin_signature || sender.signature;
                 if (liSig) body = appendSignature(body, liSig);
               }

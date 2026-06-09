@@ -3001,6 +3001,33 @@ router.post('/:id/preview', async (req, res) => {
     const stepsByOrder = {};
     for (const s of stepsRes.rows) stepsByOrder[s.step_order] = s;
 
+    // Resolve the executing user's default sender signature ONCE, so the modal
+    // can offer a "Show with signature" preview that mirrors what the firer
+    // appends at send. This is display-only; drafts stay signature-free
+    // (Policy A — the model signs name-only, the platform appends at send).
+    let senderSignature = null;
+    try {
+      const ssRows = await pool.query(
+        `SELECT signature, linkedin_signature
+           FROM prospecting_sender_accounts
+          WHERE org_id    = $1
+            AND user_id   = $2
+            AND client_id IS NULL
+            AND is_active = true
+          ORDER BY
+            (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+            last_sent_at ASC NULLS FIRST
+          LIMIT 1`,
+        [req.orgId, req.user.userId]
+      );
+      if (ssRows.rows[0]) {
+        senderSignature = {
+          email_signature:    ssRows.rows[0].signature || null,
+          linkedin_signature: ssRows.rows[0].linkedin_signature || null,
+        };
+      }
+    } catch (_) { /* non-fatal — toggle simply has nothing to append */ }
+
     // Run dispatcher per prospect — sequentially to keep skill rate-limited.
     const previews = [];
     let succeeded = 0, failed = 0;
@@ -3168,6 +3195,7 @@ router.post('/:id/preview', async (req, res) => {
       sequenceId:   parseInt(req.params.id, 10),
       sequenceName: sequence.name,
       previews,
+      senderSignature,
       summary: {
         requested: ids.length,
         succeeded,

@@ -233,8 +233,12 @@ export default function MyOutreachStyleSettings() {
           placeholder="Add a phrase…"
         />
 
+        <div style={{ marginTop: 12, marginBottom: 8, fontSize: 12, color: '#6b7280', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 6, padding: '8px 10px' }}>
+          <strong style={{ color: '#374151' }}>Where your prospecting signature comes from:</strong> outreach emails and LinkedIn messages are signed using your <strong>connected sender account</strong> (Settings → My Preferences). The platform appends that signature automatically when a message is sent — you don't need to type it into the draft. The signature below is only used as a <strong>fallback</strong> when you have no sender account connected.
+        </div>
+
         <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 13, color: '#374151', marginBottom: 4 }}>Email signature block</div>
+          <div style={{ fontSize: 13, color: '#374151', marginBottom: 4 }}>Email signature block <span style={{ color: '#9ca3af', fontWeight: 400 }}>(fallback)</span></div>
           <textarea
             value={config.rep.email_signature_block}
             onChange={(e) => update({ rep: { ...config.rep, email_signature_block: e.target.value } })}
