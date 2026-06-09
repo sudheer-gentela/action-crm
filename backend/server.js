@@ -323,6 +323,26 @@ app.get('/api/org/context', authenticateToken, orgContext, async (req, res) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 4b. MCP SERVER (agent access) — mounted BEFORE the 404 handler
+//
+// mcp-server.mjs is ESM (the MCP SDK and jose are ESM-only), so it cannot be
+// require()'d from this CommonJS file. We mount an empty router now — its
+// position in the stack is fixed, ahead of the 404 below — and populate it via
+// dynamic import a few ms later at boot. Adds /mcp plus the two OAuth discovery
+// routes (/.well-known/oauth-protected-resource and /.well-known/oauth-authorization-server).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const mcpRouter = express.Router();
+app.use('/', mcpRouter);
+import('./mcp-server.mjs')
+  .then(({ registerMcp }) => {
+    registerMcp(mcpRouter);
+    console.log('✅ MCP server mounted at /mcp');
+  })
+  .catch(err => console.error('❌ MCP mount failed:', err.message));
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 5. ERROR HANDLERS — must be last
 // ─────────────────────────────────────────────────────────────────────────────
 
