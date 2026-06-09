@@ -171,6 +171,7 @@ app.use('/api/proposals',     require('./routes/proposals.routes'));
 app.use('/api/calendar',      require('./routes/calendar.routes'));
 app.use('/api/dashboard',     require('./routes/dashboard.routes'));
 app.use('/api/agent',         require('./routes/agent.routes'));
+app.use('/api/agent-auth',         require('./routes/agent-auth.routes'));
 
 // ── Reporting (cross-campaign manager dashboards) ─────────────────────────
 // Phase 2 of the sequence reporting feature. Read-only aggregation
