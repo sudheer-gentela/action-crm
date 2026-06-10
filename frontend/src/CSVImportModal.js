@@ -36,6 +36,9 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
   // Conflicts step state.
   const [preflight, setPreflight] = useState(null);      // { rows, summary } from API
   const [preflightLoading, setPreflightLoading] = useState(false);
+  // Set when the preflight check fails and import proceeds without it —
+  // surfaced on the result step so the bypass is never silent.
+  const [preflightWarning, setPreflightWarning] = useState(null);
   const [decisions, setDecisions] = useState({});        // existingId → 'skip' | 'move'
 
   // Whether the conflicts step applies: targeting a campaign, in insert mode,
@@ -48,6 +51,13 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
   const handleFile = useCallback((e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // Guard: csvParse runs on the main thread — a very large file freezes the
+    // tab. 10MB is far above any realistic prospect/contact import.
+    if (file.size > 10 * 1024 * 1024) {
+      alert('File is too large (max 10MB). Split the CSV and import in batches.');
+      e.target.value = '';
+      return;
+    }
     setFileName(file.name);
 
     const reader = new FileReader();
@@ -82,11 +92,12 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
     const errors = [];
     const rows = [];
 
-    // Build an account name→id lookup (case-insensitive)
+    // Build an account name→id lookup (case-insensitive). Guard against
+    // accounts with a null/empty name — one bad record shouldn't kill validation.
     const acctMap = {};
     accounts.forEach(a => {
-      acctMap[a.name.toLowerCase()] = a.id;
-      if (a.domain) acctMap[a.domain.toLowerCase()] = a.id;
+      if (a?.name) acctMap[a.name.toLowerCase()] = a.id;
+      if (a?.domain) acctMap[a.domain.toLowerCase()] = a.id;
     });
 
     csvRows.forEach((csvRow, rowIdx) => {
@@ -137,7 +148,9 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
           }
         }
 
-        obj[f.key] = val || undefined;
+        // Note: explicit empty/null check — `val || undefined` would also drop
+        // legitimate numeric zeros (deal value 0, probability 0%).
+        obj[f.key] = (val === '' || val === null || val === undefined) ? undefined : val;
       });
 
       if (hasData) rows.push(obj);
@@ -183,8 +196,14 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
       setDecisions(initial);
       setStep('conflicts');
     } catch (err) {
-      // Preflight failure shouldn't block import — fall back to plain import.
+      // Preflight failure shouldn't block import — fall back to plain import,
+      // but tell the user the conflict check was skipped (result step banner).
       console.error('preflight failed, importing without conflict check:', err);
+      setPreflightWarning(
+        'The campaign/sequence conflict check could not run (' +
+        (err.message || 'network error') +
+        '). Rows were imported without checking whether they already belong to another campaign or active sequence.'
+      );
       return doImport({});
     } finally {
       setPreflightLoading(false);
@@ -206,8 +225,14 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  // While the bulk request is in flight, closing the modal would hide a
+  // result the server will still produce — the user may then re-import and
+  // create duplicates. Lock dismissal during the 'importing' step.
+  const closable = step !== 'importing';
+  const handleClose = () => { if (closable) onClose(); };
+
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={handleClose}>
       <div className="modal csv-import-modal" onClick={e => e.stopPropagation()} style={{
         maxWidth: 720, width: '95vw', maxHeight: '85vh', overflow: 'auto',
         background: '#fff', borderRadius: 16, padding: '28px 32px',
@@ -216,8 +241,9 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
         {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
           <h2 style={{ margin: 0, fontSize: 20 }}>📥 Import {entityLabel}</h2>
-          <button onClick={onClose} style={{
-            background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#9ca3af',
+          <button onClick={handleClose} disabled={!closable} style={{
+            background: 'none', border: 'none', fontSize: 22,
+            cursor: closable ? 'pointer' : 'default', color: closable ? '#9ca3af' : '#e5e7eb',
           }}>×</button>
         </div>
 
@@ -540,6 +566,15 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
                   ].filter(Boolean).join(' · ') + ` ${entity}`
                 : 'Import completed with issues'}
             </h3>
+            {preflightWarning && (
+              <div style={{
+                textAlign: 'left', margin: '12px auto', maxWidth: 500, padding: '10px 14px',
+                background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8,
+                fontSize: 12, color: '#92400e',
+              }}>
+                ⚠ {preflightWarning}
+              </div>
+            )}
             {result.errors?.length > 0 && (
               <div style={{
                 textAlign: 'left', maxHeight: 200, overflow: 'auto',

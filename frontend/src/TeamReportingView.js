@@ -1419,9 +1419,9 @@ function TimelineStep({ step }) {
           <div className="trv-tl-step-subject">{step.subject || step.subject_template}</div>
         )}
         {expanded && (step.body || step.body_template) && (
-          <div className="trv-tl-step-body" dangerouslySetInnerHTML={{
-            __html: (step.body || step.body_template || '').replace(/\n/g, '<br>')
-          }} />
+          <div className="trv-tl-step-body" style={{ whiteSpace: 'pre-wrap' }}>
+            {step.body || step.body_template || ''}
+          </div>
         )}
         {expanded && step.task_note && (
           <div className="trv-tl-step-task">Note: {step.task_note}</div>

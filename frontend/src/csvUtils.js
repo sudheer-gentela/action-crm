@@ -23,7 +23,15 @@ export function csvExport(data, columns, filename) {
 
   const escape = (val) => {
     if (val === null || val === undefined) return '';
-    const str = String(val);
+    let str = String(val);
+    // Formula-injection guard: cells starting with = + - @ or tab/CR execute
+    // as formulas when the CSV is opened in Excel/Sheets. Notes, names and
+    // company fields can contain externally-sourced text (LinkedIn capture,
+    // imports), so neutralize by prefixing a single quote. Plain numbers
+    // (including negatives like -500) are exempt so they stay numeric.
+    if (/^[=+\-@\t\r]/.test(str) && !/^-?\d+(\.\d+)?$/.test(str)) {
+      str = "'" + str;
+    }
     if (str.includes(',') || str.includes('"') || str.includes('\n')) {
       return '"' + str.replace(/"/g, '""') + '"';
     }

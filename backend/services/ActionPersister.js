@@ -73,6 +73,33 @@ const VALID_STATUS = new Set([
 
 class ActionPersister {
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Persistence-failure tracking
+  //
+  // upsertDiagnosticAlert() catches DB errors and returns null so one bad row
+  // can't kill a nightly batch. But null is indistinguishable from a legitimate
+  // skip, so a systematic failure (a column/constraint drift) would silently
+  // stop producing alerts — the exact failure the product most needs to be
+  // loud about. We count failures here; a batch runner reads the count for its
+  // run summary via takeFailureCount() and logs/alerts when it's non-zero.
+  // ──────────────────────────────────────────────────────────────────────────
+  static _failureCount = 0;
+  static _lastFailure = null;
+
+  /** Returns the accumulated failure count and resets it. Call once per batch run. */
+  static takeFailureCount() {
+    const count = ActionPersister._failureCount;
+    const last  = ActionPersister._lastFailure;
+    ActionPersister._failureCount = 0;
+    ActionPersister._lastFailure = null;
+    return { count, last };
+  }
+
+  static _recordFailure(context, err) {
+    ActionPersister._failureCount += 1;
+    ActionPersister._lastFailure = { context, message: err.message };
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // upsertDiagnosticAlert
   // ══════════════════════════════════════════════════════════════════════════
@@ -207,6 +234,7 @@ class ActionPersister {
       );
       return result.rows[0]?.id ?? null;
     } catch (err) {
+      ActionPersister._recordFailure(`upsertDiagnosticAlert ${entityType}/${entityId} rule=${sourceRule}`, err);
       console.error(`[ActionPersister] upsertDiagnosticAlert failed (${entityType}/${entityId} rule=${sourceRule}):`, err.message);
       return null;
     }

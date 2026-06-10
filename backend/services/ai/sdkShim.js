@@ -82,7 +82,13 @@ try {
           });
           return {
             content: [{ type: 'text', text }],
-            usage:   { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens },
+            usage: {
+              input_tokens:  usage.input_tokens,
+              output_tokens: usage.output_tokens,
+              cache_read_input_tokens:     usage.cache_read_input_tokens     || 0,
+              cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
+              cache_creation:              usage.cache_creation              || null,
+            },
             model,
             _gowarm_meta: { model, provider, keySource },
           };
@@ -130,7 +136,16 @@ try {
         });
         return {
           choices: [{ message: { role: 'assistant', content: text } }],
-          usage:   { prompt_tokens: usage.input_tokens, completion_tokens: usage.output_tokens },
+          usage: {
+            prompt_tokens:     usage.input_tokens,
+            completion_tokens: usage.output_tokens,
+            // Anthropic-style cache fields passed through so callers that
+            // forward usage into TokenTrackingService.log keep cache
+            // attribution even on this cross-provider path.
+            cache_read_input_tokens:     usage.cache_read_input_tokens     || 0,
+            cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
+            cache_creation:              usage.cache_creation              || null,
+          },
           model,
           _gowarm_meta: { model, provider, keySource },
         };

@@ -182,8 +182,15 @@ router.get('/duplicates', async (req, res) => {
 router.post('/merge', async (req, res) => {
   const client = await (db.pool ? db.pool.connect() : db.connect());
   try {
-    const { keepId, removeId, fieldOverrides = {} } = req.body;
-    if (!keepId || !removeId) {
+    const { fieldOverrides = {} } = req.body;
+    // Coerce to integers up front. The IN ($1,$2) query matches even when the
+    // client sends "12" (pg casts), but the later rows.find(r => r.id === keepId)
+    // strict-compares a DB integer against the raw client type — a string id
+    // makes find() return undefined and the next line throws a 500. Parsing
+    // here also makes the self-merge guard reliable.
+    const keepId   = parseInt(req.body.keepId, 10);
+    const removeId = parseInt(req.body.removeId, 10);
+    if (!Number.isInteger(keepId) || !Number.isInteger(removeId)) {
       return res.status(400).json({ error: { message: 'keepId and removeId are required' } });
     }
     if (keepId === removeId) {

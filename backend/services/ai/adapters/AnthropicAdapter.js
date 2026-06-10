@@ -29,13 +29,47 @@ class AnthropicAdapter extends BaseAdapter {
     });
   }
 
-  async complete({ model, prompt, messages, system, maxTokens = 1024, temperature }) {
+  async complete({ model, prompt, messages, system, maxTokens = 1024, temperature, cache }) {
     const msgs = messages || [{ role: 'user', content: prompt }];
+
+    // ── Prompt caching (opt-in) ──────────────────────────────────────────
+    // When the caller passes cache: { system: true }, the system prompt is
+    // sent as a content block marked with cache_control so Anthropic caches
+    // the entire prefix (tools + system) server-side. Subsequent identical
+    // prefixes within the TTL are billed at 0.1x input price instead of 1x.
+    //
+    // Opt-in, never automatic: call sites with per-request dynamic system
+    // prompts would pay the 1.25x cache-write premium on every call and
+    // never get a read. Only call sites with a stable system prefix (e.g.
+    // SkillRunnerService, whose system prompt is pure disk content) should
+    // set this.
+    //
+    // cache.ttl: '1h' opts into the 1-hour cache (2x write cost) — default
+    // is the 5-minute cache, refreshed free on every hit.
+    //
+    // Note: prompts below the model's minimum cacheable length (e.g. 1,024
+    // tokens for the Sonnet/Opus 4.x families) are silently processed
+    // without caching — no error, both cache usage fields come back 0.
+    let systemParam = system;
+    if (system && cache && cache.system) {
+      const cacheControl = {
+        type: 'ephemeral',
+        ...(cache.ttl === '1h' ? { ttl: '1h' } : {}),
+      };
+      if (typeof system === 'string') {
+        systemParam = [{ type: 'text', text: system, cache_control: cacheControl }];
+      } else if (Array.isArray(system) && system.length > 0) {
+        // Already block-structured: mark the last block (caches the full prefix).
+        systemParam = system.map((b, i) =>
+          i === system.length - 1 ? { ...b, cache_control: cacheControl } : b
+        );
+      }
+    }
 
     const baseParams = {
       model,
       max_tokens: maxTokens,
-      ...(system ? { system } : {}),
+      ...(systemParam ? { system: systemParam } : {}),
       messages: msgs,
     };
 
@@ -65,8 +99,17 @@ class AnthropicAdapter extends BaseAdapter {
     return {
       text,
       usage: {
+        // input_tokens from the API counts ONLY tokens after the last cache
+        // breakpoint. Total input = input_tokens + cache_read_input_tokens
+        // + cache_creation_input_tokens. TokenTrackingService and
+        // SkillRunnerService own that summation.
         input_tokens:  resp.usage?.input_tokens  || 0,
         output_tokens: resp.usage?.output_tokens || 0,
+        cache_creation_input_tokens: resp.usage?.cache_creation_input_tokens || 0,
+        cache_read_input_tokens:     resp.usage?.cache_read_input_tokens     || 0,
+        // 5m/1h write breakdown — present only when mixing TTLs; used by
+        // TokenTrackingService for exact cache-write pricing.
+        cache_creation: resp.usage?.cache_creation || null,
       },
     };
   }

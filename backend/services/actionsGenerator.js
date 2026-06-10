@@ -522,6 +522,15 @@ class ActionsGenerator {
 
       console.log(`✅ generateAll complete — generated: ${totalGenerated}, upserted: ${totalUpserted}, stale resolved: ${totalResolved}`);
 
+      // Surface any swallowed persistence failures from this run. A non-zero
+      // count means upsertDiagnosticAlert hit DB errors (e.g. schema drift) and
+      // silently produced fewer alerts than rules fired — log loudly so a
+      // systematic failure is visible within a day rather than going unnoticed.
+      const persistFailures = ActionPersister.takeFailureCount();
+      if (persistFailures.count > 0) {
+        console.error(`❌ generateAll: ${persistFailures.count} diagnostic alert(s) FAILED to persist this run. Last error: ${persistFailures.last?.context} — ${persistFailures.last?.message}`);
+      }
+
       try {
         await db.query(
           `UPDATE action_config SET last_generated_at = NOW()
@@ -531,7 +540,7 @@ class ActionsGenerator {
         );
       } catch (_) { /* non-blocking */ }
 
-      return { success: true, generated: totalGenerated, upserted: totalUpserted, resolved: totalResolved };
+      return { success: true, generated: totalGenerated, upserted: totalUpserted, resolved: totalResolved, persistFailures: persistFailures.count };
 
     } catch (error) {
       console.error('❌ Error in generateAll:', error);

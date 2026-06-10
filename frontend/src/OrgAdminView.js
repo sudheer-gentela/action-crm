@@ -4709,13 +4709,15 @@ const API_OA = process.env.REACT_APP_API_URL || '';
 
 function apiFetchOA(path, options = {}) {
   const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+  // ...options is spread BEFORE headers so a caller passing options.headers
+  // merges into (rather than replaces) the auth + content-type defaults.
   return fetch(`${API_OA}${path}`, {
+    ...options,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
       ...(options.headers || {}),
     },
-    ...options,
   }).then(r => {
     if (!r.ok) return r.json().then(e => Promise.reject(new Error(e?.error?.message || r.statusText)));
     return r.json();

@@ -112,10 +112,27 @@ app.use('/api/auth/', authLimiter);
 // parser below — which is what Twilio's signature validator expects.
 app.use((req, res, next) => {
   if (!req.path.startsWith('/webhooks/')) return next();
+  // Cap the accumulated body. Without this, a large POST to any /webhooks/...
+  // path buffers unbounded in memory before signature verification can reject
+  // it. 1MB is generous for transcript/event payloads; abort past it.
+  const MAX_WEBHOOK_BYTES = 1024 * 1024; // 1 MB
   let data = '';
+  let bytes = 0;
+  let aborted = false;
   req.setEncoding('utf8');
-  req.on('data',  chunk => { data += chunk; });
-  req.on('end',   ()    => {
+  req.on('data', chunk => {
+    if (aborted) return;
+    bytes += Buffer.byteLength(chunk, 'utf8');
+    if (bytes > MAX_WEBHOOK_BYTES) {
+      aborted = true;
+      res.status(413).json({ error: { message: 'Payload too large' } });
+      req.destroy();
+      return;
+    }
+    data += chunk;
+  });
+  req.on('end', () => {
+    if (aborted) return;
     req.rawBody = data;
     try { req.body = JSON.parse(data); } catch { req.body = {}; }
     next();
@@ -265,11 +282,8 @@ app.use('/api/prospecting/inbox',   require('./routes/prospecting-inbox.routes')
 app.use('/api/prospecting/activity', require('./routes/prospecting-activity.routes'));
 
 // ── Twilio (Phase 3) ──────────────────────────────────────────────────────
-// Admin endpoints — orgs admin/owner only (enforced inside the routes file).
-app.use('/api/org/admin/twilio', require('./routes/org-twilio.routes'));
-
 // Admin endpoints — DID provisioning per rep, org status, available numbers.
-// Requires owner/admin role (gated inside the routes file).
+// Owner/admin only (role enforced inside the routes file).
 app.use('/api/org/admin/twilio', require('./routes/org-twilio.routes'));
 
 // Rep self-serve: personal phone for the Twilio outbound flow.
@@ -352,11 +366,20 @@ app.use((req, res) => {
 });
 
 app.use((err, req, res, next) => {
-  console.error('Error:', err.stack);
-  res.status(err.status || 500).json({
+  // Always log the full detail server-side (Railway logs).
+  console.error('Error:', err.stack || err.message || err);
+
+  const isDev = process.env.NODE_ENV === 'development';
+  const status = err.status || 500;
+
+  // In production, do NOT leak err.message to the client — it can expose
+  // internals (body-parser errors, CORS rejections like "CORS blocked: <origin>",
+  // anything thrown past a handler). Return a generic message and keep the
+  // detail in the server log above. Dev keeps message + stack for debugging.
+  res.status(status).json({
     error: {
-      message: err.message || 'Internal server error',
-      ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+      message: isDev ? (err.message || 'Internal server error') : 'Internal server error',
+      ...(isDev && { stack: err.stack }),
     },
   });
 });

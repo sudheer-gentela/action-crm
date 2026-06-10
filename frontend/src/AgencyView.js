@@ -17,13 +17,15 @@ const TEAL = '#0F9D8E';
 
 function apiFetch(path, options = {}) {
   const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+  // ...options is spread BEFORE headers so a caller passing options.headers
+  // merges into (rather than replaces) the auth + content-type defaults.
   return fetch(`${API}${path}`, {
+    ...options,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
       ...(options.headers || {}),
     },
-    ...options,
   }).then(r => {
     if (!r.ok) return r.json().then(e => Promise.reject(new Error(e?.error?.message || r.statusText)));
     return r.json();

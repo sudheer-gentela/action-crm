@@ -325,13 +325,20 @@ async function persistSkillRun(client, {
   // skill runner). skill_runs.cost_usd enables per-prospect / per-deal cost
   // queries against skill_runs alone.
   //
-  // Single source of pricing data: TokenTrackingService.estimateCost. If the
-  // model isn't recognized (returns null) we store 0 — matching what
-  // ai_token_usage does in the same case.
-  const promptTokens     = usage?.input_tokens  || 0;
+  // Single source of pricing data: TokenTrackingService.estimateCostFromUsage
+  // (cache-aware). If the model isn't recognized (returns null) we store 0 —
+  // matching what ai_token_usage does in the same case.
+  //
+  // Token semantics (2026_18): input_tokens = TOTAL input (uncached + cache
+  // reads + cache writes) so existing per-prospect cost queries keep their
+  // meaning; the cache split is stored alongside in its own columns.
+  const uncachedTokens   = usage?.input_tokens  || 0;
+  const cacheReadTokens  = usage?.cache_read_input_tokens     || 0;
+  const cacheWriteTokens = usage?.cache_creation_input_tokens || 0;
+  const promptTokens     = uncachedTokens + cacheReadTokens + cacheWriteTokens;
   const completionTokens = usage?.output_tokens || 0;
-  const estimatedCost    = TokenTrackingService.estimateCost(
-    model, promptTokens, completionTokens
+  const estimatedCost    = TokenTrackingService.estimateCostFromUsage(
+    model, usage || {}
   ) || 0;
 
   const ins = await client.query(
@@ -340,15 +347,19 @@ async function persistSkillRun(client, {
        input_payload, prompt_hash, methodology,
        output, raw_output,
        hook_category, hook_signal_id,
-       model, input_tokens, output_tokens, cost_usd, latency_ms,
+       model, input_tokens, output_tokens,
+       cache_read_tokens, cache_creation_tokens,
+       cost_usd, latency_ms,
        status, error_detail
      ) VALUES (
        $1,$2,$3,$4,$5,
        $6::jsonb,$7,$8,
        $9::jsonb,$10,
        $11,$12,
-       $13,$14,$15,$16,$17,
-       $18,$19
+       $13,$14,$15,
+       $16,$17,
+       $18,$19,
+       $20,$21
      ) RETURNING id`,
     [
       orgId, userId, skillName, prospectId || null, dealId || null,
@@ -358,6 +369,8 @@ async function persistSkillRun(client, {
       model || 'unknown',
       promptTokens,
       completionTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
       estimatedCost,
       latencyMs != null ? latencyMs : null,
       status, errorDetail || null,
@@ -474,8 +487,37 @@ async function runSkill({
           { role: 'assistant', content: '{' },   // prefill — forces JSON
         ],
         maxTokens: meta.maxTokens,
+        // Prompt caching: the system prompt here is pure disk content
+        // (SKILL.md + bundled files, ~13-15K tokens) and byte-identical
+        // across every org/user/prospect for a given skill+methodology —
+        // skill_prompt_versions' hash dedup proves it. One breakpoint at the
+        // end of `system` caches the whole prefix; within a firer batch,
+        // prospect #2 onward reads it at 0.1x input price. 5-minute TTL
+        // (default) is refreshed free on every hit, which back-to-back
+        // batch processing sustains. Anthropic-only; other adapters ignore.
+        cache: { system: true },
       });
       latencyMs = Date.now() - startTs;
+
+      // Cache observability — one line per run so hit rates are visible in
+      // Railway logs during rollout. Expected: first run per skill+model
+      // after a >5min gap shows cacheWrite≈prefix size; subsequent runs show
+      // cached≈prefix size. Both 0 on an Anthropic model means the prefix is
+      // below the model's minimum cacheable length or the system prompt
+      // changed between calls.
+      {
+        const u = aiResult.usage || {};
+        const totalIn = (u.input_tokens || 0)
+          + (u.cache_read_input_tokens || 0)
+          + (u.cache_creation_input_tokens || 0);
+        console.log(
+          `[skill-runner] ${skillName} model=${model} in=${totalIn} ` +
+          `(cached=${u.cache_read_input_tokens || 0} ` +
+          `cacheWrite=${u.cache_creation_input_tokens || 0} ` +
+          `uncached=${u.input_tokens || 0}) out=${u.output_tokens || 0} ` +
+          `latency=${latencyMs}ms`
+        );
+      }
     } catch (err) {
       // AI call itself failed — record execution_failed and rethrow.
       const runId = await persistSkillRun(client, {

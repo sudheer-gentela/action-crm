@@ -71,13 +71,15 @@ const MANUAL_LOG_CONFIG = {
 
 function apiFetch(path, options = {}) {
   const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+  // ...options is spread BEFORE headers so a caller passing options.headers
+  // merges into (rather than replaces) the auth + content-type defaults.
   return fetch(`${API}${path}`, {
+    ...options,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
       ...(options.headers || {}),
     },
-    ...options,
   }).then(r => {
     if (!r.ok) return r.json().then(e => Promise.reject(new Error(e?.error?.message || r.statusText)));
     return r.json();
@@ -87,12 +89,12 @@ function apiFetch(path, options = {}) {
 async function apiFetchRaw(path, options = {}) {
   const token = localStorage.getItem('token') || localStorage.getItem('authToken');
   const res = await fetch(`${API}${path}`, {
+    ...options,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
       ...(options.headers || {}),
     },
-    ...options,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error?.message || res.statusText);
@@ -2199,13 +2201,15 @@ export default function ActionsView({ openActionId, onActionOpened }) {
     } else if (nextStep === 'linkedin') {
       const url = person.linkedinUrl;
       if (url) {
-        window.open(url.startsWith('http') ? url : `https://${url}`, '_blank');
+        // noopener: linkedinUrl is prospect-sourced data — don't hand the
+        // opened page a window.opener reference (reverse tabnabbing).
+        window.open(url.startsWith('http') ? url : `https://${url}`, '_blank', 'noopener,noreferrer');
       }
     } else if (nextStep === 'whatsapp') {
       const phone = person.phone;
       if (phone) {
         const cleanPhone = phone.replace(/[\s\-()]/g, '').replace(/^\+/, '');
-        window.open(`https://wa.me/${cleanPhone}`, '_blank');
+        window.open(`https://wa.me/${cleanPhone}`, '_blank', 'noopener,noreferrer');
       }
     } else if (nextStep === 'document') {
       // Best: go to deal detail page which has DealFilesPanel with deal-specific files

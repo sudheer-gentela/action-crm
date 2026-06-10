@@ -61,11 +61,23 @@ class OpenAIAdapter extends BaseAdapter {
 
     const text  = resp.choices?.[0]?.message?.content || '';
     const usage = resp.usage || {};
+
+    // OpenAI auto-caches stable prompt prefixes >1K tokens server-side and
+    // reports the cached portion in prompt_tokens_details.cached_tokens.
+    // OpenAI's prompt_tokens is TOTAL input (cached portion included), while
+    // our cross-adapter convention is:
+    //   total input = input_tokens + cache_read + cache_creation
+    // so we subtract the cached portion out of input_tokens to avoid
+    // double-counting downstream. OpenAI has no explicit cache writes.
+    const cachedTokens = usage.prompt_tokens_details?.cached_tokens || 0;
     return {
       text,
       usage: {
-        input_tokens:  usage.prompt_tokens     || 0,
+        input_tokens:  Math.max((usage.prompt_tokens || 0) - cachedTokens, 0),
         output_tokens: usage.completion_tokens || 0,
+        cache_read_input_tokens:     cachedTokens,
+        cache_creation_input_tokens: 0,
+        cache_creation: null,
       },
     };
   }

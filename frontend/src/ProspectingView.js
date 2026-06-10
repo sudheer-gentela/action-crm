@@ -5,7 +5,7 @@
 // owns shared state (prospects, scope, selection) and routes between views.
 // Shared helpers/constants/context now live in ./prospecting/prospectingShared.
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 import {
   DEFAULT_PROSPECT_STAGES,
@@ -406,7 +406,13 @@ export default function ProspectingView() {
 
   // ── Data fetching ──────────────────────────────────────────────────────────
 
+  // Monotonic request counter — guards against out-of-order responses when
+  // scope/search/campaign change while a fetch is still in flight (an older
+  // response must never overwrite a newer one).
+  const fetchSeq = useRef(0);
+
   const fetchProspects = useCallback(async () => {
+    const seq = ++fetchSeq.current;
     try {
       setLoading(true);
       setCampaignAccessError(null);
@@ -418,9 +424,12 @@ export default function ProspectingView() {
         apiFetch(`/prospects/pipeline/summary?scope=${scope}${campaignQS}`),
       ]);
 
+      if (seq !== fetchSeq.current) return; // stale response — a newer fetch superseded this one
+
       setProspects(prospectsRes.prospects || []);
       setPipelineSummary(summaryRes);
     } catch (err) {
+      if (seq !== fetchSeq.current) return;
       console.error('Failed to fetch prospects:', err);
       if (err?.status === 403 && campaignFilter) {
         // Filtered to a campaign this user isn't allowed to see — surface a
@@ -432,7 +441,7 @@ export default function ProspectingView() {
         );
       }
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) setLoading(false);
     }
   }, [scope, debouncedSearch, campaignFilter]);
 

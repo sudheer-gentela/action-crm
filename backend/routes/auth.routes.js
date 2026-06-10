@@ -72,12 +72,27 @@ async function isSuperAdmin(userId) {
 // ─────────────────────────────────────────────────────────────
 router.post('/register', async (req, res) => {
   try {
+    // Public self-registration is disabled. Previously this route inserted any
+    // anonymous signup into org_id = 1 (the live dogfood org) as a member,
+    // granting read access to production data. Until invite-based onboarding
+    // exists, accounts are created from the backend only. Set
+    // ALLOW_PUBLIC_SIGNUP='true' to re-enable (intentionally explicit).
+    if (process.env.ALLOW_PUBLIC_SIGNUP !== 'true') {
+      return res.status(403).json({
+        error: { message: 'Public registration is disabled. Contact your administrator for access.' },
+      });
+    }
+
     const { error } = registerSchema.validate(req.body);
     if (error) {
       return res.status(400).json({ error: { message: error.details[0].message } });
     }
 
-    const { email, password, firstName, lastName } = req.body;
+    const { password, firstName, lastName } = req.body;
+    // Normalize email: lowercase + trim on write and on every lookup so
+    // Foo@x.com and foo@x.com can't become two accounts, and so password-reset
+    // (which already lowercases) resolves the same row as login.
+    const email = String(req.body.email || '').toLowerCase().trim();
     const regTz = isValidTimeZone(req.body.timezone) ? req.body.timezone : null;
 
     // Check if user exists
@@ -156,7 +171,10 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: { message: error.details[0].message } });
     }
 
-    const { email, password } = req.body;
+    const { password } = req.body;
+    // Match the normalization used at registration / password-reset so a
+    // capitalized-email account still resolves on login.
+    const email = String(req.body.email || '').toLowerCase().trim();
 
     // Get user
     const result = await db.query(

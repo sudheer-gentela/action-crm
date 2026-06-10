@@ -94,7 +94,15 @@ const useAuth = () => {
     const token    = localStorage.getItem('token');
     const userData = localStorage.getItem('user');
     if (token && userData) {
-      setUser(JSON.parse(userData));
+      try {
+        setUser(JSON.parse(userData));
+      } catch (e) {
+        // Corrupted 'user' blob would otherwise white-screen the app at boot.
+        // Clear the session and fall through to the login screen.
+        console.error('Corrupted user data in localStorage — clearing session:', e);
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+      }
     }
     setLoading(false);
   }, []);
