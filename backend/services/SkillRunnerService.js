@@ -38,6 +38,21 @@ const {
 
 const SKILLS_DIR = path.join(__dirname, '..', 'skills');
 
+// ── Prefill capability memo ──────────────────────────────────────────────────
+// Model ids that have rejected the assistant-'{' prefill with a 400. Populated
+// at runtime on first rejection so subsequent calls skip the doomed attempt
+// (one extra round-trip per model per process lifetime, then clean calls).
+const MODELS_WITHOUT_PREFILL = new Set();
+
+// Matches Anthropic's prefill-rejection 400:
+//   "This model does not support assistant message prefill. The conversation
+//    must end with a user message."
+function isPrefillRejectionError(err) {
+  const msg = String((err && err.message) || '').toLowerCase();
+  return msg.includes('prefill')
+      || msg.includes('must end with a user message');
+}
+
 // Methodologies the discovery-call-prep skill accepts.
 const ALLOWED_METHODOLOGIES = new Set(['meddic', 'challenger']);
 
@@ -478,25 +493,59 @@ async function runSkill({
 
     let aiResult, latencyMs, completeText, parseResult;
 
+    // ── JSON prefill — Anthropic-only, with automatic fallback ────────────
+    // The `{ role:'assistant', content:'{' }` prefill is an Anthropic-specific
+    // technique (the model CONTINUES the assistant turn). Two cases must skip
+    // it:
+    //   1. Non-Anthropic providers: OpenAI/Gemini don't continue a trailing
+    //      assistant message — they generate a fresh reply, so prepending '{'
+    //      to an already-complete JSON object corrupts it ('{{…').
+    //   2. Newer Anthropic models that reject prefill outright with a 400
+    //      ("This model does not support assistant message prefill").
+    // For (2) we can't know ahead of time, so: try with prefill, and on a
+    // prefill-rejection error retry once without it and remember the model
+    // in-process so subsequent calls skip the doomed attempt. Without
+    // prefill, extractJsonObject still recovers the object (the skills'
+    // output contract demands bare JSON, and the extractor strips fences and
+    // brackets to the outermost {...}).
+    const baseMessages = [{ role: 'user', content: userMessage }];
+    let usePrefill = provider === 'anthropic' && !MODELS_WITHOUT_PREFILL.has(model);
+
+    const callOnce = (withPrefill) => adapter.complete({
+      model,
+      system,
+      messages: withPrefill
+        ? [...baseMessages, { role: 'assistant', content: '{' }]   // prefill — forces JSON
+        : baseMessages,
+      maxTokens: meta.maxTokens,
+      // Prompt caching: the system prompt here is pure disk content
+      // (SKILL.md + bundled files, ~13-15K tokens) and byte-identical
+      // across every org/user/prospect for a given skill+methodology —
+      // skill_prompt_versions' hash dedup proves it. One breakpoint at the
+      // end of `system` caches the whole prefix; within a firer batch,
+      // prospect #2 onward reads it at 0.1x input price. 5-minute TTL
+      // (default) is refreshed free on every hit, which back-to-back
+      // batch processing sustains. Anthropic-only; other adapters ignore.
+      cache: { system: true },
+    });
+
     try {
-      aiResult = await adapter.complete({
-        model,
-        system,
-        messages: [
-          { role: 'user', content: userMessage },
-          { role: 'assistant', content: '{' },   // prefill — forces JSON
-        ],
-        maxTokens: meta.maxTokens,
-        // Prompt caching: the system prompt here is pure disk content
-        // (SKILL.md + bundled files, ~13-15K tokens) and byte-identical
-        // across every org/user/prospect for a given skill+methodology —
-        // skill_prompt_versions' hash dedup proves it. One breakpoint at the
-        // end of `system` caches the whole prefix; within a firer batch,
-        // prospect #2 onward reads it at 0.1x input price. 5-minute TTL
-        // (default) is refreshed free on every hit, which back-to-back
-        // batch processing sustains. Anthropic-only; other adapters ignore.
-        cache: { system: true },
-      });
+      try {
+        aiResult = await callOnce(usePrefill);
+      } catch (err) {
+        if (usePrefill && isPrefillRejectionError(err)) {
+          // Model rejected the prefill technique — remember and retry clean.
+          MODELS_WITHOUT_PREFILL.add(model);
+          usePrefill = false;
+          console.warn(
+            `[skill-runner] model=${model} rejected assistant prefill; ` +
+            `retrying without it (and skipping prefill for this model from now on).`
+          );
+          aiResult = await callOnce(false);
+        } else {
+          throw err;
+        }
+      }
       latencyMs = Date.now() - startTs;
 
       // Cache observability — one line per run so hit rates are visible in
@@ -534,8 +583,10 @@ async function runSkill({
       throw e;
     }
 
-    // Re-prepend the prefilled '{' before parsing.
-    completeText = '{' + (aiResult.text || '');
+    // Re-prepend the prefilled '{' before parsing — only when the successful
+    // attempt actually used the prefill. Non-prefill responses are complete
+    // JSON already; extractJsonObject handles fences/extra prose either way.
+    completeText = (usePrefill ? '{' : '') + (aiResult.text || '');
     parseResult = extractJsonObject(completeText);
 
     // Log token usage regardless of parse success.

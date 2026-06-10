@@ -272,6 +272,13 @@ function PreviewStepsPanel({ preview, senderSignature, showSignature }) {
     // to fix. If errors mention data gaps, point at LinkedIn capture + research
     // approval as the fix paths.
     const errs = preview.errors || [];
+    // Classify failures: an API/configuration error (model rejected the
+    // request, auth failure, etc.) gets a different hint than the sparse-data
+    // case — telling the rep to capture a LinkedIn profile cannot fix a 400
+    // from the provider.
+    const looksLikeConfigError = errs.length > 0 && errs.every(e =>
+      /skill (call|execution) failed|invalid_request_error|api key|401|403|400/i.test(e.reason || '')
+    );
     const dispatchTotal = preview.dispatchSummary?.total || 0;
     const dispatchErrored = preview.dispatchSummary?.errored || 0;
     const dispatchSkipped = preview.dispatchSummary?.skipped || 0;
@@ -304,7 +311,17 @@ function PreviewStepsPanel({ preview, senderSignature, showSignature }) {
               <>The sequence has no email or LinkedIn steps to personalise.</>
             )}
           </div>
-          {allErrored && (
+          {allErrored && looksLikeConfigError && (
+            <div style={{ fontSize: 12, marginTop: 10, padding: 10, background: 'rgba(255,255,255,0.5)', borderRadius: 4 }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>This looks like an AI model / configuration error, not a data problem.</div>
+              <ol style={{ margin: '6px 0 0 18px', padding: 0, lineHeight: 1.6 }}>
+                <li><strong>Read the dispatcher details below</strong> — the provider's error message says exactly what was rejected.</li>
+                <li><strong>Check AI Settings → Effective routing</strong> to see which model serves prospect outreach drafts, and that its provider has a working key.</li>
+                <li><strong>Re-run this preview</strong> after fixing the configuration — refreshing re-runs the skill calls.</li>
+              </ol>
+            </div>
+          )}
+          {allErrored && !looksLikeConfigError && (
             <div style={{ fontSize: 12, marginTop: 10, padding: 10, background: 'rgba(255,255,255,0.5)', borderRadius: 4 }}>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>Most common cause: not enough data on this prospect.</div>
               <ol style={{ margin: '6px 0 0 18px', padding: 0, lineHeight: 1.6 }}>
