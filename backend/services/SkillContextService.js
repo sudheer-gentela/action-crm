@@ -358,6 +358,7 @@ const caseKey = (item) => {
 //   org_baseline → campaign_override → user_layer (add/exclude)
 //
 // Per-field rules:
+//   pitch            : campaign REPLACES org (if non-empty); no user layer
 //   products         : campaign REPLACES org (if non-empty) → + user add/exclude
 //   value_props      : campaign REPLACES org (if non-empty) → + user add/exclude
 //   target_personas  : campaign REPLACES org (if non-empty) → + user add/exclude
@@ -426,6 +427,17 @@ function buildOrgContext({
   };
 
   // ── Replacement layer: campaign overrides org for these fields ────────────
+  // Pitch is a scalar string: non-empty campaign value replaces org, empty
+  // inherits. There is no user layer for pitch — it is a campaign/org concern.
+  const ocPitch = (typeof oc.pitch === 'string') ? oc.pitch.trim() : '';
+  const ccPitch = (typeof cc.pitch === 'string') ? cc.pitch.trim() : '';
+  const effectivePitch = ccPitch || ocPitch || null;
+  if (collect) {
+    provenanceOut.pitch = effectivePitch
+      ? [{ value: effectivePitch, source: ccPitch ? `campaign:${campaignId != null ? campaignId : '?'}` : 'org' }]
+      : [];
+  }
+
   const effectiveProducts        = resolveCampaignReplacement(oc.products, cc.products);
   const effectiveValueProps      = resolveCampaignReplacement(oc.default_value_props,          cc.default_value_props);
   const effectivePersonas        = resolveCampaignReplacement(oc.default_target_personas,      cc.default_target_personas);
@@ -573,6 +585,7 @@ function buildOrgContext({
 
   return {
     rep,
+    pitch: effectivePitch,
     products,
     value_props: valueProps,
     target_personas: targetPersonas,

@@ -541,7 +541,7 @@ function StatusStepper({ action, onStatusChange, onStart }) {
       if (onStart) { onStart(action); return; }
     }
     setUpdating(true);
-    try { await onStatusChange(action.id, cfg.next); }
+    try { await onStatusChange(refOf(action), cfg.next); }
     finally { setUpdating(false); }
   }
 
@@ -870,7 +870,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
 
         return (
           <div
-            key={action.id}
+            key={refOf(action)}
             className={`av-table-row ${isComplete ? 'av-table-row--completed' : ''} ${i % 2 === 0 ? 'av-table-row--even' : ''}`}
             style={{ gridTemplateColumns: gridCols }}
           >
@@ -997,7 +997,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
                         <button
                           className="av-table-start-btn"
                           style={{ background: '#8b5cf614', color: '#8b5cf6', borderColor: '#8b5cf640' }}
-                          onClick={() => onUnsnooze(action.id)}
+                          onClick={() => onUnsnooze(refOf(action))}
                         >
                           ↑ Wake
                         </button>
@@ -1118,7 +1118,7 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
               <> · wakes {new Date(action.snoozedUntil).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</>
             )}
           </div>
-          <button className="av-snooze-info__unsnooze" onClick={() => onUnsnooze(action.id)}>
+          <button className="av-snooze-info__unsnooze" onClick={() => onUnsnooze(refOf(action))}>
             ↑ Unsnooze
           </button>
         </div>
@@ -1850,6 +1850,21 @@ function AddActionModal({ onSave, onClose, deals = [], accounts = [], contacts =
   );
 }
 
+// ── Unified-list identity helpers ────────────────────────────────────────────
+// The unified list merges rows from two tables (actions, prospecting_actions)
+// whose serial ids can collide. The backend sends a composite `uid`
+// ("deal-57" / "prospecting-57"); rows are keyed and updates routed by it.
+// refOf falls back to building the same shape locally — and ultimately to the
+// bare id — so the view still works against an older backend without uid.
+const refOf = (a) => a.uid || (a.actionSource ? `${a.actionSource}-${a.id}` : a.id);
+
+function findActionByRef(list, ref) {
+  const hit = list.find(a => refOf(a) === ref);
+  if (hit) return hit;
+  // Legacy fallback: numeric-id match (older callers / pre-uid rows)
+  return list.find(a => a.id === ref);
+}
+
 export default function ActionsView({ openActionId, onActionOpened }) {
   const [actions,       setActions]       = useState([]);
   const [loading,       setLoading]       = useState(true);
@@ -2107,10 +2122,17 @@ export default function ActionsView({ openActionId, onActionOpened }) {
     setFilters(prev => ({ ...prev, [key]: value }));
   }
 
-  async function handleStatusChange(actionId, newStatus) {
+  async function handleStatusChange(actionRef, newStatus) {
     try {
-      // Find the action to determine which table to update
-      const action = actions.find(a => a.id === actionId);
+      // Resolve via composite uid (exact across both source tables); the
+      // legacy numeric-id path inside findActionByRef keeps old callers
+      // working but can mis-resolve on an id collision — all internal call
+      // sites now pass refOf(action).
+      const action = findActionByRef(actions, actionRef);
+      const apiId = action?.id
+        ?? (typeof actionRef === 'string' ? actionRef.split('-').pop() : actionRef);
+      const targetRef = action ? refOf(action) : actionRef;
+      const isTarget = (a) => refOf(a) === targetRef;
       const isProspecting = action?.actionSource === 'prospecting';
 
       let nextAction = null;
@@ -2118,12 +2140,12 @@ export default function ActionsView({ openActionId, onActionOpened }) {
       if (isProspecting) {
         const statusMap = { yet_to_start: 'pending', in_progress: 'in_progress', completed: 'completed' };
         const mappedStatus = statusMap[newStatus] || newStatus;
-        await apiFetch(`/prospecting-actions/${actionId}/status`, {
+        await apiFetch(`/prospecting-actions/${apiId}/status`, {
           method: 'PATCH',
           body: JSON.stringify({ status: mappedStatus }),
         });
       } else {
-        const result = await apiFetch(`/actions/${actionId}/status`, {
+        const result = await apiFetch(`/actions/${apiId}/status`, {
           method: 'PATCH',
           body: JSON.stringify({ status: newStatus }),
         });
@@ -2134,11 +2156,11 @@ export default function ActionsView({ openActionId, onActionOpened }) {
       }
 
       setActions(prev => {
-        let updated = prev.map(a => a.id === actionId
+        let updated = prev.map(a => isTarget(a)
           ? { ...a, status: newStatus, completed: newStatus === 'completed' }
           : a
         ).filter(a => {
-          if (!filters.status && a.id === actionId && newStatus === 'completed') return false;
+          if (!filters.status && isTarget(a) && newStatus === 'completed') return false;
           return true;
         });
 
@@ -2147,6 +2169,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
           // Map backend row to frontend shape
           updated = [...updated, {
             id:              nextAction.id,
+            uid:             `deal-${nextAction.id}`,
             actionSource:    'deal',
             type:            nextAction.type,
             actionType:      nextAction.action_type || nextAction.type,
@@ -2237,7 +2260,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
     }
 
     // Set status to in_progress (async, non-blocking)
-    handleStatusChange(action.id, 'in_progress').catch(() => {});
+    handleStatusChange(refOf(action), 'in_progress').catch(() => {});
 
     // Open log modal so they can record the outcome
     setLogAction(action);
@@ -2303,42 +2326,50 @@ export default function ActionsView({ openActionId, onActionOpened }) {
     }
   }
 
-  async function handleSnooze(actionId, reason, duration) {
-    const action = actions.find(a => a.id === actionId);
+  async function handleSnooze(actionRef, reason, duration) {
+    const action = findActionByRef(actions, actionRef);
+    const apiId = action?.id
+      ?? (typeof actionRef === 'string' ? actionRef.split('-').pop() : actionRef);
+    const targetRef = action ? refOf(action) : actionRef;
+    const isTarget = (a) => refOf(a) === targetRef;
     const endpoint = action?.actionSource === 'prospecting'
-      ? `/prospecting-actions/${actionId}/snooze`
-      : `/actions/${actionId}/snooze`;
+      ? `/prospecting-actions/${apiId}/snooze`
+      : `/actions/${apiId}/snooze`;
     await apiFetch(endpoint, {
       method: 'PATCH',
       body: JSON.stringify({ reason, duration }),
     });
     // Remove from open view, show in snoozed view
     setActions(prev =>
-      prev.map(a => a.id === actionId
+      prev.map(a => isTarget(a)
         ? { ...a, status: 'snoozed', snoozeReason: reason, snoozeDuration: duration }
         : a
       ).filter(a => {
-        if (filters.status !== 'snoozed' && a.id === actionId) return false;
+        if (filters.status !== 'snoozed' && isTarget(a)) return false;
         return true;
       })
     );
     setSnoozeAction(null);
   }
 
-  async function handleUnsnooze(actionId) {
+  async function handleUnsnooze(actionRef) {
     try {
-      const action = actions.find(a => a.id === actionId);
+      const action = findActionByRef(actions, actionRef);
+      const apiId = action?.id
+        ?? (typeof actionRef === 'string' ? actionRef.split('-').pop() : actionRef);
+      const targetRef = action ? refOf(action) : actionRef;
+      const isTarget = (a) => refOf(a) === targetRef;
       const endpoint = action?.actionSource === 'prospecting'
-        ? `/prospecting-actions/${actionId}/unsnooze`
-        : `/actions/${actionId}/unsnooze`;
+        ? `/prospecting-actions/${apiId}/unsnooze`
+        : `/actions/${apiId}/unsnooze`;
       await apiFetch(endpoint, { method: 'PATCH' });
       setActions(prev =>
-        prev.map(a => a.id === actionId
+        prev.map(a => isTarget(a)
           ? { ...a, status: 'yet_to_start', snoozedUntil: null, snoozeReason: null, snoozeDuration: null }
           : a
         ).filter(a => {
           // If we're on snoozed view, remove it after unsnooze
-          if (filters.status === 'snoozed' && a.id === actionId) return false;
+          if (filters.status === 'snoozed' && isTarget(a)) return false;
           return true;
         })
       );
@@ -2622,7 +2653,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
             <div className="av-grid">
               {actions.map(action => (
                 <ActionCard
-                  key={action.id}
+                  key={refOf(action)}
                   action={action}
                   onStatusChange={handleStatusChange}
                   onStart={handleStart}
@@ -2675,7 +2706,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
       {snoozeAction && (
         <SnoozeModal
           action={snoozeAction}
-          onSnooze={handleSnooze}
+          onSnooze={(_id, reason, duration) => handleSnooze(refOf(snoozeAction), reason, duration)}
           onClose={() => setSnoozeAction(null)}
         />
       )}

@@ -5,6 +5,32 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import LinkedInDataDrawer from '../LinkedInDataDrawer';
 import PersonalizeProvenanceFooter from '../PersonalizeProvenanceFooter';
 
+// ── AI rationale block ────────────────────────────────────────────────────────
+// Renders the skill's rep-facing reasoning (why this hook / angle) and any
+// confidence notes (caveats: shaky ICP fit, sparse data, missing prior touch).
+// These are the decision inputs for "AI draft vs sequence default vs edit" —
+// the dispatcher now preserves them on personalize_sources (rationale /
+// confidenceNotes). Renders nothing when both are absent (older drafts).
+function AiRationaleBlock({ sources }) {
+  const rationale  = sources?.rationale || null;
+  const confidence = sources?.confidenceNotes || null;
+  if (!rationale && !confidence) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
+      {rationale && (
+        <div style={{ padding: '8px 10px', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 6, fontSize: 12, color: '#5b21b6', lineHeight: 1.5 }}>
+          <span style={{ fontWeight: 700 }}>🧠 Why this draft:</span> {rationale}
+        </div>
+      )}
+      {confidence && (
+        <div style={{ padding: '8px 10px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, fontSize: 12, color: '#92400e', lineHeight: 1.5 }}>
+          <span style={{ fontWeight: 700 }}>⚠️ AI caveats:</span> {confidence}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle, onSubjectChange, onBodyChange, onSend, onApprove, approving, onComplete, onDiscard, onConvertAndSend, onUndoEnrollment, compact = false, onDrawerToggle }) {
   const overdue  = draft.isOverdue || (draft.scheduledSendAt && new Date(draft.scheduledSendAt) < new Date());
   const channel  = draft.channel || 'email';
@@ -110,6 +136,21 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
   const intentSource  = draft.personalizeSources?.intentSource || null;
   const intentLabel   = stepIntent ? INTENT_LABEL[stepIntent] : null;
   const intentColor   = stepIntent ? INTENT_COLOR[stepIntent] : null;
+
+  // ── Sequence default (revert) ───────────────────────────────────────────────
+  // GET /drafts now returns `sequenceDefault` — the rendered step template,
+  // i.e. exactly what the firer would send with no personalisation. The button
+  // swaps the editor content to it; persistence rides the existing save flow
+  // (parents PATCH subject/body before send/approve), so no new endpoint.
+  const seqDefault = draft.sequenceDefault || null;
+  const matchesDefault = !!seqDefault
+    && (subject || '') === (seqDefault.subject || '')
+    && (body || '')    === (seqDefault.body || '');
+  const handleUseDefault = useCallback(() => {
+    if (!seqDefault) return;
+    onSubjectChange(seqDefault.subject || '');
+    onBodyChange(seqDefault.body || '');
+  }, [seqDefault, onSubjectChange, onBodyChange]);
 
   return (
     <div style={{
@@ -266,9 +307,30 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
                 />
               </div>
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                  Body
-                </label>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                    Body
+                  </label>
+                  {seqDefault && !matchesDefault && (
+                    <button
+                      type="button"
+                      onClick={handleUseDefault}
+                      title="Replace the AI draft with the sequence step's own template, rendered for this prospect. You can still edit before sending."
+                      style={{
+                        fontSize: 11, padding: '2px 10px', borderRadius: 5,
+                        border: '1px solid #d1d5db', background: '#fff', color: '#374151',
+                        cursor: 'pointer', fontWeight: 500,
+                      }}
+                    >
+                      ↩ Use sequence default
+                    </button>
+                  )}
+                  {seqDefault && matchesDefault && (
+                    <span style={{ fontSize: 10, color: '#9ca3af', fontStyle: 'italic' }}>
+                      Showing sequence default
+                    </span>
+                  )}
+                </div>
                 <textarea
                   ref={bodyRef}
                   value={body}
@@ -280,6 +342,8 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
                 {draft.personalizeSources && (
                   <PersonalizeProvenanceFooter sources={draft.personalizeSources} />
                 )}
+                {/* Skill rationale + caveats — the rep's decision inputs */}
+                <AiRationaleBlock sources={draft.personalizeSources} />
               </div>
               </div>
               {drawerVisible && (
@@ -355,6 +419,8 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
               {draft.personalizeSources && (
                 <PersonalizeProvenanceFooter sources={draft.personalizeSources} />
               )}
+              {/* Skill rationale + caveats — same decision inputs as email */}
+              <AiRationaleBlock sources={draft.personalizeSources} />
               {draft.prospect?.linkedinUrl || draft.prospect?.linkedin_url ? (
                 <a
                   href={draft.prospect.linkedinUrl || draft.prospect.linkedin_url}

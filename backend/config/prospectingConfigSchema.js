@@ -14,6 +14,9 @@
 //
 // ─── ORG-LEVEL SHAPE ─────────────────────────────────────────────────────────
 //   {
+//     pitch:                        string         // short narrative pitch the
+//                                                  // skill paraphrases as the
+//                                                  // email's bridge framing
 //     products:                     Product[]      // priority order; skill
 //                                                  // anchors to products[0]
 //     default_value_props:          string[]
@@ -48,9 +51,10 @@
 // ─── CAMPAIGN-LEVEL SHAPE ────────────────────────────────────────────────────
 // Same field set as ORG. Every field is independently optional — leaving a
 // field empty/absent means "inherit from org" for that field. Non-empty
-// fields REPLACE the org value for products / value_props / target_personas /
-// case_studies / hook_preferences. Guardrails are additive — campaign values
-// are unioned with org values; campaigns never loosen org restrictions.
+// fields REPLACE the org value for pitch / products / value_props /
+// target_personas / case_studies / hook_preferences. Guardrails are additive —
+// campaign values are unioned with org values; campaigns never loosen org
+// restrictions.
 //
 // ─── USER-LEVEL SHAPE ────────────────────────────────────────────────────────
 //   {
@@ -126,6 +130,19 @@ function cleanStringArray(v) {
 // Filter a string array down to valid hook categories, preserving order.
 function cleanHookCategories(v) {
   return cleanStringArray(v).filter(x => HOOK_CATEGORIES.includes(x));
+}
+
+// Pitch: a short free-text narrative ("what we say to this audience and why").
+// Trimmed and hard-capped — the skill paraphrases it, so a multi-page pitch
+// only burns tokens without improving output. Empty/invalid sanitizes to ''
+// which the resolver in buildOrgContext reads as "inherit" (campaign) or
+// "absent" (org).
+const PITCH_MAX_CHARS = 2000;
+function cleanPitch(v) {
+  if (typeof v !== 'string') return '';
+  const s = v.trim();
+  if (!s) return '';
+  return s.length > PITCH_MAX_CHARS ? s.slice(0, PITCH_MAX_CHARS).trim() : s;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -326,6 +343,7 @@ function sanitizeOrgConfig(input) {
   const hp = (c.hook_preferences && typeof c.hook_preferences === 'object')
     ? c.hook_preferences : {};
   return {
+    pitch:                        cleanPitch(c.pitch),
     products:                     cleanProductArray(c.products),
     default_value_props:          cleanStringArray(c.default_value_props),
     default_target_personas:      cleanStringArray(c.default_target_personas),
@@ -418,4 +436,5 @@ module.exports = {
   cleanProductArray,
   cleanCaseStudy,
   cleanCaseStudyArray,
+  cleanPitch,
 };

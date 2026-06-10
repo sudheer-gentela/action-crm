@@ -19,6 +19,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiFetch, DEFAULT_PROSPECT_STAGES } from './prospectingShared';
 import CSVImportModal from '../CSVImportModal';
 import CampaignConfigPanel from './CampaignConfigPanel';
+import CampaignBriefWizard from './CampaignBriefWizard';
 import PacingTile from './PacingTile';
 import BatchActivateModal from './BatchActivateModal';
 import EntityIdHint from '../EntityIdHint';
@@ -206,6 +207,7 @@ export default function CampaignsView() {
   const [scope,       setScope]       = useState('mine');     // mine|team|org
   const [caps,        setCaps]        = useState({ isAdmin: false, hasSubordinates: false, userId: null });
   const [showCreate,  setShowCreate]  = useState(false);
+  const [showWizard,  setShowWizard]  = useState(false);
   const [editing,     setEditing]     = useState(null);   // campaign being edited (or null)
   const [detailId,    setDetailId]    = useState(null);   // campaign id open in drawer
 
@@ -310,9 +312,18 @@ export default function CampaignsView() {
             >{f.label}</button>
           ))}
         </div>
-        <button className="pv-btn-primary" onClick={() => setShowCreate(true)}>
-          + New Campaign
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            className="pv-btn-primary"
+            onClick={() => setShowWizard(true)}
+            title="Guided campaign brief: audience, ICP, pitch, case studies, fallback sequence"
+          >
+            ✨ Guided Brief
+          </button>
+          <button className="pv-btn-primary" onClick={() => setShowCreate(true)}>
+            + New Campaign
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -364,6 +375,13 @@ export default function CampaignsView() {
           campaign={editing}
           onSaved={handleSaved}
           onClose={() => { setShowCreate(false); setEditing(null); }}
+        />
+      )}
+
+      {showWizard && (
+        <CampaignBriefWizard
+          onSaved={() => { setShowWizard(false); handleSaved(); }}
+          onClose={() => setShowWizard(false)}
         />
       )}
 

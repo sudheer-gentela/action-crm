@@ -193,6 +193,34 @@ export default function CampaignConfigPanel({ campaignId, canEdit }) {
           }}>{flash.msg}</div>
         )}
 
+        {/* Pitch — campaign-level narrative the skill paraphrases as framing */}
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>Pitch</div>
+          <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>
+            The story for this campaign's audience — what we say and why ("we help X do Y because Z").
+            The AI paraphrases this as the email's framing; it never quotes it. Non-empty here REPLACES the org pitch.
+            {data.org_baseline.pitch ? (
+              <span style={{ display: 'block', marginTop: 4, fontStyle: 'italic' }}>
+                Org default: "{data.org_baseline.pitch.length > 140 ? data.org_baseline.pitch.slice(0, 140) + '…' : data.org_baseline.pitch}"
+              </span>
+            ) : null}
+          </div>
+          <textarea
+            value={draft.pitch || ''}
+            onChange={e => setDraft({ ...draft, pitch: e.target.value })}
+            disabled={!effectiveCanEdit}
+            rows={3}
+            maxLength={2000}
+            placeholder="Leave empty to inherit the org pitch…"
+            style={{
+              width: '100%', padding: '8px 11px', borderRadius: 7,
+              border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box',
+              fontFamily: 'inherit', color: '#111', resize: 'vertical', lineHeight: 1.5,
+              background: effectiveCanEdit ? '#fff' : '#f9fafb',
+            }}
+          />
+        </div>
+
         {/* Value props */}
         <FieldGroup
           title="Value propositions"

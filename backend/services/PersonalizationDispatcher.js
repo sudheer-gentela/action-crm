@@ -145,6 +145,12 @@ function mapSkillOutput({ skillName, skillResult, channel }) {
     hook: out.hook || null,
     stepIntent: out.step_intent || null,
     referencesPriorEvent: out.references_prior_email || out.references_prior_event || null,
+    // Rep-facing decision inputs the skill already produces. Surfaced on the
+    // draft card so the rep can judge "AI draft vs sequence default vs edit"
+    // without re-deriving the reasoning. Previously dropped here — that loss
+    // was the gap, not the skill.
+    rationale:       (typeof out.rationale === 'string' && out.rationale.trim()) ? out.rationale.trim() : null,
+    confidenceNotes: (typeof out.confidence_notes === 'string' && out.confidence_notes.trim()) ? out.confidence_notes.trim() : null,
   };
 
   if (skillName === 'outreach-email') {

@@ -32,8 +32,12 @@ const authenticateToken = (req, res, next) => {
     req.orgId  = decoded.org_id || null;                        // populated once JWT is updated
     next();
   } catch (error) {
-    console.log('[auth-fail] name=' + error.name + ' msg=' + error.message + ' tokenLen=' + token.length + ' tokenHead=' + token.slice(0, 20) + ' secretLen=' + (process.env.JWT_SECRET ? process.env.JWT_SECRET.length : 0));
-    return res.status(403).json({ error: { message: 'Invalid or expired token' } });
+    // Log the failure class only — never token material or secret metadata.
+    console.log('[auth-fail] ' + error.name + ': ' + error.message);
+    // `code` is the machine-readable contract the frontend keys refresh logic
+    // on (prospectingShared checks it). Keep the message human-readable; do
+    // not couple any client behavior to the message text.
+    return res.status(403).json({ error: { message: 'Invalid or expired token', code: 'TOKEN_INVALID' } });
   }
 };
 

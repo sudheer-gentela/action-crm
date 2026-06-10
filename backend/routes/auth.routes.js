@@ -95,9 +95,11 @@ router.post('/register', async (req, res) => {
     const email = String(req.body.email || '').toLowerCase().trim();
     const regTz = isValidTimeZone(req.body.timezone) ? req.body.timezone : null;
 
-    // Check if user exists
+    // Check if user exists — compare case-insensitively so a legacy
+    // mixed-case row (stored before emails were normalized) still blocks
+    // a duplicate lowercase signup.
     const existingUser = await db.query(
-      'SELECT id FROM users WHERE email = $1',
+      'SELECT id FROM users WHERE LOWER(email) = $1',
       [email]
     );
     if (existingUser.rows.length > 0) {
@@ -176,9 +178,10 @@ router.post('/login', async (req, res) => {
     // capitalized-email account still resolves on login.
     const email = String(req.body.email || '').toLowerCase().trim();
 
-    // Get user
+    // Get user — LOWER(email) so accounts stored with mixed case before
+    // emails were normalized (input is lowercased above) can still log in.
     const result = await db.query(
-      'SELECT * FROM users WHERE email = $1',
+      'SELECT * FROM users WHERE LOWER(email) = $1',
       [email]
     );
     if (result.rows.length === 0) {
@@ -291,7 +294,75 @@ router.get('/verify', async (req, res) => {
   }
 });
 
-module.exports = router;
+// ─────────────────────────────────────────────────────────────
+// POST /api/auth/refresh
+//
+// Contract (matches frontend prospectingShared._refreshToken):
+//   Request:  Authorization: Bearer <current token>  (may be expired)
+//   Response: { token } — a fresh JWT with current org context
+//
+// Accepts a token whose signature is valid but which expired within
+// REFRESH_GRACE_MS (24h). Beyond the grace window — or on any signature
+// problem — the user must log in again. Org context and role are re-read
+// from the DB at refresh time so a role/org change since login takes
+// effect on the new token rather than being copied forward.
+// ─────────────────────────────────────────────────────────────
+const REFRESH_GRACE_MS = 24 * 60 * 60 * 1000; // 24 hours past expiry
+
+router.post('/refresh', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ error: { message: 'No token provided', code: 'TOKEN_MISSING' } });
+    }
+
+    // Verify the signature while tolerating expiry; expiry is checked
+    // manually against the grace window below.
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
+    } catch (e) {
+      // Bad signature / malformed — never refreshable.
+      return res.status(401).json({ error: { message: 'Invalid token', code: 'TOKEN_INVALID' } });
+    }
+
+    if (decoded.exp && (Date.now() - decoded.exp * 1000) > REFRESH_GRACE_MS) {
+      return res.status(401).json({ error: { message: 'Session expired. Please log in again.', code: 'TOKEN_EXPIRED' } });
+    }
+
+    const userId = decoded.userId || decoded.id || decoded.sub;
+    if (!userId) {
+      return res.status(401).json({ error: { message: 'Invalid token', code: 'TOKEN_INVALID' } });
+    }
+
+    // User must still exist; org membership re-resolved fresh.
+    const userRes = await db.query(
+      'SELECT id, email FROM users WHERE id = $1',
+      [userId]
+    );
+    if (userRes.rows.length === 0) {
+      return res.status(401).json({ error: { message: 'User not found', code: 'TOKEN_INVALID' } });
+    }
+    const user = userRes.rows[0];
+    const orgPayload = await getOrgPayload(user.id);
+
+    const newToken = jwt.sign(
+      {
+        userId: user.id,        // kept as userId to match existing convention
+        email:  user.email,
+        org_id: orgPayload.org_id,
+        role:   orgPayload.role,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+
+    res.json({ token: newToken });
+  } catch (error) {
+    console.error('Refresh error:', error);
+    res.status(500).json({ error: { message: 'Token refresh failed' } });
+  }
+});
 
 // ─────────────────────────────────────────────────────────────
 // Password Reset — dependencies
@@ -392,7 +463,7 @@ router.post('/forgot-password', async (req, res) => {
   try {
     // Look up user — silently succeed even if not found
     const { rows } = await db.query(
-      'SELECT id, first_name, email FROM users WHERE email = $1',
+      'SELECT id, first_name, email FROM users WHERE LOWER(email) = $1',
       [email.toLowerCase().trim()]
     );
 
@@ -481,20 +552,30 @@ router.post('/reset-password', async (req, res) => {
     return res.status(400).json({ error: { message: 'Password must be at least 8 characters' } });
   }
 
+  // All three writes (password update, mark token used, invalidate siblings)
+  // happen in ONE transaction. Previously they were separate statements: a
+  // failure after the password UPDATE left the token still valid — replayable
+  // to set a second password. FOR UPDATE on the token row also prevents two
+  // concurrent submits of the same link from both passing the validity check.
+  const client = await db.pool.connect();
   try {
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
 
-    // Find a valid, unused, non-expired token
-    const { rows } = await db.query(
+    await client.query('BEGIN');
+
+    // Find a valid, unused, non-expired token — locked for this transaction
+    const { rows } = await client.query(
       `SELECT prt.id, prt.user_id
        FROM password_reset_tokens prt
        WHERE prt.token_hash = $1
          AND prt.used_at   IS NULL
-         AND prt.expires_at > NOW()`,
+         AND prt.expires_at > NOW()
+       FOR UPDATE`,
       [tokenHash]
     );
 
     if (rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({
         error: { message: 'This reset link is invalid or has expired. Please request a new one.' }
       });
@@ -504,30 +585,37 @@ router.post('/reset-password', async (req, res) => {
 
     // Hash new password and update user
     const passwordHash = await bcrypt.hash(password, 10);
-    await db.query(
+    await client.query(
       'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2',
       [passwordHash, userId]
     );
 
     // Mark token as used
-    await db.query(
+    await client.query(
       'UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1',
       [tokenId]
     );
 
     // Invalidate any other unused tokens for this user
-    await db.query(
+    await client.query(
       `UPDATE password_reset_tokens
        SET used_at = NOW()
        WHERE user_id = $1 AND used_at IS NULL AND id != $2`,
       [userId, tokenId]
     );
 
+    await client.query('COMMIT');
+
     console.log(`🔐 Password reset successful for user ${userId}`);
     res.json({ message: 'Password reset successfully. You can now sign in.' });
 
   } catch (err) {
+    try { await client.query('ROLLBACK'); } catch {} // no-op if BEGIN never ran
     console.error('Reset password error:', err);
     res.status(500).json({ error: { message: 'Something went wrong. Please try again.' } });
+  } finally {
+    client.release();
   }
 });
+
+module.exports = router;

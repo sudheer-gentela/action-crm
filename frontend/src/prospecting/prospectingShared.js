@@ -115,8 +115,13 @@ export function apiFetch(path, options = {}, _isRetry = false) {
     if (r.ok) return r.json();
     let errBody = {};
     try { errBody = await r.json(); } catch (_) {}
-    const errMsg = errBody?.error?.message || r.statusText;
-    if (r.status === 403 && errMsg === 'Invalid or expired token' && !_isRetry) {
+    const errMsg  = errBody?.error?.message || r.statusText;
+    const errCode = errBody?.error?.code || null;
+    // Prefer the machine-readable code (auth.middleware sends
+    // code:'TOKEN_INVALID'); keep the message-string match as a fallback so
+    // this still works against a backend that predates the code field.
+    const isAuthFail = errCode === 'TOKEN_INVALID' || errMsg === 'Invalid or expired token';
+    if (r.status === 403 && isAuthFail && !_isRetry) {
       try {
         await _refreshToken();
         return apiFetch(path, options, true);
@@ -130,6 +135,7 @@ export function apiFetch(path, options = {}, _isRetry = false) {
     }
     const err = new Error(errMsg);
     err.status = r.status;
+    err.code = errCode;
     return Promise.reject(err);
   });
 }

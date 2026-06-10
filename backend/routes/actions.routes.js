@@ -1414,9 +1414,16 @@ router.post('/suggestions/:id/dismiss', async (req, res) => {
 
 // Unified row mapper — works for both deal and prospecting action rows
 function mapUnifiedAction(row, source) {
+  const actionSource = source || row.action_source;
   return {
     id:                      row.id,
-    actionSource:            source || row.action_source,
+    // Stable cross-table identifier. `id` alone is ambiguous in the unified
+    // list: actions.id and prospecting_actions.id are independent serials, so
+    // the same number can refer to two different rows. Clients should key
+    // rows and route updates by uid, using id only on the source-specific
+    // endpoint the uid prefix selects.
+    uid:                     `${actionSource}-${row.id}`,
+    actionSource:            actionSource,
     type:                    row.action_type,
     actionType:              row.action_type,
     priority:                row.priority,

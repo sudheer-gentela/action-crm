@@ -29,8 +29,10 @@ pool.on('connect', () => {
 });
 
 pool.on('error', (err) => {
-  console.error('❌ Unexpected database error:', err);
-  process.exit(-1);
+  // An idle client erroring (network blip, server-side connection reset) is
+  // recoverable — the pool discards the client and creates a new one on
+  // demand. Exiting here turned every routine blip into a full API outage.
+  console.error('❌ Idle database client error (recoverable, pool will replace the client):', err.message);
 });
 
 if (process.env.DATABASE_URL) {
@@ -72,10 +74,18 @@ const query = (text, params) => pool.query(text, params);
 const orgQuery = async (orgId, text, params = []) => {
   const client = await pool.connect();
   try {
-    // Set RLS session variable — scopes all queries on this client to this org
+    // SET LOCAL is a NO-OP outside a transaction (Postgres silently ignores
+    // it), so the RLS session variable must be set inside BEGIN/COMMIT for
+    // it to apply to the query. Single-statement reads still benefit: the
+    // whole round trip is one short transaction.
+    await client.query('BEGIN');
     await client.query(`SET LOCAL app.current_org_id = '${parseInt(orgId, 10)}'`);
     const result = await client.query(text, params);
+    await client.query('COMMIT');
     return result;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw err;
   } finally {
     client.release();
   }

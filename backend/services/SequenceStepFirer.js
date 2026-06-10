@@ -521,13 +521,37 @@ async function reapStaleSending(client, staleMinutes = 30) {
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
+// Re-entrancy guard for fireDueSteps. node-cron fires every minute regardless
+// of whether the previous tick finished; a tick doing AI personalization plus
+// real sends over a 100-enrollment batch can exceed 60s. The send path itself
+// is overlap-safe (atomic scheduled→sending claim + uq_seq_step_logs_pending),
+// but the draft branch is check-then-insert (duplicate drafts under overlap)
+// and a second concurrent tick doubles LLM spend for nothing. Single-process
+// guard is sufficient for the single-instance Railway deployment; if this ever
+// runs multi-instance, replace with a pg advisory lock.
+let _fireDueStepsRunning = false;
+
 const SequenceStepFirer = {
   /**
    * Fire all due sequence steps across all orgs.
    * Safe to call on a schedule — processes up to 100 enrollments per run.
+   * Overlapping invocations are skipped (see _fireDueStepsRunning above).
    * @returns {{ fired: number, stopped: number, errors: number, drafted: number }}
    */
   async fireDueSteps() {
+    if (_fireDueStepsRunning) {
+      console.warn('📨 fireDueSteps: previous tick still running — skipping this tick');
+      return { fired: 0, stopped: 0, errors: 0, drafted: 0, skippedOverlap: true };
+    }
+    _fireDueStepsRunning = true;
+    try {
+      return await this._fireDueStepsInner();
+    } finally {
+      _fireDueStepsRunning = false;
+    }
+  },
+
+  async _fireDueStepsInner() {
     let fired = 0, stopped = 0, errors = 0, drafted = 0;
 
     const client = await pool.connect();

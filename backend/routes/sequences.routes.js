@@ -727,6 +727,7 @@ router.get('/drafts', async (req, res) => {
         s.name AS sequence_name,
         p.id AS prospect_id, p.first_name, p.last_name,
         p.email AS prospect_email, p.company_name, p.linkedin_url,
+        p.title AS prospect_title, p.company_industry, p.company_domain,
         p.client_id AS prospect_client_id,
         psa.id                 AS sender_id,
         psa.email              AS sender_email,
@@ -814,6 +815,26 @@ router.get('/drafts', async (req, res) => {
       // template so the email has at least something in the subject line.
       const subject = r.subject || (channelDrift && channel === 'email' ? (r.step_subject_template || '') : '');
 
+      // Rendered "sequence default" for this step — exactly what the firer
+      // would send if the enrollment had no personalised content (its
+      // `personalised ?? renderTemplate(template)` fallback). Surfaced so the
+      // rep can compare the AI draft against the default and revert with one
+      // click (the UI PATCHes the draft with these values). Uses the same
+      // renderPreviewTemplate the /preview endpoint uses, with the firer's
+      // account→prospect COALESCE approximated by the prospect's company_*.
+      const templateVars = {
+        first_name:       r.first_name,
+        last_name:        r.last_name,
+        title:            r.prospect_title,
+        company_name:     r.company_name,
+        company_industry: r.company_industry,
+        company_domain:   r.company_domain,
+      };
+      const sequenceDefault = {
+        subject: channel === 'email' ? renderPreviewTemplate(r.step_subject_template, templateVars) : '',
+        body:    renderPreviewTemplate(r.step_body_template, templateVars),
+      };
+
       return {
         id:              r.id,
         enrollmentId:    r.enrollment_id,
@@ -850,6 +871,9 @@ router.get('/drafts', async (req, res) => {
         // Phase 3: provenance for the AI's LinkedIn data sources, if any.
         // Null when the step had no personalize config or no profile data.
         personalizeSources: r.personalize_sources || null,
+        // Rendered step template — the non-AI fallback the firer would send.
+        // Null only when the step has no templates at all.
+        sequenceDefault: (sequenceDefault.subject || sequenceDefault.body) ? sequenceDefault : null,
       };
     });
 
