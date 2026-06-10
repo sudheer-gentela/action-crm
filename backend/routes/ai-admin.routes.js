@@ -14,6 +14,7 @@ const db                    = require('../config/database');
 
 const {
   listProviders, getProvider, isValidProvider, isValidModel, CALL_TYPES,
+  SYSTEM_DEFAULT, parseModelSlot,
 } = require('../config/aiProviders');
 const CredentialsStore  = require('../services/ai/CredentialsStore');
 const AIClientResolver  = require('../services/ai/AIClientResolver');
@@ -153,6 +154,24 @@ router.get('/config', adminOnly, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// GET /api/org/admin/ai/effective
+// Per-call-type effective resolution table: which provider/model would
+// actually serve each call type, and which config layer set it. With no
+// query param this is the ORG-level view (a user with no personal
+// overrides). Pass ?userId=N to inspect a specific user's routing.
+// ─────────────────────────────────────────────────────────────────────────
+router.get('/effective', adminOnly, async (req, res) => {
+  try {
+    const userId = req.query.userId ? parseInt(req.query.userId, 10) : null;
+    const rows = await AIClientResolver.explainResolution(req.orgId, userId);
+    res.json({ userId, effective: rows });
+  } catch (err) {
+    console.error('GET /org/admin/ai/effective error:', err);
+    res.status(500).json({ error: { message: 'Failed to resolve effective models' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // PATCH /api/org/admin/ai/config
 // Body: { ai_provider?, default_model?, models_by_call_type?,
 //         allow_user_override?, allow_user_byok? }
@@ -168,16 +187,54 @@ router.patch('/config', adminOnly, async (req, res) => {
     }
     patch.ai_provider = ai_provider;
   }
-  if (default_model !== undefined) {
-    const prov = ai_provider || patch.ai_provider;
-    if (prov && !isValidModel(prov, default_model)) {
-      return res.status(400).json({ error: { message: `Model ${default_model} not valid for ${prov}` } });
+
+  // Legacy provider context for UNQUALIFIED slot values: the ai_provider in
+  // this request, else the stored org provider, else system default. Slots
+  // may also arrive provider-qualified ('anthropic/claude-sonnet-4-6'), in
+  // which case the embedded provider wins for that slot.
+  let legacyProvider = patch.ai_provider || null;
+  if (!legacyProvider) {
+    const cur = await db.query(
+      `SELECT ai_settings->>'ai_provider' AS p FROM org_action_config WHERE org_id = $1`,
+      [req.orgId]
+    );
+    const storedP = cur.rows[0]?.p;
+    legacyProvider = (storedP && isValidProvider(storedP)) ? storedP : SYSTEM_DEFAULT.provider;
+  }
+
+  // Validate a slot against the MERGED catalog (static registry + live
+  // discovery) so newly-discovered models are saveable. Returns an error
+  // string or null.
+  const validateSlot = async (slot, fieldLabel) => {
+    const parsed = parseModelSlot(slot, legacyProvider);
+    if (!parsed) {
+      return `${fieldLabel}: '${slot}' is not a valid model reference. ` +
+             `Use 'provider/model' (e.g. 'anthropic/claude-sonnet-4-6') or a model id.`;
     }
+    if (!(await AIClientResolver.isKnownModel(parsed.provider, parsed.model))) {
+      return `${fieldLabel}: model '${parsed.model}' is not known for provider ` +
+             `'${parsed.provider}'. Refresh the model list if it was released recently.`;
+    }
+    return null;
+  };
+
+  if (default_model !== undefined) {
+    const err = await validateSlot(default_model, 'default_model');
+    if (err) return res.status(400).json({ error: { message: err } });
     patch.default_model = default_model;
   }
   if (models_by_call_type !== undefined) {
-    if (typeof models_by_call_type !== 'object') {
+    if (typeof models_by_call_type !== 'object' || Array.isArray(models_by_call_type)) {
       return res.status(400).json({ error: { message: 'models_by_call_type must be an object' } });
+    }
+    const knownCallTypes = new Set(CALL_TYPES.map(ct => ct.id));
+    for (const [ct, slot] of Object.entries(models_by_call_type)) {
+      if (!knownCallTypes.has(ct)) {
+        return res.status(400).json({ error: { message: `Unknown call type: ${ct}` } });
+      }
+      if (slot == null || slot === '') continue;   // explicit clear is allowed
+      const err = await validateSlot(slot, `models_by_call_type.${ct}`);
+      if (err) return res.status(400).json({ error: { message: err } });
     }
     patch.models_by_call_type = models_by_call_type;
   }

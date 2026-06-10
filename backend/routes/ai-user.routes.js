@@ -15,6 +15,7 @@ const db                    = require('../config/database');
 
 const {
   listProviders, getProvider, isValidProvider, isValidModel, CALL_TYPES,
+  parseModelSlot,
 } = require('../config/aiProviders');
 const CredentialsStore  = require('../services/ai/CredentialsStore');
 const AIClientResolver  = require('../services/ai/AIClientResolver');
@@ -102,14 +103,55 @@ router.patch('/config', async (req, res) => {
     }
     patch.ai_provider = ai_provider;
   }
+
+  // Legacy provider context for UNQUALIFIED slots: the provider in this
+  // request, else the user's stored provider, else the org provider.
+  // Provider-qualified slots ('anthropic/claude-sonnet-4-6') carry their own.
+  let legacyProvider = (patch.ai_provider && isValidProvider(patch.ai_provider))
+    ? patch.ai_provider : null;
+  if (!legacyProvider) {
+    const cur = await db.query(
+      `SELECT ai_settings->>'ai_provider' AS p
+         FROM action_config WHERE user_id = $1 AND org_id = $2`,
+      [req.userId, req.orgId]
+    );
+    const storedP = cur.rows[0]?.p;
+    legacyProvider = (storedP && isValidProvider(storedP)) ? storedP : policy.org_provider;
+  }
+
+  const validateSlot = async (slot, fieldLabel) => {
+    const parsed = parseModelSlot(slot, legacyProvider);
+    if (!parsed) {
+      return `${fieldLabel}: '${slot}' is not a valid model reference. ` +
+             `Use 'provider/model' (e.g. 'anthropic/claude-sonnet-4-6') or a model id.`;
+    }
+    if (!(await AIClientResolver.isKnownModel(parsed.provider, parsed.model))) {
+      return `${fieldLabel}: model '${parsed.model}' is not known for provider ` +
+             `'${parsed.provider}'. Refresh the model list if it was released recently.`;
+    }
+    return null;
+  };
+
   if (default_model !== undefined) {
-    const prov = ai_provider || patch.ai_provider || policy.org_provider;
-    if (default_model !== null && !isValidModel(prov, default_model)) {
-      return res.status(400).json({ error: { message: `Model not valid for ${prov}` } });
+    if (default_model !== null) {
+      const err = await validateSlot(default_model, 'default_model');
+      if (err) return res.status(400).json({ error: { message: err } });
     }
     patch.default_model = default_model;
   }
   if (models_by_call_type !== undefined) {
+    if (typeof models_by_call_type !== 'object' || Array.isArray(models_by_call_type)) {
+      return res.status(400).json({ error: { message: 'models_by_call_type must be an object' } });
+    }
+    const knownCallTypes = new Set(CALL_TYPES.map(ct => ct.id));
+    for (const [ct, slot] of Object.entries(models_by_call_type || {})) {
+      if (!knownCallTypes.has(ct)) {
+        return res.status(400).json({ error: { message: `Unknown call type: ${ct}` } });
+      }
+      if (slot == null || slot === '') continue;   // explicit clear is allowed
+      const err = await validateSlot(slot, `models_by_call_type.${ct}`);
+      if (err) return res.status(400).json({ error: { message: err } });
+    }
     patch.models_by_call_type = models_by_call_type;
   }
 
@@ -130,6 +172,22 @@ router.patch('/config', async (req, res) => {
   } catch (err) {
     console.error('PATCH /me/ai/config error:', err);
     res.status(500).json({ error: { message: 'Failed to save AI config' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// GET /api/me/ai/effective
+// The caller's own per-call-type effective resolution (provider, model, and
+// which config layer set it) — "what will actually run when I click
+// generate". Powers the routing table in user AI preferences.
+// ─────────────────────────────────────────────────────────────────────────
+router.get('/effective', async (req, res) => {
+  try {
+    const rows = await AIClientResolver.explainResolution(req.orgId, req.userId);
+    res.json({ effective: rows });
+  } catch (err) {
+    console.error('GET /me/ai/effective error:', err);
+    res.status(500).json({ error: { message: 'Failed to resolve effective models' } });
   }
 });
 

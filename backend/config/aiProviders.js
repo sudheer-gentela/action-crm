@@ -24,16 +24,26 @@ const PROVIDERS = {
     envKey: 'ANTHROPIC_API_KEY',
     keyHint: 'sk-ant-…',
     models: [
+      { id: 'claude-fable-5',               label: 'Claude Fable 5',          tier: 'flagship' },
+      { id: 'claude-opus-4-8',              label: 'Claude Opus 4.8',         tier: 'flagship' },
       { id: 'claude-opus-4-7',              label: 'Claude Opus 4.7',         tier: 'flagship' },
       { id: 'claude-opus-4-6',              label: 'Claude Opus 4.6',         tier: 'flagship' },
       { id: 'claude-sonnet-4-6',            label: 'Claude Sonnet 4.6',       tier: 'balanced' },
       { id: 'claude-haiku-4-5-20251001',    label: 'Claude Haiku 4.5',        tier: 'fast'    },
       { id: 'claude-sonnet-4-20250514',     label: 'Claude Sonnet 4 (legacy)', tier: 'balanced' },
     ],
+    // Longest-prefix matched by getModelCost — generation-specific entries
+    // first, bare-family entries as legacy fallbacks (Opus ≤4.1 was $15/$75;
+    // Haiku 3.x was $0.80/$4).
     costPerMillion: {
-      'claude-opus':   { input: 15,   output: 75   },
-      'claude-sonnet': { input:  3,   output: 15   },
-      'claude-haiku':  { input:  0.80, output: 4.00 },
+      'claude-fable-5':    { input: 10,   output: 50   },
+      'claude-opus-4-8':   { input:  5,   output: 25   },
+      'claude-opus-4-7':   { input:  5,   output: 25   },
+      'claude-opus-4-6':   { input:  5,   output: 25   },
+      'claude-opus':       { input: 15,   output: 75   },
+      'claude-sonnet':     { input:  3,   output: 15   },
+      'claude-haiku-4-5':  { input:  1,   output:  5   },
+      'claude-haiku':      { input:  0.80, output: 4.00 },
     },
   },
 
@@ -67,15 +77,20 @@ const PROVIDERS = {
     adapter: 'gemini',
     envKey: 'GOOGLE_AI_API_KEY',
     keyHint: 'AIza…',
+    // Stable ids only — Gemini 2.0/1.5 models were shut down by Google in
+    // mid-2026, and the 3.x family ships under preview ids that churn; live
+    // discovery (ModelDiscoveryService) surfaces those without a redeploy.
+    // Note: 2.5 Pro charges 2x input above 200K prompt tokens; the figures
+    // here are the ≤200K rates used for estimation.
     models: [
-      { id: 'gemini-2.0-flash',    label: 'Gemini 2.0 Flash',  tier: 'fast'     },
-      { id: 'gemini-1.5-pro',      label: 'Gemini 1.5 Pro',    tier: 'flagship' },
-      { id: 'gemini-1.5-flash',    label: 'Gemini 1.5 Flash',  tier: 'fast'     },
+      { id: 'gemini-2.5-pro',        label: 'Gemini 2.5 Pro',        tier: 'flagship' },
+      { id: 'gemini-2.5-flash',      label: 'Gemini 2.5 Flash',      tier: 'balanced' },
+      { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', tier: 'fast'     },
     ],
     costPerMillion: {
-      'gemini-2.0-flash': { input: 0.10, output: 0.40 },
-      'gemini-1.5-pro':   { input: 1.25, output: 5.00 },
-      'gemini-1.5-flash': { input: 0.075, output: 0.30 },
+      'gemini-2.5-pro':        { input: 1.25, output: 10.00 },
+      'gemini-2.5-flash-lite': { input: 0.10, output:  0.40 },
+      'gemini-2.5-flash':      { input: 0.30, output:  2.50 },
     },
   },
 
@@ -241,6 +256,45 @@ function getModelCost(providerId, modelId) {
   return costs.default || null;
 }
 
+// ── Provider-qualified model slots ────────────────────────────────────────
+//
+// A "slot" is the value stored in default_model or models_by_call_type.
+// Two forms are accepted:
+//
+//   Qualified:   'anthropic/claude-sonnet-4-6'   (provider + model in one
+//                value — the canonical form going forward; makes per-call-
+//                type provider routing possible and removes the separate
+//                ai_provider axis from resolution)
+//   Unqualified: 'claude-sonnet-4-6'             (legacy — interpreted under
+//                the caller-supplied legacyProvider, i.e. the layer's
+//                ai_provider setting)
+//
+// Parse rule: split on the FIRST '/'. The prefix is treated as a provider
+// only when it is a known provider id — otherwise the whole string is a
+// legacy model id (protects free-form ids like HuggingFace 'org/model'
+// paths on the custom provider).
+
+function formatModelSlot(providerId, modelId) {
+  return `${providerId}/${modelId}`;
+}
+
+function parseModelSlot(slot, legacyProvider) {
+  if (typeof slot !== 'string' || !slot.trim()) return null;
+  const s = slot.trim();
+  const i = s.indexOf('/');
+  if (i > 0) {
+    const prefix = s.slice(0, i);
+    if (isValidProvider(prefix)) {
+      const model = s.slice(i + 1).trim();
+      if (!model) return null;
+      return { provider: prefix, model, qualified: true };
+    }
+  }
+  // Unqualified (legacy) — needs a provider context to mean anything.
+  if (!legacyProvider || !isValidProvider(legacyProvider)) return null;
+  return { provider: legacyProvider, model: s, qualified: false };
+}
+
 module.exports = {
   PROVIDERS,
   SYSTEM_DEFAULT,
@@ -250,4 +304,6 @@ module.exports = {
   isValidProvider,
   isValidModel,
   getModelCost,
+  formatModelSlot,
+  parseModelSlot,
 };

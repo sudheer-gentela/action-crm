@@ -20,6 +20,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { EffectiveRoutingTable, ModelSlotSelect } from './AIModelRouting';
 
 const API = process.env.REACT_APP_API_URL || '';
 
@@ -128,6 +129,10 @@ export default function OAAIProviderSettings() {
 
   const [discovery,   setDiscovery]   = useState(null);   // { last_run_at, last_run_status }
   const [refreshing,  setRefreshing]  = useState(false);
+  // Bumped after every successful save/load so the effective-routing table
+  // re-resolves against the backend (the table is resolver output, not a
+  // client-side computation — it can never disagree with what actually runs).
+  const [effectiveKey, setEffectiveKey] = useState(0);
 
   const showFlash = (kind, msg) => {
     setFlash({ kind, msg });
@@ -203,6 +208,7 @@ export default function OAAIProviderSettings() {
         }),
       });
       setDirty(false);
+      setEffectiveKey(k => k + 1);
       showFlash('success', 'Saved ✓');
     } catch (e) {
       showFlash('error', 'Save failed: ' + e.message);
@@ -377,7 +383,7 @@ export default function OAAIProviderSettings() {
 
       {/* ── Per-call-type overrides ── */}
       <Section title="Per-task model overrides"
-               desc="Use a different model for specific tasks. Leave blank to use the default above.">
+               desc="Use a different model for specific tasks — any provider, not just the default one. Task overrides beat default models (yours and your users'). Leave blank to use the default above.">
         <Card style={{ padding: 0 }}>
           {Object.entries(groupBy(callTypes, 'group')).map(([group, items]) => (
             <div key={group}>
@@ -397,16 +403,14 @@ export default function OAAIProviderSettings() {
                       <div style={{ fontSize: 12, color: '#6b7280', fontFamily: 'monospace' }}>{ct.id}</div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <select
+                      <ModelSlotSelect
+                        providers={providers}
                         value={override || ''}
-                        onChange={(e) => setCallTypeModel(ct.id, e.target.value)}
-                        style={{ ...selectStyle, minWidth: 200, maxWidth: 240 }}
-                      >
-                        <option value="">Use default ({modelLabel(config.default_model, availableModels)})</option>
-                        {availableModels.map(m => (
-                          <option key={m.id} value={m.id}>{modelOptionLabel(m)}</option>
-                        ))}
-                      </select>
+                        legacyProvider={config.ai_provider}
+                        onChange={(v) => v ? setCallTypeModel(ct.id, v) : clearCallTypeModel(ct.id)}
+                        emptyLabel={`Use default (${modelLabel(config.default_model, availableModels)})`}
+                        style={{ ...selectStyle, minWidth: 220, maxWidth: 280 }}
+                      />
                       {override && (
                         <button onClick={() => clearCallTypeModel(ct.id)}
                                 style={iconBtnStyle} title="Clear override">×</button>
@@ -418,6 +422,24 @@ export default function OAAIProviderSettings() {
             </div>
           ))}
         </Card>
+      </Section>
+
+      {/* ── Effective routing (resolver output, not a client-side guess) ── */}
+      <Section title="Effective routing"
+               desc="What will actually serve each task right now, and which setting decided it — straight from the resolver. Per-user overrides may differ; this is the org-level view (a user with no personal overrides).">
+        <Card style={{ padding: 0 }}>
+          <EffectiveRoutingTable
+            fetcher={apiFetch}
+            endpoint="/org/admin/ai/effective"
+            callTypes={callTypes}
+            refreshKey={effectiveKey}
+          />
+        </Card>
+        {dirty && (
+          <p style={{ fontSize: 12, color: '#854F0B', marginTop: 6 }}>
+            ⚠️ You have unsaved changes — this table reflects the last saved config.
+          </p>
+        )}
       </Section>
 
       {/* ── API keys ── */}

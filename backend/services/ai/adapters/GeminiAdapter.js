@@ -51,11 +51,23 @@ class GeminiAdapter extends BaseAdapter {
 
     const text  = result.response.text();
     const usage = result.response.usageMetadata || {};
+    // Gemini 2.5+ implicit caching: usageMetadata.cachedContentTokenCount is
+    // the portion of promptTokenCount served from cache (billed at ~10% of
+    // input price). promptTokenCount is TOTAL input (cached included) —
+    // same shape as OpenAI's prompt_tokens — while the platform convention
+    // (TokenTrackingService / skill_runs) wants input_tokens = UNCACHED only,
+    // with the cached portion in cache_read_input_tokens. Subtract to avoid
+    // double-counting, mirroring OpenAIAdapter. Gemini implicit caching has
+    // no explicit write event, so cache_creation stays 0.
+    const cachedTokens = usage.cachedContentTokenCount || 0;
     return {
       text,
       usage: {
-        input_tokens:  usage.promptTokenCount     || 0,
+        input_tokens:  Math.max((usage.promptTokenCount || 0) - cachedTokens, 0),
         output_tokens: usage.candidatesTokenCount || 0,
+        cache_read_input_tokens:     cachedTokens,
+        cache_creation_input_tokens: 0,
+        cache_creation: null,
       },
     };
   }

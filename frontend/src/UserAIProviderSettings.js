@@ -19,6 +19,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { EffectiveRoutingTable, ModelSlotSelect } from './AIModelRouting';
 
 const API = process.env.REACT_APP_API_URL || '';
 
@@ -104,6 +105,9 @@ export default function UserAIProviderSettings() {
 
   const [data,       setData]       = useState(null);  // {policy, user_settings, providers, call_types}
   const [credentials, setCredentials] = useState([]);
+  // Bumped after every successful save so the effective-routing table
+  // re-resolves against the backend.
+  const [effectiveKey, setEffectiveKey] = useState(0);
 
   const [showAddKey, setShowAddKey] = useState(false);
   const [newKey,     setNewKey]     = useState({ provider: 'anthropic', api_key: '', label: '', endpoint_url: '' });
@@ -138,17 +142,25 @@ export default function UserAIProviderSettings() {
   }
 
   const { policy, user_settings, providers } = data;
-
-  // The effective provider/model — what the user is actually getting
-  const effectiveProvider = user_settings.ai_provider || policy.org_provider;
-  const effectiveModel    = user_settings.default_model || policy.org_model;
-  const provDef           = providers.find(p => p.id === effectiveProvider);
+  const callTypes = data.call_types || [];
+  // Provider context for legacy unqualified slot values in YOUR settings.
+  const legacyProvider = user_settings.ai_provider || policy.org_provider;
 
   function setOverride(patch) {
     setData(prev => ({
       ...prev,
       user_settings: { ...prev.user_settings, ...patch },
     }));
+    setDirty(true);
+  }
+
+  function setCallTypeModel(callType, slot) {
+    setData(prev => {
+      const next = { ...(prev.user_settings.models_by_call_type || {}) };
+      if (slot) next[callType] = slot;
+      else delete next[callType];
+      return { ...prev, user_settings: { ...prev.user_settings, models_by_call_type: next } };
+    });
     setDirty(true);
   }
 
@@ -172,6 +184,7 @@ export default function UserAIProviderSettings() {
         }),
       });
       setDirty(false);
+      setEffectiveKey(k => k + 1);
       showFlash('success', 'Saved ✓');
     } catch (e) {
       showFlash('error', 'Save failed: ' + e.message);
@@ -220,19 +233,22 @@ export default function UserAIProviderSettings() {
 
       {flash && <Flash kind={flash.kind} msg={flash.msg} />}
 
-      {/* ── Effective settings card ── */}
-      <Card style={{ background: '#FAFBFD', border: '1px solid #DDE4ED' }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 8 }}>
-          What you're using right now
+      {/* ── Effective routing — straight from the backend resolver ── */}
+      <Card style={{ background: '#FAFBFD', border: '1px solid #DDE4ED', padding: 0 }}>
+        <div style={{ padding: '12px 18px 4px', fontSize: 11, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+          What you're using right now — per task
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 15, fontWeight: 500 }}>{provDef?.label || effectiveProvider}</span>
-          <span style={{ fontSize: 13, color: '#6b7280' }}>·</span>
-          <span style={{ fontSize: 14, fontFamily: 'monospace', color: '#374151' }}>{effectiveModel}</span>
-          {user_settings.ai_provider || user_settings.default_model
-            ? <Pill tone="warn">Your override</Pill>
-            : <Pill tone="ok">Org default</Pill>}
-        </div>
+        <EffectiveRoutingTable
+          fetcher={apiFetch}
+          endpoint="/me/ai/effective"
+          callTypes={callTypes}
+          refreshKey={effectiveKey}
+        />
+        {dirty && (
+          <div style={{ padding: '6px 18px 12px', fontSize: 12, color: '#854F0B' }}>
+            ⚠️ Unsaved changes — this table reflects the last saved config.
+          </div>
+        )}
       </Card>
 
       {/* ── Override section ── */}
@@ -243,6 +259,7 @@ export default function UserAIProviderSettings() {
           </h3>
           <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 12, lineHeight: 1.5 }}>
             Use a different provider or model than your org default. Leave blank to inherit from your org.
+            Note: task-specific overrides — yours below, or your org's — take precedence over this default.
           </p>
           <Card>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 12 }}>
@@ -299,6 +316,39 @@ export default function UserAIProviderSettings() {
                 Clear override & use org default
               </button>
             )}
+          </Card>
+
+          <h3 style={{ fontSize: 15, fontWeight: 600, marginTop: 28, marginBottom: 4 }}>
+            Per-task overrides
+          </h3>
+          <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 12, lineHeight: 1.5 }}>
+            Pin specific tasks to a model of your choice — any provider. Your task override wins over
+            everything else for that task. Leave blank to follow the chain above.
+          </p>
+          <Card style={{ padding: 0 }}>
+            {callTypes.map((ct, idx) => {
+              const override = user_settings.models_by_call_type?.[ct.id];
+              const isLast = idx === callTypes.length - 1;
+              return (
+                <div key={ct.id} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '10px 18px', borderBottom: isLast ? 'none' : '1px solid #f1f1ec', gap: 12,
+                }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{ct.label}</div>
+                    <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace' }}>{ct.id}</div>
+                  </div>
+                  <ModelSlotSelect
+                    providers={providers}
+                    value={override || ''}
+                    legacyProvider={legacyProvider}
+                    onChange={(v) => setCallTypeModel(ct.id, v)}
+                    emptyLabel="No override"
+                    style={{ ...selectStyle, minWidth: 220, maxWidth: 280 }}
+                  />
+                </div>
+              );
+            })}
           </Card>
         </>
       ) : (
