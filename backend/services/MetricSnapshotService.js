@@ -91,6 +91,7 @@ const MEASURES = [
   'enrolled', 'sent', 'failed', 'replied_steps', 'replies', 'ooo_replies',
   'connections_sent', 'connections_accepted', 'calls_logged',
   'meetings_booked', 'qualified', 'converted', 'prospects_added',
+  'bounces_hard', 'bounces_soft', 'blocks',          // Phase 2 (email_delivery_events)
 ];
 
 /** Emit the measure select list with `exprs` overriding specific measures. */
@@ -320,6 +321,32 @@ function familyProspectsAdded() {
          AND ${d} BETWEEN $3::date AND $4::date`;
 }
 
+// Phase 2 — bounce/block events from NDR parsing, by DETECTED date.
+// Dims come from the event row (matched at detection time); unmatched events
+// carry sentinel dims and still count at the org level. fit_band from the
+// linked prospect's current icp_score where available.
+function familyDeliveryEvents() {
+  return `
+      SELECT ${tzDate('ede.detected_at')}                                AS d,
+             COALESCE(ede.campaign_id, 0)                                AS campaign_id,
+             0 AS sequence_id, 0 AS sequence_step_id,
+             'email' AS channel,
+             COALESCE(ede.sender_account_id, 0)                          AS sender_account_id,
+             COALESCE(p.owner_id, 0)                                     AS owner_id,
+             ${FIT_BAND_SQL}                                             AS fit_band,
+         ${measureCols({
+           bounces_hard: `CASE WHEN ede.event_type = 'hard_bounce' THEN 1 ELSE 0 END`,
+           bounces_soft: `CASE WHEN ede.event_type = 'soft_bounce' THEN 1 ELSE 0 END`,
+           blocks: `CASE WHEN ede.event_type = 'block' THEN 1 ELSE 0 END`,
+         })}
+        FROM email_delivery_events ede
+        LEFT JOIN prospects p ON p.id = ede.prospect_id AND p.org_id = ede.org_id
+       WHERE ede.org_id = $1
+         AND ede.detected_at >= ($3::date - INTERVAL '2 days')
+         AND ede.detected_at <  ($4::date + INTERVAL '3 days')
+         AND ${tzDate('ede.detected_at')} BETWEEN $3::date AND $4::date`;
+}
+
 // ── core writer ──────────────────────────────────────────────────────────────
 
 /**
@@ -339,6 +366,7 @@ async function computeRange(orgId, startDate, endDate, calendarOpt) {
     familyMeetings(),
     familyStageTransitions(),
     familyProspectsAdded(),
+    familyDeliveryEvents(),   // Phase 2
   ].join('\n      UNION ALL\n');
 
   const insertSql = `

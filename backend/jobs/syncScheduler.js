@@ -49,6 +49,7 @@ const HandoverService = require('../services/handover.service');
 const { runNightlySweep: runProspectingNightlySweep } = require('../services/prospectingActions.service');  // Phase 4
 const StrapNightlySweep = require('../services/StrapNightlySweep');                                         // Phase 5
 const MetricSnapshotService = require('../services/MetricSnapshotService');                                 // Insights/WBR Phase 1
+const BounceDetectionService = require('../services/BounceDetectionService');                               // Insights/WBR Phase 2
 const sfSync            = require('../services/crm');                                                        // Phase 6 SF
 
 
@@ -360,9 +361,19 @@ async function storeEmailToDatabase(client, userId, orgId, email, userEmail, pro
   // Drop provably-automated senders (noreply, system domains, etc.) before
   // any DB work. Uses org-specific blocklist merged with platform defaults.
   if (!shouldStoreEmail(fromAddress, toAddresses, direction, filterCache.filter)) {
-    if (config.system.debug) console.log('Gate1-drop (automated sender):', fromAddress, email.subject);
-    await logFilteredEmail(client, orgId, userId, email, 'automated_sender', provider);
-    return { skipped: true, reason: 'automated_sender' };
+    // Insights/WBR Phase 2: NDR (bounce) messages land here because
+    // mailer-daemon/postmaster are in the blocklist. Parse the delivery
+    // signal BEFORE dropping — writes email_delivery_events + bounce_received
+    // activity, may auto-stop enrollments on hard bounce (D26). The NDR is
+    // still dropped from the CRM inbox either way. Never crashes the sync.
+    let filterReason = 'automated_sender';
+    if (direction === 'received' && BounceDetectionService.isLikelyNdr(fromAddress, email.subject)) {
+      const ndr = await BounceDetectionService.processPotentialNdr(client, { orgId, userId, email, provider });
+      if (ndr.processed) filterReason = 'ndr_processed';
+    }
+    if (config.system.debug) console.log(`Gate1-drop (${filterReason}):`, fromAddress, email.subject);
+    await logFilteredEmail(client, orgId, userId, email, filterReason, provider);
+    return { skipped: true, reason: filterReason };
   }
 
   // ── Dedup ─────────────────────────────────────────────────────────────────
