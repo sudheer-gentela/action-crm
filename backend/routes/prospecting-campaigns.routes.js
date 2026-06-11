@@ -1420,8 +1420,11 @@ router.get('/:id', async (req, res) => {
       const isOverriding = (v) => {
         if (v == null) return false;
         if (typeof v === 'string') return v.trim() !== '';
-        if (Array.isArray(v)) return v.length > 0;
-        if (typeof v === 'object') return Object.keys(v).length > 0;
+        if (Array.isArray(v)) return v.some(isOverriding);
+        // Objects override only if SOMETHING nested does — e.g.
+        // guardrails: { banned: [], required: [] } is inert, not an
+        // override, despite being a non-empty object.
+        if (typeof v === 'object') return Object.values(v).some(isOverriding);
         return true;
       };
       const activeKeys = cfgOv
