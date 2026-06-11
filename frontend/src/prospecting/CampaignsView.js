@@ -209,7 +209,36 @@ export default function CampaignsView() {
   const [showCreate,  setShowCreate]  = useState(false);
   const [showWizard,  setShowWizard]  = useState(false);
   const [editing,     setEditing]     = useState(null);   // campaign being edited (or null)
-  const [detailId,    setDetailId]    = useState(null);   // campaign id open in drawer
+  // Campaign id open in the detail drawer. Owns the THIRD hash segment
+  // (#/prospecting/campaigns/14) — restored on mount so a browser refresh
+  // reopens the same drawer. App.js owns segment 1, ProspectingView owns
+  // segment 2; this component never rewrites those. Access is enforced
+  // server-side on the drawer's fetch, so a deep link to a campaign the
+  // user can't see just renders the drawer's error state.
+  const [detailId,    setDetailId]    = useState(() => {
+    const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/');
+    if (parts[0]?.toLowerCase() === 'prospecting' && parts[1]?.toLowerCase() === 'campaigns') {
+      const id = parseInt(parts[2], 10);
+      if (Number.isInteger(id) && id > 0) return id;
+    }
+    return null;
+  });
+
+  // Write the id segment whenever the drawer opens/closes/switches. Only
+  // while the first two segments are ours — during a sub-view or tab
+  // switch the parents rewrite the hash and this effect must not fight
+  // them from a component that's about to unmount.
+  useEffect(() => {
+    const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/');
+    if (parts[0]?.toLowerCase() !== 'prospecting' || parts[1]?.toLowerCase() !== 'campaigns') return;
+    const current = parseInt(parts[2], 10);
+    const currentId = Number.isInteger(current) && current > 0 ? current : null;
+    if (currentId === detailId) return;
+    window.history.replaceState(
+      null, '',
+      detailId ? `#/prospecting/campaigns/${detailId}` : '#/prospecting/campaigns'
+    );
+  }, [detailId]);
 
   // Capability flags — server-authoritative (do NOT infer role client-side).
   // Drives which scope tabs are offered: Team when the user has reports, Org

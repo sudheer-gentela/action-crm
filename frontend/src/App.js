@@ -634,18 +634,21 @@ function Dashboard({ user, onLogout }) {
     return DEFAULT_TAB_BY_ROLE[activeRole];
   });
 
-  // Keep the hash in lockstep with the active tab. replaceState (not
-  // location.hash =) so tab switches don't pile up history entries —
-  // the browser Back button keeps its normal "leave the app" meaning.
+  // Keep the hash's FIRST segment in lockstep with the active tab.
+  // Deeper segments (#/prospecting/campaigns/14) are owned by the views
+  // themselves (ProspectingView → sub-view, CampaignsView → drawer id),
+  // so we only rewrite when the tab segment actually differs — a rewrite
+  // resets the deeper segments, which is correct on a tab switch and
+  // wrong any other time. replaceState (not location.hash =) so tab
+  // switches don't pile up history entries — the browser Back button
+  // keeps its normal "leave the app" meaning.
   // Internal pseudo-tabs (e.g. 'playbook-detail') aren't persistable —
   // they depend on in-memory ids — so for those we leave the hash on
   // the last persistable tab, which is also the sane refresh target.
   useEffect(() => {
     if (!persistableTabsForRole(activeRole).has(currentTab)) return;
-    const desired = `#/${currentTab}`;
-    if (window.location.hash !== desired) {
-      window.history.replaceState(null, '', desired);
-    }
+    if (tabFromHash() === currentTab) return;   // segment already right; keep sub-segments
+    window.history.replaceState(null, '', `#/${currentTab}`);
   }, [currentTab, activeRole]);
 
   // Manual hash edits (or programmatic ones) navigate too.

@@ -36,6 +36,21 @@ import CSVImportModal       from './CSVImportModal';
 import './ProspectingView.css';
 import './OutreachComposer.css';
 
+// ── URL-hash sub-navigation ──────────────────────────────────────────────────
+// App.js owns the FIRST hash segment (#/prospecting). This view owns the
+// SECOND (#/prospecting/campaigns), so a browser refresh restores not just
+// the Prospecting module but the sub-view the rep was on. The THIRD segment
+// (a campaign id, #/prospecting/campaigns/14) is owned by CampaignsView.
+// Each owner reads its own segment on mount and rewrites the hash only when
+// ITS segment changes — never touching segments it doesn't own.
+const PV_HASH_MODES = ['pipeline', 'list', 'account', 'campaigns', 'research', 'inbox', 'sequences', 'calls'];
+
+function hashSegment(n) {
+  const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/');
+  const seg = parts[n];
+  return seg ? seg.toLowerCase() : null;
+}
+
 export default function ProspectingView() {
   const [prospects, setProspects] = useState([]);
   const [pipelineSummary, setPipelineSummary] = useState({ pipeline: [], metrics: {} });
@@ -44,8 +59,30 @@ export default function ProspectingView() {
   // Scope capabilities (server-authoritative). The localStorage user does NOT
   // carry subordinateIds, so the toggle must be gated on this, not on the user.
   const [scopeCaps, setScopeCaps] = useState({ hasSubordinates: false, isAdmin: false });
-  const [viewMode, setViewMode] = useState('pipeline'); // pipeline | list | account
+  // pipeline | list | account | campaigns | research | inbox | sequences | calls
+  // Restored from the hash's second segment on mount (refresh-survival);
+  // 'pipeline' is the default and is represented by NO second segment.
+  const [viewMode, setViewMode] = useState(() => {
+    if (hashSegment(0) === 'prospecting') {
+      const m = hashSegment(1);
+      if (m && PV_HASH_MODES.includes(m)) return m;
+    }
+    return 'pipeline';
+  });
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Write the second hash segment when the sub-view changes. Guard: only
+  // while the tab segment is ours (App.js owns tab switches), and skip the
+  // write when the segment already matches — that's what preserves a
+  // deeper campaign-id segment written by CampaignsView. Changing the
+  // sub-view intentionally resets the deeper segments (the drawer unmounts
+  // with the view anyway).
+  useEffect(() => {
+    if (hashSegment(0) !== 'prospecting') return;
+    const want = viewMode === 'pipeline' ? null : viewMode;
+    if (hashSegment(1) === want) return;
+    window.history.replaceState(null, '', want ? `#/prospecting/${want}` : '#/prospecting');
+  }, [viewMode]);
   // Debounced mirror of searchQuery. The input stays bound to searchQuery for
   // responsiveness; the data fetches (prospects + the Inbox/Sequences/Calls
   // views) key off debouncedSearch so we don't fire a request per keystroke.
