@@ -406,6 +406,14 @@ function CampaignRow({ campaign: c, isLast, onClick, currentUserId }) {
   const goal          = c.goal_qualified || null;
   const pct = goal ? Math.min(100, Math.round((qualified / goal) * 100)) : 0;
 
+  // LinkedIn connection funnel (all-time, from the list query's
+  // li_sent_count / li_accepted_count FILTER aggregates). Rendered as one
+  // compact "accepted / sent" stat; campaigns with no LinkedIn sends show a
+  // muted dash rather than a misleading 0%.
+  const liSent     = parseInt(c.li_sent_count     || 0, 10);
+  const liAccepted = parseInt(c.li_accepted_count || 0, 10);
+  const liRate     = liSent > 0 ? Math.round((liAccepted / liSent) * 100) : null;
+
   // Show the owner only when it isn't the current user (e.g. a manager viewing
   // a team member's campaign in Team/Org scope). Hidden until currentUserId
   // resolves so we never mislabel your own campaigns during load.
@@ -438,6 +446,26 @@ function CampaignRow({ campaign: c, isLast, onClick, currentUserId }) {
       <div style={{ display: 'flex', gap: 20, textAlign: 'right', alignItems: 'center' }}>
         <Stat value={prospectCount} label="prospects" />
         <Stat value={qualified} label="qualified" color="#059669" />
+        {/* LinkedIn connections — highlighted tile when there's data, muted
+            dash otherwise. minWidth keeps the goal column aligned across
+            rows whether or not a campaign has LinkedIn activity. */}
+        <div style={{
+          minWidth: 96,
+          background: liSent > 0 ? '#eff6ff' : 'transparent',
+          borderRadius: 8, padding: '5px 10px',
+        }}>
+          <div style={{ fontSize: 17, fontWeight: 700, color: liSent > 0 ? '#1d4ed8' : '#cbd5e1' }}>
+            {liSent > 0 ? `${liAccepted}/${liSent}` : '—'}
+            {liRate != null && (
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#3b82f6', marginLeft: 5 }}>
+                {liRate}%
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: liSent > 0 ? '#3b82f6' : '#9ca3af' }}>
+            {liSent > 0 ? 'in accepted / sent' : 'in no sends'}
+          </div>
+        </div>
         <div style={{ width: 92 }}>
           <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>
             {goal ? `goal ${goal}` : 'no goal'}
@@ -909,6 +937,62 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                   );
               })}
             </div>
+
+            {/* LinkedIn connections — ALL-TIME state-based funnel for the
+                connect step (requests sent → accepted), distinct from the
+                event-based weekly cards above. Fed by channel_data.linkedin,
+                which the extension's "Check & update" sync keeps accurate.
+                Hidden entirely until the campaign has at least one tracked
+                request, so email-only campaigns don't carry a dead section. */}
+            {data.metrics.linkedinConnections?.requestsSent > 0 && (() => {
+              const li = data.metrics.linkedinConnections;
+              return (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{
+                    fontSize: 11, color: '#6b7280', fontWeight: 600,
+                    letterSpacing: 0.3, marginBottom: 8,
+                  }}>
+                    LINKEDIN CONNECTIONS — ALL TIME
+                  </div>
+                  <div style={{
+                    display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+                    gap: 8, marginBottom: 10,
+                  }}>
+                    <div style={{ background: '#f8fafc', borderRadius: 8, padding: '10px 12px' }}>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: '#1A3A5C' }}>{li.requestsSent}</div>
+                      <div style={{ fontSize: 11, color: '#6b7280' }}>requests sent</div>
+                    </div>
+                    <div style={{ background: '#ecfdf5', borderRadius: 8, padding: '10px 12px' }}>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: '#047857' }}>{li.accepted}</div>
+                      <div style={{ fontSize: 11, color: '#059669' }}>accepted</div>
+                    </div>
+                    <div style={{ background: '#f8fafc', borderRadius: 8, padding: '10px 12px' }}>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: '#1A3A5C' }}>{li.pending}</div>
+                      <div style={{ fontSize: 11, color: '#6b7280' }}>pending</div>
+                    </div>
+                    <div style={{ background: '#eff6ff', borderRadius: 8, padding: '10px 12px' }}>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: '#1d4ed8' }}>
+                        {li.acceptanceRate != null ? `${li.acceptanceRate}%` : '—'}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#3b82f6' }}>acceptance</div>
+                    </div>
+                  </div>
+                  <div style={{ height: 7, background: '#f1f5f9', borderRadius: 4, overflow: 'hidden', marginBottom: 4 }}>
+                    <div style={{
+                      width: `${Math.min(100, Math.round((li.accepted / li.requestsSent) * 100))}%`,
+                      height: '100%', background: '#059669',
+                    }} />
+                  </div>
+                  <div style={{
+                    display: 'flex', justifyContent: 'space-between',
+                    fontSize: 11, color: '#9ca3af',
+                  }}>
+                    <span>{li.accepted} of {li.requestsSent} accepted</span>
+                    <span>via extension sync</span>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Goal progress */}
             {data.campaign.goal_qualified && (

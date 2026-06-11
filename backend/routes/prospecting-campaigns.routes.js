@@ -628,7 +628,22 @@ router.get('/', async (req, res) => {
               COUNT(p.id) FILTER (WHERE p.deleted_at IS NULL)                                    AS prospect_count,
               COUNT(p.id) FILTER (WHERE p.deleted_at IS NULL AND p.stage = 'qualified_sal')       AS qualified_count,
               COUNT(p.id) FILTER (WHERE p.deleted_at IS NULL AND p.stage NOT IN
-                    ('qualified_sal','disqualified','nurture'))                                  AS active_count
+                    ('qualified_sal','disqualified','nurture'))                                  AS active_count,
+              -- LinkedIn connection funnel (all-time, from channel_data.linkedin
+              -- state — kept accurate by the extension's "Check & update"
+              -- sync). sent ⊇ accepted by construction: an accepted
+              -- connection always counts as a sent request even when the
+              -- request itself predates GoWarm tracking.
+              COUNT(p.id) FILTER (WHERE p.deleted_at IS NULL AND (
+                       (p.channel_data->'linkedin'->>'request_sent_at')    IS NOT NULL
+                    OR (p.channel_data->'linkedin'->>'connected_at')       IS NOT NULL
+                    OR (p.channel_data->'linkedin'->>'connection_status') IN
+                       ('connection_request_sent','connection_accepted')
+              ))                                                                                 AS li_sent_count,
+              COUNT(p.id) FILTER (WHERE p.deleted_at IS NULL AND (
+                       (p.channel_data->'linkedin'->>'connected_at')       IS NOT NULL
+                    OR (p.channel_data->'linkedin'->>'connection_status') = 'connection_accepted'
+              ))                                                                                 AS li_accepted_count
          FROM prospecting_campaigns c
          LEFT JOIN playbooks pb ON pb.id = c.playbook_id
          LEFT JOIN sequences sq ON sq.id = c.default_sequence_id
@@ -1070,6 +1085,50 @@ router.get('/:id', async (req, res) => {
     const totalProspects = Object.values(stageMap).reduce((a, b) => a + b, 0);
     const qualified      = stageMap['qualified_sal'] || 0;
 
+    // ── LinkedIn connection funnel (all-time prospect state) ────────────────
+    // Source of truth is channel_data.linkedin, kept accurate by the
+    // extension's "Check & update sent / accepted" sync (and the manual
+    // linkedin-event endpoint). Unlike the weekly byChannel cards below
+    // (event-based, windowed), these are CURRENT-STATE counts:
+    //   requestsSent — request_sent_at set, or status at/past
+    //                  connection_request_sent. Includes accepted rows by
+    //                  construction (accepted implies a request existed,
+    //                  even if it predates GoWarm tracking).
+    //   accepted     — connected_at set, or status = connection_accepted.
+    //   pending      — sent minus accepted. NOTE: LinkedIn exposes no
+    //                  decline/ignore signal, so withdrawn and ignored
+    //                  requests are indistinguishable from pending.
+    let linkedinConnections = { requestsSent: 0, accepted: 0, pending: 0, acceptanceRate: null };
+    try {
+      const liRes = await pool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE
+                    (channel_data->'linkedin'->>'request_sent_at')    IS NOT NULL
+                 OR (channel_data->'linkedin'->>'connected_at')       IS NOT NULL
+                 OR (channel_data->'linkedin'->>'connection_status') IN
+                    ('connection_request_sent','connection_accepted')
+           )::int AS requests_sent,
+           COUNT(*) FILTER (WHERE
+                    (channel_data->'linkedin'->>'connected_at')       IS NOT NULL
+                 OR (channel_data->'linkedin'->>'connection_status') = 'connection_accepted'
+           )::int AS accepted
+         FROM prospects
+        WHERE org_id = $1 AND campaign_id = $2 AND deleted_at IS NULL`,
+        [req.orgId, req.params.id]
+      );
+      const liSent     = liRes.rows[0]?.requests_sent || 0;
+      const liAccepted = liRes.rows[0]?.accepted      || 0;
+      linkedinConnections = {
+        requestsSent:   liSent,
+        accepted:       liAccepted,
+        pending:        Math.max(0, liSent - liAccepted),
+        acceptanceRate: liSent > 0 ? Math.round((liAccepted / liSent) * 100) : null,
+      };
+    } catch (liErr) {
+      // Non-fatal — the drawer simply omits the section.
+      console.warn('campaigns GET /:id linkedin-connections compute failed:', liErr.message);
+    }
+
     // Outreach + responses this week, unioned across channels. Week starts
     // on the most recent Sunday in server time (matches the old behaviour).
     const weekStart = new Date();
@@ -1301,6 +1360,9 @@ router.get('/:id', async (req, res) => {
         // New, channel-aware shape.
         byChannel:           byChannelOut,
         bySource,
+        // All-time LinkedIn connection funnel (state-based — see comment
+        // above the query). Rendered as the "LinkedIn connections" block.
+        linkedinConnections,
       },
     });
   } catch (err) {
