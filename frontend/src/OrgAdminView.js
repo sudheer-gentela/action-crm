@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { hashSegment, writeHash } from './hashNav';
 import { apiService } from './apiService';
 import './OrgAdminView.css';
 import DealHealthSettings from './DealHealthSettings';
@@ -487,7 +488,20 @@ function OATokenUsageModule() {
 }
 
 export default function OrgAdminView() {
-  const [tab, setTab]               = useState('members');
+  // Restored from #/org-admin/<tab> on refresh; 'members' (the default)
+  // is represented by no segment. See hashNav.js for the ownership model.
+  const [tab, setTab]               = useState(() => {
+    if (hashSegment(0) === 'org-admin') {
+      const s = hashSegment(1);
+      if (s) return s;
+    }
+    return 'members';
+  });
+
+  useEffect(() => {
+    if (hashSegment(0) !== 'org-admin') return;
+    writeHash(['org-admin', tab === 'members' ? null : tab]);
+  }, [tab]);
   const [stats, setStats]           = useState(null);
   const [orgName, setOrgName]       = useState('');
   const [orgId,   setOrgId]         = useState(null);

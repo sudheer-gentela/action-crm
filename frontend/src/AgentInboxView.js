@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { hashSegment, hashIdSegment, writeHash } from './hashNav';
 import './AgentInboxView.css';
 
 const API = process.env.REACT_APP_API_URL || '';
@@ -107,7 +108,17 @@ export default function AgentInboxView() {
   const [statusFilter, setStatusFilter] = useState('pending');
   const [typeFilter, setTypeFilter]     = useState('');
   const [selected, setSelected]         = useState(new Set());
-  const [detailId, setDetailId]         = useState(null);
+  // Open proposal detail. Restored from #/agent/<id> on refresh — the
+  // detail renders inline against the loaded list, so an id that's been
+  // filtered out (e.g. no longer 'pending') simply shows no expansion.
+  const [detailId, setDetailId]         = useState(() =>
+    hashSegment(0) === 'agent' ? hashIdSegment(1) : null
+  );
+
+  useEffect(() => {
+    if (hashSegment(0) !== 'agent') return;
+    writeHash(['agent', detailId]);
+  }, [detailId]);
   const [agentEnabled, setAgentEnabled] = useState(null);
 
   const flash = (type, msg) => {

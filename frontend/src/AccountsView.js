@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { hashSegment, hashIdSegment, writeHash } from './hashNav';
 import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import AccountForm from './AccountForm';
@@ -28,13 +29,42 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
   const [showForm, setShowForm] = useState(false);
   const [editingAccount, setEditingAccount] = useState(null);
   const [selectedAccount, setSelectedAccount] = useState(null);
+  // Account id from the URL hash awaiting the list load (refresh-survival,
+  // #/accounts/<id>/<tab>). Restored by find-in-loaded-list below.
+  const [pendingHashAccountId, setPendingHashAccountId] = useState(() =>
+    hashSegment(0) === 'accounts' ? hashIdSegment(1) : null
+  );
   const [error, setError] = useState('');
 
   // Inline editing
   const [editingField, setEditingField] = useState(null);
   const [savingField, setSavingField] = useState(null);
   const [showImportModal, setShowImportModal] = useState(false);
-  const [detailTab, setDetailTab] = useState('overview'); // 'overview' | 'orgchart'
+  // 'overview' | 'orgchart' — third hash segment when a detail is open.
+  const [detailTab, setDetailTab] = useState(() => {
+    if (hashSegment(0) === 'accounts' && hashSegment(2) === 'orgchart') return 'orgchart';
+    return 'overview';
+  });
+
+  // Hash restore: find the account in the loaded list (no by-id endpoint,
+  // and the panel expects the list-row shape anyway). One-shot.
+  useEffect(() => {
+    if (!pendingHashAccountId || accounts.length === 0) return;
+    const target = accounts.find(a => a.id === pendingHashAccountId);
+    if (target) setSelectedAccount(target);
+    setPendingHashAccountId(null);
+  }, [pendingHashAccountId, accounts]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Mirror selection + tab into the hash (only while Accounts is active).
+  useEffect(() => {
+    if (hashSegment(0) !== 'accounts') return;
+    if (pendingHashAccountId) return;
+    writeHash([
+      'accounts',
+      selectedAccount?.id || null,
+      selectedAccount && detailTab !== 'overview' ? detailTab : null,
+    ]);
+  }, [selectedAccount, detailTab, pendingHashAccountId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Scope toggle state ────────────────────────────────────────
   const [scope, setScope] = useState('mine');

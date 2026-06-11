@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { hashSegment, hashIdSegment, writeHash } from './hashNav';
 import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import MeetingForm from './MeetingForm';
@@ -98,6 +99,24 @@ function CalendarView({ openMeetingId = null, onMeetingOpened = null }) {
   const [showForm, setShowForm]               = useState(false);
   const [editingMeeting, setEditingMeeting]   = useState(null);
   const [selectedMeeting, setSelectedMeeting] = useState(null);
+  // Meeting id from the URL hash awaiting the meetings load
+  // (refresh-survival, #/calendar/<id>). Restored by find-in-list below.
+  const [pendingHashMeetingId, setPendingHashMeetingId] = useState(() =>
+    hashSegment(0) === 'calendar' ? hashIdSegment(1) : null
+  );
+
+  useEffect(() => {
+    if (!pendingHashMeetingId || meetings.length === 0) return;
+    const target = meetings.find(m => m.id === pendingHashMeetingId);
+    if (target) setSelectedMeeting(target);
+    setPendingHashMeetingId(null);
+  }, [pendingHashMeetingId, meetings]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (hashSegment(0) !== 'calendar') return;
+    if (pendingHashMeetingId) return;
+    writeHash(['calendar', selectedMeeting?.id || null]);
+  }, [selectedMeeting, pendingHashMeetingId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [activeAction, setActiveAction]       = useState(null); // { action, rect }
   const [snoozeAction, setSnoozeAction]       = useState(null); // action being snoozed
   const [error, setError]                     = useState('');

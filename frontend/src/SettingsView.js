@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { hashSegment, writeHash } from './hashNav';
 import { apiService } from './apiService';
 import ActionsSettings from './ActionsSettings';
 import OutlookConnect from './OutlookConnect';
@@ -80,14 +81,32 @@ export default function SettingsView({ initialTab }) {
   const isAdmin  = orgRole === 'owner' || orgRole === 'admin' || _u.is_super_admin === true;
   const readOnly = !isAdmin;
 
-  // Default to 'alerts' unless a specific tab is requested
-  const [activeId,   setActiveId]   = useState(initialTab || 'alerts');
+  // Default to 'alerts' unless a specific tab is requested (prop), or the
+  // URL hash carries one (#/settings/<section>) — refresh-survival; see
+  // hashNav.js for the ownership model. The prop wins over the hash since
+  // it's an explicit in-app navigation.
+  const [activeId,   setActiveId]   = useState(() => {
+    if (initialTab) return initialTab;
+    if (hashSegment(0) === 'settings') {
+      const s = hashSegment(1);
+      if (s) return s;
+    }
+    return 'alerts';
+  });
+
+  // Mirror the active section into the hash (only while Settings is the
+  // active tab — App.js owns tab switches).
+  useEffect(() => {
+    if (hashSegment(0) !== 'settings') return;
+    writeHash(['settings', activeId === 'alerts' ? null : activeId]);
+  }, [activeId]);
   // Track which parent groups are expanded { 'connections': true, 'ai': true }
-  // Auto-expand the group containing initialTab if it's a child item
+  // Auto-expand the group containing the restored section (prop or hash)
   function getInitialExpanded() {
     const state = { connections: true, ai: false };
-    if (initialTab) {
-      const parent = CHILD_PARENT[initialTab];
+    const restored = initialTab || (hashSegment(0) === 'settings' ? hashSegment(1) : null);
+    if (restored) {
+      const parent = CHILD_PARENT[restored];
       if (parent) state[parent] = true;
     }
     return state;

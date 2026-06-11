@@ -564,6 +564,8 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
   //   { type: 'events', channel, kind }  — byChannel number clicked
   //   { type: 'li', bucket }             — LinkedIn connections tile clicked
   const [drill, setDrill] = useState(null);
+  // Read-only sequence-steps modal ("what does this campaign actually send?")
+  const [showSequenceSteps, setShowSequenceSteps] = useState(false);
   // Default sequence's ai_enabled — loaded alongside campaign data below.
   const [seqAiEnabled, setSeqAiEnabled] = useState(true);
 
@@ -1141,6 +1143,21 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                 and stalled enrollments. Reads from the new
                 /prospecting-campaigns/:id/sequence-health endpoint. */}
             <SequenceHealthTile campaignId={campaignId} />
+            {/* Read-only peek at what the default sequence actually sends —
+                steps, channels, delays, templates — without leaving the
+                campaign. Opens SequenceStepsModal (GET /sequences/:id). */}
+            {data.campaign.default_sequence_id && (
+              <button
+                onClick={() => setShowSequenceSteps(true)}
+                style={{
+                  marginTop: 6, marginBottom: 14, padding: 0,
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  fontSize: 12, fontWeight: 600, color: '#0F9D8E',
+                }}
+              >
+                View sequence steps →
+              </button>
+            )}
 
             {/* Slice 2: pacing tile — funnel + activation rate */}
             <PacingTile campaignId={campaignId} />
@@ -1380,6 +1397,13 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
             onClose={() => setDrill(null)}
           />
         )}
+        {showSequenceSteps && data?.campaign?.default_sequence_id && (
+          <SequenceStepsModal
+            sequenceId={data.campaign.default_sequence_id}
+            sequenceName={data.campaign.default_sequence_name}
+            onClose={() => setShowSequenceSteps(false)}
+          />
+        )}
         {showEnroll && data && (
           <EnrollAllModal
             campaign={data.campaign}
@@ -1429,6 +1453,131 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
 // the campaign before launching the actual preview. Reuses the campaign
 // members list already loaded into the drawer.
 // ─────────────────────────────────────────────────────────────────────────────
+// ── SequenceStepsModal ───────────────────────────────────────────────────────
+//
+// Read-only view of the campaign's default sequence: every step with its
+// channel, delay, intent, and templates — so a rep can see exactly what the
+// campaign sends without navigating to the Sequences view. Templates render
+// as-stored (with {{placeholders}}); per-prospect personalization happens at
+// send time via the outreach skill, so this is the skeleton, not the final
+// copy. Uses GET /sequences/:id (steps included in the payload).
+function SequenceStepsModal({ sequenceId, sequenceName, onClose }) {
+  const [seq,   setSeq]   = useState(null);   // null = loading
+  const [error, setError] = useState('');
+  const [openStep, setOpenStep] = useState(null);   // step id with template expanded
+
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch(`/sequences/${sequenceId}`)
+      .then(r => { if (!cancelled) setSeq(r.sequence || null); })
+      .catch(err => { if (!cancelled) { setError(err.message || 'Failed to load sequence'); setSeq({ steps: [] }); } });
+    return () => { cancelled = true; };
+  }, [sequenceId]);
+
+  const CHANNEL_META = {
+    email:    { icon: '✉️', label: 'Email' },
+    linkedin: { icon: '🔗', label: 'LinkedIn' },
+    call:     { icon: '📞', label: 'Call' },
+    task:     { icon: '📝', label: 'Task' },
+  };
+
+  const steps = seq?.steps || [];
+
+  return (
+    <div className="pv-modal-overlay" onClick={onClose}>
+      <div className="pv-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 'min(560px, 95vw)' }}>
+        <div className="pv-modal-header">
+          <h3>Sequence — {seq?.name || sequenceName || '…'}</h3>
+          <button className="pv-modal-close" onClick={onClose}>×</button>
+        </div>
+
+        <div style={{ maxHeight: '65vh', overflowY: 'auto', padding: '8px 0 12px' }}>
+          {seq == null && (
+            <div style={{ padding: 20, fontSize: 13, color: '#6b7280' }}>Loading…</div>
+          )}
+          {error && (
+            <div style={{
+              margin: 16, padding: 12, background: '#fef2f2', border: '1px solid #fecaca',
+              color: '#991b1b', fontSize: 13, borderRadius: 6,
+            }}>{error}</div>
+          )}
+
+          {steps.map((s, i) => {
+            const meta = CHANNEL_META[s.channel] || { icon: '•', label: s.channel };
+            const hasTemplate = !!(s.subject_template || s.body_template || s.task_note);
+            const expanded = openStep === s.id;
+            const delayLabel = i === 0
+              ? (s.delay_days > 0 ? `day ${s.delay_days}` : 'on enrollment')
+              : `+${s.delay_days} day${s.delay_days === 1 ? '' : 's'}`;
+            return (
+              <div key={s.id} style={{ padding: '10px 16px', borderBottom: '1px solid #f8fafc' }}>
+                <div
+                  style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: hasTemplate ? 'pointer' : 'default' }}
+                  onClick={() => hasTemplate && setOpenStep(expanded ? null : s.id)}
+                >
+                  <div style={{
+                    width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
+                    background: '#f1f5f9', color: '#475569',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 11, fontWeight: 700,
+                  }}>
+                    {s.step_order}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#1f2937' }}>
+                      {meta.icon} {meta.label}
+                      {s.step_intent && (
+                        <span style={{
+                          marginLeft: 8, fontSize: 10, fontWeight: 600, color: '#6b7280',
+                          background: '#f1f5f9', borderRadius: 8, padding: '1px 7px',
+                        }}>
+                          {String(s.step_intent).replace(/_/g, ' ')}
+                        </span>
+                      )}
+                      {s.require_approval && (
+                        <span style={{
+                          marginLeft: 6, fontSize: 10, fontWeight: 600, color: '#92400e',
+                          background: '#fffbeb', borderRadius: 8, padding: '1px 7px',
+                        }}>
+                          needs approval
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                      {delayLabel}
+                      {s.subject_template ? ` · ${s.subject_template}` : ''}
+                    </div>
+                  </div>
+                  {hasTemplate && (
+                    <div style={{ fontSize: 11, color: '#0F9D8E', flexShrink: 0 }}>
+                      {expanded ? 'hide' : 'view'} template
+                    </div>
+                  )}
+                </div>
+                {expanded && (
+                  <div style={{
+                    marginTop: 8, marginLeft: 32, padding: 10,
+                    background: '#f8fafc', borderRadius: 6,
+                    fontSize: 12, color: '#374151', whiteSpace: 'pre-wrap',
+                    maxHeight: 220, overflowY: 'auto',
+                  }}>
+                    {s.subject_template && <div style={{ fontWeight: 600, marginBottom: 6 }}>Subject: {s.subject_template}</div>}
+                    {s.body_template || s.task_note || '(no template — generated per prospect at send time)'}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {seq != null && !error && steps.length === 0 && (
+            <div style={{ padding: 20, fontSize: 13, color: '#9ca3af' }}>This sequence has no steps yet.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── CampaignDrilldownModal ───────────────────────────────────────────────────
 //
 // "Who's behind this number?" — opened by clicking any BY CHANNEL count or a

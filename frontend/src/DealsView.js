@@ -9,6 +9,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import { hashSegment, hashIdSegment, writeHash } from './hashNav';
 import { apiService } from './apiService';
 import { enrichData } from './mockData';
 import DealForm from './DealForm';
@@ -48,6 +49,10 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
   const [showForm, setShowForm]       = useState(false);
   const [editingDeal, setEditingDeal] = useState(null);
   const [selectedDeal, setSelectedDeal] = useState(null);
+  // Deal id from the URL hash awaiting the list load (refresh-survival).
+  const [pendingHashDealId, setPendingHashDealId] = useState(() =>
+    hashSegment(0) === 'deals' ? hashIdSegment(1) : null
+  );
   const [error, setError]             = useState('');
   const [showTranscriptUpload, setShowTranscriptUpload] = useState(false);
   const [viewingTranscriptId, setViewingTranscriptId]   = useState(null);
@@ -109,6 +114,26 @@ function DealsView({ openDealId = null, onDealOpened = null }) {
     const target = deals.find(d => d.id === openDealId || d.id === parseInt(openDealId));
     if (target) { setSelectedDeal(target); if (onDealOpened) onDealOpened(); }
   }, [openDealId, deals]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Hash restore (#/deals/<id>) — same find-in-loaded-list pattern as the
+  // openDealId prop above, so the selected object has the exact shape the
+  // panel expects. One-shot: clears after the first list load so closing
+  // the panel later doesn't snap it back open. An id not in the list
+  // (filtered out / no access) silently falls back to the list view and
+  // the write-effect below trims the stale segment.
+  useEffect(() => {
+    if (!pendingHashDealId || deals.length === 0) return;
+    const target = deals.find(d => d.id === pendingHashDealId);
+    if (target) setSelectedDeal(target);
+    setPendingHashDealId(null);
+  }, [pendingHashDealId, deals]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Mirror the open deal into the hash (only while Deals is the active tab).
+  useEffect(() => {
+    if (hashSegment(0) !== 'deals') return;
+    if (pendingHashDealId) return;   // hold the segment until restore resolves
+    writeHash(['deals', selectedDeal?.id || null]);
+  }, [selectedDeal, pendingHashDealId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchDeals = async () => {
     try {

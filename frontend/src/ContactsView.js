@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { hashSegment, hashIdSegment, writeHash } from './hashNav';
 import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import ContactForm from './ContactForm';
@@ -48,6 +49,10 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
   const [showForm, setShowForm] = useState(false);
   const [editingContact, setEditingContact] = useState(null);
   const [selectedContact, setSelectedContact] = useState(null);
+  // Contact id from the URL hash awaiting the list load (refresh-survival).
+  const [pendingHashContactId, setPendingHashContactId] = useState(() =>
+    hashSegment(0) === 'contacts' ? hashIdSegment(1) : null
+  );
   const [contactTeams, setContactTeams]       = useState([]);    // team memberships for selected contact
   const [error, setError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -89,6 +94,23 @@ function ContactsView({ openContactId = null, onContactOpened = null }) {
       if (onContactOpened) onContactOpened();
     }
   }, [openContactId, contacts]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Hash restore (#/contacts/<id>) — same find-in-loaded-list pattern as
+  // the openContactId prop above. One-shot; a stale/inaccessible id falls
+  // back to the list and the write-effect trims the segment.
+  useEffect(() => {
+    if (!pendingHashContactId || contacts.length === 0) return;
+    const target = contacts.find(c => c.id === pendingHashContactId);
+    if (target) setSelectedContact(target);
+    setPendingHashContactId(null);
+  }, [pendingHashContactId, contacts]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Mirror the open contact into the hash (only while Contacts is active).
+  useEffect(() => {
+    if (hashSegment(0) !== 'contacts') return;
+    if (pendingHashContactId) return;
+    writeHash(['contacts', selectedContact?.id || null]);
+  }, [selectedContact, pendingHashContactId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset inline edit when switching contacts
   useEffect(() => { setEditingField(null); }, [selectedContact?.id]);

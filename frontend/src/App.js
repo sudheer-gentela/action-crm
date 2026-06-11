@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { hashIdSegment, writeHash } from './hashNav';
 import './App.css';
 import AccountsView from './AccountsView';
 import DealsView from './DealsView';
@@ -508,7 +509,9 @@ function Dashboard({ user, onLogout }) {
   const [pendingMeetingId, setPendingMeetingId]         = useState(null);
   const [pendingAccountId, setPendingAccountId]         = useState(null);
   const [pendingPlaybookFilter, setPendingPlaybookFilter] = useState(null);
-  const [pendingPlaybookId, setPendingPlaybookId]         = useState(null);
+  const [pendingPlaybookId, setPendingPlaybookId]         = useState(() =>
+    tabFromHash() === 'playbooks' ? hashIdSegment(1) : null
+  );
   const [pendingContractId, setPendingContractId]       = useState(null);
   const [pendingHandoverId, setPendingHandoverId]       = useState(null);
   const [pendingActionId, setPendingActionId]           = useState(null); // Phase 4: deep-link from calendar
@@ -630,6 +633,11 @@ function Dashboard({ user, onLogout }) {
   // this role can't reach.
   const [currentTab, setCurrentTab] = useState(() => {
     const fromHash = tabFromHash();
+    // #/playbooks/<id> restores the playbook-detail pseudo-tab (the id
+    // itself is restored by pendingPlaybookId's initializer).
+    if (fromHash === 'playbooks' && hashIdSegment(1) && activeRole === 'member') {
+      return 'playbook-detail';
+    }
     if (fromHash && persistableTabsForRole(activeRole).has(fromHash)) return fromHash;
     return DEFAULT_TAB_BY_ROLE[activeRole];
   });
@@ -646,10 +654,22 @@ function Dashboard({ user, onLogout }) {
   // they depend on in-memory ids — so for those we leave the hash on
   // the last persistable tab, which is also the sane refresh target.
   useEffect(() => {
+    // playbook-detail is a pseudo-tab but IS persistable as #/playbooks/<id>.
+    if (currentTab === 'playbook-detail') {
+      if (pendingPlaybookId) writeHash(['playbooks', pendingPlaybookId]);
+      return;
+    }
     if (!persistableTabsForRole(activeRole).has(currentTab)) return;
-    if (tabFromHash() === currentTab) return;   // segment already right; keep sub-segments
+    if (tabFromHash() === currentTab) {
+      // Segment already right — keep sub-segments (owned by the views),
+      // EXCEPT the playbooks id: no view owns it (it belongs to the
+      // playbook-detail pseudo-tab), so returning to the playbooks list
+      // must trim it or a refresh would bounce back into the detail.
+      if (currentTab === 'playbooks' && hashIdSegment(1)) writeHash(['playbooks']);
+      return;
+    }
     window.history.replaceState(null, '', `#/${currentTab}`);
-  }, [currentTab, activeRole]);
+  }, [currentTab, pendingPlaybookId, activeRole]);
 
   // Manual hash edits (or programmatic ones) navigate too.
   useEffect(() => {

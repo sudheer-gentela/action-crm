@@ -79,8 +79,13 @@ export default function ProspectingView() {
   // with the view anyway).
   useEffect(() => {
     if (hashSegment(0) !== 'prospecting') return;
+    const seg1 = hashSegment(1);
+    // A numeric segment-1 is a prospect id under the default pipeline
+    // mode (#/prospecting/321) — owned by the prospect-drawer effect,
+    // not a mode mismatch. Treat it as "no mode segment".
+    const seg1Mode = seg1 && !/^\d+$/.test(seg1) ? seg1 : null;
     const want = viewMode === 'pipeline' ? null : viewMode;
-    if (hashSegment(1) === want) return;
+    if (seg1Mode === want) return;
     window.history.replaceState(null, '', want ? `#/prospecting/${want}` : '#/prospecting');
   }, [viewMode]);
   // Debounced mirror of searchQuery. The input stays bound to searchQuery for
@@ -99,6 +104,45 @@ export default function ProspectingView() {
   // Whether the "Later stages ▾" dropdown (collapsed zero-count stages) is open.
   const [laterStagesOpen, setLaterStagesOpen] = useState(false);
   const [selectedProspect, setSelectedProspect] = useState(null);
+  // Prospect id from the URL hash awaiting the prospects load
+  // (refresh-survival). Hash shape: #/prospecting[/<mode>]/<id> — the
+  // numeric segment sits right after the mode (or right after
+  // 'prospecting' for the default pipeline mode). NOT used in campaigns
+  // mode, where the numeric segment is a campaign id owned by
+  // CampaignsView.
+  const [pendingHashProspectId, setPendingHashProspectId] = useState(() => {
+    const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/').filter(Boolean);
+    if (parts[0]?.toLowerCase() !== 'prospecting') return null;
+    if (parts[1]?.toLowerCase() === 'campaigns') return null;
+    // id is parts[1] (pipeline default) or parts[2] (explicit mode)
+    const candidate = PV_HASH_MODES.includes(parts[1]?.toLowerCase()) ? parts[2] : parts[1];
+    const id = parseInt(candidate, 10);
+    return Number.isInteger(id) && id > 0 && String(id) === candidate ? id : null;
+  });
+
+  // Restore the prospect drawer once the list has loaded (find-in-list —
+  // the drawer expects the list-row shape). One-shot; an id outside the
+  // current scope/filters falls back to the list and the write-effect
+  // below trims the stale segment.
+  useEffect(() => {
+    if (!pendingHashProspectId || prospects.length === 0) return;
+    const target = prospects.find(pr => pr.id === pendingHashProspectId);
+    if (target) setSelectedProspect(target);
+    setPendingHashProspectId(null);
+  }, [pendingHashProspectId, prospects]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Mirror the open prospect into the hash. Skipped in campaigns mode
+  // (numeric segment there belongs to CampaignsView).
+  useEffect(() => {
+    if (hashSegment(0) !== 'prospecting' || viewMode === 'campaigns') return;
+    if (pendingHashProspectId) return;
+    const base = viewMode === 'pipeline' ? ['prospecting'] : ['prospecting', viewMode];
+    const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/').filter(Boolean);
+    const desired = '#/' + base.concat(selectedProspect?.id ? [String(selectedProspect.id)] : []).join('/');
+    if (('#/' + parts.join('/')) !== desired) {
+      window.history.replaceState(null, '', desired);
+    }
+  }, [selectedProspect, viewMode, pendingHashProspectId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
 
