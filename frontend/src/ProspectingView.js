@@ -49,7 +49,7 @@ const PV_HASH_MODES = ['pipeline', 'list', 'account', 'campaigns', 'research', '
 // funnel banner) are hidden — these views are about a different entity
 // (campaigns, sequences, calls, research queue) and render their own
 // aggregates instead.
-const GLOBAL_STRIPS_HIDDEN_MODES = ['campaigns', 'sequences', 'calls', 'research'];
+const GLOBAL_STRIPS_HIDDEN_MODES = ['campaigns', 'sequences', 'calls', 'research', 'inbox'];
 
 function hashSegment(n) {
   const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/');

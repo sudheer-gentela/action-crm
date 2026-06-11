@@ -124,6 +124,10 @@ function ProspectingInbox({ scope: pageScope, onScopeChange, search }) {
 function ActivityFeed({ scope, search }) {
   const [items, setItems]       = useState([]);
   const [counts, setCounts]     = useState({});
+  // Window-wide aggregates from the feed endpoint's rollup row:
+  // { outbound, inbound, prospects } — prospects is DISTINCT across
+  // channels, which per-chip counts can't express.
+  const [summary, setSummary]   = useState(null);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState('');
   const [type, setType]         = useState('all');     // category filter
@@ -163,6 +167,7 @@ function ActivityFeed({ scope, search }) {
       const res = await apiFetch(`/prospecting/activity?${new URLSearchParams(params)}`);
       setItems(res.items   || []);
       setCounts(res.counts || {});
+      setSummary(res.summary || null);
       setTotal(res.total   || 0);
       setBySender(res.bySender || []);
       setOffset(newOffset);
@@ -199,7 +204,11 @@ function ActivityFeed({ scope, search }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
 
-      {/* ── Type-filter chips ──────────────────────────────────────────────── */}
+      {/* ── Type-filter chips + window summary ─────────────────────────────
+          The chips carry per-channel counts; the right-aligned summary adds
+          what they can't: outbound/inbound split and DISTINCT prospects
+          touched in the window (replacing the global prospect-pool strips
+          that used to sit above this view). */}
       <div style={{
         display: 'flex', gap: 6, alignItems: 'center', padding: '10px 16px',
         borderBottom: '1px solid #f3f4f6', background: '#fff', flexShrink: 0, flexWrap: 'wrap',
@@ -232,6 +241,16 @@ function ActivityFeed({ scope, search }) {
             </button>
           );
         })}
+        {summary && counts.all > 0 && (
+          <span style={{
+            marginLeft: 'auto', display: 'inline-flex', gap: 12,
+            fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap',
+          }}>
+            <span><b style={{ color: '#1f2937' }}>{summary.outbound}</b> outbound</span>
+            <span><b style={{ color: summary.inbound > 0 ? '#047857' : '#1f2937' }}>{summary.inbound}</b> inbound</span>
+            <span><b style={{ color: '#1f2937' }}>{summary.prospects}</b> prospects</span>
+          </span>
+        )}
       </div>
 
       {/* ── Per-sender bar (team/org only) — each person's count, doubles as a

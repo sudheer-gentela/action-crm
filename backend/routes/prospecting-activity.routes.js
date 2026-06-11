@@ -429,15 +429,23 @@ router.get('/', async (req, res) => {
     const countParams = params.slice(0, params.length - 2);
     const countWhere  = senderOuterCond ? `WHERE ${senderOuterCond}` : '';
     const countQuery = `
-      SELECT feed.category, COUNT(*)::int AS n
+      SELECT feed.category,
+             COUNT(*)::int AS n,
+             COUNT(*) FILTER (WHERE feed.direction = 'sent')::int     AS outbound,
+             COUNT(*) FILTER (WHERE feed.direction = 'received')::int AS inbound,
+             COUNT(DISTINCT feed.prospect_id)::int                    AS prospects
       FROM (
         ${emailBranch}
         UNION ALL
         ${activityBranch}
       ) feed
       ${countWhere}
-      GROUP BY feed.category
+      GROUP BY GROUPING SETS ((feed.category), ())
     `;
+    // The GROUPING SETS () rollup row (category IS NULL) carries the
+    // feed-wide direction split and the DISTINCT-prospect count — which
+    // cannot be derived by summing per-category rows (a prospect with an
+    // email AND a LinkedIn touch would be double-counted).
 
     // ── Per-sender breakdown — every actor in the current view with their count.
     // Respects the active category pill (typeCond) so the chips reconcile with
@@ -496,14 +504,21 @@ router.get('/', async (req, res) => {
     // Build counts object. `all` is the sum of everything returned by the
     // count query (which already respects includeSystem via the branch filter).
     const counts = { all: 0, email: 0, linkedin: 0, call: 0, sequence: 0, task: 0, system: 0 };
+    // Window-wide aggregates from the rollup row (see countQuery comment).
+    let summary = { outbound: 0, inbound: 0, prospects: 0 };
     for (const r of countResult.rows) {
+      if (r.category == null) {
+        counts.all = r.n;
+        summary = { outbound: r.outbound, inbound: r.inbound, prospects: r.prospects };
+        continue;
+      }
       if (counts[r.category] != null) counts[r.category] = r.n;
-      counts.all += r.n;
     }
 
     res.json({
       items,
       counts,
+      summary,
       total:  counts.all,
       bySender: bySenderResult.rows.map(r => ({
         userId: r.user_id,
