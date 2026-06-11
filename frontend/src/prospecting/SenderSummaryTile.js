@@ -13,6 +13,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { apiFetch } from './prospectingShared';
+import { writeHash } from '../hashNav';
 
 const HEALTH_STYLES = {
   healthy:      { bg: '#ecfdf5', fg: '#065f46', border: '#a7f3d0', dot: '#10b981', label: 'Healthy' },
@@ -31,6 +32,12 @@ const PROVIDER_LABEL = {
 // breaking the SPA into a fresh page load.
 function goToSettings(e) {
   if (e?.preventDefault) e.preventDefault();
+  // Land on the actual senders section, not the Settings default tab:
+  // write the hash FIRST so SettingsView's initializer (which reads
+  // #/settings/<section> on mount) restores 'preferences' (My Preferences,
+  // where sender accounts live), THEN switch the tab. App.js's hash-write
+  // effect sees the tab segment already correct and keeps the sub-segment.
+  writeHash(['settings', 'preferences']);
   window.dispatchEvent(new CustomEvent('navigate', { detail: 'settings' }));
 }
 
@@ -224,9 +231,41 @@ export default function SenderSummaryTile({ campaignId }) {
             {linkedin.owner_name}'s LinkedIn (Chrome extension)
           </span>
         </div>
-        <div style={{ fontSize: 11, color: '#6b7280' }}>
-          Whoever's signed in on the rep's browser at task time.
-        </div>
+        {Array.isArray(linkedin.seats) && linkedin.seats.length > 0 ? (
+          // Bound LinkedIn identity(ies) from user_linkedin_seats — captured
+          // the first time the rep ran "Check & update" in the extension.
+          <div style={{ marginTop: 2 }}>
+            {linkedin.seats.map(s => (
+              <div key={s.public_identifier} style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                fontSize: 12, color: '#374151', padding: '3px 0',
+              }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#10b981', flexShrink: 0 }} />
+                <span style={{ fontWeight: 600 }}>{s.display_name || s.public_identifier}</span>
+                <a
+                  href={`https://www.linkedin.com/in/${s.public_identifier}/`}
+                  target="_blank" rel="noopener noreferrer"
+                  style={{ color: '#0077B5', textDecoration: 'none', fontSize: 11 }}
+                >
+                  in/{s.public_identifier} ↗
+                </a>
+                {s.last_seen_at && (
+                  <span style={{ fontSize: 11, color: '#9ca3af', marginLeft: 'auto' }}>
+                    verified {new Date(s.last_seen_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, color: '#6b7280' }}>
+            Whoever's signed in on the rep's browser at task time.
+            <span style={{ display: 'block', color: '#92400e', marginTop: 2 }}>
+              No LinkedIn account verified yet — run "Check &amp; update" in the
+              extension once to bind it.
+            </span>
+          </div>
+        )}
         <details style={{ marginTop: 6 }}>
           <summary style={{ cursor: 'pointer', fontSize: 11, color: '#6b7280' }}>
             How LinkedIn sending works

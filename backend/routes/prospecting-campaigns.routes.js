@@ -3694,15 +3694,37 @@ router.get('/:id/sender-summary', async (req, res) => {
       };
     }
 
-    // LinkedIn: no server-side account. The driving account is whoever's
-    // logged in on the rep's browser when LinkedIn tasks fire. We surface
-    // the rep identity + an explanatory note.
+    // LinkedIn: execution happens from the rep's logged-in browser session
+    // via the Chrome extension. Since the connection-sync feature, the
+    // rep's LinkedIn identity IS known server-side: user_linkedin_seats
+    // binds the LinkedIn publicIdentifier to the GoWarm user the first
+    // time they run "Check & update" in the extension. Surface the bound
+    // seat(s) so the campaign shows WHICH LinkedIn account sends.
     const linkedinSummary = {
       model: 'chrome_extension',
       owner_id: ownerId,
       owner_name: ownerName,
-      note: 'LinkedIn connection requests and messages are executed from the rep\'s logged-in LinkedIn account via the GoWarmCRM Chrome extension. There is no server-side LinkedIn account binding — whoever is signed in on the rep\'s browser at task execution time is the sender.',
+      seats: [],
+      note: 'LinkedIn connection requests and messages are executed from the rep\'s logged-in LinkedIn account via the GoWarmCRM Chrome extension. The account shown here was verified the last time the rep synced connection activity; if no account is shown, the rep hasn\'t run "Check & update" in the extension yet.',
     };
+    try {
+      const seatRes = await pool.query(
+        `SELECT public_identifier, display_name, last_seen_at
+           FROM user_linkedin_seats
+          WHERE org_id = $1 AND user_id = $2
+       ORDER BY last_seen_at DESC`,
+        [req.orgId, ownerId]
+      );
+      linkedinSummary.seats = seatRes.rows.map(s => ({
+        public_identifier: s.public_identifier,
+        display_name:      s.display_name || null,
+        last_seen_at:      s.last_seen_at,
+      }));
+    } catch (seatErr) {
+      // Table may predate the 2026_20 migration in some envs — the card
+      // simply falls back to the unbound explanatory state.
+      console.warn('sender-summary: linkedin seats lookup failed:', seatErr.message);
+    }
 
     res.json({ email: emailSummary, linkedin: linkedinSummary });
   } catch (err) {
