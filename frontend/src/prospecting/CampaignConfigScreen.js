@@ -322,6 +322,22 @@ function ScheduleConfigSection({ campaignId }) {
 export default function CampaignConfigScreen({ campaignId, onBack }) {
   const [campaign, setCampaign] = useState(null);
   const [overrides, setOverrides] = useState(null);
+  // Active tab: 'outreach' | 'schedule'. Deep-linked as hash segment 4
+  // (#/prospecting/campaigns/<id>/config/schedule) — outreach, the
+  // default, keeps the clean /config URL.
+  const [tab, setTab] = useState(() => {
+    const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/');
+    return parts[4]?.toLowerCase() === 'schedule' ? 'schedule' : 'outreach';
+  });
+
+  useEffect(() => {
+    const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/');
+    if (parts[0]?.toLowerCase() !== 'prospecting' || parts[1]?.toLowerCase() !== 'campaigns') return;
+    if (parts[3]?.toLowerCase() !== 'config') return;
+    const want = tab === 'schedule' ? `#/prospecting/campaigns/${campaignId}/config/schedule`
+                                    : `#/prospecting/campaigns/${campaignId}/config`;
+    if (window.location.hash !== want) window.history.replaceState(null, '', want);
+  }, [tab, campaignId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -337,15 +353,24 @@ export default function CampaignConfigScreen({ campaignId, onBack }) {
 
   const schedN = overrides?.schedule?.length || 0;
   const cfgN   = overrides?.config?.hasOverride ? (overrides.config.overriddenKeys?.length || 0) : 0;
-  const chip = (text, active) => (
-    <span style={{
-      fontSize: 11, padding: '3px 10px', borderRadius: 12, fontWeight: active ? 700 : 400,
-      background: active ? '#FEF1E7' : '#f3f4f6',
-      color: active ? '#92400e' : '#6b7280',
-    }}>
+  const chip = (text, active, goTab) => (
+    <span
+      onClick={goTab ? () => setTab(goTab) : undefined}
+      style={{
+        fontSize: 11, padding: '3px 10px', borderRadius: 12, fontWeight: active ? 700 : 400,
+        background: active ? '#FEF1E7' : '#f3f4f6',
+        color: active ? '#92400e' : '#6b7280',
+        cursor: goTab ? 'pointer' : 'default',
+      }}
+    >
       {text}
     </span>
   );
+
+  const TABS = [
+    { key: 'outreach', label: '🛠 Outreach config',  badge: cfgN },
+    { key: 'schedule', label: '📅 Sending schedule', badge: schedN },
+  ];
 
   return (
     <div style={{ maxWidth: 920, margin: '0 auto' }}>
@@ -364,24 +389,60 @@ export default function CampaignConfigScreen({ campaignId, onBack }) {
           <h2 style={{ margin: 0, fontSize: 18, color: '#1A3A5C' }}>Campaign configuration</h2>
           {overrides && chip(
             cfgN > 0 ? `outreach: ${cfgN} override${cfgN === 1 ? '' : 's'}` : 'outreach: inheriting org',
-            cfgN > 0
+            cfgN > 0, 'outreach'
           )}
           {overrides && chip(
             schedN > 0 ? `schedule: ${schedN} override${schedN === 1 ? '' : 's'}` : 'schedule: inheriting org',
-            schedN > 0
+            schedN > 0, 'schedule'
           )}
         </div>
       </div>
 
-      {/* Outreach config — the existing editor, complete with every field
-          (pitch, value props, personas, products, hooks, case studies,
-          guardrails) and its own save/delete controls. */}
-      <CampaignConfigPanel campaignId={campaignId} />
-
-      {/* Sending schedule — inherit/override rows. */}
-      <div style={{ marginTop: 16 }}>
-        <ScheduleConfigSection campaignId={campaignId} />
+      {/* ── Tab bar ── two clearly separate surfaces: the outreach config
+          editor and the sending-schedule editor. */}
+      <div style={{
+        display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16,
+      }}>
+        {TABS.map(tb => {
+          const active = tab === tb.key;
+          return (
+            <button
+              key={tb.key}
+              onClick={() => setTab(tb.key)}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                padding: '9px 16px', fontSize: 13.5,
+                fontWeight: active ? 700 : 500,
+                color: active ? '#1A3A5C' : '#9ca3af',
+                borderBottom: active ? `2px solid ${TEAL}` : '2px solid transparent',
+                marginBottom: -2,
+              }}
+            >
+              {tb.label}
+              {tb.badge > 0 && (
+                <span style={{
+                  marginLeft: 6, fontSize: 10.5, fontWeight: 700,
+                  background: '#FEF1E7', color: '#92400e',
+                  borderRadius: 9, padding: '1px 7px',
+                }}>
+                  {tb.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
+
+      {tab === 'outreach' && (
+        /* The existing editor, complete with every field (pitch, value
+           props, personas, products, hooks, case studies, guardrails)
+           and its own save/delete controls. */
+        <CampaignConfigPanel campaignId={campaignId} />
+      )}
+
+      {tab === 'schedule' && (
+        <ScheduleConfigSection campaignId={campaignId} />
+      )}
     </div>
   );
 }
