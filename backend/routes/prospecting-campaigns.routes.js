@@ -1201,7 +1201,13 @@ router.get('/:id', async (req, res) => {
 
          UNION ALL
 
-         -- Sequence step sends — attributed to the step's channel
+         -- Sequence step sends — attributed to the step's channel.
+         -- DEDUP: email sends through the sequence engine write BOTH an
+         -- emails row and this activity (metadata.emailId links them).
+         -- Those are already counted by the email branch above, so we
+         -- exclude any step activity that references an emails row —
+         -- keeping only steps with no first-class record of their own
+         -- (LinkedIn/call steps, plus legacy email rows without emailId).
          SELECT
            CASE
              WHEN pa.metadata->>'channel' IN ('email','linkedin','call')
@@ -1214,6 +1220,7 @@ router.get('/:id', async (req, res) => {
           WHERE pa.org_id      = $1
             AND p.campaign_id  = $2
             AND pa.activity_type = 'sequence_step_sent'
+            AND (pa.metadata->>'emailId') IS NULL
             AND pa.created_at  >= $3
 
          UNION ALL
@@ -1473,6 +1480,7 @@ router.get('/:id/outreach-events', async (req, res) => {
            JOIN prospects p ON p.id = pa.prospect_id
           WHERE pa.org_id = $1 AND p.campaign_id = $2
             AND pa.activity_type = 'sequence_step_sent'
+            AND (pa.metadata->>'emailId') IS NULL
             AND pa.created_at >= $3
 
          UNION ALL

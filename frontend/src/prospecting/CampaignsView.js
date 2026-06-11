@@ -1422,6 +1422,33 @@ function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
   const [error,   setError]   = useState('');
 
   const isEvents = drill.type === 'events';
+
+  // Sort for the LinkedIn-prospects mode (client-side — the payload carries
+  // both dates, so no refetch needed). Defaults follow the bucket: the
+  // accepted list opens sorted by acceptance recency, sent/pending by
+  // request recency.
+  const [sortKey, setSortKey] = useState(
+    drill.type === 'li' && drill.bucket === 'accepted' ? 'accepted' : 'sent'
+  );
+
+  const sortedRows = React.useMemo(() => {
+    if (!rows) return rows;
+    if (isEvents) return rows;   // events arrive ts DESC from the server
+    const ts = (v) => {
+      const t = v ? new Date(v).getTime() : NaN;
+      return Number.isNaN(t) ? -Infinity : t;   // undated rows sink to the bottom
+    };
+    const sorted = [...rows];
+    if (sortKey === 'name') {
+      sorted.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    } else if (sortKey === 'accepted') {
+      sorted.sort((a, b) => ts(b.connected_at) - ts(a.connected_at));
+    } else {
+      sorted.sort((a, b) => ts(b.request_sent_at) - ts(a.request_sent_at));
+    }
+    return sorted;
+  }, [rows, sortKey, isEvents]);
+
   const chLabel  = drill.channel === 'email' ? 'Email'
                  : drill.channel === 'linkedin' ? 'LinkedIn'
                  : drill.channel === 'call' ? 'Call' : '';
@@ -1469,6 +1496,36 @@ function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
         </div>
 
         <div style={{ maxHeight: '60vh', overflowY: 'auto', padding: '4px 0 8px' }}>
+          {!isEvents && rows != null && rows.length > 1 && (
+            <div style={{
+              display: 'flex', gap: 4, alignItems: 'center',
+              padding: '6px 16px 8px', borderBottom: '1px solid #f8fafc',
+            }}>
+              <span style={{ fontSize: 11, color: '#9ca3af', marginRight: 2 }}>Sort by</span>
+              {[
+                { key: 'sent',     label: 'Sent date' },
+                { key: 'accepted', label: 'Accepted date' },
+                { key: 'name',     label: 'Name' },
+              ].map(opt => {
+                const active = sortKey === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    onClick={() => setSortKey(opt.key)}
+                    style={{
+                      padding: '2px 9px', fontSize: 11, fontWeight: 600,
+                      background: active ? '#111827' : '#fff',
+                      color:      active ? '#fff'    : '#374151',
+                      border: `1px solid ${active ? '#111827' : '#d1d5db'}`,
+                      borderRadius: 11, cursor: 'pointer',
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           {rows == null && (
             <div style={{ padding: 20, fontSize: 13, color: '#6b7280' }}>Loading…</div>
           )}
@@ -1484,7 +1541,7 @@ function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
             </div>
           )}
 
-          {(rows || []).map((r, i) => (
+          {(sortedRows || []).map((r, i) => (
             <div key={isEvents ? i : r.id} style={{
               display: 'flex', alignItems: 'center', gap: 10,
               padding: '9px 16px',
