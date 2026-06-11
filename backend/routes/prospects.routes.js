@@ -1988,6 +1988,17 @@ router.post('/bulk-campaign', async (req, res) => {
     if (!Array.isArray(prospectIds) || prospectIds.length === 0) {
       return res.status(400).json({ error: { message: 'prospectIds array is required' } });
     }
+    // Campaign membership is only ever removed when EXPLICITLY asked.
+    // A request that omits campaignId entirely used to fall through the
+    // `= null` default and silently untag every prospect in the list —
+    // a forgotten field must not be a destructive action. Untagging now
+    // requires a literal campaignId: null in the body (which is what the
+    // confirm-gated "Remove from campaign" UI sends).
+    if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'campaignId')) {
+      return res.status(400).json({ error: {
+        message: 'campaignId is required: pass a campaign id to assign/move, or an explicit null to remove from campaign.',
+      } });
+    }
     const ids = prospectIds.map(x => parseInt(x, 10)).filter(Number.isFinite);
     if (ids.length === 0) {
       return res.status(400).json({ error: { message: 'No valid prospectIds' } });
