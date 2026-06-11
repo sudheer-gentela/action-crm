@@ -739,8 +739,12 @@ export default function ProspectingView() {
         </div>
       </div>
 
-      {/* ── Metrics Bar (clickable stage chips + performance group) ─────────── */}
-      <div className="pv-metrics-bar" style={{ gap: 8 }}>
+      {/* ── Metrics Bar (clickable stage chips + performance group) ───────────
+          Hidden in campaigns mode: these are GLOBAL prospect-pool numbers
+          (all stages, all campaigns), which read as wrong context above a
+          campaign list — CampaignsView shows campaign-level aggregates
+          instead. */}
+      <div className="pv-metrics-bar" style={{ gap: 8, display: viewMode === 'campaigns' ? 'none' : undefined }}>
         {(() => {
           const EMBER = '#E8630A';
           const chipStyle = (active) => ({
@@ -870,8 +874,10 @@ export default function ProspectingView() {
         </div>
       </div>
 
-      {/* ── LinkedIn Funnel Strip ───────────────────────────────────────────── */}
-      {liMetrics.sent > 0 && (
+      {/* ── LinkedIn Funnel Strip ───────────────────────────────────────────
+          Also global-scope (all prospects, all campaigns) — hidden in
+          campaigns mode for the same reason as the metrics bar above. */}
+      {viewMode !== 'campaigns' && liMetrics.sent > 0 && (
         <div style={{
           display: 'flex', alignItems: 'center', gap: 0,
           background: '#f8fafc', border: '1px solid #e2e8f0',

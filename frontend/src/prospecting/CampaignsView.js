@@ -362,6 +362,50 @@ export default function CampaignsView() {
         }}>{error}</div>
       )}
 
+      {/* ── Campaign aggregates strip ─────────────────────────────────────────
+          Replaces the global prospect-pool/LinkedIn strips (hidden by
+          ProspectingView in campaigns mode). Summed CLIENT-SIDE from the
+          rows currently listed, so it always agrees with what's on screen
+          and follows the scope (Mine/Team/Org) and status filter for free.
+          LinkedIn counts come from the list query's li_*_count aggregates. */}
+      {!loading && campaigns.length > 0 && (() => {
+        const agg = campaigns.reduce((a, c) => ({
+          prospects:  a.prospects  + parseInt(c.prospect_count    || 0, 10),
+          qualified:  a.qualified  + parseInt(c.qualified_count   || 0, 10),
+          active:     a.active     + parseInt(c.active_count      || 0, 10),
+          goal:       a.goal       + (parseInt(c.goal_qualified, 10) || 0),
+          liSent:     a.liSent     + parseInt(c.li_sent_count     || 0, 10),
+          liAccepted: a.liAccepted + parseInt(c.li_accepted_count || 0, 10),
+        }), { prospects: 0, qualified: 0, active: 0, goal: 0, liSent: 0, liAccepted: 0 });
+        const liRate = agg.liSent > 0 ? Math.round((agg.liAccepted / agg.liSent) * 100) : null;
+        const Metric = ({ value, label, color }) => (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 76 }}>
+            <span style={{ fontSize: 17, fontWeight: 700, color: color || '#1f2937' }}>{value}</span>
+            <span style={{ fontSize: 10.5, color: '#9ca3af', whiteSpace: 'nowrap' }}>{label}</span>
+          </div>
+        );
+        return (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap',
+            background: '#f8fafc', border: '1px solid #e2e8f0',
+            borderRadius: 8, padding: '8px 14px', marginBottom: 12,
+          }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', marginRight: 10, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+              {statusFilter === 'all' ? 'All' : statusFilter} campaigns — totals
+            </span>
+            <Metric value={campaigns.length} label="campaigns" />
+            <Metric value={agg.prospects}    label="prospects" />
+            <Metric value={agg.active}       label="in motion" />
+            <Metric value={agg.goal > 0 ? `${agg.qualified}/${agg.goal}` : agg.qualified}
+                    label={agg.goal > 0 ? 'qualified / goal' : 'qualified'} color="#059669" />
+            <div style={{ width: 1, height: 24, background: '#e2e8f0', margin: '0 8px' }} />
+            <Metric value={agg.liSent > 0 ? `${agg.liAccepted}/${agg.liSent}` : '—'}
+                    label="in accepted / sent" color={agg.liSent > 0 ? '#1d4ed8' : '#cbd5e1'} />
+            {liRate != null && <Metric value={`${liRate}%`} label="acceptance" color="#1d4ed8" />}
+          </div>
+        );
+      })()}
+
       {loading ? (
         <div className="pv-loading">Loading campaigns...</div>
       ) : campaigns.length === 0 ? (
