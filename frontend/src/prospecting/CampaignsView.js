@@ -18,7 +18,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiFetch, DEFAULT_PROSPECT_STAGES } from './prospectingShared';
 import CSVImportModal from '../CSVImportModal';
-import CampaignConfigPanel from './CampaignConfigPanel';
 import CampaignConfigScreen from './CampaignConfigScreen';
 import CampaignBriefWizard from './CampaignBriefWizard';
 import PacingTile from './PacingTile';
