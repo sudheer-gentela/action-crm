@@ -437,7 +437,7 @@ export default function CampaignConfigScreen({ campaignId, onBack }) {
         /* The existing editor, complete with every field (pitch, value
            props, personas, products, hooks, case studies, guardrails)
            and its own save/delete controls. */
-        <CampaignConfigPanel campaignId={campaignId} />
+        <CampaignConfigPanel campaignId={campaignId} defaultOpen />
       )}
 
       {tab === 'schedule' && (

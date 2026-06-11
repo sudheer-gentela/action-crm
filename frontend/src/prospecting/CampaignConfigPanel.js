@@ -32,14 +32,16 @@ const HOOK_CATEGORY_OPTIONS = [
   { value: 'role_curiosity',  label: 'Role + stage curiosity' },
 ];
 
-export default function CampaignConfigPanel({ campaignId, canEdit }) {
+export default function CampaignConfigPanel({ campaignId, canEdit, defaultOpen = false }) {
   const [data,    setData]    = useState(null);   // { override, resolved, org_baseline, has_override }
   const [draft,   setDraft]   = useState(null);   // editable copy of override
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
   const [error,   setError]   = useState('');
   const [flash,   setFlash]   = useState(null);
-  const [expanded, setExpanded] = useState(false);
+  // defaultOpen: the dedicated config screen passes true — when the rep has
+  // explicitly navigated to "configuration", a collapsed header is friction.
+  const [expanded, setExpanded] = useState(defaultOpen);
 
   const showFlash = (type, msg) => {
     setFlash({ type, msg });

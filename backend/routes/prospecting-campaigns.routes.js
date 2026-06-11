@@ -1413,18 +1413,30 @@ router.get('/:id', async (req, res) => {
       }
 
       const cfgOv = raw.prospecting_config_override || null;
+      // Only count keys that actually override something. The panel's
+      // semantics: empty string / empty array / empty object = "inherit
+      // from org" — those keys may exist in the saved blob but are NOT
+      // overrides, and counting them inflates the badge.
+      const isOverriding = (v) => {
+        if (v == null) return false;
+        if (typeof v === 'string') return v.trim() !== '';
+        if (Array.isArray(v)) return v.length > 0;
+        if (typeof v === 'object') return Object.keys(v).length > 0;
+        return true;
+      };
+      const activeKeys = cfgOv
+        ? Object.entries(cfgOv).filter(([, v]) => isOverriding(v))
+        : [];
       overridesBlock = {
         schedule,
         config: {
-          hasOverride: !!cfgOv,
+          hasOverride: activeKeys.length > 0,
           // Key names + sizes only — values live behind GET /:id/config,
           // which enforces the owner/manager/admin read guard.
-          overriddenKeys: cfgOv
-            ? Object.entries(cfgOv).map(([k, v]) => ({
-                key: k,
-                size: Array.isArray(v) ? v.length : (v && typeof v === 'object' ? Object.keys(v).length : 1),
-              }))
-            : [],
+          overriddenKeys: activeKeys.map(([k, v]) => ({
+            key: k,
+            size: Array.isArray(v) ? v.length : (v && typeof v === 'object' ? Object.keys(v).length : 1),
+          })),
         },
       };
     } catch (ovErr) {
