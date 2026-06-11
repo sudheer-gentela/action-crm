@@ -131,6 +131,44 @@ function CallsInboxView({ scope, onSelectProspect, search }) {
 
   return (
     <div>
+      {/* ── Call aggregates strip ────────────────────────────────────────
+          Replaces the global prospect-pool strips (hidden by
+          ProspectingView in calls mode). Counts come from the server-side
+          tab counts (window-wide); talk time + prospects are summed from
+          the rows currently LISTED, so the label names the active filter
+          to stay honest about what's being aggregated. */}
+      {counts.all > 0 && (() => {
+        const talkSec   = items.reduce((a, i) => a + (parseInt(i.duration_seconds, 10) || 0), 0);
+        const prospects = new Set(items.map(i => i.prospect_id).filter(Boolean)).size;
+        const talkLabel = talkSec >= 3600
+          ? `${Math.floor(talkSec / 3600)}h ${Math.round((talkSec % 3600) / 60)}m`
+          : talkSec >= 60 ? `${Math.round(talkSec / 60)}m` : `${talkSec}s`;
+        const M = ({ value, label, color }) => (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 76 }}>
+            <span style={{ fontSize: 17, fontWeight: 700, color: color || '#1f2937' }}>{value}</span>
+            <span style={{ fontSize: 10.5, color: '#9ca3af', whiteSpace: 'nowrap' }}>{label}</span>
+          </div>
+        );
+        return (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap',
+            background: '#f8fafc', border: '1px solid #e2e8f0',
+            borderRadius: 8, padding: '8px 14px', marginBottom: 12,
+          }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', marginRight: 10, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+              Calls — last {dateRange} days
+            </span>
+            <M value={counts.all}       label="calls" />
+            <M value={counts.pending}   label="pending"   color={counts.pending  ? '#92400e' : undefined} />
+            <M value={counts.overdue}   label="overdue"   color={counts.overdue  ? '#991b1b' : undefined} />
+            <M value={counts.completed} label="completed" color="#059669" />
+            <div style={{ width: 1, height: 24, background: '#e2e8f0', margin: '0 8px' }} />
+            <M value={prospects} label={filter === 'all' ? 'prospects' : `prospects (${filter})`} />
+            <M value={talkLabel} label={filter === 'all' ? 'talk time' : `talk time (${filter})`} />
+          </div>
+        );
+      })()}
+
       {/* Filter row — tabs + date range */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16,

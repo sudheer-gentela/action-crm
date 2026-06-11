@@ -606,6 +606,38 @@ function SequencesView({ prospects, search }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
 
+      {/* ── Sequence aggregates strip ────────────────────────────────────
+          Replaces the global prospect-pool strips (hidden by
+          ProspectingView in sequences mode). Summed client-side from the
+          loaded library so it always matches the cards below. */}
+      {sequences.length > 0 && (() => {
+        const agg = sequences.reduce((a, s) => ({
+          steps:  a.steps  + (parseInt(s.step_count, 10)       || 0),
+          active: a.active + (parseInt(s.enrollment_count, 10) || 0),
+        }), { steps: 0, active: 0 });
+        const M = ({ value, label, color }) => (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 76 }}>
+            <span style={{ fontSize: 17, fontWeight: 700, color: color || '#1f2937' }}>{value}</span>
+            <span style={{ fontSize: 10.5, color: '#9ca3af', whiteSpace: 'nowrap' }}>{label}</span>
+          </div>
+        );
+        return (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap',
+            background: '#f8fafc', border: '1px solid #e2e8f0',
+            borderRadius: 8, padding: '8px 14px', margin: '0 0 10px',
+          }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', marginRight: 10, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+              Sequences — totals
+            </span>
+            <M value={sequences.length} label="sequences" />
+            <M value={agg.steps}        label="steps" />
+            <M value={agg.active}       label="active enrollments" color="#0F9D8E" />
+            {drafts.length > 0 && <M value={drafts.length} label="drafts awaiting review" color="#92400e" />}
+          </div>
+        );
+      })()}
+
       {/* ── Sub-tab bar ─────────────────────────────────────────────────── */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',

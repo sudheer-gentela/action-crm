@@ -45,6 +45,12 @@ import './OutreachComposer.css';
 // ITS segment changes — never touching segments it doesn't own.
 const PV_HASH_MODES = ['pipeline', 'list', 'account', 'campaigns', 'research', 'inbox', 'sequences', 'calls'];
 
+// Sub-views where the GLOBAL prospect-pool strips (stage pills + LinkedIn
+// funnel banner) are hidden — these views are about a different entity
+// (campaigns, sequences, calls, research queue) and render their own
+// aggregates instead.
+const GLOBAL_STRIPS_HIDDEN_MODES = ['campaigns', 'sequences', 'calls', 'research'];
+
 function hashSegment(n) {
   const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/');
   const seg = parts[n];
@@ -740,11 +746,11 @@ export default function ProspectingView() {
       </div>
 
       {/* ── Metrics Bar (clickable stage chips + performance group) ───────────
-          Hidden in campaigns mode: these are GLOBAL prospect-pool numbers
-          (all stages, all campaigns), which read as wrong context above a
-          campaign list — CampaignsView shows campaign-level aggregates
-          instead. */}
-      <div className="pv-metrics-bar" style={{ gap: 8, display: viewMode === 'campaigns' ? 'none' : undefined }}>
+          Hidden in entity-focused modes: these are GLOBAL prospect-pool
+          numbers (all stages, all campaigns), which read as wrong context
+          above a campaign / sequence / call / research list — those views
+          show their own aggregates instead. */}
+      <div className="pv-metrics-bar" style={{ gap: 8, display: GLOBAL_STRIPS_HIDDEN_MODES.includes(viewMode) ? 'none' : undefined }}>
         {(() => {
           const EMBER = '#E8630A';
           const chipStyle = (active) => ({
@@ -875,9 +881,9 @@ export default function ProspectingView() {
       </div>
 
       {/* ── LinkedIn Funnel Strip ───────────────────────────────────────────
-          Also global-scope (all prospects, all campaigns) — hidden in
-          campaigns mode for the same reason as the metrics bar above. */}
-      {viewMode !== 'campaigns' && liMetrics.sent > 0 && (
+          Also global-scope (all prospects, all campaigns) — hidden in the
+          same entity-focused modes as the metrics bar above. */}
+      {!GLOBAL_STRIPS_HIDDEN_MODES.includes(viewMode) && liMetrics.sent > 0 && (
         <div style={{
           display: 'flex', alignItems: 'center', gap: 0,
           background: '#f8fafc', border: '1px solid #e2e8f0',
