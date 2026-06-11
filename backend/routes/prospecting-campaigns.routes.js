@@ -1357,6 +1357,45 @@ router.get('/:id', async (req, res) => {
       campaign.can_set_lock          = false;
     }
 
+    // ── in_motion: has this campaign committed to an outreach path? ──────
+    // True once ANY of these exist (all-time, regardless of the range
+    // toggle): an active sequence enrollment, a sent email, a LinkedIn
+    // outreach event, or a sequence step send. Drives launch-time-only
+    // affordances in the UI — e.g. template-only mass enrollment is a
+    // decision you make BEFORE the campaign starts sending, not after
+    // personalized outreach is already in flight (mixing verbatim and
+    // personalized sends to the same audience).
+    const motionRes = await pool.query(
+      `SELECT
+         EXISTS (
+           SELECT 1 FROM sequence_enrollments se
+             JOIN prospects p ON p.id = se.prospect_id
+            WHERE se.org_id = $1 AND p.campaign_id = $2
+              AND p.deleted_at IS NULL AND se.status = 'active'
+         ) AS has_active_enrollments,
+         EXISTS (
+           SELECT 1 FROM emails e
+             JOIN prospects p ON p.id = e.prospect_id
+            WHERE e.org_id = $1 AND p.campaign_id = $2
+              AND e.direction = 'sent'
+         ) AS has_email_sends,
+         EXISTS (
+           SELECT 1 FROM prospecting_activities pa
+             JOIN prospects p ON p.id = pa.prospect_id
+            WHERE pa.org_id = $1 AND p.campaign_id = $2
+              AND (
+                (pa.activity_type = 'linkedin_event'
+                 AND pa.metadata->>'event' IN (
+                   'connection_request_sent','message_sent',
+                   'inmail_sent','voice_note_sent'))
+                OR pa.activity_type = 'sequence_step_sent'
+              )
+         ) AS has_other_sends`,
+      [req.orgId, req.params.id]
+    );
+    const motion = motionRes.rows[0] || {};
+    const inMotion = !!(motion.has_active_enrollments || motion.has_email_sends || motion.has_other_sends);
+
     res.json({
       campaign,
       funnel,
@@ -1365,6 +1404,12 @@ router.get('/:id', async (req, res) => {
       metrics: {
         totalProspects,
         qualified,
+        inMotion,
+        inMotionReasons: {
+          activeEnrollments: !!motion.has_active_enrollments,
+          emailSends:        !!motion.has_email_sends,
+          otherSends:        !!motion.has_other_sends,
+        },
         goalQualified:       campaign.goal_qualified || null,
         // Which window the outreach/response numbers cover: 'week' | 'all'.
         // Echoed so the UI labels match what was actually computed.
@@ -1408,10 +1453,12 @@ router.get('/:id/outreach-events', async (req, res) => {
     if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
     if (!(await CampaignAccess.requireCanAccess(req, res, campaign))) return;
 
-    const channel = req.query.channel;
+    // channel is optional: omit (or pass 'all') to drill into the
+    // cross-channel totals shown on the top metric cards.
+    const channel = req.query.channel && req.query.channel !== 'all' ? req.query.channel : null;
     const kind    = req.query.kind;
-    if (!['email', 'linkedin', 'call'].includes(channel)) {
-      return res.status(400).json({ error: { message: 'channel must be one of: email, linkedin, call' } });
+    if (channel && !['email', 'linkedin', 'call'].includes(channel)) {
+      return res.status(400).json({ error: { message: 'channel must be one of: email, linkedin, call (or omitted for all)' } });
     }
     if (!['outreach', 'response'].includes(kind)) {
       return res.status(400).json({ error: { message: 'kind must be one of: outreach, response' } });
@@ -1502,7 +1549,7 @@ router.get('/:id/outreach-events', async (req, res) => {
               company_name, detail,
               COUNT(*) OVER ()::int AS total
          FROM touches
-        WHERE kind = $4 AND channel = $5
+        WHERE kind = $4 AND ($5::text IS NULL OR channel = $5)
      ORDER BY ts DESC
         LIMIT 200`,
       [req.orgId, req.params.id, rangeStart, kind, channel]
@@ -1524,6 +1571,53 @@ router.get('/:id/outreach-events', async (req, res) => {
   } catch (err) {
     console.error('campaigns GET /:id/outreach-events', err);
     res.status(500).json({ error: { message: 'Failed to load outreach events' } });
+  }
+});
+
+// ── GET /:id/enrolled-prospects — drill-down for the "In sequences" card ─────
+//
+// Returns the prospects behind metrics.activeEnrollments: campaign members
+// with an ACTIVE sequence enrollment, plus which sequence/step they're on.
+router.get('/:id/enrolled-prospects', async (req, res) => {
+  try {
+    const campaign = await loadCampaign(req.orgId, req.params.id);
+    if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanAccess(req, res, campaign))) return;
+
+    const { rows } = await pool.query(
+      `SELECT p.id, p.first_name, p.last_name, p.title, p.company_name, p.stage,
+              s.name           AS sequence_name,
+              se.current_step,
+              se.next_step_due,
+              COUNT(*) OVER ()::int AS total
+         FROM sequence_enrollments se
+         JOIN prospects p ON p.id = se.prospect_id AND p.org_id = se.org_id
+         JOIN sequences s ON s.id = se.sequence_id
+        WHERE se.org_id = $1
+          AND p.campaign_id = $2
+          AND p.deleted_at IS NULL
+          AND se.status = 'active'
+     ORDER BY se.next_step_due ASC NULLS LAST, p.id
+        LIMIT 500`,
+      [req.orgId, req.params.id]
+    );
+
+    res.json({
+      total: rows[0]?.total || 0,
+      prospects: rows.map(r => ({
+        id:            r.id,
+        name:          `${r.first_name || ''} ${r.last_name || ''}`.trim(),
+        title:         r.title || null,
+        company_name:  r.company_name || null,
+        stage:         r.stage,
+        sequence_name: r.sequence_name,
+        current_step:  r.current_step,
+        next_step_due: r.next_step_due,
+      })),
+    });
+  } catch (err) {
+    console.error('campaigns GET /:id/enrolled-prospects', err);
+    res.status(500).json({ error: { message: 'Failed to load enrolled prospects' } });
   }
 });
 

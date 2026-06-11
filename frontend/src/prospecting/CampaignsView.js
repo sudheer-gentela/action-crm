@@ -936,10 +936,22 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
             <div style={{
               display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 12,
             }}>
-              <MetricCard label="Prospects"      value={data.metrics.totalProspects} />
-              <MetricCard label={rangeFilter === 'all' ? 'Outreach (all)' : 'Outreach / wk'}  value={data.metrics.outreachThisWeek} />
-              <MetricCard label={rangeFilter === 'all' ? 'Responses (all)' : 'Responses / wk'} value={data.metrics.responsesThisWeek} />
-              <MetricCard label="In sequences"   value={data.metrics.activeEnrollments} />
+              <div style={{ cursor: 'pointer' }} title="Click to see who"
+                   onClick={() => setDrill({ type: 'members' })}>
+                <MetricCard label="Prospects"      value={data.metrics.totalProspects} />
+              </div>
+              <div style={{ cursor: 'pointer' }} title="Click to see who"
+                   onClick={() => setDrill({ type: 'events', channel: 'all', kind: 'outreach' })}>
+                <MetricCard label={rangeFilter === 'all' ? 'Outreach (all)' : 'Outreach / wk'}  value={data.metrics.outreachThisWeek} />
+              </div>
+              <div style={{ cursor: 'pointer' }} title="Click to see who"
+                   onClick={() => setDrill({ type: 'events', channel: 'all', kind: 'response' })}>
+                <MetricCard label={rangeFilter === 'all' ? 'Responses (all)' : 'Responses / wk'} value={data.metrics.responsesThisWeek} />
+              </div>
+              <div style={{ cursor: 'pointer' }} title="Click to see who"
+                   onClick={() => setDrill({ type: 'enrolled' })}>
+                <MetricCard label="In sequences"   value={data.metrics.activeEnrollments} />
+              </div>
             </div>
 
             {/* Channel filter pills + per-channel cards. byChannel always
@@ -1122,12 +1134,20 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
 
             {/* Goal progress */}
             {data.campaign.goal_qualified && (
-              <div style={{ marginBottom: 20 }}>
+              <div
+                style={{ marginBottom: 20, cursor: data.metrics.qualified > 0 ? 'pointer' : 'default' }}
+                title={data.metrics.qualified > 0 ? 'Click to see who qualified' : undefined}
+                onClick={() => {
+                  if (data.metrics.qualified > 0) {
+                    setDrill({ type: 'stage', stage: 'qualified_sal', label: 'Qualified (SAL)' });
+                  }
+                }}
+              >
                 <div style={{
                   display: 'flex', justifyContent: 'space-between',
                   fontSize: 12, color: '#6b7280', marginBottom: 5,
                 }}>
-                  <span>Qualified (SAL) goal</span>
+                  <span>Qualified (SAL) goal{data.metrics.qualified > 0 ? ' →' : ''}</span>
                   <span style={{ fontWeight: 600 }}>
                     {data.metrics.qualified} / {data.campaign.goal_qualified}
                   </span>
@@ -1204,7 +1224,10 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
             )}
 
             {/* Slice 2: pacing tile — funnel + activation rate */}
-            <PacingTile campaignId={campaignId} />
+            <PacingTile
+              campaignId={campaignId}
+              onStageClick={(stage, label) => setDrill({ type: 'stage', stage, label })}
+            />
 
             {/* Slice 4: sender visibility — which email + LinkedIn account
                 will fire this campaign's outreach. */}
@@ -1313,28 +1336,54 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                     No default sequence set on this campaign.
                   </div>
                 )}
-                <div style={{
-                  marginTop: 12, padding: '8px 10px', background: '#f8fafc', borderRadius: 6,
-                  fontSize: 11, color: '#6b7280',
-                }}>
-                  <div style={{ fontWeight: 600, marginBottom: 3 }}>
-                    Advanced: skip research, enrol everyone with templates only
-                  </div>
-                  <div style={{ marginBottom: 6 }}>
-                    Bypasses per-prospect AI personalisation. Each enrollment uses the sequence template verbatim. Useful if you don't have or want signal-based research.
-                  </div>
-                  <button
-                    onClick={() => setShowEnroll(true)}
-                    disabled={busy || totalProspects === 0}
-                    style={{
-                      background: 'none', border: '1px solid #cbd5e1', borderRadius: 4,
-                      padding: '4px 10px', fontSize: 11, color: '#475569',
-                      cursor: 'pointer', fontWeight: 500,
-                    }}
-                  >
-                    📨 Enroll all in sequence (template-only)
-                  </button>
-                </div>
+                {/* Template-only mass enrollment is a LAUNCH-TIME decision:
+                    available only while the campaign hasn't started sending.
+                    Once anything is in motion (active enrollments or any
+                    outreach sent — metrics.inMotion from the backend), the
+                    button locks: mass-enrolling verbatim templates mid-flight
+                    would mix un-personalized sends into a personalized
+                    campaign and risk double-touching prospects. */}
+                {(() => {
+                  const inMotion = !!data.metrics.inMotion;
+                  const reasons  = data.metrics.inMotionReasons || {};
+                  const why = reasons.activeEnrollments ? 'prospects are actively enrolled in a sequence'
+                            : reasons.emailSends        ? 'outreach emails have already been sent'
+                            : reasons.otherSends        ? 'outreach has already been sent'
+                            : 'the campaign is in motion';
+                  return (
+                    <div style={{
+                      marginTop: 12, padding: '8px 10px',
+                      background: inMotion ? '#fafafa' : '#f8fafc', borderRadius: 6,
+                      fontSize: 11, color: inMotion ? '#9ca3af' : '#6b7280',
+                    }}>
+                      <div style={{ fontWeight: 600, marginBottom: 3 }}>
+                        Advanced: skip research, enrol everyone with templates only
+                      </div>
+                      <div style={{ marginBottom: 6 }}>
+                        Bypasses per-prospect AI personalisation. Each enrollment uses the sequence template verbatim. Useful if you don't have or want signal-based research.
+                      </div>
+                      <button
+                        onClick={() => setShowEnroll(true)}
+                        disabled={busy || totalProspects === 0 || inMotion}
+                        title={inMotion ? `Locked — ${why}.` : undefined}
+                        style={{
+                          background: 'none', border: '1px solid #cbd5e1', borderRadius: 4,
+                          padding: '4px 10px', fontSize: 11,
+                          color: inMotion ? '#9ca3af' : '#475569',
+                          cursor: inMotion ? 'not-allowed' : 'pointer', fontWeight: 500,
+                        }}
+                      >
+                        📨 Enroll all in sequence (template-only)
+                      </button>
+                      {inMotion && (
+                        <div style={{ marginTop: 5, color: '#92400e' }}>
+                          🔒 Locked — {why}. Template-only enrollment is a launch-time
+                          decision; it can't be applied once the campaign is sending.
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
@@ -1673,9 +1722,13 @@ function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
 
   const chLabel  = drill.channel === 'email' ? 'Email'
                  : drill.channel === 'linkedin' ? 'LinkedIn'
-                 : drill.channel === 'call' ? 'Call' : '';
+                 : drill.channel === 'call' ? 'Call'
+                 : drill.channel === 'all' ? 'All channels' : '';
   const title = isEvents
     ? `${chLabel} ${drill.kind === 'outreach' ? 'outreach' : 'responses'} — ${range === 'all' ? 'all time' : 'this week'}`
+    : drill.type === 'stage'    ? `${drill.label || drill.stage} — prospects`
+    : drill.type === 'members'  ? 'Campaign members'
+    : drill.type === 'enrolled' ? 'In sequences — active enrollments'
     : drill.bucket === 'sent'     ? 'LinkedIn — requests sent'
     : drill.bucket === 'accepted' ? 'LinkedIn — accepted'
     :                               'LinkedIn — pending';
@@ -1689,6 +1742,27 @@ function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
           const r = await apiFetch(`/prospecting-campaigns/${campaignId}/outreach-events?${qs}`);
           if (cancelled) return;
           setRows(r.events || []);
+          setTotal(r.total || 0);
+        } else if (drill.type === 'stage' || drill.type === 'members') {
+          // Stage / all-members drill: the standard prospects list endpoint,
+          // campaign-scoped (+ stage-scoped for stage drills).
+          const qs = `campaignId=${campaignId}${drill.type === 'stage' ? `&stage=${drill.stage}` : ''}`;
+          const r = await apiFetch(`/prospects?${qs}`);
+          if (cancelled) return;
+          const list = (r.prospects || []).map(pr => ({
+            id:           pr.id,
+            name:         `${pr.first_name || ''} ${pr.last_name || ''}`.trim(),
+            title:        pr.title || null,
+            company_name: pr.company_name || null,
+            stage:        pr.stage,
+            linkedin_url: pr.linkedin_url || null,
+          }));
+          setRows(list);
+          setTotal(list.length);
+        } else if (drill.type === 'enrolled') {
+          const r = await apiFetch(`/prospecting-campaigns/${campaignId}/enrolled-prospects`);
+          if (cancelled) return;
+          setRows(r.prospects || []);
           setTotal(r.total || 0);
         } else {
           const r = await apiFetch(`/prospecting-campaigns/${campaignId}/linkedin-connection-prospects?bucket=${drill.bucket}`);
@@ -1785,12 +1859,26 @@ function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
                 <div style={{ fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {isEvents
                     ? [r.company_name, r.detail].filter(Boolean).join(' · ')
-                    : [r.title, r.company_name].filter(Boolean).join(' · ')}
+                    : drill.type === 'enrolled'
+                      ? [r.title, r.company_name].filter(Boolean).join(' · ')
+                      : [r.title, r.company_name].filter(Boolean).join(' · ')}
                 </div>
               </div>
               <div style={{ fontSize: 11, color: '#6b7280', textAlign: 'right', flexShrink: 0 }}>
                 {isEvents ? (
                   fmtDate(r.ts)
+                ) : drill.type === 'enrolled' ? (
+                  <>
+                    <div>{r.sequence_name} · step {r.current_step}</div>
+                    {r.next_step_due && <div style={{ color: '#9ca3af' }}>next {fmtDate(r.next_step_due)}</div>}
+                  </>
+                ) : (drill.type === 'stage' || drill.type === 'members') ? (
+                  <span style={{
+                    fontSize: 10, fontWeight: 600, color: '#475569',
+                    background: '#f1f5f9', borderRadius: 8, padding: '2px 8px',
+                  }}>
+                    {String(r.stage || '').replace(/_/g, ' ')}
+                  </span>
                 ) : (
                   <>
                     {r.request_sent_at && <div>sent {fmtDate(r.request_sent_at)}</div>}

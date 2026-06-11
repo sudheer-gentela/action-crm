@@ -18,7 +18,9 @@ const HEALTH_COLORS = {
   gray:  { bg: '#f9fafb', fg: '#6b7280', dot: '#9ca3af', label: 'No activity yet' },
 };
 
-export default function PacingTile({ campaignId }) {
+// onStageClick (optional): (stageKey, label) => void — makes the mini-funnel
+// tiles clickable so the drawer can open a "who's in this stage" drill-down.
+export default function PacingTile({ campaignId, onStageClick }) {
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState('');
@@ -73,12 +75,12 @@ export default function PacingTile({ campaignId }) {
 
       {/* Mini-funnel: counts by stage */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6, marginBottom: 12 }}>
-        <FunnelStep label="Target"    count={stages.target}    color="#6b7280" />
-        <FunnelStep label="Research"  count={stages.research}  color="#8b5cf6" highlight />
-        <FunnelStep label="Outreach"  count={stages.outreach}  color="#3b82f6" />
-        <FunnelStep label="Engaged"   count={stages.engaged}   color="#0F9D8E" />
-        <FunnelStep label="Disc."     count={stages.discovery_call} color="#f59e0b" />
-        <FunnelStep label="SAL"       count={stages.qualified_sal}  color="#10b981" />
+        <FunnelStep label="Target"    count={stages.target}    color="#6b7280" onClick={onStageClick && (() => onStageClick('target', 'Target'))} />
+        <FunnelStep label="Research"  count={stages.research}  color="#8b5cf6" highlight onClick={onStageClick && (() => onStageClick('research', 'Research'))} />
+        <FunnelStep label="Outreach"  count={stages.outreach}  color="#3b82f6" onClick={onStageClick && (() => onStageClick('outreach', 'Outreach'))} />
+        <FunnelStep label="Engaged"   count={stages.engaged}   color="#0F9D8E" onClick={onStageClick && (() => onStageClick('engaged', 'Engaged'))} />
+        <FunnelStep label="Disc."     count={stages.discovery_call} color="#f59e0b" onClick={onStageClick && (() => onStageClick('discovery_call', 'Discovery call'))} />
+        <FunnelStep label="SAL"       count={stages.qualified_sal}  color="#10b981" onClick={onStageClick && (() => onStageClick('qualified_sal', 'Qualified (SAL)'))} />
       </div>
 
       {/* Activation rate stats */}
@@ -117,14 +119,18 @@ export default function PacingTile({ campaignId }) {
   );
 }
 
-function FunnelStep({ label, count, color, highlight }) {
+function FunnelStep({ label, count, color, highlight, onClick }) {
   return (
-    <div style={{
-      textAlign: 'center', padding: '6px 4px',
-      background: highlight ? '#f5f3ff' : '#fff',
-      border: highlight ? `1px solid ${color}33` : '1px solid #f1f5f9',
-      borderRadius: 6,
-    }}>
+    <div
+      onClick={onClick || undefined}
+      title={onClick ? 'Click to see who' : undefined}
+      style={{
+        textAlign: 'center', padding: '6px 4px',
+        background: highlight ? '#f5f3ff' : '#fff',
+        border: highlight ? `1px solid ${color}33` : '1px solid #f1f5f9',
+        borderRadius: 6,
+        cursor: onClick ? 'pointer' : 'default',
+      }}>
       <div style={{ fontSize: 16, fontWeight: 700, color }}>{count}</div>
       <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>{label}</div>
     </div>
