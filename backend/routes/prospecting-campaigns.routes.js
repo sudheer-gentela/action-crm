@@ -1649,6 +1649,65 @@ router.get('/:id/outreach-events', async (req, res) => {
   }
 });
 
+// ── GET /:id/schedule-config — per-field schedule provenance for the config
+// screen: campaign raw value (null = inheriting), org config value, and the
+// resolver default, so the UI can render "inherit (org: 8) / override" rows
+// that exactly match what the firer resolves.
+router.get('/:id/schedule-config', async (req, res) => {
+  try {
+    const campaign = await loadCampaign(req.orgId, req.params.id);
+    if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanAccess(req, res, campaign))) return;
+
+    const { DEFAULTS: SCHED_DEFAULTS } = require('../services/SendingScheduleResolver');
+    const [rawRes, orgRes] = await Promise.all([
+      pool.query(
+        `SELECT start_mode, pacing_mode, cadence_minutes,
+                send_window_start_hour, send_window_start_minute,
+                send_window_end_hour, send_window_days, send_window_timezone,
+                daily_activation_cap
+           FROM prospecting_campaigns
+          WHERE id = $1 AND org_id = $2`,
+        [req.params.id, req.orgId]
+      ),
+      pool.query(
+        `SELECT config FROM org_integrations
+          WHERE org_id = $1 AND integration_type = 'prospecting_email'`,
+        [req.orgId]
+      ),
+    ]);
+    const raw    = rawRes.rows[0] || {};
+    const orgCfg = orgRes.rows[0]?.config || {};
+
+    // column → [org config key, resolver DEFAULTS key]
+    const MAP = {
+      start_mode:               ['startMode',             'startMode'],
+      pacing_mode:              ['pacingMode',            'pacingMode'],
+      cadence_minutes:          ['cadenceMinutes',        'cadenceMinutes'],
+      send_window_start_hour:   ['sendWindowStartHour',   'sendWindowStartHour'],
+      send_window_start_minute: ['sendWindowStartMinute', 'sendWindowStartMinute'],
+      send_window_end_hour:     ['sendWindowEndHour',     'sendWindowEndHour'],
+      send_window_days:         ['sendWindowDays',        'sendWindowDays'],
+      send_window_timezone:     ['sendWindowTimezone',    'sendWindowTimezone'],
+      daily_activation_cap:     ['dailyActivationCap',    'linkedinReleaseCap'],
+    };
+    const fields = {};
+    for (const [col, [orgKey, defKey]] of Object.entries(MAP)) {
+      fields[col] = {
+        campaignValue:  raw[col] ?? null,
+        orgValue:       orgCfg[orgKey] ?? null,
+        defaultValue:   SCHED_DEFAULTS[defKey] ?? null,
+        inheritedValue: orgCfg[orgKey] ?? SCHED_DEFAULTS[defKey] ?? null,
+        inheritedFrom:  orgCfg[orgKey] != null ? 'org' : 'default',
+      };
+    }
+    res.json({ fields });
+  } catch (err) {
+    console.error('campaigns GET /:id/schedule-config', err);
+    res.status(500).json({ error: { message: 'Failed to load schedule config' } });
+  }
+});
+
 // ── GET /:id/enrolled-prospects — drill-down for the "In sequences" card ─────
 //
 // Returns the prospects behind metrics.activeEnrollments: campaign members
