@@ -12,6 +12,9 @@ function CallsInboxView({ scope, onSelectProspect, search }) {
   const [error, setError]         = useState('');
   const [filter, setFilter]       = useState('all');   // all | pending | overdue | completed
   const [dateRange, setDateRange] = useState('30');    // days
+  // Campaign narrow — null = all campaigns. List loaded once on mount.
+  const [campaignId, setCampaignId] = useState(null);
+  const [campaignList, setCampaignList] = useState([]);
   const [expandedId, setExpandedId] = useState(null);  // composite key: `${kind}-${id}`
 
   // Modal state — Phase 2 lets the rep click "Log call" on a pending row
@@ -37,6 +40,12 @@ function CallsInboxView({ scope, onSelectProspect, search }) {
     return d.toISOString();
   };
 
+  useEffect(() => {
+    apiFetch('/prospecting-campaigns?status=all')
+      .then(r => setCampaignList(r.campaigns || []))
+      .catch(() => { /* selector simply stays hidden */ });
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
@@ -47,6 +56,7 @@ function CallsInboxView({ scope, onSelectProspect, search }) {
         limit: 100,
         ...(dateRange && { from: fromDate() }),
         ...(search && { search }),
+        ...(campaignId && { campaignId }),
       };
       const res = await apiFetch(`/prospect-calls/inbox?${new URLSearchParams(params)}`);
       setItems(res.items || []);
@@ -56,7 +66,7 @@ function CallsInboxView({ scope, onSelectProspect, search }) {
     } finally {
       setLoading(false);
     }
-  }, [scope, filter, dateRange, search]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scope, filter, dateRange, search, campaignId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [load]);
 
@@ -156,7 +166,9 @@ function CallsInboxView({ scope, onSelectProspect, search }) {
             borderRadius: 8, padding: '8px 14px', marginBottom: 12,
           }}>
             <span style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', marginRight: 10, textTransform: 'uppercase', letterSpacing: '.04em' }}>
-              Calls — last {dateRange} days
+              Calls — {campaignId
+                ? (campaignList.find(c => c.id === campaignId)?.name || 'campaign')
+                : 'all campaigns'}{dateRange ? ` · last ${dateRange} days` : ' · all time'}
             </span>
             <M value={counts.all}       label="calls" />
             <M value={counts.pending}   label="pending"   color={counts.pending  ? '#92400e' : undefined} />
@@ -215,6 +227,26 @@ function CallsInboxView({ scope, onSelectProspect, search }) {
           <option value="90">90 days</option>
           <option value="">All time</option>
         </select>
+
+        {campaignList.length > 0 && (
+          <select
+            value={campaignId || ''}
+            onChange={e => setCampaignId(e.target.value ? parseInt(e.target.value, 10) : null)}
+            title="Show only calls for one campaign's prospects"
+            style={{
+              padding: '5px 8px', fontSize: 12, maxWidth: 220,
+              border: campaignId ? '1px solid #E8630A' : '1px solid #d1d5db',
+              color: campaignId ? '#E8630A' : '#374151',
+              fontWeight: campaignId ? 600 : 400,
+              borderRadius: 6, background: '#fff',
+            }}
+          >
+            <option value="">🚀 All campaigns</option>
+            {campaignList.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        )}
 
         {loading && (
           <span style={{ fontSize: 12, color: '#9ca3af', marginLeft: 'auto' }}>

@@ -1210,6 +1210,15 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
             {/* Read-only peek at what the default sequence actually sends —
                 steps, channels, delays, templates — without leaving the
                 campaign. Opens SequenceStepsModal (GET /sequences/:id). */}
+            {/* Campaign config overrides — provenance view. Shows what THIS
+                campaign changes vs. what it inherits, for both override
+                systems (sending schedule columns + personalization config
+                jsonb). Values of the personalization blob are fetched
+                lazily via GET /:id/config, which enforces its own
+                owner/manager/admin read guard — a 403 renders as a notice
+                rather than an error. */}
+            <CampaignOverridesSection campaignId={campaignId} overrides={data.overrides} />
+
             {data.campaign.default_sequence_id && (
               <button
                 onClick={() => setShowSequenceSteps(true)}
@@ -1546,6 +1555,116 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
 // the campaign before launching the actual preview. Reuses the campaign
 // members list already loaded into the drawer.
 // ─────────────────────────────────────────────────────────────────────────────
+// ── CampaignOverridesSection ─────────────────────────────────────────────────
+//
+// Read-only provenance panel: which settings this campaign overrides and what
+// it would inherit otherwise. Collapsed by default to keep the drawer calm —
+// the summary line says everything when there are no overrides.
+function CampaignOverridesSection({ campaignId, overrides }) {
+  const [open, setOpen] = useState(false);
+  const [cfg, setCfg]   = useState(null);     // lazy: GET /:id/config result
+  const [cfgErr, setCfgErr] = useState('');
+  const [cfgLoading, setCfgLoading] = useState(false);
+
+  if (!overrides) return null;
+  const sched     = overrides.schedule || [];
+  const hasCfg    = !!overrides.config?.hasOverride;
+  const cfgKeys   = overrides.config?.overriddenKeys || [];
+  const nOverrides = sched.length + (hasCfg ? cfgKeys.length : 0);
+
+  const loadConfig = () => {
+    if (cfg || cfgLoading) return;
+    setCfgLoading(true);
+    apiFetch(`/prospecting-campaigns/${campaignId}/config`)
+      .then(r => setCfg(r))
+      .catch(err => setCfgErr(/403|access|permission/i.test(err.message || '')
+        ? 'You can see that overrides exist, but viewing their values requires campaign owner, their manager, or admin access.'
+        : (err.message || 'Failed to load config')))
+      .finally(() => setCfgLoading(false));
+  };
+
+  const fmtVal = (v) => Array.isArray(v) ? v.join(', ') : String(v);
+
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <button
+        onClick={() => { setOpen(!open); if (!open && hasCfg) loadConfig(); }}
+        style={{
+          background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+          fontSize: 12, fontWeight: 600, color: '#0F9D8E',
+        }}
+      >
+        {open ? '▾' : '▸'} Campaign config overrides{' '}
+        <span style={{ color: nOverrides > 0 ? '#92400e' : '#9ca3af', fontWeight: nOverrides > 0 ? 700 : 400 }}>
+          {nOverrides > 0 ? `(${nOverrides})` : '(none — inheriting org defaults)'}
+        </span>
+      </button>
+
+      {open && (
+        <div style={{
+          marginTop: 8, padding: '10px 12px', background: '#f8fafc',
+          border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12,
+        }}>
+          {/* Sending schedule overrides */}
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>
+            Sending schedule
+          </div>
+          {sched.length === 0 ? (
+            <div style={{ color: '#9ca3af', marginBottom: 10 }}>
+              No schedule overrides — this campaign follows the org sending schedule.
+            </div>
+          ) : (
+            <div style={{ marginBottom: 10 }}>
+              {sched.map(f => (
+                <div key={f.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '3px 0' }}>
+                  <span style={{ color: '#374151' }}>{f.label}</span>
+                  <span style={{ textAlign: 'right' }}>
+                    <b style={{ color: '#92400e' }}>{fmtVal(f.campaignValue)}</b>
+                    <span style={{ color: '#9ca3af' }}>
+                      {' '}· {f.inheritedFrom === 'org' ? 'org' : 'default'} would be {fmtVal(f.inheritedValue)}
+                    </span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Personalization config override */}
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>
+            Personalization config
+          </div>
+          {!hasCfg ? (
+            <div style={{ color: '#9ca3af' }}>
+              No personalization overrides — drafts use the org-level config.
+            </div>
+          ) : (
+            <div>
+              <div style={{ color: '#374151', marginBottom: 6 }}>
+                Overridden: {cfgKeys.map(k => `${k.key}${k.size > 1 ? ` (${k.size})` : ''}`).join(', ')}
+              </div>
+              {cfgLoading && <div style={{ color: '#9ca3af' }}>Loading values…</div>}
+              {cfgErr && <div style={{ color: '#92400e' }}>{cfgErr}</div>}
+              {cfg?.override && (
+                <pre style={{
+                  margin: 0, padding: 8, background: '#fff', border: '1px solid #e5e7eb',
+                  borderRadius: 4, fontSize: 11, maxHeight: 220, overflow: 'auto',
+                  whiteSpace: 'pre-wrap', color: '#374151',
+                }}>
+                  {JSON.stringify(cfg.override, null, 2)}
+                </pre>
+              )}
+              <div style={{ color: '#9ca3af', marginTop: 6, fontSize: 11 }}>
+                Non-empty arrays REPLACE the org value; guardrails UNION across
+                layers. Clear the whole override to fully re-inherit.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── SequenceStepsModal ───────────────────────────────────────────────────────
 //
 // Read-only view of the campaign's default sequence: every step with its

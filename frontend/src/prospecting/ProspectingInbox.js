@@ -32,6 +32,16 @@ function ProspectingInbox({ scope: pageScope, onScopeChange, search }) {
   const [tab, setTab] = useState('activity'); // 'activity' | 'email'
   const [caps, setCaps] = useState({ hasSubordinates: false, isAdmin: false });
   const [scopeLocal, setScopeLocal] = useState(pageScope || 'mine');
+  // Campaign narrow — applies to BOTH tabs (Activity feed + Email Inbox),
+  // so it lives here and is threaded down as a prop. null = all campaigns.
+  const [campaignId, setCampaignId] = useState(null);
+  const [campaignList, setCampaignList] = useState([]);
+
+  useEffect(() => {
+    apiFetch('/prospecting-campaigns?status=all')
+      .then(r => setCampaignList(r.campaigns || []))
+      .catch(() => { /* selector simply stays hidden */ });
+  }, []);
 
   // Server-authoritative scope capabilities (same source the campaign list uses).
   useEffect(() => {
@@ -65,6 +75,24 @@ function ProspectingInbox({ scope: pageScope, onScopeChange, search }) {
         display: 'flex', gap: 4, alignItems: 'center', padding: '0 16px',
         borderBottom: '1px solid #e5e7eb', background: '#fff', flexShrink: 0,
       }}>
+        {campaignList.length > 0 && (
+          <select
+            value={campaignId || ''}
+            onChange={e => setCampaignId(e.target.value ? parseInt(e.target.value, 10) : null)}
+            title="Filter both tabs to one campaign's prospects"
+            style={{
+              marginLeft: 'auto', order: 99, fontSize: 12, padding: '4px 8px',
+              borderRadius: 6, border: campaignId ? '1px solid #E8630A' : '1px solid #d1d5db',
+              color: campaignId ? '#E8630A' : '#374151', background: '#fff',
+              maxWidth: 220, fontWeight: campaignId ? 600 : 400,
+            }}
+          >
+            <option value="">🚀 All campaigns</option>
+            {campaignList.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        )}
         {TABS.map(t => {
           const active = tab === t.value;
           return (
@@ -111,8 +139,8 @@ function ProspectingInbox({ scope: pageScope, onScopeChange, search }) {
       {/* ── Active tab ───────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {tab === 'activity'
-          ? <ActivityFeed scope={scope} search={search} />
-          : <EmailInbox scope={scope} search={search} />}
+          ? <ActivityFeed scope={scope} search={search} campaignId={campaignId} />
+          : <EmailInbox scope={scope} search={search} campaignId={campaignId} />}
       </div>
     </div>
   );
@@ -121,7 +149,7 @@ function ProspectingInbox({ scope: pageScope, onScopeChange, search }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Activity feed — unified multi-channel stream.
 // ─────────────────────────────────────────────────────────────────────────────
-function ActivityFeed({ scope, search }) {
+function ActivityFeed({ scope, search, campaignId }) {
   const [items, setItems]       = useState([]);
   const [counts, setCounts]     = useState({});
   // Window-wide aggregates from the feed endpoint's rollup row:
@@ -163,6 +191,7 @@ function ActivityFeed({ scope, search }) {
         ...(dateRange && { from: fromDate() }),
         ...(search && { search }),
         ...(senderId && { senderId }),
+        ...(campaignId && { campaignId }),
       };
       const res = await apiFetch(`/prospecting/activity?${new URLSearchParams(params)}`);
       setItems(res.items   || []);
@@ -176,7 +205,7 @@ function ActivityFeed({ scope, search }) {
     } finally {
       setLoading(false);
     }
-  }, [scope, type, direction, dateRange, search, senderId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scope, type, direction, dateRange, search, senderId, campaignId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(0); }, [load]);
 
@@ -596,7 +625,7 @@ function ActivityRow({ item, scope }) {
 // Email Inbox — the prior email-only view, preserved verbatim (only renamed
 // from the component default to make the sub-tab honest).
 // ─────────────────────────────────────────────────────────────────────────────
-function EmailInbox({ scope, search }) {
+function EmailInbox({ scope, search, campaignId }) {
   const [emails, setEmails]       = useState([]);
   const [stats, setStats]         = useState(null);
   const [loading, setLoading]     = useState(true);
@@ -635,10 +664,11 @@ function EmailInbox({ scope, search }) {
         ...(dateRange  && { from: fromDate() }),
         ...(search && { search }),
         ...(senderId && { senderId }),
+        ...(campaignId && { campaignId }),
       };
       const [emailsRes, statsRes] = await Promise.all([
         apiFetch(`/prospecting/inbox?${new URLSearchParams(params)}`),
-        apiFetch(`/prospecting/inbox/stats?${new URLSearchParams({ scope, ...(dateRange && { from: fromDate() }), ...(search && { search }) })}`),
+        apiFetch(`/prospecting/inbox/stats?${new URLSearchParams({ scope, ...(dateRange && { from: fromDate() }), ...(search && { search }), ...(campaignId && { campaignId }) })}`),
       ]);
       setEmails(emailsRes.emails || []);
       setTotal(emailsRes.total  || 0);
@@ -650,7 +680,7 @@ function EmailInbox({ scope, search }) {
     } finally {
       setLoading(false);
     }
-  }, [scope, direction, dateRange, search, senderId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scope, direction, dateRange, search, senderId, campaignId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(0); }, [load]);
 

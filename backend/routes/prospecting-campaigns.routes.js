@@ -1357,6 +1357,80 @@ router.get('/:id', async (req, res) => {
       campaign.can_set_lock          = false;
     }
 
+    // ── Campaign-level config overrides (provenance view) ────────────────
+    // Two independent override systems exist; surface BOTH so a rep can see
+    // exactly what this campaign changes vs. what it inherits:
+    //   1. Sending schedule — nullable columns on prospecting_campaigns that
+    //      win over org_integrations.config which wins over resolver DEFAULTS.
+    //   2. Personalization/skill config — prospecting_config_override jsonb
+    //      (full blob behind GET /:id/config with its own stricter guard;
+    //      here we expose only WHICH keys are overridden, not their values).
+    let overridesBlock = null;
+    try {
+      const { DEFAULTS: SCHED_DEFAULTS } = require('../services/SendingScheduleResolver');
+      const ovRes = await pool.query(
+        `SELECT daily_activation_cap, send_window_start_hour, send_window_start_minute,
+                send_window_end_hour, send_window_days, send_window_timezone,
+                start_mode, pacing_mode, cadence_minutes,
+                prospecting_config_override
+           FROM prospecting_campaigns
+          WHERE id = $1 AND org_id = $2`,
+        [req.params.id, req.orgId]
+      );
+      const orgCfgRes = await pool.query(
+        `SELECT config FROM org_integrations
+          WHERE org_id = $1 AND integration_type = 'prospecting_email'`,
+        [req.orgId]
+      );
+      const raw    = ovRes.rows[0] || {};
+      const orgCfg = orgCfgRes.rows[0]?.config || {};
+
+      // column → { label, orgKey, defaultKey } — orgKey is the camelCase
+      // name in org_integrations.config; defaults come from the resolver so
+      // the "inherited would be" value matches what actually fires.
+      const FIELDS = [
+        ['start_mode',               'Start mode',               'startMode',             'startMode'],
+        ['pacing_mode',              'Pacing mode',              'pacingMode',            'pacingMode'],
+        ['cadence_minutes',          'Cadence (minutes)',        'cadenceMinutes',        'cadenceMinutes'],
+        ['send_window_start_hour',   'Send window start (hour)', 'sendWindowStartHour',   'sendWindowStartHour'],
+        ['send_window_start_minute', 'Send window start (min)',  'sendWindowStartMinute', 'sendWindowStartMinute'],
+        ['send_window_end_hour',     'Send window end (hour)',   'sendWindowEndHour',     'sendWindowEndHour'],
+        ['send_window_days',         'Send days',                'sendWindowDays',        'sendWindowDays'],
+        ['send_window_timezone',     'Timezone',                 'sendWindowTimezone',    'sendWindowTimezone'],
+        ['daily_activation_cap',     'Daily activation cap',     'dailyActivationCap',    'linkedinReleaseCap'],
+      ];
+      const schedule = [];
+      for (const [col, label, orgKey, defKey] of FIELDS) {
+        if (raw[col] == null) continue;   // not overridden by this campaign
+        const inheritedFromOrg = orgCfg[orgKey] != null;
+        schedule.push({
+          key:            col,
+          label,
+          campaignValue:  raw[col],
+          inheritedValue: inheritedFromOrg ? orgCfg[orgKey] : SCHED_DEFAULTS[defKey],
+          inheritedFrom:  inheritedFromOrg ? 'org' : 'default',
+        });
+      }
+
+      const cfgOv = raw.prospecting_config_override || null;
+      overridesBlock = {
+        schedule,
+        config: {
+          hasOverride: !!cfgOv,
+          // Key names + sizes only — values live behind GET /:id/config,
+          // which enforces the owner/manager/admin read guard.
+          overriddenKeys: cfgOv
+            ? Object.entries(cfgOv).map(([k, v]) => ({
+                key: k,
+                size: Array.isArray(v) ? v.length : (v && typeof v === 'object' ? Object.keys(v).length : 1),
+              }))
+            : [],
+        },
+      };
+    } catch (ovErr) {
+      console.warn('campaigns GET /:id overrides compute failed:', ovErr.message);
+    }
+
     // ── in_motion: has this campaign committed to an outreach path? ──────
     // True once ANY of these exist (all-time, regardless of the range
     // toggle): an active sequence enrollment, a sent email, a LinkedIn
@@ -1401,6 +1475,7 @@ router.get('/:id', async (req, res) => {
       funnel,
       terminal,
       schedule: scheduleBlock,
+      overrides: overridesBlock,
       metrics: {
         totalProspects,
         qualified,

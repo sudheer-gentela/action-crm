@@ -363,9 +363,12 @@ router.get('/inbox', async (req, res) => {
     from,
     to,
     search,
+    campaignId,
     limit  = 100,
     offset = 0,
   } = req.query;
+  const campaignIdInt = campaignId != null && campaignId !== ''
+    ? parseInt(campaignId, 10) : null;
 
   const lim = Math.min(parseInt(limit, 10) || 100, 200);
   const off = Math.max(parseInt(offset, 10) || 0, 0);
@@ -420,6 +423,14 @@ router.get('/inbox', async (req, res) => {
       )`;
   };
 
+  // Campaign narrow — all three streams alias prospects as `p`, so one
+  // helper covers them (same per-stream-params pattern as searchClause).
+  const campaignClause = (params) => {
+    if (campaignIdInt == null || isNaN(campaignIdInt)) return '';
+    params.push(campaignIdInt);
+    return ` AND p.campaign_id = $${params.length}`;
+  };
+
   try {
     // ── Stream 1: completed calls ─────────────────────────────────────────
     // Uses the calls table directly. `kind='completed'`.
@@ -427,6 +438,7 @@ router.get('/inbox', async (req, res) => {
     const completedScopeClause = userClause.replace(/user_id/g, 'c.user_id');
     const completedDateClause = dateClause('c.occurred_at', completedParams);
     const completedSearchClause = searchClause(completedParams);
+    const completedCampaignClause = campaignClause(completedParams);
 
     const completedQuery = `
       SELECT
@@ -455,7 +467,7 @@ router.get('/inbox', async (req, res) => {
       FROM calls c
       LEFT JOIN users u    ON u.id = c.user_id
       LEFT JOIN prospects p ON p.id = c.prospect_id
-      WHERE c.org_id = $1 ${completedScopeClause} ${completedDateClause} ${completedSearchClause}
+      WHERE c.org_id = $1 ${completedScopeClause} ${completedDateClause} ${completedSearchClause} ${completedCampaignClause}
     `;
 
     // ── Stream 2: pending sequence call tasks ─────────────────────────────
@@ -464,6 +476,7 @@ router.get('/inbox', async (req, res) => {
     const pendingSeqScopeClause = userClause.replace(/user_id/g, 'se.enrolled_by');
     const pendingSeqDateClause = dateClause('ssl.scheduled_send_at', pendingSeqParams);
     const pendingSeqSearchClause = searchClause(pendingSeqParams);
+    const pendingSeqCampaignClause = campaignClause(pendingSeqParams);
 
     const pendingSequenceQuery = `
       SELECT
@@ -500,7 +513,7 @@ router.get('/inbox', async (req, res) => {
       WHERE ssl.org_id = $1
         AND ssl.channel = 'call'
         AND ssl.status  = 'draft'
-        ${pendingSeqScopeClause} ${pendingSeqDateClause} ${pendingSeqSearchClause}
+        ${pendingSeqScopeClause} ${pendingSeqDateClause} ${pendingSeqSearchClause} ${pendingSeqCampaignClause}
     `;
 
     // ── Stream 3: pending callback requests ───────────────────────────────
@@ -513,6 +526,7 @@ router.get('/inbox', async (req, res) => {
     const pendingCbScopeClause = userClause.replace(/user_id/g, 'c.user_id');
     const pendingCbDateClause = dateClause('c.callback_requested_at', pendingCbParams);
     const pendingCbSearchClause = searchClause(pendingCbParams);
+    const pendingCbCampaignClause = campaignClause(pendingCbParams);
 
     const pendingCallbackQuery = `
       SELECT
@@ -546,7 +560,7 @@ router.get('/inbox', async (req, res) => {
       WHERE c.org_id = $1
         AND c.outcome = 'callback_requested'
         AND c.callback_requested_at IS NOT NULL
-        ${pendingCbScopeClause} ${pendingCbDateClause} ${pendingCbSearchClause}
+        ${pendingCbScopeClause} ${pendingCbDateClause} ${pendingCbSearchClause} ${pendingCbCampaignClause}
         AND NOT EXISTS (
           SELECT 1 FROM calls c2
           WHERE c2.prospect_id = c.prospect_id
@@ -652,18 +666,33 @@ router.get('/inbox', async (req, res) => {
       countsSearchSeq = pred('sequence_step_logs.prospect_id');
     }
 
+    // Campaign narrow on the tab badges — keeps them consistent with a
+    // campaign-filtered list (same EXISTS shape as the search narrow).
+    let countsCampaign = '';
+    let countsCampaignSeq = '';
+    if (campaignIdInt != null && !isNaN(campaignIdInt)) {
+      countsParams.push(campaignIdInt);
+      const ci = countsParams.length;
+      const cpred = (col) => ` AND EXISTS (
+            SELECT 1 FROM prospects p
+             WHERE p.id = ${col} AND p.campaign_id = $${ci}
+          )`;
+      countsCampaign    = cpred('calls.prospect_id');
+      countsCampaignSeq = cpred('sequence_step_logs.prospect_id');
+    }
+
     const countsQuery = `
       SELECT
-        (SELECT COUNT(*) FROM calls WHERE org_id = $1 ${countsScope}${countsSearch}) AS completed,
+        (SELECT COUNT(*) FROM calls WHERE org_id = $1 ${countsScope}${countsSearch}${countsCampaign}) AS completed,
         (SELECT COUNT(*) FROM sequence_step_logs
             WHERE org_id = $1 AND channel = 'call' AND status = 'draft'
-              ${countsScope.replace('user_id', '(SELECT enrolled_by FROM sequence_enrollments WHERE id = sequence_step_logs.enrollment_id)')}${countsSearchSeq}
+              ${countsScope.replace('user_id', '(SELECT enrolled_by FROM sequence_enrollments WHERE id = sequence_step_logs.enrollment_id)')}${countsSearchSeq}${countsCampaignSeq}
         ) AS pending_sequence,
         (SELECT COUNT(*) FROM calls
             WHERE org_id = $1
               AND outcome = 'callback_requested'
               AND callback_requested_at IS NOT NULL
-              ${countsScope}${countsSearch}
+              ${countsScope}${countsSearch}${countsCampaign}
         ) AS pending_callback
     `;
     const countsRes = await db.query(countsQuery, countsParams);

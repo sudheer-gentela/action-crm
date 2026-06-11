@@ -36,6 +36,7 @@ router.get('/', async (req, res) => {
       from,
       to,
       search,
+      campaignId,
       limit     = 100,
       offset    = 0,
     } = req.query;
@@ -99,6 +100,16 @@ router.get('/', async (req, res) => {
         OR LOWER(p.email) LIKE $${params.length}
         OR LOWER(p.company_name) LIKE $${params.length}
       )`;
+    }
+
+    // Campaign narrow — the queries join prospects p, so a single
+    // predicate scopes the whole inbox to one campaign's prospects.
+    let campaignFilter = '';
+    const campaignIdInt = req.query.campaignId != null && req.query.campaignId !== ''
+      ? parseInt(req.query.campaignId, 10) : null;
+    if (campaignIdInt != null && !isNaN(campaignIdInt)) {
+      params.push(campaignIdInt);
+      campaignFilter = ` AND p.campaign_id = $${params.length}`;
     }
 
     // Snapshot the params behind the scope/direction/date/search filters BEFORE
@@ -186,6 +197,7 @@ router.get('/', async (req, res) => {
         ${directionFilter}
         ${dateFilter}
         ${searchFilter}
+        ${campaignFilter}
         ${senderFilter}
         ${solicitedFilter}
 
@@ -207,6 +219,7 @@ router.get('/', async (req, res) => {
         ${directionFilter}
         ${dateFilter}
         ${searchFilter}
+        ${campaignFilter}
         ${senderFilter}
         ${solicitedFilter}
     `;
@@ -225,6 +238,7 @@ router.get('/', async (req, res) => {
         ${directionFilter}
         ${dateFilter}
         ${searchFilter}
+        ${campaignFilter}
         ${solicitedFilter}
       GROUP BY e.user_id, u.first_name, u.last_name
       ORDER BY n DESC
@@ -340,6 +354,16 @@ router.get('/stats', async (req, res) => {
       )`;
     }
 
+    // Campaign narrow — the queries join prospects p, so a single
+    // predicate scopes the whole inbox to one campaign's prospects.
+    let campaignFilter = '';
+    const campaignIdInt = req.query.campaignId != null && req.query.campaignId !== ''
+      ? parseInt(req.query.campaignId, 10) : null;
+    if (campaignIdInt != null && !isNaN(campaignIdInt)) {
+      params.push(campaignIdInt);
+      campaignFilter = ` AND p.campaign_id = $${params.length}`;
+    }
+
     const statsQuery = `
       SELECT
         COUNT(*)                                          AS total,
@@ -360,6 +384,7 @@ router.get('/stats', async (req, res) => {
         ${userFilter}
         ${dateFilter}
         ${searchFilter}
+        ${campaignFilter}
         -- Same solicited-reply filter as the inbox GET: inbound counts in
         -- stats only if a preceding outbound to the same prospect exists.
         AND (
