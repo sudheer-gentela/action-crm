@@ -527,13 +527,24 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
   // The filter is sent to the API so the server doesn't return data for
   // channels we won't display.
   const [channelFilter, setChannelFilter] = useState(null);
+  // Time range for the BY CHANNEL cards: 'week' (Sunday-start, default) or
+  // 'all' (lifetime). Sent to the API so the counts AND the drill-down lists
+  // are computed over the same window.
+  const [rangeFilter, setRangeFilter] = useState('week');
+  // Drill-down modal state. null = closed. Otherwise one of:
+  //   { type: 'events', channel, kind }  — byChannel number clicked
+  //   { type: 'li', bucket }             — LinkedIn connections tile clicked
+  const [drill, setDrill] = useState(null);
   // Default sequence's ai_enabled — loaded alongside campaign data below.
   const [seqAiEnabled, setSeqAiEnabled] = useState(true);
 
   const load = useCallback(async (chFilter) => {
     setLoading(true);
     try {
-      const qs = chFilter ? `?channel=${chFilter}` : '';
+      const qp = new URLSearchParams();
+      if (chFilter) qp.set('channel', chFilter);
+      if (rangeFilter === 'all') qp.set('range', 'all');
+      const qs = qp.toString() ? `?${qp.toString()}` : '';
       const r = await apiFetch(`/prospecting-campaigns/${campaignId}${qs}`);
       setData(r);
       // Whether the campaign's default sequence uses AI — drives visibility of
@@ -566,7 +577,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
     } finally {
       setLoading(false);
     }
-  }, [campaignId]);
+  }, [campaignId, rangeFilter]);
 
   useEffect(() => { load(channelFilter); }, [load, channelFilter]);
 
@@ -851,8 +862,8 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
               display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 12,
             }}>
               <MetricCard label="Prospects"      value={data.metrics.totalProspects} />
-              <MetricCard label="Outreach / wk"  value={data.metrics.outreachThisWeek} />
-              <MetricCard label="Responses / wk" value={data.metrics.responsesThisWeek} />
+              <MetricCard label={rangeFilter === 'all' ? 'Outreach (all)' : 'Outreach / wk'}  value={data.metrics.outreachThisWeek} />
+              <MetricCard label={rangeFilter === 'all' ? 'Responses (all)' : 'Responses / wk'} value={data.metrics.responsesThisWeek} />
               <MetricCard label="In sequences"   value={data.metrics.activeEnrollments} />
             </div>
 
@@ -865,9 +876,34 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
               marginBottom: 8,
             }}>
               <div style={{ fontSize: 11, color: '#6b7280', fontWeight: 600, letterSpacing: 0.3 }}>
-                BY CHANNEL — THIS WEEK
+                BY CHANNEL — {rangeFilter === 'all' ? 'ALL TIME' : 'THIS WEEK'}
               </div>
-              <div style={{ display: 'flex', gap: 4 }}>
+              <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                {/* Range pills — drive both the card counts and the
+                    drill-down lists, so a clicked number always matches
+                    the list it opens. */}
+                {[
+                  { key: 'week', label: 'This week' },
+                  { key: 'all',  label: 'All time' },
+                ].map(opt => {
+                  const active = rangeFilter === opt.key;
+                  return (
+                    <button
+                      key={opt.key}
+                      onClick={() => setRangeFilter(opt.key)}
+                      style={{
+                        padding: '3px 10px', fontSize: 11, fontWeight: 600,
+                        background: active ? '#0F9D8E' : '#fff',
+                        color:      active ? '#fff'    : '#374151',
+                        border: `1px solid ${active ? '#0F9D8E' : '#d1d5db'}`,
+                        borderRadius: 12, cursor: 'pointer',
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+                <div style={{ width: 1, height: 16, background: '#e5e7eb', margin: '0 4px' }} />
                 {[
                   { key: null,       label: 'All' },
                   { key: 'email',    label: '✉ Email' },
@@ -909,9 +945,16 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                 return channelFilter
                   ? (
                     // Filtered view: separate outreach + responses cards for the one channel.
+                    // Clicking a card opens the drill-down list of the touches behind it.
                     <React.Fragment key={ch}>
-                      <MetricCard label={`${chLabel} — outreach`}  value={stats.outreach} />
-                      <MetricCard label={`${chLabel} — responses`} value={stats.responses} />
+                      <div style={{ cursor: 'pointer' }} title="Click to see who"
+                           onClick={() => setDrill({ type: 'events', channel: ch, kind: 'outreach' })}>
+                        <MetricCard label={`${chLabel} — outreach`}  value={stats.outreach} />
+                      </div>
+                      <div style={{ cursor: 'pointer' }} title="Click to see who"
+                           onClick={() => setDrill({ type: 'events', channel: ch, kind: 'response' })}>
+                        <MetricCard label={`${chLabel} — responses`} value={stats.responses} />
+                      </div>
                     </React.Fragment>
                   )
                   : (
@@ -924,11 +967,13 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                         {chLabel}
                       </div>
                       <div style={{ display: 'flex', gap: 16 }}>
-                        <div>
+                        <div style={{ cursor: 'pointer' }} title="Click to see who"
+                             onClick={() => setDrill({ type: 'events', channel: ch, kind: 'outreach' })}>
                           <div style={{ fontSize: 18, fontWeight: 700, color: '#111827' }}>{stats.outreach}</div>
                           <div style={{ fontSize: 10, color: '#9ca3af' }}>outreach</div>
                         </div>
-                        <div>
+                        <div style={{ cursor: 'pointer' }} title="Click to see who"
+                             onClick={() => setDrill({ type: 'events', channel: ch, kind: 'response' })}>
                           <div style={{ fontSize: 18, fontWeight: 700, color: '#111827' }}>{stats.responses}</div>
                           <div style={{ fontSize: 10, color: '#9ca3af' }}>responses</div>
                         </div>
@@ -958,15 +1003,21 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                     display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
                     gap: 8, marginBottom: 10,
                   }}>
-                    <div style={{ background: '#f8fafc', borderRadius: 8, padding: '10px 12px' }}>
+                    <div style={{ background: '#f8fafc', borderRadius: 8, padding: '10px 12px', cursor: 'pointer' }}
+                         title="Click to see who"
+                         onClick={() => setDrill({ type: 'li', bucket: 'sent' })}>
                       <div style={{ fontSize: 18, fontWeight: 700, color: '#1A3A5C' }}>{li.requestsSent}</div>
                       <div style={{ fontSize: 11, color: '#6b7280' }}>requests sent</div>
                     </div>
-                    <div style={{ background: '#ecfdf5', borderRadius: 8, padding: '10px 12px' }}>
+                    <div style={{ background: '#ecfdf5', borderRadius: 8, padding: '10px 12px', cursor: 'pointer' }}
+                         title="Click to see who"
+                         onClick={() => setDrill({ type: 'li', bucket: 'accepted' })}>
                       <div style={{ fontSize: 18, fontWeight: 700, color: '#047857' }}>{li.accepted}</div>
                       <div style={{ fontSize: 11, color: '#059669' }}>accepted</div>
                     </div>
-                    <div style={{ background: '#f8fafc', borderRadius: 8, padding: '10px 12px' }}>
+                    <div style={{ background: '#f8fafc', borderRadius: 8, padding: '10px 12px', cursor: 'pointer' }}
+                         title="Click to see who"
+                         onClick={() => setDrill({ type: 'li', bucket: 'pending' })}>
                       <div style={{ fontSize: 18, fontWeight: 700, color: '#1A3A5C' }}>{li.pending}</div>
                       <div style={{ fontSize: 11, color: '#6b7280' }}>pending</div>
                     </div>
@@ -1292,6 +1343,14 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
             onClose={() => setShowImport(false)}
           />
         )}
+        {drill && (
+          <CampaignDrilldownModal
+            campaignId={campaignId}
+            drill={drill}
+            range={rangeFilter}
+            onClose={() => setDrill(null)}
+          />
+        )}
         {showEnroll && data && (
           <EnrollAllModal
             campaign={data.campaign}
@@ -1341,6 +1400,139 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
 // the campaign before launching the actual preview. Reuses the campaign
 // members list already loaded into the drawer.
 // ─────────────────────────────────────────────────────────────────────────────
+// ── CampaignDrilldownModal ───────────────────────────────────────────────────
+//
+// "Who's behind this number?" — opened by clicking any BY CHANNEL count or a
+// LINKEDIN CONNECTIONS tile in the campaign drawer. Two modes:
+//
+//   drill = { type: 'events', channel, kind }
+//     → GET /:id/outreach-events?channel=&kind=&range=
+//       One row per TOUCH (a prospect can appear multiple times — that's
+//       correct, the count being explained is touches, not people).
+//
+//   drill = { type: 'li', bucket: 'sent' | 'accepted' | 'pending' }
+//     → GET /:id/linkedin-connection-prospects?bucket=
+//       One row per PROSPECT, with request/accept dates.
+//
+// Both endpoints use predicates identical to the counts they explain, so the
+// list total always reconciles with the number that was clicked.
+function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
+  const [rows,    setRows]    = useState(null);   // null = loading
+  const [total,   setTotal]   = useState(0);
+  const [error,   setError]   = useState('');
+
+  const isEvents = drill.type === 'events';
+  const chLabel  = drill.channel === 'email' ? 'Email'
+                 : drill.channel === 'linkedin' ? 'LinkedIn'
+                 : drill.channel === 'call' ? 'Call' : '';
+  const title = isEvents
+    ? `${chLabel} ${drill.kind === 'outreach' ? 'outreach' : 'responses'} — ${range === 'all' ? 'all time' : 'this week'}`
+    : drill.bucket === 'sent'     ? 'LinkedIn — requests sent'
+    : drill.bucket === 'accepted' ? 'LinkedIn — accepted'
+    :                               'LinkedIn — pending';
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        if (isEvents) {
+          const qs = `channel=${drill.channel}&kind=${drill.kind}${range === 'all' ? '&range=all' : ''}`;
+          const r = await apiFetch(`/prospecting-campaigns/${campaignId}/outreach-events?${qs}`);
+          if (cancelled) return;
+          setRows(r.events || []);
+          setTotal(r.total || 0);
+        } else {
+          const r = await apiFetch(`/prospecting-campaigns/${campaignId}/linkedin-connection-prospects?bucket=${drill.bucket}`);
+          if (cancelled) return;
+          setRows(r.prospects || []);
+          setTotal(r.total || 0);
+        }
+      } catch (err) {
+        if (!cancelled) { setError(err.message || 'Failed to load'); setRows([]); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [campaignId, drill, range, isEvents]);
+
+  const fmtDate = (v) => {
+    if (!v) return '';
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
+  return (
+    <div className="pv-modal-overlay" onClick={onClose}>
+      <div className="pv-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 'min(520px, 95vw)' }}>
+        <div className="pv-modal-header">
+          <h3>{title}{rows != null && ` (${total})`}</h3>
+          <button className="pv-modal-close" onClick={onClose}>×</button>
+        </div>
+
+        <div style={{ maxHeight: '60vh', overflowY: 'auto', padding: '4px 0 8px' }}>
+          {rows == null && (
+            <div style={{ padding: 20, fontSize: 13, color: '#6b7280' }}>Loading…</div>
+          )}
+          {error && (
+            <div style={{
+              margin: 16, padding: 12, background: '#fef2f2', border: '1px solid #fecaca',
+              color: '#991b1b', fontSize: 13, borderRadius: 6,
+            }}>{error}</div>
+          )}
+          {rows != null && !error && rows.length === 0 && (
+            <div style={{ padding: 20, fontSize: 13, color: '#9ca3af' }}>
+              Nothing in this bucket{isEvents && range !== 'all' ? ' this week — try "All time"' : ''}.
+            </div>
+          )}
+
+          {(rows || []).map((r, i) => (
+            <div key={isEvents ? i : r.id} style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '9px 16px',
+              borderBottom: '1px solid #f8fafc',
+            }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#1f2937', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {isEvents ? (r.prospect_name || '(unknown)') : (r.name || '(unknown)')}
+                  {!isEvents && r.linkedin_url && (
+                    <a
+                      href={r.linkedin_url} target="_blank" rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      style={{ marginLeft: 6, fontSize: 11, color: '#2563eb', textDecoration: 'none' }}
+                    >
+                      in ↗
+                    </a>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {isEvents
+                    ? [r.company_name, r.detail].filter(Boolean).join(' · ')
+                    : [r.title, r.company_name].filter(Boolean).join(' · ')}
+                </div>
+              </div>
+              <div style={{ fontSize: 11, color: '#6b7280', textAlign: 'right', flexShrink: 0 }}>
+                {isEvents ? (
+                  fmtDate(r.ts)
+                ) : (
+                  <>
+                    {r.request_sent_at && <div>sent {fmtDate(r.request_sent_at)}</div>}
+                    {r.connected_at    && <div style={{ color: '#047857' }}>accepted {fmtDate(r.connected_at)}</div>}
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {rows != null && total > rows.length && (
+            <div style={{ padding: '10px 16px', fontSize: 11, color: '#9ca3af' }}>
+              Showing first {rows.length} of {total}.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PreviewPickerModal({ campaignId, sequenceId, sequenceName, members, onClose, onPick }) {
   const [selected, setSelected] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');

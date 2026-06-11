@@ -1129,11 +1129,17 @@ router.get('/:id', async (req, res) => {
       console.warn('campaigns GET /:id linkedin-connections compute failed:', liErr.message);
     }
 
-    // Outreach + responses this week, unioned across channels. Week starts
-    // on the most recent Sunday in server time (matches the old behaviour).
+    // Outreach + responses, unioned across channels, over the requested
+    // range. range=week (default, back-compat) starts on the most recent
+    // Sunday in server time; range=all starts at epoch so the same query
+    // returns lifetime counts — keeping the two modes structurally
+    // identical means a number in either mode always reconciles with the
+    // /:id/outreach-events drill-down for the same range.
+    const range = req.query.range === 'all' ? 'all' : 'week';
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     weekStart.setHours(0, 0, 0, 0);
+    const rangeStart = range === 'all' ? new Date(0) : weekStart;
 
     // The CTE produces one row per touch with (channel, direction). We then
     // aggregate by channel.
@@ -1231,7 +1237,7 @@ router.get('/:id', async (req, res) => {
          FROM outreach
         WHERE kind IS NOT NULL
      GROUP BY channel`,
-      [req.orgId, req.params.id, weekStart]
+      [req.orgId, req.params.id, rangeStart]
     );
 
     // Build byChannel with explicit zeros for any missing channel so the
@@ -1353,7 +1359,11 @@ router.get('/:id', async (req, res) => {
         totalProspects,
         qualified,
         goalQualified:       campaign.goal_qualified || null,
-        // Back-compat — older frontend code reads these flat fields.
+        // Which window the outreach/response numbers cover: 'week' | 'all'.
+        // Echoed so the UI labels match what was actually computed.
+        range,
+        // Back-compat — older frontend code reads these flat fields. They
+        // reflect the REQUESTED range despite the legacy "ThisWeek" names.
         outreachThisWeek,
         responsesThisWeek,
         activeEnrollments:   enrollRes.rows[0]?.active_enrollments || 0,
@@ -1368,6 +1378,223 @@ router.get('/:id', async (req, res) => {
   } catch (err) {
     console.error('campaigns GET /:id', err);
     res.status(500).json({ error: { message: 'Failed to load campaign' } });
+  }
+});
+
+// ── GET /:id/outreach-events — drill-down for the BY CHANNEL numbers ─────────
+//
+// Returns the INDIVIDUAL touches behind a byChannel count, using the exact
+// same union/classification logic as GET /:id (same range semantics, same
+// kind derivation) so the list always sums to the number that was clicked.
+//
+//   Query: channel = email | linkedin | call   (required)
+//          kind    = outreach | response       (required)
+//          range   = week | all                (default week, same Sunday rule)
+//
+//   Returns { events: [{ prospect_id, prospect_name, company_name, ts,
+//                        channel, kind, detail }], total, range }
+//   detail is a short human label: email subject, linkedin event type,
+//   sequence step description, or call direction/outcome.
+router.get('/:id/outreach-events', async (req, res) => {
+  try {
+    const campaign = await loadCampaign(req.orgId, req.params.id);
+    if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanAccess(req, res, campaign))) return;
+
+    const channel = req.query.channel;
+    const kind    = req.query.kind;
+    if (!['email', 'linkedin', 'call'].includes(channel)) {
+      return res.status(400).json({ error: { message: 'channel must be one of: email, linkedin, call' } });
+    }
+    if (!['outreach', 'response'].includes(kind)) {
+      return res.status(400).json({ error: { message: 'kind must be one of: outreach, response' } });
+    }
+
+    const range = req.query.range === 'all' ? 'all' : 'week';
+    const weekStart = new Date();
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const rangeStart = range === 'all' ? new Date(0) : weekStart;
+
+    const { rows } = await pool.query(
+      `WITH touches AS (
+         SELECT 'email'::text AS channel,
+                CASE
+                  WHEN e.direction = 'sent'                     THEN 'outreach'
+                  WHEN e.direction IN ('received','inbound')
+                       AND EXISTS (
+                         SELECT 1 FROM emails out_e
+                         WHERE out_e.org_id      = e.org_id
+                           AND out_e.prospect_id = e.prospect_id
+                           AND out_e.direction   = 'sent'
+                           AND out_e.sent_at     < e.sent_at
+                       )                                        THEN 'response'
+                  ELSE NULL
+                END AS kind,
+                e.sent_at AS ts,
+                p.id AS prospect_id, p.first_name, p.last_name, p.company_name,
+                COALESCE(NULLIF(e.subject, ''), '(no subject)') AS detail
+           FROM emails e
+           JOIN prospects p ON p.id = e.prospect_id
+          WHERE e.org_id = $1 AND p.campaign_id = $2 AND e.sent_at >= $3
+
+         UNION ALL
+
+         SELECT 'linkedin'::text,
+                CASE
+                  WHEN pa.metadata->>'event' IN (
+                    'connection_request_sent', 'message_sent',
+                    'inmail_sent',              'voice_note_sent'
+                  ) THEN 'outreach'
+                  WHEN pa.metadata->>'event' = 'reply_received' THEN 'response'
+                  ELSE NULL
+                END,
+                pa.created_at,
+                p.id, p.first_name, p.last_name, p.company_name,
+                replace(COALESCE(pa.metadata->>'event', 'linkedin'), '_', ' ')
+           FROM prospecting_activities pa
+           JOIN prospects p ON p.id = pa.prospect_id
+          WHERE pa.org_id = $1 AND p.campaign_id = $2
+            AND pa.activity_type = 'linkedin_event'
+            AND pa.created_at >= $3
+
+         UNION ALL
+
+         SELECT CASE
+                  WHEN pa.metadata->>'channel' IN ('email','linkedin','call')
+                    THEN pa.metadata->>'channel'
+                  ELSE 'email'
+                END::text,
+                'outreach'::text,
+                pa.created_at,
+                p.id, p.first_name, p.last_name, p.company_name,
+                COALESCE(NULLIF(pa.description, ''), 'sequence step sent')
+           FROM prospecting_activities pa
+           JOIN prospects p ON p.id = pa.prospect_id
+          WHERE pa.org_id = $1 AND p.campaign_id = $2
+            AND pa.activity_type = 'sequence_step_sent'
+            AND pa.created_at >= $3
+
+         UNION ALL
+
+         SELECT 'call'::text,
+                CASE
+                  WHEN c.direction = 'outbound' THEN 'outreach'
+                  WHEN c.direction = 'inbound'  THEN 'response'
+                  ELSE NULL
+                END,
+                c.occurred_at,
+                p.id, p.first_name, p.last_name, p.company_name,
+                trim(both ' ·' FROM c.direction || ' · ' || COALESCE(c.outcome, ''))
+           FROM calls c
+           JOIN prospects p ON p.id = c.prospect_id
+          WHERE c.org_id = $1 AND p.campaign_id = $2 AND c.occurred_at >= $3
+       )
+       SELECT channel, kind, ts, prospect_id, first_name, last_name,
+              company_name, detail,
+              COUNT(*) OVER ()::int AS total
+         FROM touches
+        WHERE kind = $4 AND channel = $5
+     ORDER BY ts DESC
+        LIMIT 200`,
+      [req.orgId, req.params.id, rangeStart, kind, channel]
+    );
+
+    res.json({
+      range, channel, kind,
+      total:  rows[0]?.total || 0,
+      events: rows.map(r => ({
+        prospect_id:   r.prospect_id,
+        prospect_name: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
+        company_name:  r.company_name || null,
+        ts:            r.ts,
+        channel:       r.channel,
+        kind:          r.kind,
+        detail:        r.detail || null,
+      })),
+    });
+  } catch (err) {
+    console.error('campaigns GET /:id/outreach-events', err);
+    res.status(500).json({ error: { message: 'Failed to load outreach events' } });
+  }
+});
+
+// ── GET /:id/linkedin-connection-prospects — drill-down for the LI tiles ─────
+//
+// Returns the PEOPLE behind the LINKEDIN CONNECTIONS — ALL TIME tiles, using
+// predicates identical to the tile counts in GET /:id (and to the list
+// query's li_*_count aggregates), so the list always matches the number.
+//
+//   Query: bucket = sent | accepted | pending
+//
+//   Returns { bucket, total, prospects: [{ id, name, title, company_name,
+//             linkedin_url, stage, connection_status, request_sent_at,
+//             connected_at }] }
+router.get('/:id/linkedin-connection-prospects', async (req, res) => {
+  try {
+    const campaign = await loadCampaign(req.orgId, req.params.id);
+    if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanAccess(req, res, campaign))) return;
+
+    const bucket = req.query.bucket;
+    if (!['sent', 'accepted', 'pending'].includes(bucket)) {
+      return res.status(400).json({ error: { message: 'bucket must be one of: sent, accepted, pending' } });
+    }
+
+    // Keep these predicates in lockstep with GET /:id and GET / aggregates.
+    const SENT_PRED = `(
+         (channel_data->'linkedin'->>'request_sent_at')    IS NOT NULL
+      OR (channel_data->'linkedin'->>'connected_at')       IS NOT NULL
+      OR (channel_data->'linkedin'->>'connection_status') IN
+         ('connection_request_sent','connection_accepted')
+    )`;
+    const ACCEPTED_PRED = `(
+         (channel_data->'linkedin'->>'connected_at')       IS NOT NULL
+      OR (channel_data->'linkedin'->>'connection_status') = 'connection_accepted'
+    )`;
+
+    const bucketPred =
+      bucket === 'sent'     ? SENT_PRED :
+      bucket === 'accepted' ? ACCEPTED_PRED :
+                              `${SENT_PRED} AND NOT ${ACCEPTED_PRED}`;
+
+    // accepted sorts by acceptance recency; sent/pending by request recency.
+    const orderBy = bucket === 'accepted'
+      ? `(channel_data->'linkedin'->>'connected_at')    DESC NULLS LAST`
+      : `(channel_data->'linkedin'->>'request_sent_at') DESC NULLS LAST`;
+
+    const { rows } = await pool.query(
+      `SELECT id, first_name, last_name, title, company_name, linkedin_url, stage,
+              channel_data->'linkedin'->>'connection_status' AS connection_status,
+              channel_data->'linkedin'->>'request_sent_at'   AS request_sent_at,
+              channel_data->'linkedin'->>'connected_at'      AS connected_at,
+              COUNT(*) OVER ()::int AS total
+         FROM prospects
+        WHERE org_id = $1 AND campaign_id = $2 AND deleted_at IS NULL
+          AND ${bucketPred}
+     ORDER BY ${orderBy}, id DESC
+        LIMIT 500`,
+      [req.orgId, req.params.id]
+    );
+
+    res.json({
+      bucket,
+      total: rows[0]?.total || 0,
+      prospects: rows.map(r => ({
+        id:                r.id,
+        name:              `${r.first_name || ''} ${r.last_name || ''}`.trim(),
+        title:             r.title || null,
+        company_name:      r.company_name || null,
+        linkedin_url:      r.linkedin_url || null,
+        stage:             r.stage,
+        connection_status: r.connection_status || null,
+        request_sent_at:   r.request_sent_at || null,
+        connected_at:      r.connected_at || null,
+      })),
+    });
+  } catch (err) {
+    console.error('campaigns GET /:id/linkedin-connection-prospects', err);
+    res.status(500).json({ error: { message: 'Failed to load LinkedIn connection prospects' } });
   }
 });
 
