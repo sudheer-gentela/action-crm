@@ -84,6 +84,39 @@ const DEFAULT_TAB_BY_ROLE = {
 };
 
 // ─────────────────────────────────────────────────────────────
+// TAB ↔ URL HASH SYNC
+//
+// Navigation is plain component state (no router), so before this a
+// browser refresh reset currentTab to the role default and dumped the
+// user on Actions. We mirror the active tab into the URL hash
+// (app.gowarmcrm.com/#/prospecting) and restore it on load:
+//   • refresh keeps you on the screen you were on
+//   • module URLs are bookmarkable / shareable
+//   • zero hosting config — the hash never reaches the server, so no
+//     SPA rewrite rules are needed on Vercel
+//
+// Only tabs the active role can actually reach are restorable; a hash
+// pointing at a tab outside the role's nav (or an internal pseudo-tab
+// like 'playbook-detail', which depends on in-memory ids) falls back
+// to the role default.
+// ─────────────────────────────────────────────────────────────
+
+function tabFromHash() {
+  const m = (window.location.hash || '').match(/^#\/?([a-z0-9-]+)/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
+// Tabs restorable for a role: its sidebar nav + (for members) every
+// launcher module. Org-module enablement is NOT checked here — it loads
+// async, and each module view already renders its own "module is
+// disabled" panel when the flag is off.
+function persistableTabsForRole(role) {
+  const nav = (NAV_ITEMS_BY_ROLE[role] || NAV_ITEMS_BY_ROLE.member).map(i => i.id);
+  const modules = role === 'member' ? ALL_MODULE_ITEMS.map(m => m.id) : [];
+  return new Set([...nav, ...modules]);
+}
+
+// ─────────────────────────────────────────────────────────────
 // useAuth
 // ─────────────────────────────────────────────────────────────
 const useAuth = () => {
@@ -592,7 +625,40 @@ function Dashboard({ user, onLogout }) {
     return (saved && availableRoles.includes(saved)) ? saved : 'member';
   });
 
-  const [currentTab, setCurrentTab] = useState(DEFAULT_TAB_BY_ROLE[activeRole]);
+  // Restore the tab from the URL hash on load (survives refresh). Falls
+  // back to the role default when the hash is absent or points at a tab
+  // this role can't reach.
+  const [currentTab, setCurrentTab] = useState(() => {
+    const fromHash = tabFromHash();
+    if (fromHash && persistableTabsForRole(activeRole).has(fromHash)) return fromHash;
+    return DEFAULT_TAB_BY_ROLE[activeRole];
+  });
+
+  // Keep the hash in lockstep with the active tab. replaceState (not
+  // location.hash =) so tab switches don't pile up history entries —
+  // the browser Back button keeps its normal "leave the app" meaning.
+  // Internal pseudo-tabs (e.g. 'playbook-detail') aren't persistable —
+  // they depend on in-memory ids — so for those we leave the hash on
+  // the last persistable tab, which is also the sane refresh target.
+  useEffect(() => {
+    if (!persistableTabsForRole(activeRole).has(currentTab)) return;
+    const desired = `#/${currentTab}`;
+    if (window.location.hash !== desired) {
+      window.history.replaceState(null, '', desired);
+    }
+  }, [currentTab, activeRole]);
+
+  // Manual hash edits (or programmatic ones) navigate too.
+  useEffect(() => {
+    const onHashChange = () => {
+      const t = tabFromHash();
+      if (t && persistableTabsForRole(activeRole).has(t)) {
+        setCurrentTab(prev => (prev === t ? prev : t));
+      }
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, [activeRole]);
 
   const handleRoleSwitch = (role) => {
     if (role === activeRole) return;
