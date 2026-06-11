@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict T9iBQizVRGL7vRvIgO5RdaM2cjFAzWj4vI7p6uLeyWZt0o46ppOyIpUXvRhbD97
+\restrict DXpGLo9xpRhppGyvCIxj7SqcXNOuS8eL5p1XlIHZtfLuZFPVpS19zac6xr7Pfcs
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -5216,6 +5216,55 @@ ALTER SEQUENCE public.teams_id_seq OWNED BY public.teams.id;
 
 
 --
+-- Name: user_linkedin_seats; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_linkedin_seats (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    user_id integer NOT NULL,
+    public_identifier text NOT NULL,
+    display_name text,
+    member_urn text,
+    first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE user_linkedin_seats; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.user_linkedin_seats IS 'Binds a LinkedIn member (publicIdentifier) to a GoWarm user. Created lazily on first extension connection-sync. One seat per org may bind to only one user.';
+
+
+--
+-- Name: COLUMN user_linkedin_seats.public_identifier; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.user_linkedin_seats.public_identifier IS 'LinkedIn /in/<slug>. Uniqueness and matching are on lower(public_identifier) per org.';
+
+
+--
+-- Name: user_linkedin_seats_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.user_linkedin_seats_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: user_linkedin_seats_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.user_linkedin_seats_id_seq OWNED BY public.user_linkedin_seats.id;
+
+
+--
 -- Name: user_preferences; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -6252,6 +6301,13 @@ ALTER TABLE ONLY public.team_memberships ALTER COLUMN id SET DEFAULT nextval('pu
 --
 
 ALTER TABLE ONLY public.teams ALTER COLUMN id SET DEFAULT nextval('public.teams_id_seq'::regclass);
+
+
+--
+-- Name: user_linkedin_seats id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_linkedin_seats ALTER COLUMN id SET DEFAULT nextval('public.user_linkedin_seats_id_seq'::regclass);
 
 
 --
@@ -7565,6 +7621,14 @@ ALTER TABLE ONLY public.team_memberships
 
 ALTER TABLE ONLY public.teams
     ADD CONSTRAINT uq_teams_org_dimension_name UNIQUE (org_id, dimension, name);
+
+
+--
+-- Name: user_linkedin_seats user_linkedin_seats_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_linkedin_seats
+    ADD CONSTRAINT user_linkedin_seats_pkey PRIMARY KEY (id);
 
 
 --
@@ -9887,6 +9951,13 @@ CREATE INDEX idx_prospects_linkedin_activity ON public.prospects USING gin (link
 
 
 --
+-- Name: idx_prospects_linkedin_slug; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_prospects_linkedin_slug ON public.prospects USING btree (org_id, lower("substring"((linkedin_url)::text, '/in/([^/?#]+)'::text))) WHERE ((linkedin_url IS NOT NULL) AND (deleted_at IS NULL));
+
+
+--
 -- Name: idx_prospects_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10384,6 +10455,13 @@ CREATE INDEX idx_transcripts_user ON public.meeting_transcripts USING btree (use
 
 
 --
+-- Name: idx_user_linkedin_seats_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_user_linkedin_seats_user ON public.user_linkedin_seats USING btree (org_id, user_id);
+
+
+--
 -- Name: idx_user_preferences_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10664,10 +10742,24 @@ CREATE UNIQUE INDEX uq_seq_step_logs_pending ON public.sequence_step_logs USING 
 
 
 --
+-- Name: uq_user_linkedin_seats_org_slug; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_user_linkedin_seats_org_slug ON public.user_linkedin_seats USING btree (org_id, lower(public_identifier));
+
+
+--
 -- Name: uq_user_prompts_user_org_type; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX uq_user_prompts_user_org_type ON public.user_prompts USING btree (user_id, org_id, template_type);
+
+
+--
+-- Name: uq_users_email_lower; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_users_email_lower ON public.users USING btree (lower((email)::text));
 
 
 --
@@ -14001,5 +14093,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict T9iBQizVRGL7vRvIgO5RdaM2cjFAzWj4vI7p6uLeyWZt0o46ppOyIpUXvRhbD97
+\unrestrict DXpGLo9xpRhppGyvCIxj7SqcXNOuS8eL5p1XlIHZtfLuZFPVpS19zac6xr7Pfcs
 

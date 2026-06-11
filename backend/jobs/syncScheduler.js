@@ -48,6 +48,7 @@ const SupportService  = require('../services/supportService');
 const HandoverService = require('../services/handover.service');
 const { runNightlySweep: runProspectingNightlySweep } = require('../services/prospectingActions.service');  // Phase 4
 const StrapNightlySweep = require('../services/StrapNightlySweep');                                         // Phase 5
+const MetricSnapshotService = require('../services/MetricSnapshotService');                                 // Insights/WBR Phase 1
 const sfSync            = require('../services/crm');                                                        // Phase 6 SF
 
 
@@ -1153,6 +1154,38 @@ function startScheduler() {
       .catch(err => console.error('❌ Workflow audit error:', err.message));
   }, { timezone: 'UTC' });
 
+  // ── Outbound metric snapshot — nightly at 03:30 UTC ──────────────────────  // Insights/WBR Phase 1
+  // Recomputes the trailing 7 org-local days of `prospecting_metric_daily`
+  // (raw daily counts at full segment grain) for every org with prospecting
+  // data. Feeds the WBR frames and the OutboundInsightEngine. Runs AFTER the
+  // diagnostic sweeps (02:30/02:45/03:00) so tonight's diagnostic writes are
+  // included, keeping the 15-min stagger convention (03:15 workflow audit,
+  // 03:45 purge). See docs/INSIGHTS_WBR_DESIGN.md and MetricSnapshotService.js.
+  cron.schedule('30 3 * * *', async () => {
+    console.log('📊 Running nightly outbound metric snapshot...');
+    try {
+      const orgs = await pool.query(
+        `SELECT DISTINCT o.id AS org_id
+           FROM organizations o
+          WHERE o.status = 'active'
+            AND EXISTS (SELECT 1 FROM prospects p WHERE p.org_id = o.id)`
+      );
+      let totalRows = 0, totalErrors = 0;
+      for (const { org_id } of orgs.rows) {
+        try {
+          const r = await MetricSnapshotService.runNightly(org_id);
+          totalRows += r.rows;
+        } catch (err) {
+          totalErrors++;
+          console.error(`❌ Metric snapshot error org=${org_id}:`, err.message);
+        }
+      }
+      console.log(`✅ Metric snapshot done — orgs: ${orgs.rows.length}, rows: ${totalRows}, errors: ${totalErrors}`);
+    } catch (err) {
+      console.error('❌ Metric snapshot sweep error:', err.message);
+    }
+  }, { timezone: 'UTC' });
+
   // ── Email filter log purge — nightly at 03:45 UTC ─────────────────────────
   // Shifted to 03:45 UTC (was 03:30) to maintain 30-min gap after workflow audit.
   // Deletes email_filter_log rows older than 30 days to keep the table lean.
@@ -1223,6 +1256,7 @@ function startScheduler() {
   console.log('✅ Prospecting diagnostic scheduler started (nightly 02:45 UTC)');
   console.log('✅ STRAP nightly sweep started (nightly 03:00 UTC)');             // Phase 5
   console.log('✅ Workflow audit scheduler started (nightly 03:15 UTC)');        // shifted Phase 5
+  console.log('✅ Outbound metric snapshot started (nightly 03:30 UTC)');        // Insights/WBR Phase 1
   console.log('✅ Email filter log purge started (nightly 03:45 UTC)');          // shifted Phase 5
   console.log('✅ Salesforce sync started (nightly 04:00 UTC)');                 // Phase 6
   console.log('✅ Salesforce write-back started (nightly 04:30 UTC)');           // Phase 6
