@@ -50,6 +50,7 @@ const { runNightlySweep: runProspectingNightlySweep } = require('../services/pro
 const StrapNightlySweep = require('../services/StrapNightlySweep');                                         // Phase 5
 const MetricSnapshotService = require('../services/MetricSnapshotService');                                 // Insights/WBR Phase 1
 const BounceDetectionService = require('../services/BounceDetectionService');                               // Insights/WBR Phase 2
+const OutboundInsightEngine = require('../services/OutboundInsightEngine');                                 // Insights/WBR Phase 3
 const sfSync            = require('../services/crm');                                                        // Phase 6 SF
 
 
@@ -1192,6 +1193,22 @@ function startScheduler() {
         }
       }
       console.log(`✅ Metric snapshot done — orgs: ${orgs.rows.length}, rows: ${totalRows}, errors: ${totalErrors}`);
+
+      // Insights/WBR Phase 3 — runs AFTER the snapshot loop (same cron, strict
+      // ordering) so the engine reads tonight's fresh snapshot. Per-org
+      // failures never block other orgs.
+      let totalGenerated = 0, totalResolved = 0, insightErrors = 0;
+      for (const { org_id } of orgs.rows) {
+        try {
+          const r = await OutboundInsightEngine.runForOrg(org_id);
+          totalGenerated += r.generated;
+          totalResolved  += r.resolved;
+        } catch (err) {
+          insightErrors++;
+          console.error(`❌ Insight engine error org=${org_id}:`, err.message);
+        }
+      }
+      console.log(`✅ Insight engine done — orgs: ${orgs.rows.length}, generated: ${totalGenerated}, resolved: ${totalResolved}, errors: ${insightErrors}`);
     } catch (err) {
       console.error('❌ Metric snapshot sweep error:', err.message);
     }
@@ -1268,6 +1285,7 @@ function startScheduler() {
   console.log('✅ STRAP nightly sweep started (nightly 03:00 UTC)');             // Phase 5
   console.log('✅ Workflow audit scheduler started (nightly 03:15 UTC)');        // shifted Phase 5
   console.log('✅ Outbound metric snapshot started (nightly 03:30 UTC)');        // Insights/WBR Phase 1
+  console.log('✅ Outbound insight engine started (03:30 UTC, after snapshot)');  // Insights/WBR Phase 3
   console.log('✅ Email filter log purge started (nightly 03:45 UTC)');          // shifted Phase 5
   console.log('✅ Salesforce sync started (nightly 04:00 UTC)');                 // Phase 6
   console.log('✅ Salesforce write-back started (nightly 04:30 UTC)');           // Phase 6
