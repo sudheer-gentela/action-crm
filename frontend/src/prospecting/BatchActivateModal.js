@@ -323,13 +323,13 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                     </span>
                   </div>
 
-                  {pickLoading ? (
+                  {(pickLoading || pickList === null) ? (
                     <div style={{ fontSize: 13, color: '#6b7280', padding: '10px 0' }}>Loading prospects…</div>
                   ) : pickError ? (
                     <div style={{ fontSize: 13, color: '#991b1b', padding: '8px 12px', background: '#fef2f2', borderRadius: 6 }}>
                       {pickError}
                     </div>
-                  ) : (pickList && pickList.length === 0) ? (
+                  ) : pickList.length === 0 ? (
                     <div style={{ fontSize: 13, color: '#9ca3af', padding: '10px 0' }}>
                       No research-stage prospects to activate.
                     </div>
