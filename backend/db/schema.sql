@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict DXpGLo9xpRhppGyvCIxj7SqcXNOuS8eL5p1XlIHZtfLuZFPVpS19zac6xr7Pfcs
+\restrict o0QcpOUPZtwBv0WZzTpPHerD6y9tlICxJfL3l9ehbtwm8uoZeospvrafEVHf17h
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -2411,6 +2411,156 @@ ALTER SEQUENCE public.discovered_models_id_seq OWNED BY public.discovered_models
 
 
 --
+-- Name: domain_health_daily; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.domain_health_daily (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    domain character varying(255) NOT NULL,
+    metric_date date NOT NULL,
+    source character varying(30) DEFAULT 'postmaster_v2'::character varying NOT NULL,
+    spam_rate numeric(7,5),
+    compliance_status character varying(30),
+    auth_pass_rate numeric(7,5),
+    delivery_errors jsonb,
+    raw jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE domain_health_daily; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.domain_health_daily IS 'Domain-level deliverability health. Created in Phase 2, populated in Phase 6 (Google Postmaster Tools v2 nightly pull; later DMARC rua). Insight-rule thresholds: spam_rate < 0.001 safe; >= 0.003 Gmail may reject. Sparse below ~200 Gmail-recipient sends/day (Google privacy suppression).';
+
+
+--
+-- Name: domain_health_daily_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.domain_health_daily_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: domain_health_daily_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.domain_health_daily_id_seq OWNED BY public.domain_health_daily.id;
+
+
+--
+-- Name: email_delivery_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_delivery_events (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    detected_at timestamp with time zone DEFAULT now() NOT NULL,
+    provider character varying(20),
+    ndr_external_id character varying(255),
+    ndr_from character varying(255),
+    failed_recipient character varying(255) NOT NULL,
+    event_type character varying(20) NOT NULL,
+    smtp_code character varying(20),
+    diagnostic_excerpt text,
+    prospect_id integer,
+    step_log_id bigint,
+    sender_account_id integer,
+    campaign_id integer,
+    enrollment_stopped boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_ede_event_type CHECK (((event_type)::text = ANY ((ARRAY['hard_bounce'::character varying, 'soft_bounce'::character varying, 'block'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE email_delivery_events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.email_delivery_events IS 'Per-message bounce/block events parsed from NDR messages at inbox-sync Gate 1 by BounceDetectionService. The only per-message delivery signal available when sending via real Gmail/Outlook mailboxes. Feeds prospecting_metric_daily bounce measures and the OutboundInsightEngine deliverability causes. See docs/INSIGHTS_WBR_DESIGN.md Phase 2.';
+
+
+--
+-- Name: COLUMN email_delivery_events.event_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.email_delivery_events.event_type IS 'hard_bounce = permanent (5.1.x, user unknown) ΓåÆ list-quality cause, may auto-stop enrollment. soft_bounce = transient (4.x.x, mailbox full). block = policy/reputation rejection (5.7.x, spam/blocked) ΓåÆ sender-health cause.';
+
+
+--
+-- Name: email_delivery_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.email_delivery_events_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: email_delivery_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.email_delivery_events_id_seq OWNED BY public.email_delivery_events.id;
+
+
+--
+-- Name: email_engagement_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_engagement_events (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    step_log_id bigint NOT NULL,
+    prospect_id integer,
+    event_type character varying(10) NOT NULL,
+    url text,
+    link_index integer,
+    user_agent text,
+    ip character varying(64),
+    is_bot boolean DEFAULT false NOT NULL,
+    bot_reason character varying(40),
+    occurred_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_eee_type CHECK (((event_type)::text = ANY ((ARRAY['open'::character varying, 'click'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE email_engagement_events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.email_engagement_events IS 'Raw open/click events from the public tracking endpoints. Bot-classified events are flagged, never dropped (D41). Snapshot measures count is_bot=false only. Opens are DIRECTIONAL (Apple MPP auto-fires pixels, Gmail proxies images) ΓÇö labeled as such in the WBR grid.';
+
+
+--
+-- Name: email_engagement_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.email_engagement_events_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: email_engagement_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.email_engagement_events_id_seq OWNED BY public.email_engagement_events.id;
+
+
+--
 -- Name: email_filter_log; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4056,6 +4206,8 @@ CREATE TABLE public.prospecting_campaigns (
     delete_locked_by integer,
     delete_locked_at timestamp with time zone,
     sender_account_ids integer[],
+    tracking_opens boolean DEFAULT false NOT NULL,
+    tracking_clicks boolean DEFAULT false NOT NULL,
     CONSTRAINT chk_daily_activation_cap CHECK (((daily_activation_cap IS NULL) OR (daily_activation_cap > 0))),
     CONSTRAINT chk_pc_cadence_minutes CHECK (((cadence_minutes IS NULL) OR ((cadence_minutes >= 1) AND (cadence_minutes <= 240)))),
     CONSTRAINT chk_pc_pacing_mode CHECK (((pacing_mode IS NULL) OR (pacing_mode = ANY (ARRAY['cadence'::text, 'spread'::text])))),
@@ -4066,6 +4218,13 @@ CREATE TABLE public.prospecting_campaigns (
     CONSTRAINT chk_send_window_start_hour CHECK (((send_window_start_hour IS NULL) OR ((send_window_start_hour >= 0) AND (send_window_start_hour <= 23)))),
     CONSTRAINT prospecting_campaigns_status_chk CHECK ((status = ANY (ARRAY['active'::text, 'paused'::text, 'completed'::text, 'archived'::text])))
 );
+
+
+--
+-- Name: COLUMN prospecting_campaigns.tracking_clicks; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_campaigns.tracking_clicks IS 'Per-campaign click-tracking toggle (Phase 7, default OFF). Written ONLY via PUT /api/tracking-domains/campaign/:id/toggles ΓÇö isolated from the config-override replace semantics.';
 
 
 --
@@ -4119,6 +4278,188 @@ CREATE SEQUENCE public.prospecting_edit_grants_id_seq
 --
 
 ALTER SEQUENCE public.prospecting_edit_grants_id_seq OWNED BY public.prospecting_edit_grants.id;
+
+
+--
+-- Name: prospecting_insights; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.prospecting_insights (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    metric character varying(50) NOT NULL,
+    cause_code character varying(40) NOT NULL,
+    segment jsonb DEFAULT '{}'::jsonb NOT NULL,
+    segment_hash character varying(32) NOT NULL,
+    current_window_start date NOT NULL,
+    current_window_end date NOT NULL,
+    baseline_window_start date NOT NULL,
+    baseline_window_end date NOT NULL,
+    observed numeric NOT NULL,
+    baseline numeric NOT NULL,
+    observed_n integer DEFAULT 0 NOT NULL,
+    baseline_n integer DEFAULT 0 NOT NULL,
+    delta_rel numeric,
+    headline text NOT NULL,
+    hypothesis text,
+    impact_estimate text,
+    recommended_action text,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status character varying(20) DEFAULT 'new'::character varying NOT NULL,
+    first_detected_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    acknowledged_at timestamp with time zone,
+    acknowledged_by integer,
+    resolved_at timestamp with time zone,
+    CONSTRAINT chk_pi_cause CHECK (((cause_code)::text = ANY ((ARRAY['list_targeting'::character varying, 'deliverability_sender'::character varying, 'deliverability_domain'::character varying, 'message_step'::character varying, 'timing_cadence'::character varying, 'rep_execution'::character varying, 'capacity_volume'::character varying, 'list_exhaustion'::character varying, 'mixed_confounded'::character varying])::text[]))),
+    CONSTRAINT chk_pi_status CHECK (((status)::text = ANY ((ARRAY['new'::character varying, 'acknowledged'::character varying, 'resolved'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE prospecting_insights; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.prospecting_insights IS 'Aggregate diagnostic findings for the outbound motion, written nightly by OutboundInsightEngine from prospecting_metric_daily. Full lineage per row; evidence arrays are the drill-down. Upsert key (org_id, metric, cause_code, segment_hash); auto-resolves when the condition clears. See docs/INSIGHTS_WBR_DESIGN.md Phase 3.';
+
+
+--
+-- Name: COLUMN prospecting_insights.evidence; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_insights.evidence IS 'Drill-down payload: sampled raw-row IDs (step_log_ids, prospect_ids, delivery_event_ids ΓÇö capped at 50 each) plus the per-segment breakdown table shown at drill level 2. IDs are samples from the current window matching the segment, not exhaustive.';
+
+
+--
+-- Name: prospecting_insights_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.prospecting_insights_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: prospecting_insights_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.prospecting_insights_id_seq OWNED BY public.prospecting_insights.id;
+
+
+--
+-- Name: prospecting_metric_daily; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.prospecting_metric_daily (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    metric_date date NOT NULL,
+    campaign_id integer DEFAULT 0 NOT NULL,
+    sequence_id integer DEFAULT 0 NOT NULL,
+    sequence_step_id integer DEFAULT 0 NOT NULL,
+    channel character varying(50) DEFAULT 'none'::character varying NOT NULL,
+    sender_account_id integer DEFAULT 0 NOT NULL,
+    owner_id integer DEFAULT 0 NOT NULL,
+    fit_band character varying(20) DEFAULT 'unknown'::character varying NOT NULL,
+    enrolled integer DEFAULT 0 NOT NULL,
+    sent integer DEFAULT 0 NOT NULL,
+    failed integer DEFAULT 0 NOT NULL,
+    replied_steps integer DEFAULT 0 NOT NULL,
+    replies integer DEFAULT 0 NOT NULL,
+    ooo_replies integer DEFAULT 0 NOT NULL,
+    connections_sent integer DEFAULT 0 NOT NULL,
+    connections_accepted integer DEFAULT 0 NOT NULL,
+    calls_logged integer DEFAULT 0 NOT NULL,
+    meetings_booked integer DEFAULT 0 NOT NULL,
+    qualified integer DEFAULT 0 NOT NULL,
+    converted integer DEFAULT 0 NOT NULL,
+    prospects_added integer DEFAULT 0 NOT NULL,
+    tasks_overdue integer DEFAULT 0 NOT NULL,
+    computed_at timestamp with time zone DEFAULT now() NOT NULL,
+    bounces_hard integer DEFAULT 0 NOT NULL,
+    bounces_soft integer DEFAULT 0 NOT NULL,
+    blocks integer DEFAULT 0 NOT NULL,
+    opens integer DEFAULT 0 NOT NULL,
+    clicks integer DEFAULT 0 NOT NULL
+);
+
+
+--
+-- Name: TABLE prospecting_metric_daily; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.prospecting_metric_daily IS 'Daily-grain raw-count snapshot of the outbound motion. Written nightly by MetricSnapshotService (trailing 7 org-local days, DELETE+INSERT). Feeds WBR frames and OutboundInsightEngine. Rates are NEVER stored here ΓÇö always recomputed from summed counts. See docs/INSIGHTS_WBR_DESIGN.md.';
+
+
+--
+-- Name: COLUMN prospecting_metric_daily.metric_date; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_metric_daily.metric_date IS 'Org-local calendar date (org timezone from organizations.settings->calendar->>timezone), not UTC.';
+
+
+--
+-- Name: COLUMN prospecting_metric_daily.campaign_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_metric_daily.campaign_id IS '0 = unattributed (prospects.campaign_id IS NULL). Never NULL ΓÇö sentinel keeps the unique grain sound.';
+
+
+--
+-- Name: COLUMN prospecting_metric_daily.replied_steps; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_metric_daily.replied_steps IS 'Step logs whose status reached ''replied''. Subset of sent. team-overview parity: its "sent" = this table''s (sent - replied_steps); its "replied" = replied_steps.';
+
+
+--
+-- Name: COLUMN prospecting_metric_daily.replies; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_metric_daily.replies IS 'Replies counted on the date RECEIVED (period-based reply attribution, D18). Reply rate for a period = SUM(replies)/SUM(sent) over that period ΓÇö not a per-send cohort rate.';
+
+
+--
+-- Name: COLUMN prospecting_metric_daily.tasks_overdue; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_metric_daily.tasks_overdue IS 'Point-in-time gauge: open prospecting_actions past due as of the nightly run. Only written for the current org-local date; zero for historical dates.';
+
+
+--
+-- Name: COLUMN prospecting_metric_daily.bounces_hard; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_metric_daily.bounces_hard IS 'email_delivery_events hard_bounce, by detected date. Bounce rate for a period = SUM(bounces_hard + bounces_soft + blocks) / SUM(sent) over that period.';
+
+
+--
+-- Name: COLUMN prospecting_metric_daily.opens; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_metric_daily.opens IS 'Human-classified (is_bot=false) opens by occurred date. UNIQUE per (step_log, day) ΓÇö repeat opens of the same send on the same day count once. Directional metric (Apple MPP inflation).';
+
+
+--
+-- Name: prospecting_metric_daily_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.prospecting_metric_daily_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: prospecting_metric_daily_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.prospecting_metric_daily_id_seq OWNED BY public.prospecting_metric_daily.id;
 
 
 --
@@ -5216,6 +5557,52 @@ ALTER SEQUENCE public.teams_id_seq OWNED BY public.teams.id;
 
 
 --
+-- Name: tracking_domains; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.tracking_domains (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    hostname character varying(255) NOT NULL,
+    status character varying(20) DEFAULT 'pending'::character varying NOT NULL,
+    cf_hostname_id character varying(64),
+    last_checked_at timestamp with time zone,
+    error_message text,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_td_status CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'verifying'::character varying, 'active'::character varying, 'failed'::character varying, 'disabled'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE tracking_domains; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.tracking_domains IS 'Per-customer CNAME tracking domains (Phase 7). status=active means DNS verified AND TLS cert issued ΓÇö only then does send-time decoration run. The CNAME target (track.gowarmcrm.com) is the stable customer contract; TLS provider is swappable (D38).';
+
+
+--
+-- Name: tracking_domains_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.tracking_domains_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: tracking_domains_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.tracking_domains_id_seq OWNED BY public.tracking_domains.id;
+
+
+--
 -- Name: user_linkedin_seats; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5898,6 +6285,27 @@ ALTER TABLE ONLY public.discovered_models ALTER COLUMN id SET DEFAULT nextval('p
 
 
 --
+-- Name: domain_health_daily id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.domain_health_daily ALTER COLUMN id SET DEFAULT nextval('public.domain_health_daily_id_seq'::regclass);
+
+
+--
+-- Name: email_delivery_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_delivery_events ALTER COLUMN id SET DEFAULT nextval('public.email_delivery_events_id_seq'::regclass);
+
+
+--
+-- Name: email_engagement_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_engagement_events ALTER COLUMN id SET DEFAULT nextval('public.email_engagement_events_id_seq'::regclass);
+
+
+--
 -- Name: email_filter_log id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -6150,6 +6558,20 @@ ALTER TABLE ONLY public.prospecting_edit_grants ALTER COLUMN id SET DEFAULT next
 
 
 --
+-- Name: prospecting_insights id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prospecting_insights ALTER COLUMN id SET DEFAULT nextval('public.prospecting_insights_id_seq'::regclass);
+
+
+--
+-- Name: prospecting_metric_daily id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prospecting_metric_daily ALTER COLUMN id SET DEFAULT nextval('public.prospecting_metric_daily_id_seq'::regclass);
+
+
+--
 -- Name: prospecting_sender_accounts id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -6301,6 +6723,13 @@ ALTER TABLE ONLY public.team_memberships ALTER COLUMN id SET DEFAULT nextval('pu
 --
 
 ALTER TABLE ONLY public.teams ALTER COLUMN id SET DEFAULT nextval('public.teams_id_seq'::regclass);
+
+
+--
+-- Name: tracking_domains id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tracking_domains ALTER COLUMN id SET DEFAULT nextval('public.tracking_domains_id_seq'::regclass);
 
 
 --
@@ -6864,6 +7293,30 @@ ALTER TABLE ONLY public.discovered_models
 
 
 --
+-- Name: domain_health_daily domain_health_daily_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.domain_health_daily
+    ADD CONSTRAINT domain_health_daily_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: email_delivery_events email_delivery_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_delivery_events
+    ADD CONSTRAINT email_delivery_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: email_engagement_events email_engagement_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_engagement_events
+    ADD CONSTRAINT email_engagement_events_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: email_filter_log email_filter_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7336,6 +7789,22 @@ ALTER TABLE ONLY public.prospecting_edit_grants
 
 
 --
+-- Name: prospecting_insights prospecting_insights_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prospecting_insights
+    ADD CONSTRAINT prospecting_insights_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: prospecting_metric_daily prospecting_metric_daily_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prospecting_metric_daily
+    ADD CONSTRAINT prospecting_metric_daily_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: prospecting_sender_accounts prospecting_sender_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7589,6 +8058,14 @@ ALTER TABLE ONLY public.team_memberships
 
 ALTER TABLE ONLY public.teams
     ADD CONSTRAINT teams_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: tracking_domains tracking_domains_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tracking_domains
+    ADD CONSTRAINT tracking_domains_pkey PRIMARY KEY (id);
 
 
 --
@@ -9027,6 +9504,34 @@ CREATE INDEX idx_ecf_org_type_key ON public.entity_custom_fields USING btree (or
 
 
 --
+-- Name: idx_ede_org_detected; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ede_org_detected ON public.email_delivery_events USING btree (org_id, detected_at);
+
+
+--
+-- Name: idx_ede_prospect; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ede_prospect ON public.email_delivery_events USING btree (prospect_id) WHERE (prospect_id IS NOT NULL);
+
+
+--
+-- Name: idx_eee_org_time; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_eee_org_time ON public.email_engagement_events USING btree (org_id, occurred_at);
+
+
+--
+-- Name: idx_eee_step_log; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_eee_step_log ON public.email_engagement_events USING btree (step_log_id);
+
+
+--
 -- Name: idx_email_filter_log_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -9601,6 +10106,13 @@ CREATE INDEX idx_pe_grants_lookup ON public.prospecting_edit_grants USING btree 
 
 
 --
+-- Name: idx_pi_org_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pi_org_status ON public.prospecting_insights USING btree (org_id, status, last_seen_at DESC);
+
+
+--
 -- Name: idx_pipeline_stages_org_pipeline; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -9745,6 +10257,13 @@ CREATE INDEX idx_playbooks_current_version ON public.playbooks USING btree (curr
 --
 
 CREATE INDEX idx_playbooks_is_active ON public.playbooks USING btree (is_active);
+
+
+--
+-- Name: idx_pmd_org_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pmd_org_date ON public.prospecting_metric_daily USING btree (org_id, metric_date);
 
 
 --
@@ -10357,6 +10876,13 @@ CREATE INDEX idx_super_admins_user_id ON public.super_admins USING btree (user_i
 
 
 --
+-- Name: idx_td_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_td_org ON public.tracking_domains USING btree (org_id, status);
+
+
+--
 -- Name: idx_team_dimensions_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10714,6 +11240,20 @@ CREATE UNIQUE INDEX uq_actions_deal_source_rule ON public.actions USING btree (d
 
 
 --
+-- Name: uq_dhd_grain; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_dhd_grain ON public.domain_health_daily USING btree (org_id, domain, metric_date, source);
+
+
+--
+-- Name: uq_ede_ndr_recipient; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_ede_ndr_recipient ON public.email_delivery_events USING btree (org_id, ndr_external_id, failed_recipient) WHERE (ndr_external_id IS NOT NULL);
+
+
+--
 -- Name: uq_pactions_prospect_play; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10728,6 +11268,20 @@ CREATE UNIQUE INDEX uq_pactions_prospect_source_rule ON public.prospecting_actio
 
 
 --
+-- Name: uq_pi_finding; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_pi_finding ON public.prospecting_insights USING btree (org_id, metric, cause_code, segment_hash);
+
+
+--
+-- Name: uq_pmd_grain; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_pmd_grain ON public.prospecting_metric_daily USING btree (org_id, metric_date, campaign_id, sequence_id, sequence_step_id, channel, sender_account_id, owner_id, fit_band);
+
+
+--
 -- Name: uq_prompts_user_org_key; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10739,6 +11293,13 @@ CREATE UNIQUE INDEX uq_prompts_user_org_key ON public.prompts USING btree (user_
 --
 
 CREATE UNIQUE INDEX uq_seq_step_logs_pending ON public.sequence_step_logs USING btree (enrollment_id, sequence_step_id) WHERE ((status)::text = ANY (ARRAY['scheduled'::text, 'sending'::text]));
+
+
+--
+-- Name: uq_td_hostname; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_td_hostname ON public.tracking_domains USING btree (hostname);
 
 
 --
@@ -14093,5 +14654,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict DXpGLo9xpRhppGyvCIxj7SqcXNOuS8eL5p1XlIHZtfLuZFPVpS19zac6xr7Pfcs
+\unrestrict o0QcpOUPZtwBv0WZzTpPHerD6y9tlICxJfL3l9ehbtwm8uoZeospvrafEVHf17h
 

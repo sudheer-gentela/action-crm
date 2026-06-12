@@ -47,6 +47,104 @@ const STAGE_TRANSITIONS = {
 };
 
 
+// ── Campaign assignment + sequence enrollment helpers ────────────────────────
+// Shared by POST / (create) and POST /:id/push-to-target so both honour the
+// Chrome extension's v1.8 contract (campaignId + sequenceId on the request,
+// { enrollment, enrollmentError } on the response). Mirrors the canonical
+// enroll logic in sequences.routes.js POST /enroll.
+
+// Next-step-due calc (local mirror of sequences.routes.js calcDueDate).
+function calcDueDate(delayDays) {
+  const d = new Date();
+  d.setDate(d.getDate() + (parseInt(delayDays) || 0));
+  return d;
+}
+
+// Assigns the prospect to a campaign (if campaignId given) and enrolls it in a
+// sequence (if sequenceId given). Partial-failure semantics: an invalid
+// campaign throws hard (err.statusCode = 404) so the caller surfaces it; a
+// failed enrollment is returned as { enrollmentError } and never rolls back a
+// successful campaign assignment — exactly what the extension's smart-suggest
+// UI branches on. Returns { enrollment, enrollmentError }.
+async function assignCampaignAndEnroll({ orgId, userId, prospectId, campaignId, sequenceId }) {
+  // 1. Campaign assignment — hard-fails on a campaign that isn't live in the org.
+  if (campaignId != null) {
+    const camp = await db.query(
+      `SELECT id FROM prospecting_campaigns WHERE id = $1 AND org_id = $2`,
+      [parseInt(campaignId, 10), orgId]
+    );
+    if (camp.rows.length === 0) {
+      const e = new Error(`Campaign ${campaignId} not found in this org`);
+      e.statusCode = 404;
+      throw e;
+    }
+    await db.query(
+      `UPDATE prospects SET campaign_id = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2 AND org_id = $3 AND deleted_at IS NULL`,
+      [parseInt(campaignId, 10), prospectId, orgId]
+    );
+  }
+
+  // 2. Sequence enrollment — soft-fails into enrollmentError.
+  let enrollment = null;
+  let enrollmentError = null;
+  if (sequenceId != null) {
+    try {
+      const seq = await db.query(
+        `SELECT id, name FROM sequences WHERE id = $1 AND org_id = $2 AND status = 'active'`,
+        [parseInt(sequenceId, 10), orgId]
+      );
+      if (seq.rows.length === 0) {
+        enrollmentError = 'Sequence not found or not active';
+      } else {
+        const firstStep = await db.query(
+          `SELECT delay_days FROM sequence_steps WHERE sequence_id = $1 ORDER BY step_order LIMIT 1`,
+          [parseInt(sequenceId, 10)]
+        );
+        const nextDue = calcDueDate(firstStep.rows[0]?.delay_days ?? 0);
+
+        const er = await db.query(
+          `INSERT INTO sequence_enrollments
+                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps)
+                VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (sequence_id, prospect_id) DO NOTHING
+           RETURNING *`,
+          [orgId, parseInt(sequenceId, 10), prospectId, userId, nextDue, JSON.stringify({})]
+        );
+
+        if (er.rows.length) {
+          enrollment = er.rows[0];
+          // Activity log so the enrollment shows in the prospect's Activity tab.
+          // Non-fatal — a failed log must not undo a successful enrollment.
+          try {
+            await db.query(
+              `INSERT INTO prospecting_activities
+                           (org_id, prospect_id, user_id, activity_type, description, metadata)
+                    VALUES ($1, $2, $3, 'sequence_enrolled', $4, $5)`,
+              [orgId, prospectId, userId,
+               `Enrolled in sequence "${seq.rows[0].name}"`,
+               JSON.stringify({
+                 sequenceId: parseInt(sequenceId, 10),
+                 sequenceName: seq.rows[0].name,
+                 enrollmentId: er.rows[0].id,
+               })]
+            );
+          } catch (actErr) {
+            console.warn('assignCampaignAndEnroll: activity log failed for prospect', prospectId, actErr.message);
+          }
+        }
+        // er.rows empty → ON CONFLICT DO NOTHING fired (already enrolled);
+        // leave enrollment null and enrollmentError null (not an error).
+      }
+    } catch (err) {
+      enrollmentError = err.message;
+    }
+  }
+
+  return { enrollment, enrollmentError };
+}
+
+
 // ── GET / — list prospects ───────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
@@ -1612,6 +1710,11 @@ router.post('/', async (req, res) => {
       firstName, lastName, email, phone, linkedinUrl, title, linkedinHeadline, location,
       companyName, companyDomain, companySize, companyIndustry, companyLinkedInUrl,
       accountId, source, playbookId, tags,
+      // v1.8 extension contract: optional campaign assignment + sequence
+      // enrollment performed atomically with creation. Previously dropped on
+      // the floor, so the "Add to GoWarmCRM" button created the prospect but
+      // never assigned the campaign or enrolled in the sequence.
+      campaignId = null, sequenceId = null,
     } = req.body;
 
     if (!firstName || !lastName) {
@@ -1705,10 +1808,85 @@ router.post('/', async (req, res) => {
       [req.orgId, result.rows[0].id, req.user.userId, `Prospect created from ${source || 'manual'}`]
     );
 
-    res.status(201).json({ prospect: result.rows[0] });
+    // v1.8: honour campaign + sequence on creation. Campaign assignment
+    // hard-fails (bad campaign id), enrollment soft-fails into enrollmentError
+    // so a new prospect is never lost just because the sequence enroll failed.
+    let enrollment = null;
+    let enrollmentError = null;
+    if (campaignId != null || sequenceId != null) {
+      try {
+        ({ enrollment, enrollmentError } = await assignCampaignAndEnroll({
+          orgId:      req.orgId,
+          userId:     req.user.userId,
+          prospectId: result.rows[0].id,
+          campaignId,
+          sequenceId,
+        }));
+        // Reflect the campaign assignment on the returned row.
+        if (campaignId != null) result.rows[0].campaign_id = parseInt(campaignId, 10);
+      } catch (assignErr) {
+        // Bad campaign id — prospect is already created; surface as a soft
+        // error rather than 500 so the client knows the row exists.
+        enrollmentError = assignErr.message;
+      }
+    }
+
+    res.status(201).json({ prospect: result.rows[0], enrollment, enrollmentError });
   } catch (error) {
     console.error('Create prospect error:', error);
     res.status(500).json({ error: { message: 'Failed to create prospect' } });
+  }
+});
+
+// ── POST /:id/push-to-target — assign existing prospect to campaign + sequence ─
+// Powers the Chrome extension's smart-suggest prompt (PUSH_PROSPECT_TO_TARGET):
+// drops an already-in-CRM prospect into the rep's default campaign and/or
+// sequence. Body: { campaignId?: int|null, sequenceId?: int|null }.
+// Returns 200 { prospect, enrollment, enrollmentError } — partial-failure
+// semantics: a failed enrollment is reported but doesn't undo the campaign
+// assignment, and "already enrolled" is a success (enrollment:null, no error).
+router.post('/:id/push-to-target', async (req, res) => {
+  try {
+    const prospectId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(prospectId)) {
+      return res.status(400).json({ error: { message: 'Invalid prospect id' } });
+    }
+
+    const { campaignId = null, sequenceId = null } = req.body || {};
+    if (campaignId == null && sequenceId == null) {
+      return res.status(400).json({ error: { message: 'campaignId or sequenceId is required' } });
+    }
+
+    // Tenant scoping — the prospect must live in the caller's org.
+    const existing = await db.query(
+      `SELECT id FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+      [prospectId, req.orgId]
+    );
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+
+    const { enrollment, enrollmentError } = await assignCampaignAndEnroll({
+      orgId:      req.orgId,
+      userId:     req.user.userId,
+      prospectId,
+      campaignId,
+      sequenceId,
+    });
+
+    // Return the fresh row so the extension can refresh its campaign/sequence state.
+    const updated = await db.query(
+      `SELECT * FROM prospects WHERE id = $1 AND org_id = $2`,
+      [prospectId, req.orgId]
+    );
+
+    res.json({ prospect: updated.rows[0], enrollment, enrollmentError });
+  } catch (error) {
+    if (error.statusCode === 404) {
+      return res.status(404).json({ error: { message: error.message } });
+    }
+    console.error('push-to-target error:', error);
+    res.status(500).json({ error: { message: 'Failed to push prospect to target' } });
   }
 });
 
