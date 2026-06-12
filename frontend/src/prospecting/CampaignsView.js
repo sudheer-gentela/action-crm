@@ -715,6 +715,12 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
       method: 'POST',
       body: JSON.stringify({ prospectIds: ids }),
     });
+    if (!res.activated) {
+      // Nothing enrolled — surface the backend's reason (e.g. already enrolled
+      // / not in research stage) instead of a bare "Activated 0".
+      window.alert(res.message || 'No prospects were activated — they may already be enrolled or not in the research stage.');
+      return res;
+    }
     const parts = [`Activated ${res.activated} prospect${res.activated === 1 ? '' : 's'}` +
       (res.sequenceName ? ` in "${res.sequenceName}"` : '')];
     if (Array.isArray(res.skipped) && res.skipped.length) parts.push(`${res.skipped.length} skipped`);

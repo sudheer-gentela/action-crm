@@ -132,6 +132,24 @@ async function assignCampaignAndEnroll({ orgId, userId, prospectId, campaignId, 
           } catch (actErr) {
             console.warn('assignCampaignAndEnroll: activity log failed for prospect', prospectId, actErr.message);
           }
+
+          // Advance the prospect to 'outreach' on a *new* enrollment, matching
+          // bulk-activate (which moves research → outreach when it enrolls).
+          // Without this, a prospect enrolled via push-to-target / create stays
+          // in research and shows up as still-activatable. Guarded to pre-
+          // outreach stages so it only ever moves forward, never backward over a
+          // later-stage prospect. Non-fatal — a failed stage update must not
+          // undo a successful enrollment.
+          try {
+            await db.query(
+              `UPDATE prospects
+                  SET stage = 'outreach', stage_changed_at = CURRENT_TIMESTAMP
+                WHERE id = $1 AND org_id = $2 AND stage IN ('target', 'research')`,
+              [prospectId, orgId]
+            );
+          } catch (stageErr) {
+            console.warn('assignCampaignAndEnroll: stage advance failed for prospect', prospectId, stageErr.message);
+          }
         }
         // er.rows empty → ON CONFLICT DO NOTHING fired (already enrolled);
         // leave enrollment null and enrollmentError null (not an error).

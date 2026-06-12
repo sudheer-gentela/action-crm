@@ -498,7 +498,11 @@ export default function ProspectingView() {
       method: 'POST',
       body: JSON.stringify({ prospectIds: ids }),
     });
-    // Compose a concise summary the rep actually sees.
+    if (!res.activated) {
+      // Nothing enrolled — surface the backend's reason rather than "Activated 0".
+      alert(res.message || 'No prospects were activated — they may already be enrolled or not in the research stage.');
+      return res;
+    }
     const parts = [`Activated ${res.activated} prospect${res.activated === 1 ? '' : 's'}` +
       (res.sequenceName ? ` in "${res.sequenceName}"` : '')];
     if (Array.isArray(res.skipped) && res.skipped.length) {
