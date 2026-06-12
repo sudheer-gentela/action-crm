@@ -88,7 +88,11 @@ async function request(orgId, hostnameRaw, userId) {
     `INSERT INTO tracking_domains (org_id, hostname, status, created_by)
      VALUES ($1, $2, 'pending', $3)
      ON CONFLICT (hostname) DO UPDATE
-       SET updated_at = now()
+       SET status = CASE WHEN tracking_domains.status = 'disabled'
+                         THEN 'pending' ELSE tracking_domains.status END,
+           error_message = CASE WHEN tracking_domains.status = 'disabled'
+                                THEN NULL ELSE tracking_domains.error_message END,
+           updated_at = now()
      RETURNING *`,
     [orgId, hostname, userId || null]
   );
