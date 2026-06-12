@@ -42,10 +42,11 @@ function ListView({
   atCap = false,
   bulkCap = 20,
   onDiscard,
+  onActivate,
   overdueCallProspectIds,
 }) {
   const { allStages } = useStages();
-  const showMenu = !!onDiscard;
+  const showMenu = !!onDiscard || !!onActivate;
 
   // Header "select all" — checked when all visible rows are selected.
   // If any are unselected, header acts as "select all visible" (bounded by cap).
@@ -163,7 +164,7 @@ function ListView({
                 <td>{p.icp_score != null ? p.icp_score : '—'}</td>
                 {showMenu && (
                   <td onClick={e => e.stopPropagation()} style={{ textAlign: 'right' }}>
-                    <ProspectRowMenu prospect={p} onDiscard={onDiscard} />
+                    <ProspectRowMenu prospect={p} onDiscard={onDiscard} onActivate={onActivate} />
                   </td>
                 )}
               </tr>

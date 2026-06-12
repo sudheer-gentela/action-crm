@@ -238,9 +238,13 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                       disabled={readyCount === 0}
                     />
                   </div>
-                  {count >= todayMax && (
+                  {/* Only warn when today's *capacity* is the binding constraint
+                      AND prospects genuinely spill to tomorrow. Maxing the slider
+                      because the ready pool is smaller than capacity is not a cap
+                      hit — readyCount(12) under todayRoom(100) must stay silent. */}
+                  {todayRoom < readyCount && count >= todayRoom && (
                     <div style={{ fontSize: 11, color: '#92400e', marginTop: 6 }}>
-                      ⚠ Hitting the daily cap. Save the rest for tomorrow.
+                      ⚠ Hitting today's sending cap ({todayRoom}). The remaining {Math.max(0, readyCount - count)} will stay in research for tomorrow.
                     </div>
                   )}
                 </div>

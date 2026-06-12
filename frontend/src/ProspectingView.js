@@ -404,6 +404,24 @@ export default function ProspectingView() {
   const selectedStages = [...new Set(selectedProspects.map(p => p.stage).filter(Boolean))];
   const selectionStage = selectedStages.length === 1 ? selectedStages[0] : null;
 
+  // ── Bulk activation eligibility ──────────────────────────────────────────
+  // bulk-activate is campaign-scoped (enrolls into that campaign's default
+  // sequence) and only accepts research-stage prospects, so "Activate selected"
+  // is offered only when the whole selection sits in ONE campaign and is all in
+  // research. Derived from the selected prospects themselves, not the filter,
+  // so it's correct even when the pipeline isn't campaign-filtered.
+  const selectedCampaignIds = [...new Set(selectedProspects.map(p => p.campaign_id).filter(Boolean))];
+  const selectionCampaignId = selectedCampaignIds.length === 1 ? selectedCampaignIds[0] : null;
+  const allResearchSelected = selectedProspects.length > 0 && selectedProspects.every(p => p.stage === 'research');
+  const canActivateSelected = !!selectionCampaignId && allResearchSelected;
+  const activateSelectedReason = canActivateSelected
+    ? `Activate ${selectedIds.size} selected — enroll in the campaign's default sequence`
+    : !allResearchSelected
+      ? 'Select research-stage prospects to activate'
+      : selectedCampaignIds.length > 1
+        ? 'Selected prospects span multiple campaigns — select one campaign\u2019s prospects'
+        : 'Selected prospects aren\u2019t in a campaign';
+
   // Forward targets for the selection's current stage, using the org's
   // configured pipeline order. Entering "outreach" is special: it starts real
   // outreach, so it's routed through the enroll PREVIEW rather than a silent
@@ -452,6 +470,72 @@ export default function ProspectingView() {
       alert(`Move failed: ${err.message}`);
     } finally {
       setMovingStage(false);
+    }
+  };
+
+  // ── Activation (single + bulk) ────────────────────────────────────────────
+  // Both paths POST to the campaign-scoped bulk-activate endpoint with an
+  // explicit prospectIds list — the backend validates that each is in the
+  // campaign, in research stage, and not already enrolled, then enrolls them
+  // in the campaign's default sequence (runSkill omitted → defaults to the
+  // sequence's AI setting). Returns { activated, skipped, warning, sequenceName }.
+  const [activating, setActivating] = useState(false);
+
+  const activateProspectIds = async (campaignId, ids) => {
+    const res = await apiFetch(`/prospecting-campaigns/${campaignId}/bulk-activate`, {
+      method: 'POST',
+      body: JSON.stringify({ prospectIds: ids }),
+    });
+    // Compose a concise summary the rep actually sees.
+    const parts = [`Activated ${res.activated} prospect${res.activated === 1 ? '' : 's'}` +
+      (res.sequenceName ? ` in "${res.sequenceName}"` : '')];
+    if (Array.isArray(res.skipped) && res.skipped.length) {
+      parts.push(`${res.skipped.length} skipped`);
+    }
+    if (res.warning?.message) parts.push(res.warning.message);
+    alert(parts.join('\n'));
+    return res;
+  };
+
+  // Single-prospect activation from the row menu. Guarded by the menu (only
+  // shown for research-stage prospects in a campaign), but we re-check here so
+  // a stale row can't fire an invalid request.
+  const handleSingleActivate = async (prospect) => {
+    if (!prospect?.campaign_id || prospect.stage !== 'research') {
+      alert('This prospect must be in a campaign and in the research stage to activate.');
+      return;
+    }
+    if (activating) return;
+    setActivating(true);
+    try {
+      await activateProspectIds(prospect.campaign_id, [prospect.id]);
+      fetchProspects();
+    } catch (err) {
+      alert(`Activation failed: ${err.message}`);
+    } finally {
+      setActivating(false);
+    }
+  };
+
+  // Bulk activation of the current selection. Enabled only when the selection
+  // is one campaign + all research (see canActivateSelected).
+  const handleBulkActivate = async () => {
+    if (!canActivateSelected || selectedIds.size === 0 || activating) return;
+    const ids = [...selectedIds];
+    const ok = window.confirm(
+      `Activate ${ids.length} prospect${ids.length === 1 ? '' : 's'}? ` +
+      `They'll be enrolled in the campaign's default sequence and Step 1 will be drafted.`
+    );
+    if (!ok) return;
+    setActivating(true);
+    try {
+      await activateProspectIds(selectionCampaignId, ids);
+      clearSelection();
+      fetchProspects();
+    } catch (err) {
+      alert(`Activation failed: ${err.message}`);
+    } finally {
+      setActivating(false);
     }
   };
 
@@ -995,6 +1079,7 @@ export default function ProspectingView() {
           selectionActive={selectedIds.size > 0}
           atCap={selectedIds.size >= BULK_ENROLL_CAP}
           onDiscard={setDiscardTargetProspect}
+          onActivate={handleSingleActivate}
           overdueCallProspectIds={overdueCallProspectIds}
         />
       ) : viewMode === 'list' ? (
@@ -1009,6 +1094,7 @@ export default function ProspectingView() {
           atCap={selectedIds.size >= BULK_ENROLL_CAP}
           bulkCap={BULK_ENROLL_CAP}
           onDiscard={setDiscardTargetProspect}
+          onActivate={handleSingleActivate}
           overdueCallProspectIds={overdueCallProspectIds}
         />
       ) : viewMode === 'account' ? (
@@ -1119,6 +1205,22 @@ export default function ProspectingView() {
             </span>
           )}
           <div style={{ flex: 1 }} />
+          {/* Activate selected — enrolls the selection into its campaign's
+              default sequence. Enabled only for a single-campaign, all-research
+              selection (see canActivateSelected). */}
+          <button
+            onClick={handleBulkActivate}
+            disabled={!canActivateSelected || activating}
+            title={activateSelectedReason}
+            style={{
+              padding: '7px 16px', borderRadius: 7, border: 'none',
+              background: (!canActivateSelected || activating) ? '#9ca3af' : '#0F9D8E',
+              color: '#fff', fontSize: 13, fontWeight: 600,
+              cursor: (!canActivateSelected || activating) ? 'default' : 'pointer',
+            }}
+          >
+            {activating ? '⟳ Activating…' : `⚡ Activate ${selectedIds.size} selected`}
+          </button>
           {/* Context-aware stage movement. Disabled when the selection spans
               multiple stages (valid targets differ per stage) or there's no
               forward stage. "Outreach" routes through the enroll preview so

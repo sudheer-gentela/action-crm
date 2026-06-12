@@ -3,9 +3,15 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 
-function ProspectRowMenu({ prospect, onDiscard, stopClickPropagation = true, style = {} }) {
+function ProspectRowMenu({ prospect, onDiscard, onActivate, stopClickPropagation = true, style = {} }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+
+  // Activation enrolls the prospect into its campaign's default sequence, so
+  // it only applies to a research-stage prospect that's actually in a campaign.
+  const canActivate = !!onActivate
+    && prospect?.stage === 'research'
+    && !!prospect?.campaign_id;
 
   useEffect(() => {
     if (!open) return;
@@ -52,6 +58,27 @@ function ProspectRowMenu({ prospect, onDiscard, stopClickPropagation = true, sty
             padding: 4,
           }}
         >
+          {canActivate && (
+            <button
+              onClick={e => {
+                stop(e);
+                setOpen(false);
+                onActivate(prospect);
+              }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                width: '100%',
+                padding: '7px 10px',
+                border: 'none', background: 'transparent',
+                color: '#0F9D8E',
+                fontSize: 13, textAlign: 'left',
+                borderRadius: 5, cursor: 'pointer',
+              }}
+            >
+              ⚡ Activate
+            </button>
+          )}
+          {onDiscard && (
           <button
             onClick={e => {
               stop(e);
@@ -70,6 +97,7 @@ function ProspectRowMenu({ prospect, onDiscard, stopClickPropagation = true, sty
           >
             🗑 Discard…
           </button>
+          )}
         </div>
       )}
     </span>

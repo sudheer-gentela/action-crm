@@ -5,7 +5,7 @@ import React from 'react';
 import { useStages, CHANNEL_ICONS, LI_STATUS_LABELS, getLiStatus, getLiDotColor, timeAgo } from './prospectingShared';
 import ProspectRowMenu from './ProspectRowMenu';
 
-function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, terminalCounts, isSelected, onToggleSelect, selectionActive, atCap, onDiscard, overdueCallProspectIds }) {
+function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, terminalCounts, isSelected, onToggleSelect, selectionActive, atCap, onDiscard, onActivate, overdueCallProspectIds }) {
   const { terminalStages } = useStages();
   return (
     <div className="pv-pipeline">
@@ -28,6 +28,7 @@ function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, termin
                   selectionActive={selectionActive}
                   atCap={atCap}
                   onDiscard={onDiscard}
+                  onActivate={onActivate}
                   hasOverdueCall={overdueCallProspectIds && overdueCallProspectIds.has(p.id)}
                 />
               ))}
@@ -55,13 +56,13 @@ function PipelineBoard({ stages, groupedByStage, onSelect, onStageChange, termin
 // PROSPECT CARD (used in pipeline)
 // ═════════════════════════════════════════════════════════════════════════════
 
-function ProspectCard({ prospect: p, onClick, isSelected = false, onToggleSelect, selectionActive = false, atCap = false, onDiscard, hasOverdueCall = false }) {
+function ProspectCard({ prospect: p, onClick, isSelected = false, onToggleSelect, selectionActive = false, atCap = false, onDiscard, onActivate, hasOverdueCall = false }) {
   // The checkbox is fully visible when:
   //   - the card is selected, OR
   //   - the user already has a selection in progress (so additions are easy)
   // Otherwise it's 0.35 opacity and rises on hover via the existing .pv-card:hover rule.
   const showCheckbox = !!onToggleSelect;
-  const showMenu     = !!onDiscard;
+  const showMenu     = !!onDiscard || !!onActivate;
   const visible      = isSelected || selectionActive;
   const disabled     = !isSelected && atCap;
 
@@ -108,7 +109,7 @@ function ProspectCard({ prospect: p, onClick, isSelected = false, onToggleSelect
             right: showCheckbox ? 28 : 4,
           }}
         >
-          <ProspectRowMenu prospect={p} onDiscard={onDiscard} />
+          <ProspectRowMenu prospect={p} onDiscard={onDiscard} onActivate={onActivate} />
         </div>
       )}
       <div className="pv-card-top">
