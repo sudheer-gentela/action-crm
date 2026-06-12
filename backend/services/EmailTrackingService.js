@@ -29,7 +29,11 @@ const db = require('../config/database');
 
 const TOO_SOON_SECONDS = 10;
 
-const SCANNER_UA_RE = /safelinks|microsoft office|outlook-protect|googleimageproxy|barracuda|mimecast|proofpoint|symantec|trendmicro|forcepoint|paloalto|fireeye|bitdefender|python-requests|curl\/|wget\/|go-http-client|okhttp|headlesschrome|phantomjs|bot\b|crawler|spider/i;
+// NOTE: GoogleImageProxy is deliberately NOT here — all Gmail opens arrive
+// through it (it's how Gmail loads images), so flagging it would zero open
+// counts for every Gmail recipient. Apple MPP inflation is handled by
+// labeling opens "directional", not by exclusion.
+const SCANNER_UA_RE = /safelinks|microsoft office|outlook-protect|barracuda|mimecast|proofpoint|symantec|trendmicro|forcepoint|paloalto|fireeye|bitdefender|python-requests|curl\/|wget\/|go-http-client|okhttp|headlesschrome|phantomjs|bot\b|crawler|spider/i;
 
 function secret() {
   const s = process.env.TRACKING_TOKEN_SECRET || process.env.JWT_SECRET;
