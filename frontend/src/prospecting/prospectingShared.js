@@ -115,7 +115,11 @@ export function apiFetch(path, options = {}, _isRetry = false) {
     if (r.ok) return r.json();
     let errBody = {};
     try { errBody = await r.json(); } catch (_) {}
-    const errMsg  = errBody?.error?.message || r.statusText;
+    const errMsg  =
+      errBody?.error?.message ||
+      (typeof errBody?.error === 'string' ? errBody.error : null) ||
+      (typeof errBody?.message === 'string' ? errBody.message : null) ||
+      r.statusText;
     const errCode = errBody?.error?.code || null;
     // Prefer the machine-readable code (auth.middleware sends
     // code:'TOKEN_INVALID'); keep the message-string match as a fallback so

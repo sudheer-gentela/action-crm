@@ -12,9 +12,12 @@
 //   POST   /api/tracking-domains/:id/verify   DNS check → CF cert → active
 //   DELETE /api/tracking-domains/:id      disable
 //   GET    /api/tracking-domains/campaign/:campaignId/toggles
+//          → { opens, clicks, can_write }  (can_write lets the UI enable/disable
+//            the checkboxes without an optimistic-then-revert round trip)
 //   PUT    /api/tracking-domains/campaign/:campaignId/toggles  { opens, clicks }
-//          (dedicated columns, D39-amended — write allowed for org owner/admin
-//           or the campaign owner, mirroring configWriteGuard semantics)
+//          Write allowed for the campaign owner, ANY manager of the owner, or an
+//          org owner/admin (CampaignAccess.canToggleTracking — deliberately
+//          broader than config writes; managers oversee their reps' tracking).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const express = require('express');
@@ -22,6 +25,7 @@ const router = express.Router();
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
 const TrackingDomainService = require('../services/TrackingDomainService');
+const CampaignAccess = require('../services/CampaignAccess');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -70,15 +74,14 @@ const { pool } = require('../config/database');
 
 async function loadCampaignForToggles(req, res) {
   const id = parseInt(req.params.campaignId, 10);
-  if (!Number.isInteger(id)) { res.status(400).json({ error: 'Invalid campaign id' }); return null; }
+  if (!Number.isInteger(id)) { res.status(400).json({ error: { message: 'Invalid campaign id' } }); return null; }
   const r = await pool.query(
-    `SELECT c.id, c.owner_id, c.tracking_opens, c.tracking_clicks, ou.role
-       FROM prospecting_campaigns c
-       LEFT JOIN org_users ou ON ou.org_id = c.org_id AND ou.user_id = $3
-      WHERE c.id = $1 AND c.org_id = $2`,
-    [id, req.orgId, req.user.userId]
+    `SELECT id, owner_id, tracking_opens, tracking_clicks
+       FROM prospecting_campaigns
+      WHERE id = $1 AND org_id = $2`,
+    [id, req.orgId]
   );
-  if (r.rows.length === 0) { res.status(404).json({ error: 'Campaign not found' }); return null; }
+  if (r.rows.length === 0) { res.status(404).json({ error: { message: 'Campaign not found' } }); return null; }
   return r.rows[0];
 }
 
@@ -86,10 +89,15 @@ router.get('/campaign/:campaignId/toggles', async (req, res) => {
   try {
     const c = await loadCampaignForToggles(req, res);
     if (!c) return;
-    res.json({ opens: c.tracking_opens === true, clicks: c.tracking_clicks === true });
+    const { allowed } = await CampaignAccess.canToggleTracking(req, c);
+    res.json({
+      opens: c.tracking_opens === true,
+      clicks: c.tracking_clicks === true,
+      can_write: allowed,
+    });
   } catch (err) {
     console.error('[tracking-domains] toggles get error:', err.message);
-    res.status(500).json({ error: 'Failed to load tracking toggles' });
+    res.status(500).json({ error: { message: 'Failed to load tracking toggles' } });
   }
 });
 
@@ -97,8 +105,8 @@ router.put('/campaign/:campaignId/toggles', async (req, res) => {
   try {
     const c = await loadCampaignForToggles(req, res);
     if (!c) return;
-    const canWrite = ['owner', 'admin'].includes(c.role) || c.owner_id === req.user.userId;
-    if (!canWrite) return res.status(403).json({ error: 'Only org admins or the campaign owner can change tracking' });
+    const { allowed, reason } = await CampaignAccess.canToggleTracking(req, c);
+    if (!allowed) return res.status(403).json({ error: { message: reason } });
     const r = await pool.query(
       `UPDATE prospecting_campaigns
           SET tracking_opens = $3, tracking_clicks = $4, updated_at = now()
@@ -106,10 +114,10 @@ router.put('/campaign/:campaignId/toggles', async (req, res) => {
         RETURNING tracking_opens AS opens, tracking_clicks AS clicks`,
       [c.id, req.orgId, req.body?.opens === true, req.body?.clicks === true]
     );
-    res.json(r.rows[0]);
+    res.json({ opens: r.rows[0].opens === true, clicks: r.rows[0].clicks === true, can_write: true });
   } catch (err) {
     console.error('[tracking-domains] toggles put error:', err.message);
-    res.status(500).json({ error: 'Failed to save tracking toggles' });
+    res.status(500).json({ error: { message: 'Failed to save tracking toggles' } });
   }
 });
 

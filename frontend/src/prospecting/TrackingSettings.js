@@ -135,6 +135,7 @@ export function TrackingDomainSettings() {
 export function CampaignTrackingToggles({ campaignId }) {
   const [hasActiveDomain, setHasActiveDomain] = useState(null);
   const [toggles, setToggles] = useState(null);
+  const [canWrite, setCanWrite] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [flash, setFlash] = useState(null);
@@ -144,23 +145,33 @@ export function CampaignTrackingToggles({ campaignId }) {
       .then((r) => setHasActiveDomain((r.domains || []).some((d) => d.status === 'active')))
       .catch(() => setHasActiveDomain(false));
     apiFetch(`/tracking-domains/campaign/${campaignId}/toggles`)
-      .then(setToggles)
-      .catch(() => setToggles({ opens: false, clicks: false }));
+      .then((r) => {
+        setToggles({ opens: r.opens === true, clicks: r.clicks === true });
+        setCanWrite(r.can_write === true);
+      })
+      .catch(() => { setToggles({ opens: false, clicks: false }); setCanWrite(false); });
   }, [campaignId]);
 
   const set = (key, on) => {
+    const prev = toggles;
     const next = { ...(toggles || {}), [key]: on };
     setToggles(next);
     setSaving(true); setError(null);
     apiFetch(`/tracking-domains/campaign/${campaignId}/toggles`, {
       method: 'PUT', body: JSON.stringify(next),
     })
-      .then((saved) => { setToggles(saved); setFlash('Saved'); setTimeout(() => setFlash(null), 2000); })
-      .catch((e) => { setError(e.message); setToggles({ ...(toggles || {}) }); })
+      .then((saved) => {
+        setToggles({ opens: saved.opens === true, clicks: saved.clicks === true });
+        if (typeof saved.can_write === 'boolean') setCanWrite(saved.can_write);
+        setFlash('Saved'); setTimeout(() => setFlash(null), 2000);
+      })
+      .catch((e) => { setError(e.message); setToggles(prev); })
       .finally(() => setSaving(false));
   };
 
-  const disabled = hasActiveDomain === false || toggles === null;
+  const noDomain = hasActiveDomain === false;
+  const noPerm   = canWrite === false;
+  const disabled = noDomain || noPerm || toggles === null;
   const t = toggles || {};
 
   return (
@@ -173,10 +184,16 @@ export function CampaignTrackingToggles({ campaignId }) {
         Changes apply to emails sent after the change; in-flight scheduled
         sends pick it up at send time.
       </div>
-      {hasActiveDomain === false && (
+      {noDomain && (
         <div style={{ ...S.note, marginBottom: 10 }}>
           Set up a verified tracking domain in Org Admin → Tracking Domain first —
           tracking stays off until one is active.
+        </div>
+      )}
+      {!noDomain && noPerm && (
+        <div style={{ ...S.note, marginBottom: 10 }}>
+          Only the campaign owner, their manager, or an org admin can change
+          tracking for this campaign.
         </div>
       )}
       <label style={{ ...S.row, cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1 }}>

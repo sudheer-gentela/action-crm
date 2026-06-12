@@ -123,6 +123,37 @@ async function canMutateCampaign(req, campaign) {
 }
 
 /**
+ * Tracking-toggle write check. Intentionally BROADER than canMutateCampaign:
+ * the per-campaign open/click tracking toggles are a lightweight operational
+ * setting (not message content or strategy), so a manager may flip them for a
+ * rep on their team. Grants to the SAME set as canAccessCampaign (read):
+ *   • Admins / owners (org-level role)
+ *   • The campaign owner
+ *   • Any manager whose subordinateIds (transitive, solid-line) include the
+ *     campaign owner
+ * This is a deliberate product decision (Sudheer, 2026-06-12) — do NOT
+ * "tighten" it back to canMutateCampaign without revisiting that call.
+ */
+async function canToggleTracking(req, campaign) {
+  if (!campaign) return { allowed: false, reason: 'Campaign not found' };
+
+  if (await isAdmin(req)) {
+    return { allowed: true, reason: null };
+  }
+  if (campaign.owner_id === req.userId) {
+    return { allowed: true, reason: null };
+  }
+  const subs = req.subordinateIds || [];
+  if (subs.includes(campaign.owner_id)) {
+    return { allowed: true, reason: null };
+  }
+  return {
+    allowed: false,
+    reason: "You don't have permission to change tracking for this campaign. Only the campaign owner, their manager, or an org admin can change it.",
+  };
+}
+
+/**
  * Delete-access check for the CASCADE delete (campaign + its prospects).
  * This is the layered permission model:
  *
@@ -266,6 +297,7 @@ module.exports = {
   isAdmin,
   canAccessCampaign,
   canMutateCampaign,
+  canToggleTracking,
   canDeleteCampaign,
   canSetCampaignLock,
   requireCanAccess,
