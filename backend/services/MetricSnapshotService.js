@@ -92,6 +92,7 @@ const MEASURES = [
   'connections_sent', 'connections_accepted', 'calls_logged',
   'meetings_booked', 'qualified', 'converted', 'prospects_added',
   'bounces_hard', 'bounces_soft', 'blocks',          // Phase 2 (email_delivery_events)
+  'opens', 'clicks',                                 // Phase 7 (email_engagement_events, is_bot=false)
 ];
 
 /** Emit the measure select list with `exprs` overriding specific measures. */
@@ -347,6 +348,39 @@ function familyDeliveryEvents() {
          AND ${tzDate('ede.detected_at')} BETWEEN $3::date AND $4::date`;
 }
 
+// Phase 7 — human-classified opens/clicks by occurred date. Opens dedupe to
+// one per (step_log, org-local day); clicks count every event. Dims via the
+// step log's enrollment/prospect/email joins.
+function familyEngagementEvents() {
+  const d = tzDate('e2.occurred_at');
+  return `
+      SELECT f.d, f.campaign_id, f.sequence_id, f.sequence_step_id,
+             'email' AS channel, f.sender_account_id, f.owner_id, f.fit_band,
+         ${measureCols({ opens: 'f.opens', clicks: 'f.clicks' })}
+        FROM (
+          SELECT ${d}                                                  AS d,
+                 COALESCE(p.campaign_id, 0)                            AS campaign_id,
+                 COALESCE(se.sequence_id, 0)                           AS sequence_id,
+                 COALESCE(ssl.sequence_step_id, 0)                     AS sequence_step_id,
+                 COALESCE(em.sender_account_id, 0)                     AS sender_account_id,
+                 COALESCE(p.owner_id, 0)                               AS owner_id,
+                 ${FIT_BAND_SQL}                                       AS fit_band,
+                 LEAST(SUM(CASE WHEN e2.event_type = 'open'  THEN 1 ELSE 0 END), 1)::int AS opens,
+                 SUM(CASE WHEN e2.event_type = 'click' THEN 1 ELSE 0 END)::int           AS clicks
+            FROM email_engagement_events e2
+            JOIN sequence_step_logs ssl ON ssl.id = e2.step_log_id AND ssl.org_id = e2.org_id
+            JOIN sequence_enrollments se ON se.id = ssl.enrollment_id AND se.org_id = ssl.org_id
+            JOIN prospects p ON p.id = ssl.prospect_id AND p.org_id = ssl.org_id
+            LEFT JOIN emails em ON em.id = ssl.email_id AND em.org_id = ssl.org_id
+           WHERE e2.org_id = $1
+             AND e2.is_bot = false
+             AND e2.occurred_at >= ($3::date - INTERVAL '2 days')
+             AND e2.occurred_at <  ($4::date + INTERVAL '3 days')
+             AND ${d} BETWEEN $3::date AND $4::date
+           GROUP BY 1, 2, 3, 4, 5, 6, 7, e2.step_log_id
+        ) f`;
+}
+
 // ── core writer ──────────────────────────────────────────────────────────────
 
 /**
@@ -367,6 +401,7 @@ async function computeRange(orgId, startDate, endDate, calendarOpt) {
     familyStageTransitions(),
     familyProspectsAdded(),
     familyDeliveryEvents(),   // Phase 2
+    familyEngagementEvents(), // Phase 7
   ].join('\n      UNION ALL\n');
 
   const insertSql = `

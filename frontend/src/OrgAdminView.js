@@ -17,6 +17,7 @@ import HubSpotConnect    from './HubSpotConnect';
 import OATwilioSettings from './OATwilioSettings';
 import OAAIProviderSettings from './OAAIProviderSettings';
 import OAProspectingSkillConfig from './OAProspectingSkillConfig';
+import { TrackingDomainSettings } from './prospecting/TrackingSettings';   // Insights/WBR Phase 7
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -70,6 +71,7 @@ const STATIC_NAV_GROUPS = [
       { id: 'duplicates',     icon: '🔍', label: 'Duplicates'     },
       { id: 'workflows',      icon: '⚙️', label: 'Workflows'      },
       { id: 'email-settings', icon: '📧', label: 'Email Settings'  },
+      { id: 'tracking-domain', icon: '🔗', label: 'Tracking Domain' },   // Insights/WBR Phase 7
     ],
   },
   // 'Modules' group is injected here dynamically — see buildNavGroups()
@@ -132,6 +134,7 @@ const TAB_META = {
   duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
   'workflows':   { title: 'Workflows',       desc: 'Manage data-integrity workflows and standalone rules for deals, contacts, and accounts' },
   'email-settings': { title: 'Email Settings', desc: 'Configure which emails are synced and matched to deals, prospects, and accounts' },
+  'tracking-domain': { title: 'Tracking Domain', desc: 'Per-customer CNAME domain for email open/click tracking — one DNS record on your domain keeps tracked links aligned with your sending reputation' },
   'wf-log':      { title: 'Execution Log', desc: 'Workflow execution history and open violations' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
   'ai-providers': { title: 'AI Providers', desc: 'Choose AI provider and model, manage API keys, and set user policy for your organisation' },
@@ -680,6 +683,7 @@ export default function OrgAdminView() {
             {tab === 'duplicates'       && <OADuplicateSettings />}
             {tab === 'workflows'        && <OAWorkflows />}
             {tab === 'email-settings'   && <OAEmailSettings />}
+            {tab === 'tracking-domain'  && <TrackingDomainSettings />}   {/* Insights/WBR Phase 7 */}
             {tab === 'team-dimensions'  && <OATeamDimensions />}
             {(tab === 'integrations' || tab === 'integrations-overview') && <OAIntegrations orgId={orgId} />}
             {tab === 'salesforce'        && <OASalesforceSettings />}

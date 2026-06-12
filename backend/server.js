@@ -103,6 +103,12 @@ const authLimiter = rateLimit({
     error: { message: 'Too many login attempts. Please try again in 15 minutes.', code: 'AUTH_RATE_LIMIT_EXCEEDED' },
   }),
 });
+// Insights/WBR Phase 7 — PUBLIC tracking endpoints (pixel + click redirect).
+// Hit by recipients' mail clients via per-customer tracking hostnames, so
+// they must sit OUTSIDE the /api rate-limiter and auth chain. Security is
+// the HMAC token, not auth — see routes/tracking.routes.js header.
+app.use('/t', require('./routes/tracking.routes'));
+
 app.use('/api/',      apiLimiter);
 app.use('/api/auth/', authLimiter);
 
@@ -178,6 +184,7 @@ app.use('/api/prospecting-config', require('./routes/prospecting-config.routes')
 
 app.use('/api/prospecting-wbr',      require('./routes/prospecting-wbr.routes'));
 app.use('/api/prospecting-insights', require('./routes/prospecting-insights.routes'));
+app.use('/api/tracking-domains',     require('./routes/tracking-domains.routes')); // Insights/WBR Phase 7
 
 // ── Core CRM ──────────────────────────────────────────────────────────────
 app.use('/api/auth',          require('./routes/auth.routes'));

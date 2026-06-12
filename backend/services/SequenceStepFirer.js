@@ -40,6 +40,7 @@
 
 const { pool }                        = require('../config/database');
 const { sendEmail: sendGmailEmail }   = require('./googleService');
+const EmailTrackingService            = require('./EmailTrackingService');   // Insights/WBR Phase 7
 const { sendEmail: sendOutlookEmail } = require('./outlookService');
 const { plainTextToHtml }             = require('./emailFormatter');
 
@@ -959,7 +960,19 @@ const SequenceStepFirer = {
 
           // Signature + HTML applied at send time (stored body stays plain).
           const sendBodyPlain = appendSignature(sendBodyRaw, sender.signature);
-          const sendBodyHtml  = plainTextToHtml(sendBodyPlain);
+          let sendBodyHtml    = plainTextToHtml(sendBodyPlain);
+
+          // Insights/WBR Phase 7 — open/click tracking decoration.
+          // Triple-gated inside the service: org has an ACTIVE tracking
+          // domain (no shared fallback, D40) AND campaign toggles on
+          // (default OFF, D39). Never throws; on any failure the email goes
+          // out untracked with the original HTML.
+          sendBodyHtml = await EmailTrackingService.decorateHtml(client, {
+            orgId: enrollment.org_id,
+            prospectId: enrollment.prospect_id,
+            stepLogId: logId,
+            html: sendBodyHtml,
+          });
 
           // Dispatch. On throw → fail + pause (no retry), then defer to owner.
           try {
