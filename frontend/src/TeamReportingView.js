@@ -226,14 +226,18 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
 
   const loadTab = useCallback(async (which) => {
     if (!depth) return;     // wait for scope hydration
-    const reqId = ++lastReqRef.current;
-    setTabLoading(true);
-    setError(null);
 
     let url;
     if (which === 'rep')      url = `/reporting/sequences/team-by-rep?${queryString}`;
     if (which === 'campaign') url = `/reporting/sequences/team-overview?${queryString}`;
     if (which === 'sequence') url = `/reporting/sequences/team-by-sequence?${queryString}`;
+    if (!url) return;       // 'wbr' and 'insights' tabs fetch their own data
+                            // (WbrGrid / InsightsPanel) — without this guard the
+                            // generic loader fired apiFetch(undefined) → /apiundefined 404
+
+    const reqId = ++lastReqRef.current;
+    setTabLoading(true);
+    setError(null);
 
     try {
       const res = await apiFetch(url);
