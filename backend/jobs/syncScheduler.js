@@ -51,6 +51,7 @@ const StrapNightlySweep = require('../services/StrapNightlySweep');             
 const MetricSnapshotService = require('../services/MetricSnapshotService');                                 // Insights/WBR Phase 1
 const BounceDetectionService = require('../services/BounceDetectionService');                               // Insights/WBR Phase 2
 const OutboundInsightEngine = require('../services/OutboundInsightEngine');                                 // Insights/WBR Phase 3
+const PostmasterHealthService = require('../services/PostmasterHealthService');                             // Insights/WBR Phase 6
 const sfSync            = require('../services/crm');                                                        // Phase 6 SF
 
 
@@ -996,27 +997,31 @@ async function syncAllUsers() {
  * Schedule automatic syncs based on config.
  */
 function startScheduler() {
+  // ── Email sync interval cron — only in scheduled mode ─────────────────────
+  // FIX (Insights/WBR Phase 3 deployment): this guard used to `return` early,
+  // which silently skipped registration of EVERY nightly sweep below (deals,
+  // cases, handovers, prospecting, STRAP, workflow audit, metric snapshot,
+  // insight engine, purge, Salesforce) whenever email sync was in Manual mode.
+  // The mode now only controls the email-sync interval cron itself; all
+  // nightly jobs register unconditionally.
   if (config.emailSync.frequency !== 'scheduled') {
-    console.log('Email sync scheduler: Manual mode');
-    return;
-  }
-  if (!config.emailSync.enabled) {
-    console.log('Email sync scheduler: Disabled');
-    return;
-  }
+    console.log('Email sync scheduler: Manual mode (nightly sweeps still active)');
+  } else if (!config.emailSync.enabled) {
+    console.log('Email sync scheduler: Disabled (nightly sweeps still active)');
+  } else {
+    const intervalMinutes = config.emailSync.intervalMinutes;
+    const cronMap = {
+      1: '* * * * *', 5: '*/5 * * * *', 10: '*/10 * * * *',
+      15: '*/15 * * * *', 30: '*/30 * * * *', 60: '0 * * * *',
+    };
+    const cronExpression = cronMap[intervalMinutes] || '*/15 * * * *';
 
-  const intervalMinutes = config.emailSync.intervalMinutes;
-  const cronMap = {
-    1: '* * * * *', 5: '*/5 * * * *', 10: '*/10 * * * *',
-    15: '*/15 * * * *', 30: '*/30 * * * *', 60: '0 * * * *',
-  };
-  const cronExpression = cronMap[intervalMinutes] || '*/15 * * * *';
-
-  console.log('Email sync scheduler started: Every ' + intervalMinutes + ' minutes');
-  cron.schedule(cronExpression, () => {
-    console.log('Running scheduled sync...');
-    syncAllUsers();
-  }, { timezone: config.system.timezone || 'UTC' });
+    console.log('Email sync scheduler started: Every ' + intervalMinutes + ' minutes');
+    cron.schedule(cronExpression, () => {
+      console.log('Running scheduled sync...');
+      syncAllUsers();
+    }, { timezone: config.system.timezone || 'UTC' });
+  }
 
   // ── Deal actions — nightly sweep ─────────────────────────────────────────
   // Runs at 01:00 UTC every day. Upserts diagnostic alerts for all active
@@ -1214,6 +1219,37 @@ function startScheduler() {
     }
   }, { timezone: 'UTC' });
 
+  // ── Postmaster domain-health pull — nightly at 04:15 UTC ─────────────────  // Insights/WBR Phase 6
+  // Pulls Google Postmaster Tools v2 stats + compliance into
+  // domain_health_daily for every org with settings.postmaster.domains.
+  // Skips silently when no org has domains configured or OAuth is absent.
+  // Runs AFTER the 03:30 snapshot/insights (its findings feed TOMORROW's
+  // insight run — Postmaster data lags 1-3 days anyway).
+  cron.schedule('15 4 * * *', async () => {
+    console.log('📮 Running Postmaster domain-health pull...');
+    try {
+      const orgs = await pool.query(
+        `SELECT id AS org_id FROM organizations
+          WHERE status = 'active'
+            AND jsonb_array_length(COALESCE(settings -> 'postmaster' -> 'domains', '[]'::jsonb)) > 0`
+      );
+      if (orgs.rows.length === 0) { console.log('📮 Postmaster pull: no orgs configured — skipped'); return; }
+      let totalRows = 0, totalErrors = 0;
+      for (const { org_id } of orgs.rows) {
+        try {
+          const r = await PostmasterHealthService.runNightly(org_id);
+          totalRows += r.rows; totalErrors += r.errors;
+        } catch (err) {
+          totalErrors++;
+          console.error(`❌ Postmaster pull error org=${org_id}:`, err.message);
+        }
+      }
+      console.log(`✅ Postmaster pull done — orgs: ${orgs.rows.length}, rows: ${totalRows}, errors: ${totalErrors}`);
+    } catch (err) {
+      console.error('❌ Postmaster pull sweep error:', err.message);
+    }
+  }, { timezone: 'UTC' });
+
   // ── Email filter log purge — nightly at 03:45 UTC ─────────────────────────
   // Shifted to 03:45 UTC (was 03:30) to maintain 30-min gap after workflow audit.
   // Deletes email_filter_log rows older than 30 days to keep the table lean.
@@ -1287,6 +1323,7 @@ function startScheduler() {
   console.log('✅ Outbound metric snapshot started (nightly 03:30 UTC)');        // Insights/WBR Phase 1
   console.log('✅ Outbound insight engine started (03:30 UTC, after snapshot)');  // Insights/WBR Phase 3
   console.log('✅ Email filter log purge started (nightly 03:45 UTC)');          // shifted Phase 5
+  console.log('✅ Postmaster domain-health pull started (nightly 04:15 UTC)');   // Insights/WBR Phase 6
   console.log('✅ Salesforce sync started (nightly 04:00 UTC)');                 // Phase 6
   console.log('✅ Salesforce write-back started (nightly 04:30 UTC)');           // Phase 6
 }

@@ -484,6 +484,55 @@ async function detectListRunway(ctx, volumeInsight) {
   };
 }
 
+async function detectDomainSpamRate(ctx) {
+  // Phase 6 — reads domain_health_daily (Postmaster v2 pull). Thresholds per
+  // Gmail sender guidelines (D15): <0.1% safe, >=0.3% Gmail may reject.
+  // Latest reading per domain within the last 5 days (Postmaster lags 1-3d).
+  const { orgId, cfg } = ctx;
+  const r = await db.query(
+    `SELECT DISTINCT ON (domain) domain, metric_date::text AS d, spam_rate
+       FROM domain_health_daily
+      WHERE org_id = $1 AND source = 'postmaster_v2'
+        AND spam_rate IS NOT NULL
+        AND metric_date >= CURRENT_DATE - 5
+      ORDER BY domain, metric_date DESC`,
+    [orgId]
+  );
+
+  const findings = [];
+  for (const row of r.rows) {
+    const sr = Number(row.spam_rate);
+    if (sr < 0.001) continue;
+    const critical = sr >= 0.003;
+
+    const hist = await db.query(
+      `SELECT metric_date::text AS d, spam_rate
+         FROM domain_health_daily
+        WHERE org_id = $1 AND domain = $2 AND source = 'postmaster_v2'
+          AND spam_rate IS NOT NULL AND metric_date >= CURRENT_DATE - 14
+        ORDER BY metric_date`,
+      [orgId, row.domain]
+    );
+
+    findings.push({
+      metric: 'spam_rate', cause_code: 'deliverability_domain',
+      segment: { dim: 'domain', value: row.domain, label: row.domain },
+      observed: sr, baseline: 0.001, observed_n: 0, baseline_n: 0,
+      delta_rel: null,
+      headline: critical
+        ? `Gmail spam rate for ${row.domain} is ${pct(sr)} — at/above the 0.3% level where Gmail may start rejecting mail`
+        : `Gmail spam rate for ${row.domain} is ${pct(sr)} — above the 0.1% safe threshold`,
+      hypothesis: `Google Postmaster reports user-marked spam at ${pct(sr)} on ${row.d} (latest reading). Gmail guidelines: stay under 0.1%; sustained 0.3%+ risks bulk rejection. Recent trend: ${hist.rows.map((h) => `${h.d.slice(5)}: ${pct(Number(h.spam_rate))}`).join(', ') || 'single reading'}.`,
+      impact_estimate: critical ? 'Risk of Gmail rejecting/spam-foldering the domain\u2019s mail' : 'Early-warning level',
+      recommended_action: 'Reduce volume to that domain\u2019s coldest segments, tighten the fit gate, verify one-click unsubscribe, and review recent copy for spam triggers. Re-check Postmaster daily until under 0.1%.',
+      evidence: { step_log_ids: [], prospect_ids: [], delivery_event_ids: [],
+        breakdown: hist.rows.map((h) => ({ dim: 'date', value: h.d, label: h.d, cur_rate: Math.round(Number(h.spam_rate) * 1000) / 10, base_rate: 0.1, cur_n: 0, base_n: 0 })) },
+      impactScore: critical ? 50 : 8,
+    });
+  }
+  return findings;
+}
+
 // ── persistence (upsert-and-resolve) ─────────────────────────────────────────
 
 async function upsertInsight(orgId, w, ins) {
@@ -577,6 +626,14 @@ async function runForOrg(orgId) {
 
   const runway = await detectListRunway(ctx, volume);
   if (runway) findings.push(runway);
+
+  // Phase 6 — Postmaster spam-rate findings (no-op until domain_health_daily
+  // has data; never fails the run).
+  try {
+    findings.push(...await detectDomainSpamRate(ctx));
+  } catch (err) {
+    console.error(`[InsightEngine] org=${orgId} spam-rate detector error:`, err.message);
+  }
 
   // Rank by impact, cap (quality over quantity — design doc §1).
   findings.sort((a, b) => (b.impactScore || 0) - (a.impactScore || 0));
