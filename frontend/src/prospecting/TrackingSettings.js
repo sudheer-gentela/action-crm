@@ -93,6 +93,18 @@ export function TrackingDomainSettings() {
             {d.status !== 'active' && (
               <button style={S.btn} disabled={busy} onClick={() => verify(d.id)}>Verify</button>
             )}
+            <button
+              style={{ ...S.btn, borderColor: '#fca5a5', color: '#b91c1c' }}
+              disabled={busy}
+              onClick={() => {
+                if (!window.confirm(`Remove ${d.hostname}? ${d.status === 'active' ? 'Email tracking will stop for all campaigns until a new domain is verified.' : 'You can re-add it any time.'}`)) return;
+                setBusy(true); setError(null);
+                apiFetch(`/tracking-domains/${d.id}`, { method: 'DELETE' })
+                  .then(load).catch((e) => setError(e.message)).finally(() => setBusy(false));
+              }}
+            >
+              Remove
+            </button>
           </div>
           {d.status !== 'active' && d.instructions && (
             <>

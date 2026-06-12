@@ -136,7 +136,14 @@ async function verify(orgId, id) {
     return fail('DNS verified ✓ — but Cloudflare for SaaS is not configured on the server (set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ZONE_ID), so the TLS certificate cannot be issued yet');
   }
   try {
-    let cf = row.cf_hostname_id ? await cfGetHostname(row.cf_hostname_id) : await cfCreateHostname(row.hostname);
+    // A stored cf_hostname_id can go stale (e.g. the hostname was deleted in
+    // the Cloudflare dashboard). Treat fetch failure as "doesn't exist" and
+    // fall through to creating a fresh registration.
+    let cf = null;
+    if (row.cf_hostname_id) {
+      try { cf = await cfGetHostname(row.cf_hostname_id); } catch (e) { cf = null; }
+    }
+    if (!cf) cf = await cfCreateHostname(row.hostname);
     const sslStatus = cf?.ssl?.status || cf?.status || 'unknown';
     const active = sslStatus === 'active';
     await db.query(
