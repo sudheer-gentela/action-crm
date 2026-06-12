@@ -633,6 +633,13 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
   const [targetCount,       setTargetCount]       = useState(0);
   const [bulkPromoting,     setBulkPromoting]     = useState(false);
 
+  // Member-list activation (drawer): per-member ⚡ and "Activate N selected".
+  // All members belong to THIS campaign, so activation is unambiguous — only
+  // research-stage members are eligible (the bulk-activate endpoint enforces
+  // this too). Selection is scoped to the members currently shown.
+  const [selectedMemberIds, setSelectedMemberIds] = useState(() => new Set());
+  const [activatingMembers, setActivatingMembers] = useState(false);
+
   // Slice 4: preview drafts modal + picker for which prospects to preview.
   const [showPreviewPicker, setShowPreviewPicker] = useState(false);
   const [previewProspectIds, setPreviewProspectIds] = useState([]);
@@ -697,6 +704,74 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
   }, [campaignId, rangeFilter]);
 
   useEffect(() => { load(channelFilter); }, [load, channelFilter]);
+
+  // ── Member activation (single + selected) ─────────────────────────────────
+  // Both hit the campaign-scoped bulk-activate endpoint with an explicit
+  // prospectIds list; the backend validates research-stage + not-already-
+  // enrolled and enrolls into this campaign's default sequence. runSkill is
+  // omitted → defaults to the sequence's AI setting (same as the batch modal).
+  const activateMemberIds = async (ids) => {
+    const res = await apiFetch(`/prospecting-campaigns/${campaignId}/bulk-activate`, {
+      method: 'POST',
+      body: JSON.stringify({ prospectIds: ids }),
+    });
+    const parts = [`Activated ${res.activated} prospect${res.activated === 1 ? '' : 's'}` +
+      (res.sequenceName ? ` in "${res.sequenceName}"` : '')];
+    if (Array.isArray(res.skipped) && res.skipped.length) parts.push(`${res.skipped.length} skipped`);
+    if (res.warning?.message) parts.push(res.warning.message);
+    window.alert(parts.join('\n'));
+    return res;
+  };
+
+  const handleActivateMember = async (member) => {
+    if (member?.stage !== 'research') {
+      window.alert('Only research-stage members can be activated.');
+      return;
+    }
+    if (activatingMembers) return;
+    setActivatingMembers(true);
+    try {
+      await activateMemberIds([member.id]);
+      setSelectedMemberIds(new Set());
+      load(channelFilter);
+    } catch (err) {
+      window.alert(`Activation failed: ${err.message}`);
+    } finally {
+      setActivatingMembers(false);
+    }
+  };
+
+  const selectedMembers = members.filter(m => selectedMemberIds.has(m.id));
+  const allSelectedResearch = selectedMembers.length > 0 && selectedMembers.every(m => m.stage === 'research');
+  const canActivateSelectedMembers = allSelectedResearch && !activatingMembers;
+
+  const toggleMemberSelect = (id) => {
+    setSelectedMemberIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const handleActivateSelectedMembers = async () => {
+    if (!canActivateSelectedMembers || selectedMemberIds.size === 0) return;
+    const ids = [...selectedMemberIds];
+    const ok = window.confirm(
+      `Activate ${ids.length} member${ids.length === 1 ? '' : 's'}? ` +
+      `They'll be enrolled in this campaign's default sequence and Step 1 will be drafted.`
+    );
+    if (!ok) return;
+    setActivatingMembers(true);
+    try {
+      await activateMemberIds(ids);
+      setSelectedMemberIds(new Set());
+      load(channelFilter);
+    } catch (err) {
+      window.alert(`Activation failed: ${err.message}`);
+    } finally {
+      setActivatingMembers(false);
+    }
+  };
 
   const togglePause = async () => {
     if (!data) return;
@@ -1453,19 +1528,64 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                 No prospects in this campaign yet. Use “Import prospects” above.
               </div>
             ) : (
-              <div style={{ border: '1px solid #f1f5f9', borderRadius: 6 }}>
-                {members.map((m, i) => (
-                  <MemberRow key={m.id} member={m} isLast={i === members.length - 1} />
-                ))}
-                {totalProspects > members.length && (
+              <>
+                {/* Select → activate bar. Appears once any member is ticked.
+                    Enabled only when every selected member is research-stage. */}
+                {selectedMemberIds.size > 0 && (
                   <div style={{
-                    padding: '8px 12px', fontSize: 12, color: '#9ca3af',
-                    borderTop: '1px solid #f1f5f9', textAlign: 'center',
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '8px 12px', marginBottom: 6,
+                    background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 6,
                   }}>
-                    + {totalProspects - members.length} more — view all in Pipeline
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#065f46' }}>
+                      {selectedMemberIds.size} selected
+                    </span>
+                    <div style={{ flex: 1 }} />
+                    <button
+                      onClick={() => setSelectedMemberIds(new Set())}
+                      style={{
+                        fontSize: 12, color: '#6b7280', background: 'none',
+                        border: 'none', cursor: 'pointer',
+                      }}
+                    >Clear</button>
+                    <button
+                      onClick={handleActivateSelectedMembers}
+                      disabled={!canActivateSelectedMembers}
+                      title={canActivateSelectedMembers
+                        ? `Activate ${selectedMemberIds.size} selected`
+                        : 'Only research-stage members can be activated'}
+                      style={{
+                        padding: '6px 14px', borderRadius: 6, border: 'none',
+                        background: canActivateSelectedMembers ? '#0F9D8E' : '#9ca3af',
+                        color: '#fff', fontSize: 12, fontWeight: 600,
+                        cursor: canActivateSelectedMembers ? 'pointer' : 'default',
+                      }}
+                    >
+                      {activatingMembers ? '⟳ Activating…' : `⚡ Activate ${selectedMemberIds.size} selected`}
+                    </button>
                   </div>
                 )}
-              </div>
+                <div style={{ border: '1px solid #f1f5f9', borderRadius: 6 }}>
+                  {members.map((m, i) => (
+                    <MemberRow
+                      key={m.id}
+                      member={m}
+                      isLast={i === members.length - 1}
+                      selected={selectedMemberIds.has(m.id)}
+                      onToggleSelect={toggleMemberSelect}
+                      onActivate={handleActivateMember}
+                    />
+                  ))}
+                  {totalProspects > members.length && (
+                    <div style={{
+                      padding: '8px 12px', fontSize: 12, color: '#9ca3af',
+                      borderTop: '1px solid #f1f5f9', textAlign: 'center',
+                    }}>
+                      + {totalProspects - members.length} more — view all in Pipeline
+                    </div>
+                  )}
+                </div>
+              </>
             )}
 
             {/* Settings line */}
@@ -2240,14 +2360,25 @@ function Funnel({ funnel, terminal }) {
 }
 
 // ── MemberRow ────────────────────────────────────────────────────────────────
-function MemberRow({ member: m, isLast }) {
+function MemberRow({ member: m, isLast, selected = false, onToggleSelect, onActivate }) {
   const initials = `${(m.first_name || '?')[0] || ''}${(m.last_name || '')[0] || ''}`.toUpperCase();
   const meta = STAGE_META[m.stage];
+  const canActivate = !!onActivate && m.stage === 'research';
   return (
     <div style={{
       display: 'flex', alignItems: 'center', padding: '9px 12px',
       borderBottom: isLast ? 'none' : '1px solid #f1f5f9',
+      background: selected ? '#f0fdf4' : 'transparent',
     }}>
+      {onToggleSelect && (
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggleSelect(m.id)}
+          style={{ marginRight: 10, cursor: 'pointer', flexShrink: 0 }}
+          title="Select member"
+        />
+      )}
       <div style={{
         width: 28, height: 28, borderRadius: '50%', background: '#eef2ff',
         color: '#4338ca', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -2266,6 +2397,19 @@ function MemberRow({ member: m, isLast }) {
           fontSize: 11, padding: '2px 8px', borderRadius: 6,
           background: '#f1f5f9', color: meta.color, fontWeight: 600,
         }}>{meta.label}</span>
+      )}
+      {canActivate && (
+        <button
+          onClick={() => onActivate(m)}
+          title="Activate — enroll in the campaign's default sequence"
+          style={{
+            marginLeft: 8, padding: '3px 9px', borderRadius: 6,
+            border: '1px solid #99f6e4', background: '#f0fdfa', color: '#0F766E',
+            fontSize: 11, fontWeight: 600, cursor: 'pointer', flexShrink: 0,
+          }}
+        >
+          ⚡ Activate
+        </button>
       )}
     </div>
   );
