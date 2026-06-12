@@ -1,0 +1,230 @@
+/* InsightsPanel.css — scoped to .insx-*. Matches GoWarmCRM's reporting
+   design system: teal #0F9D8E accent, slate neutrals, white surfaces. */
+
+.insx-root {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px 24px;
+}
+
+.insx-state {
+  padding: 32px 20px;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.insx-state-error { color: #b91c1c; }
+
+.insx-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.insx-toolbar-note {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.5;
+  max-width: 640px;
+}
+.insx-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: #475569;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* ── Card ─────────────────────────────────────────────────────────────── */
+
+.insx-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.insx-card-resolved { opacity: 0.65; }
+
+.insx-card-head {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 12px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+.insx-card-head:hover { background: #fafafa; }
+.insx-card-head:focus-visible { outline: 2px solid #0F9D8E; outline-offset: -2px; }
+
+.insx-card-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 7px; }
+
+.insx-chip {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+}
+.insx-chip-status-new          { background: #0F9D8E; color: #fff; }
+.insx-chip-status-acknowledged { background: #e0f2f1; color: #0f766e; }
+.insx-chip-status-resolved     { background: #f1f5f9; color: #94a3b8; }
+.insx-chip-cause               { background: #fef3c7; color: #92400e; }
+.insx-chip-seg                 { background: #eef2ff; color: #4338ca; }
+
+.insx-card-headline {
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+  line-height: 1.4;
+}
+.insx-card-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #6b7280;
+}
+.insx-card-caret { float: right; color: #94a3b8; }
+
+/* ── Body ─────────────────────────────────────────────────────────────── */
+
+.insx-card-body {
+  border-top: 1px solid #f1f5f9;
+  padding: 14px;
+}
+
+.insx-numbers { display: flex; gap: 28px; margin-bottom: 14px; }
+.insx-number-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #94a3b8;
+}
+.insx-number-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: #111827;
+  font-variant-numeric: tabular-nums;
+}
+.insx-number-sub { font-size: 11px; color: #94a3b8; }
+
+.insx-section { margin-bottom: 14px; }
+.insx-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6b7280;
+  margin-bottom: 5px;
+}
+.insx-text { font-size: 13px; color: #374151; line-height: 1.55; }
+
+.insx-breakdown {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.insx-breakdown th {
+  text-align: left;
+  font-weight: 500;
+  color: #6b7280;
+  padding: 5px 8px;
+  border-bottom: 1px solid #e5e7eb;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+.insx-breakdown td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #f8fafc;
+  color: #1f2937;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Evidence ─────────────────────────────────────────────────────────── */
+
+.insx-evidence-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.insx-evidence-tab {
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #475569;
+  cursor: pointer;
+}
+.insx-evidence-tab.active {
+  background: #0F9D8E;
+  border-color: #0F9D8E;
+  color: #fff;
+}
+
+.insx-evidence-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.insx-ev-row { border-bottom: 1px solid #f8fafc; cursor: pointer; }
+.insx-ev-row:hover { background: #f0fdfa; }
+.insx-ev-row td { padding: 7px 8px; color: #374151; vertical-align: top; }
+.insx-ev-main { min-width: 160px; }
+.insx-ev-name { display: block; font-weight: 500; color: #111827; }
+.insx-ev-sub { display: block; font-size: 11px; color: #94a3b8; }
+.insx-ev-detail {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #6b7280;
+}
+.insx-ev-when { white-space: nowrap; color: #94a3b8; font-size: 11.5px; }
+
+.insx-status {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  white-space: nowrap;
+}
+.insx-status-replied     { background: #dcfce7; color: #166534; }
+.insx-status-failed,
+.insx-status-hard_bounce { background: #fee2e2; color: #991b1b; }
+.insx-status-soft_bounce { background: #fef3c7; color: #92400e; }
+.insx-status-block       { background: #fee2e2; color: #991b1b; }
+
+.insx-evidence-empty { font-size: 12.5px; color: #94a3b8; padding: 6px 0; }
+
+.insx-pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #6b7280;
+}
+.insx-pager button {
+  border: 1px solid #d1d5db;
+  background: #fff;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.insx-pager button:disabled { opacity: 0.4; cursor: default; }
+
+.insx-actions { margin-top: 4px; }
+.insx-ack-btn {
+  border: 1px solid #0F9D8E;
+  background: #fff;
+  color: #0f766e;
+  border-radius: 7px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.insx-ack-btn:hover { background: #f0fdfa; }

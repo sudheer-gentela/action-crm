@@ -32,6 +32,8 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { apiFetch } from './prospecting/prospectingShared';
+import WbrGrid from './prospecting/WbrGrid';                  // Insights/WBR Phase 5
+import InsightsPanel from './prospecting/InsightsPanel';      // Insights/WBR Phase 5
 import './TeamReportingView.css';
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -117,6 +119,21 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
 
   // ── Drill-down state ───────────────────────────────────────────────────
   const [drillCampaignId, setDrillCampaignId] = useState(drilldownCampaignId);
+  // ── Insights/WBR Phase 5 state ──────────────────────────────────────────
+  const [insightMetrics, setInsightMetrics] = useState(new Set());  // metric keys with open insights (WBR dots)
+  const [focusMetric, setFocusMetric] = useState(null);             // set when jumping WBR → Insights
+
+  // Pre-fetch open insights once so the WBR grid can annotate rows before
+  // the Insights tab is ever visited. InsightsPanel refreshes this on load.
+  useEffect(() => {
+    apiFetch('/prospecting-insights')
+      .then(res => {
+        const open = (res.insights || []).filter(i => i.status !== 'resolved');
+        setInsightMetrics(new Set(open.map(i =>
+          i.metric === 'send_volume' ? 'sends' : i.metric)));
+      })
+      .catch(() => {});
+  }, []);
 
   // Track which sub-tabs of the drill-down are open (per-sequence and per-rep
   // both render, but allowing collapse/expand keeps it manageable).
@@ -319,7 +336,8 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         allCampaigns={allCampaigns}
         showCampaignDropdown={showCampaignDropdown}
         onToggleCampaignDropdown={() => setShowCampaignDropdown(s => !s)}
-        showCampaignFilter={tab !== 'campaign'}   // tab 'campaign' IS the campaign list
+        showCampaignFilter={tab !== 'campaign' && tab !== 'insights'}   // tab 'campaign' IS the campaign list; insights are org-level
+        showWindowPicker={tab !== 'wbr' && tab !== 'insights'}          // WBR/insight windows are fixed by design
       />
 
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
@@ -369,6 +387,32 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         />
       )}
 
+      {/* ── Insights/WBR Phase 5 tabs ──────────────────────────────────── */}
+      {tab === 'wbr' && (
+        <WbrGrid
+          depth={depth}
+          campaignFilter={campaignFilter}
+          insightMetrics={insightMetrics}
+          onJumpToInsight={(metricKey) => {
+            // WBR metric keys → insight metric keys ('sends' insight is 'send_volume')
+            setFocusMetric(metricKey === 'sends' ? 'send_volume' : metricKey);
+            setTab('insights');
+            setTabExplicitlySet(true);
+          }}
+        />
+      )}
+
+      {tab === 'insights' && (
+        <InsightsPanel
+          focusMetric={focusMetric}
+          onInsightsLoaded={(list) => {
+            const open = list.filter(i => i.status !== 'resolved');
+            setInsightMetrics(new Set(open.map(i =>
+              i.metric === 'send_volume' ? 'sends' : i.metric)));
+          }}
+        />
+      )}
+
       {prospectPanel && (
         <ProspectListPanel
           context={prospectPanel}
@@ -413,6 +457,8 @@ function TabBar({ tab, onTabChange }) {
     { key: 'rep',      label: 'By rep' },
     { key: 'campaign', label: 'By campaign' },
     { key: 'sequence', label: 'By sequence' },
+    { key: 'wbr',      label: 'WBR' },        // Insights/WBR Phase 5
+    { key: 'insights', label: 'Insights' },   // Insights/WBR Phase 5
   ];
   return (
     <div className="trv-tabbar">
@@ -438,6 +484,7 @@ function Toolbar({
   campaignFilter, onCampaignFilterChange,
   allCampaigns, showCampaignDropdown, onToggleCampaignDropdown,
   showCampaignFilter,
+  showWindowPicker = true,   // Insights/WBR Phase 5: WBR/Insights tabs use fixed windows
 }) {
   const isPreset = windowState.kind === 'preset';
   const [customStart, setCustomStart] = useState(
@@ -464,6 +511,7 @@ function Toolbar({
         </select>
       </div>
 
+      {showWindowPicker && (
       <div className="trv-toolbar-group">
         <span className="trv-toolbar-label">Window:</span>
         {WINDOW_PRESETS.map(p => (
@@ -505,6 +553,7 @@ function Toolbar({
           </span>
         )}
       </div>
+      )}
 
       {showCampaignFilter && (
         <div className="trv-toolbar-group trv-toolbar-right">
