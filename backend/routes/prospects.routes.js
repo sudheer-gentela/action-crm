@@ -2211,6 +2211,29 @@ router.post('/bulk-campaign', async (req, res) => {
       }
     }
 
+    // When REMOVING from a campaign (campaignId === null), also stop the
+    // prospects' active/paused sequence enrollments — removed-from-campaign must
+    // mean removed-from-sequence so the firer stops sending. Scoped to prospects
+    // that are actually in a campaign right now, and run BEFORE we null
+    // campaign_id so a partial failure can't leave someone untagged-but-enrolled.
+    // (A move to a different campaign is left untouched — only explicit removal
+    // stops sequences.)
+    let enrollmentsStopped = 0;
+    if (campaignId == null) {
+      const stopRes = await db.query(
+        `UPDATE sequence_enrollments se
+            SET status = 'stopped', stopped_at = NOW(), stop_reason = 'removed_from_campaign'
+           FROM prospects p
+          WHERE se.prospect_id = p.id
+            AND p.org_id       = $1
+            AND p.id = ANY($2::int[])
+            AND p.campaign_id IS NOT NULL
+            AND se.status IN ('active', 'paused')`,
+        [req.orgId, ids]
+      );
+      enrollmentsStopped = stopRes.rowCount;
+    }
+
     const result = await db.query(
       `UPDATE prospects
           SET campaign_id = $1, updated_at = CURRENT_TIMESTAMP
@@ -2222,6 +2245,7 @@ router.post('/bulk-campaign', async (req, res) => {
     res.json({
       updated: result.rowCount,
       campaignId: campaignId != null ? parseInt(campaignId, 10) : null,
+      enrollmentsStopped,
       message: campaignId == null
         ? `Removed ${result.rowCount} prospect(s) from their campaign.`
         : `Moved ${result.rowCount} prospect(s) to campaign ${campaignId}.`,

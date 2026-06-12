@@ -2250,6 +2250,24 @@ router.delete('/:id/prospects', async (req, res) => {
     if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
     if (!(await CampaignAccess.requireCanMutate(req, res, campaign))) return;
 
+    // Removing someone from a campaign must also take them out of the
+    // campaign's sequence, otherwise the firer keeps sending. Stop their
+    // active/paused enrollments FIRST (scoped to prospects currently in THIS
+    // campaign, before we null campaign_id) so a partial failure can never
+    // leave a prospect untagged but still enrolled. Mirrors the campaign-delete
+    // cascade's stop step.
+    const stopRes = await pool.query(
+      `UPDATE sequence_enrollments se
+          SET status = 'stopped', stopped_at = NOW(), stop_reason = 'removed_from_campaign'
+         FROM prospects p
+        WHERE se.prospect_id = p.id
+          AND p.org_id      = $1
+          AND p.campaign_id = $2
+          AND p.id = ANY($3::int[])
+          AND se.status IN ('active', 'paused')`,
+      [req.orgId, req.params.id, prospectIds]
+    );
+
     const { rows } = await pool.query(
       `UPDATE prospects
           SET campaign_id = NULL
@@ -2259,7 +2277,7 @@ router.delete('/:id/prospects', async (req, res) => {
        RETURNING id`,
       [req.orgId, req.params.id, prospectIds]
     );
-    res.json({ ok: true, removed: rows.length });
+    res.json({ ok: true, removed: rows.length, enrollmentsStopped: stopRes.rowCount });
   } catch (err) {
     console.error('campaigns DELETE /:id/prospects', err);
     res.status(500).json({ error: { message: 'Failed to remove prospects' } });
