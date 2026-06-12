@@ -20,6 +20,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiFetch } from './prospectingShared';
 import CampaignConfigPanel from './CampaignConfigPanel';
+import { CampaignTrackingToggles } from './TrackingSettings';   // Insights/WBR Phase 7
 
 const EMBER = '#E8630A';
 const TEAL  = '#0F9D8E';
@@ -327,7 +328,8 @@ export default function CampaignConfigScreen({ campaignId, onBack }) {
   // default, keeps the clean /config URL.
   const [tab, setTab] = useState(() => {
     const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/');
-    return parts[4]?.toLowerCase() === 'schedule' ? 'schedule' : 'outreach';
+    const seg = parts[4]?.toLowerCase();
+    return seg === 'schedule' ? 'schedule' : seg === 'tracking' ? 'tracking' : 'outreach';
   });
 
   useEffect(() => {
@@ -335,6 +337,7 @@ export default function CampaignConfigScreen({ campaignId, onBack }) {
     if (parts[0]?.toLowerCase() !== 'prospecting' || parts[1]?.toLowerCase() !== 'campaigns') return;
     if (parts[3]?.toLowerCase() !== 'config') return;
     const want = tab === 'schedule' ? `#/prospecting/campaigns/${campaignId}/config/schedule`
+               : tab === 'tracking' ? `#/prospecting/campaigns/${campaignId}/config/tracking`
                                     : `#/prospecting/campaigns/${campaignId}/config`;
     if (window.location.hash !== want) window.history.replaceState(null, '', want);
   }, [tab, campaignId]);
@@ -370,6 +373,7 @@ export default function CampaignConfigScreen({ campaignId, onBack }) {
   const TABS = [
     { key: 'outreach', label: '🛠 Outreach config',  badge: cfgN },
     { key: 'schedule', label: '📅 Sending schedule', badge: schedN },
+    { key: 'tracking', label: '🔗 Tracking',         badge: 0 },     // Insights/WBR Phase 7
   ];
 
   return (
@@ -442,6 +446,14 @@ export default function CampaignConfigScreen({ campaignId, onBack }) {
 
       {tab === 'schedule' && (
         <ScheduleConfigSection campaignId={campaignId} />
+      )}
+
+      {/* Insights/WBR Phase 7 — open/click tracking toggles (default OFF).
+          Self-contained: persists via PUT /tracking-domains/campaign/:id/toggles
+          (dedicated columns — deliberately NOT the config-override jsonb,
+          which is replace-on-save; see design doc D39 amendment). */}
+      {tab === 'tracking' && (
+        <CampaignTrackingToggles campaignId={campaignId} />
       )}
     </div>
   );
