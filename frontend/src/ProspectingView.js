@@ -275,6 +275,18 @@ export default function ProspectingView() {
     return () => window.removeEventListener('campaign-filter', onCampaignFilter);
   }, []);
 
+  // Reverse of the campaign-filter bridge: reopen the campaign drawer the rep
+  // came from. Set the hash first so CampaignsView's mount initializer reads
+  // the campaign id and opens that drawer; then switch to the Campaigns view.
+  // The viewMode hash-sync effect leaves the id intact because segment-1
+  // already matches 'campaigns'. campaignFilter is left set so returning to
+  // the pipeline keeps the same scope.
+  const backToCampaign = () => {
+    if (!campaignFilter?.campaignId) return;
+    window.location.hash = `#/prospecting/campaigns/${campaignFilter.campaignId}`;
+    setViewMode('campaigns');
+  };
+
   // Drafts deep-link bridge: CampaignsView's "Preview drafts" dispatches a
   // 'drafts-deep-link' window event. We catch it, store the campaign context,
   // and switch to the Inbox so the user lands on Drafts pre-filtered to that
@@ -1043,13 +1055,25 @@ export default function ProspectingView() {
               ))}
             </select>
           </div>
-          <button
-            onClick={() => setCampaignFilter(null)}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: '#92400e', fontSize: 13, fontWeight: 600,
-            }}
-          >✕ Clear filter</button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+            <button
+              onClick={backToCampaign}
+              title={`Back to "${campaignFilter.campaignName}" campaign`}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                background: '#fff', border: '1px solid #FBCF9D', borderRadius: 5,
+                cursor: 'pointer', color: '#9a3412', fontSize: 13, fontWeight: 600,
+                padding: '4px 10px',
+              }}
+            >← Back to campaign</button>
+            <button
+              onClick={() => setCampaignFilter(null)}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: '#92400e', fontSize: 13, fontWeight: 600,
+              }}
+            >✕ Clear filter</button>
+          </div>
         </div>
       )}
 

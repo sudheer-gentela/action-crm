@@ -25,7 +25,14 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
   // Default to enrolling everything — that's the workflow you said you want.
   // The slider in 'enrollAll' mode is read-only (showing readyCount) since
   // the count is implied by the toggle.
-  const [enrollAll,  setEnrollAll]  = useState(true);
+  // Mode: 'all' (enroll everything), 'today' (capped batch), 'pick' (choose
+  // specific prospects). 'pick' fetches the eligible research-stage list and
+  // sends an explicit prospectIds array to bulk-activate.
+  const [mode, setMode] = useState('all');
+  const [pickList,    setPickList]    = useState(null);   // null = not yet loaded
+  const [pickLoading, setPickLoading] = useState(false);
+  const [pickError,   setPickError]   = useState('');
+  const [pickedIds,   setPickedIds]   = useState(() => new Set());
   const [cap,        setCap]        = useState(null);   // { orgCap, userTarget, effective }
   const [loading,    setLoading]    = useState(true);
   const [activating, setActivating] = useState(false);
@@ -44,10 +51,10 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                     || r?.linkedinDailyActivationCap || r?.limits?.linkedinDailyActivationCap || 25;
         setCap({ orgCap, userTarget: null, effective: orgCap });
         // Initial count: if enrollAll, all ready prospects; else min(cap, ready).
-        setCount(enrollAll ? (readyCount || 0) : Math.min(orgCap, readyCount || 0));
+        setCount(mode === 'all' ? (readyCount || 0) : Math.min(orgCap, readyCount || 0));
       } catch (err) {
         setCap({ orgCap: 25, userTarget: null, effective: 25 });
-        setCount(enrollAll ? (readyCount || 0) : Math.min(25, readyCount || 0));
+        setCount(mode === 'all' ? (readyCount || 0) : Math.min(25, readyCount || 0));
       } finally {
         setLoading(false);
       }
@@ -55,22 +62,59 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readyCount]);
 
-  // When toggling enrollAll, reset count appropriately.
+  // When switching modes, reset count appropriately.
   useEffect(() => {
     if (!cap) return;
-    if (enrollAll) setCount(readyCount || 0);
-    else            setCount(Math.min(cap.effective, readyCount || 0));
+    if (mode === 'all') setCount(readyCount || 0);
+    else if (mode === 'today') setCount(Math.min(cap.effective, readyCount || 0));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enrollAll]);
+  }, [mode]);
+
+  // Fetch the eligible (research-stage) prospects the first time pick mode is
+  // entered. Default selection = all of them; the rep deselects what they don't
+  // want. Already-enrolled prospects, if any slip in, are skipped server-side.
+  useEffect(() => {
+    if (mode !== 'pick' || pickList !== null) return;
+    setPickLoading(true);
+    setPickError('');
+    (async () => {
+      try {
+        const r = await apiFetch(`/prospects?campaignId=${campaign.id}&stage=research`);
+        const list = r.prospects || [];
+        setPickList(list);
+        setPickedIds(new Set(list.map(p => p.id)));
+      } catch (err) {
+        setPickError(err.message || 'Failed to load prospects');
+        setPickList([]);
+      } finally {
+        setPickLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
+  // The count that actually drives the preview + activate button, per mode.
+  const effectiveCount =
+    mode === 'all'  ? (readyCount || 0) :
+    mode === 'pick' ? pickedIds.size :
+                      count;
+
+  const togglePick = (id) => {
+    setPickedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   // Debounced schedule preview fetch — runs when count changes. We use a
   // 250ms debounce so dragging the slider doesn't fire a request per pixel.
   useEffect(() => {
-    if (loading || count < 1) { setPreview(null); return; }
+    if (loading || effectiveCount < 1) { setPreview(null); return; }
     setPreviewLoading(true);
     const t = setTimeout(async () => {
       try {
-        const r = await apiFetch(`/prospecting-campaigns/${campaign.id}/schedule-preview?count=${count}`);
+        const r = await apiFetch(`/prospecting-campaigns/${campaign.id}/schedule-preview?count=${effectiveCount}`);
         setPreview(r);
       } catch (err) {
         // Preview failure is non-fatal — the user can still activate.
@@ -80,7 +124,7 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
       }
     }, 250);
     return () => clearTimeout(t);
-  }, [count, loading, campaign.id]);
+  }, [effectiveCount, loading, campaign.id]);
 
   // Today's room for the first step's channel, from the live preview. Drives
   // the "Today's batch only" sizing. Falls back to the org cap pre-preview.
@@ -96,9 +140,13 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
     setActivating(true);
     setError('');
     try {
+      const body =
+        mode === 'pick' ? { prospectIds: [...pickedIds], runSkill }
+      : mode === 'all'  ? { enrollAll: true, runSkill }
+      :                   { count, runSkill };
       const r = await apiFetch(`/prospecting-campaigns/${campaign.id}/bulk-activate`, {
         method: 'POST',
-        body: JSON.stringify({ count, runSkill, enrollAll }),
+        body: JSON.stringify(body),
       });
       setResult(r);
     } catch (err) {
@@ -165,23 +213,25 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                       <div>📅 No daily cap for {ch} — limited only by the active days/window</div>
                     )}
                     <div style={{ color: '#6b7280', fontSize: 11, marginTop: 4 }}>
-                      {enrollAll
+                      {mode === 'all'
                         ? `Enrolling everything: ${readyCount} prospects pre-scheduled across days, respecting capacity.`
-                        : `Today's batch only — the rest stay in research for later.`}
+                        : mode === 'pick'
+                          ? `Choosing specific prospects — ${pickedIds.size} selected.`
+                          : `Today's batch only — the rest stay in research for later.`}
                     </div>
                   </div>
                 );
               })()}
 
-              {/* Mode toggle: enrollAll vs today's batch only */}
+              {/* Mode toggle: enroll all · today's batch · choose prospects */}
               <div className="pv-form-section">
                 <h4 style={{ marginBottom: 6 }}>Mode</h4>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, cursor: 'pointer' }}>
                     <input
                       type="radio"
-                      checked={enrollAll}
-                      onChange={() => setEnrollAll(true)}
+                      checked={mode === 'all'}
+                      onChange={() => setMode('all')}
                     />
                     <span>
                       <strong>Enroll all eligible</strong> ({readyCount} prospects)
@@ -193,8 +243,8 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                   <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, cursor: 'pointer' }}>
                     <input
                       type="radio"
-                      checked={!enrollAll}
-                      onChange={() => setEnrollAll(false)}
+                      checked={mode === 'today'}
+                      onChange={() => setMode('today')}
                     />
                     <span>
                       <strong>Today's batch only</strong> (up to {todayMax})
@@ -203,12 +253,25 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                       </div>
                     </span>
                   </label>
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      checked={mode === 'pick'}
+                      onChange={() => setMode('pick')}
+                    />
+                    <span>
+                      <strong>Choose prospects</strong>
+                      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+                        Pick exactly which research-ready prospects to activate.
+                      </div>
+                    </span>
+                  </label>
                 </div>
               </div>
 
-              {/* Count input — only shown when 'Today's batch only' is selected.
-                  In enrollAll mode the count is implicit (readyCount). */}
-              {!enrollAll && (
+              {/* Count input — only shown in 'Today's batch only' mode.
+                  In enroll-all the count is implicit; in pick it's the tally. */}
+              {mode === 'today' && (
                 <div className="pv-form-section">
                   <h4>How many?</h4>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -250,8 +313,81 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                 </div>
               )}
 
+              {/* Prospect picker — choose exactly which to activate. */}
+              {mode === 'pick' && (
+                <div className="pv-form-section">
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                    <h4 style={{ margin: 0 }}>Prospects</h4>
+                    {pickList && pickList.length > 0 && (
+                      <div style={{ display: 'flex', gap: 10, fontSize: 11 }}>
+                        <button
+                          type="button"
+                          onClick={() => setPickedIds(new Set(pickList.map(p => p.id)))}
+                          style={{ background: 'none', border: 'none', color: '#0F766E', cursor: 'pointer', fontWeight: 600 }}
+                        >Select all</button>
+                        <button
+                          type="button"
+                          onClick={() => setPickedIds(new Set())}
+                          style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer' }}
+                        >None</button>
+                      </div>
+                    )}
+                  </div>
+
+                  {pickLoading ? (
+                    <div style={{ fontSize: 13, color: '#6b7280', padding: '10px 0' }}>Loading prospects…</div>
+                  ) : pickError ? (
+                    <div style={{ fontSize: 13, color: '#991b1b', padding: '8px 12px', background: '#fef2f2', borderRadius: 6 }}>
+                      {pickError}
+                    </div>
+                  ) : (pickList && pickList.length === 0) ? (
+                    <div style={{ fontSize: 13, color: '#9ca3af', padding: '10px 0' }}>
+                      No research-stage prospects to activate.
+                    </div>
+                  ) : (
+                    <div style={{
+                      maxHeight: 220, overflowY: 'auto',
+                      border: '1px solid #e5e7eb', borderRadius: 6,
+                    }}>
+                      {(pickList || []).map((p, i) => {
+                        const checked = pickedIds.has(p.id);
+                        return (
+                          <label
+                            key={p.id}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 10,
+                              padding: '8px 10px', cursor: 'pointer',
+                              borderBottom: i === pickList.length - 1 ? 'none' : '1px solid #f1f5f9',
+                              background: checked ? '#f0fdfa' : 'transparent',
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => togglePick(p.id)}
+                              style={{ cursor: 'pointer', flexShrink: 0 }}
+                            />
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: '#1f2937' }}>
+                                {p.first_name} {p.last_name}
+                              </div>
+                              <div style={{ fontSize: 11, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {[p.title, p.company_name].filter(Boolean).join(' · ') || '—'}
+                              </div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>
+                    {pickedIds.size} of {pickList ? pickList.length : 0} selected
+                  </div>
+                </div>
+              )}
+
               {/* Schedule preview — shows what's about to happen, per day. */}
-              <SchedulePreview preview={preview} loading={previewLoading} count={count} />
+              <SchedulePreview preview={preview} loading={previewLoading} count={effectiveCount} />
 
               {/* Skill toggle — only relevant when the sequence uses AI */}
               {aiEnabled && (
@@ -284,12 +420,12 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                 <button onClick={onClose} disabled={activating} className="pv-btn-secondary">Cancel</button>
                 <button
                   onClick={handleActivate}
-                  disabled={activating || readyCount === 0 || count < 1}
+                  disabled={activating || readyCount === 0 || effectiveCount < 1}
                   className="pv-btn-primary"
                 >
                   {activating
-                    ? `Activating ${count}…${runSkill ? ' (running skill)' : ''}`
-                    : `Activate ${count} ${count === 1 ? 'prospect' : 'prospects'}`}
+                    ? `Activating ${effectiveCount}…${runSkill ? ' (running skill)' : ''}`
+                    : `Activate ${effectiveCount} ${effectiveCount === 1 ? 'prospect' : 'prospects'}`}
                 </button>
               </div>
             </>
