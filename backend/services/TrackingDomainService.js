@@ -28,8 +28,19 @@ const db = require('../config/database');
 const CNAME_TARGET = () => process.env.TRACKING_CNAME_TARGET || 'track.gowarmcrm.com';
 const CF_API = 'https://api.cloudflare.com/client/v4';
 
-let _fetchImpl = typeof fetch === 'function' ? fetch : null;
-let _resolveCname = (h) => dns.resolveCname(h);
+// All outbound calls are time-bounded: Node fetch has NO default timeout,
+// and a stalled Cloudflare/DNS call would otherwise hang the verify request
+// (and the UI button) for minutes.
+const CF_TIMEOUT_MS = 15000;
+const DNS_TIMEOUT_MS = 8000;
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} timed out after ${ms / 1000}s — try Verify again`)), ms)),
+  ]);
+}
+let _fetchImpl = (url, opts = {}) => fetch(url, { signal: AbortSignal.timeout(CF_TIMEOUT_MS), ...opts });
+let _resolveCname = (h) => withTimeout(dns.resolveCname(h), DNS_TIMEOUT_MS, 'DNS lookup');
 function setFetchImpl(fn) { _fetchImpl = fn; }
 function setDnsResolver(fn) { _resolveCname = fn; }
 

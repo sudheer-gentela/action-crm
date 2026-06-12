@@ -66,8 +66,12 @@ export function TrackingDomainSettings() {
   };
   const verify = (id) => {
     setBusy(true); setError(null);
-    apiFetch(`/tracking-domains/${id}/verify`, { method: 'POST' })
-      .then(load).catch((e) => setError(e.message)).finally(() => setBusy(false));
+    const timeout = new Promise((_, rej) =>
+      setTimeout(() => rej(new Error('Verification is taking longer than expected — the check continues in the background; click Verify again in a minute.')), 30000));
+    Promise.race([
+      apiFetch(`/tracking-domains/${id}/verify`, { method: 'POST' }).then(load),
+      timeout,
+    ]).catch((e) => setError(e.message)).finally(() => setBusy(false));
   };
 
   return (
