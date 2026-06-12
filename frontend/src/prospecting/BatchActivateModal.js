@@ -318,20 +318,9 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                 <div className="pv-form-section">
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                     <h4 style={{ margin: 0 }}>Prospects</h4>
-                    {pickList && pickList.length > 0 && (
-                      <div style={{ display: 'flex', gap: 10, fontSize: 11 }}>
-                        <button
-                          type="button"
-                          onClick={() => setPickedIds(new Set(pickList.map(p => p.id)))}
-                          style={{ background: 'none', border: 'none', color: '#0F766E', cursor: 'pointer', fontWeight: 600 }}
-                        >Select all</button>
-                        <button
-                          type="button"
-                          onClick={() => setPickedIds(new Set())}
-                          style={{ background: 'none', border: 'none', color: '#6b7280', cursor: 'pointer' }}
-                        >None</button>
-                      </div>
-                    )}
+                    <span style={{ fontSize: 11, color: '#6b7280' }}>
+                      {pickedIds.size} of {pickList ? pickList.length : 0} selected
+                    </span>
                   </div>
 
                   {pickLoading ? (
@@ -344,19 +333,43 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                     <div style={{ fontSize: 13, color: '#9ca3af', padding: '10px 0' }}>
                       No research-stage prospects to activate.
                     </div>
-                  ) : (
+                  ) : (() => {
+                    const allSelected = pickList.length > 0 && pickedIds.size === pickList.length;
+                    return (
                     <div style={{
-                      maxHeight: 220, overflowY: 'auto',
+                      maxHeight: 240, overflowY: 'auto', overflowX: 'hidden',
                       border: '1px solid #e5e7eb', borderRadius: 6,
                     }}>
-                      {(pickList || []).map((p, i) => {
+                      {/* Sticky select-all — tick everything, then untick a few. */}
+                      <div style={{
+                        position: 'sticky', top: 0, zIndex: 1,
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        padding: '6px 9px', background: '#f8fafc',
+                        borderBottom: '1px solid #e5e7eb', cursor: 'pointer',
+                      }}
+                        onClick={() => setPickedIds(allSelected ? new Set() : new Set(pickList.map(p => p.id)))}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={allSelected}
+                          onChange={() => setPickedIds(allSelected ? new Set() : new Set(pickList.map(p => p.id)))}
+                          onClick={e => e.stopPropagation()}
+                          style={{ width: 14, height: 14, margin: 0, flexShrink: 0, cursor: 'pointer' }}
+                        />
+                        <span style={{ fontSize: 11, fontWeight: 600, color: '#475569' }}>Select all</span>
+                      </div>
+
+                      {pickList.map((p, i) => {
                         const checked = pickedIds.has(p.id);
+                        const name = `${p.first_name || ''} ${p.last_name || ''}`.trim() || '—';
+                        const sub  = [p.title, p.company_name].filter(Boolean).join(' · ');
                         return (
-                          <label
+                          <div
                             key={p.id}
+                            onClick={() => togglePick(p.id)}
                             style={{
-                              display: 'flex', alignItems: 'center', gap: 10,
-                              padding: '8px 10px', cursor: 'pointer',
+                              display: 'flex', alignItems: 'center', gap: 8,
+                              padding: '5px 9px', cursor: 'pointer',
                               borderBottom: i === pickList.length - 1 ? 'none' : '1px solid #f1f5f9',
                               background: checked ? '#f0fdfa' : 'transparent',
                             }}
@@ -365,24 +378,32 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                               type="checkbox"
                               checked={checked}
                               onChange={() => togglePick(p.id)}
-                              style={{ cursor: 'pointer', flexShrink: 0 }}
+                              onClick={e => e.stopPropagation()}
+                              style={{ width: 14, height: 14, margin: 0, flexShrink: 0, cursor: 'pointer' }}
                             />
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontSize: 13, fontWeight: 600, color: '#1f2937' }}>
-                                {p.first_name} {p.last_name}
-                              </div>
-                              <div style={{ fontSize: 11, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {[p.title, p.company_name].filter(Boolean).join(' · ') || '—'}
-                              </div>
+                            <div style={{
+                              flex: 1, minWidth: 0, fontSize: 13,
+                              overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis',
+                            }}>
+                              {p.linkedin_url ? (
+                                <a
+                                  href={p.linkedin_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={e => e.stopPropagation()}
+                                  style={{ color: '#0F766E', fontWeight: 600, textDecoration: 'none' }}
+                                >{name}</a>
+                              ) : (
+                                <span style={{ fontWeight: 600, color: '#1f2937' }}>{name}</span>
+                              )}
+                              {sub && <span style={{ color: '#6b7280', fontWeight: 400 }}> · {sub}</span>}
                             </div>
-                          </label>
+                          </div>
                         );
                       })}
                     </div>
-                  )}
-                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 6 }}>
-                    {pickedIds.size} of {pickList ? pickList.length : 0} selected
-                  </div>
+                    );
+                  })()}
                 </div>
               )}
 
