@@ -163,7 +163,7 @@ router.get('/', async (req, res) => {
 
 // POST /api/sequences  — body: { name, description, require_approval, ai_enabled, steps: [{channel, delay_days, subject_template, body_template, task_note, require_approval}] }
 router.post('/', async (req, res) => {
-  const { name, description, require_approval = true, ai_enabled = true, personalize_config_default = null, steps = [], visibility = 'shared', allow_manager_edit = false } = req.body;
+  const { name, description, require_approval = true, ai_enabled = false, personalize_config_default = null, steps = [], visibility = 'shared', allow_manager_edit = false } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: { message: 'name is required' } });
   const vis = visibility === 'private' ? 'private' : 'shared';
 
@@ -175,7 +175,7 @@ router.post('/', async (req, res) => {
       `INSERT INTO sequences (org_id, name, description, created_by, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [req.orgId, name.trim(), description || null, req.user.userId, require_approval,
-       ai_enabled !== false,
+       ai_enabled === true,
        personalize_config_default ? JSON.stringify(personalize_config_default) : null,
        vis, allow_manager_edit === true]
     );

@@ -19,9 +19,9 @@ import { apiFetch } from './prospectingShared';
 
 export default function BatchActivateModal({ campaign, readyCount, aiEnabled = true, onClose, onActivated }) {
   const [count,      setCount]      = useState(0);
-  // runSkill defaults to the sequence's AI setting. When the sequence has AI
-  // off there's nothing to run, so the toggle is forced off and hidden.
-  const [runSkill,   setRunSkill]   = useState(aiEnabled !== false);
+  // Lazy by default: personalisation happens just-in-time at send. This toggle
+  // is an opt-in to personalise the whole batch now and preview the drafts.
+  const [runSkill,   setRunSkill]   = useState(false);
   // Default to enrolling everything — that's the workflow you said you want.
   // The slider in 'enrollAll' mode is read-only (showing readyCount) since
   // the count is implied by the toggle.
@@ -141,9 +141,9 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
     setError('');
     try {
       const body =
-        mode === 'pick' ? { prospectIds: [...pickedIds], runSkill }
-      : mode === 'all'  ? { enrollAll: true, runSkill }
-      :                   { count, runSkill };
+        mode === 'pick' ? { prospectIds: [...pickedIds], personalizeNow: runSkill }
+      : mode === 'all'  ? { enrollAll: true, personalizeNow: runSkill }
+      :                   { count, personalizeNow: runSkill };
       const r = await apiFetch(`/prospecting-campaigns/${campaign.id}/bulk-activate`, {
         method: 'POST',
         body: JSON.stringify(body),
@@ -410,7 +410,10 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
               {/* Schedule preview — shows what's about to happen, per day. */}
               <SchedulePreview preview={preview} loading={previewLoading} count={effectiveCount} />
 
-              {/* Skill toggle — only relevant when the sequence uses AI */}
+              {/* Personalisation timing — only relevant when the sequence uses AI.
+                  Default OFF: drafts are personalised just-in-time at send (using
+                  the freshest signal). ON: personalise the whole batch now so the
+                  rep can preview every draft — those drafts are then frozen. */}
               {aiEnabled && (
               <div className="pv-form-section">
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
@@ -420,11 +423,12 @@ export default function BatchActivateModal({ campaign, readyCount, aiEnabled = t
                     onChange={e => setRunSkill(e.target.checked)}
                   />
                   <span>
-                    Run AI personalisation (outreach-personalization skill) per prospect
+                    Personalise now &amp; create drafts (preview)
                   </span>
                 </label>
                 <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4, marginLeft: 22 }}>
-                  Generates first email + LinkedIn note from each prospect's signal. Adds ~5s per prospect.
+                  Off (default): each draft is written at send time from the latest signal.
+                  On: generate all drafts now so you can review them — adds ~5s per prospect, and the drafts are then fixed.
                 </div>
               </div>
               )}

@@ -3357,8 +3357,15 @@ router.post('/:id/bulk-activate', async (req, res) => {
     // outreach-linkedin with the inferred step_intent. The dispatcher handles
     // any sequence shape — 3 steps or 8 steps, LinkedIn-first or email-first,
     // with breakups and tasks in any position.
-    const effectiveRunSkill = runSkill === undefined ? campaign.sequence_ai_enabled !== false : runSkill;
-    const wantSkill = effectiveRunSkill !== false && skipPersonalisation !== true;
+    // Lazy by default (D-lazy): personalisation now happens just-in-time in the
+    // SequenceStepFirer, so activation does NOT spend LLM calls. The rep can opt
+    // into eager "create drafts now" preview per activation via personalizeNow,
+    // which pre-personalises the whole batch up front (those drafts are then
+    // frozen — the firer reuses them as-is). Only meaningful when the sequence
+    // uses AI; skipPersonalisation remains a hard "force off".
+    const wantSkill = req.body.personalizeNow === true
+      && campaign.sequence_ai_enabled !== false
+      && skipPersonalisation !== true;
     const enrollments = [];
     const skipped     = [];
     let slotIndex     = 0;

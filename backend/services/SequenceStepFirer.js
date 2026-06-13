@@ -43,6 +43,7 @@ const { sendEmail: sendGmailEmail }   = require('./googleService');
 const EmailTrackingService            = require('./EmailTrackingService');   // Insights/WBR Phase 7
 const { sendEmail: sendOutlookEmail } = require('./outlookService');
 const { plainTextToHtml }             = require('./emailFormatter');
+const PersonalizationDispatcher       = require('./PersonalizationDispatcher');  // lazy JIT personalisation
 
 // ── Template renderer ─────────────────────────────────────────────────────────
 function renderTemplate(template, prospect, account) {
@@ -260,6 +261,51 @@ const AUTO_SEND_PREDICATE = `
   AND COALESCE(ss.require_approval, s.require_approval) = false
 `;
 
+// ── Lazy (JIT) personalisation ───────────────────────────────────────────────
+// Default mode: enrollments are created WITHOUT personalised content. The skill
+// runs here, on demand, only when a step's artifact is actually being produced —
+// a draft is being written, or (for auto-send) a sender slot has already been
+// secured. So we never spend an LLM call on a step that can't proceed (deferred
+// for capacity, or a prospect removed first), and we use the freshest
+// engagement history available at that moment.
+//
+// Returns the personalised step { subject, body, personalize_sources } or null
+// (caller then falls back to the sequence template). Persists the result onto
+// the enrollment so it's reused — and frozen — on subsequent ticks.
+async function ensureStepPersonalized(client, enrollment, channel) {
+  if (enrollment.seq_ai_enabled === false) return null;            // templated sequence
+  if (channel !== 'email' && channel !== 'linkedin') return null;  // call/task → templates
+  const key = enrollment.current_step;
+  const existing = enrollment.personalised_steps?.[key]
+                ?? enrollment.personalised_steps?.[String(key)];
+  if (existing) return existing;                                   // eager / prior tick
+
+  let result;
+  try {
+    result = await PersonalizationDispatcher.personaliseEnrollment({
+      orgId:         enrollment.org_id,
+      userId:        enrollment.enrolled_by,
+      sequenceId:    enrollment.seq_id,
+      prospectId:    enrollment.prospect_id,
+      onlyStepOrder: key,
+    });
+  } catch (err) {
+    console.warn(`SequenceStepFirer: JIT personalise failed for enrollment ${enrollment.id} step ${key}: ${err.message}`);
+    return null;                                                   // fall back to template
+  }
+
+  const ps = result.personalisedSteps?.[key] ?? result.personalisedSteps?.[String(key)] ?? null;
+  if (!ps) return null;
+
+  const merged = { ...(enrollment.personalised_steps || {}), [key]: ps };
+  await client.query(
+    `UPDATE sequence_enrollments SET personalised_steps = $1::jsonb WHERE id = $2`,
+    [JSON.stringify(merged), enrollment.id]
+  );
+  enrollment.personalised_steps = merged;
+  return ps;
+}
+
 /**
  * Create 'scheduled' rows for active auto-send enrollments whose CURRENT step
  * has no pending (scheduled/sending) or sent row yet. Idempotent via
@@ -354,6 +400,7 @@ async function materializeRows(client, enrollmentIds = null) {
       WHERE se.status = 'active'
         AND se.next_step_due IS NOT NULL
         AND ${AUTO_SEND_PREDICATE}
+        AND s.ai_enabled = false
         AND NOT EXISTS (
           SELECT 1 FROM sequence_step_logs l
            WHERE l.enrollment_id    = se.id
@@ -573,6 +620,7 @@ const SequenceStepFirer = {
       const dueRes = await client.query(
         `SELECT se.*, s.id AS seq_id, s.name AS seq_name,
                 s.require_approval AS seq_require_approval,
+                s.ai_enabled AS seq_ai_enabled,
                 p.campaign_id AS prospect_campaign_id,
                 ss.channel AS current_step_channel
            FROM sequence_enrollments se
@@ -731,16 +779,26 @@ const SequenceStepFirer = {
             enrollment.personalised_steps?.[enrollment.current_step] ||
             enrollment.personalised_steps?.[String(enrollment.current_step)];
 
-          const subject = personalisedStep?.subject ?? renderTemplate(step.subject_template, prospect || {}, account);
-          let   body    = personalisedStep?.body    ?? renderTemplate(step.body_template,    prospect || {}, account);
+          let subject = personalisedStep?.subject ?? renderTemplate(step.subject_template, prospect || {}, account);
+          let body    = personalisedStep?.body    ?? renderTemplate(step.body_template,    prospect || {}, account);
 
           // Phase 3: provenance — if the AI generated this draft with LinkedIn
           // data, the enrollment.personalised_steps blob carries a
           // personalize_sources object. Copy it onto the log row so the
           // rep-facing footer + immutable audit trail both stay consistent.
-          const personalizeSourcesJson = personalisedStep?.personalize_sources
+          let personalizeSourcesJson = personalisedStep?.personalize_sources
             ? JSON.stringify(personalisedStep.personalize_sources)
             : null;
+
+          // Fold a JIT-personalisation result into subject/body/sources. Used by
+          // both branches; in the SEND branch it runs only AFTER a sender slot is
+          // secured so the LLM is never spent on a capacity-deferred step.
+          const applyPersonalised = (ps) => {
+            if (!ps) return;
+            if (ps.subject != null) subject = ps.subject;
+            if (ps.body    != null) body    = ps.body;
+            if (ps.personalize_sources) personalizeSourcesJson = JSON.stringify(ps.personalize_sources);
+          };
 
           // Has the rep approved this email step for paced sending? An approved
           // draft is flipped to a pending 'scheduled' row by /drafts/approve.
@@ -771,6 +829,11 @@ const SequenceStepFirer = {
               // Draft already exists and is awaiting rep action — skip
               continue;
             }
+
+            // JIT personalisation: this draft is being created right now, so
+            // personalise it now (with the freshest engagement history) unless
+            // it was already personalised eagerly at activation.
+            applyPersonalised(await ensureStepPersonalized(client, enrollment, step.channel));
 
             // ── Fetch sender for signature + display_name ─────────────────
             // Client sender if the prospect belongs to a client, else rep's sender.
@@ -911,6 +974,13 @@ const SequenceStepFirer = {
             continue;
           }
           const sender = pick.sender;
+
+          // Capacity is now confirmed (a sender slot is secured), so personalise
+          // JIT — this is the point where "the step has capacity to send." For an
+          // AI sequence the scheduled row was intentionally NOT pre-materialised
+          // by the top-up, so the INSERT below is the real creation and carries
+          // the freshly personalised content.
+          applyPersonalised(await ensureStepPersonalized(client, enrollment, step.channel));
 
           // Ensure a pending scheduled row exists (the top-up normally created it
           // ahead of time; this INSERT is the race/backfill backstop). A unique

@@ -300,7 +300,7 @@ async function loadEngagementHistory(prospectId, orgId) {
 // Never throws on per-step failures — those go into errors[]. Throws on
 // hard failures (sequence not found, no steps, etc.) with statusCode.
 // ─────────────────────────────────────────────────────────────────────────────
-async function personaliseEnrollment({ orgId, userId, sequenceId, prospectId, hookPreferences }) {
+async function personaliseEnrollment({ orgId, userId, sequenceId, prospectId, hookPreferences, onlyStepOrder }) {
   if (!orgId || !userId || !sequenceId || !prospectId) {
     const e = new Error('orgId, userId, sequenceId, prospectId all required');
     e.statusCode = 400;
@@ -321,6 +321,9 @@ async function personaliseEnrollment({ orgId, userId, sequenceId, prospectId, ho
   let personalised = 0, skipped = 0, errored = 0;
 
   for (const step of steps) {
+    // JIT mode: when the firer asks for a single step, personalise only that
+    // one (the others are personalised lazily as the enrollment advances).
+    if (onlyStepOrder != null && step.step_order !== onlyStepOrder) continue;
     const channel = step.channel;
 
     // call/task — skip personalisation, the firer renders templates

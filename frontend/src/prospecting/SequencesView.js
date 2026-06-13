@@ -1525,9 +1525,28 @@ function SequencesView({ prospects, search }) {
                     {viewingSeq.description}
                   </div>
                 )}
-                <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: 12, color: '#9ca3af' }}>
+                <div style={{ display: 'flex', gap: 12, marginTop: 8, fontSize: 12, color: '#9ca3af', alignItems: 'center' }}>
                   <span>{(viewingSeq.steps || []).length} steps</span>
                   <span>Draft before sending: {viewingSeq.require_approval ? 'Yes' : 'No'}</span>
+                  <span>·</span>
+                  <span
+                    onClick={async () => {
+                      const next = !(viewingSeq.ai_enabled !== false);
+                      try {
+                        await apiFetch(`/sequences/${viewingSeq.id}`, {
+                          method: 'PATCH',
+                          body: JSON.stringify({ ai_enabled: next }),
+                        });
+                        setViewingSeq({ ...viewingSeq, ai_enabled: next });
+                      } catch (e) {
+                        alert(`Couldn't update AI setting: ${e.message}`);
+                      }
+                    }}
+                    title="When on, drafts are written by AI (just-in-time at send). When off, the sequence uses its templates verbatim."
+                    style={{ cursor: 'pointer', color: '#0F766E', fontWeight: 600 }}
+                  >
+                    AI personalisation: {viewingSeq.ai_enabled !== false ? 'On' : 'Off'} ✎
+                  </span>
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
