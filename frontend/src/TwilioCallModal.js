@@ -27,12 +27,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Device } from '@twilio/voice-sdk';
 
-export default function TwilioCallModal({ callId, prospect, onCompleted, onClosed }) {
+export default function TwilioCallModal({ callId, prospect, mode = 'softphone', onCompleted, onClosed }) {
   const API     = process.env.REACT_APP_API_URL;
   const token   = localStorage.getItem('token') || localStorage.getItem('authToken');
   const headers = { Authorization: `Bearer ${token}` };
+  const isBridge = mode === 'bridge';
 
-  const [status, setStatus]            = useState('connecting'); // connecting → ringing → in_progress → terminal
+  const [status, setStatus]            = useState(isBridge ? 'initiated' : 'connecting'); // → ringing → in_progress → terminal
   const [durationSeconds, setDuration] = useState(0);
   const [terminalMsg, setTerminalMsg]  = useState(null);
   const [error, setError]              = useState(null);
@@ -47,6 +48,7 @@ export default function TwilioCallModal({ callId, prospect, onCompleted, onClose
 
   // ── Set up the softphone Device + place the call ───────────────────────
   useEffect(() => {
+    if (isBridge) return;   // bridge mode: no browser Device — the call runs on the rep's phone
     let disposed = false;
 
     async function fetchToken() {
@@ -197,9 +199,20 @@ export default function TwilioCallModal({ callId, prospect, onCompleted, onClose
     try { call.mute(next); setMuted(next); } catch (_) {}
   };
 
-  const endCall = () => {
+  const endCall = async () => {
     if (ending) return;
     setEnding(true);
+    if (isBridge) {
+      // No browser Device — ask the backend to cancel / hang up the Twilio call.
+      try {
+        await fetch(`${API}/prospect-calls/${callId}/cancel`, {
+          method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+        });
+      } catch (_) { /* the status poll will still resolve the terminal state */ }
+      handledTerminal.current = true;
+      onClosed?.('user_canceled');
+      return;
+    }
     try { callRef.current?.disconnect(); } catch (_) {}
     // Let the status poll fire onCompleted/onClosed with the server duration.
     // If the call never connected, treat End as a user close.
@@ -223,6 +236,7 @@ export default function TwilioCallModal({ callId, prospect, onCompleted, onClose
   const headline = (() => {
     if (terminalMsg) return terminalMsg;
     if (status === 'connecting') return '🎧 Connecting your microphone…';
+    if (status === 'initiated')  return isBridge ? '📞 Dialing your phone…' : `📞 Calling ${prospectName}…`;
     if (status === 'ringing')    return `📞 Ringing ${prospectName}…`;
     if (status === 'in_progress') return `🔴 Live · ${formatDuration(displayDuration)}`;
     return `📞 Calling ${prospectName}…`;
@@ -241,24 +255,28 @@ export default function TwilioCallModal({ callId, prospect, onCompleted, onClose
         {error && <div style={{ fontSize: 12, color: '#b91c1c', marginBottom: 12 }}>{error}</div>}
 
         <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 16 }}>
-          You're on the call through your computer. Use the controls below — closing this window won't end the call.
+          {isBridge
+            ? 'Twilio is calling your phone, then bridging to the prospect. Answer your phone to connect.'
+            : "You're on the call through your computer. Use the controls below — closing this window won't end the call."}
         </div>
 
         {!terminalMsg && (
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <button
-              onClick={toggleMute}
-              disabled={!isLive}
-              style={{
-                padding: '10px 16px',
-                background: muted ? '#f59e0b' : '#f3f4f6',
-                color: muted ? '#fff' : '#111827',
-                border: '1px solid #e5e7eb', borderRadius: 6, fontSize: 14, fontWeight: 600,
-                cursor: isLive ? 'pointer' : 'not-allowed', opacity: isLive ? 1 : 0.5,
-              }}
-            >
-              {muted ? '🔇 Unmute' : '🎙️ Mute'}
-            </button>
+            {!isBridge && (
+              <button
+                onClick={toggleMute}
+                disabled={!isLive}
+                style={{
+                  padding: '10px 16px',
+                  background: muted ? '#f59e0b' : '#f3f4f6',
+                  color: muted ? '#fff' : '#111827',
+                  border: '1px solid #e5e7eb', borderRadius: 6, fontSize: 14, fontWeight: 600,
+                  cursor: isLive ? 'pointer' : 'not-allowed', opacity: isLive ? 1 : 0.5,
+                }}
+              >
+                {muted ? '🔇 Unmute' : '🎙️ Mute'}
+              </button>
+            )}
             <button
               onClick={endCall}
               disabled={ending}

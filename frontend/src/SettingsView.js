@@ -846,6 +846,9 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
   const [phone,       setPhone]       = useState('');
   const [phoneSaving, setPhoneSaving] = useState(false);
   const [phoneError,  setPhoneError]  = useState('');
+  // Org calling mode ('softphone' | 'bridge' | 'both'). Controls whether the
+  // Personal Phone field is shown — browser-only orgs don't need it.
+  const [callingMode, setCallingMode] = useState('softphone');
   const [tz,        setTz]        = useState('');
   const [tzSaving,  setTzSaving]  = useState(false);
 
@@ -874,7 +877,7 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
       const token = localStorage.getItem('token') || localStorage.getItem('authToken');
       const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
-      const [sendersRes, limitsRes, prefsRes, orgCfgRes, userPromptsRes, phoneRes, tzRes] = await Promise.all([
+      const [sendersRes, limitsRes, prefsRes, orgCfgRes, userPromptsRes, phoneRes, tzRes, csRes] = await Promise.all([
         apiService.prospectingSenders.getAll(),
         apiService.prospectingSenders.getOrgLimits(),
         fetch(`${API}/users/me/preferences/prospecting`, { headers }).then(r => r.json()),
@@ -882,6 +885,7 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
         fetch(`${API}/prompts/user/prospecting`, { headers }).then(r => r.json()),
         fetch(`${API}/users/me/phone`, { headers }).then(r => r.json()),
         fetch(`${API}/users/me/timezone`, { headers }).then(r => r.json()),
+        fetch(`${API}/org/call-settings`, { headers }).then(r => r.json()).catch(() => ({})),
       ]);
 
       setSenders(sendersRes.data?.senders || []);
@@ -889,6 +893,13 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
 
       // Phone (Phase 3 — Twilio click-to-dial)
       setPhone(phoneRes?.phone || '');
+
+      // Org calling mode — drives visibility of the Personal Phone field below.
+      setCallingMode(
+        ['softphone', 'bridge', 'both'].includes(csRes?.settings?.calling_mode)
+          ? csRes.settings.calling_mode
+          : 'softphone'
+      );
 
       // Personal timezone
       setTz(tzRes?.timezone || '');
@@ -1118,14 +1129,16 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
         {/* Only shown in the default "full prefs" view. The component is also
             mounted in showAIOnly / showSendersOnly modes from other panels — in
             those modes the phone field doesn't belong. */}
-        {!showAIOnly && !showSendersOnly && (
+        {!showAIOnly && !showSendersOnly && callingMode !== 'softphone' && (
           <div className="sv-section">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
               <div>
                 <h3 className="sv-section-heading" style={{ margin: 0 }}>📞 Personal Phone</h3>
                 <p className="sv-hint" style={{ margin: '4px 0 0' }}>
-                  Your phone in E.164 format (e.g. <code>+14155551234</code>). When you click "Call via Twilio"
-                  on a prospect, Twilio dials this number first, then bridges to the prospect when you pick up.
+                  Your phone in E.164 format (e.g. <code>+14155551234</code>).{' '}
+                  {callingMode === 'bridge'
+                    ? 'Phone-bridge calling rings this number first, then connects you to the prospect when you pick up — so it’s required to make calls.'
+                    : 'Only used for phone-bridge calling: when you choose “Call (phone bridge)” on a prospect, Twilio rings this number first. Browser calling doesn’t need it.'}
                 </p>
               </div>
             </div>
@@ -1168,7 +1181,9 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
             )}
             {!phone && !phoneError && (
               <div style={{ marginTop: 8, color: '#9ca3af', fontSize: 12 }}>
-                No phone set. You won't be able to use Twilio click-to-dial until you add one here.
+                {callingMode === 'bridge'
+                  ? "No phone set. You won't be able to make calls until you add one here."
+                  : 'No phone set. Browser calling still works; you only need this for phone-bridge calls.'}
               </div>
             )}
           </div>

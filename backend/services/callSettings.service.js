@@ -47,6 +47,12 @@ const SYSTEM_DEFAULTS = {
   recording_enabled:            true,
   recording_disclosure_enabled: true,
   rate_limits: { per_user_per_minute: 10, per_org_per_minute: 100 },
+
+  // Which calling experience(s) reps can use:
+  //   'softphone' — browser WebRTC only (default)
+  //   'bridge'    — Twilio dials the rep's phone, then bridges to the prospect
+  //   'both'      — rep picks per call
+  calling_mode: 'softphone',
 };
 
 // Valid group keys. The UI renders a separator between groups, so the
@@ -191,6 +197,15 @@ class CallSettingsService {
         throw new Error("phone_validation must be 'lenient' or 'strict'");
       }
       cleaned.phone_validation = v;
+    }
+
+    // calling_mode: 'softphone' | 'bridge' | 'both'.
+    if (patch.calling_mode !== undefined) {
+      const v = String(patch.calling_mode);
+      if (!['softphone', 'bridge', 'both'].includes(v)) {
+        throw new Error("calling_mode must be 'softphone', 'bridge', or 'both'");
+      }
+      cleaned.calling_mode = v;
     }
 
     // recording_enabled / recording_disclosure_enabled: booleans. These are

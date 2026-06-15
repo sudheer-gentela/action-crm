@@ -62,10 +62,13 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   // Which of the prospect's numbers to dial (from ProspectPhonesPanel). null
   // means "let the backend use the primary".
   const [selectedPhoneId,          setSelectedPhoneId]          = useState(null);
+  // Calling mode of the in-progress call ('softphone' | 'bridge') — drives TwilioCallModal.
+  const [activeCallMode,           setActiveCallMode]           = useState('softphone');
 
   const [callModalSequenceContext, setCallModalSequenceContext] = useState(null);
   const [calls,            setCalls]            = useState([]);
   const [callSettings,     setCallSettings]     = useState(null);
+  const callingMode = callSettings?.calling_mode || 'softphone';
   const refreshCalls = async () => {
     if (!prospect?.id) return;
     try {
@@ -86,12 +89,13 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   // into Error(message). The code lets us render specific CTAs for each
   // failure mode (REP_PHONE_MISSING → open prefs, REP_DID_MISSING → admin
   // notified, etc.).
-  const initiateTwilioCall = async () => {
+  const startCall = async (callMode) => {
     if (isInitiatingTwilio || !prospect?.id) return;
     setIsInitiatingTwilio(true);
     try {
       const token = localStorage.getItem('token') || localStorage.getItem('authToken');
-      const r = await fetch(`${API}/prospect-calls/prepare`, {
+      const endpoint = callMode === 'bridge' ? 'initiate' : 'prepare';
+      const r = await fetch(`${API}/prospect-calls/${endpoint}`, {
         method:  'POST',
         headers: {
           'Content-Type':  'application/json',
@@ -108,15 +112,17 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
         const code = body?.error?.code;
         const msg  = body?.error?.message || 'Failed to start call';
         if (code === 'REP_PHONE_MISSING') {
-          alert("Add your phone number in My Preferences before making calls.");
+          alert('Phone-bridge calling rings your own phone first — add your number in My Preferences, or use browser calling.');
         } else if (code === 'REP_DID_MISSING') {
           alert("Your admin needs to provision a Twilio phone number for you. They've been notified.");
         } else if (code === 'PROSPECT_PHONE_MISSING') {
-          alert("This prospect has no phone number on file.");
+          alert('This prospect has no phone number on file.');
+        } else if (code === 'CALLING_MODE_DISABLED') {
+          alert(msg);
         } else if (code === 'USER_RATE_LIMIT' || code === 'ORG_RATE_LIMIT') {
           alert(msg);
-        } else if (code === 'TWILIO_NOT_CONFIGURED') {
-          alert("Twilio is not set up on this deployment. Contact support.");
+        } else if (code === 'TWILIO_NOT_CONFIGURED' || code === 'TWILIO_NOT_PROVISIONED' || code === 'TWILIO_VOICE_NOT_PROVISIONED') {
+          alert(msg);
         } else if (code === 'TWILIO_21219') {
           alert("Trial account: this prospect's phone must be verified in the Twilio console first.");
         } else {
@@ -125,6 +131,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
         return;
       }
 
+      setActiveCallMode(callMode);
       setActiveTwilioCallId(body.call.id);
     } catch (err) {
       alert(err.message || 'Failed to start call');
@@ -683,25 +690,46 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
 
         <div className="pv-detail-stage-row">
           <div className="pv-detail-stage-actions">
-            <button
-              style={{
-                fontSize: '12px', padding: '5px 12px',
-                background: '#ecfdf5',
-                border: '1px solid #6ee7b7',
-                color: '#065f46',
-                borderRadius: 6,
-                cursor: (prospect.phone || selectedPhoneId) ? 'pointer' : 'not-allowed',
-                fontWeight: 600,
-                opacity: (prospect.phone || selectedPhoneId) ? 1 : 0.5,
-              }}
-              onClick={() => (prospect.phone || selectedPhoneId) && initiateTwilioCall()}
-              disabled={(!prospect.phone && !selectedPhoneId) || isInitiatingTwilio}
-              title={(prospect.phone || selectedPhoneId)
-                ? 'Call the selected number via Twilio'
-                : 'Add a phone number to enable calling'}
-            >
-              {isInitiatingTwilio ? '⏳ Starting…' : '📞 Call via Twilio'}
-            </button>
+            {callingMode !== 'bridge' && (
+              <button
+                style={{
+                  fontSize: '12px', padding: '5px 12px',
+                  background: '#ecfdf5',
+                  border: '1px solid #6ee7b7',
+                  color: '#065f46',
+                  borderRadius: 6,
+                  cursor: (prospect.phone || selectedPhoneId) ? 'pointer' : 'not-allowed',
+                  fontWeight: 600,
+                  opacity: (prospect.phone || selectedPhoneId) ? 1 : 0.5,
+                }}
+                onClick={() => (prospect.phone || selectedPhoneId) && startCall('softphone')}
+                disabled={(!prospect.phone && !selectedPhoneId) || isInitiatingTwilio}
+                title={(prospect.phone || selectedPhoneId)
+                  ? 'Call the selected number from your browser'
+                  : 'Add a phone number to enable calling'}
+              >
+                {isInitiatingTwilio ? '⏳ Starting…' : (callingMode === 'both' ? '📞 Call (browser)' : '📞 Call via Twilio')}
+              </button>
+            )}
+            {callingMode !== 'softphone' && (
+              <button
+                style={{
+                  fontSize: '12px', padding: '5px 12px',
+                  background: '#eff6ff',
+                  border: '1px solid #93c5fd',
+                  color: '#1e40af',
+                  borderRadius: 6,
+                  cursor: (prospect.phone || selectedPhoneId) ? 'pointer' : 'not-allowed',
+                  fontWeight: 600,
+                  opacity: (prospect.phone || selectedPhoneId) ? 1 : 0.5,
+                }}
+                onClick={() => (prospect.phone || selectedPhoneId) && startCall('bridge')}
+                disabled={(!prospect.phone && !selectedPhoneId) || isInitiatingTwilio}
+                title="Twilio rings your phone first, then bridges to the prospect"
+              >
+                {isInitiatingTwilio ? '⏳ Starting…' : (callingMode === 'both' ? '📲 Call (phone bridge)' : '📞 Call via Twilio')}
+              </button>
+            )}
             <button className="pv-btn-primary" style={{ fontSize: '12px', padding: '5px 12px' }} onClick={() => openOutreach()}>
               📤 New Outreach
             </button>
@@ -1311,6 +1339,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
         {activeTwilioCallId && prospect && (
           <TwilioCallModal
             callId={activeTwilioCallId}
+            mode={activeCallMode}
             prospect={prospect}
             onCompleted={(callId, durationSec) => {
               // Call ended normally. Close the in-progress modal and open

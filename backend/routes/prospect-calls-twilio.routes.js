@@ -227,6 +227,14 @@ async function resolveDialNumber({ phoneIdRaw, prospectId, orgId, mirrorPhone })
   return { phone };
 }
 
+// Whether the org's calling_mode permits a given path. 'both' permits either.
+//   want = 'softphone' (browser) | 'bridge' (dial-and-bridge)
+async function callingModeAllows(orgId, want) {
+  const settings = await CallSettingsService.getForOrg(orgId);
+  const mode = settings.calling_mode || 'softphone';
+  return mode === 'both' || mode === want;
+}
+
 
 // =========================================================================
 // POST /initiate — start a Twilio call
@@ -257,6 +265,13 @@ router.post('/initiate', initiateIpLimiter, async (req, res) => {
   const sequenceStepLogId = req.body.sequence_step_log_id
     ? parseInt(req.body.sequence_step_log_id, 10)
     : null;
+
+  // Org must permit phone-bridge calling.
+  if (!(await callingModeAllows(req.orgId, 'bridge'))) {
+    return res.status(409).json({
+      error: { message: 'Phone-bridge calling is disabled for your organization.', code: 'CALLING_MODE_DISABLED' },
+    });
+  }
 
   // 1. Rep validation (phone + DID).
   let rep;
@@ -443,6 +458,13 @@ router.post('/prepare', initiateIpLimiter, async (req, res) => {
   const sequenceStepLogId = req.body.sequence_step_log_id
     ? parseInt(req.body.sequence_step_log_id, 10)
     : null;
+
+  // Org must permit browser (softphone) calling.
+  if (!(await callingModeAllows(req.orgId, 'softphone'))) {
+    return res.status(409).json({
+      error: { message: 'Browser calling is disabled for your organization.', code: 'CALLING_MODE_DISABLED' },
+    });
+  }
 
   // 1. Rep needs a DID (caller ID). No personal-phone requirement for browser.
   const repRes = await db.pool.query(

@@ -28,6 +28,7 @@ export default function OATwilioSettings() {
     recording_disclosure_enabled: true,
     rate_limits: { per_user_per_minute: 10, per_org_per_minute: 100 },
     phone_validation: 'lenient',
+    calling_mode: 'softphone',
   });
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -57,6 +58,7 @@ export default function OATwilioSettings() {
             per_org_per_minute:  s.rate_limits?.per_org_per_minute  || 100,
           },
           phone_validation: s.phone_validation === 'strict' ? 'strict' : 'lenient',
+          calling_mode: ['softphone', 'bridge', 'both'].includes(s.calling_mode) ? s.calling_mode : 'softphone',
         });
         setReps(rp.reps || []);
       })
@@ -101,6 +103,24 @@ export default function OATwilioSettings() {
         throw new Error(j?.error?.message || 'Save failed');
       }
       showFlash('success', 'Phone number format saved ✓');
+    } catch (err) {
+      showFlash('error', err.message);
+    }
+  };
+
+  // ── Save calling-mode setting (call_settings surface) ──────────────────
+  const saveCallingMode = async (modeVal) => {
+    setSettings(s => ({ ...s, calling_mode: modeVal }));
+    try {
+      const r = await fetch(`${API}/org/call-settings`, {
+        method: 'PATCH', headers,
+        body: JSON.stringify({ calling_mode: modeVal }),
+      });
+      if (!r.ok) {
+        const j = await r.json();
+        throw new Error(j?.error?.message || 'Save failed');
+      }
+      showFlash('success', 'Calling mode saved ✓');
     } catch (err) {
       showFlash('error', err.message);
     }
@@ -290,6 +310,24 @@ export default function OATwilioSettings() {
             Plays "This call may be recorded." at the start of each call. Required in two-party-consent jurisdictions.
           </span>
         </label>
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 12, color: '#374151', display: 'block', marginBottom: 4, fontWeight: 600 }}>
+            Calling mode
+          </label>
+          <select
+            value={settings.calling_mode}
+            onChange={e => saveCallingMode(e.target.value)}
+            style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+          >
+            <option value="softphone">Browser softphone only (default)</option>
+            <option value="bridge">Phone bridge only (Twilio calls the rep's phone)</option>
+            <option value="both">Both — rep chooses per call</option>
+          </select>
+          <span style={{ display: 'block', color: '#6b7280', fontSize: 12, marginTop: 4 }}>
+            How reps place calls. Browser softphone needs only a mic; phone bridge requires each rep to set a personal phone in My Preferences. Saved immediately.
+          </span>
+        </div>
 
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 12, color: '#374151', display: 'block', marginBottom: 4, fontWeight: 600 }}>
