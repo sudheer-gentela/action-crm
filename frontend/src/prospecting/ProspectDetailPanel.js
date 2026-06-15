@@ -14,6 +14,7 @@ import OutreachSkillPanel from './OutreachSkillPanel';
 import StrapPanel from '../StrapPanel';
 import SequenceEnrollModal from '../SequenceEnrollModal';
 import TwilioCallModal from '../TwilioCallModal';
+import ProspectPhonesPanel from './ProspectPhonesPanel';
 
 function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   const { allStages, prospectStages } = useStages();
@@ -58,6 +59,9 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   const [editingTwilioCallId,      setEditingTwilioCallId]      = useState(null);
   const [prefilledCallDurationSec, setPrefilledCallDurationSec] = useState(null);
   const [isInitiatingTwilio,       setIsInitiatingTwilio]       = useState(false);
+  // Which of the prospect's numbers to dial (from ProspectPhonesPanel). null
+  // means "let the backend use the primary".
+  const [selectedPhoneId,          setSelectedPhoneId]          = useState(null);
 
   const [callModalSequenceContext, setCallModalSequenceContext] = useState(null);
   const [calls,            setCalls]            = useState([]);
@@ -93,7 +97,10 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
           'Content-Type':  'application/json',
           Authorization:   `Bearer ${token}`,
         },
-        body: JSON.stringify({ prospect_id: prospect.id }),
+        body: JSON.stringify({
+          prospect_id: prospect.id,
+          ...(selectedPhoneId ? { phone_id: selectedPhoneId } : {}),
+        }),
       });
       const body = await r.json().catch(() => ({}));
 
@@ -665,6 +672,15 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
             its own Log Call entry point (handled via onLogCall there), and
             sequence-step call drafts open the modal directly. The header
             button was duplication. */}
+        {/* Phone numbers — pick which one the call should dial */}
+        <div className="pv-detail-stage-row">
+          <ProspectPhonesPanel
+            prospectId={prospect.id}
+            onSelectedPhoneChange={setSelectedPhoneId}
+            phoneValidation={callSettings?.phone_validation}
+          />
+        </div>
+
         <div className="pv-detail-stage-row">
           <div className="pv-detail-stage-actions">
             <button
@@ -674,14 +690,14 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
                 border: '1px solid #6ee7b7',
                 color: '#065f46',
                 borderRadius: 6,
-                cursor: prospect.phone ? 'pointer' : 'not-allowed',
+                cursor: (prospect.phone || selectedPhoneId) ? 'pointer' : 'not-allowed',
                 fontWeight: 600,
-                opacity: prospect.phone ? 1 : 0.5,
+                opacity: (prospect.phone || selectedPhoneId) ? 1 : 0.5,
               }}
-              onClick={() => prospect.phone && initiateTwilioCall()}
-              disabled={!prospect.phone || isInitiatingTwilio}
-              title={prospect.phone
-                ? `Call ${prospect.phone} via Twilio`
+              onClick={() => (prospect.phone || selectedPhoneId) && initiateTwilioCall()}
+              disabled={(!prospect.phone && !selectedPhoneId) || isInitiatingTwilio}
+              title={(prospect.phone || selectedPhoneId)
+                ? 'Call the selected number via Twilio'
                 : 'Add a phone number to enable calling'}
             >
               {isInitiatingTwilio ? '⏳ Starting…' : '📞 Call via Twilio'}

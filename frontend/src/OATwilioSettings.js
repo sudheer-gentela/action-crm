@@ -27,6 +27,7 @@ export default function OATwilioSettings() {
     recording_enabled:            true,
     recording_disclosure_enabled: true,
     rate_limits: { per_user_per_minute: 10, per_org_per_minute: 100 },
+    phone_validation: 'lenient',
   });
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
@@ -55,6 +56,7 @@ export default function OATwilioSettings() {
             per_user_per_minute: s.rate_limits?.per_user_per_minute || 10,
             per_org_per_minute:  s.rate_limits?.per_org_per_minute  || 100,
           },
+          phone_validation: s.phone_validation === 'strict' ? 'strict' : 'lenient',
         });
         setReps(rp.reps || []);
       })
@@ -81,6 +83,26 @@ export default function OATwilioSettings() {
       showFlash('error', err.message);
     } finally {
       setSettingsSaving(false);
+    }
+  };
+
+  // ── Save phone-format setting (call_settings surface) ──────────────────
+  // Saved immediately on change via /org/call-settings — independent of the
+  // recording/rate-limit Save button above (which posts to /org/admin/twilio).
+  const savePhoneValidation = async (mode) => {
+    setSettings(s => ({ ...s, phone_validation: mode }));
+    try {
+      const r = await fetch(`${API}/org/call-settings`, {
+        method: 'PATCH', headers,
+        body: JSON.stringify({ phone_validation: mode }),
+      });
+      if (!r.ok) {
+        const j = await r.json();
+        throw new Error(j?.error?.message || 'Save failed');
+      }
+      showFlash('success', 'Phone number format saved ✓');
+    } catch (err) {
+      showFlash('error', err.message);
     }
   };
 
@@ -268,6 +290,23 @@ export default function OATwilioSettings() {
             Plays "This call may be recorded." at the start of each call. Required in two-party-consent jurisdictions.
           </span>
         </label>
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 12, color: '#374151', display: 'block', marginBottom: 4, fontWeight: 600 }}>
+            Phone number format
+          </label>
+          <select
+            value={settings.phone_validation}
+            onChange={e => savePhoneValidation(e.target.value)}
+            style={{ padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
+          >
+            <option value="lenient">Lenient — accept any reasonable format</option>
+            <option value="strict">Strict — require E.164 (e.g. +14155551234)</option>
+          </select>
+          <span style={{ display: 'block', color: '#6b7280', fontSize: 12, marginTop: 4 }}>
+            How prospect phone numbers are validated when added or edited. Strict requires E.164 and reduces dial failures. Saved immediately.
+          </span>
+        </div>
 
         <div style={{ display: 'flex', gap: 24, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ flex: 1, minWidth: 180 }}>

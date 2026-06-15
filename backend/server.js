@@ -283,6 +283,7 @@ app.use('/api/linkedin-connections', require('./routes/linkedin-connections.rout
 //   GET /:id, PATCH /:id) handles everything else.
 app.use('/api/prospect-calls',      require('./routes/prospect-calls-twilio.routes'));
 app.use('/api/prospect-calls',      require('./routes/prospect-calls.routes'));
+app.use('/api/prospect-phones',     require('./routes/prospect-phones.routes'));
 app.use('/api/org/call-settings',   require('./routes/org-call-settings.routes'));
 
 // Prospecting Phase 2

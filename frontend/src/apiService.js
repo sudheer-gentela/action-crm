@@ -155,10 +155,20 @@ twilio: {
     getAccount:       ()                     => api.get(`/org/admin/twilio/account`),
     getVoiceToken:    ()                     => api.get(`/twilio/voice/token`),
     // Browser-dial: creates the call row; the softphone originates the call.
-    prepareCall:      (prospectId, sequenceStepLogId = null) => api.post(`/prospect-calls/prepare`, {
+    prepareCall:      (prospectId, sequenceStepLogId = null, phoneId = null) => api.post(`/prospect-calls/prepare`, {
       prospect_id: prospectId,
       ...(sequenceStepLogId ? { sequence_step_log_id: sequenceStepLogId } : {}),
+      ...(phoneId ? { phone_id: phoneId } : {}),
     }),
+  },
+
+  prospectPhones: {
+    list:       (prospectId)                       => api.get(`/prospect-phones?prospect_id=${prospectId}`),
+    add:        (prospectId, phone, label = null, isPrimary = false) =>
+                  api.post(`/prospect-phones`, { prospect_id: prospectId, phone, label, is_primary: isPrimary }),
+    update:     (id, patch)                        => api.patch(`/prospect-phones/${id}`, patch),
+    setPrimary: (id)                               => api.patch(`/prospect-phones/${id}`, { is_primary: true }),
+    remove:     (id)                               => api.delete(`/prospect-phones/${id}`),
   },
 
   health: {

@@ -204,7 +204,7 @@ router.post('/twiml/:callId', requireTwilioSignature(orgFromCallId), async (req,
     // the prospect's phone shows the rep's DID, not Twilio's pool number.
     const { rows } = await db.pool.query(
       `SELECT c.id, c.org_id, c.prospect_id, c.user_id, c.status,
-              p.phone        AS prospect_phone,
+              c.phone_used   AS prospect_phone,
               p.first_name   AS prospect_first_name,
               u.twilio_did   AS rep_did
          FROM calls c
@@ -549,7 +549,7 @@ router.post('/voice-app', requireTwilioSignature(orgFromBodyCallId), async (req,
   try {
     const { rows } = await db.pool.query(
       `SELECT c.id, c.org_id, c.status, c.direction,
-              p.phone      AS prospect_phone,
+              c.phone_used AS prospect_phone,
               p.first_name AS prospect_first_name,
               u.twilio_did AS rep_did
          FROM calls c

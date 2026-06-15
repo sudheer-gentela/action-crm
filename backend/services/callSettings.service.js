@@ -36,6 +36,17 @@ const SYSTEM_DEFAULTS = {
     { key: 'do_not_call',          label: 'Do not call — explicit request',      group: 'blocker',    order: 9 },
   ],
   edit_window_hours: 24,
+
+  // How strictly prospect phone numbers are validated on entry. Per-org choice:
+  //   'lenient' — permissive free-form (default; matches legacy behavior)
+  //   'strict'  — require E.164 (e.g. +14155551234)
+  phone_validation: 'lenient',
+
+  // Twilio call recording + per-minute rate caps (edited in the Twilio settings
+  // screen). Safe defaults: recording on with a spoken disclosure, modest caps.
+  recording_enabled:            true,
+  recording_disclosure_enabled: true,
+  rate_limits: { per_user_per_minute: 10, per_org_per_minute: 100 },
 };
 
 // Valid group keys. The UI renders a separator between groups, so the
@@ -138,6 +149,19 @@ class CallSettingsService {
     return (Date.now() - new Date(loggedAt).getTime()) < windowMs;
   }
 
+  // ── Public: validate a phone number against an org's phone_validation mode ─
+  //   'strict'  → E.164 (+ country code, 8–15 digits total)
+  //   'lenient' → permissive free-form (digits, spaces, () . - and optional +)
+  // Centralized so the prospect-phones routes (and any importer) stay consistent.
+  static isPhoneValid(mode, phone) {
+    const p = String(phone == null ? '' : phone).trim();
+    if (!p) return false;
+    const re = mode === 'strict'
+      ? /^\+[1-9]\d{7,14}$/
+      : /^\+?[0-9().\-\s]{7,20}$/;
+    return re.test(p);
+  }
+
   // ── Internal: merge a stored partial over the system defaults ────────────
   // Outcomes are NOT deep-merged — if the stored config sets outcomes, it
   // replaces the defaults entirely. Other fields use simple overlay.
@@ -159,6 +183,51 @@ class CallSettingsService {
       throw new Error('Patch must be an object');
     }
     const cleaned = {};
+
+    // phone_validation: 'lenient' | 'strict'.
+    if (patch.phone_validation !== undefined) {
+      const v = String(patch.phone_validation);
+      if (v !== 'lenient' && v !== 'strict') {
+        throw new Error("phone_validation must be 'lenient' or 'strict'");
+      }
+      cleaned.phone_validation = v;
+    }
+
+    // recording_enabled / recording_disclosure_enabled: booleans. These are
+    // sent by the Twilio settings screen (PATCH /org/admin/twilio/settings →
+    // setForOrg) and were previously rejected here, so they never persisted.
+    if (patch.recording_enabled !== undefined) {
+      if (typeof patch.recording_enabled !== 'boolean') {
+        throw new Error('recording_enabled must be a boolean');
+      }
+      cleaned.recording_enabled = patch.recording_enabled;
+    }
+    if (patch.recording_disclosure_enabled !== undefined) {
+      if (typeof patch.recording_disclosure_enabled !== 'boolean') {
+        throw new Error('recording_disclosure_enabled must be a boolean');
+      }
+      cleaned.recording_disclosure_enabled = patch.recording_disclosure_enabled;
+    }
+
+    // rate_limits: { per_user_per_minute (1..100), per_org_per_minute (1..1000) }.
+    // Merge over the org's current values so a partial update doesn't drop the
+    // other field (top-level JSONB merge replaces the whole rate_limits key).
+    if (patch.rate_limits !== undefined) {
+      if (typeof patch.rate_limits !== 'object' || patch.rate_limits === null) {
+        throw new Error('rate_limits must be an object');
+      }
+      const current = await this.getForOrg(orgId);
+      const merged = { ...(current.rate_limits || {}), ...patch.rate_limits };
+      const pu = Number(merged.per_user_per_minute);
+      const po = Number(merged.per_org_per_minute);
+      if (!Number.isInteger(pu) || pu < 1 || pu > 100) {
+        throw new Error('rate_limits.per_user_per_minute must be an integer between 1 and 100');
+      }
+      if (!Number.isInteger(po) || po < 1 || po > 1000) {
+        throw new Error('rate_limits.per_org_per_minute must be an integer between 1 and 1000');
+      }
+      cleaned.rate_limits = { per_user_per_minute: pu, per_org_per_minute: po };
+    }
 
     // edit_window_hours: integer 0..720 (one month).
     if (patch.edit_window_hours !== undefined) {

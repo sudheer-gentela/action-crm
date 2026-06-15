@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict o0QcpOUPZtwBv0WZzTpPHerD6y9tlICxJfL3l9ehbtwm8uoZeospvrafEVHf17h
+\restrict nRG2gveeUUGw3tBN4npKzNSr83G9u4hnSqp8zJNI7l059XnYTFs3Stvs9vVM9dF
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -3369,6 +3369,31 @@ ALTER SEQUENCE public.org_roles_id_seq OWNED BY public.org_roles.id;
 
 
 --
+-- Name: org_twilio_accounts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_twilio_accounts (
+    org_id integer NOT NULL,
+    subaccount_sid text NOT NULL,
+    auth_token_ciphertext bytea NOT NULL,
+    auth_token_iv bytea NOT NULL,
+    auth_token_tag bytea NOT NULL,
+    auth_token_last4 text,
+    api_key_sid text,
+    api_key_secret_ciphertext bytea,
+    api_key_secret_iv bytea,
+    api_key_secret_tag bytea,
+    api_key_secret_last4 text,
+    twiml_app_sid text,
+    status text DEFAULT 'active'::text NOT NULL,
+    friendly_name text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT org_twilio_accounts_status_chk CHECK ((status = ANY (ARRAY['active'::text, 'suspended'::text, 'closed'::text])))
+);
+
+
+--
 -- Name: org_users; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4067,6 +4092,41 @@ CREATE SEQUENCE public.proposals_id_seq
 --
 
 ALTER SEQUENCE public.proposals_id_seq OWNED BY public.proposals.id;
+
+
+--
+-- Name: prospect_phones; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.prospect_phones (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    prospect_id integer NOT NULL,
+    phone character varying(64) NOT NULL,
+    label character varying(40),
+    is_primary boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: prospect_phones_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.prospect_phones_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: prospect_phones_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.prospect_phones_id_seq OWNED BY public.prospect_phones.id;
 
 
 --
@@ -5009,7 +5069,7 @@ CREATE TABLE public.sequences (
     require_approval boolean DEFAULT true NOT NULL,
     client_id integer,
     personalize_config_default jsonb,
-    ai_enabled boolean DEFAULT true NOT NULL,
+    ai_enabled boolean DEFAULT false NOT NULL,
     visibility text DEFAULT 'shared'::text NOT NULL,
     allow_manager_edit boolean DEFAULT false NOT NULL,
     CONSTRAINT sequences_visibility_chk CHECK ((visibility = ANY (ARRAY['shared'::text, 'private'::text])))
@@ -6530,6 +6590,13 @@ ALTER TABLE ONLY public.proposals ALTER COLUMN id SET DEFAULT nextval('public.pr
 
 
 --
+-- Name: prospect_phones id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prospect_phones ALTER COLUMN id SET DEFAULT nextval('public.prospect_phones_id_seq'::regclass);
+
+
+--
 -- Name: prospecting_actions id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -7533,6 +7600,14 @@ ALTER TABLE ONLY public.org_roles
 
 
 --
+-- Name: org_twilio_accounts org_twilio_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_twilio_accounts
+    ADD CONSTRAINT org_twilio_accounts_pkey PRIMARY KEY (org_id);
+
+
+--
 -- Name: org_users org_users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7746,6 +7821,14 @@ ALTER TABLE ONLY public.prompts
 
 ALTER TABLE ONLY public.proposals
     ADD CONSTRAINT proposals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: prospect_phones prospect_phones_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prospect_phones
+    ADD CONSTRAINT prospect_phones_pkey PRIMARY KEY (id);
 
 
 --
@@ -10015,6 +10098,13 @@ CREATE INDEX idx_org_roles_org ON public.org_roles USING btree (org_id) WHERE (i
 
 
 --
+-- Name: idx_org_twilio_accounts_subaccount_sid; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_org_twilio_accounts_subaccount_sid ON public.org_twilio_accounts USING btree (subaccount_sid);
+
+
+--
 -- Name: idx_org_users_org_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10341,6 +10431,13 @@ CREATE INDEX idx_prompts_org ON public.prompts USING btree (org_id);
 --
 
 CREATE INDEX idx_proposals_org ON public.proposals USING btree (org_id);
+
+
+--
+-- Name: idx_prospect_phones_org_prospect; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_prospect_phones_org_prospect ON public.prospect_phones USING btree (org_id, prospect_id);
 
 
 --
@@ -11286,6 +11383,20 @@ CREATE UNIQUE INDEX uq_pmd_grain ON public.prospecting_metric_daily USING btree 
 --
 
 CREATE UNIQUE INDEX uq_prompts_user_org_key ON public.prompts USING btree (user_id, org_id, key);
+
+
+--
+-- Name: uq_prospect_phones_one_primary; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_prospect_phones_one_primary ON public.prospect_phones USING btree (prospect_id) WHERE is_primary;
+
+
+--
+-- Name: uq_prospect_phones_prospect_phone; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_prospect_phones_prospect_phone ON public.prospect_phones USING btree (prospect_id, phone);
 
 
 --
@@ -13198,6 +13309,14 @@ ALTER TABLE ONLY public.org_invites
 
 
 --
+-- Name: org_twilio_accounts org_twilio_accounts_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_twilio_accounts
+    ADD CONSTRAINT org_twilio_accounts_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: org_users org_users_invited_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -13539,6 +13658,22 @@ ALTER TABLE ONLY public.proposals
 
 ALTER TABLE ONLY public.proposals
     ADD CONSTRAINT proposals_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: prospect_phones prospect_phones_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prospect_phones
+    ADD CONSTRAINT prospect_phones_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: prospect_phones prospect_phones_prospect_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prospect_phones
+    ADD CONSTRAINT prospect_phones_prospect_id_fkey FOREIGN KEY (prospect_id) REFERENCES public.prospects(id) ON DELETE CASCADE;
 
 
 --
@@ -14654,5 +14789,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict o0QcpOUPZtwBv0WZzTpPHerD6y9tlICxJfL3l9ehbtwm8uoZeospvrafEVHf17h
+\unrestrict nRG2gveeUUGw3tBN4npKzNSr83G9u4hnSqp8zJNI7l059XnYTFs3Stvs9vVM9dF
 

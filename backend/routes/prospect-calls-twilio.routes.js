@@ -200,6 +200,34 @@ async function notifyAdminsOfMissingDid(orgId, repUserId) {
 }
 
 
+// Resolve which number to dial. Explicit phone_id (validated against the
+// prospect + org), else the prospect's primary, else the legacy prospects.phone
+// mirror. Returns { phone } or { error: { status, message, code } }. The chosen
+// number is frozen onto calls.phone_used and dialed server-side by the TwiML.
+async function resolveDialNumber({ phoneIdRaw, prospectId, orgId, mirrorPhone }) {
+  const phoneId = phoneIdRaw ? parseInt(phoneIdRaw, 10) : null;
+  if (phoneId) {
+    const { rows } = await db.pool.query(
+      `SELECT phone FROM prospect_phones WHERE id = $1 AND prospect_id = $2 AND org_id = $3`,
+      [phoneId, prospectId, orgId]
+    );
+    if (!rows.length) {
+      return { error: { status: 400, message: 'Selected phone number not found for this prospect.', code: 'PHONE_NOT_FOUND' } };
+    }
+    return { phone: rows[0].phone };
+  }
+  const { rows } = await db.pool.query(
+    `SELECT phone FROM prospect_phones WHERE prospect_id = $1 AND org_id = $2 AND is_primary = true LIMIT 1`,
+    [prospectId, orgId]
+  );
+  const phone = rows.length ? rows[0].phone : mirrorPhone;
+  if (!phone) {
+    return { error: { status: 400, message: 'This prospect has no phone number on file. Add one before calling.', code: 'PROSPECT_PHONE_MISSING' } };
+  }
+  return { phone };
+}
+
+
 // =========================================================================
 // POST /initiate — start a Twilio call
 // =========================================================================
@@ -298,7 +326,13 @@ router.post('/initiate', initiateIpLimiter, async (req, res) => {
   // 5. Insert the row. We do this OUTSIDE a transaction — Twilio.calls.create
   //    is a network call that can take 500ms+ and we shouldn't hold a DB
   //    transaction open across it. On failure we patch the row.
-  const phoneUsed = prospect.phone;
+  const dial = await resolveDialNumber({
+    phoneIdRaw: req.body.phone_id, prospectId, orgId: req.orgId, mirrorPhone: prospect.phone,
+  });
+  if (dial.error) {
+    return res.status(dial.error.status).json({ error: { message: dial.error.message, code: dial.error.code } });
+  }
+  const phoneUsed = dial.phone;
   let callRow;
   try {
     const insRes = await db.pool.query(
@@ -329,7 +363,7 @@ router.post('/initiate', initiateIpLimiter, async (req, res) => {
       callId:        callRow.id,
       repPhone:      rep.phone,
       repDid:        rep.twilio_did,
-      prospectPhone: prospect.phone,
+      prospectPhone: phoneUsed,
       recording:     true,    // honors org setting via TwiML route; here it's
                               // the master switch for whether Twilio records
                               // at all. Org-level disable happens in TwiML.
@@ -439,11 +473,13 @@ router.post('/prepare', initiateIpLimiter, async (req, res) => {
     return res.status(404).json({ error: { message: 'Prospect not found' } });
   }
   const prospect = pRes.rows[0];
-  if (!prospect.phone) {
-    return res.status(400).json({
-      error: { message: 'This prospect has no phone number on file. Add one before calling.', code: 'PROSPECT_PHONE_MISSING' },
-    });
+  const dial = await resolveDialNumber({
+    phoneIdRaw: req.body.phone_id, prospectId, orgId: req.orgId, mirrorPhone: prospect.phone,
+  });
+  if (dial.error) {
+    return res.status(dial.error.status).json({ error: { message: dial.error.message, code: dial.error.code } });
   }
+  const phoneToUse = dial.phone;
 
   // 3. Rate limits (same caps as dial-and-bridge).
   const rateErr = await checkRateLimits(req.orgId, req.user.userId);
@@ -477,7 +513,7 @@ router.post('/prepare', initiateIpLimiter, async (req, res) => {
                $4, 'twilio', $5,
                CURRENT_TIMESTAMP)
        RETURNING *`,
-      [req.orgId, prospectId, req.user.userId, prospect.phone, sequenceStepLogId]
+      [req.orgId, prospectId, req.user.userId, phoneToUse, sequenceStepLogId]
     );
     const callRow = insRes.rows[0];
 
@@ -489,7 +525,7 @@ router.post('/prepare', initiateIpLimiter, async (req, res) => {
         status:      'initiated',
         provider:    'twilio',
         direction:   'outbound',
-        phone_used:  prospect.phone,
+        phone_used:  phoneToUse,
         occurred_at: callRow.occurred_at,
       },
       prospect: {
