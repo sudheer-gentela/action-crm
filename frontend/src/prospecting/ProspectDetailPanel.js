@@ -74,7 +74,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   };
 
   // ── Initiate a Twilio call ───────────────────────────────────────────────
-  // Calls POST /prospect-calls/initiate. On success, sets activeTwilioCallId
+  // Calls POST /prospect-calls/prepare. On success, sets activeTwilioCallId
   // which causes TwilioCallModal to render and start polling.
   //
   // We use a raw fetch here (not apiFetch) so we can read both the error
@@ -87,7 +87,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
     setIsInitiatingTwilio(true);
     try {
       const token = localStorage.getItem('token') || localStorage.getItem('authToken');
-      const r = await fetch(`${API}/prospect-calls/initiate`, {
+      const r = await fetch(`${API}/prospect-calls/prepare`, {
         method:  'POST',
         headers: {
           'Content-Type':  'application/json',

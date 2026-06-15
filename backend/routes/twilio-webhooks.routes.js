@@ -4,8 +4,16 @@
  * Public webhook endpoints called by Twilio (not by the user's browser).
  * No auth/orgContext middleware here — these are unauthenticated by JWT
  * because Twilio doesn't have one. Instead, EVERY route validates the
- * Twilio request signature via TwilioProvider.validateSignature() before
- * doing anything that touches the DB.
+ * Twilio request signature via TwilioProvider.validateSignature().
+ *
+ * Per-org/subaccount note: each org's subaccount signs webhooks with its OWN
+ * auth token, so validation now needs the org id. The signature middleware is
+ * a FACTORY that takes a per-route org resolver (callId → org, or DID SID →
+ * org); it resolves the org from the URL params FIRST, then validates with that
+ * subaccount's token. This reorders the original flow (which validated before
+ * any DB lookup), but the resolver only does a narrow, parameterized id lookup
+ * and leaks nothing on failure — an unresolvable org or bad signature both
+ * fail closed with a TwiML <Reject/>.
  *
  * Routes:
  *
@@ -45,28 +53,82 @@ const CallSettingsService = require('../services/callSettings.service');
 const CallOutcomeMirrorService = require('../services/callOutcomeMirror.service');
 
 
-// ── Signature-validation middleware ───────────────────────────────────────
-// Applied to every webhook route. Returns 403 on failure. In development
-// (no auth token configured) it lets the request through with a warning
-// so local testing with the Twilio CLI's signature-bypass mode still works.
-function requireTwilioSignature(req, res, next) {
-  // If no auth token in the env at all, this is a misconfigured deploy.
-  // Don't let unsigned requests through — fail closed.
-  if (!process.env.TWILIO_AUTH_TOKEN) {
-    console.warn('twilio-webhooks: TWILIO_AUTH_TOKEN not set; rejecting webhook');
-    return res.status(503).type('text/xml').send(
-      '<?xml version="1.0" encoding="UTF-8"?><Response><Reject/></Response>'
-    );
-  }
+// ── Signature-validation middleware (per-subaccount) ──────────────────────
+const REJECT_XML = '<?xml version="1.0" encoding="UTF-8"?><Response><Reject/></Response>';
 
-  const ok = TwilioProvider.validateSignature(req);
-  if (!ok) {
-    console.warn('twilio-webhooks: signature validation FAILED for', req.originalUrl);
-    return res.status(403).type('text/xml').send(
-      '<?xml version="1.0" encoding="UTF-8"?><Response><Reject/></Response>'
-    );
-  }
-  return next();
+// Resolve the owning org from a callId-based route (calls.id → calls.org_id).
+async function orgFromCallId(req) {
+  const callId = parseInt(req.params.callId, 10);
+  if (!Number.isInteger(callId) || callId <= 0) return null;
+  const { rows } = await db.pool.query(
+    `SELECT org_id FROM calls WHERE id = $1 AND provider = 'twilio' LIMIT 1`,
+    [callId]
+  );
+  return rows.length ? rows[0].org_id : null;
+}
+
+// Resolve the owning org from a DID-SID route (users.twilio_did_sid → org_id).
+async function orgFromDidSid(req) {
+  const didSid = req.params.didSid;
+  if (!didSid) return null;
+  const { rows } = await db.pool.query(
+    `SELECT org_id FROM users WHERE twilio_did_sid = $1 LIMIT 1`,
+    [didSid]
+  );
+  return rows.length ? rows[0].org_id : null;
+}
+
+// Resolve the owning org from a callId passed in the POST BODY (used by the
+// browser-dial /voice-app route, whose URL is a fixed TwiML App path).
+async function orgFromBodyCallId(req) {
+  const callId = parseInt(req.body && req.body.callId, 10);
+  if (!Number.isInteger(callId) || callId <= 0) return null;
+  const { rows } = await db.pool.query(
+    `SELECT org_id FROM calls WHERE id = $1 AND provider = 'twilio' LIMIT 1`,
+    [callId]
+  );
+  return rows.length ? rows[0].org_id : null;
+}
+
+// Factory: build a signature-validation middleware for routes whose org is
+// resolved by `orgResolver(req) -> Promise<orgId|null>`. Fails closed (TwiML
+// <Reject/>) when the org can't be resolved or the signature doesn't verify
+// against that subaccount's auth token. The resolved org is stashed on
+// req.twilioOrgId for the handler to reuse if it wants.
+function requireTwilioSignature(orgResolver) {
+  return async (req, res, next) => {
+    if (!req.headers['x-twilio-signature']) {
+      console.warn('twilio-webhooks: missing X-Twilio-Signature for', req.originalUrl);
+      return res.status(403).type('text/xml').send(REJECT_XML);
+    }
+
+    let orgId = null;
+    try {
+      orgId = await orgResolver(req);
+    } catch (e) {
+      console.error('twilio-webhooks: org resolution error for', req.originalUrl, e.message);
+      orgId = null;
+    }
+    if (!orgId) {
+      console.warn('twilio-webhooks: could not resolve org for', req.originalUrl);
+      return res.status(403).type('text/xml').send(REJECT_XML);
+    }
+
+    let ok = false;
+    try {
+      ok = await TwilioProvider.validateSignature(req, orgId);
+    } catch (e) {
+      console.error('twilio-webhooks: signature validation error for', req.originalUrl, e.message);
+      ok = false;
+    }
+    if (!ok) {
+      console.warn('twilio-webhooks: signature validation FAILED for', req.originalUrl);
+      return res.status(403).type('text/xml').send(REJECT_XML);
+    }
+
+    req.twilioOrgId = orgId;
+    return next();
+  };
 }
 
 
@@ -128,7 +190,7 @@ function mapTwilioStatus(twilioStatus) {
 // Our :callId is our internal calls.id, which we use to look up the
 // prospect's phone and the rep's DID (callerId for the outbound leg).
 // =========================================================================
-router.post('/twiml/:callId', requireTwilioSignature, async (req, res) => {
+router.post('/twiml/:callId', requireTwilioSignature(orgFromCallId), async (req, res) => {
   const callId = parseInt(req.params.callId, 10);
   if (!Number.isInteger(callId) || callId <= 0) {
     return res.status(400).type('text/xml').send(
@@ -236,7 +298,7 @@ router.post('/twiml/:callId', requireTwilioSignature, async (req, res) => {
 //   To    — our DID (E.164)
 //   CallSid — Twilio's call id
 // =========================================================================
-router.post('/twiml-inbound/:didSid', requireTwilioSignature, async (req, res) => {
+router.post('/twiml-inbound/:didSid', requireTwilioSignature(orgFromDidSid), async (req, res) => {
   const didSid     = req.params.didSid;
   const fromNumber = req.body.From || null;   // prospect's number
   const callSid    = req.body.CallSid || null;
@@ -354,7 +416,7 @@ router.post('/twiml-inbound/:didSid', requireTwilioSignature, async (req, res) =
 // mirror will run later, when the rep captures an outcome via LogCallModal
 // (which POSTs to /api/prospect-calls as a status='completed' row update).
 // =========================================================================
-router.post('/status/:callId', requireTwilioSignature, async (req, res) => {
+router.post('/status/:callId', requireTwilioSignature(orgFromCallId), async (req, res) => {
   const callId = parseInt(req.params.callId, 10);
   if (!Number.isInteger(callId) || callId <= 0) {
     return res.status(400).end();
@@ -425,7 +487,7 @@ router.post('/status/:callId', requireTwilioSignature, async (req, res) => {
 // We store the canonical .mp3 URL on calls.recording_url. Twilio holds the
 // audio (reference-only storage per Phase 3 decision).
 // =========================================================================
-router.post('/recording/:callId', requireTwilioSignature, async (req, res) => {
+router.post('/recording/:callId', requireTwilioSignature(orgFromCallId), async (req, res) => {
   const callId  = parseInt(req.params.callId, 10);
   const recUrl  = req.body.RecordingUrl  || null;
   const recStat = req.body.RecordingStatus || null;
@@ -455,6 +517,116 @@ router.post('/recording/:callId', requireTwilioSignature, async (req, res) => {
   } catch (err) {
     console.error('recording route error:', err);
     return res.status(500).end();
+  }
+});
+
+
+// =========================================================================
+// POST /voice-app — browser-dial outbound TwiML (Voice SDK Device.connect)
+// =========================================================================
+// Fired by Twilio when a rep's softphone Device.connect({ params: { callId } })
+// originates a call. This IS the subaccount's TwiML App voiceUrl. The browser
+// is one leg; this TwiML dials the prospect (the other leg) with the rep's DID
+// as caller ID and bridges them.
+//
+// SECURITY: we IGNORE any client-supplied "To" and dial the prospect phone from
+// the DB row identified by callId — this prevents a holder of a valid token
+// from dialing arbitrary numbers (toll fraud). Signature is validated against
+// the org's subaccount (orgFromBodyCallId) before we get here.
+//
+// Twilio body params we use:
+//   callId   — custom param from Device.connect (our calls.id)
+//   CallSid  — the parent (browser-leg) call SID; captured as provider_call_id
+// =========================================================================
+router.post('/voice-app', requireTwilioSignature(orgFromBodyCallId), async (req, res) => {
+  const callId  = parseInt(req.body.callId, 10);
+  const callSid = req.body.CallSid || null;
+
+  if (!Number.isInteger(callId) || callId <= 0) {
+    return res.status(400).type('text/xml').send(REJECT_XML);
+  }
+
+  try {
+    const { rows } = await db.pool.query(
+      `SELECT c.id, c.org_id, c.status, c.direction,
+              p.phone      AS prospect_phone,
+              p.first_name AS prospect_first_name,
+              u.twilio_did AS rep_did
+         FROM calls c
+         JOIN prospects p ON p.id = c.prospect_id
+         JOIN users     u ON u.id = c.user_id
+        WHERE c.id = $1 AND c.provider = 'twilio'
+        LIMIT 1`,
+      [callId]
+    );
+
+    if (!rows.length) {
+      return res.status(404).type('text/xml').send(
+        '<?xml version="1.0" encoding="UTF-8"?><Response><Say>This call could not be connected.</Say><Hangup/></Response>'
+      );
+    }
+    const row = rows[0];
+
+    // Defensive: only bridge outbound rows that haven't already finished.
+    const TERMINAL = ['completed', 'no_answer', 'failed', 'busy', 'canceled'];
+    if (row.direction !== 'outbound' || TERMINAL.includes(row.status)) {
+      return res.type('text/xml').send(
+        '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>'
+      );
+    }
+    if (!row.prospect_phone || !row.rep_did) {
+      return res.type('text/xml').send(
+        '<?xml version="1.0" encoding="UTF-8"?>' +
+        '<Response><Say voice="alice">This call is missing a phone number. Please check the prospect in Go Warm.</Say><Hangup/></Response>'
+      );
+    }
+
+    // Capture the parent (browser-leg) SID for correlation/cancel. Best-effort.
+    if (callSid) {
+      db.pool.query(
+        `UPDATE calls SET provider_call_id = $1, updated_at = NOW()
+          WHERE id = $2 AND provider_call_id IS NULL`,
+        [callSid, callId]
+      ).catch((e) => console.warn('voice-app: provider_call_id write failed:', e.message));
+    }
+
+    const { recording_enabled, recording_disclosure_enabled } = await resolveTwilioSettings(row.org_id);
+
+    const VoiceResponse = twilioLib.twiml.VoiceResponse;
+    const twiml = new VoiceResponse();
+
+    if (recording_enabled && recording_disclosure_enabled) {
+      twiml.say({ voice: 'alice' }, 'This call may be recorded.');
+    }
+
+    const dialOpts = {
+      callerId:       row.rep_did,
+      answerOnBridge: true,
+    };
+    if (recording_enabled) {
+      dialOpts.record = TwilioProvider.RECORDING_MODE;
+      dialOpts.recordingStatusCallback       = TwilioProvider.buildWebhookUrl(
+        TwilioProvider.WEBHOOK_PATHS.recording(callId)
+      );
+      dialOpts.recordingStatusCallbackMethod = 'POST';
+      dialOpts.recordingStatusCallbackEvent  = 'completed';
+    }
+
+    const dial = twiml.dial(dialOpts);
+    // Status callbacks on the prospect (dialed) leg drive calls.status/duration,
+    // same handler the dial-and-bridge path uses.
+    dial.number({
+      statusCallback:       TwilioProvider.buildWebhookUrl(TwilioProvider.WEBHOOK_PATHS.status(callId)),
+      statusCallbackMethod: 'POST',
+      statusCallbackEvent:  TwilioProvider.STATUS_CALLBACK_EVENTS,
+    }, row.prospect_phone);
+
+    return res.type('text/xml').send(twiml.toString());
+  } catch (err) {
+    console.error('voice-app route error:', err);
+    return res.status(500).type('text/xml').send(
+      '<?xml version="1.0" encoding="UTF-8"?><Response><Say>An error occurred. Please try again.</Say><Hangup/></Response>'
+    );
   }
 });
 

@@ -149,6 +149,16 @@ twilio: {
       ...(sequenceStepLogId ? { sequence_step_log_id: sequenceStepLogId } : {}),
     }),
     getCallStatus:   (callId)               => api.get(`/prospect-calls/${callId}/status`),
+
+    // Per-org subaccount (Model A) + browser dialing (Voice SDK v2)
+    provisionAccount: ()                     => api.post(`/org/admin/twilio/provision-account`),
+    getAccount:       ()                     => api.get(`/org/admin/twilio/account`),
+    getVoiceToken:    ()                     => api.get(`/twilio/voice/token`),
+    // Browser-dial: creates the call row; the softphone originates the call.
+    prepareCall:      (prospectId, sequenceStepLogId = null) => api.post(`/prospect-calls/prepare`, {
+      prospect_id: prospectId,
+      ...(sequenceStepLogId ? { sequence_step_log_id: sequenceStepLogId } : {}),
+    }),
   },
 
   health: {

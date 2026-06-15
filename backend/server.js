@@ -299,6 +299,9 @@ app.use('/api/prospecting/activity', require('./routes/prospecting-activity.rout
 // Owner/admin only (role enforced inside the routes file).
 app.use('/api/org/admin/twilio', require('./routes/org-twilio.routes'));
 
+// Browser dialing (Voice JS SDK v2): mints per-org subaccount access tokens.
+app.use('/api/twilio/voice',     require('./routes/twilio-voice.routes'));
+
 // Rep self-serve: personal phone for the Twilio outbound flow.
 app.use('/api/users/me/phone',   require('./routes/user-phone.routes'));
 

@@ -1,84 +1,84 @@
 /**
- * TwilioProviderService
+ * TwilioProviderService  (per-org / subaccount-scoped)
  *
- * Wraps the Twilio Node SDK with the operations Phase 3 needs:
- *   - validateConfig():     startup sanity check on env vars
- *   - initiateCall():       place an outbound two-legged call
- *   - provisionDid():       buy a new DID, wire it to our inbound webhook
- *   - releaseDid():         release a DID back to Twilio's pool
- *   - validateSignature():  verify an incoming webhook is really from Twilio
- *   - buildWebhookUrl():    construct absolute callback URLs (internal)
+ * Pure Twilio adapter. Every operation runs against ONE org's Twilio
+ * SUBACCOUNT, resolved via twilioAccounts.service.js. This module does not own
+ * the DB; it reads credentials through the accounts service and otherwise only
+ * talks to Twilio.
  *
- * Does NOT touch the database. The route/persistence layer owns DB writes.
- * This service is a pure adapter over the Twilio API.
+ * Public operations (all now take `orgId`):
+ *   getClient(orgId)                          → subaccount-scoped Twilio client
+ *   initiateCall({ orgId, ... })              → outbound two-legged call (legacy dial-and-bridge)
+ *   provisionDid({ orgId, areaCode, ... })    → buy + wire a DID in the org's subaccount
+ *   releaseDid(orgId, didSid)                 → release a DID
+ *   cancelCall(orgId, callSid, mode)          → cancel/hang up a call
+ *   claimDid(orgId, didSid)                   → re-wire an existing DID's voiceUrl
+ *   validateSignature(req, orgId)             → verify an inbound webhook (per-subaccount token)
+ *   buildWebhookUrl(path)                     → absolute callback URL (internal helper)
+ *   validateConfig()                          → boot-time PARENT/webhook sanity check
  *
- * Environment variables consumed:
- *   TWILIO_ACCOUNT_SID         (required) — Twilio account identifier
- *   TWILIO_AUTH_TOKEN          (required) — used for API auth + signature verification
- *   RAILWAY_PUBLIC_DOMAIN      (preferred) — auto-set on Railway, hostname only
- *   BACKEND_PUBLIC_URL         (fallback)  — full https URL for local/non-Railway dev
- *
- * Either RAILWAY_PUBLIC_DOMAIN or BACKEND_PUBLIC_URL must be set; we need a
- * publicly reachable URL so Twilio can deliver TwiML, status, and recording
- * webhooks back to our backend.
+ * Migration note (single-account → subaccounts): the env vars
+ * TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN now hold the PARENT credentials and
+ * are used only for subaccount lifecycle (in twilioAccounts.service.js), never
+ * for per-org calls. Per-org calls use the subaccount's own SID + auth token.
  */
 
-const twilio = require('twilio');
+const twilio         = require('twilio');
+const TwilioAccounts = require('./twilioAccounts.service');
 
-// ── Module-level singletons ────────────────────────────────────────────────
-// The Twilio Node client is thread-safe and meant to be reused. Lazy-init on
-// first call so unit tests can stub it before module load if needed.
-let _client = null;
+// ── Per-org client cache ────────────────────────────────────────────────────
+// Twilio clients are reusable; cache one per subaccount SID so we don't rebuild
+// (and re-decrypt) on every call. Keyed by subaccount SID, not orgId, so a
+// re-provisioned org can't collide with a stale client.
+const _clientCache = new Map();   // subaccountSid -> twilio client
 
-function getClient() {
-  if (_client) return _client;
-  const sid   = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  if (!sid || !token) {
-    throw new Error('TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN env vars are required');
+/**
+ * Resolve a Twilio client scoped to the org's subaccount.
+ * @param {number} orgId
+ * @returns {Promise<import('twilio').Twilio>}
+ * @throws  {Error} code 'TWILIO_NOT_PROVISIONED' if the org has no active subaccount
+ */
+async function getClient(orgId) {
+  const creds = await TwilioAccounts.getCredentials(orgId);
+  if (!creds) {
+    const e = new Error(`Org ${orgId} has no active Twilio subaccount provisioned`);
+    e.code = 'TWILIO_NOT_PROVISIONED';
+    throw e;
   }
-  _client = twilio(sid, token);
-  return _client;
+  const cached = _clientCache.get(creds.accountSid);
+  if (cached) return cached;
+  const client = twilio(creds.accountSid, creds.authToken);
+  _clientCache.set(creds.accountSid, client);
+  return client;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────
-// Where webhook routes will live in server.js. Centralized so changes here
-// stay in sync with the routes file.
 const WEBHOOK_PATHS = {
-  twiml:           (callId) => `/api/twilio/webhooks/twiml/${callId}`,
-  twimlInbound:    (didSid) => `/api/twilio/webhooks/twiml-inbound/${didSid}`,
-  status:          (callId) => `/api/twilio/webhooks/status/${callId}`,
-  recording:       (callId) => `/api/twilio/webhooks/recording/${callId}`,
+  twiml:        (callId) => `/api/twilio/webhooks/twiml/${callId}`,
+  twimlInbound: (didSid) => `/api/twilio/webhooks/twiml-inbound/${didSid}`,
+  status:       (callId) => `/api/twilio/webhooks/status/${callId}`,
+  recording:    (callId) => `/api/twilio/webhooks/recording/${callId}`,
 };
 
-// Status callback events we want Twilio to fire. All four give us complete
-// lifecycle visibility:
-//   initiated → row exists; status='initiated'
-//   ringing   → at least one leg is ringing; status='ringing'
-//   answered  → both legs connected (Twilio's term for in_progress)
-//   completed → call ended; final state in (completed|no_answer|failed|busy|canceled)
 const STATUS_CALLBACK_EVENTS = ['initiated', 'ringing', 'answered', 'completed'];
-
-// Recording mode. 'record-from-answer-dual' captures both legs as separate
-// audio channels (better for downstream transcription with diarization) and
-// only starts billing/storage from the moment the second leg answers.
 const RECORDING_MODE = 'record-from-answer-dual';
 
 
-// ── validateConfig ────────────────────────────────────────────────────────
+// ── validateConfig (boot-time) ──────────────────────────────────────────────
 /**
- * Run at server startup to fail fast on missing config rather than blowing
- * up on the first call attempt. Server.js should call this before starting
- * to listen.
+ * Run at server startup. With subaccounts, the only deployment-wide
+ * requirement is the PARENT credentials (for provisioning) plus a public base
+ * URL (for webhooks / TwiML App voiceUrl). Per-org readiness is checked at call
+ * time via getClient().
  *
- * @returns {Object} resolved config (mostly for logging at boot)
- * @throws  if any required env var is missing
+ * @returns {Object} resolved parent config (for logging at boot)
+ * @throws  if parent creds or public base URL are missing
  */
 function validateConfig() {
   const sid   = process.env.TWILIO_ACCOUNT_SID;
   const token = process.env.TWILIO_AUTH_TOKEN;
   if (!sid || !token) {
-    throw new Error('Twilio: TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set');
+    throw new Error('Twilio: parent TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set');
   }
   const base = _resolvePublicBaseUrl();
   if (!base) {
@@ -88,78 +88,72 @@ function validateConfig() {
     );
   }
   return {
-    account_sid_prefix: sid.slice(0, 8) + '…',  // safe to log
-    public_base_url:    base,
+    parent_account_sid_prefix: sid.slice(0, 8) + '…',
+    public_base_url:           base,
+    mode:                      'subaccount-per-org',
   };
 }
 
 
 // ── initiateCall ──────────────────────────────────────────────────────────
 /**
- * Place a two-legged outbound call. Twilio dials the rep first; when the rep
- * picks up, Twilio fetches the TwiML URL we hand it, which tells Twilio to
- * dial the prospect and bridge.
+ * Place a two-legged outbound call within the org's subaccount. Twilio dials
+ * the rep first; when the rep picks up, Twilio fetches the TwiML URL, which
+ * dials the prospect and bridges.
  *
- * Required args:
- *   callId         (int)    — our calls.id; embedded in webhook URLs so the
- *                             callback can update the right row
- *   repPhone       (string) — rep's real phone in E.164 (e.g. +14155551234)
- *   repDid         (string) — Twilio DID assigned to this rep in E.164
- *   prospectPhone  (string) — prospect phone in E.164 (validated upstream)
+ * NOTE: this is the legacy dial-and-bridge path (rep PSTN leg first). The
+ * browser-dial softphone supersedes it for orgs on the Voice SDK; kept for
+ * fallback / non-browser reps.
  *
- * Optional args (with defaults from org_action_config.call_settings):
- *   recording        (bool)   — record both legs (default: true)
- *   recordingMode    (string) — Twilio recording mode (default: 'record-from-answer-dual')
- *
- * Returns: { sid, status } from Twilio. `sid` becomes provider_call_id.
- *
- * NOTE: this method does NOT generate TwiML itself. Twilio fetches TwiML
- *       by calling our `twimlUrl` webhook when the rep answers. That route
- *       lives in twilio-webhooks.routes.js (next deliverable) and is
- *       responsible for the <Dial> + optional disclosure <Say>.
+ * @param {Object} args
+ * @param {number} args.orgId
+ * @param {number} args.callId
+ * @param {string} args.repPhone       rep phone E.164
+ * @param {string} args.repDid         rep's Twilio DID E.164
+ * @param {string} args.prospectPhone  prospect phone E.164
+ * @param {boolean}[args.recording=true]
+ * @param {string} [args.recordingMode]
+ * @returns {Promise<{sid: string, status: string}>}
  */
-async function initiateCall({ callId, repPhone, repDid, prospectPhone, recording = true, recordingMode = RECORDING_MODE }) {
-  if (!callId || !repPhone || !repDid || !prospectPhone) {
-    throw new Error('initiateCall: callId, repPhone, repDid, and prospectPhone are all required');
+async function initiateCall({ orgId, callId, repPhone, repDid, prospectPhone, recording = true, recordingMode = RECORDING_MODE }) {
+  if (!orgId || !callId || !repPhone || !repDid || !prospectPhone) {
+    throw new Error('initiateCall: orgId, callId, repPhone, repDid, and prospectPhone are all required');
   }
 
-  const client = getClient();
+  const client = await getClient(orgId);
   const base   = _resolvePublicBaseUrl();
 
   const params = {
-    to:                  repPhone,
-    from:                repDid,
-    url:                 `${base}${WEBHOOK_PATHS.twiml(callId)}`,
-    statusCallback:      `${base}${WEBHOOK_PATHS.status(callId)}`,
-    statusCallbackEvent: STATUS_CALLBACK_EVENTS,
-    statusCallbackMethod:'POST',
+    to:                   repPhone,
+    from:                 repDid,
+    url:                  `${base}${WEBHOOK_PATHS.twiml(callId)}`,
+    statusCallback:       `${base}${WEBHOOK_PATHS.status(callId)}`,
+    statusCallbackEvent:  STATUS_CALLBACK_EVENTS,
+    statusCallbackMethod: 'POST',
   };
 
   if (recording) {
-    params.record                   = true;
-    params.recordingStatusCallback  = `${base}${WEBHOOK_PATHS.recording(callId)}`;
+    params.record                        = true;
+    params.recordingStatusCallback       = `${base}${WEBHOOK_PATHS.recording(callId)}`;
     params.recordingStatusCallbackMethod = 'POST';
-    params.recordingChannels        = 'dual';
-    // recordingMode is set on the <Dial> in TwiML rather than on the parent
-    // call resource — we'll thread it through to the TwiML route via query
-    // string. For now it's documented but not used on the parent call.
-    void recordingMode;  // suppress unused-var lint
+    params.recordingChannels             = 'dual';
+    void recordingMode;
   }
 
-  // Surface Twilio errors with a code that callers can switch on. The most
-  // common ones for a trial account are:
-  //   21219 — to-number is not verified (trial accounts can only call verified)
+  // Common Twilio error codes (now that accounts are upgraded subaccounts, the
+  // trial-only 21219 unverified-to-number error no longer applies):
   //   21211 — invalid 'to' phone format
-  //   21214 — invalid 'from' phone (DID not owned by account)
+  //   21214 — invalid 'from' phone (DID not owned by THIS subaccount)
+  //   13227 — geo permission: subaccount not allowed to dial this destination
   try {
     const call = await client.calls.create(params);
     return { sid: call.sid, status: call.status };
   } catch (err) {
     const e = new Error(err.message || 'Twilio call create failed');
-    e.code        = err.code;        // Twilio numeric code (e.g. 21219)
-    e.status      = err.status;      // HTTP status from Twilio API
-    e.moreInfo    = err.moreInfo;    // Twilio docs link
-    e.providerErr = true;            // routing layer can branch on this
+    e.code        = err.code;
+    e.status      = err.status;
+    e.moreInfo    = err.moreInfo;
+    e.providerErr = true;
     throw e;
   }
 }
@@ -167,36 +161,23 @@ async function initiateCall({ callId, repPhone, repDid, prospectPhone, recording
 
 // ── provisionDid ──────────────────────────────────────────────────────────
 /**
- * Buy a new DID and wire it to our inbound-call webhook so prospects who
- * dial it get routed to the assigned rep.
+ * Buy a new DID inside the org's subaccount and wire it to our inbound webhook.
  *
- * Required args:
- *   areaCode (string) — 3-digit US area code preference (e.g. '415')
- *
- * Optional args:
- *   country  (string) — ISO country code (default 'US'; only US for Phase 3)
- *
- * Returns: { did, did_sid, area_code, capabilities }
- *
- * Note on cost: each provisioned DID costs ~$1/month on Twilio. Caller
- * (admin route) is responsible for confirming the cost with the admin before
- * invoking this method.
- *
- * The inbound voice URL points to /twiml-inbound/{didSid} rather than
- * /twiml-inbound/{phoneNumber} because the SID is stable and URL-safe; the
- * phone number could collide with URL encoding edge cases.
+ * @param {Object} args
+ * @param {number} args.orgId
+ * @param {string} args.areaCode  3-digit US area code
+ * @param {string} [args.country='US']
+ * @returns {Promise<{did, did_sid, area_code, capabilities}>}
  */
-async function provisionDid({ areaCode, country = 'US' } = {}) {
+async function provisionDid({ orgId, areaCode, country = 'US' } = {}) {
+  if (!orgId) throw new Error('provisionDid: orgId is required');
   if (!areaCode || !/^\d{3}$/.test(String(areaCode))) {
     throw new Error('provisionDid: areaCode must be a 3-digit US area code (e.g. "415")');
   }
 
-  const client = getClient();
+  const client = await getClient(orgId);
   const base   = _resolvePublicBaseUrl();
 
-  // Search for a local number with voice capability in the requested area.
-  // limit:1 because we just need one match; admin can retry with a different
-  // area code if none is available.
   const available = await client.availablePhoneNumbers(country)
     .local
     .list({ areaCode, voiceEnabled: true, limit: 1 });
@@ -209,10 +190,6 @@ async function provisionDid({ areaCode, country = 'US' } = {}) {
 
   const candidate = available[0];
 
-  // Purchase it. The voiceUrl is set BEFORE the purchase completes so there's
-  // no window where the number is owned but routes nowhere.
-  // We do a placeholder voiceUrl first, then patch it with the real SID after
-  // creation — required because we don't know the SID until the buy succeeds.
   const placeholderVoiceUrl = `${base}/api/twilio/webhooks/twiml-inbound/PENDING`;
   const purchased = await client.incomingPhoneNumbers.create({
     phoneNumber: candidate.phoneNumber,
@@ -220,7 +197,6 @@ async function provisionDid({ areaCode, country = 'US' } = {}) {
     voiceMethod: 'POST',
   });
 
-  // Now we have the SID; patch the voiceUrl to include it.
   await client.incomingPhoneNumbers(purchased.sid).update({
     voiceUrl: `${base}${WEBHOOK_PATHS.twimlInbound(purchased.sid)}`,
   });
@@ -236,67 +212,45 @@ async function provisionDid({ areaCode, country = 'US' } = {}) {
 
 // ── releaseDid ────────────────────────────────────────────────────────────
 /**
- * Release a DID back to Twilio's pool. Stops the monthly charge. Used when
- * an admin removes a rep or reassigns their number.
- *
- * @param {string} didSid — Twilio's PN... SID for the number
- * @returns {boolean} true on success
- *
- * IMPORTANT: after release, the DID may be re-issued to a different Twilio
- * customer immediately. Make sure the DB row for this rep's twilio_did is
- * cleared in the same transaction that invokes this method, or you'll have
- * a phantom DID record that points at someone else's number.
+ * Release a DID back to Twilio's pool from the org's subaccount.
+ * @param {number} orgId
+ * @param {string} didSid  PN... SID
+ * @returns {Promise<boolean>}
  */
-async function releaseDid(didSid) {
+async function releaseDid(orgId, didSid) {
+  if (!orgId)  throw new Error('releaseDid: orgId is required');
   if (!didSid) throw new Error('releaseDid: didSid is required');
-  const client = getClient();
+  const client = await getClient(orgId);
   await client.incomingPhoneNumbers(didSid).remove();
   return true;
 }
 
 
-// ── cancelCall ────────────────────────────────────────────────────────────
+// ── cancelCall ──────────────────────────────────────────────────────────────
 /**
- * Terminate an in-flight Twilio call. The Twilio API uses different status
- * values depending on the call's current state:
+ * Terminate an in-flight call in the org's subaccount.
+ *   queued|ringing|initiated → update({status:'canceled'})
+ *   in-progress              → update({status:'completed'})
  *
- *   queued | ringing | initiated  →  update({status: 'canceled'})
- *                                    ↳ ends the call before connection
- *                                    ↳ final state: 'canceled'
- *   in-progress                   →  update({status: 'completed'})
- *                                    ↳ hangs up an already-connected call
- *                                    ↳ final state: 'completed'
- *
- * Sending the wrong value for the current state returns a Twilio 400. The
- * caller must pass the right `mode` based on what they know about the
- * current call state.
- *
- * @param {string} callSid — Twilio's CA... SID for the call (our provider_call_id)
- * @param {string} mode    — 'cancel' (pre-connect) or 'hangup' (in-progress)
- * @returns {Object} the Twilio call resource after the update
- *
- * If Twilio reports the call has already ended (e.g. webhook race), we
- * swallow the resulting 20404 / 21220 errors and return null — the caller
- * can treat that as success since the goal (call not ringing) is achieved.
+ * @param {number} orgId
+ * @param {string} callSid  CA... SID
+ * @param {string} [mode='cancel']  'cancel' (pre-connect) or 'hangup' (in-progress)
+ * @returns {Promise<{sid, status} | null>}  null if the call already ended
  */
-async function cancelCall(callSid, mode = 'cancel') {
+async function cancelCall(orgId, callSid, mode = 'cancel') {
+  if (!orgId)   throw new Error('cancelCall: orgId is required');
   if (!callSid) throw new Error('cancelCall: callSid is required');
   if (mode !== 'cancel' && mode !== 'hangup') {
     throw new Error(`cancelCall: mode must be 'cancel' or 'hangup', got '${mode}'`);
   }
-  const client = getClient();
+  const client = await getClient(orgId);
   const targetStatus = mode === 'hangup' ? 'completed' : 'canceled';
 
   try {
     const call = await client.calls(callSid).update({ status: targetStatus });
     return { sid: call.sid, status: call.status };
   } catch (err) {
-    // Twilio error codes we want to treat as "already done":
-    //   20404 — call not found (already cleared from Twilio)
-    //   21220 — call has already ended (terminal state hit during race)
-    if (err.code === 20404 || err.code === 21220) {
-      return null;
-    }
+    if (err.code === 20404 || err.code === 21220) return null;
     const e = new Error(err.message || 'Twilio call cancel failed');
     e.code        = err.code;
     e.status      = err.status;
@@ -306,53 +260,37 @@ async function cancelCall(callSid, mode = 'cancel') {
 }
 
 
-// ── claimDid ──────────────────────────────────────────────────────────────
+// ── claimDid ────────────────────────────────────────────────────────────────
 /**
- * Claim an existing DID that's already in our Twilio account. Unlike
- * provisionDid which BUYS a new number, this just rewires the voice URL on
- * an existing number to route inbound calls to GoWarmCRM.
+ * Re-wire the voiceUrl of an existing DID already in the org's subaccount so
+ * inbound calls route to GoWarmCRM. Does not buy a number.
  *
- * Used when an admin wants to assign a DID that was provisioned through the
- * Twilio console (e.g. the trial DID, ported numbers, or numbers acquired
- * outside our app).
- *
- * @param {string} didSid — the PN... SID of the existing Twilio number
- * @returns {Object} { did, did_sid, capabilities }
- *
- * Throws:
- *   'TWILIO_DID_NOT_FOUND' if the SID doesn't exist in our account
- *   Pass-through Twilio errors otherwise
- *
- * NOTE: this OVERWRITES the existing voice URL on the number. If the DID
- * was previously routing inbound calls somewhere else (e.g. a flex flow,
- * a different application), that routing is replaced. The route caller
- * surfaces this in the success message.
+ * @param {number} orgId
+ * @param {string} didSid  PN... SID
+ * @returns {Promise<{did, did_sid, capabilities, previous_voice_url}>}
  */
-async function claimDid(didSid) {
+async function claimDid(orgId, didSid) {
+  if (!orgId) throw new Error('claimDid: orgId is required');
   if (!didSid || typeof didSid !== 'string' || !/^PN[a-f0-9]+$/i.test(didSid)) {
     const e = new Error('claimDid: didSid must be a Twilio phone-number SID (PN...)');
     e.code = 'INVALID_DID_SID';
     throw e;
   }
-  const client = getClient();
+  const client = await getClient(orgId);
   const base   = _resolvePublicBaseUrl();
 
-  // Verify the SID exists in our account and fetch the number.
   let phoneNumber;
   try {
     phoneNumber = await client.incomingPhoneNumbers(didSid).fetch();
   } catch (err) {
     if (err.code === 20404 || err.status === 404) {
-      const e = new Error(`No phone number with SID ${didSid} exists in this Twilio account`);
+      const e = new Error(`No phone number with SID ${didSid} exists in this subaccount`);
       e.code = 'TWILIO_DID_NOT_FOUND';
       throw e;
     }
     throw err;
   }
 
-  // Rewire the voice URL to route inbound calls to our backend. Twilio
-  // includes the previous URL in the response so the caller can surface
-  // what was overwritten, but we don't read it here.
   const newVoiceUrl = `${base}${WEBHOOK_PATHS.twimlInbound(didSid)}`;
   await client.incomingPhoneNumbers(didSid).update({
     voiceUrl:    newVoiceUrl,
@@ -360,9 +298,9 @@ async function claimDid(didSid) {
   });
 
   return {
-    did:               phoneNumber.phoneNumber,
-    did_sid:           phoneNumber.sid,
-    capabilities:      phoneNumber.capabilities,
+    did:                phoneNumber.phoneNumber,
+    did_sid:            phoneNumber.sid,
+    capabilities:       phoneNumber.capabilities,
     previous_voice_url: phoneNumber.voiceUrl || null,
   };
 }
@@ -370,56 +308,35 @@ async function claimDid(didSid) {
 
 // ── validateSignature ─────────────────────────────────────────────────────
 /**
- * Verify that a webhook request actually came from Twilio. Without this,
- * anyone who knows the URL of one of our webhook routes could forge a
- * status/recording callback and corrupt our calls table.
+ * Verify an inbound webhook actually came from Twilio, using the SUBACCOUNT's
+ * auth token (each subaccount signs with its own token).
  *
- * Twilio signs the request URL + form-body params with HMAC-SHA1 keyed on
- * our Auth Token. The signature is in the X-Twilio-Signature header.
+ * The route must resolve which org the callback belongs to FIRST (callId → org,
+ * or DID SID → org) and pass that orgId here. This reorders the original flow,
+ * where validation happened before any DB lookup.
  *
- * @param {Object} req — Express request object. Must have:
- *                       req.headers['x-twilio-signature']
- *                       req.body  (parsed urlencoded form)
- *                       req.originalUrl
- * @returns {boolean}
- *
- * USAGE NOTES:
- * - The URL Twilio signed is the FULL URL it called, not Express's relative
- *   path. We reconstruct it from req.protocol + req.get('host') + req.originalUrl.
- * - Express must be configured to trust the proxy header so req.protocol
- *   returns 'https' when behind Cloudflare/Railway. server.js sets this via
- *   app.set('trust proxy', ...) — confirm before relying on this.
- * - When `extended: true` is set on express.urlencoded(), the parsed body
- *   keys/values are what Twilio used as signing params. Good.
+ * @param {Object} req    Express request (x-twilio-signature header, parsed body, originalUrl)
+ * @param {number} orgId  the org whose subaccount the webhook targets
+ * @returns {Promise<boolean>}
  */
-function validateSignature(req) {
+async function validateSignature(req, orgId) {
   const signature = req.headers['x-twilio-signature'];
   if (!signature) return false;
+  if (!orgId) return false;
 
-  const token = process.env.TWILIO_AUTH_TOKEN;
+  const token = await TwilioAccounts.getAuthToken(orgId);
   if (!token) return false;
 
-  // Reconstruct the URL Twilio used. Honour x-forwarded-proto so we get
-  // 'https' even when our Express server itself is HTTP behind Cloudflare.
   const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
-  const host  = req.headers['x-forwarded-host'] || req.get('host');
+  const host  = req.headers['x-forwarded-host']  || req.get('host');
   const url   = `${proto}://${host}${req.originalUrl}`;
-
-  // req.body is the parsed urlencoded form Twilio sent.
   const params = req.body || {};
 
   return twilio.validateRequest(token, signature, url, params);
 }
 
 
-// ── buildWebhookUrl ───────────────────────────────────────────────────────
-/**
- * Construct an absolute webhook URL. Exported so the route layer can use it
- * if it ever needs to log or echo back the URL Twilio is expected to call.
- *
- * @param {string} path — must start with '/'
- * @returns {string} absolute https URL
- */
+// ── buildWebhookUrl ─────────────────────────────────────────────────────────
 function buildWebhookUrl(path) {
   const base = _resolvePublicBaseUrl();
   if (!base) throw new Error('buildWebhookUrl: no public base URL configured');
@@ -428,15 +345,11 @@ function buildWebhookUrl(path) {
 
 
 // ── _resolvePublicBaseUrl (internal) ──────────────────────────────────────
-// Railway auto-sets RAILWAY_PUBLIC_DOMAIN to a bare hostname (no scheme).
-// For local dev or non-Railway hosting, BACKEND_PUBLIC_URL is the escape
-// hatch — must include https:// scheme.
 function _resolvePublicBaseUrl() {
   if (process.env.RAILWAY_PUBLIC_DOMAIN) {
     return `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
   }
   if (process.env.BACKEND_PUBLIC_URL) {
-    // Strip trailing slash so concatenation with WEBHOOK_PATHS values is clean.
     return process.env.BACKEND_PUBLIC_URL.replace(/\/+$/, '');
   }
   return null;
@@ -445,6 +358,7 @@ function _resolvePublicBaseUrl() {
 
 // ── Exports ───────────────────────────────────────────────────────────────
 module.exports = {
+  getClient,
   validateConfig,
   initiateCall,
   provisionDid,
@@ -453,8 +367,6 @@ module.exports = {
   claimDid,
   validateSignature,
   buildWebhookUrl,
-  // Expose constants for the route/webhook layer to reuse without
-  // hardcoding the path shape in two places.
   WEBHOOK_PATHS,
   STATUS_CALLBACK_EVENTS,
   RECORDING_MODE,

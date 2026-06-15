@@ -24,6 +24,7 @@ const authenticateToken   = require('../middleware/auth.middleware');
 const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
 const requireModule       = require('../middleware/requireModule.middleware');
 const TwilioProvider      = require('../services/twilioProvider.service');
+const TwilioAccounts      = require('../services/twilioAccounts.service');
 const CallSettingsService = require('../services/callSettings.service');
 
 router.use(authenticateToken);
@@ -96,16 +97,24 @@ router.post('/provision-did/:userId', adminOnly, async (req, res) => {
     });
   }
 
-  // Twilio config check.
+  // Twilio config check: parent/webhook config + this org has a subaccount.
   try { TwilioProvider.validateConfig(); }
   catch (cfgErr) {
     return res.status(503).json({ error: { message: 'Twilio is not configured for this deployment.' } });
+  }
+  if (!(await TwilioAccounts.isProvisioned(req.orgId))) {
+    return res.status(409).json({
+      error: {
+        message: 'This org has no Twilio subaccount yet. Provision one first (POST /api/org/admin/twilio/provision-account).',
+        code:    'TWILIO_NOT_PROVISIONED',
+      },
+    });
   }
 
   // Purchase.
   let provisioned;
   try {
-    provisioned = await TwilioProvider.provisionDid({ areaCode });
+    provisioned = await TwilioProvider.provisionDid({ orgId: req.orgId, areaCode });
   } catch (err) {
     if (err.code === 'TWILIO_NO_NUMBERS_AVAILABLE') {
       return res.status(409).json({ error: { message: err.message, code: 'NO_NUMBERS_AVAILABLE' } });
@@ -133,7 +142,7 @@ router.post('/provision-did/:userId', adminOnly, async (req, res) => {
   } catch (err) {
     // Roll back the Twilio purchase to avoid orphan billed numbers.
     console.error('provision-did: DB write failed after Twilio purchase, attempting release:', err);
-    try { await TwilioProvider.releaseDid(provisioned.did_sid); }
+    try { await TwilioProvider.releaseDid(req.orgId, provisioned.did_sid); }
     catch (_) {
       console.error('CRITICAL: DID purchased but neither DB nor Twilio release succeeded:', {
         did: provisioned.did, did_sid: provisioned.did_sid, user_id: userId,
@@ -193,7 +202,7 @@ router.post('/release-did/:userId', adminOnly, async (req, res) => {
 
   // Then release on Twilio.
   try {
-    await TwilioProvider.releaseDid(rep.twilio_did_sid);
+    await TwilioProvider.releaseDid(req.orgId, rep.twilio_did_sid);
   } catch (err) {
     console.error('CRITICAL: DID cleared from DB but Twilio release failed:', {
       did: rep.twilio_did, did_sid: rep.twilio_did_sid, user_id: userId, error: err.message,
@@ -284,17 +293,25 @@ router.post('/claim-did/:userId', adminOnly, async (req, res) => {
     });
   }
 
-  // Twilio config check.
+  // Twilio config check: parent/webhook config + this org has a subaccount.
   try { TwilioProvider.validateConfig(); }
   catch (cfgErr) {
     return res.status(503).json({ error: { message: 'Twilio is not configured for this deployment.' } });
+  }
+  if (!(await TwilioAccounts.isProvisioned(req.orgId))) {
+    return res.status(409).json({
+      error: {
+        message: 'This org has no Twilio subaccount yet. Provision one first (POST /api/org/admin/twilio/provision-account).',
+        code:    'TWILIO_NOT_PROVISIONED',
+      },
+    });
   }
 
   // Claim on Twilio side — verifies SID exists in our account, rewires the
   // voice URL to our inbound webhook.
   let claimed;
   try {
-    claimed = await TwilioProvider.claimDid(didSid);
+    claimed = await TwilioProvider.claimDid(req.orgId, didSid);
   } catch (err) {
     if (err.code === 'TWILIO_DID_NOT_FOUND') {
       return res.status(404).json({
@@ -403,6 +420,83 @@ router.patch('/settings', adminOnly, async (req, res) => {
     const msg = err.message || 'Failed to update Twilio settings';
     const isValidation = /must be|required|cannot|exceeds/i.test(msg);
     return res.status(isValidation ? 400 : 500).json({ error: { message: msg } });
+  }
+});
+
+
+// =========================================================================
+// GET /account — this org's Twilio subaccount status (safe summary)
+// =========================================================================
+// Never returns secrets — only SIDs, last4s, and provisioning state. Drives
+// the admin "Twilio setup" panel and the per-org cost screen's header.
+// =========================================================================
+router.get('/account', adminOnly, async (req, res) => {
+  try {
+    const row = await TwilioAccounts.getRow(req.orgId);
+    if (!row) {
+      return res.json({ provisioned: false });
+    }
+    return res.json({
+      provisioned:        row.status === 'active',
+      status:             row.status,
+      subaccount_sid:     row.subaccount_sid,
+      friendly_name:      row.friendly_name,
+      api_key_sid:        row.api_key_sid || null,
+      twiml_app_sid:      row.twiml_app_sid || null,
+      auth_token_last4:   row.auth_token_last4 || null,
+      softphone_ready:    !!(row.api_key_sid && row.twiml_app_sid),
+      created_at:         row.created_at,
+    });
+  } catch (err) {
+    console.error('GET /org/admin/twilio/account error:', err);
+    return res.status(500).json({ error: { message: 'Failed to load Twilio account status' } });
+  }
+});
+
+
+// =========================================================================
+// POST /provision-account — create this org's Twilio subaccount
+// =========================================================================
+// Body (optional): { friendly_name: "Acme Corp" }
+//
+// Creates the subaccount + an API key + a TwiML App (for browser dialing) and
+// stores the encrypted credentials. Idempotent: if the org already has a
+// subaccount, returns the existing summary with already_existed=true rather
+// than creating a duplicate. Must succeed before provision-did / claim-did /
+// calling will work for this org.
+//
+// Requires parent Twilio creds (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN) and
+// AI_CREDS_KEY for credential encryption.
+// =========================================================================
+router.post('/provision-account', adminOnly, async (req, res) => {
+  // Parent/webhook config must be present to create subaccounts + TwiML Apps.
+  try { TwilioProvider.validateConfig(); }
+  catch (cfgErr) {
+    return res.status(503).json({
+      error: { message: 'Twilio parent account is not configured for this deployment.', code: 'TWILIO_NOT_CONFIGURED' },
+    });
+  }
+
+  const friendlyName = typeof req.body.friendly_name === 'string' && req.body.friendly_name.trim()
+    ? req.body.friendly_name.trim()
+    : undefined;
+
+  try {
+    const result = await TwilioAccounts.provisionSubaccount({ orgId: req.orgId, friendlyName });
+    return res.status(result.already_existed ? 200 : 201).json({ account: result });
+  } catch (err) {
+    if (err.code === 'ENCRYPTION_NOT_CONFIGURED') {
+      return res.status(503).json({
+        error: { message: 'Credential encryption is not configured (AI_CREDS_KEY missing).', code: 'ENCRYPTION_NOT_CONFIGURED' },
+      });
+    }
+    console.error('provision-account error:', err);
+    return res.status(502).json({
+      error: {
+        message: err.message || 'Failed to provision Twilio subaccount',
+        code:    err.code ? `TWILIO_${err.code}` : 'TWILIO_ERROR',
+      },
+    });
   }
 });
 

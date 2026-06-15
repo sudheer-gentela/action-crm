@@ -27,6 +27,7 @@ const authenticateToken     = require('../middleware/auth.middleware');
 const { orgContext }        = require('../middleware/orgContext.middleware');
 const requireModule         = require('../middleware/requireModule.middleware');
 const TwilioProvider        = require('../services/twilioProvider.service');
+const TwilioAccounts        = require('../services/twilioAccounts.service');
 const CallSettingsService   = require('../services/callSettings.service');
 const NotificationService   = require('../services/notificationService');
 
@@ -272,7 +273,9 @@ router.post('/initiate', initiateIpLimiter, async (req, res) => {
   }
 
   // 4. Check Twilio is configured BEFORE we insert the calls row. Avoids
-  //    orphaned status='initiated' rows when Twilio creds aren't set.
+  //    orphaned status='initiated' rows. Two layers now:
+  //    (a) parent/webhook config present (deployment-wide), and
+  //    (b) THIS org has an active Twilio subaccount provisioned.
   try {
     TwilioProvider.validateConfig();
   } catch (cfgErr) {
@@ -280,6 +283,14 @@ router.post('/initiate', initiateIpLimiter, async (req, res) => {
       error: {
         message: 'Twilio is not configured for this deployment.',
         code:    'TWILIO_NOT_CONFIGURED',
+      },
+    });
+  }
+  if (!(await TwilioAccounts.isProvisioned(req.orgId))) {
+    return res.status(503).json({
+      error: {
+        message: 'Calling is not set up for your organization yet. An admin needs to provision Twilio in Org Settings → Prospecting → Twilio.',
+        code:    'TWILIO_NOT_PROVISIONED',
       },
     });
   }
@@ -314,6 +325,7 @@ router.post('/initiate', initiateIpLimiter, async (req, res) => {
   let twilioResult;
   try {
     twilioResult = await TwilioProvider.initiateCall({
+      orgId:         req.orgId,
       callId:        callRow.id,
       repPhone:      rep.phone,
       repDid:        rep.twilio_did,
@@ -371,6 +383,126 @@ router.post('/initiate', initiateIpLimiter, async (req, res) => {
       phone:      prospect.phone,
     },
   });
+});
+
+
+// =========================================================================
+// POST /prepare — create a call row for BROWSER dialing (no server-side call)
+// =========================================================================
+// Browser-dial flow: the softphone (Voice SDK Device) originates the call, so
+// the backend does NOT call Twilio here. It only validates and creates the
+// calls row, returning the id. The browser then Device.connect({ params:
+// { callId } }); Twilio fetches /webhooks/voice-app, which dials the prospect
+// (from this row) with the rep's DID as caller ID. Lifecycle + duration arrive
+// via the /webhooks/status/:callId callback exactly as before.
+//
+// Unlike /initiate (dial-and-bridge), the rep does NOT need a personal phone —
+// audio is the browser. The rep DOES still need a DID for caller ID.
+//
+// Body: { prospect_id (int, required), sequence_step_log_id (int, optional) }
+// =========================================================================
+router.post('/prepare', initiateIpLimiter, async (req, res) => {
+  const prospectId = parseInt(req.body.prospect_id, 10);
+  if (!Number.isInteger(prospectId) || prospectId <= 0) {
+    return res.status(400).json({ error: { message: 'prospect_id is required' } });
+  }
+  const sequenceStepLogId = req.body.sequence_step_log_id
+    ? parseInt(req.body.sequence_step_log_id, 10)
+    : null;
+
+  // 1. Rep needs a DID (caller ID). No personal-phone requirement for browser.
+  const repRes = await db.pool.query(
+    `SELECT id, twilio_did, twilio_did_sid FROM users WHERE id = $1 AND org_id = $2`,
+    [req.user.userId, req.orgId]
+  );
+  if (!repRes.rows.length) {
+    return res.status(401).json({ error: { message: 'User not found' } });
+  }
+  if (!repRes.rows[0].twilio_did) {
+    notifyAdminsOfMissingDid(req.orgId, req.user.userId);
+    return res.status(400).json({
+      error: {
+        message: 'Your admin needs to provision a phone number for you before you can make calls.',
+        code:    'REP_DID_MISSING',
+      },
+    });
+  }
+
+  // 2. Prospect must exist + have a phone.
+  const pRes = await db.pool.query(
+    `SELECT id, phone, first_name, last_name
+       FROM prospects
+      WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+    [prospectId, req.orgId]
+  );
+  if (!pRes.rows.length) {
+    return res.status(404).json({ error: { message: 'Prospect not found' } });
+  }
+  const prospect = pRes.rows[0];
+  if (!prospect.phone) {
+    return res.status(400).json({
+      error: { message: 'This prospect has no phone number on file. Add one before calling.', code: 'PROSPECT_PHONE_MISSING' },
+    });
+  }
+
+  // 3. Rate limits (same caps as dial-and-bridge).
+  const rateErr = await checkRateLimits(req.orgId, req.user.userId);
+  if (rateErr) {
+    return res.status(rateErr.status).json({ error: { message: rateErr.message, code: rateErr.code } });
+  }
+
+  // 4. Twilio must be configured + this org provisioned with a subaccount.
+  try {
+    TwilioProvider.validateConfig();
+  } catch (cfgErr) {
+    return res.status(503).json({ error: { message: 'Twilio is not configured for this deployment.', code: 'TWILIO_NOT_CONFIGURED' } });
+  }
+  if (!(await TwilioAccounts.isProvisioned(req.orgId))) {
+    return res.status(503).json({
+      error: { message: 'Calling is not set up for your organization yet. An admin needs to provision Twilio in Org Settings → Prospecting → Twilio.', code: 'TWILIO_NOT_PROVISIONED' },
+    });
+  }
+
+  // 5. Create the row. status='initiated'; provider_call_id filled later by
+  //    the voice-app webhook (parent call SID) / status callbacks.
+  try {
+    const insRes = await db.pool.query(
+      `INSERT INTO calls
+         (org_id, prospect_id, user_id,
+          direction, status, outcome,
+          phone_used, provider, sequence_step_log_id,
+          occurred_at)
+       VALUES ($1, $2, $3,
+               'outbound', 'initiated', NULL,
+               $4, 'twilio', $5,
+               CURRENT_TIMESTAMP)
+       RETURNING *`,
+      [req.orgId, prospectId, req.user.userId, prospect.phone, sequenceStepLogId]
+    );
+    const callRow = insRes.rows[0];
+
+    return res.status(201).json({
+      call: {
+        id:          callRow.id,
+        prospect_id: callRow.prospect_id,
+        user_id:     callRow.user_id,
+        status:      'initiated',
+        provider:    'twilio',
+        direction:   'outbound',
+        phone_used:  prospect.phone,
+        occurred_at: callRow.occurred_at,
+      },
+      prospect: {
+        id:         prospect.id,
+        first_name: prospect.first_name,
+        last_name:  prospect.last_name,
+        phone:      prospect.phone,
+      },
+    });
+  } catch (err) {
+    console.error('prepare: INSERT failed', err);
+    return res.status(500).json({ error: { message: 'Failed to create call record' } });
+  }
 });
 
 
@@ -490,7 +622,7 @@ router.post('/:id/cancel', async (req, res) => {
   const mode = call.status === 'in_progress' ? 'hangup' : 'cancel';
 
   try {
-    await TwilioProvider.cancelCall(call.provider_call_id, mode);
+    await TwilioProvider.cancelCall(call.org_id, call.provider_call_id, mode);
   } catch (err) {
     console.error('cancel: Twilio API error:', err.message, 'code=', err.code);
     return res.status(502).json({

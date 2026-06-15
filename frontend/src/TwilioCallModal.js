@@ -1,77 +1,136 @@
 /**
- * TwilioCallModal.js
+ * TwilioCallModal.js  (browser dialing — Voice JS SDK v2)
  *
- * The in-progress modal shown while a Twilio call is live. Drives off the
- * /api/prospect-calls/:id/status poll endpoint.
+ * The rep now talks through the computer (WebRTC), so there is NO PSTN leg to
+ * the rep's phone. On mount this modal:
+ *   1. fetches a Voice AccessToken (GET /twilio/voice/token)
+ *   2. creates a @twilio/voice-sdk Device
+ *   3. Device.connect({ params: { callId } }) — Twilio fetches /voice-app TwiML,
+ *      which dials the PROSPECT (from the DB row) with the rep's DID as caller
+ *      ID and bridges it to this browser leg.
  *
- * Lifecycle:
- *   1. Mount → start polling every 1.5s
- *   2. status='initiated'   → "📞 Dialing your phone…"
- *   3. status='ringing'     → "📞 Ringing prospect…"
- *   4. status='in_progress' → "🔴 Live · M:SS" (count up duration)
- *   5. status='completed'   → close modal, fire onCompleted(callId, durationSeconds)
- *                              so the parent opens LogCallModal pre-filled
- *   6. status in failed/no_answer/busy/canceled → show terminal message, then
- *                              close after 3s and fire onClosed()
+ * The call lifecycle + duration still come from the server status poll
+ * (/prospect-calls/:id/status), driven by the prospect-leg status webhook —
+ * that remains the source of truth, identical to the dial-and-bridge version.
+ * The Device/Call only provides the audio path, mute, and hangup.
  *
- * Props:
- *   callId            (int, required)
+ * Props (unchanged):
+ *   callId            (int, required)   — from POST /prospect-calls/prepare
  *   prospect          ({ first_name, last_name, phone })
- *   onCompleted(callId, durationSeconds) — fires when call ends normally
- *   onClosed(reason)  — fires when call ends abnormally or user closes
+ *   onCompleted(callId, durationSeconds)
+ *   onClosed(reason)
  *
+ * Requires dependency: @twilio/voice-sdk (npm i @twilio/voice-sdk)
  * Drop-in location: frontend/src/TwilioCallModal.js
- * Imported and rendered by ProspectingView.js (see patch instructions).
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import { Device } from '@twilio/voice-sdk';
 
 export default function TwilioCallModal({ callId, prospect, onCompleted, onClosed }) {
   const API     = process.env.REACT_APP_API_URL;
   const token   = localStorage.getItem('token') || localStorage.getItem('authToken');
   const headers = { Authorization: `Bearer ${token}` };
 
-  const [status, setStatus]               = useState('initiated');
-  const [durationSeconds, setDuration]    = useState(0);
-  const [terminalMsg, setTerminalMsg]     = useState(null);
-  const [error, setError]                 = useState(null);
-  const [cancelling, setCancelling]       = useState(false);
+  const [status, setStatus]            = useState('connecting'); // connecting → ringing → in_progress → terminal
+  const [durationSeconds, setDuration] = useState(0);
+  const [terminalMsg, setTerminalMsg]  = useState(null);
+  const [error, setError]              = useState(null);
+  const [muted, setMuted]              = useState(false);
+  const [ending, setEnding]            = useState(false);
 
-  // Refs so the polling loop sees latest values without re-creating itself.
   const pollTimer        = useRef(null);
-  const liveStartedAtRef = useRef(null);   // ms timestamp when status hit in_progress
-  const handledTerminal  = useRef(false);  // dedupe terminal callbacks
+  const liveStartedAtRef = useRef(null);
+  const handledTerminal  = useRef(false);
+  const deviceRef        = useRef(null);
+  const callRef          = useRef(null);
 
-  // ── Cancel/End the call ────────────────────────────────────────────────
-  // Called when the rep clicks the prominent red button. The backend figures
-  // out whether to send Twilio cancel (pre-connect) or hangup (in-progress)
-  // based on the current call state. After the call ends, modal closes
-  // without LogCallModal handoff — rep can recover via "Outcome not captured"
-  // later if they want.
-  const cancelCall = async () => {
-    if (cancelling) return;
-    setCancelling(true);
-    setError(null);
-    try {
-      const r = await fetch(`${API}/prospect-calls/${callId}/cancel`, {
-        method:  'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-      });
+  // ── Set up the softphone Device + place the call ───────────────────────
+  useEffect(() => {
+    let disposed = false;
+
+    async function fetchToken() {
+      const r = await fetch(`${API}/twilio/voice/token`, { headers });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) {
-        throw new Error(body?.error?.message || 'Cancel failed');
+        const e = new Error(body?.error?.message || 'Could not get a calling token');
+        e.code = body?.error?.code;
+        throw e;
       }
-      // Mark as handled so the poll loop doesn't fire onCompleted when the
-      // status webhook arrives a moment later.
-      handledTerminal.current = true;
-      onClosed?.('user_canceled');
-    } catch (err) {
-      setError(err.message);
-      setCancelling(false);
+      return body.token;
     }
-  };
 
-  // ── Poll loop ──────────────────────────────────────────────────────────
+    (async () => {
+      let jwt;
+      try {
+        jwt = await fetchToken();
+      } catch (err) {
+        if (!disposed) {
+          setError(err.message);
+          setStatus('failed');
+          setTerminalMsg(err.code === 'TWILIO_VOICE_NOT_PROVISIONED'
+            ? 'Browser calling is not set up for your org yet.'
+            : err.message);
+          setTimeout(() => onClosed?.('token_error'), 3500);
+        }
+        return;
+      }
+      if (disposed) return;
+
+      const device = new Device(jwt, {
+        logLevel: 'error',
+        codecPreferences: ['opus', 'pcmu'],
+      });
+      deviceRef.current = device;
+
+      // Refresh the token before it expires so long sessions don't drop.
+      device.on('tokenWillExpire', async () => {
+        try { device.updateToken(await fetchToken()); }
+        catch (e) { console.warn('token refresh failed:', e.message); }
+      });
+
+      device.on('error', (e) => {
+        console.error('Twilio Device error:', e);
+        if (!disposed) setError(e?.message || 'Calling device error');
+      });
+
+      try {
+        // Browser will prompt for mic permission here on first use.
+        const call = await device.connect({ params: { callId: String(callId) } });
+        callRef.current = call;
+
+        call.on('disconnect', () => {
+          // Bridge ended (prospect hung up, rep ended, or we called disconnect).
+          // The status poll resolves the terminal handoff with the authoritative
+          // duration; if the poll already handled it, this is a no-op.
+          if (!handledTerminal.current && !disposed) {
+            // Nudge a final poll; if the webhook hasn't landed yet the poll
+            // loop will catch the terminal state shortly.
+          }
+        });
+        call.on('error', (e) => {
+          console.error('Twilio Call error:', e);
+          if (!disposed) setError(e?.message || 'Call error');
+        });
+      } catch (err) {
+        if (!disposed) {
+          setError(err?.message || 'Could not start the call');
+          setStatus('failed');
+          setTerminalMsg('Could not start the call. Check your microphone permission.');
+          setTimeout(() => onClosed?.('connect_error'), 3500);
+        }
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      try { callRef.current?.disconnect(); } catch (_) {}
+      try { deviceRef.current?.destroy(); } catch (_) {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [callId]);
+
+  // ── Status poll (source of truth for lifecycle + duration) ─────────────
   useEffect(() => {
     let cancelled = false;
 
@@ -83,13 +142,11 @@ export default function TwilioCallModal({ callId, prospect, onCompleted, onClose
         const j = await r.json();
         if (cancelled) return;
 
-        setStatus(j.status);
-        if (typeof j.duration_seconds === 'number') {
-          setDuration(j.duration_seconds);
-        }
+        // Don't let the server status overwrite a local connecting/failed state
+        // before the first real lifecycle event arrives.
+        if (j.status && j.status !== 'initiated') setStatus(j.status);
+        if (typeof j.duration_seconds === 'number') setDuration(j.duration_seconds);
 
-        // Start a local count-up the first time we see in_progress so the
-        // UI feels responsive between 1.5s polls.
         if (j.status === 'in_progress' && !liveStartedAtRef.current) {
           liveStartedAtRef.current = Date.now();
         }
@@ -97,29 +154,23 @@ export default function TwilioCallModal({ callId, prospect, onCompleted, onClose
         if (j.is_terminal && !handledTerminal.current) {
           handledTerminal.current = true;
           if (j.status === 'completed') {
-            // Hand off to LogCallModal via the parent.
             onCompleted?.(callId, j.duration_seconds);
-            return;  // stop polling
-          } else {
-            // Abnormal end. Show a brief message then close.
-            const msg = {
-              no_answer: 'No answer.',
-              busy:      'The line was busy.',
-              failed:    'Call failed.',
-              canceled:  'Call canceled.',
-            }[j.status] || `Call ended (${j.status}).`;
-            setTerminalMsg(msg);
-            setTimeout(() => onClosed?.(j.status), 3000);
-            return;  // stop polling
+            return;
           }
+          const msg = {
+            no_answer: 'No answer.',
+            busy:      'The line was busy.',
+            failed:    'Call failed.',
+            canceled:  'Call ended.',
+          }[j.status] || `Call ended (${j.status}).`;
+          setTerminalMsg(msg);
+          setTimeout(() => onClosed?.(j.status), 3000);
+          return;
         }
-      } catch (err) {
-        // Transient — just keep polling. Set the error message for visibility.
-        setError('Polling failed; retrying…');
+      } catch (_) {
+        setError('Reconnecting…');
       }
-      if (!cancelled) {
-        pollTimer.current = setTimeout(tick, 1500);
-      }
+      if (!cancelled) pollTimer.current = setTimeout(tick, 1500);
     }
     tick();
 
@@ -130,7 +181,7 @@ export default function TwilioCallModal({ callId, prospect, onCompleted, onClose
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [callId]);
 
-  // ── Local count-up while live ─────────────────────────────────────────
+  // ── Local count-up while live ──────────────────────────────────────────
   const [localTick, setLocalTick] = useState(0);
   useEffect(() => {
     if (status !== 'in_progress') return;
@@ -138,17 +189,30 @@ export default function TwilioCallModal({ callId, prospect, onCompleted, onClose
     return () => clearInterval(interval);
   }, [status]);
 
+  // ── Controls ───────────────────────────────────────────────────────────
+  const toggleMute = () => {
+    const call = callRef.current;
+    if (!call) return;
+    const next = !muted;
+    try { call.mute(next); setMuted(next); } catch (_) {}
+  };
+
+  const endCall = () => {
+    if (ending) return;
+    setEnding(true);
+    try { callRef.current?.disconnect(); } catch (_) {}
+    // Let the status poll fire onCompleted/onClosed with the server duration.
+    // If the call never connected, treat End as a user close.
+    if (!liveStartedAtRef.current && !handledTerminal.current) {
+      handledTerminal.current = true;
+      onClosed?.('user_canceled');
+    }
+  };
+
   // ── Render ─────────────────────────────────────────────────────────────
   const displayDuration = (() => {
-    // When server reports a duration, prefer it. Otherwise compute locally
-    // from the start timestamp for a smooth count-up.
     if (durationSeconds > 0) return durationSeconds;
-    if (liveStartedAtRef.current) {
-      // localTick triggers re-render every second; the actual math reads
-      // from the ref.
-      void localTick;
-      return Math.floor((Date.now() - liveStartedAtRef.current) / 1000);
-    }
+    if (liveStartedAtRef.current) { void localTick; return Math.floor((Date.now() - liveStartedAtRef.current) / 1000); }
     return 0;
   })();
 
@@ -158,74 +222,66 @@ export default function TwilioCallModal({ callId, prospect, onCompleted, onClose
 
   const headline = (() => {
     if (terminalMsg) return terminalMsg;
-    if (status === 'initiated') return '📞 Dialing your phone…';
-    if (status === 'ringing')   return `📞 Ringing ${prospectName}…`;
+    if (status === 'connecting') return '🎧 Connecting your microphone…';
+    if (status === 'ringing')    return `📞 Ringing ${prospectName}…`;
     if (status === 'in_progress') return `🔴 Live · ${formatDuration(displayDuration)}`;
-    return `Status: ${status}`;
+    return `📞 Calling ${prospectName}…`;
   })();
 
+  const isLive = status === 'in_progress';
+
   return (
-    <div style={overlay} onClick={() => { /* prevent click-through; require terminal */ }}>
+    <div style={overlay}>
       <div style={modal}>
-        <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>
-          {headline}
-        </div>
-        <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 24 }}>
+        <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 12 }}>{headline}</div>
+        <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 20 }}>
           {prospect?.phone && <span style={{ fontFamily: 'monospace' }}>{prospect.phone}</span>}
         </div>
 
-        {error && (
-          <div style={{ fontSize: 12, color: '#b91c1c', marginBottom: 12 }}>
-            {error}
+        {error && <div style={{ fontSize: 12, color: '#b91c1c', marginBottom: 12 }}>{error}</div>}
+
+        <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 16 }}>
+          You're on the call through your computer. Use the controls below — closing this window won't end the call.
+        </div>
+
+        {!terminalMsg && (
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <button
+              onClick={toggleMute}
+              disabled={!isLive}
+              style={{
+                padding: '10px 16px',
+                background: muted ? '#f59e0b' : '#f3f4f6',
+                color: muted ? '#fff' : '#111827',
+                border: '1px solid #e5e7eb', borderRadius: 6, fontSize: 14, fontWeight: 600,
+                cursor: isLive ? 'pointer' : 'not-allowed', opacity: isLive ? 1 : 0.5,
+              }}
+            >
+              {muted ? '🔇 Unmute' : '🎙️ Mute'}
+            </button>
+            <button
+              onClick={endCall}
+              disabled={ending}
+              style={{
+                padding: '10px 20px',
+                background: ending ? '#9ca3af' : '#dc2626',
+                color: '#fff', border: 'none', borderRadius: 6, fontSize: 14, fontWeight: 600,
+                cursor: ending ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {ending ? '⏳ Ending…' : (isLive ? '🔴 End call' : '🚫 Cancel call')}
+            </button>
           </div>
         )}
 
-        <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 16 }}>
-          Twilio is bridging your phone with the prospect's. Hang up your phone, or use End call below to terminate from here.
-        </div>
-
-        {/* Cancel/End call — the primary action. Label depends on whether
-            the call has connected yet. Hidden once the call hits a terminal
-            state (modal will auto-close anyway). */}
-        {!terminalMsg && (() => {
-          const isInProgress = status === 'in_progress';
-          const label = cancelling
-            ? '⏳ Ending…'
-            : isInProgress
-              ? '🔴 End call'
-              : '🚫 Cancel call';
-          return (
-            <button
-              onClick={cancelCall}
-              disabled={cancelling}
-              style={{
-                padding: '10px 20px',
-                background: cancelling ? '#9ca3af' : '#dc2626',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 6,
-                fontSize: 14,
-                fontWeight: 600,
-                cursor: cancelling ? 'not-allowed' : 'pointer',
-                marginRight: 8,
-              }}
-            >
-              {label}
-            </button>
-          );
-        })()}
-
         <button
           onClick={() => onClosed?.('user_closed')}
-          style={{
-            padding: '8px 16px', background: '#f3f4f6', border: '1px solid #e5e7eb',
-            borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: 'pointer',
-          }}
+          style={{ padding: '8px 16px', background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: 'pointer' }}
         >
-          Hide modal
+          Hide window
         </button>
         <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 8 }}>
-          Hiding doesn't end the call; only End call (or hanging up your phone) does.
+          Hiding doesn't end the call; only End call does.
         </div>
       </div>
     </div>
