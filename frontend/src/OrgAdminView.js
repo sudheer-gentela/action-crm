@@ -3,6 +3,7 @@ import { hashSegment, writeHash } from './hashNav';
 import { apiService } from './apiService';
 import './OrgAdminView.css';
 import DealHealthSettings from './DealHealthSettings';
+import CustomFieldDefsEditor from './customFields/CustomFieldDefsEditor';
 import OrgSendingScheduleSettings from './OrgSendingScheduleSettings';
 import OAStages from './OAStages';
 import PlaybookPlaysEditor from './PlaybookPlaysEditor';
@@ -72,6 +73,7 @@ const STATIC_NAV_GROUPS = [
       { id: 'workflows',      icon: '⚙️', label: 'Workflows'      },
       { id: 'email-settings', icon: '📧', label: 'Email Settings'  },
       { id: 'tracking-domain', icon: '🔗', label: 'Tracking Domain' },   // Insights/WBR Phase 7
+      { id: 'custom-fields',   icon: '🧱', label: 'Custom Fields'   },
     ],
   },
   // 'Modules' group is injected here dynamically — see buildNavGroups()
@@ -633,6 +635,7 @@ export default function OrgAdminView() {
         </div>
 
         <div className="oa-content">
+          {tab === 'custom-fields' && <CustomFieldDefsEditor />}
           {/* Stats cards — show on members tab */}
           {tab === 'members' && stats && (
             <div className="oa-stats-grid">

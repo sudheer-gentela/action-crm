@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS custom_field_defs (
   created_at       timestamptz  NOT NULL DEFAULT now(),
   updated_at       timestamptz  NOT NULL DEFAULT now(),
   CONSTRAINT custom_field_defs_target_entity_check
-    CHECK (target_entity IN ('account', 'prospect')),
+    CHECK (target_entity IN ('account', 'prospect', 'contact', 'deal')),
   CONSTRAINT custom_field_defs_field_type_check
     CHECK (field_type IN ('text', 'number', 'date', 'boolean', 'picklist'))
 );

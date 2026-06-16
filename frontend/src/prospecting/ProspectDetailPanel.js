@@ -15,6 +15,7 @@ import StrapPanel from '../StrapPanel';
 import SequenceEnrollModal from '../SequenceEnrollModal';
 import TwilioCallModal from '../TwilioCallModal';
 import ProspectPhonesPanel from './ProspectPhonesPanel';
+import CustomFieldsPanel from '../customFields/CustomFieldsPanel';
 
 function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   const { allStages, prospectStages } = useStages();
@@ -914,6 +915,15 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
               {/* STRAP — Strategy & Action Plan */}
               <div style={{ marginTop: 16 }}>
                 <StrapPanel entityType="prospect" entityId={prospect.id} />
+              </div>
+
+              {/* Custom fields — campaign view (durable + this-campaign) with Promote */}
+              <div style={{ marginTop: 16 }}>
+                <CustomFieldsPanel
+                  entityType="prospect"
+                  entityId={prospect.id}
+                  campaignId={prospect.campaign_id || null}
+                />
               </div>
             </div>
           )}

@@ -3,6 +3,8 @@ import { hashSegment, hashIdSegment, writeHash } from './hashNav';
 import { apiService } from './apiService';
 import { mockData, enrichData } from './mockData';
 import AccountForm from './AccountForm';
+import CustomFieldsPanel from './customFields/CustomFieldsPanel';
+import { CustomFieldColumnPicker } from './customFields/customFieldColumns';
 import AccountMergeBanner from './AccountMergeBanner';
 import EntityIdHint from './EntityIdHint';
 import CoverageScorecard from './CoverageScorecard';
@@ -475,6 +477,7 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
                      background: '#fff', fontSize: 13, cursor: 'pointer' }}>
             📤 Export
           </button>
+          <CustomFieldColumnPicker entityType="account" entityIds={accounts.map(a => a.id)} />
           <button onClick={() => setShowImportModal(true)} title="Import CSV"
             style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #d1d5db',
                      background: '#fff', fontSize: 13, cursor: 'pointer' }}>
@@ -808,6 +811,9 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
                 </div>
               </div>
 
+              <div style={{ marginTop: 16 }}>
+                <CustomFieldsPanel entityType="account" entityId={selectedAccount.id} />
+              </div>
             </div>
             )} {/* end detailTab === 'overview' */}
           </div>

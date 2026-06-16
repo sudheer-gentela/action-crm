@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './AccountForm.css';
 import { salesforceAPI } from './apiService';
+import CustomFieldsPanel from './customFields/CustomFieldsPanel';
 
 function AccountForm({ account, onSubmit, onClose }) {
   const [formData, setFormData] = useState({
@@ -208,6 +209,13 @@ function AccountForm({ account, onSubmit, onClose }) {
               rows="4"
             />
           </div>
+
+          {/* Custom fields — only for saved accounts (need an id to attach values) */}
+          {account?.id && (
+            <div className="form-group">
+              <CustomFieldsPanel entityType="account" entityId={account.id} />
+            </div>
+          )}
 
           {/* Submit Error */}
           {errors.submit && (

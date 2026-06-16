@@ -21,6 +21,7 @@ import React, { useState, useEffect } from 'react';
 import { apiFetch } from './prospectingShared';
 import CampaignConfigPanel from './CampaignConfigPanel';
 import { CampaignTrackingToggles } from './TrackingSettings';   // Insights/WBR Phase 7
+import CustomFieldDefsEditor from '../customFields/CustomFieldDefsEditor';
 
 const EMBER = '#E8630A';
 const TEAL  = '#0F9D8E';
@@ -374,6 +375,7 @@ export default function CampaignConfigScreen({ campaignId, onBack }) {
     { key: 'outreach', label: '🛠 Outreach config',  badge: cfgN },
     { key: 'schedule', label: '📅 Sending schedule', badge: schedN },
     { key: 'tracking', label: '🔗 Tracking',         badge: 0 },     // Insights/WBR Phase 7
+    { key: 'custom-fields', label: '🧱 Custom fields', badge: 0 },
   ];
 
   return (
@@ -454,6 +456,11 @@ export default function CampaignConfigScreen({ campaignId, onBack }) {
           which is replace-on-save; see design doc D39 amendment). */}
       {tab === 'tracking' && (
         <CampaignTrackingToggles campaignId={campaignId} />
+      )}
+
+      {/* Campaign-only custom field definitions (campaign_id scoped) */}
+      {tab === 'custom-fields' && (
+        <CustomFieldDefsEditor campaignId={campaignId} />
       )}
     </div>
   );

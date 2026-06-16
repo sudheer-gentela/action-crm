@@ -4,6 +4,7 @@
 import React from 'react';
 import { useStages, CHANNEL_ICONS, LI_STATUS_LABELS, getLiStatus, getLiDotColor, timeAgo } from './prospectingShared';
 import ProspectRowMenu from './ProspectRowMenu';
+import { formatCustomValue } from '../customFields/customFieldColumns';
 
 // Source pill — mapped from prospects.source to a short label and tone.
 // Unknown values get a neutral grey pill with the raw value so we don't lose
@@ -44,6 +45,7 @@ function ListView({
   onDiscard,
   onActivate,
   overdueCallProspectIds,
+  customColumns,   // { keys:[], defs:[], byEntity:{} } — optional custom-field columns
 }) {
   const { allStages } = useStages();
   const showMenu = !!onDiscard || !!onActivate;
@@ -64,7 +66,12 @@ function ListView({
   // Column count used for the empty-state cell's colSpan.
   // 10 base cols (Name, Company, Title, Stage, Channel, Source, LinkedIn,
   // Outreach, Last Touch, ICP) + optional select column + optional menu.
-  const colCount = 10 + (onToggleSelect ? 1 : 0) + (showMenu ? 1 : 0);
+  const colCount = 10 + (onToggleSelect ? 1 : 0) + (showMenu ? 1 : 0) + (customColumns?.keys?.length || 0);
+
+  const cfKeys = customColumns?.keys || [];
+  const cfDefs = customColumns?.defs || [];
+  const cfByEntity = customColumns?.byEntity || {};
+  const cfDefFor = (k) => cfDefs.find(d => d.field_key === k) || { field_key: k };
 
   return (
     <div className="pv-list">
@@ -93,6 +100,7 @@ function ListView({
             <th>Outreach</th>
             <th>Last Touch</th>
             <th>ICP</th>
+            {cfKeys.map(k => <th key={k}>{(cfDefFor(k).label) || k}</th>)}
             {showMenu && <th style={{ width: 36 }}></th>}
           </tr>
         </thead>
@@ -162,6 +170,9 @@ function ListView({
                 <td>{p.outreach_count || 0}</td>
                 <td>{p.last_outreach_at ? timeAgo(p.last_outreach_at) : '—'}</td>
                 <td>{p.icp_score != null ? p.icp_score : '—'}</td>
+                {cfKeys.map(k => (
+                  <td key={k}>{formatCustomValue(cfDefFor(k), cfByEntity[p.id]?.[k]) || '—'}</td>
+                ))}
                 {showMenu && (
                   <td onClick={e => e.stopPropagation()} style={{ textAlign: 'right' }}>
                     <ProspectRowMenu prospect={p} onDiscard={onDiscard} onActivate={onActivate} />

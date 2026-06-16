@@ -20,6 +20,7 @@ import {
 
 import PipelineBoard        from './prospecting/PipelineBoard';
 import ListView             from './prospecting/ListView';
+import { useCustomFieldColumns, useSelectedColumns, CustomFieldColumnPicker } from './customFields/customFieldColumns';
 import AccountView          from './prospecting/AccountView';
 import ProspectCreateModal  from './prospecting/ProspectCreateModal';
 import ProspectDetailPanel  from './prospecting/ProspectDetailPanel';
@@ -684,6 +685,14 @@ export default function ProspectingView() {
     ? prospects.filter(p => p.stage === stageFilter)
     : prospects;
 
+  // ── Custom-field columns for the list view (durable values) ────────────────
+  const cfEntityIds = visibleProspects.map(p => p.id);
+  const { defs: cfDefs, byEntity: cfByEntity } = useCustomFieldColumns({
+    entityType: 'prospect', entityIds: cfEntityIds,
+  });
+  const [cfCols, setCfCols] = useSelectedColumns('prospect');
+  const prospectCustomColumns = { keys: cfCols, defs: cfDefs, byEntity: cfByEntity };
+
   // ── Group by account for account view ──────────────────────────────────────
 
   const groupedByAccount = {};
@@ -829,6 +838,15 @@ export default function ProspectingView() {
           }}>
             📋 Playbooks
           </button>
+
+          {(viewMode === 'list') && (
+            <CustomFieldColumnPicker
+              entityType="prospect"
+              entityIds={cfEntityIds}
+              selected={cfCols}
+              onChange={setCfCols}
+            />
+          )}
 
           <button className="pv-btn-secondary" onClick={handleExportProspects}
             title={campaignFilter ? `Export "${campaignFilter.campaignName}" prospects` : 'Export prospects'}>
@@ -1124,6 +1142,7 @@ export default function ProspectingView() {
           onDiscard={setDiscardTargetProspect}
           onActivate={handleSingleActivate}
           overdueCallProspectIds={overdueCallProspectIds}
+          customColumns={prospectCustomColumns}
         />
       ) : viewMode === 'account' ? (
         <AccountView

@@ -96,9 +96,13 @@ export function downloadCustomFieldsCsv({ entityType, fields, entityIds, campaig
 }
 
 // Toolbar control: pick which custom fields appear as columns + export.
-export function CustomFieldColumnPicker({ entityType, entityIds = [], campaignId = null }) {
+// Selection is uncontrolled (localStorage) by default; pass `selected` + `onChange`
+// to control it from a parent (so a list can render the chosen columns reactively).
+export function CustomFieldColumnPicker({ entityType, entityIds = [], campaignId = null, selected: selectedProp, onChange }) {
   const { defs } = useCustomFieldColumns({ entityType, entityIds: [], campaignId });
-  const [selected, setSelected] = useSelectedColumns(entityType);
+  const [internalSel, setInternalSel] = useSelectedColumns(entityType);
+  const selected = selectedProp !== undefined ? selectedProp : internalSel;
+  const setSelected = onChange || setInternalSel;
   const [open, setOpen] = useState(false);
   const toggle = (key) => setSelected(selected.includes(key) ? selected.filter(k => k !== key) : [...selected, key]);
 
