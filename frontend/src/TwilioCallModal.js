@@ -50,6 +50,17 @@ export default function TwilioCallModal({ callId, prospect, mode = 'softphone', 
   useEffect(() => {
     if (isBridge) return;   // bridge mode: no browser Device — the call runs on the rep's phone
     let disposed = false;
+    let watchdog = null;
+
+    // If we never get past "connecting" within a reasonable window, stop hanging
+    // and tell the rep what to check (mic permission / network / CSP).
+    watchdog = setTimeout(() => {
+      if (disposed || handledTerminal.current || liveStartedAtRef.current) return;
+      handledTerminal.current = true;
+      setStatus('failed');
+      setTerminalMsg('Still trying to connect. This is usually a blocked microphone, or the page’s security policy blocking Twilio (it needs wss://*.twilio.com allowed). Open the browser console for the exact error.');
+      setTimeout(() => onClosed?.('connect_timeout'), 5000);
+    }, 15000);
 
     async function fetchToken() {
       const r = await fetch(`${API}/twilio/voice/token`, { headers });
@@ -93,13 +104,34 @@ export default function TwilioCallModal({ callId, prospect, mode = 'softphone', 
 
       device.on('error', (e) => {
         console.error('Twilio Device error:', e);
-        if (!disposed) setError(e?.message || 'Calling device error');
+        if (disposed) return;
+        setError(e?.message || 'Calling device error');
+        // If the call never went live, a Device error is fatal — surface it with
+        // guidance instead of leaving the rep stuck on "Connecting…".
+        if (!liveStartedAtRef.current && !handledTerminal.current) {
+          const code = e?.code;
+          let msg = e?.message || 'Calling could not start.';
+          if (code === 31204 || code === 20151 || code === 31201 || /token/i.test(msg)) {
+            msg = 'Calling token was rejected. Ask your admin to re-run Twilio setup — the org’s API key or voice app may be stale.';
+          } else if (code === 31401 || code === 31402 || /microphone|getusermedia|permission|notallowed/i.test(msg)) {
+            msg = 'Microphone access is blocked. Allow mic access for this site in the address bar, then try again.';
+          } else if (code === 31005 || code === 31000 || code === 31009 || code === 53000 || /transport|websocket|signaling|connection/i.test(msg)) {
+            msg = 'Could not reach Twilio (network/WebSocket blocked). If this persists, the site’s security policy needs wss://*.twilio.com allowed.';
+          }
+          if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+          handledTerminal.current = true;
+          setStatus('failed');
+          setTerminalMsg(msg);
+          setTimeout(() => onClosed?.('device_error'), 4000);
+        }
       });
 
       try {
         // Browser will prompt for mic permission here on first use.
         const call = await device.connect({ params: { callId: String(callId) } });
         callRef.current = call;
+        // Call is established (ringing/answered) — stop the connect watchdog.
+        if (watchdog) { clearTimeout(watchdog); watchdog = null; }
 
         call.on('disconnect', () => {
           // Bridge ended (prospect hung up, rep ended, or we called disconnect).
@@ -126,6 +158,7 @@ export default function TwilioCallModal({ callId, prospect, mode = 'softphone', 
 
     return () => {
       disposed = true;
+      if (watchdog) { clearTimeout(watchdog); watchdog = null; }
       try { callRef.current?.disconnect(); } catch (_) {}
       try { deviceRef.current?.destroy(); } catch (_) {}
     };
