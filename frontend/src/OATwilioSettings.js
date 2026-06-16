@@ -39,6 +39,10 @@ export default function OATwilioSettings() {
   const [areaCodes, setAreaCodes]     = useState({});    // userId → "415"
   const [claimSids, setClaimSids]     = useState({});    // userId → "PN..." (for claim flow)
 
+  // This org's Twilio subaccount status (gates all calling). null = unknown.
+  const [account, setAccount]         = useState(null);  // { provisioned, softphone_ready, ... }
+  const [accountBusy, setAccountBusy] = useState(false);
+
   const [flash, setFlash] = useState(null);
   const showFlash = (type, msg) => { setFlash({ type, msg }); setTimeout(() => setFlash(null), 5000); };
 
@@ -47,8 +51,9 @@ export default function OATwilioSettings() {
     Promise.all([
       fetch(`${API}/org/call-settings`, { headers }).then(r => r.json()),
       fetch(`${API}/org/admin/twilio/reps`, { headers }).then(r => r.json()),
+      fetch(`${API}/org/admin/twilio/account`, { headers }).then(r => r.json()).catch(() => ({ provisioned: false })),
     ])
-      .then(([cs, rp]) => {
+      .then(([cs, rp, acct]) => {
         const s = cs.settings || {};
         setSettings({
           recording_enabled:            s.recording_enabled !== false,
@@ -61,11 +66,32 @@ export default function OATwilioSettings() {
           calling_mode: ['softphone', 'bridge', 'both'].includes(s.calling_mode) ? s.calling_mode : 'softphone',
         });
         setReps(rp.reps || []);
+        setAccount(acct || { provisioned: false });
       })
       .catch(() => showFlash('error', 'Failed to load Twilio settings'))
       .finally(() => setRepsLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Provision this org's Twilio subaccount (one-time, gates all calling) ─
+  const provisionAccount = async () => {
+    if (accountBusy) return;
+    setAccountBusy(true);
+    try {
+      const r = await fetch(`${API}/org/admin/twilio/provision-account`, { method: 'POST', headers });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.error?.message || 'Failed to set up calling');
+      // Re-fetch the canonical status summary.
+      const acct = await fetch(`${API}/org/admin/twilio/account`, { headers })
+        .then(x => x.json()).catch(() => null);
+      setAccount(acct || { provisioned: true });
+      showFlash('success', j.account?.already_existed ? 'Calling was already set up ✓' : 'Calling set up ✓');
+    } catch (err) {
+      showFlash('error', err.message);
+    } finally {
+      setAccountBusy(false);
+    }
+  };
 
   // ── Save org settings ──────────────────────────────────────────────────
   const saveSettings = async () => {
@@ -266,6 +292,47 @@ export default function OATwilioSettings() {
         </div>
       )}
 
+      {/* ── Calling account (must be provisioned before any calls work) ──── */}
+      <section style={{
+        marginBottom: 32, padding: 16, borderRadius: 8,
+        border: `1px solid ${account?.provisioned ? '#a7f3d0' : '#fde68a'}`,
+        background: account?.provisioned ? '#f0fdf4' : '#fffbeb',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+          <div>
+            <h4 style={{ margin: '0 0 4px', fontSize: 14, fontWeight: 600, color: '#1f2937' }}>
+              Calling account {account?.provisioned
+                ? <span style={{ color: '#059669' }}>· Ready ✓</span>
+                : <span style={{ color: '#b45309' }}>· Not set up</span>}
+            </h4>
+            <p style={{ margin: 0, fontSize: 12, color: '#6b7280' }}>
+              {account?.provisioned
+                ? 'Your organization\u2019s Twilio account is provisioned. Reps with a Twilio number can place calls.'
+                : 'Calling isn\u2019t enabled for this organization yet. Set it up once to provision your Twilio account, then assign each rep a number below.'}
+            </p>
+            {account?.provisioned && account?.softphone_ready === false && (
+              <p style={{ margin: '6px 0 0', fontSize: 12, color: '#b45309' }}>
+                Browser calling isn't fully configured (missing voice app). Re-run setup to finish enabling the softphone.
+              </p>
+            )}
+          </div>
+          {(!account?.provisioned || account?.softphone_ready === false) && (
+            <button
+              onClick={provisionAccount}
+              disabled={accountBusy}
+              style={{
+                padding: '8px 18px', whiteSpace: 'nowrap',
+                background: accountBusy ? '#9ca3af' : '#0F9D8E',
+                color: '#fff', border: 'none', borderRadius: 6,
+                fontSize: 13, fontWeight: 600, cursor: accountBusy ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {accountBusy ? '⏳ Setting up…' : (account?.provisioned ? 'Finish setup' : 'Set up calling')}
+            </button>
+          )}
+        </div>
+      </section>
+
       {/* ── Org-level settings ───────────────────────────────────────────── */}
       <section style={{ marginBottom: 32, padding: 16, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fafafa' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -389,7 +456,8 @@ export default function OATwilioSettings() {
           Rep phone numbers ({reps.length})
         </h4>
         <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 16px' }}>
-          Each rep needs their own Twilio phone number (DID) before they can make calls. Reps also need to add their personal phone in My Preferences.
+          Each rep needs their own Twilio phone number (DID) before they can make calls.
+          {settings.calling_mode !== 'softphone' && ' Reps also need to add their personal phone in My Preferences.'}
         </p>
 
         {repsLoading ? (
@@ -402,7 +470,7 @@ export default function OATwilioSettings() {
               <thead>
                 <tr style={{ background: '#f9fafb' }}>
                   <th style={th}>Rep</th>
-                  <th style={th}>Personal phone</th>
+                  {settings.calling_mode !== 'softphone' && <th style={th}>Personal phone</th>}
                   <th style={th}>Twilio DID</th>
                   <th style={th}>Action</th>
                 </tr>
@@ -414,9 +482,11 @@ export default function OATwilioSettings() {
                       <div style={{ fontWeight: 500 }}>{rep.name}</div>
                       <div style={{ fontSize: 11, color: '#6b7280' }}>{rep.email} · {rep.role}</div>
                     </td>
-                    <td style={td}>
-                      {rep.phone || <span style={{ color: '#9ca3af' }}>Not set</span>}
-                    </td>
+                    {settings.calling_mode !== 'softphone' && (
+                      <td style={td}>
+                        {rep.phone || <span style={{ color: '#9ca3af' }}>Not set</span>}
+                      </td>
+                    )}
                     <td style={td}>
                       {rep.twilio_did ? (
                         <div>
