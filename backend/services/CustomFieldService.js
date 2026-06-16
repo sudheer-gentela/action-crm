@@ -278,10 +278,36 @@ async function readValues(opts) {
   return result;
 }
 
+/**
+ * Delete a single custom field value (durable or campaign-scoped) on an entity.
+ * campaignId == null → the durable value; set → that campaign's value.
+ * @returns {Promise<{deleted:number}>}
+ */
+async function deleteValue(opts) {
+  const { orgId, entityType, entityId, fieldKey, campaignId = null, client } = opts;
+  if (!orgId || !entityType || !entityId || !fieldKey) {
+    throw new Error('CustomFieldService.deleteValue: orgId, entityType, entityId, fieldKey are required');
+  }
+  const exec = client || pool;
+  const isDurable = campaignId === null || campaignId === undefined;
+  const sql = `
+    DELETE FROM entity_custom_fields
+     WHERE org_id = $1 AND entity_type = $2 AND entity_id = $3 AND field_key = $4
+       AND ${isDurable ? 'campaign_id IS NULL' : 'campaign_id = $5'}
+    RETURNING id
+  `;
+  const params = isDurable
+    ? [orgId, entityType, entityId, fieldKey]
+    : [orgId, entityType, entityId, fieldKey, campaignId];
+  const { rows } = await exec.query(sql, params);
+  return { deleted: rows.length };
+}
+
 module.exports = {
   writeValue,
   promote,
   readValues,
+  deleteValue,
   // exported for tests / reuse
   castForWrite,
   castForRead,
