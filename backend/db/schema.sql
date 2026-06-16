@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict JYo5vxKcKdwO72gZbZI7rCuKxORJdf4B70j99eEg7t7u1slqrQ6BIEaQRCDdmPn
+\restrict grhDGgmiFt8J3Aix0vqgftrOJaoLQGK3l6MeHqk2Of2MdSqYOK2IBIydufhmgn2
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -1954,6 +1954,48 @@ ALTER SEQUENCE public.conversation_starters_id_seq OWNED BY public.conversation_
 
 
 --
+-- Name: custom_field_defs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.custom_field_defs (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    campaign_id integer,
+    target_entity character varying(20) NOT NULL,
+    field_key character varying(100) NOT NULL,
+    label character varying(200),
+    field_type character varying(20) DEFAULT 'text'::character varying NOT NULL,
+    picklist_options jsonb DEFAULT '[]'::jsonb NOT NULL,
+    display_order integer DEFAULT 0 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT custom_field_defs_field_type_check CHECK (((field_type)::text = ANY ((ARRAY['text'::character varying, 'number'::character varying, 'date'::character varying, 'boolean'::character varying, 'picklist'::character varying])::text[]))),
+    CONSTRAINT custom_field_defs_target_entity_check CHECK (((target_entity)::text = ANY ((ARRAY['account'::character varying, 'prospect'::character varying])::text[])))
+);
+
+
+--
+-- Name: custom_field_defs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.custom_field_defs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: custom_field_defs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.custom_field_defs_id_seq OWNED BY public.custom_field_defs.id;
+
+
+--
 -- Name: deal_activities; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2771,9 +2813,32 @@ CREATE TABLE public.entity_custom_fields (
     crm_field_key character varying(200),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    campaign_id integer,
+    field_def_id integer,
     CONSTRAINT entity_custom_fields_entity_type_check CHECK (((entity_type)::text = ANY ((ARRAY['deal'::character varying, 'contact'::character varying, 'account'::character varying, 'prospect'::character varying])::text[]))),
     CONSTRAINT entity_custom_fields_field_type_check CHECK (((field_type)::text = ANY ((ARRAY['text'::character varying, 'number'::character varying, 'date'::character varying, 'boolean'::character varying, 'picklist'::character varying])::text[])))
 );
+
+
+--
+-- Name: COLUMN entity_custom_fields.source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.entity_custom_fields.source IS 'Origin of the value: manual | csv | ai_research | crm_sync.';
+
+
+--
+-- Name: COLUMN entity_custom_fields.campaign_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.entity_custom_fields.campaign_id IS 'NULL = durable value on the entity; SET = campaign-scoped value (promote = write the NULL twin).';
+
+
+--
+-- Name: COLUMN entity_custom_fields.field_def_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.entity_custom_fields.field_def_id IS 'FK to custom_field_defs. Nullable: legacy/CRM rows predate defs; Phase F backfills.';
 
 
 --
@@ -6282,6 +6347,13 @@ ALTER TABLE ONLY public.conversation_starters ALTER COLUMN id SET DEFAULT nextva
 
 
 --
+-- Name: custom_field_defs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.custom_field_defs ALTER COLUMN id SET DEFAULT nextval('public.custom_field_defs_id_seq'::regclass);
+
+
+--
 -- Name: deal_activities id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -7256,6 +7328,14 @@ ALTER TABLE ONLY public.conversation_starters
 
 
 --
+-- Name: custom_field_defs custom_field_defs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.custom_field_defs
+    ADD CONSTRAINT custom_field_defs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: deal_activities deal_activities_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7413,14 +7493,6 @@ ALTER TABLE ONLY public.emails
 
 ALTER TABLE ONLY public.enrichment_credit_log
     ADD CONSTRAINT enrichment_credit_log_pkey PRIMARY KEY (id);
-
-
---
--- Name: entity_custom_fields entity_custom_fields_org_id_entity_type_entity_id_field_key_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.entity_custom_fields
-    ADD CONSTRAINT entity_custom_fields_org_id_entity_type_entity_id_field_key_key UNIQUE (org_id, entity_type, entity_id, field_key);
 
 
 --
@@ -9041,6 +9113,13 @@ CREATE INDEX idx_cev_contract ON public.contract_events USING btree (contract_id
 
 
 --
+-- Name: idx_cfd_org_campaign; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_cfd_org_campaign ON public.custom_field_defs USING btree (org_id, campaign_id);
+
+
+--
 -- Name: idx_client_activities_client_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -9577,6 +9656,13 @@ CREATE INDEX idx_ecf_number_value ON public.entity_custom_fields USING btree (or
 --
 
 CREATE INDEX idx_ecf_org_entity ON public.entity_custom_fields USING btree (org_id, entity_type, entity_id);
+
+
+--
+-- Name: idx_ecf_org_entity_campaign; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ecf_org_entity_campaign ON public.entity_custom_fields USING btree (org_id, entity_type, entity_id, campaign_id);
 
 
 --
@@ -11337,10 +11423,38 @@ CREATE UNIQUE INDEX uq_actions_deal_source_rule ON public.actions USING btree (d
 
 
 --
+-- Name: uq_cfd_org_campaign_target_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_cfd_org_campaign_target_key ON public.custom_field_defs USING btree (org_id, campaign_id, target_entity, field_key) WHERE (campaign_id IS NOT NULL);
+
+
+--
+-- Name: uq_cfd_org_target_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_cfd_org_target_key ON public.custom_field_defs USING btree (org_id, target_entity, field_key) WHERE (campaign_id IS NULL);
+
+
+--
 -- Name: uq_dhd_grain; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX uq_dhd_grain ON public.domain_health_daily USING btree (org_id, domain, metric_date, source);
+
+
+--
+-- Name: uq_ecf_entity_field_campaign; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_ecf_entity_field_campaign ON public.entity_custom_fields USING btree (org_id, entity_type, entity_id, field_key, campaign_id) WHERE (campaign_id IS NOT NULL);
+
+
+--
+-- Name: uq_ecf_entity_field_durable; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_ecf_entity_field_durable ON public.entity_custom_fields USING btree (org_id, entity_type, entity_id, field_key) WHERE (campaign_id IS NULL);
 
 
 --
@@ -11446,6 +11560,13 @@ CREATE TRIGGER linkedin_profiles_set_updated_at BEFORE UPDATE ON public.linkedin
 --
 
 CREATE TRIGGER straps_updated_at BEFORE UPDATE ON public.straps FOR EACH ROW EXECUTE FUNCTION public.trg_straps_updated_at();
+
+
+--
+-- Name: custom_field_defs trg_cfd_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_cfd_updated_at BEFORE UPDATE ON public.custom_field_defs FOR EACH ROW EXECUTE FUNCTION public.update_entity_custom_fields_updated_at();
 
 
 --
@@ -12541,6 +12662,22 @@ ALTER TABLE ONLY public.conversation_starters
 
 
 --
+-- Name: custom_field_defs custom_field_defs_campaign_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.custom_field_defs
+    ADD CONSTRAINT custom_field_defs_campaign_id_fkey FOREIGN KEY (campaign_id) REFERENCES public.prospecting_campaigns(id) ON DELETE CASCADE;
+
+
+--
+-- Name: custom_field_defs custom_field_defs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.custom_field_defs
+    ADD CONSTRAINT custom_field_defs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: deal_activities deal_activities_deal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -12898,6 +13035,22 @@ ALTER TABLE ONLY public.enrichment_credit_log
 
 ALTER TABLE ONLY public.enrichment_credit_log
     ADD CONSTRAINT enrichment_credit_log_prospect_id_fkey FOREIGN KEY (prospect_id) REFERENCES public.prospects(id) ON DELETE SET NULL;
+
+
+--
+-- Name: entity_custom_fields entity_custom_fields_campaign_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_custom_fields
+    ADD CONSTRAINT entity_custom_fields_campaign_id_fkey FOREIGN KEY (campaign_id) REFERENCES public.prospecting_campaigns(id) ON DELETE CASCADE;
+
+
+--
+-- Name: entity_custom_fields entity_custom_fields_field_def_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_custom_fields
+    ADD CONSTRAINT entity_custom_fields_field_def_id_fkey FOREIGN KEY (field_def_id) REFERENCES public.custom_field_defs(id) ON DELETE SET NULL;
 
 
 --
@@ -14789,5 +14942,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict JYo5vxKcKdwO72gZbZI7rCuKxORJdf4B70j99eEg7t7u1slqrQ6BIEaQRCDdmPn
+\unrestrict grhDGgmiFt8J3Aix0vqgftrOJaoLQGK3l6MeHqk2Of2MdSqYOK2IBIydufhmgn2
 
