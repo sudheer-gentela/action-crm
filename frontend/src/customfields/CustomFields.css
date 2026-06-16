@@ -1,0 +1,75 @@
+/* prospecting/CustomFields.css — scoped to .cf-* to avoid collisions.
+   Reuses the app's Ember (#E8630A) / Navy (#1A3A5C) palette. */
+
+.cf-panel, .cf-editor { font-size: 13px; color: #1A3A5C; }
+.cf-panel-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.cf-panel-title { font-weight: 600; font-size: 13px; }
+.cf-panel-hint, .cf-panel .cf-muted, .cf-muted { color: #6b7280; font-size: 12px; }
+.cf-scope-note { margin: 4px 0 10px; }
+
+.cf-table { width: 100%; border-collapse: collapse; }
+.cf-table th { text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .03em; color: #6b7280; padding: 6px 8px; border-bottom: 1px solid #e5e7eb; }
+.cf-table td { padding: 6px 8px; border-bottom: 1px solid #f1f2f4; vertical-align: middle; }
+.cf-label { font-weight: 500; }
+.cf-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+.cf-input { width: 100%; max-width: 240px; padding: 5px 8px; border: 1px solid #d6dae0;
+  border-radius: 6px; font-size: 13px; color: #1A3A5C; background: #fff; }
+.cf-input:focus { outline: none; border-color: #E8630A; box-shadow: 0 0 0 2px rgba(232,99,10,.15); }
+.cf-input-sm { max-width: 80px; }
+.cf-textarea { max-width: 100%; min-height: 140px; font-family: ui-monospace, monospace; font-size: 12px; }
+
+.cf-btn { padding: 5px 10px; border: 1px solid #d6dae0; border-radius: 6px; background: #fff;
+  color: #1A3A5C; font-size: 12px; cursor: pointer; }
+.cf-btn:hover { background: #f7f8fa; }
+.cf-btn:disabled { opacity: .5; cursor: default; }
+.cf-btn-primary { background: #E8630A; border-color: #E8630A; color: #fff; }
+.cf-btn-primary:hover { background: #cf5708; }
+.cf-btn-promote { background: #1A3A5C; border-color: #1A3A5C; color: #fff; }
+.cf-btn-promote:hover { background: #14304c; }
+.cf-btn-danger { color: #b42318; border-color: #f1c4c0; }
+
+.cf-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px;
+  font-size: 10px; font-weight: 600; text-transform: lowercase; background: #eef1f4; color: #475569; }
+.cf-src-manual { background: #eef1f4; color: #475569; }
+.cf-src-csv { background: #e8f0fe; color: #1a56db; }
+.cf-src-ai_research { background: #fde7d9; color: #b45309; }
+.cf-src-crm_sync { background: #eafaf1; color: #057a55; }
+.cf-src-campaign { background: #1A3A5C; color: #fff; }
+
+.cf-empty, .cf-muted.cf-empty { color: #6b7280; font-style: italic; padding: 12px 8px; }
+.cf-error { background: #fef2f2; border: 1px solid #fecaca; color: #b42318;
+  padding: 8px 10px; border-radius: 6px; margin: 8px 0; font-size: 12px; }
+.cf-warn { color: #b45309; }
+
+.cf-editor-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.cf-tabs { display: flex; gap: 4px; }
+.cf-tab { padding: 5px 12px; border: 1px solid #d6dae0; background: #fff; border-radius: 6px;
+  font-size: 12px; cursor: pointer; color: #475569; }
+.cf-tab.is-active { background: #1A3A5C; border-color: #1A3A5C; color: #fff; }
+.cf-check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #475569; }
+.cf-row-inactive { opacity: .55; }
+
+.cf-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px;
+  padding-top: 12px; border-top: 1px solid #eef0f3; }
+.cf-add .cf-input { max-width: 180px; }
+
+/* Import modal */
+.cf-import-modal { max-width: 720px; width: 92vw; }
+.cf-import-body { padding: 4px 2px; }
+.cf-import-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+.cf-import-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; align-items: center; }
+.cf-map-table .cf-input { max-width: 200px; }
+.cf-preview { background: #f7f9fc; border: 1px solid #e3e9f0; border-radius: 8px; padding: 10px 14px; margin-top: 10px; }
+.cf-preview ul { margin: 6px 0 0; padding-left: 18px; }
+.cf-preview.cf-ok { background: #eafaf1; border-color: #b7ebcf; }
+
+/* Column picker (list views) */
+.cf-colpicker { position: relative; display: inline-flex; gap: 6px; }
+.cf-colpicker-menu { position: absolute; top: 100%; left: 0; z-index: 30; margin-top: 4px;
+  min-width: 200px; max-height: 300px; overflow: auto; background: #fff;
+  border: 1px solid #d6dae0; border-radius: 8px; box-shadow: 0 6px 20px rgba(26,58,92,.12); padding: 6px; }
+.cf-colpicker-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+  font-size: 13px; color: #1A3A5C; border-radius: 6px; cursor: pointer; }
+.cf-colpicker-item:hover { background: #f5f7fa; }

@@ -39,6 +39,14 @@ const ENTITY_CFG = {
     table: 'accounts',
     match: { id: { col: 'id', numeric: true }, domain: { col: 'domain' }, name: { col: 'name' } },
   },
+  contact: {
+    table: 'contacts',
+    match: { id: { col: 'id', numeric: true }, email: { col: 'email' }, linkedin_url: { col: 'linkedin_url' } },
+  },
+  deal: {
+    table: 'deals',
+    match: { id: { col: 'id', numeric: true }, external_crm_deal_id: { col: 'external_crm_deal_id' }, name: { col: 'name' } },
+  },
 };
 
 function normKey(v, numeric) {

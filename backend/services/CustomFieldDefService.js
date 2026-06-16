@@ -19,7 +19,7 @@
 
 const { pool } = require('../config/database');
 
-const VALID_TARGET = new Set(['account', 'prospect']);
+const VALID_TARGET = new Set(['account', 'prospect', 'contact', 'deal']);
 const VALID_TYPE   = new Set(['text', 'number', 'date', 'boolean', 'picklist']);
 // snake_case-ish: starts with a letter, then letters/digits/underscores, ≤100 chars.
 const FIELD_KEY_RE = /^[a-z][a-z0-9_]{0,99}$/;

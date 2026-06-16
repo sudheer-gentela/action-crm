@@ -24,6 +24,7 @@
 
 const db              = require('../config/database');
 const IcpScoringService = require('./icpScoring.service');
+const CustomFieldService = require('./CustomFieldService');
 
 class ProspectContextBuilder {
 
@@ -75,8 +76,12 @@ class ProspectContextBuilder {
     );
 
     // \u2500\u2500 4. Build the outreach context summary \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    // Custom fields (durable, entity-level) — canonical prospect + linked
+    // account values surfaced to the AI for richer personalization (D5).
+    const customFields = await this._getCustomFields(prospect, account, orgId);
+
     const outreachContext = this._buildOutreachContext(
-      prospect, account, derived, stageGuidance
+      prospect, account, derived, stageGuidance, customFields
     );
 
     return {
@@ -95,6 +100,7 @@ class ProspectContextBuilder {
       icpScore: prospect.icp_score,
       derived,
       outreachContext,
+      customFields,
       userId,
       orgId,
     };
@@ -221,7 +227,46 @@ class ProspectContextBuilder {
   // Produces a human-readable (and AI-consumable) summary of everything known
   // about this prospect. Used by the Outreach Composer for AI-generated messages.
 
-  static _buildOutreachContext(prospect, account, derived, stageGuidance) {
+  // Fetch durable (entity-level) custom fields for the prospect and its linked
+  // account, with human labels. Returns { prospectFields:[], accountFields:[] }
+  // as "Label: value" strings, ready to drop into the prompt context.
+  static async _getCustomFields(prospect, account, orgId) {
+    try {
+      const accountId = (account && account.id) || prospect.account_id || null;
+      const { rows } = await db.query(
+        `SELECT ecf.entity_type,
+                COALESCE(d.label, ecf.field_label, ecf.field_key) AS label,
+                ecf.field_type, ecf.value_text, ecf.value_number, ecf.value_date, ecf.value_bool
+           FROM entity_custom_fields ecf
+           LEFT JOIN custom_field_defs d ON d.id = ecf.field_def_id
+          WHERE ecf.org_id = $1 AND ecf.campaign_id IS NULL
+            AND ( (ecf.entity_type = 'prospect' AND ecf.entity_id = $2)
+               OR (ecf.entity_type = 'account'  AND ecf.entity_id = $3) )
+          ORDER BY ecf.entity_type, label`,
+        [orgId, prospect.id, accountId || -1]
+      );
+      const fmt = (r) => {
+        const v = CustomFieldService.castForRead(r.field_type, r);
+        if (v === null || v === undefined || v === '') return null;
+        if (r.field_type === 'date')    return String(v).slice(0, 10);
+        if (r.field_type === 'boolean') return v ? 'Yes' : 'No';
+        return String(v);
+      };
+      const prospectFields = [], accountFields = [];
+      for (const r of rows) {
+        const val = fmt(r);
+        if (val === null) continue;
+        (r.entity_type === 'account' ? accountFields : prospectFields).push(`${r.label}: ${val}`);
+      }
+      return { prospectFields, accountFields };
+    } catch (err) {
+      // Non-fatal: personalization proceeds without custom fields.
+      console.warn('ProspectContextBuilder._getCustomFields failed:', err.message);
+      return { prospectFields: [], accountFields: [] };
+    }
+  }
+
+  static _buildOutreachContext(prospect, account, derived, stageGuidance, customFields = null) {
     const parts = [];
 
     // \u2500\u2500 Who they are \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -238,6 +283,14 @@ class ProspectContextBuilder {
     // \u2500\u2500 Research notes \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     if (prospect.research_notes) {
       parts.push(`**Research notes:** ${prospect.research_notes}`);
+    }
+
+    // Custom fields (durable entity-level values; D5 canonical)
+    if (customFields?.prospectFields?.length) {
+      parts.push(`**Custom fields:** ${customFields.prospectFields.join('; ')}`);
+    }
+    if (customFields?.accountFields?.length) {
+      parts.push(`**Account custom fields:** ${customFields.accountFields.join('; ')}`);
     }
 
     // \u2500\u2500 Account relationship \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500

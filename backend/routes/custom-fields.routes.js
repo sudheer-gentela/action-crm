@@ -44,7 +44,7 @@ router.use(requireModule('prospecting'));
 
 const adminOnly = requireRole('owner', 'admin');
 
-const VALUE_ENTITY_TYPES = new Set(['account', 'prospect']); // defs target these
+const VALUE_ENTITY_TYPES = new Set(['account', 'prospect', 'contact']); // defs target these
 const VALID_SOURCES = new Set(['manual', 'csv', 'ai_research', 'crm_sync']);
 
 const bad   = (res, msg, code = 400) => res.status(code).json({ error: { message: msg } });
