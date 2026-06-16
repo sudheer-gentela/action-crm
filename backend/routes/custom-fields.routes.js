@@ -36,6 +36,7 @@ const requireModule = require('../middleware/requireModule.middleware');
 
 const Defs = require('../services/CustomFieldDefService');
 const CF   = require('../services/CustomFieldService');
+const Import = require('../services/CustomFieldImportService');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -252,6 +253,49 @@ router.delete('/values', async (req, res) => {
   } catch (err) {
     console.error('custom-fields DELETE /values error:', err);
     return bad(res, 'Failed to delete custom field value', 500);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BULK IMPORT (CSV → durable values). Admin only; dry-run by default.
+// Body: { targetEntity, rows[], matchBy, columnMap[], createDefs?, dryRun?, campaignId? }
+//   rows       — parsed CSV rows (objects keyed by header); frontend parses CSV.
+//   matchBy    — which key identifies the entity (prospect: id|email|linkedin_url,
+//                account: id|domain|name).
+//   columnMap  — [{ column, fieldKey, fieldType?, label? }, …]
+//   createDefs — auto-create missing defs (effective only on a committed run).
+//   dryRun     — defaults TRUE: preview match/cast/def outcomes, write nothing.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/import', adminOnly, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!VALUE_ENTITY_TYPES.has(b.targetEntity)) return bad(res, 'targetEntity must be account or prospect');
+    if (!Array.isArray(b.rows) || b.rows.length === 0) return bad(res, 'rows must be a non-empty array');
+    if (!b.matchBy) return bad(res, 'matchBy is required');
+    if (!Array.isArray(b.columnMap) || b.columnMap.length === 0) return bad(res, 'columnMap must be a non-empty array');
+
+    const campaignId = b.campaignId != null ? toInt(b.campaignId) : null;
+    if (b.campaignId != null && campaignId === null) return bad(res, 'campaignId must be an integer');
+
+    // dry-run-first: anything other than an explicit false is treated as a dry run.
+    const dryRun = b.dryRun !== false;
+
+    const summary = await Import.runImport({
+      orgId: req.orgId,
+      targetEntity: b.targetEntity,
+      rows: b.rows,
+      matchBy: b.matchBy,
+      columnMap: b.columnMap,
+      createDefs: b.createDefs === true,
+      dryRun,
+      campaignId,
+    });
+    return res.json(summary);
+  } catch (err) {
+    if (/Maximum|must be|unsupported|non-empty/i.test(err.message)) return bad(res, err.message, 400);
+    if (err.code === '23503') return bad(res, 'Referenced campaign does not exist', 400);
+    console.error('custom-fields POST /import error:', err);
+    return bad(res, 'Failed to import custom field values', 500);
   }
 });
 
