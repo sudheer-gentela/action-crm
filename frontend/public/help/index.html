@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GoWarmCRM · Help Center</title>
+<meta name="robots" content="noindex" />
+<link rel="stylesheet" href="assets/help.css" />
+<style>
+  body { background:
+    radial-gradient(1100px 480px at 50% -8%, var(--navy-soft), transparent 60%),
+    var(--canvas);
+  }
+</style>
+</head>
+<body>
+
+<!--
+  ─────────────────────────────────────────────────────────────
+  HELP CENTER ROUTER
+  The product opens this page with the user's role in the hash:
+      /help/index.html#superadmin
+      /help/index.html#orgadmin     (Phase 2)
+      /help/index.html#enduser      (Phase 3)
+  Accepts raw role strings too (super-admin, org-admin, member, rep…).
+  Unknown / not-yet-published guides fall through to this landing.
+  ─────────────────────────────────────────────────────────────
+-->
+<script>
+(function () {
+  // role hash  ->  guide file.  Add entries as later phases ship.
+  var MAP = {
+    'superadmin':  'superadmin.html',
+    'super-admin': 'superadmin.html',
+    'super_admin': 'superadmin.html',
+    'super-user':  'superadmin.html',
+    'orgadmin':    'orgadmin.html',
+    'org-admin':   'orgadmin.html',
+    'org_admin':   'orgadmin.html',
+    'admin':       'orgadmin.html'
+    // Phase 3:  'enduser' / 'member' / 'rep'       -> 'enduser.html'
+  };
+  var raw = (location.hash || '').replace(/^#\/?/, '').toLowerCase();
+  if (raw && MAP[raw]) { location.replace(MAP[raw]); }
+})();
+</script>
+
+<div class="lp">
+  <div class="lp-hero">
+    <div class="help-brand-mark" aria-hidden="true">
+      <svg width="26" height="26" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
+        <path d="M36 6 C26 18 12 26 14 44 C16 58 26 68 36 72 C46 68 56 58 58 44 C60 26 46 18 36 6Z" fill="#FDE68A"/>
+        <path d="M36 22 C31 30 26 36 28 46 C30 53 33 58 36 62 C39 58 42 53 44 46 C46 36 41 30 36 22Z" fill="#fff"/>
+      </svg>
+    </div>
+    <h1>GoWarmCRM Help Center</h1>
+    <p>Guides for getting the most out of GoWarmCRM. Pick the guide that matches your role — or open the one that's linked from inside the product.</p>
+  </div>
+
+  <div class="lp-grid">
+
+    <a class="lp-card" href="superadmin.html">
+      <span class="arrow">→</span>
+      <div class="ic">⚡</div>
+      <div class="who">Platform Admin</div>
+      <h3>Super Admin Guide</h3>
+      <p>Provision organisations, manage modules and seats, run support mode, control platform-wide settings, and read the audit trail.</p>
+    </a>
+
+    <a class="lp-card" href="orgadmin.html">
+      <span class="arrow">→</span>
+      <div class="ic">🔑</div>
+      <div class="who">Organisation Admin</div>
+      <h3>Org Admin Guide</h3>
+      <p>Set up your team, playbooks, stages, diagnostic rules, CRM integrations, AI providers, and data-quality tools.</p>
+    </a>
+
+    <a class="lp-card is-soon" href="#" aria-disabled="true" onclick="return false;">
+      <span class="badge-soon" style="position:absolute;top:24px;right:24px;">Phase 3</span>
+      <div class="ic">🎯</div>
+      <div class="who">Sales Rep</div>
+      <h3>End-User Guide</h3>
+      <p>Work your action queue, run prospecting sequences, log calls, use the Chrome extension, and capture meeting insights.</p>
+    </a>
+
+  </div>
+
+  <div class="lp-foot">GoWarmCRM by DeepConnect Technologies · Need a hand? Contact your administrator.</div>
+</div>
+
+</body>
+</html>

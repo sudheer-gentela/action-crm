@@ -446,6 +446,18 @@ export default function Sidebar({
             />
           )}
 
+          {/* Help & Guides — opens the role-aware docs in a new tab. Shown for
+              every role. The static help bundle lives in /public/help/ and routes
+              by role via the URL hash (#super-admin / #org-admin / #member). */}
+          <button
+            className="sb-nav-item"
+            onClick={() => window.open(`/help/index.html#${activeRole}`, '_blank', 'noopener')}
+            title={collapsed ? 'Help & Guides' : ''}
+          >
+            <span className="sb-nav-icon">❓</span>
+            {!collapsed && <span className="sb-nav-label">Help &amp; Guides</span>}
+          </button>
+
           <UserCard
             user={user}
             activeRole={activeRole}
