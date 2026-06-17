@@ -21,7 +21,7 @@ import React, { useState, useEffect } from 'react';
 import { apiFetch } from './prospectingShared';
 import CampaignConfigPanel from './CampaignConfigPanel';
 import { CampaignTrackingToggles } from './TrackingSettings';   // Insights/WBR Phase 7
-import CustomFieldDefsEditor from '../customFields/CustomFieldDefsEditor';
+import CustomFieldDefsEditor from '../customfields/CustomFieldDefsEditor';
 
 const EMBER = '#E8630A';
 const TEAL  = '#0F9D8E';

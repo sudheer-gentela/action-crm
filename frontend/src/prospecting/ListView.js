@@ -4,7 +4,7 @@
 import React from 'react';
 import { useStages, CHANNEL_ICONS, LI_STATUS_LABELS, getLiStatus, getLiDotColor, timeAgo } from './prospectingShared';
 import ProspectRowMenu from './ProspectRowMenu';
-import { formatCustomValue } from '../customFields/customFieldColumns';
+import { formatCustomValue } from '../customfields/customFieldColumns';
 
 // Source pill — mapped from prospects.source to a short label and tone.
 // Unknown values get a neutral grey pill with the raw value so we don't lose

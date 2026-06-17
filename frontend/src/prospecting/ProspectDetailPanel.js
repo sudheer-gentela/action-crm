@@ -15,7 +15,7 @@ import StrapPanel from '../StrapPanel';
 import SequenceEnrollModal from '../SequenceEnrollModal';
 import TwilioCallModal from '../TwilioCallModal';
 import ProspectPhonesPanel from './ProspectPhonesPanel';
-import CustomFieldsPanel from '../customFields/CustomFieldsPanel';
+import CustomFieldsPanel from '../customfields/CustomFieldsPanel';
 
 function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   const { allStages, prospectStages } = useStages();

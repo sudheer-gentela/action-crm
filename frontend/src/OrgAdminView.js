@@ -3,7 +3,7 @@ import { hashSegment, writeHash } from './hashNav';
 import { apiService } from './apiService';
 import './OrgAdminView.css';
 import DealHealthSettings from './DealHealthSettings';
-import CustomFieldDefsEditor from './customFields/CustomFieldDefsEditor';
+import CustomFieldDefsEditor from './customfields/CustomFieldDefsEditor';
 import OrgSendingScheduleSettings from './OrgSendingScheduleSettings';
 import OAStages from './OAStages';
 import PlaybookPlaysEditor from './PlaybookPlaysEditor';

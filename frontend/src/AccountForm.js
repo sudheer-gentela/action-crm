@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './AccountForm.css';
 import { salesforceAPI } from './apiService';
-import CustomFieldsPanel from './customFields/CustomFieldsPanel';
+import CustomFieldsPanel from './customfields/CustomFieldsPanel';
 
 function AccountForm({ account, onSubmit, onClose }) {
   const [formData, setFormData] = useState({

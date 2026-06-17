@@ -37,8 +37,11 @@
     'orgadmin':    'orgadmin.html',
     'org-admin':   'orgadmin.html',
     'org_admin':   'orgadmin.html',
-    'admin':       'orgadmin.html'
-    // Phase 3:  'enduser' / 'member' / 'rep'       -> 'enduser.html'
+    'admin':       'orgadmin.html',
+    'enduser':     'enduser.html',
+    'member':      'enduser.html',
+    'rep':         'enduser.html',
+    'user':        'enduser.html'
   };
   var raw = (location.hash || '').replace(/^#\/?/, '').toLowerCase();
   if (raw && MAP[raw]) { location.replace(MAP[raw]); }
@@ -75,8 +78,8 @@
       <p>Set up your team, playbooks, stages, diagnostic rules, CRM integrations, AI providers, and data-quality tools.</p>
     </a>
 
-    <a class="lp-card is-soon" href="#" aria-disabled="true" onclick="return false;">
-      <span class="badge-soon" style="position:absolute;top:24px;right:24px;">Phase 3</span>
+    <a class="lp-card" href="enduser.html">
+      <span class="arrow">→</span>
       <div class="ic">🎯</div>
       <div class="who">Sales Rep</div>
       <h3>End-User Guide</h3>

@@ -20,7 +20,7 @@ import {
 
 import PipelineBoard        from './prospecting/PipelineBoard';
 import ListView             from './prospecting/ListView';
-import { useCustomFieldColumns, useSelectedColumns, CustomFieldColumnPicker } from './customFields/customFieldColumns';
+import { useCustomFieldColumns, useSelectedColumns, CustomFieldColumnPicker } from './customfields/customFieldColumns';
 import AccountView          from './prospecting/AccountView';
 import ProspectCreateModal  from './prospecting/ProspectCreateModal';
 import ProspectDetailPanel  from './prospecting/ProspectDetailPanel';
