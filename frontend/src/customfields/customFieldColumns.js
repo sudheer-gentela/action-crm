@@ -21,7 +21,9 @@ const LS_KEY = (e) => `cf_cols_${e}`;
 export function useSelectedColumns(entityType) {
   const read = () => { try { return JSON.parse(localStorage.getItem(LS_KEY(entityType)) || '[]'); } catch { return []; } };
   const [sel, setSel] = useState(read);
-  useEffect(() => { setSel(read()); /* eslint-disable-next-line */ }, [entityType]);
+  // read() is intentionally not a dependency — re-reading localStorage only when
+  // entityType changes is the desired behaviour.
+  useEffect(() => { setSel(read()); }, [entityType]); // eslint-disable-line react-hooks/exhaustive-deps
   const update = useCallback((next) => {
     setSel(next);
     try { localStorage.setItem(LS_KEY(entityType), JSON.stringify(next)); } catch { /* ignore */ }
