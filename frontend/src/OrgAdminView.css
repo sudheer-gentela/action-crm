@@ -7,7 +7,11 @@
 /* ── Sidebar Layout ─────────────────────────────────────────── */
 .oa-layout {
   display: flex;
-  height: 100%;
+  /* Definite height = viewport minus .content-area's 24px top+bottom padding.
+     Without this, height:100% can't resolve (ancestors are min-height:100vh,
+     not fixed), so the whole page scrolls instead of the sidebar/content
+     scrolling independently. */
+  height: calc(100vh - 48px);
   min-height: 0;
   background: #f8f9fb;
 }
@@ -751,4 +755,14 @@
   border-color: #fff;
   box-shadow: 0 0 0 2px #3B82F6;
   transform: scale(1.1);
+}
+
+/* On mobile the app adds a header above .content-area and reduces padding,
+   so a fixed viewport height would be slightly off. Let the page scroll
+   naturally there (the sidebar collapses to icons anyway). */
+@media (max-width: 768px) {
+  .oa-layout {
+    height: auto;
+    min-height: 0;
+  }
 }
