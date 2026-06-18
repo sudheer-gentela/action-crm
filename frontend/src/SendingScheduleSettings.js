@@ -291,14 +291,25 @@ export default function SendingScheduleSettings({ mode = 'org', value, orgDefaul
           ]}
         />
         {pacingMode === 'cadence' ? (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10 }}>
-            <span style={{ fontSize: 12, color: '#6b7280' }}>Every</span>
-            <input type="number" min="1" max="240"
-              value={eff('cadenceMinutes') ?? 5}
-              onChange={(e) => update({ cadenceMinutes: parseInt(e.target.value, 10) || 1 })}
-              disabled={disabled || (isCampaign && !isOvr('pacingMode'))}
-              style={{ ...selectStyle(disabled || (isCampaign && !isOvr('pacingMode'))), width: 70 }} />
-            <span style={{ fontSize: 12, color: '#6b7280' }}>minutes (± a little jitter)</span>
+          <div style={{ marginTop: 10 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 12, color: '#6b7280' }}>Every</span>
+              <input type="number" min="1" max="240"
+                value={eff('cadenceMinutes') ?? 5}
+                onChange={(e) => update({ cadenceMinutes: parseInt(e.target.value, 10) || 1 })}
+                disabled={disabled || (isCampaign && !isOvr('pacingMode'))}
+                style={{ ...selectStyle(disabled || (isCampaign && !isOvr('pacingMode'))), width: 70 }} />
+              <span style={{ fontSize: 12, color: '#6b7280' }}>minutes (± a little jitter)</span>
+            </div>
+            {/* End time is shown in cadence mode too — it's the daily safety
+                cutoff the backend enforces, not just a spread-only field. Keeping
+                it visible removes the guesswork about when sending stops. */}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10 }}>
+              <span style={{ fontSize: 12, color: '#6b7280' }}>End by</span>
+              <HourSelect value={eff('sendWindowEndHour')} onChange={(h) => update({ sendWindowEndHour: h })}
+                min={1} max={24} disabled={disabled || (isCampaign && !isOvr('pacingMode'))} />
+              <span style={{ fontSize: 11, color: '#9ca3af' }}>daily safety cutoff — unsent volume rolls to the next day</span>
+            </div>
           </div>
         ) : (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10 }}>

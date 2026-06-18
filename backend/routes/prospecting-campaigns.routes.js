@@ -162,7 +162,10 @@ function validateAndCoerceSchedule(body) {
   }
   if (out.send_window_start_hour !== null && out.send_window_end_hour !== null
       && out.send_window_end_hour <= out.send_window_start_hour) {
-    errors.push('send_window_end_hour must be after send_window_start_hour');
+    errors.push(
+      `send_window_end_hour (${out.send_window_end_hour}:00) must be after ` +
+      `send_window_start_hour (${out.send_window_start_hour}:00)`
+    );
   }
   if (raw.send_window_days !== undefined && raw.send_window_days !== null) {
     if (!Array.isArray(raw.send_window_days)) {
@@ -192,17 +195,12 @@ function validateAndCoerceSchedule(body) {
     }
   }
 
-  // Cross-field guard: when BOTH window bounds are provided in this payload,
-  // the end must be after the start — otherwise the day's send window is empty
-  // and nothing sends. (When only one is provided, the other is inherited and
-  // can't be checked here; the resolver clamps that cross-layer case.)
-  if (out.send_window_start_hour !== undefined && out.send_window_end_hour !== undefined
-      && out.send_window_end_hour <= out.send_window_start_hour) {
-    errors.push(
-      `send_window_end_hour (${out.send_window_end_hour}:00) must be after ` +
-      `send_window_start_hour (${out.send_window_start_hour}:00)`
-    );
-  }
+  // Cross-field guard for the end-after-start rule lives above (the `!== null`
+  // check), which correctly skips when only one bound is provided in this
+  // payload — the other is inherited and the resolver clamps that cross-layer
+  // case. (A prior duplicate guard here used `!== undefined`, which let the
+  // null-initialized fields through and mis-fired "end (null:00) must be after
+  // start" on any payload that set only the start hour.)
 
   return { values: out, errors };
 }
