@@ -49,6 +49,41 @@ const SKILL_FOR_CHANNEL = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// isOrgAiEnabled — org-level master switch for outreach personalisation.
+//
+// Stored at organizations.settings.prospecting_config.ai_enabled (same blob the
+// rest of the org outreach config already lives in, so no migration). The flag
+// is opt-OUT: only the literal boolean false disables AI. NULL / missing / any
+// other value → enabled, so existing orgs are unaffected.
+//
+// This is the single chokepoint: personaliseEnrollment() is the one function
+// every AI path flows through (firer JIT, bulk-activate eager, the
+// ai-personalise-enrollment preview, and the whole-sequence preview), so a
+// guard here disables AI org-wide. When disabled, callers receive an empty
+// personalisedSteps map and every consumer already falls back to the sequence
+// template (renderTemplate in SequenceStepFirer; { engine: 'template' } in the
+// preview routes). No call site needs to change.
+//
+// Lookup failure is treated as "enabled" — a transient DB hiccup must never
+// silently switch a whole org to templates without the operator choosing it.
+// ─────────────────────────────────────────────────────────────────────────────
+async function isOrgAiEnabled(orgId) {
+  try {
+    const r = await pool.query(
+      `SELECT (settings->'prospecting_config'->>'ai_enabled') AS ai_enabled
+         FROM organizations
+        WHERE id = $1`,
+      [orgId]
+    );
+    // Column is text here (->>). Only the explicit string 'false' disables.
+    return r.rows[0]?.ai_enabled !== 'false';
+  } catch (err) {
+    console.warn(`PersonalizationDispatcher: org AI flag lookup failed for org ${orgId}; defaulting to enabled: ${err.message}`);
+    return true;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // inferIntent — when sequence_steps.step_intent is NULL, infer from
 // channel + step_order + engagement_history.
 //
@@ -314,6 +349,20 @@ async function personaliseEnrollment({ orgId, userId, sequenceId, prospectId, ho
     throw e;
   }
 
+  // ── Org-level AI master switch ────────────────────────────────────────────
+  // When AI is disabled for the org, short-circuit before any skill call:
+  // return an empty personalisedSteps map so every caller falls back to the
+  // sequence template. All steps are counted as 'skipped' (not 'errored'), so
+  // bulk-activate reports skillStatus correctly and the firer renders templates.
+  if (!(await isOrgAiEnabled(orgId))) {
+    return {
+      personalisedSteps: {},
+      errors: [],
+      summary: { total: steps.length, personalised: 0, skipped: steps.length, errored: 0 },
+      orgAiDisabled: true,
+    };
+  }
+
   const engagementHistory = await loadEngagementHistory(prospectId, orgId);
 
   const personalisedSteps = {};
@@ -415,6 +464,7 @@ module.exports = {
   inferIntent,
   isValidIntentForChannel,
   mapSkillOutput,
+  isOrgAiEnabled,
   EMAIL_INTENTS,
   LINKEDIN_INTENTS,
   SKILL_FOR_CHANNEL,
