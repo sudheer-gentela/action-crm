@@ -9,6 +9,7 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import * as CFApi from './customFieldsApi';
+import CustomFieldsImportModal from './CustomFieldsImportModal';
 import './CustomFields.css';
 
 const ENTITIES = ['prospect', 'account', 'contact', 'deal'];
@@ -21,6 +22,7 @@ export default function CustomFieldDefsEditor({ campaignId = null }) {
   const [error, setError]     = useState(null);
   const [draft, setDraft]     = useState(blankDraft());
   const [showInactive, setShowInactive] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const scopeLabel = campaignId != null ? 'campaign-only' : 'org-level';
 
   const load = useCallback(async () => {
@@ -75,10 +77,15 @@ export default function CustomFieldDefsEditor({ campaignId = null }) {
               onClick={() => setTargetEntity(e)}>{CFApi.ENTITY_LABEL[e]}</button>
           ))}
         </div>
-        <label className="cf-check">
-          <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} />
-          Show inactive
-        </label>
+        <div className="cf-head-actions" style={{ display: 'flex', alignItems: 'center', gap: 12, marginLeft: 'auto' }}>
+          <label className="cf-check">
+            <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} />
+            Show inactive
+          </label>
+          <button type="button" className="cf-btn" onClick={() => setShowImport(true)}>
+            Import values (CSV)
+          </button>
+        </div>
       </div>
       <p className="cf-muted cf-scope-note">Defining <strong>{scopeLabel}</strong> {targetEntity} fields.</p>
 
@@ -136,6 +143,15 @@ export default function CustomFieldDefsEditor({ campaignId = null }) {
           onChange={e => setDraft({ ...draft, displayOrder: e.target.value })} />
         <button type="button" className="cf-btn cf-btn-primary" onClick={add}>Add field</button>
       </div>
+
+      {showImport && (
+        <CustomFieldsImportModal
+          targetEntity={targetEntity}
+          campaignId={campaignId}
+          onClose={() => setShowImport(false)}
+          onDone={() => { load(); }}
+        />
+      )}
     </div>
   );
 }
