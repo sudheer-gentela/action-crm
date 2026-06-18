@@ -818,21 +818,24 @@ function ProviderPill({ provider }) {
   );
 }
 
-const AI_MODELS = {
-  anthropic: [
-    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku (fast, economical)' },
-    { value: 'claude-sonnet-4-5-20251022', label: 'Claude Sonnet (balanced)' },
-    { value: 'claude-opus-4-5-20251022', label: 'Claude Opus (most capable)' },
-  ],
-  openai: [
-    { value: 'gpt-4o-mini', label: 'GPT-4o Mini (fast, economical)' },
-    { value: 'gpt-4o',      label: 'GPT-4o (most capable)' },
-  ],
-  gemini: [
-    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (fast)' },
-    { value: 'gemini-1.5-pro',   label: 'Gemini 1.5 Pro (most capable)' },
-  ],
-};
+// ORPHANED 2026-06 — only consumer was the Prospecting AI model dropdown, now
+// commented out (see UserPreferencesSettings). Kept here, also commented, so
+// it's ready if that selector is ever rewired to a real model source.
+// const AI_MODELS = {
+//   anthropic: [
+//     { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku (fast, economical)' },
+//     { value: 'claude-sonnet-4-5-20251022', label: 'Claude Sonnet (balanced)' },
+//     { value: 'claude-opus-4-5-20251022', label: 'Claude Opus (most capable)' },
+//   ],
+//   openai: [
+//     { value: 'gpt-4o-mini', label: 'GPT-4o Mini (fast, economical)' },
+//     { value: 'gpt-4o',      label: 'GPT-4o (most capable)' },
+//   ],
+//   gemini: [
+//     { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (fast)' },
+//     { value: 'gemini-1.5-pro',   label: 'Gemini 1.5 Pro (most capable)' },
+//   ],
+// };
 
 function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }) {
   const [senders, setSenders]       = useState([]);
