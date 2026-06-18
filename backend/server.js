@@ -256,7 +256,6 @@ app.use('/api/deal-roles',             require('./routes/org-roles.routes'));
 app.use('/api/deal-team',              require('./routes/deal-team.routes'));
 app.use('/api/deal-contacts',          require('./routes/deal-contacts.routes'));
 app.use('/api/straps',                 require('./routes/strap.routes'));
-app.use('/api/help',                   require('./routes/help.routes'));        // gated Help Center (signed URLs)
 app.use('/api/products',               require('./routes/products.routes'));
 app.use('/api/pipeline-stages',        require('./routes/pipeline-stages.routes'));
 app.use('/api/playbook-plays',         require('./routes/playbook-plays.routes'));
@@ -277,6 +276,11 @@ app.use('/api/linkedin-profiles',   require('./routes/linkedin-profiles.routes')
 // Bulk LinkedIn connection-acceptance sync from the Chrome extension
 // ("Check & update sent / accepted" popup buttons). Seat-bound + owner-scoped.
 app.use('/api/linkedin-connections', require('./routes/linkedin-connections.routes'));
+// Optional, opt-in LinkedIn connection-request auto-send.
+//   linkedin-autosend  → extension actuator surface (claim / confirm / report-failure)
+//   linkedin-automation → settings surface (org toggle+caps, per-user opt-in)
+app.use('/api/linkedin-autosend',    require('./routes/linkedin-autosend.routes'));
+app.use('/api',                      require('./routes/linkedin-automation.routes'));
 
 // Calls.
 //   Phase 3 (Twilio: /initiate, /:id/status) mounted FIRST so its specific
@@ -485,6 +489,40 @@ app.listen(PORT, () => {
         }
       } catch (err) {
         console.error('📨 Sequences Cron error:', err.message);
+      }
+    });
+
+    // Every 5 min: reclaim expired LinkedIn auto-send leases back to 'scheduled'.
+    // A 'sending' linkedin row whose lease_expires_at has passed means the rep's
+    // browser went away before the extension confirmed the click; re-offering it
+    // is safe (the extension confirms immediately after a successful Connect, so
+    // an expired lease almost always means the click never happened). This is the
+    // safe counterpart to the email reaper, which is scoped to channel='email'
+    // precisely so it never fail+pauses one of these leases.
+    cron.schedule('*/5 * * * *', async () => {
+      try {
+        const { pool } = require('./config/database');
+        const { reclaimed } = await require('./services/LinkedInAutoSendService').reclaimExpiredLeases(pool);
+        if (reclaimed > 0) {
+          console.log(`🔗 LinkedIn auto-send Cron: reclaimed ${reclaimed} expired lease(s)`);
+        }
+      } catch (err) {
+        console.error('🔗 LinkedIn auto-send reclaim Cron error:', err.message);
+      }
+    });
+
+    // Weekly (Mon 14:00 UTC): nudge reps whose LinkedIn connection data is stale
+    // to run a manual "Check & update". Server-side reminder only — never opens
+    // LinkedIn or polls Voyager (see LinkedInRefreshNudge for why).
+    cron.schedule('0 14 * * 1', async () => {
+      try {
+        const { pool } = require('./config/database');
+        const { inserted } = await require('./services/LinkedInRefreshNudge').nudgeStaleSeats(pool);
+        if (inserted > 0) {
+          console.log(`🔗 LinkedIn refresh-nudge Cron: ${inserted} nudge(s) created`);
+        }
+      } catch (err) {
+        console.error('🔗 LinkedIn refresh-nudge Cron error:', err.message);
       }
     });
 

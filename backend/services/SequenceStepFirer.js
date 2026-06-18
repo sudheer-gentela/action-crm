@@ -44,6 +44,7 @@ const EmailTrackingService            = require('./EmailTrackingService');   // 
 const { sendEmail: sendOutlookEmail } = require('./outlookService');
 const { plainTextToHtml }             = require('./emailFormatter');
 const PersonalizationDispatcher       = require('./PersonalizationDispatcher');  // lazy JIT personalisation
+const LinkedInAutomationConfig        = require('./linkedinAutomationConfig');   // org→user→system auto-connect gate
 
 // ── Template renderer ─────────────────────────────────────────────────────────
 function renderTemplate(template, prospect, account) {
@@ -553,6 +554,12 @@ async function reapStaleSending(client, staleMinutes = 30) {
        JOIN sequence_enrollments se ON se.id = l.enrollment_id
        JOIN sequences s             ON s.id  = se.sequence_id
       WHERE l.status = 'sending'
+        -- LinkedIn auto-send rows ALSO sit in 'sending' while leased to the
+        -- browser extension. They are NOT email worker crashes — they have their
+        -- own lease_expires_at and are reclaimed back to 'scheduled' by the
+        -- LinkedIn reclaim sweep (LinkedInAutoSendService.reclaimExpiredLeases),
+        -- never fail+paused here. Excluding them keeps this reaper email-only.
+        AND l.channel = 'email'
         AND l.fired_at < NOW() - ($1 || ' minutes')::interval`,
     [String(staleMinutes)]
   );
@@ -637,11 +644,22 @@ const SequenceStepFirer = {
             -- perpetually 'due' and — sorted oldest-first — monopolize the
             -- LIMIT batch, starving email auto-sends. They re-enter the queue
             -- the moment the rep actions the draft (status leaves 'draft').
+            --
+            -- Same reasoning for LinkedIn auto-send: a connection_request step
+            -- that's been materialized as a 'scheduled'/'sending' linkedin row
+            -- is actuated by the browser EXTENSION, not the firer. The firer
+            -- must not keep re-selecting it (it would no-op on the idempotency
+            -- guard, but still burn a LIMIT slot every tick). It re-enters the
+            -- queue when the extension confirms the send (row → 'sent') and the
+            -- enrollment advances, OR if the row is failed/skipped. NOTE: email
+            -- 'scheduled' rows are deliberately NOT parked — the firer's SEND
+            -- branch must claim those itself.
             AND NOT EXISTS (
               SELECT 1 FROM sequence_step_logs l
                WHERE l.enrollment_id    = se.id
                  AND l.sequence_step_id = ss.id
-                 AND l.status           = 'draft'
+                 AND ( l.status = 'draft'
+                    OR (ss.channel = 'linkedin' AND l.status IN ('scheduled','sending')) )
             )
           ORDER BY se.next_step_due ASC, se.id ASC
           LIMIT 100`
@@ -817,6 +835,91 @@ const SequenceStepFirer = {
 
           // ── DRAFT BRANCH ──────────────────────────────────────────────────
           if (step.channel !== 'email' || (effectiveRequireApproval && !hasApprovedSchedule)) {
+
+            // ── LinkedIn connection-request AUTO-SEND gate (opt-in) ──────────
+            // Optional, defensive, off by default. When BOTH the org-admin
+            // master toggle is on AND this rep has explicitly opted in, a
+            // LinkedIn connection_request step is MATERIALIZED as a 'scheduled'
+            // row for the browser extension to actuate in the rep's own
+            // authenticated session — instead of the human-actioned draft this
+            // branch would otherwise create. The firer never sends it; the
+            // extension claims (scheduled→sending), performs the click, then
+            // confirms (sending→sent) which advances the enrollment. All the
+            // defensive limits (daily cap, jitter, human-hours window, abort on
+            // challenge) live at claim time / in the extension — see
+            // LinkedInAutoSendService + background.js. This is a knowing,
+            // disclosed LinkedIn-ToS tradeoff the org+rep both accept.
+            if (step.channel === 'linkedin' && step.step_intent === 'connection_request') {
+              let gate = { enabled: false };
+              try {
+                gate = await LinkedInAutomationConfig.resolveForUser(client, {
+                  orgId: enrollment.org_id, userId: enrollment.enrolled_by,
+                });
+              } catch (gErr) {
+                // Never let a config lookup failure block the normal draft path.
+                console.warn(`SequenceStepFirer: auto-connect gate lookup failed for enrollment ${enrollment.id}: ${gErr.message}`);
+              }
+
+              if (gate.enabled) {
+                // Idempotency: at most one live row per step. uq_seq_step_logs_pending
+                // already blocks a duplicate scheduled/sending row, but checking
+                // 'sent' too means a confirmed send is never re-queued either.
+                const existingLive = await client.query(
+                  `SELECT 1 FROM sequence_step_logs
+                    WHERE enrollment_id=$1 AND sequence_step_id=$2
+                      AND status IN ('scheduled','sending','sent')
+                    LIMIT 1`,
+                  [enrollment.id, step.id]
+                );
+                if (existingLive.rows.length === 0) {
+                  // Personalise the note now (freshest history), then hard-cap to
+                  // 280 chars — LinkedIn's connection-note ceiling, same limit
+                  // OutreachValidator enforces. No signature on a connection note.
+                  applyPersonalised(await ensureStepPersonalized(client, enrollment, step.channel));
+                  const note = (body || '').slice(0, 280);
+                  try {
+                    await client.query(
+                      `INSERT INTO sequence_step_logs
+                                   (org_id, enrollment_id, sequence_step_id, prospect_id,
+                                    channel, status, subject, body, scheduled_send_at, fired_at,
+                                    personalize_sources)
+                            VALUES ($1, $2, $3, $4, 'linkedin', 'scheduled', NULL, $5, NOW(), NULL, $6::jsonb)`,
+                      [
+                        enrollment.org_id, enrollment.id, step.id, enrollment.prospect_id,
+                        note, personalizeSourcesJson,
+                      ]
+                    );
+                    try {
+                      await client.query(
+                        `INSERT INTO prospecting_activities
+                                     (org_id, prospect_id, user_id, activity_type, description, metadata)
+                              VALUES ($1, $2, $3, 'sequence_autosend_queued', $4, $5)`,
+                        [
+                          enrollment.org_id, enrollment.prospect_id, enrollment.enrolled_by,
+                          `LinkedIn connection request queued for auto-send — ${enrollment.seq_name} step ${enrollment.current_step}`,
+                          JSON.stringify({
+                            enrollmentId: enrollment.id, sequenceId: enrollment.seq_id,
+                            stepOrder: enrollment.current_step, stepId: step.id,
+                            channel: 'linkedin', step_intent: 'connection_request',
+                            gate_source: gate.source,
+                          }),
+                        ]
+                      );
+                    } catch (actErr) {
+                      console.warn(`SequenceStepFirer: autosend-queued activity log failed for enrollment ${enrollment.id}:`, actErr.message);
+                    }
+                    drafted++; // counts as "queued" rather than "sent"
+                  } catch (insErr) {
+                    // 23505 = a pending row already exists (raced another tick) — fine.
+                    if (insErr.code !== '23505') throw insErr;
+                  }
+                }
+                // Do NOT advance — the extension's confirm advances the enrollment.
+                continue;
+              }
+              // gate disabled → fall through to the normal draft behaviour below.
+            }
+
             // Idempotency: don't create a second draft for this step
             const existingDraft = await client.query(
               `SELECT id FROM sequence_step_logs
