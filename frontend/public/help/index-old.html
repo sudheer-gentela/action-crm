@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GoWarmCRM · Help Center</title>
+<meta name="robots" content="noindex" />
+<style>
+/* ============================================================
+   GoWarmCRM — Help Center shared theme
+   Self-contained. No external fonts or CDNs (CSP-safe drop-in).
+   Palette: Ember #E8630A · Navy #1A3A5C
+   ============================================================ */
+
+:root {
+  /* Brand */
+  --ember:        #E8630A;
+  --ember-dark:   #C9540A;
+  --ember-soft:   #FDEFE4;
+  --ember-line:   #F6C9A6;
+  --navy:         #1A3A5C;
+  --navy-700:     #234a73;
+  --navy-soft:    #EAF0F6;
+
+  /* Neutrals */
+  --paper:        #FFFFFF;
+  --canvas:       #F6F7F9;
+  --line:         #E5E7EB;
+  --line-soft:    #EEF0F3;
+  --text:         #2B3340;
+  --muted:        #6B7280;
+  --faint:        #9CA3AF;
+
+  /* Semantic */
+  --green:        #0F9D6E;
+  --green-soft:   #E7F6EF;
+  --amber:        #B7791F;
+  --amber-soft:   #FBF3E2;
+  --red:          #DC2626;
+  --red-soft:     #FBEAEA;
+  --blue:         #2563EB;
+  --blue-soft:    #E8EFFE;
+
+  /* Geometry */
+  --radius:       12px;
+  --radius-sm:    8px;
+  --shadow:       0 1px 2px rgba(16,24,40,.05), 0 8px 24px rgba(16,24,40,.06);
+  --shadow-sm:    0 1px 2px rgba(16,24,40,.06);
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --sidebar-w: 280px;
+  --maxw: 860px;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--text);
+  background: var(--canvas);
+  font-size: 15px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ------------------------------------------------------------
+   App shell: fixed sidebar + scrolling content
+   ------------------------------------------------------------ */
+.help-shell { display: flex; min-height: 100vh; }
+
+.help-sidebar {
+  width: var(--sidebar-w);
+  flex: 0 0 var(--sidebar-w);
+  background: var(--navy);
+  color: #fff;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 22px 0 28px;
+}
+
+.help-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 0 96px;
+}
+
+.help-content-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 0 40px;
+}
+
+/* ------------------------------------------------------------
+   Brand block in sidebar
+   ------------------------------------------------------------ */
+.help-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 22px 18px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(255,255,255,.10);
+}
+.help-brand-mark {
+  width: 34px; height: 34px;
+  border-radius: 9px;
+  background: var(--ember);
+  display: grid; place-items: center;
+  flex: 0 0 34px;
+}
+.help-brand-name { font-weight: 700; font-size: 15px; letter-spacing: .2px; line-height: 1.15; }
+.help-brand-name .warm { color: var(--ember); }
+.help-brand-sub { font-size: 11.5px; color: rgba(255,255,255,.55); margin-top: 1px; }
+
+/* role pill on sidebar */
+.help-role-pill {
+  margin: 14px 22px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: rgba(232,99,10,.20);
+  border: 1px solid rgba(232,99,10,.5);
+  padding: 5px 11px;
+  border-radius: 999px;
+}
+.help-role-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ember); }
+
+/* ------------------------------------------------------------
+   Sidebar nav (table of contents)
+   ------------------------------------------------------------ */
+.help-nav { padding: 10px 14px 0; }
+.help-nav-group-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,.40);
+  padding: 16px 10px 6px;
+}
+.help-nav a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  color: rgba(255,255,255,.78);
+  text-decoration: none;
+  font-size: 13.5px;
+  line-height: 1.35;
+  transition: background .12s, color .12s;
+}
+.help-nav a .ic { width: 17px; text-align: center; flex: 0 0 17px; opacity: .9; }
+.help-nav a:hover { background: rgba(255,255,255,.07); color: #fff; }
+.help-nav a.active {
+  background: var(--ember);
+  color: #fff;
+  font-weight: 600;
+}
+.help-nav a.active .ic { opacity: 1; }
+
+.help-nav-foot {
+  margin: 22px 22px 0;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255,255,255,.10);
+  font-size: 11.5px;
+  color: rgba(255,255,255,.45);
+}
+.help-nav-foot a { color: rgba(255,255,255,.75); }
+
+/* ------------------------------------------------------------
+   Top bar inside content (search + breadcrumb)
+   ------------------------------------------------------------ */
+.help-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(246,247,249,.86);
+  backdrop-filter: saturate(140%) blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.help-topbar-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 13px 40px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.help-crumb { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.help-crumb b { color: var(--navy); font-weight: 600; }
+.help-search {
+  margin-left: auto;
+  position: relative;
+  width: 270px;
+  max-width: 45vw;
+}
+.help-search input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px 8px 32px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--text);
+}
+.help-search input:focus {
+  outline: none;
+  border-color: var(--ember);
+  box-shadow: 0 0 0 3px var(--ember-soft);
+}
+.help-search .mag {
+  position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+  color: var(--faint); font-size: 13px; pointer-events: none;
+}
+
+/* ------------------------------------------------------------
+   Hero
+   ------------------------------------------------------------ */
+.help-hero { padding: 44px 0 8px; }
+.help-eyebrow {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ember);
+}
+.help-eyebrow::before {
+  content: ""; width: 22px; height: 2px; background: var(--ember); border-radius: 2px;
+}
+.help-hero h1 {
+  font-size: 33px;
+  line-height: 1.12;
+  margin: 14px 0 10px;
+  color: var(--navy);
+  letter-spacing: -.02em;
+  font-weight: 800;
+}
+.help-hero p { font-size: 16px; color: var(--muted); max-width: 60ch; margin: 0; }
+
+/* ------------------------------------------------------------
+   Sections
+   ------------------------------------------------------------ */
+.help-section { padding-top: 52px; scroll-margin-top: 70px; }
+.help-section > h2 {
+  font-size: 23px;
+  color: var(--navy);
+  letter-spacing: -.01em;
+  font-weight: 800;
+  margin: 0 0 4px;
+  display: flex; align-items: baseline; gap: 10px;
+}
+.help-section > h2 .num {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ember);
+  font-variant-numeric: tabular-nums;
+  background: var(--ember-soft);
+  border-radius: 6px;
+  padding: 2px 8px;
+  align-self: center;
+}
+.help-section > .lead { font-size: 15.5px; color: var(--muted); margin: 6px 0 22px; max-width: 64ch; }
+
+.help-section h3 {
+  font-size: 17px; color: var(--navy); font-weight: 700;
+  margin: 30px 0 8px; letter-spacing: -.01em;
+}
+.help-section h4 {
+  font-size: 14px; color: var(--navy); font-weight: 700;
+  margin: 20px 0 4px; text-transform: none;
+}
+.help-section p { margin: 0 0 13px; }
+.help-section a { color: var(--ember-dark); text-decoration: none; border-bottom: 1px solid var(--ember-line); }
+.help-section a:hover { border-bottom-color: var(--ember); }
+.help-section ul, .help-section ol { margin: 0 0 14px; padding-left: 22px; }
+.help-section li { margin: 5px 0; }
+.help-section strong { color: var(--navy); font-weight: 650; }
+code, .kbd {
+  font-family: var(--mono);
+  font-size: .86em;
+  background: var(--navy-soft);
+  color: var(--navy-700);
+  padding: 1.5px 6px;
+  border-radius: 5px;
+}
+
+/* ------------------------------------------------------------
+   Figure / screen-map
+   ------------------------------------------------------------ */
+.help-figure {
+  margin: 8px 0 22px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.help-figure-bar {
+  display: flex; align-items: center; gap: 7px;
+  padding: 9px 14px;
+  background: var(--navy-soft);
+  border-bottom: 1px solid var(--line);
+}
+.help-figure-bar .tl { display: flex; gap: 6px; }
+.help-figure-bar .tl i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+.help-figure-bar .tl i:nth-child(1){ background:#F56C6C; }
+.help-figure-bar .tl i:nth-child(2){ background:#F5B942; }
+.help-figure-bar .tl i:nth-child(3){ background:#3CC97B; }
+.help-figure-bar .tt { font-size: 12px; color: var(--muted); font-weight: 600; margin-left: 4px; }
+.help-figure svg { display: block; width: 100%; height: auto; }
+.help-figure-cap {
+  padding: 9px 14px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border-top: 1px solid var(--line-soft);
+  background: #FCFCFD;
+}
+.help-figure-cap b { color: var(--navy); }
+
+/* numbered callout list paired with a figure */
+.help-steps { counter-reset: step; list-style: none; padding-left: 0; margin: 6px 0 16px; }
+.help-steps > li {
+  position: relative;
+  padding-left: 38px;
+  margin: 12px 0;
+  min-height: 26px;
+}
+.help-steps > li::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute; left: 0; top: 0;
+  width: 26px; height: 26px;
+  background: var(--ember);
+  color: #fff;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 13px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------
+   Callouts
+   ------------------------------------------------------------ */
+.note {
+  display: flex; gap: 11px;
+  padding: 13px 15px;
+  border-radius: var(--radius-sm);
+  margin: 16px 0;
+  font-size: 14px;
+  border: 1px solid;
+  line-height: 1.55;
+}
+.note .ic { flex: 0 0 auto; font-size: 15px; line-height: 1.5; }
+.note p { margin: 0 0 6px; }
+.note p:last-child { margin: 0; }
+.note--tip   { background: var(--ember-soft); border-color: var(--ember-line); color: #7a3a08; }
+.note--info  { background: var(--blue-soft);  border-color: #c5d7fb; color: #1e3a8a; }
+.note--warn  { background: var(--amber-soft); border-color: #f0dca8; color: #7a5a13; }
+.note--danger{ background: var(--red-soft);   border-color: #f3c9c9; color: #991b1b; }
+.note b { color: inherit; }
+
+/* ------------------------------------------------------------
+   Tables (reference)
+   ------------------------------------------------------------ */
+.help-table-wrap { overflow-x: auto; margin: 6px 0 18px; border: 1px solid var(--line); border-radius: var(--radius); }
+table.ref {
+  width: 100%; border-collapse: collapse; font-size: 13.5px; background: var(--paper);
+}
+table.ref th, table.ref td { text-align: left; padding: 10px 14px; vertical-align: top; }
+table.ref thead th {
+  background: var(--navy-soft); color: var(--navy);
+  font-size: 11px; letter-spacing: .05em; text-transform: uppercase; font-weight: 700;
+  border-bottom: 1px solid var(--line);
+}
+table.ref tbody tr + tr td { border-top: 1px solid var(--line-soft); }
+table.ref td code { white-space: nowrap; }
+
+/* status / plan pills used in tables */
+.pill { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.pill--green { background: var(--green-soft); color: var(--green); }
+.pill--amber { background: var(--amber-soft); color: var(--amber); }
+.pill--red   { background: var(--red-soft);   color: var(--red); }
+.pill--grey  { background: #EEF0F3; color: #5b6471; }
+.pill--navy  { background: var(--navy-soft);  color: var(--navy); }
+.pill--ember { background: var(--ember-soft); color: var(--ember-dark); }
+
+/* ------------------------------------------------------------
+   Action chip (for "what each button does" rows)
+   ------------------------------------------------------------ */
+.chip-row { display: flex; align-items: flex-start; gap: 12px; margin: 9px 0; }
+.chip-glyph {
+  flex: 0 0 auto;
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  display: grid; place-items: center;
+  font-size: 15px;
+  background: var(--navy-soft);
+  border: 1px solid var(--line);
+}
+.chip-glyph.is-blue  { background: var(--blue-soft);  border-color:#c5d7fb; }
+.chip-glyph.is-green { background: var(--green-soft); border-color:#bfe7d4; }
+.chip-glyph.is-red   { background: var(--red-soft);   border-color:#f3c9c9; }
+.chip-body { font-size: 14px; padding-top: 2px; }
+.chip-body b { color: var(--navy); }
+
+/* ------------------------------------------------------------
+   Landing (index) cards
+   ------------------------------------------------------------ */
+.lp { max-width: 980px; margin: 0 auto; padding: 64px 32px 80px; }
+.lp-hero { text-align: center; margin-bottom: 46px; }
+.lp-hero .help-brand-mark { width: 52px; height: 52px; border-radius: 13px; margin: 0 auto 20px; }
+.lp-hero h1 { font-size: 38px; color: var(--navy); font-weight: 800; letter-spacing: -.02em; margin: 0 0 12px; }
+.lp-hero p { font-size: 17px; color: var(--muted); margin: 0 auto; max-width: 56ch; }
+.lp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+.lp-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 26px 24px;
+  box-shadow: var(--shadow-sm);
+  transition: transform .14s, box-shadow .14s, border-color .14s;
+  position: relative;
+}
+.lp-card:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: var(--ember-line); }
+.lp-card .ic {
+  width: 46px; height: 46px; border-radius: 11px; display: grid; place-items: center;
+  font-size: 22px; margin-bottom: 16px; background: var(--ember-soft);
+}
+.lp-card h3 { font-size: 18px; color: var(--navy); font-weight: 700; margin: 0 0 6px; }
+.lp-card p { font-size: 13.5px; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
+.lp-card .who { font-size: 11.5px; font-weight: 600; color: var(--ember-dark); text-transform: uppercase; letter-spacing: .05em; }
+.lp-card .arrow { position: absolute; top: 24px; right: 24px; color: var(--faint); font-size: 18px; transition: transform .14s, color .14s; }
+.lp-card:hover .arrow { transform: translateX(3px); color: var(--ember); }
+.lp-card.is-soon { opacity: .72; }
+.lp-card.is-soon .badge-soon {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); background: #EEF0F3; padding: 3px 8px; border-radius: 6px;
+}
+.lp-foot { text-align: center; margin-top: 46px; font-size: 13px; color: var(--faint); }
+
+/* ------------------------------------------------------------
+   Search "no results" + hidden state
+   ------------------------------------------------------------ */
+.help-section.is-hidden { display: none; }
+.search-empty {
+  display: none;
+  padding: 40px 0; text-align: center; color: var(--muted); font-size: 15px;
+}
+.search-empty.show { display: block; }
+
+/* back to top */
+.to-top {
+  position: fixed; right: 22px; bottom: 22px;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: var(--navy); color: #fff; border: none; cursor: pointer;
+  font-size: 18px; box-shadow: var(--shadow); opacity: 0; pointer-events: none;
+  transition: opacity .2s; z-index: 40;
+}
+.to-top.show { opacity: 1; pointer-events: auto; }
+.to-top:hover { background: var(--ember); }
+
+/* ------------------------------------------------------------
+   Mobile
+   ------------------------------------------------------------ */
+.help-menu-btn {
+  display: none;
+  background: var(--navy); color:#fff; border:none; border-radius: 8px;
+  width: 38px; height: 38px; font-size: 18px; cursor: pointer;
+}
+.help-scrim { display:none; }
+
+@media (max-width: 900px) {
+  :root { --sidebar-w: 256px; }
+  .help-content-inner, .help-topbar-inner { padding-left: 22px; padding-right: 22px; }
+  .help-sidebar {
+    position: fixed; left: 0; top: 0; z-index: 60;
+    transform: translateX(-100%); transition: transform .22s ease;
+    box-shadow: 0 0 40px rgba(0,0,0,.3);
+  }
+  .help-shell.nav-open .help-sidebar { transform: translateX(0); }
+  .help-shell.nav-open .help-scrim {
+    display: block; position: fixed; inset: 0; background: rgba(15,23,42,.5); z-index: 55;
+  }
+  .help-menu-btn { display: grid; place-items: center; }
+  .help-search { width: auto; flex: 1; max-width: none; }
+  .help-hero h1 { font-size: 27px; }
+  .help-crumb { display: none; }
+}
+
+@media (max-width: 560px) {
+  .help-content-inner, .help-topbar-inner { padding-left: 16px; padding-right: 16px; }
+  .lp { padding: 40px 18px 60px; }
+  .lp-hero h1 { font-size: 29px; }
+}
+
+</style>
+<style>
+  body { background:
+    radial-gradient(1100px 480px at 50% -8%, var(--navy-soft), transparent 60%),
+    var(--canvas);
+  }
+</style>
+</head>
+<body>
+
+<!--
+  ─────────────────────────────────────────────────────────────
+  HELP CENTER ROUTER
+  The product opens this page with the user's role in the hash:
+      /help/index.html#superadmin
+      /help/index.html#orgadmin     (Phase 2)
+      /help/index.html#enduser      (Phase 3)
+  Accepts raw role strings too (super-admin, org-admin, member, rep…).
+  Unknown / not-yet-published guides fall through to this landing.
+  ─────────────────────────────────────────────────────────────
+-->
+<script>
+(function () {
+  // role hash  ->  guide file.  Add entries as later phases ship.
+  var MAP = {
+    'superadmin':  'superadmin.html',
+    'super-admin': 'superadmin.html',
+    'super_admin': 'superadmin.html',
+    'super-user':  'superadmin.html',
+    'orgadmin':    'orgadmin.html',
+    'org-admin':   'orgadmin.html',
+    'org_admin':   'orgadmin.html',
+    'admin':       'orgadmin.html',
+    'enduser':     'enduser.html',
+    'member':      'enduser.html',
+    'rep':         'enduser.html',
+    'user':        'enduser.html'
+  };
+  var raw = (location.hash || '').replace(/^#\/?/, '').toLowerCase();
+  if (raw && MAP[raw]) { location.replace(MAP[raw]); }
+})();
+</script>
+
+<div class="lp">
+  <div class="lp-hero">
+    <div class="help-brand-mark" aria-hidden="true">
+      <svg width="26" height="26" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
+        <path d="M36 6 C26 18 12 26 14 44 C16 58 26 68 36 72 C46 68 56 58 58 44 C60 26 46 18 36 6Z" fill="#FDE68A"/>
+        <path d="M36 22 C31 30 26 36 28 46 C30 53 33 58 36 62 C39 58 42 53 44 46 C46 36 41 30 36 22Z" fill="#fff"/>
+      </svg>
+    </div>
+    <h1>GoWarmCRM Help Center</h1>
+    <p>Guides for getting the most out of GoWarmCRM. Pick the guide that matches your role — or open the one that's linked from inside the product.</p>
+  </div>
+
+  <div class="lp-grid">
+
+    <a class="lp-card" href="superadmin.html">
+      <span class="arrow">→</span>
+      <div class="ic">⚡</div>
+      <div class="who">Platform Admin</div>
+      <h3>Super Admin Guide</h3>
+      <p>Provision organisations, manage modules and seats, run support mode, control platform-wide settings, and read the audit trail.</p>
+    </a>
+
+    <a class="lp-card" href="orgadmin.html">
+      <span class="arrow">→</span>
+      <div class="ic">🔑</div>
+      <div class="who">Organisation Admin</div>
+      <h3>Org Admin Guide</h3>
+      <p>Set up your team, playbooks, stages, diagnostic rules, CRM integrations, AI providers, and data-quality tools.</p>
+    </a>
+
+    <a class="lp-card" href="enduser.html">
+      <span class="arrow">→</span>
+      <div class="ic">🎯</div>
+      <div class="who">Sales Rep</div>
+      <h3>End-User Guide</h3>
+      <p>Work your action queue, run prospecting sequences, log calls, use the Chrome extension, and capture meeting insights.</p>
+    </a>
+
+  </div>
+
+  <div class="lp-foot">GoWarmCRM by DeepConnect Technologies · Need a hand? Contact your administrator.</div>
+</div>
+
+</body>
+</html>
