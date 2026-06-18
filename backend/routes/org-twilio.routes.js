@@ -26,12 +26,19 @@ const requireModule       = require('../middleware/requireModule.middleware');
 const TwilioProvider      = require('../services/twilioProvider.service');
 const TwilioAccounts      = require('../services/twilioAccounts.service');
 const CallSettingsService = require('../services/callSettings.service');
+const { requireEntitlement } = require('../services/entitlements.service');
 
 router.use(authenticateToken);
 router.use(orgContext);
 router.use(requireModule('prospecting'));
 
 const adminOnly = requireRole('owner', 'admin');
+
+// Calling is a paid capability. Gate every action that creates or relies on
+// billed Twilio resources (subaccount, DIDs) behind the calling entitlement.
+// Read-only routes (GET /reps, GET /account, PATCH /settings) stay open so an
+// admin can still see state and toggle non-billed prefs even if calling lapses.
+const callingEntitled = requireEntitlement('calling');
 
 
 // =========================================================================
@@ -49,6 +56,10 @@ router.get('/reps', adminOnly, async (req, res) => {
          u.twilio_did,
          u.twilio_did_sid,
          u.twilio_did_provisioned_at,
+         -- Individual-level calling state. Read via to_jsonb so this query is
+         -- safe to run BEFORE the calling_enabled column migration: a missing
+         -- key yields null, treated as enabled. Only an explicit false revokes.
+         ((to_jsonb(u) ->> 'calling_enabled') IS DISTINCT FROM 'false') AS calling_enabled,
          (u.phone IS NOT NULL AND u.twilio_did IS NOT NULL) AS ready_to_call
        FROM users u
        JOIN org_users ou ON ou.user_id = u.id AND ou.org_id = u.org_id
@@ -72,7 +83,7 @@ router.get('/reps', adminOnly, async (req, res) => {
 // On failure AFTER the Twilio purchase succeeds, we attempt to release the
 // DID so we don't end up paying for a number we lost track of.
 // =========================================================================
-router.post('/provision-did/:userId', adminOnly, async (req, res) => {
+router.post('/provision-did/:userId', adminOnly, callingEntitled, async (req, res) => {
   const userId   = parseInt(req.params.userId, 10);
   const areaCode = String(req.body.area_code || '').trim();
 
@@ -242,7 +253,7 @@ router.post('/release-did/:userId', adminOnly, async (req, res) => {
 // configured on the Twilio number. The success response surfaces this so
 // the admin knows.
 // =========================================================================
-router.post('/claim-did/:userId', adminOnly, async (req, res) => {
+router.post('/claim-did/:userId', adminOnly, callingEntitled, async (req, res) => {
   const userId = parseInt(req.params.userId, 10);
   const didSid = String(req.body.did_sid || '').trim();
 
@@ -369,6 +380,57 @@ router.post('/claim-did/:userId', adminOnly, async (req, res) => {
 
 
 // =========================================================================
+// PATCH /reps/:userId/calling — individual-level calling enable/disable
+// =========================================================================
+// Body: { enabled: boolean }
+//
+// Org-admin control to revoke or restore calling for a single rep, INDEPENDENT
+// of the org-level calling entitlement. Enforced at every call-placement path
+// (voice token mint, /prepare, /initiate) via
+// TwilioAccounts.isUserCallingEnabled.
+//
+// Does not touch the rep's DID — a disabled rep keeps their number; they just
+// can't place calls until re-enabled.
+// =========================================================================
+router.patch('/reps/:userId/calling', adminOnly, async (req, res) => {
+  const userId = parseInt(req.params.userId, 10);
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ error: { message: 'Invalid user id' } });
+  }
+  if (typeof req.body.enabled !== 'boolean') {
+    return res.status(400).json({ error: { message: 'enabled must be boolean' } });
+  }
+
+  try {
+    const { rows } = await db.pool.query(
+      `UPDATE users
+          SET calling_enabled = $1,
+              updated_at       = NOW()
+        WHERE id = $2 AND org_id = $3
+      RETURNING id`,
+      [req.body.enabled, userId, req.orgId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: { message: 'User not found in this org' } });
+    }
+    return res.json({ rep_id: userId, calling_enabled: req.body.enabled });
+  } catch (err) {
+    if (err.code === '42703') {
+      // Column not migrated yet.
+      return res.status(409).json({
+        error: {
+          message: 'The calling_enabled column has not been added yet. Run the users.calling_enabled migration first.',
+          code:    'MIGRATION_REQUIRED',
+        },
+      });
+    }
+    console.error('PATCH /org/admin/twilio/reps/:userId/calling error:', err);
+    return res.status(500).json({ error: { message: 'Failed to update calling state' } });
+  }
+});
+
+
+// =========================================================================
 // PATCH /settings — org-level Twilio toggles + rate limits
 // =========================================================================
 router.patch('/settings', adminOnly, async (req, res) => {
@@ -468,7 +530,7 @@ router.get('/account', adminOnly, async (req, res) => {
 // Requires parent Twilio creds (TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN) and
 // AI_CREDS_KEY for credential encryption.
 // =========================================================================
-router.post('/provision-account', adminOnly, async (req, res) => {
+router.post('/provision-account', adminOnly, callingEntitled, async (req, res) => {
   // Parent/webhook config must be present to create subaccounts + TwiML Apps.
   try { TwilioProvider.validateConfig(); }
   catch (cfgErr) {
@@ -485,6 +547,15 @@ router.post('/provision-account', adminOnly, async (req, res) => {
     const result = await TwilioAccounts.provisionSubaccount({ orgId: req.orgId, friendlyName });
     return res.status(result.already_existed ? 200 : 201).json({ account: result });
   } catch (err) {
+    if (err.code === 'ENTITLEMENT_REQUIRED') {
+      return res.status(402).json({
+        error: {
+          message:     'Calling is not included in your plan. Contact your account owner to enable it.',
+          code:        'ENTITLEMENT_REQUIRED',
+          entitlement: 'calling',
+        },
+      });
+    }
     if (err.code === 'ENCRYPTION_NOT_CONFIGURED') {
       return res.status(503).json({
         error: { message: 'Credential encryption is not configured (AI_CREDS_KEY missing).', code: 'ENCRYPTION_NOT_CONFIGURED' },

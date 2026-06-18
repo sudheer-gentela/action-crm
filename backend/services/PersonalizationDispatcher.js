@@ -35,6 +35,7 @@
 
 const { pool } = require('../config/database');
 const SkillRunnerService = require('./SkillRunnerService');
+const Entitlements = require('./entitlements.service');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Intent enums — kept in sync with the two new skills' SKILL.md files.
@@ -349,17 +350,28 @@ async function personaliseEnrollment({ orgId, userId, sequenceId, prospectId, ho
     throw e;
   }
 
-  // ── Org-level AI master switch ────────────────────────────────────────────
-  // When AI is disabled for the org, short-circuit before any skill call:
-  // return an empty personalisedSteps map so every caller falls back to the
-  // sequence template. All steps are counted as 'skipped' (not 'errored'), so
-  // bulk-activate reports skillStatus correctly and the firer renders templates.
-  if (!(await isOrgAiEnabled(orgId))) {
+  // ── AI gate: platform entitlement AND org switch ───────────────────────────
+  // AI runs only when BOTH are on, mirroring the modules allowed/enabled model:
+  //   entitlements.ai            — PLATFORM "allowed" (has the org paid?)
+  //   prospecting_config.ai_enabled — ORG admin "enabled" (do they want it on?)
+  //
+  // When either is off, short-circuit before any skill call: return an empty
+  // personalisedSteps map so every caller falls back to the sequence template.
+  // All steps count as 'skipped' (not 'errored') and we keep the existing
+  // orgAiDisabled flag so bulk-activate / the firer / the preview routes
+  // (which already branch on it) render templates with no call-site change.
+  // The extra aiEntitled/aiEnabled fields let callers and telemetry tell
+  // "unpaid" apart from "switched off" without changing the fallback contract.
+  const aiEntitled = await Entitlements.isEntitled(orgId, 'ai');
+  const aiEnabled  = await isOrgAiEnabled(orgId);
+  if (!aiEntitled || !aiEnabled) {
     return {
       personalisedSteps: {},
       errors: [],
       summary: { total: steps.length, personalised: 0, skipped: steps.length, errored: 0 },
       orgAiDisabled: true,
+      aiEntitled,
+      aiEnabled,
     };
   }
 

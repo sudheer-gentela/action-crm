@@ -24,6 +24,7 @@
 
 const twilio = require('twilio');
 const db     = require('../config/database');
+const Entitlements = require('./entitlements.service');
 const { encrypt, decrypt, last4, isConfigured: encIsConfigured } =
   require('./credentials/encryption');
 
@@ -129,6 +130,41 @@ async function isProvisioned(orgId) {
   return !!(row && row.status === 'active');
 }
 
+/**
+ * Individual-level calling check. Calling can be revoked at TWO levels:
+ *   - ORG level:        settings.entitlements.calling (platform/billing)
+ *   - INDIVIDUAL level: users.calling_enabled = false (org admin per rep)
+ * Both must be satisfied for a rep to place a call. This covers the second.
+ *
+ * Default-ON: only an explicit calling_enabled = false revokes. NULL/missing
+ * → enabled. Unknown user → not enabled.
+ *
+ * Migration-safe: if the calling_enabled column hasn't been added yet
+ * (undefined_column, SQLSTATE 42703), returns true so deploying the code
+ * BEFORE running the ALTER TABLE never blocks calling. Fails open on other
+ * infra errors, consistent with the rest of the calling stack.
+ *
+ * @param {number} orgId
+ * @param {number} userId
+ * @returns {Promise<boolean>}
+ */
+async function isUserCallingEnabled(orgId, userId) {
+  try {
+    const { rows } = await db.pool.query(
+      `SELECT calling_enabled FROM users WHERE id = $1 AND org_id = $2`,
+      [userId, orgId]
+    );
+    if (!rows.length) return false;            // unknown user in this org
+    return rows[0].calling_enabled !== false;  // explicit false = revoked
+  } catch (err) {
+    if (err.code === '42703') return true;      // column not migrated yet → enabled
+    console.warn(
+      `isUserCallingEnabled lookup failed (org ${orgId}, user ${userId}); failing open: ${err.message}`
+    );
+    return true;
+  }
+}
+
 // ── Provisioning ──────────────────────────────────────────────────────────
 
 /**
@@ -153,6 +189,16 @@ async function provisionSubaccount({ orgId, friendlyName }) {
   if (!Number.isInteger(orgId) || orgId <= 0) {
     throw new Error('provisionSubaccount: orgId must be a positive integer');
   }
+
+  // Calling is a paid capability. Refuse to create billed Twilio resources for
+  // a non-entitled org. Defense-in-depth: the route gates this too, but the
+  // service guard means no future caller (job, script, new route) can provision
+  // around the entitlement. Throws EntitlementError (statusCode 402) which the
+  // route maps to a clean 402.
+  if (!(await Entitlements.isEntitled(orgId, 'calling'))) {
+    throw new Entitlements.EntitlementError('calling');
+  }
+
   if (!encIsConfigured()) {
     const e = new Error('AI_CREDS_KEY not configured — cannot store Twilio credentials');
     e.code = 'ENCRYPTION_NOT_CONFIGURED';
@@ -261,6 +307,7 @@ module.exports = {
   getAuthToken,
   getVoiceConfig,
   isProvisioned,
+  isUserCallingEnabled,
   provisionSubaccount,
   suspendSubaccount,
   VOICE_APP_PATH,

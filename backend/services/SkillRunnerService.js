@@ -26,6 +26,7 @@ const crypto = require('crypto');
 
 const { pool }            = require('../config/database');
 const AIClientResolver    = require('./ai/AIClientResolver');
+const Entitlements         = require('./entitlements.service');
 const TokenTrackingService = require('./TokenTrackingService');
 const OutreachValidator    = require('./OutreachValidator');
 const FitGate              = require('./FitGate');
@@ -439,6 +440,20 @@ async function runSkill({
   if (!meta) {
     const e = new Error(`Unknown skill: ${skillName}`);
     e.statusCode = 400;
+    throw e;
+  }
+
+  // ── AI entitlement gate (early-out) ─────────────────────────────────────────
+  // AIClientResolver.resolve() is now the UNIVERSAL AI gate (covers skills AND
+  // background enhancers). This check is a cheap early-out on the skill path: it
+  // throws here before loadSkill/buildSystemPrompt/pool.connect, with a
+  // skill-specific message, rather than deferring to resolve() further down.
+  // Keep both — same flag, same 402 — defense in depth.
+  if (!(await Entitlements.isEntitled(orgId, 'ai'))) {
+    const e = new Error("AI generation is not included in this organization's plan.");
+    e.statusCode  = 402;
+    e.code        = 'ENTITLEMENT_REQUIRED';
+    e.entitlement = 'ai';
     throw e;
   }
 

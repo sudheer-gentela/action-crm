@@ -36,6 +36,7 @@
  */
 
 const db = require('../../config/database');
+const Entitlements = require('../entitlements.service');
 const CredentialsStore = require('./CredentialsStore');
 const {
   PROVIDERS, SYSTEM_DEFAULT, getProvider, isValidProvider, isValidModel,
@@ -164,6 +165,33 @@ class AIClientResolver {
    * Throws if no usable key can be found (platform env var also missing).
    */
   static async resolve(orgId, userId, callType = 'default') {
+    // ── AI entitlement gate (UNIVERSAL) ──────────────────────────────────
+    // Every model call in the system funnels through resolve() before a client
+    // is built — skills (via runSkill) AND every background enhancer
+    // (Actions/CLM/Strap/Prospecting, transcript-analysis, playbook action
+    // generation, action-completion detection). So this single guard makes AI
+    // a paid capability everywhere, not just on the skill paths.
+    //
+    // orgId == null  → SYSTEM/platform call (e.g. aiProcessor email_analysis
+    //                  resolve(null,null,...)). Not billable to any one org →
+    //                  exempt. Only org-scoped calls are gated.
+    //
+    // This throws on a non-entitled org. Skill routes map statusCode 402 to a
+    // clean response; the background enhancers already wrap resolve() in
+    // try/catch and degrade gracefully (rules-based output, no AI), so an
+    // un-entitled org never crashes a nightly batch — it just gets no AI.
+    //
+    // NOTE: _resolveProviderAndModel / explainResolution / validateKey are NOT
+    // gated, so admin "what would run" preview + key-test screens keep working
+    // for un-entitled orgs.
+    if (orgId != null && !(await Entitlements.isEntitled(orgId, 'ai'))) {
+      const e = new Error("AI generation is not included in this organization's plan.");
+      e.statusCode  = 402;
+      e.code        = 'ENTITLEMENT_REQUIRED';
+      e.entitlement = 'ai';
+      throw e;
+    }
+
     const { provider, model, allowUserBYOK, source } =
       await this._resolveProviderAndModel(orgId, userId, callType);
 

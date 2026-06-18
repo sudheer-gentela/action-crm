@@ -30,10 +30,16 @@ const TwilioProvider        = require('../services/twilioProvider.service');
 const TwilioAccounts        = require('../services/twilioAccounts.service');
 const CallSettingsService   = require('../services/callSettings.service');
 const NotificationService   = require('../services/notificationService');
+const { requireEntitlement } = require('../services/entitlements.service');
 
 router.use(authenticateToken);
 router.use(orgContext);
 router.use(requireModule('prospecting'));
+
+// Org-level calling entitlement (paid). Applied per-route to the call-PLACEMENT
+// endpoints only (/initiate, /prepare) — read/cancel routes stay open so an org
+// whose calling lapses can still view and clean up in-flight calls.
+const callingEntitled = requireEntitlement('calling');
 
 
 // ── Per-IP rate limiter for /initiate ─────────────────────────────────────
@@ -257,7 +263,7 @@ async function callingModeAllows(orgId, want) {
 // row to status='failed' and surface the error to the rep. The row stays
 // in the DB as an auditable record of the attempt.
 // =========================================================================
-router.post('/initiate', initiateIpLimiter, async (req, res) => {
+router.post('/initiate', initiateIpLimiter, callingEntitled, async (req, res) => {
   const prospectId = parseInt(req.body.prospect_id, 10);
   if (!Number.isInteger(prospectId) || prospectId <= 0) {
     return res.status(400).json({ error: { message: 'prospect_id is required' } });
@@ -265,6 +271,16 @@ router.post('/initiate', initiateIpLimiter, async (req, res) => {
   const sequenceStepLogId = req.body.sequence_step_log_id
     ? parseInt(req.body.sequence_step_log_id, 10)
     : null;
+
+  // Individual-level gate: this rep may have calling revoked by an admin.
+  if (!(await TwilioAccounts.isUserCallingEnabled(req.orgId, req.user.userId))) {
+    return res.status(403).json({
+      error: {
+        message: 'Calling has been turned off for your account. Contact your admin.',
+        code:    'CALLING_DISABLED_FOR_USER',
+      },
+    });
+  }
 
   // Org must permit phone-bridge calling.
   if (!(await callingModeAllows(req.orgId, 'bridge'))) {
@@ -450,7 +466,7 @@ router.post('/initiate', initiateIpLimiter, async (req, res) => {
 //
 // Body: { prospect_id (int, required), sequence_step_log_id (int, optional) }
 // =========================================================================
-router.post('/prepare', initiateIpLimiter, async (req, res) => {
+router.post('/prepare', initiateIpLimiter, callingEntitled, async (req, res) => {
   const prospectId = parseInt(req.body.prospect_id, 10);
   if (!Number.isInteger(prospectId) || prospectId <= 0) {
     return res.status(400).json({ error: { message: 'prospect_id is required' } });
@@ -458,6 +474,16 @@ router.post('/prepare', initiateIpLimiter, async (req, res) => {
   const sequenceStepLogId = req.body.sequence_step_log_id
     ? parseInt(req.body.sequence_step_log_id, 10)
     : null;
+
+  // Individual-level gate: this rep may have calling revoked by an admin.
+  if (!(await TwilioAccounts.isUserCallingEnabled(req.orgId, req.user.userId))) {
+    return res.status(403).json({
+      error: {
+        message: 'Calling has been turned off for your account. Contact your admin.',
+        code:    'CALLING_DISABLED_FOR_USER',
+      },
+    });
+  }
 
   // Org must permit browser (softphone) calling.
   if (!(await callingModeAllows(req.orgId, 'softphone'))) {

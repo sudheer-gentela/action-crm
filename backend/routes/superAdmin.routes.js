@@ -588,6 +588,110 @@ router.patch('/orgs/:orgId/modules', async (req, res) => {
 });
 
 
+// ============================================================================
+// ENTITLEMENTS — super admin controls which PAID capabilities an org has.
+//
+// Storage: organizations.settings.entitlements = { ai: bool, calling: bool }.
+// This is the platform "allowed" axis; the org's own switches (ai_enabled,
+// org_twilio_accounts.status) are the "enabled" axis. A capability is usable
+// only when both are on. See services/entitlements.service.js.
+// ============================================================================
+
+const ENTITLEMENT_KEYS = require('../services/entitlements.service').ENTITLEMENT_KEYS;
+
+/**
+ * GET /super/orgs/:orgId/entitlements
+ * Read the current entitlement flags for an org. Default-off: missing keys
+ * report false.
+ */
+router.get('/orgs/:orgId/entitlements', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const result = await pool.query(
+      `SELECT settings->'entitlements' AS entitlements FROM organizations WHERE id = $1`,
+      [orgId]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: { message: 'Organisation not found' } });
+    }
+    const raw = result.rows[0]?.entitlements || {};
+    const entitlements = {};
+    for (const key of ENTITLEMENT_KEYS) entitlements[key] = raw[key] === true;
+    res.json({ entitlements });
+  } catch (err) {
+    console.error(`GET /super/orgs/${req.params.orgId}/entitlements error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+/**
+ * PATCH /super/orgs/:orgId/entitlements
+ * Set one or more entitlement flags.
+ *
+ * Body: { entitlements: { ai: true, calling: false } }
+ *
+ * Keys not mentioned are left unchanged. Each value is coerced to a strict
+ * boolean (true | "true" → true; everything else → false).
+ *
+ * Note: revoking 'calling' here does NOT suspend an existing Twilio subaccount
+ * or release DIDs — it only stops NEW token mints / provisioning. To stop an
+ * org mid-flight, also call twilioAccounts.suspendSubaccount(orgId). Likewise
+ * revoking 'ai' does not delete history; it stops new generation.
+ */
+router.patch('/orgs/:orgId/entitlements', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const { entitlements: incoming } = req.body;
+
+    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+      return res.status(400).json({ error: { message: 'entitlements object is required' } });
+    }
+
+    const unknownKeys = Object.keys(incoming).filter(k => !ENTITLEMENT_KEYS.includes(k));
+    if (unknownKeys.length) {
+      return res.status(400).json({ error: { message: `Unknown entitlement(s): ${unknownKeys.join(', ')}` } });
+    }
+
+    const current = await pool.query(
+      `SELECT settings FROM organizations WHERE id = $1`,
+      [orgId]
+    );
+    if (!current.rows.length) {
+      return res.status(404).json({ error: { message: 'Organisation not found' } });
+    }
+
+    const settings = current.rows[0].settings || {};
+    const merged   = { ...(settings.entitlements || {}) };
+
+    for (const [key, value] of Object.entries(incoming)) {
+      merged[key] = value === true || value === 'true';
+    }
+
+    await pool.query(
+      `UPDATE organizations
+          SET settings   = jsonb_set(COALESCE(settings, '{}'::jsonb), '{entitlements}', $2::jsonb, true),
+              updated_at = NOW()
+        WHERE id = $1`,
+      [orgId, JSON.stringify(merged)]
+    );
+
+    // Drop the cached entitlements so the change takes effect immediately.
+    require('../services/entitlements.service').invalidate(orgId);
+
+    await auditLog(req, 'update_org_entitlements', 'org', parseInt(orgId), {
+      changes: Object.entries(incoming).map(([k, v]) => `${k}=${v}`).join(', '),
+    });
+
+    const finalEntitlements = {};
+    for (const key of ENTITLEMENT_KEYS) finalEntitlements[key] = merged[key] === true;
+    res.json({ entitlements: finalEntitlements });
+  } catch (err) {
+    console.error(`PATCH /super/orgs/${req.params.orgId}/entitlements error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+
 
 // ═════════════════════════════════════════════════════════════════════════════
 // USERS WITHIN AN ORG (super admin view — can add users to any org)

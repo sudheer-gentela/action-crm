@@ -21,11 +21,16 @@ const twilio  = require('twilio');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
 const requireModule     = require('../middleware/requireModule.middleware');
+const { requireEntitlement } = require('../services/entitlements.service');
 const TwilioAccounts    = require('../services/twilioAccounts.service');
 
 router.use(authenticateToken);
 router.use(orgContext);
 router.use(requireModule('prospecting'));
+// Calling is a paid capability — gate the token mint (the actual "place a call"
+// action) behind the calling entitlement. A lapsed org that was already
+// provisioned still can't mint new call tokens once the flag is cleared.
+router.use(requireEntitlement('calling'));
 
 // Token lifetime. Calls are short; the SDK refreshes via tokenWillExpire well
 // before this elapses.
@@ -35,6 +40,17 @@ const TOKEN_TTL_SECONDS = 3600;
 // GET /token — issue a Voice AccessToken for the current rep
 // =========================================================================
 router.get('/token', async (req, res) => {
+  // Individual-level gate: org is calling-entitled (middleware above), but this
+  // specific rep may have calling revoked by an admin.
+  if (!(await TwilioAccounts.isUserCallingEnabled(req.orgId, req.user.userId))) {
+    return res.status(403).json({
+      error: {
+        message: 'Calling has been turned off for your account. Contact your admin.',
+        code:    'CALLING_DISABLED_FOR_USER',
+      },
+    });
+  }
+
   let cfg;
   try {
     cfg = await TwilioAccounts.getVoiceConfig(req.orgId);
