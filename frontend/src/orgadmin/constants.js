@@ -142,3 +142,23 @@ export const DIMENSION_COLORS = {
   geo:            '#d97706',
   motion:         '#dc2626',
 };
+
+/* Promoted from OrgAdminView.js — Phase 1 (used across people panels). */
+export const DEPARTMENT_OPTIONS = [
+  { value: '',                 label: '— No department —' },
+  { value: 'sales',            label: 'Sales' },
+  { value: 'legal',            label: 'Legal' },
+  { value: 'implementation',   label: 'Implementation' },
+  { value: 'customer_support', label: 'Customer Support' },
+  { value: 'finance',          label: 'Finance' },
+  { value: 'executive',        label: 'Executive' },
+];
+
+export const DEPARTMENT_META = {
+  sales:            { label: 'Sales',            color: '#2563eb' },
+  legal:            { label: 'Legal',            color: '#7c3aed' },
+  implementation:   { label: 'Implementation',   color: '#059669' },
+  customer_support: { label: 'Customer Support', color: '#d97706' },
+  finance:          { label: 'Finance',          color: '#dc2626' },
+  executive:        { label: 'Executive',        color: '#0891b2' },
+};
