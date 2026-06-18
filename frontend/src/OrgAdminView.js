@@ -19,8 +19,17 @@ import OATwilioSettings from './OATwilioSettings';
 import OAAIProviderSettings from './OAAIProviderSettings';
 import OAProspectingSkillConfig from './OAProspectingSkillConfig';
 import { TrackingDomainSettings } from './prospecting/TrackingSettings';   // Insights/WBR Phase 7
-// (a) with the other OA imports (near line ~18, by `import OATwilioSettings`)
-import OALinkedInAutomation from './OALinkedInAutomation';
+
+import {
+  MODULE_NAV_DEFS, TAB_META, MODULE_COLORS, CALL_TYPE_LABELS, ROLE_META, HIERARCHY_ROLES,
+} from './orgadmin/constants';
+import {
+  apiFetchOA, buildNavGroups, formatTokens, formatCost, getDimColor,
+} from './orgadmin/helpers';
+import {
+  UsageBar, RoleBadge, HierarchyRoleBadge, ToggleSwitch, ModuleSubTabs, OAModuleSeedPanel, OAModuleGeneral,
+} from './orgadmin/shared';
+
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
@@ -31,176 +40,21 @@ import OALinkedInAutomation from './OALinkedInAutomation';
 
 // Static nav groups — Modules group is injected dynamically in OrgAdminView
 // based on which modules are enabled for the org.
-const STATIC_NAV_GROUPS = [
-  {
-    label: 'Team',
-    items: [
-      { id: 'members',         icon: '👥', label: 'Members' },
-      { id: 'hierarchy',       icon: '🏢', label: 'Hierarchy' },
-      { id: 'teams',           icon: '🏷️', label: 'Teams' },
-      { id: 'invitations',     icon: '✉️', label: 'Invitations' },
-      { id: 'team-dimensions', icon: '🏷️', label: 'Team Dimensions' },
-    ],
-  },
-  {
-    label: 'Sales Process',
-    items: [
-      { id: 'playbooks', icon: '📘', label: 'Playbooks' },
-      { id: 'stages',    icon: '🏷️', label: 'Stages' },
-      { id: 'org-roles', icon: '🎭', label: 'Org Roles' },
-      { id: 'products',  icon: '📦', label: 'Products' },
-    ],
-  },
-  {
-    label: 'Sales Execution Insights',
-    items: [
-      { id: 'health',      icon: '🏥', label: 'Deal Health' },
-      { id: 'icp-scoring',        icon: '🎯', label: 'ICP Scoring'        },
-      { id: 'diagnostic-rules', icon: '⚙️',  label: 'Diagnostic Rules'  },
-    ],
-  },
-  {
-    label: 'Auto Action Execution',
-    items: [
-      { id: 'ai-agent',  icon: '🤖', label: 'AI Agent' },
-      { id: 'ai-providers', icon: '🧠', label: 'AI Providers' },
-      { id: 'action-ai', icon: '✨', label: 'Actions AI' },
-      { id: 'ai-usage',  icon: '📊', label: 'AI Usage' },
-    ],
-  },
-  {
-    label: 'Data Quality',
-    items: [
-      { id: 'duplicates',     icon: '🔍', label: 'Duplicates'     },
-      { id: 'workflows',      icon: '⚙️', label: 'Workflows'      },
-      { id: 'email-settings', icon: '📧', label: 'Email Settings'  },
-      { id: 'tracking-domain', icon: '🔗', label: 'Tracking Domain' },   // Insights/WBR Phase 7
-      { id: 'custom-fields',   icon: '🧱', label: 'Custom Fields'   },
-    ],
-  },
-  // 'Modules' group is injected here dynamically — see buildNavGroups()
-  {
-    label: 'General',
-    items: [
-      { id: 'integrations', icon: '🔌', label: 'Integrations' },
-      { id: 'salesforce',   icon: '☁️', label: 'Salesforce' },
-      { id: 'hubspot',      icon: '🟠', label: 'HubSpot' },
-      { id: 'settings', icon: '⚙️', label: 'Org Settings' },
-    ],
-  },
-];
+
 
 // Module definitions — drives dynamic nav + per-module content routing
-const MODULE_NAV_DEFS = [
-  { moduleKey: 'prospecting', navId: 'mod-prospecting', icon: '🎯', label: 'Prospecting' },
-  { moduleKey: 'contracts',   navId: 'mod-contracts',   icon: '📄', label: 'CLM' },
-  { moduleKey: 'handovers',   navId: 'mod-handovers',   icon: '🤝', label: 'Handover S→I' },
-  { moduleKey: 'service',     navId: 'mod-service',     icon: '🎧', label: 'Service' },
-  { moduleKey: 'agency',      navId: 'mod-agency',      icon: '🏢', label: 'Agency' },
-];
+
 
 // Builds the full nav group list, inserting enabled module items before 'General'
-function buildNavGroups(orgModules) {
-  const enabledModuleItems = MODULE_NAV_DEFS
-    .filter(m => orgModules[m.moduleKey])
-    .map(m => ({ id: m.navId, icon: m.icon, label: m.label }));
 
-  // 🧩 Modules is always present — it's the only way to re-enable a disabled module.
-  // Enabled modules appear as sub-items below it.
-  const moduleGroup = {
-    label: 'Modules',
-    items: [
-      { id: 'modules', icon: '🧩', label: 'Modules' },
-      ...enabledModuleItems,
-    ],
-  };
-
-  const groups = [...STATIC_NAV_GROUPS];
-  const generalIdx = groups.findIndex(g => g.label === 'General');
-  groups.splice(generalIdx, 0, moduleGroup);
-  return groups;
-}
 
 // Content descriptions for the top bar
-const TAB_META = {
-  members:       { title: 'Members',       desc: 'Manage team members, roles, and permissions' },
-  hierarchy:     { title: 'Hierarchy',     desc: 'Reporting structure and team visibility' },
-  teams:         { title: 'Teams',         desc: 'Organise users by market segment, role, product, geo, and motion' },
-  invitations:   { title: 'Invitations',   desc: 'Invite new members to your organisation' },
-  'team-dimensions': { title: 'Team Dimensions', desc: 'Configure the dimension vocabulary used for internal and customer-side teams' },
-  playbooks:     { title: 'Playbooks',     desc: 'Configure deal playbooks and templates' },
-  'stages':      { title: 'Stages',       desc: 'Customise your deal and prospecting pipeline stages' },
-  'org-roles':   { title: 'Organization Roles', desc: 'Manage roles used across deals, prospecting, and all playbooks' },
-  'products':    { title: 'Product Catalog', desc: 'Manage products and services available for deal line items' },
-  health:        { title: 'Deal Health',   desc: 'Configure health scoring parameters' },
-  'diagnostic-rules': { title: 'Diagnostic Rules', desc: 'Configure thresholds for nightly and real-time diagnostic alerts across all modules' },
-  'icp-scoring': { title: 'ICP Scoring',   desc: 'Define your Ideal Customer Profile and scoring criteria' },
-  duplicates:    { title: 'Duplicates',    desc: 'Duplicate detection rules and visibility' },
-  'workflows':   { title: 'Workflows',       desc: 'Manage data-integrity workflows and standalone rules for deals, contacts, and accounts' },
-  'email-settings': { title: 'Email Settings', desc: 'Configure which emails are synced and matched to deals, prospects, and accounts' },
-  'tracking-domain': { title: 'Tracking Domain', desc: 'Per-customer CNAME domain for email open/click tracking — one DNS record on your domain keeps tracked links aligned with your sending reputation' },
-  'wf-log':      { title: 'Execution Log', desc: 'Workflow execution history and open violations' },
-  'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },
-  'ai-providers': { title: 'AI Providers', desc: 'Choose AI provider and model, manage API keys, and set user policy for your organisation' },
-  modules:             { title: 'Modules',                           desc: 'Enable or disable product modules for your organisation' },
-  'mod-prospecting':   { title: 'Prospecting',                       desc: 'Prospecting module settings' },
-  'mod-contracts':     { title: 'Contract Lifecycle Management',      desc: 'CLM module settings — eSign configuration and contract templates' },
-  'mod-handovers':     { title: 'Sales → Implementation Handover',   desc: 'Handover module settings' },
-  'mod-service':       { title: 'Customer Support & Service',         desc: 'Service module settings — SLA tiers and general configuration' },
-  'mod-agency':        { title: 'Agency Client Management',           desc: 'Agency module settings — client portal and team configuration' },
-  integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },
-  'integrations-overview':{ title: 'Email & Calendar', desc: 'Manage Microsoft and Google connections for your team' },
-  'integrations-meeting': { title: 'Meeting & Transcript Integrations', desc: 'Configure transcript providers — Zoom, Teams, Fireflies, and more' },
-  salesforce:    { title: 'Salesforce Integration', desc: 'Sync contacts, accounts, deals, and leads with Salesforce. Configure stage/field mapping and write-back settings.' },
-  hubspot:       { title: 'HubSpot Integration',    desc: 'Sync companies, contacts, and deals with HubSpot. Configure stage and field mapping.' },
-  settings:      { title: 'Org Settings',  desc: 'Organisation name, plan, and preferences' },
-
-};
 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OATokenUsageModule — AI usage dashboard for Org Admin
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MODULE_COLORS = {
-  deals:        '#6366f1',
-  prospecting:  '#0F9D8E',
-  other:        '#9ca3af',
-};
-
-const CALL_TYPE_LABELS = {
-  action_generation:          'Action Generation',
-  ai_enhancement:             'AI Enhancement',
-  email_analysis:             'Email Analysis',
-  deal_health_check:          'Deal Health Check',
-  context_suggest:            'Context Suggest',
-  agent_proposal:             'Agent Proposal',
-  prospecting_research:       'Prospect Research',
-  prospecting_research_account: 'Account Research',
-  prospecting_draft:          'Draft Email',
-};
-
-function formatTokens(n) {
-  if (!n || n === 0) return '0';
-  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-  if (n >= 1000)    return (n / 1000).toFixed(1) + 'K';
-  return String(n);
-}
-
-function formatCost(c) {
-  if (!c || c === 0) return '$0.00';
-  if (c < 0.01) return '<$0.01';
-  return '$' + parseFloat(c).toFixed(2);
-}
-
-function UsageBar({ value, max, color = '#0F9D8E' }) {
-  const pct = max > 0 ? Math.round((value / max) * 100) : 0;
-  return (
-    <div style={{ background: '#f3f4f6', borderRadius: 4, height: 6, overflow: 'hidden', flex: 1, minWidth: 60 }}>
-      <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 4, transition: 'width 0.4s' }} />
-    </div>
-  );
-}
 
 function OATokenUsageModule() {
   const API    = process.env.REACT_APP_API_URL;
@@ -705,12 +559,6 @@ export default function OrgAdminView() {
 // ROLE DEFINITIONS — rendered as cards so users understand what each means
 // ─────────────────────────────────────────────────────────────────
 
-const ROLE_META = {
-  owner:  { label: 'Owner',  color: 'purple', icon: '👑', desc: 'Full control — org settings, billing, all data. Cannot be removed.' },
-  admin:  { label: 'Admin',  color: 'blue',   icon: '🔑', desc: 'Manage members, invitations, integrations, and all CRM data.' },
-  member: { label: 'Member', color: 'green',  icon: '👤', desc: 'Full CRM access — deals, contacts, emails, AI. Cannot manage users.' },
-  viewer: { label: 'Viewer', color: 'grey',   icon: '👁',  desc: 'Read-only access to all CRM data. Cannot create or edit records.' },
-};
 
 // v2: Department options for CLM legal team routing
 const DEPARTMENT_OPTIONS = [
@@ -740,14 +588,6 @@ const CONTRACT_TYPE_LABELS = {
   amendment:  'Amendment',
 };
 
-function RoleBadge({ role }) {
-  const m = ROLE_META[role] || { label: role, color: 'grey', icon: '•' };
-  return (
-    <span className={`oa-role-badge oa-role-badge--${m.color}`}>
-      {m.icon} {m.label}
-    </span>
-  );
-}
 
 // ─────────────────────────────────────────────────────────────────
 // MEMBERS TAB
@@ -971,25 +811,6 @@ function OAMembers({ currentUserId }) {
 // HIERARCHY TAB — visual org tree with drag-drop & matrix reporting
 // ─────────────────────────────────────────────────────────────────
 
-const HIERARCHY_ROLES = [
-  { value: 'vp',       label: 'VP',       color: '#7c3aed' },
-  { value: 'director', label: 'Director', color: '#2563eb' },
-  { value: 'manager',  label: 'Manager',  color: '#059669' },
-  { value: 'rep',      label: 'Rep',      color: '#64748b' },
-];
-
-function HierarchyRoleBadge({ role }) {
-  const r = HIERARCHY_ROLES.find(h => h.value === role) || { label: role || 'Rep', color: '#64748b' };
-  return (
-    <span style={{
-      display: 'inline-block', padding: '2px 10px', borderRadius: '12px',
-      fontSize: '11px', fontWeight: 600, color: '#fff',
-      background: r.color, letterSpacing: '0.02em',
-    }}>
-      {r.label}
-    </span>
-  );
-}
 
 function OAHierarchy() {
   const [tree, setTree]         = useState([]);
@@ -1628,17 +1449,6 @@ function OAHierarchy() {
 // and user assignment grid.
 // ─────────────────────────────────────────────────────────────────
 
-const DIMENSION_COLORS = {
-  market_segment: '#7c3aed',
-  seller_role:    '#2563eb',
-  product_line:   '#059669',
-  geo:            '#d97706',
-  motion:         '#dc2626',
-};
-
-function getDimColor(key) {
-  return DIMENSION_COLORS[key] || '#6b7280';
-}
 
 // ─────────────────────────────────────────────────────────────────
 // OATeamRoster — read-only view of user assignments across dimensions
@@ -4728,24 +4538,6 @@ function OAPlaybookTypes() {
 // System roles can be toggled active/inactive but not renamed or deleted.
 // Custom roles can be created, renamed, and deleted.
 
-const API_OA = process.env.REACT_APP_API_URL || '';
-
-function apiFetchOA(path, options = {}) {
-  const token = localStorage.getItem('token') || localStorage.getItem('authToken');
-  // ...options is spread BEFORE headers so a caller passing options.headers
-  // merges into (rather than replaces) the auth + content-type defaults.
-  return fetch(`${API_OA}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {}),
-    },
-  }).then(r => {
-    if (!r.ok) return r.json().then(e => Promise.reject(new Error(e?.error?.message || r.statusText)));
-    return r.json();
-  });
-}
 
 // Helper: try /org-roles, fall back to /deal-roles for backward compat
 async function oaRolesApi(path, options) {
@@ -4939,7 +4731,6 @@ function OADealRoles() {
     </div>
   );
 }
-
 
 
 // ─────────────────────────────────────────────────────────────────
@@ -5670,170 +5461,13 @@ function OAIntegrations({ orgId }) {
 //   playbookName string — display name
 //   playbookDesc string — short description of what's seeded
 // ─────────────────────────────────────────────────────────────────
-function OAModuleSeedPanel({ seedDone, seeding, seedMsg, onSeed, color, playbookName, playbookDesc }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Info card */}
-      <div style={{
-        background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10,
-        padding: '20px 22px',
-      }}>
-        <div style={{ fontWeight: 700, fontSize: 15, color: '#111827', marginBottom: 6 }}>
-          🌱 GoWarm Sample Playbook
-        </div>
-        <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 16px', lineHeight: 1.6 }}>
-          Seed the <strong>{playbookName}</strong> — a pre-built set of plays built by the GoWarm team
-          to give your org a running start. {playbookDesc}
-        </p>
-        <p style={{ fontSize: 12, color: '#9ca3af', margin: '0 0 18px', lineHeight: 1.5 }}>
-          This is a <strong>one-time action</strong>. The playbook will appear in your Playbooks list where
-          you can edit, rename, or clone it. Existing playbooks are not affected.
-        </p>
 
-        {seedDone ? (
-          <div style={{
-            display: 'inline-flex', alignItems: 'center', gap: 8,
-            padding: '8px 16px', borderRadius: 8,
-            background: color + '15', border: `1px solid ${color}40`,
-            color, fontSize: 13, fontWeight: 600,
-          }}>
-            ✓ Sample playbook already seeded — find it in Playbooks
-          </div>
-        ) : (
-          <button
-            disabled={seeding}
-            onClick={onSeed}
-            style={{
-              padding: '9px 22px', borderRadius: 8, border: 'none',
-              background: color, color: '#fff',
-              fontSize: 13, fontWeight: 600,
-              cursor: seeding ? 'not-allowed' : 'pointer',
-              opacity: seeding ? 0.7 : 1,
-              transition: 'opacity 0.15s',
-            }}
-          >
-            {seeding ? '⏳ Seeding…' : '🌱 Seed GoWarm Sample Playbook'}
-          </button>
-        )}
-
-        {seedMsg && (
-          <div style={{
-            marginTop: 12, padding: '8px 14px', borderRadius: 7, fontSize: 13,
-            background: seedMsg.startsWith('Error') ? '#fef2f2' : '#f0fdf4',
-            color:      seedMsg.startsWith('Error') ? '#991b1b'  : '#166534',
-            border:     `1px solid ${seedMsg.startsWith('Error') ? '#fecaca' : '#bbf7d0'}`,
-          }}>
-            {seedMsg}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ModuleSubTabs({ tabs, active, onChange }) {
-  return (
-    <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #e5e7eb', marginBottom: 24 }}>
-      {tabs.map(([key, label]) => (
-        <button key={key} onClick={() => onChange(key)} style={{
-          padding: '9px 20px', fontSize: 13,
-          fontWeight: active === key ? 600 : 400,
-          color: active === key ? '#6366f1' : '#6b7280',
-          background: 'none', border: 'none',
-          borderBottom: active === key ? '2px solid #6366f1' : '2px solid transparent',
-          cursor: 'pointer', marginBottom: -1,
-        }}>
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 // ── Generic module General tab ───────────────────────────────────────
 // Reusable enable/disable toggle for any module.
 // moduleKey: 'contracts' | 'prospecting' | 'handovers' | 'service'
 // toggleFn: async (enabled: bool) => Promise  (calls the relevant apiService method)
-function OAModuleGeneral({ moduleKey, icon, label, desc, toggleFn }) {
-  const [enabled, setEnabled] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving]   = useState(false);
-  const [error, setError]     = useState('');
-  const [success, setSuccess] = useState('');
 
-  useEffect(() => {
-    apiService.orgAdmin.getProfile()
-      .then(r => {
-        const mods = r.data.org?.settings?.modules || {};
-        setEnabled(mods[moduleKey] || false);
-      })
-      .catch(() => setError('Failed to load settings'))
-      .finally(() => setLoading(false));
-  }, [moduleKey]);
-
-  const handleToggle = async (newVal) => {
-    setSaving(true); setError(''); setSuccess('');
-    try {
-      await toggleFn(newVal);
-      setEnabled(newVal);
-      setSuccess(`${label} ${newVal ? 'enabled' : 'disabled'} ✓`);
-      setTimeout(() => setSuccess(''), 3000);
-      window.dispatchEvent(new CustomEvent('moduleToggle', { detail: { module: moduleKey, enabled: newVal } }));
-    } catch (e) {
-      setError(e.response?.data?.error?.message || e.message || 'Failed to update');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (loading) return <div className="sv-loading">Loading…</div>;
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {error   && <div className="sv-error">⚠️ {error}</div>}
-      {success && <div className="sv-success">{success}</div>}
-
-      <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '20px 22px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
-        <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
-          <span style={{ fontSize: 28 }}>{icon}</span>
-          <div>
-            <div style={{ fontWeight: 600, fontSize: 14, color: '#111827' }}>Enable {label}</div>
-            <div style={{ fontSize: 13, color: '#6b7280', marginTop: 3 }}>{desc}</div>
-          </div>
-        </div>
-        <div
-          onClick={() => !saving && handleToggle(!enabled)}
-          style={{
-            flexShrink: 0, width: 44, height: 24, borderRadius: 12,
-            background: enabled ? '#6366f1' : '#d1d5db',
-            position: 'relative', cursor: saving ? 'not-allowed' : 'pointer',
-            transition: 'background .2s', opacity: saving ? 0.7 : 1,
-          }}
-        >
-          <div style={{
-            width: 18, height: 18, borderRadius: '50%', background: '#fff',
-            position: 'absolute', top: 3,
-            left: enabled ? 23 : 3,
-            transition: 'left .2s',
-            boxShadow: '0 1px 3px rgba(0,0,0,.2)',
-          }} />
-        </div>
-      </div>
-
-      {enabled ? (
-        <div style={{ padding: '12px 16px', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 9, fontSize: 13, color: '#166534' }}>
-          ✅ Module is active and visible to all members.
-          {/* If module has extra sub-tabs, a hint to switch tabs */}
-        </div>
-      ) : (
-        <div style={{ padding: '12px 16px', background: '#fafafa', border: '1px solid #e5e7eb', borderRadius: 9, fontSize: 13, color: '#6b7280' }}>
-          Module is disabled. Enable it above to make it visible to your team.
-          Existing data is preserved when re-enabled.
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────────────────
 // PROSPECTING MODULE — General only
@@ -7601,26 +7235,6 @@ function OAActionsAI() {
 // ── Shared toggle switch used in OAActionsAI ──────────────────────────────────
 // Add this helper just above OAActionsAI in OrgAdminView.js (or inline above).
 
-function ToggleSwitch({ on, onChange, color = '#6366f1' }) {
-  return (
-    <div
-      onClick={onChange}
-      style={{
-        flexShrink: 0, width: 44, height: 24, borderRadius: 12,
-        background: on ? color : '#d1d5db',
-        position: 'relative', cursor: 'pointer', transition: 'background .2s',
-      }}
-    >
-      <div style={{
-        width: 18, height: 18, borderRadius: '50%', background: '#fff',
-        position: 'absolute', top: 3,
-        left: on ? 23 : 3,
-        transition: 'left .2s',
-        boxShadow: '0 1px 3px rgba(0,0,0,.2)',
-      }} />
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // END OF OAActionsAI REPLACEMENT BLOCK
