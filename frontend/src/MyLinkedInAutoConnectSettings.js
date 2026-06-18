@@ -35,7 +35,10 @@ export default function MyLinkedInAutoConnectSettings() {
       .catch(() => showFlash('error', 'Failed to load'))
       .finally(() => setLoading(false));
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const setOptIn = async (val) => {
     setSaving(true);
