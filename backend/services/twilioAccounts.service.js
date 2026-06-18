@@ -131,18 +131,26 @@ async function isProvisioned(orgId) {
 }
 
 /**
- * Individual-level calling check. Calling can be revoked at TWO levels:
- *   - ORG level:        settings.entitlements.calling (platform/billing)
- *   - INDIVIDUAL level: users.calling_enabled = false (org admin per rep)
- * Both must be satisfied for a rep to place a call. This covers the second.
+ * Individual-level calling check. Calling can be granted at TWO levels, and
+ * BOTH must be on for a rep to place a call:
+ *   - ORG level:        settings.entitlements.calling (platform/billing) — default OFF
+ *   - INDIVIDUAL level: users.calling_enabled = true   (org admin per rep)  — default OFF
+ * This covers the individual level.
  *
- * Default-ON: only an explicit calling_enabled = false revokes. NULL/missing
- * → enabled. Unknown user → not enabled.
+ * Default-OFF / opt-in: calling is enabled for a rep ONLY when
+ * users.calling_enabled is explicitly true. NULL / missing / false → disabled.
+ * A rep must be deliberately turned on (and the org must be entitled).
  *
  * Migration-safe: if the calling_enabled column hasn't been added yet
  * (undefined_column, SQLSTATE 42703), returns true so deploying the code
- * BEFORE running the ALTER TABLE never blocks calling. Fails open on other
- * infra errors, consistent with the rest of the calling stack.
+ * BEFORE running the ALTER TABLE never causes a calling OUTAGE — the existing
+ * behaviour persists for the brief deploy-before-migrate window. Once the
+ * column exists (default false), opt-in semantics take effect. Other infra
+ * errors also fail open, consistent with the rest of the calling stack.
+ *
+ * (If you'd rather fail CLOSED pre-migration — no calling until the column
+ * exists and a rep is enabled — change the two `return true` lines below to
+ * `return false`. That trades the no-outage guarantee for strict-by-default.)
  *
  * @param {number} orgId
  * @param {number} userId
@@ -155,9 +163,9 @@ async function isUserCallingEnabled(orgId, userId) {
       [userId, orgId]
     );
     if (!rows.length) return false;            // unknown user in this org
-    return rows[0].calling_enabled !== false;  // explicit false = revoked
+    return rows[0].calling_enabled === true;   // opt-in: only explicit true enables
   } catch (err) {
-    if (err.code === '42703') return true;      // column not migrated yet → enabled
+    if (err.code === '42703') return true;      // column not migrated yet → no outage
     console.warn(
       `isUserCallingEnabled lookup failed (org ${orgId}, user ${userId}); failing open: ${err.message}`
     );

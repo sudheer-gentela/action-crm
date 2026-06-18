@@ -56,10 +56,11 @@ router.get('/reps', adminOnly, async (req, res) => {
          u.twilio_did,
          u.twilio_did_sid,
          u.twilio_did_provisioned_at,
-         -- Individual-level calling state. Read via to_jsonb so this query is
-         -- safe to run BEFORE the calling_enabled column migration: a missing
-         -- key yields null, treated as enabled. Only an explicit false revokes.
-         ((to_jsonb(u) ->> 'calling_enabled') IS DISTINCT FROM 'false') AS calling_enabled,
+         -- Individual-level calling state (opt-in / default OFF). Read via
+         -- to_jsonb so this query is safe to run BEFORE the calling_enabled
+         -- column migration: a missing key yields null → false. Only an
+         -- explicit true reports enabled.
+         COALESCE((to_jsonb(u) ->> 'calling_enabled') = 'true', false) AS calling_enabled,
          (u.phone IS NOT NULL AND u.twilio_did IS NOT NULL) AS ready_to_call
        FROM users u
        JOIN org_users ou ON ou.user_id = u.id AND ou.org_id = u.org_id
