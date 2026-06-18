@@ -3,7 +3,8 @@
  * Shared helpers/formatters for OrgAdmin. */
 import { STATIC_NAV_GROUPS, MODULE_NAV_DEFS, DIMENSION_COLORS } from './constants';
 
-export const API_OA = process.env.REACT_APP_API_URL || '';
+// Module-private — consumed only by apiFetchOA below (no external importers).
+const API_OA = process.env.REACT_APP_API_URL || '';
 
 export function apiFetchOA(path, options = {}) {
   const token = localStorage.getItem('token') || localStorage.getItem('authToken');
