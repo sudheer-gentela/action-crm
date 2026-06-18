@@ -1,5 +1,38 @@
-import React, { useState, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { csvParse, IMPORT_FIELDS } from './csvUtils';
+import * as CFApi from './customfields/customFieldsApi';
+
+// Modal entity → which custom-field entity planes can be mapped during its
+// import. Only the prospects importer is wired end-to-end: /prospects/bulk
+// persists prospect AND account custom values (the account is resolved per
+// row during import). The standalone accounts/contacts/deals importers don't
+// write custom values yet, so they're intentionally omitted to avoid showing
+// mappings that would silently drop. The FIRST entry is the "primary" plane
+// (no suffix in the label); others are suffixed.
+const CF_ENTITY_MAP = {
+  prospects: ['prospect', 'account'],
+};
+
+// Move flat `cf:<entity>:<field_key>` columns produced by the mapper into a
+// nested `customFields: { entity: { field_key: value } }` object the bulk API
+// expects, leaving the built-in fields untouched.
+function splitCustomFields(rows) {
+  return rows.map(r => {
+    const out = {};
+    const cf = {};
+    Object.entries(r).forEach(([k, v]) => {
+      const m = /^cf:(prospect|account|contact|deal):(.+)$/.exec(k);
+      if (m) {
+        const [, ent, fk] = m;
+        (cf[ent] || (cf[ent] = {}))[fk] = v;
+      } else {
+        out[k] = v;
+      }
+    });
+    if (Object.keys(cf).length) out.customFields = cf;
+    return out;
+  });
+}
 
 /**
  * CSVImportModal — shared 4-step import dialog for Accounts, Contacts, Deals
@@ -19,7 +52,36 @@ import { csvParse, IMPORT_FIELDS } from './csvUtils';
  *                       /prospects/bulk-preflight. Required for the conflicts step.
  */
 export default function CSVImportModal({ entity, onImport, onClose, accounts = [], supportsUpsert = false, upsertMatchLabel = 'LinkedIn URL', campaignId = null, campaignName = '', onPreflight = null }) {
-  const fields = useMemo(() => IMPORT_FIELDS[entity] || [], [entity]);
+  // Custom fields the user has defined for this import's entity plane(s).
+  // Fetched on mount and merged into the mapping targets so a single CSV can
+  // populate built-in AND custom columns in one pass.
+  const [customFields, setCustomFields] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    const cfEntities = CF_ENTITY_MAP[entity] || [];
+    if (cfEntities.length === 0) { setCustomFields([]); return; }
+    (async () => {
+      try {
+        const lists = await Promise.all(cfEntities.map(ce => CFApi.listDefs({ targetEntity: ce })));
+        if (cancelled) return;
+        const primary = cfEntities[0];
+        const built = [];
+        cfEntities.forEach((ce, idx) => {
+          (lists[idx] || []).forEach(d => {
+            if (d.active === false || d.campaign_id != null) return; // durable, active only
+            const suffix = ce === primary ? '' : ` · ${CFApi.ENTITY_LABEL[ce] || ce}`;
+            built.push({ key: `cf:${ce}:${d.field_key}`, label: `${d.label || d.field_key}${suffix} (custom)` });
+          });
+        });
+        setCustomFields(built);
+      } catch (_) {
+        if (!cancelled) setCustomFields([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [entity]);
+
+  const fields = useMemo(() => [...(IMPORT_FIELDS[entity] || []), ...customFields], [entity, customFields]);
   const entityLabel = entity.charAt(0).toUpperCase() + entity.slice(1);
 
   // Steps: 'upload' → 'mapping' → 'preview' → ['conflicts'] → 'importing' → 'result'
@@ -165,7 +227,7 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
   const doImport = useCallback(async (opts) => {
     setStep('importing');
     try {
-      const res = await onImport(mappedRows, { mode, ...opts });
+      const res = await onImport(splitCustomFields(mappedRows), { mode, ...opts });
       setResult(res);
       setStep('result');
     } catch (err) {

@@ -9,6 +9,8 @@ const PlaybookActionGenerator = require('../services/PlaybookActionGenerator');
 const ActionWriter            = require('../services/ActionWriter');
 const { resolveAccountId, normalizeLinkedInCompanyUrl } = require('../services/domainResolver');
 const { enrichAccountForProspect } = require('../services/enrichmentService');
+const CF      = require('../services/CustomFieldService');
+const CFDefs  = require('../services/CustomFieldDefService');
 
 // Campaign ownership gate for /bulk-stage when called with a campaignId —
 // prevents reps from moving prospects in another rep's campaign. See
@@ -549,6 +551,58 @@ router.post('/bulk', async (req, res) => {
       resolvedCampaignId = campRes.rows[0].id;
     }
 
+    // Custom-field definitions for prospect + account, keyed by field_key, so
+    // mapped CSV custom columns can be written as durable values during import.
+    // Only durable (campaign_id = null), active defs participate.
+    const cfDefs = { prospect: {}, account: {} };
+    try {
+      for (const ent of ['prospect', 'account']) {
+        const defs = await CFDefs.listDefs({
+          orgId: req.orgId, targetEntity: ent, campaignId: null, includeInactive: false,
+        });
+        for (const d of (defs || [])) {
+          if (d.campaign_id == null) cfDefs[ent][d.field_key] = d;
+        }
+      }
+    } catch (e) {
+      console.warn('Bulk import: could not load custom field defs:', e.message);
+    }
+
+    // Write mapped custom-field values for one imported/updated row. Values are
+    // durable (campaign_id = null) and type-coerced by the field def. Unknown
+    // keys and blanks are skipped. A CF write failure is logged but never fails
+    // the row — the prospect/account record is already persisted.
+    const writeRowCustomFields = async (row, prospectId, accountId) => {
+      const cf = row && row.customFields;
+      if (!cf || typeof cf !== 'object') return;
+      for (const [ent, entityId] of [['prospect', prospectId], ['account', accountId]]) {
+        if (!entityId) continue;
+        const vals = cf[ent];
+        if (!vals || typeof vals !== 'object') continue;
+        for (const [fieldKey, rawVal] of Object.entries(vals)) {
+          const def = cfDefs[ent][fieldKey];
+          if (!def) continue; // not a defined field for this org/entity — ignore
+          if (rawVal === undefined || rawVal === null || String(rawVal).trim() === '') continue;
+          try {
+            await CF.writeValue({
+              orgId:      req.orgId,
+              entityType: ent,
+              entityId,
+              fieldKey,
+              fieldType:  def.field_type,
+              value:      rawVal,
+              source:     'csv',
+              fieldDefId: def.id,
+              fieldLabel: def.label || fieldKey,
+              client:     db,
+            });
+          } catch (cfErr) {
+            console.warn(`Bulk import row CF write failed (${ent}.${fieldKey}):`, cfErr.message);
+          }
+        }
+      }
+    };
+
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const rowNum = i + 1;
@@ -563,7 +617,7 @@ router.post('/bulk', async (req, res) => {
         }
         try {
           const match = await db.query(
-            `SELECT id, first_name, last_name, company_name
+            `SELECT id, first_name, last_name, company_name, account_id
                FROM prospects
               WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
             [id, req.orgId]
@@ -605,6 +659,7 @@ router.post('/bulk', async (req, res) => {
               WHERE id = $${n++} AND org_id = $${n}`,
             vals
           );
+          await writeRowCustomFields(row, id, match.rows[0].account_id);
           updated++;
           continue;
         } catch (idErr) {
@@ -625,7 +680,7 @@ router.post('/bulk', async (req, res) => {
         }
         try {
           const match = await db.query(
-            `SELECT id FROM prospects
+            `SELECT id, account_id FROM prospects
               WHERE org_id = $1
                 AND LOWER(REGEXP_REPLACE(linkedin_url, '.*/in/([^/?#]+).*', '\\1')) = $2
                 AND linkedin_url IS NOT NULL
@@ -667,6 +722,7 @@ router.post('/bulk', async (req, res) => {
                 WHERE id = $${n++} AND org_id = $${n}`,
               vals
             );
+            await writeRowCustomFields(row, id, match.rows[0].account_id);
             updated++;
             continue;
           }
@@ -772,7 +828,7 @@ router.post('/bulk', async (req, res) => {
           prospectCompanyDomain = accLookup.rows[0]?.domain || null;
         }
 
-        await db.query(
+        const insertRes = await db.query(
           `INSERT INTO prospects (
              org_id, owner_id, first_name, last_name, email, phone, linkedin_url,
              title, location, company_name, company_domain, company_size,
@@ -783,7 +839,7 @@ router.post('/bulk', async (req, res) => {
              $8, $9, $10, $11, $12,
              $13, $14, $15, $16, $17, $18,
              'target', CURRENT_TIMESTAMP
-           )`,
+           ) RETURNING id`,
           [
             req.orgId,
             req.user.userId,
@@ -806,6 +862,7 @@ router.post('/bulk', async (req, res) => {
           ]
         );
 
+        await writeRowCustomFields(row, insertRes.rows[0].id, resolvedAccountId);
         imported++;
       } catch (rowErr) {
         console.error(`Bulk import row ${rowNum} error:`, rowErr.message);
