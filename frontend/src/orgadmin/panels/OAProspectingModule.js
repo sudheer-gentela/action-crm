@@ -12,6 +12,7 @@ import OACampaignDeletePolicy from './OACampaignDeletePolicy';
 import OAManagerEditPolicy from './OAManagerEditPolicy';
 import OAProspectingEnrichment from './OAProspectingEnrichment';
 import OAProspectingEscalation from './OAProspectingEscalation';
+import OALinkedInAutomation from '../../OALinkedInAutomation';
 
 const ORG_AI_MODELS = {
   anthropic: [
@@ -127,7 +128,7 @@ export default function OAProspectingModule() {
       </div>
 
       <ModuleSubTabs
-        tabs={[['general', 'General'], ['ai', 'AI Settings'], ['skill-inputs', 'Skill inputs'], ['calls', 'Call Settings'], ['twilio', 'Twilio'], ['sending-schedule', 'Sending Schedule'], ['escalation', 'Escalation'], ['enrichment', 'Enrichment'], ['playbook', 'Playbook']]}
+        tabs={[['general', 'General'], ['ai', 'AI Settings'], ['skill-inputs', 'Skill inputs'], ['calls', 'Call Settings'], ['twilio', 'Twilio'], ['linkedin-automation', 'LinkedIn'], ['sending-schedule', 'Sending Schedule'], ['escalation', 'Escalation'], ['enrichment', 'Enrichment'], ['playbook', 'Playbook']]}
         active={subTab}
         onChange={setSubTab}
 
@@ -177,6 +178,12 @@ export default function OAProspectingModule() {
       {/* ── Twilio sub-tab ── */}
       {subTab === 'twilio' && (
         <OATwilioSettings />
+      )}
+
+      {/* ── LinkedIn automation sub-tab — org master toggle + guardrails for
+            connection-request auto-send. Per-rep opt-in lives in Settings. ── */}
+      {subTab === 'linkedin-automation' && (
+        <OALinkedInAutomation />
       )}
 
       {/* ── Escalation sub-tab ── */}

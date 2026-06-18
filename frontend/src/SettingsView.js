@@ -12,6 +12,7 @@ import ActionAISettings from './ActionAISettings';
 import UserAIProviderSettings from './UserAIProviderSettings';
 import PersonalizeConfigBlock from './PersonalizeConfigBlock';
 import MyOutreachStyleSettings from './MyOutreachStyleSettings';
+import MyLinkedInAutoConnectSettings from './MyLinkedInAutoConnectSettings';
 import OrgSendingScheduleSettings from './OrgSendingScheduleSettings';
 
 // ── Sidebar nav structure ────────────────────────────────────────────────────
@@ -35,6 +36,7 @@ const NAV_GROUPS = [
       { id: 'preferences',           label: 'My Preferences',            icon: '🎛️' },
       { id: 'personalize-linkedin',  label: 'LinkedIn Personalization',  icon: '✨' },
       { id: 'outreach-style',        label: 'My Outreach Style',         icon: '🎯' },
+      { id: 'linkedin-auto-connect', label: 'LinkedIn Auto-Connect',     icon: '🤝' },
     ],
   },
   {
@@ -253,6 +255,7 @@ export default function SettingsView({ initialTab }) {
           {activeId === 'preferences'          && <UserPreferencesSettings />}
           {activeId === 'personalize-linkedin' && <PersonalizeLinkedInSettings />}
           {activeId === 'outreach-style'       && <MyOutreachStyleSettings />}
+          {activeId === 'linkedin-auto-connect' && <MyLinkedInAutoConnectSettings />}
           {/* AI */}
           {activeId === 'ai-providers'     && <UserAIProviderSettings />}
           {activeId === 'ai-prefs'         && <AIPreferencesPanel />}
