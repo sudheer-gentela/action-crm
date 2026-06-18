@@ -256,6 +256,7 @@ app.use('/api/deal-roles',             require('./routes/org-roles.routes'));
 app.use('/api/deal-team',              require('./routes/deal-team.routes'));
 app.use('/api/deal-contacts',          require('./routes/deal-contacts.routes'));
 app.use('/api/straps',                 require('./routes/strap.routes'));
+app.use('/api/help',                   require('./routes/help.routes'));        // gated Help Center (signed URLs)
 app.use('/api/products',               require('./routes/products.routes'));
 app.use('/api/pipeline-stages',        require('./routes/pipeline-stages.routes'));
 app.use('/api/playbook-plays',         require('./routes/playbook-plays.routes'));

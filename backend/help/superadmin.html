@@ -1,0 +1,1248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Super Admin Guide · GoWarmCRM Help</title>
+<meta name="robots" content="noindex" />
+<style>
+/* ============================================================
+   GoWarmCRM — Help Center shared theme
+   Self-contained. No external fonts or CDNs (CSP-safe drop-in).
+   Palette: Ember #E8630A · Navy #1A3A5C
+   ============================================================ */
+
+:root {
+  /* Brand */
+  --ember:        #E8630A;
+  --ember-dark:   #C9540A;
+  --ember-soft:   #FDEFE4;
+  --ember-line:   #F6C9A6;
+  --navy:         #1A3A5C;
+  --navy-700:     #234a73;
+  --navy-soft:    #EAF0F6;
+
+  /* Neutrals */
+  --paper:        #FFFFFF;
+  --canvas:       #F6F7F9;
+  --line:         #E5E7EB;
+  --line-soft:    #EEF0F3;
+  --text:         #2B3340;
+  --muted:        #6B7280;
+  --faint:        #9CA3AF;
+
+  /* Semantic */
+  --green:        #0F9D6E;
+  --green-soft:   #E7F6EF;
+  --amber:        #B7791F;
+  --amber-soft:   #FBF3E2;
+  --red:          #DC2626;
+  --red-soft:     #FBEAEA;
+  --blue:         #2563EB;
+  --blue-soft:    #E8EFFE;
+
+  /* Geometry */
+  --radius:       12px;
+  --radius-sm:    8px;
+  --shadow:       0 1px 2px rgba(16,24,40,.05), 0 8px 24px rgba(16,24,40,.06);
+  --shadow-sm:    0 1px 2px rgba(16,24,40,.06);
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --sidebar-w: 280px;
+  --maxw: 860px;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--text);
+  background: var(--canvas);
+  font-size: 15px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ------------------------------------------------------------
+   App shell: fixed sidebar + scrolling content
+   ------------------------------------------------------------ */
+.help-shell { display: flex; min-height: 100vh; }
+
+.help-sidebar {
+  width: var(--sidebar-w);
+  flex: 0 0 var(--sidebar-w);
+  background: var(--navy);
+  color: #fff;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 22px 0 28px;
+}
+
+.help-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 0 96px;
+}
+
+.help-content-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 0 40px;
+}
+
+/* ------------------------------------------------------------
+   Brand block in sidebar
+   ------------------------------------------------------------ */
+.help-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 22px 18px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(255,255,255,.10);
+}
+.help-brand-mark {
+  width: 34px; height: 34px;
+  border-radius: 9px;
+  background: var(--ember);
+  display: grid; place-items: center;
+  flex: 0 0 34px;
+}
+.help-brand-name { font-weight: 700; font-size: 15px; letter-spacing: .2px; line-height: 1.15; }
+.help-brand-name .warm { color: var(--ember); }
+.help-brand-sub { font-size: 11.5px; color: rgba(255,255,255,.55); margin-top: 1px; }
+
+/* role pill on sidebar */
+.help-role-pill {
+  margin: 14px 22px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: rgba(232,99,10,.20);
+  border: 1px solid rgba(232,99,10,.5);
+  padding: 5px 11px;
+  border-radius: 999px;
+}
+.help-role-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ember); }
+
+/* ------------------------------------------------------------
+   Sidebar nav (table of contents)
+   ------------------------------------------------------------ */
+.help-nav { padding: 10px 14px 0; }
+.help-nav-group-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,.40);
+  padding: 16px 10px 6px;
+}
+.help-nav a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  color: rgba(255,255,255,.78);
+  text-decoration: none;
+  font-size: 13.5px;
+  line-height: 1.35;
+  transition: background .12s, color .12s;
+}
+.help-nav a .ic { width: 17px; text-align: center; flex: 0 0 17px; opacity: .9; }
+.help-nav a:hover { background: rgba(255,255,255,.07); color: #fff; }
+.help-nav a.active {
+  background: var(--ember);
+  color: #fff;
+  font-weight: 600;
+}
+.help-nav a.active .ic { opacity: 1; }
+
+.help-nav-foot {
+  margin: 22px 22px 0;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255,255,255,.10);
+  font-size: 11.5px;
+  color: rgba(255,255,255,.45);
+}
+.help-nav-foot a { color: rgba(255,255,255,.75); }
+
+/* ------------------------------------------------------------
+   Top bar inside content (search + breadcrumb)
+   ------------------------------------------------------------ */
+.help-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(246,247,249,.86);
+  backdrop-filter: saturate(140%) blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.help-topbar-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 13px 40px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.help-crumb { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.help-crumb b { color: var(--navy); font-weight: 600; }
+.help-search {
+  margin-left: auto;
+  position: relative;
+  width: 270px;
+  max-width: 45vw;
+}
+.help-search input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px 8px 32px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--text);
+}
+.help-search input:focus {
+  outline: none;
+  border-color: var(--ember);
+  box-shadow: 0 0 0 3px var(--ember-soft);
+}
+.help-search .mag {
+  position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+  color: var(--faint); font-size: 13px; pointer-events: none;
+}
+
+/* ------------------------------------------------------------
+   Hero
+   ------------------------------------------------------------ */
+.help-hero { padding: 44px 0 8px; }
+.help-eyebrow {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ember);
+}
+.help-eyebrow::before {
+  content: ""; width: 22px; height: 2px; background: var(--ember); border-radius: 2px;
+}
+.help-hero h1 {
+  font-size: 33px;
+  line-height: 1.12;
+  margin: 14px 0 10px;
+  color: var(--navy);
+  letter-spacing: -.02em;
+  font-weight: 800;
+}
+.help-hero p { font-size: 16px; color: var(--muted); max-width: 60ch; margin: 0; }
+
+/* ------------------------------------------------------------
+   Sections
+   ------------------------------------------------------------ */
+.help-section { padding-top: 52px; scroll-margin-top: 70px; }
+.help-section > h2 {
+  font-size: 23px;
+  color: var(--navy);
+  letter-spacing: -.01em;
+  font-weight: 800;
+  margin: 0 0 4px;
+  display: flex; align-items: baseline; gap: 10px;
+}
+.help-section > h2 .num {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ember);
+  font-variant-numeric: tabular-nums;
+  background: var(--ember-soft);
+  border-radius: 6px;
+  padding: 2px 8px;
+  align-self: center;
+}
+.help-section > .lead { font-size: 15.5px; color: var(--muted); margin: 6px 0 22px; max-width: 64ch; }
+
+.help-section h3 {
+  font-size: 17px; color: var(--navy); font-weight: 700;
+  margin: 30px 0 8px; letter-spacing: -.01em;
+}
+.help-section h4 {
+  font-size: 14px; color: var(--navy); font-weight: 700;
+  margin: 20px 0 4px; text-transform: none;
+}
+.help-section p { margin: 0 0 13px; }
+.help-section a { color: var(--ember-dark); text-decoration: none; border-bottom: 1px solid var(--ember-line); }
+.help-section a:hover { border-bottom-color: var(--ember); }
+.help-section ul, .help-section ol { margin: 0 0 14px; padding-left: 22px; }
+.help-section li { margin: 5px 0; }
+.help-section strong { color: var(--navy); font-weight: 650; }
+code, .kbd {
+  font-family: var(--mono);
+  font-size: .86em;
+  background: var(--navy-soft);
+  color: var(--navy-700);
+  padding: 1.5px 6px;
+  border-radius: 5px;
+}
+
+/* ------------------------------------------------------------
+   Figure / screen-map
+   ------------------------------------------------------------ */
+.help-figure {
+  margin: 8px 0 22px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.help-figure-bar {
+  display: flex; align-items: center; gap: 7px;
+  padding: 9px 14px;
+  background: var(--navy-soft);
+  border-bottom: 1px solid var(--line);
+}
+.help-figure-bar .tl { display: flex; gap: 6px; }
+.help-figure-bar .tl i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+.help-figure-bar .tl i:nth-child(1){ background:#F56C6C; }
+.help-figure-bar .tl i:nth-child(2){ background:#F5B942; }
+.help-figure-bar .tl i:nth-child(3){ background:#3CC97B; }
+.help-figure-bar .tt { font-size: 12px; color: var(--muted); font-weight: 600; margin-left: 4px; }
+.help-figure svg { display: block; width: 100%; height: auto; }
+.help-figure-cap {
+  padding: 9px 14px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border-top: 1px solid var(--line-soft);
+  background: #FCFCFD;
+}
+.help-figure-cap b { color: var(--navy); }
+
+/* numbered callout list paired with a figure */
+.help-steps { counter-reset: step; list-style: none; padding-left: 0; margin: 6px 0 16px; }
+.help-steps > li {
+  position: relative;
+  padding-left: 38px;
+  margin: 12px 0;
+  min-height: 26px;
+}
+.help-steps > li::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute; left: 0; top: 0;
+  width: 26px; height: 26px;
+  background: var(--ember);
+  color: #fff;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 13px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------
+   Callouts
+   ------------------------------------------------------------ */
+.note {
+  display: flex; gap: 11px;
+  padding: 13px 15px;
+  border-radius: var(--radius-sm);
+  margin: 16px 0;
+  font-size: 14px;
+  border: 1px solid;
+  line-height: 1.55;
+}
+.note .ic { flex: 0 0 auto; font-size: 15px; line-height: 1.5; }
+.note p { margin: 0 0 6px; }
+.note p:last-child { margin: 0; }
+.note--tip   { background: var(--ember-soft); border-color: var(--ember-line); color: #7a3a08; }
+.note--info  { background: var(--blue-soft);  border-color: #c5d7fb; color: #1e3a8a; }
+.note--warn  { background: var(--amber-soft); border-color: #f0dca8; color: #7a5a13; }
+.note--danger{ background: var(--red-soft);   border-color: #f3c9c9; color: #991b1b; }
+.note b { color: inherit; }
+
+/* ------------------------------------------------------------
+   Tables (reference)
+   ------------------------------------------------------------ */
+.help-table-wrap { overflow-x: auto; margin: 6px 0 18px; border: 1px solid var(--line); border-radius: var(--radius); }
+table.ref {
+  width: 100%; border-collapse: collapse; font-size: 13.5px; background: var(--paper);
+}
+table.ref th, table.ref td { text-align: left; padding: 10px 14px; vertical-align: top; }
+table.ref thead th {
+  background: var(--navy-soft); color: var(--navy);
+  font-size: 11px; letter-spacing: .05em; text-transform: uppercase; font-weight: 700;
+  border-bottom: 1px solid var(--line);
+}
+table.ref tbody tr + tr td { border-top: 1px solid var(--line-soft); }
+table.ref td code { white-space: nowrap; }
+
+/* status / plan pills used in tables */
+.pill { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.pill--green { background: var(--green-soft); color: var(--green); }
+.pill--amber { background: var(--amber-soft); color: var(--amber); }
+.pill--red   { background: var(--red-soft);   color: var(--red); }
+.pill--grey  { background: #EEF0F3; color: #5b6471; }
+.pill--navy  { background: var(--navy-soft);  color: var(--navy); }
+.pill--ember { background: var(--ember-soft); color: var(--ember-dark); }
+
+/* ------------------------------------------------------------
+   Action chip (for "what each button does" rows)
+   ------------------------------------------------------------ */
+.chip-row { display: flex; align-items: flex-start; gap: 12px; margin: 9px 0; }
+.chip-glyph {
+  flex: 0 0 auto;
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  display: grid; place-items: center;
+  font-size: 15px;
+  background: var(--navy-soft);
+  border: 1px solid var(--line);
+}
+.chip-glyph.is-blue  { background: var(--blue-soft);  border-color:#c5d7fb; }
+.chip-glyph.is-green { background: var(--green-soft); border-color:#bfe7d4; }
+.chip-glyph.is-red   { background: var(--red-soft);   border-color:#f3c9c9; }
+.chip-body { font-size: 14px; padding-top: 2px; }
+.chip-body b { color: var(--navy); }
+
+/* ------------------------------------------------------------
+   Landing (index) cards
+   ------------------------------------------------------------ */
+.lp { max-width: 980px; margin: 0 auto; padding: 64px 32px 80px; }
+.lp-hero { text-align: center; margin-bottom: 46px; }
+.lp-hero .help-brand-mark { width: 52px; height: 52px; border-radius: 13px; margin: 0 auto 20px; }
+.lp-hero h1 { font-size: 38px; color: var(--navy); font-weight: 800; letter-spacing: -.02em; margin: 0 0 12px; }
+.lp-hero p { font-size: 17px; color: var(--muted); margin: 0 auto; max-width: 56ch; }
+.lp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+.lp-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 26px 24px;
+  box-shadow: var(--shadow-sm);
+  transition: transform .14s, box-shadow .14s, border-color .14s;
+  position: relative;
+}
+.lp-card:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: var(--ember-line); }
+.lp-card .ic {
+  width: 46px; height: 46px; border-radius: 11px; display: grid; place-items: center;
+  font-size: 22px; margin-bottom: 16px; background: var(--ember-soft);
+}
+.lp-card h3 { font-size: 18px; color: var(--navy); font-weight: 700; margin: 0 0 6px; }
+.lp-card p { font-size: 13.5px; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
+.lp-card .who { font-size: 11.5px; font-weight: 600; color: var(--ember-dark); text-transform: uppercase; letter-spacing: .05em; }
+.lp-card .arrow { position: absolute; top: 24px; right: 24px; color: var(--faint); font-size: 18px; transition: transform .14s, color .14s; }
+.lp-card:hover .arrow { transform: translateX(3px); color: var(--ember); }
+.lp-card.is-soon { opacity: .72; }
+.lp-card.is-soon .badge-soon {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); background: #EEF0F3; padding: 3px 8px; border-radius: 6px;
+}
+.lp-foot { text-align: center; margin-top: 46px; font-size: 13px; color: var(--faint); }
+
+/* ------------------------------------------------------------
+   Search "no results" + hidden state
+   ------------------------------------------------------------ */
+.help-section.is-hidden { display: none; }
+.search-empty {
+  display: none;
+  padding: 40px 0; text-align: center; color: var(--muted); font-size: 15px;
+}
+.search-empty.show { display: block; }
+
+/* back to top */
+.to-top {
+  position: fixed; right: 22px; bottom: 22px;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: var(--navy); color: #fff; border: none; cursor: pointer;
+  font-size: 18px; box-shadow: var(--shadow); opacity: 0; pointer-events: none;
+  transition: opacity .2s; z-index: 40;
+}
+.to-top.show { opacity: 1; pointer-events: auto; }
+.to-top:hover { background: var(--ember); }
+
+/* ------------------------------------------------------------
+   Mobile
+   ------------------------------------------------------------ */
+.help-menu-btn {
+  display: none;
+  background: var(--navy); color:#fff; border:none; border-radius: 8px;
+  width: 38px; height: 38px; font-size: 18px; cursor: pointer;
+}
+.help-scrim { display:none; }
+
+@media (max-width: 900px) {
+  :root { --sidebar-w: 256px; }
+  .help-content-inner, .help-topbar-inner { padding-left: 22px; padding-right: 22px; }
+  .help-sidebar {
+    position: fixed; left: 0; top: 0; z-index: 60;
+    transform: translateX(-100%); transition: transform .22s ease;
+    box-shadow: 0 0 40px rgba(0,0,0,.3);
+  }
+  .help-shell.nav-open .help-sidebar { transform: translateX(0); }
+  .help-shell.nav-open .help-scrim {
+    display: block; position: fixed; inset: 0; background: rgba(15,23,42,.5); z-index: 55;
+  }
+  .help-menu-btn { display: grid; place-items: center; }
+  .help-search { width: auto; flex: 1; max-width: none; }
+  .help-hero h1 { font-size: 27px; }
+  .help-crumb { display: none; }
+}
+
+@media (max-width: 560px) {
+  .help-content-inner, .help-topbar-inner { padding-left: 16px; padding-right: 16px; }
+  .lp { padding: 40px 18px 60px; }
+  .lp-hero h1 { font-size: 29px; }
+}
+
+</style>
+</head>
+<body>
+<div class="help-shell">
+
+  <!-- ───────────────────────── SIDEBAR ───────────────────────── -->
+  <aside class="help-sidebar">
+    <div class="help-brand">
+      <div class="help-brand-mark" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
+          <path d="M36 6 C26 18 12 26 14 44 C16 58 26 68 36 72 C46 68 56 58 58 44 C60 26 46 18 36 6Z" fill="#FDE68A"/>
+          <path d="M36 22 C31 30 26 36 28 46 C30 53 33 58 36 62 C39 58 42 53 44 46 C46 36 41 30 36 22Z" fill="#fff"/>
+        </svg>
+      </div>
+      <div>
+        <div class="help-brand-name">Go<span class="warm">Warm</span> CRM</div>
+        <div class="help-brand-sub">Help Center</div>
+      </div>
+    </div>
+
+    <div class="help-role-pill"><span class="dot"></span> Super Admin</div>
+
+    <nav class="help-nav">
+      <div class="help-nav-group-label">Getting started</div>
+      <a href="#access"><span class="ic">🚪</span> Accessing Platform Admin</a>
+      <a href="#overview"><span class="ic">📊</span> The Overview dashboard</a>
+
+      <div class="help-nav-group-label">Organisations</div>
+      <a href="#organisations"><span class="ic">🏢</span> Managing organisations</a>
+      <a href="#creating-orgs"><span class="ic">➕</span> Creating an organisation</a>
+      <a href="#org-detail"><span class="ic">🗂️</span> Inside an organisation</a>
+      <a href="#modules"><span class="ic">🧩</span> Provisioning modules</a>
+      <a href="#support-mode"><span class="ic">🔧</span> Support mode</a>
+
+      <div class="help-nav-group-label">Platform</div>
+      <a href="#super-admins"><span class="ic">🔐</span> Super admins</a>
+      <a href="#audit"><span class="ic">📋</span> The audit log</a>
+      <a href="#workflows"><span class="ic">⚙️</span> Platform workflows</a>
+      <a href="#platform-settings"><span class="ic">🛠️</span> Platform settings</a>
+
+      <div class="help-nav-group-label">Reference</div>
+      <a href="#reference"><span class="ic">📖</span> Plans, statuses &amp; modules</a>
+
+      <div class="help-nav-foot">
+        <a href="index.html">← All guides</a>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="help-scrim"></div>
+
+  <!-- ───────────────────────── CONTENT ───────────────────────── -->
+  <main class="help-content">
+
+    <div class="help-topbar">
+      <div class="help-topbar-inner">
+        <button class="help-menu-btn" aria-label="Open navigation">☰</button>
+        <span class="help-crumb">Help Center · <b>Super Admin Guide</b></span>
+        <div class="help-search">
+          <span class="mag">🔍</span>
+          <input type="search" placeholder="Search this guide…" aria-label="Search this guide" />
+        </div>
+      </div>
+    </div>
+
+    <div class="help-content-inner">
+
+      <header class="help-hero">
+        <span class="help-eyebrow">Platform Administration</span>
+        <h1>Super Admin Guide</h1>
+        <p>Everything you need to run GoWarmCRM at the platform level — provisioning organisations, managing seats and modules, supporting customers, and controlling settings that cascade to every org.</p>
+      </header>
+
+      <div class="search-empty">No sections match your search. Try a different term.</div>
+
+      <!-- ════════════════ 1 · ACCESS ════════════════ -->
+      <section class="help-section" id="access">
+        <h2><span class="num">01</span> Accessing Platform Admin</h2>
+        <p class="lead">Platform Admin is a separate workspace from your everyday CRM. You reach it by switching your active role — your normal Member view is never replaced, just set aside while you administer the platform.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">app.gowarmcrm.com</span></div>
+          <svg viewBox="0 0 720 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The role switcher in the sidebar user card, showing Member, Org Admin and Super User, with the Platform Admin navigation item.">
+            <rect width="720" height="360" fill="#F6F7F9"/>
+            <!-- sidebar -->
+            <rect x="0" y="0" width="210" height="360" fill="#1A3A5C"/>
+            <rect x="20" y="22" width="22" height="22" rx="6" fill="#E8630A"/>
+            <text x="52" y="38" fill="#fff" font-family="sans-serif" font-size="13" font-weight="700">GoWarm CRM</text>
+            <!-- nav rows -->
+            <g font-family="sans-serif" font-size="12" fill="#cdd6e0">
+              <rect x="14" y="64" width="182" height="30" rx="7" fill="#E8630A"/>
+              <text x="30" y="83" fill="#fff" font-weight="600">⚡  Platform Admin</text>
+            </g>
+            <!-- user card at bottom -->
+            <rect x="14" y="292" width="182" height="50" rx="9" fill="#13314e" stroke="#2c4d70"/>
+            <circle cx="38" cy="317" r="13" fill="#E8630A"/>
+            <text x="38" y="321" fill="#fff" font-family="sans-serif" font-size="11" font-weight="700" text-anchor="middle">SK</text>
+            <text x="60" y="312" fill="#fff" font-family="sans-serif" font-size="11.5" font-weight="600">Sudheer K.</text>
+            <text x="60" y="328" fill="#8fa6bd" font-family="sans-serif" font-size="10">Super User ▾</text>
+            <!-- popover -->
+            <rect x="206" y="232" width="196" height="116" rx="11" fill="#fff" stroke="#E5E7EB"/>
+            <text x="222" y="254" fill="#9CA3AF" font-family="sans-serif" font-size="10" font-weight="700" letter-spacing="1">SWITCH ROLE</text>
+            <g font-family="sans-serif" font-size="12">
+              <rect x="216" y="262" width="176" height="26" rx="6" fill="#F6F7F9"/>
+              <text x="230" y="279" fill="#2B3340">👤  Member</text>
+              <rect x="216" y="292" width="176" height="26" rx="6" fill="#F6F7F9"/>
+              <text x="230" y="309" fill="#2B3340">🔑  Org Admin</text>
+              <rect x="216" y="322" width="176" height="26" rx="6" fill="#FDEFE4" stroke="#F6C9A6"/>
+              <text x="230" y="339" fill="#C9540A" font-weight="600">⚡  Super User ✓</text>
+            </g>
+            <!-- content placeholder -->
+            <rect x="234" y="24" width="460" height="26" rx="6" fill="#fff" stroke="#E5E7EB"/>
+            <text x="248" y="41" fill="#1A3A5C" font-family="sans-serif" font-size="12" font-weight="700">Platform overview</text>
+            <rect x="234" y="64" width="220" height="70" rx="10" fill="#fff" stroke="#E5E7EB"/>
+            <rect x="466" y="64" width="228" height="70" rx="10" fill="#fff" stroke="#E5E7EB"/>
+            <!-- callouts -->
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="178" cy="328" r="12" fill="#E8630A"/><text x="178" y="332" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="402" cy="335" r="12" fill="#E8630A"/><text x="402" y="339" fill="#fff" text-anchor="middle">2</text>
+              <circle cx="30" cy="79" r="12" fill="#1A3A5C" stroke="#fff" stroke-width="1.5"/><text x="30" y="83" fill="#fff" text-anchor="middle">3</text>
+            </g>
+          </svg>
+          <div class="help-figure-cap"><b>The role switcher.</b> Your role badge lives in the user card at the bottom of the sidebar.</div>
+        </div>
+
+        <ol class="help-steps">
+          <li>Click your <strong>user card</strong> at the bottom-left of the sidebar.</li>
+          <li>In the popover, choose <strong>Super User</strong>. Your available roles depend on your account — only people listed as platform super admins will see this option.</li>
+          <li>The sidebar switches to the Platform Admin workspace and opens <strong>Platform Admin</strong> (⚡). To return to your CRM, switch back to <strong>Member</strong> the same way.</li>
+        </ol>
+
+        <div class="note note--info">
+          <span class="ic">ℹ️</span>
+          <div>
+            <p><b>Who gets Super User?</b> Super admin access is held in a dedicated platform list, completely separate from any single organisation. It is granted and revoked under <a href="#super-admins">Super admins</a> — not through an org's member roles.</p>
+          </div>
+        </div>
+
+        <div class="note note--warn">
+          <span class="ic">📋</span>
+          <div>
+            <p><b>Everything you do here is recorded.</b> Org changes, user changes, support-mode sessions, and setting changes are all written to an immutable <a href="#audit">Audit Log</a>. This is by design — it protects both customers and your team.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════════════ 2 · OVERVIEW ════════════════ -->
+      <section class="help-section" id="overview">
+        <h2><span class="num">02</span> The Overview dashboard</h2>
+        <p class="lead">Overview is the landing screen of Platform Admin. It gives you a live read on the health of the whole platform across six summary cards, plus the tab bar you'll use to move between admin areas.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Platform Admin · Overview</span></div>
+          <svg viewBox="0 0 720 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The Platform Admin tab bar above six summary statistic cards.">
+            <rect width="720" height="330" fill="#F6F7F9"/>
+            <!-- tab bar -->
+            <g font-family="sans-serif" font-size="11.5">
+              <rect x="24" y="22" width="672" height="40" rx="9" fill="#fff" stroke="#E5E7EB"/>
+              <rect x="32" y="29" width="92" height="26" rx="7" fill="#E8630A"/>
+              <text x="78" y="46" fill="#fff" text-anchor="middle" font-weight="600">📊 Overview</text>
+              <text x="160" y="46" fill="#6B7280">🏢 Organisations</text>
+              <text x="290" y="46" fill="#6B7280">🔐 Super Admins</text>
+              <text x="410" y="46" fill="#6B7280">📋 Audit Log</text>
+              <text x="510" y="46" fill="#6B7280">⚙️ Workflows</text>
+              <text x="608" y="46" fill="#6B7280">🛠️ Settings</text>
+            </g>
+            <!-- stat cards -->
+            <g font-family="sans-serif">
+              <!-- row 1 -->
+              <g>
+                <rect x="24" y="80" width="216" height="100" rx="11" fill="#fff" stroke="#E5E7EB"/>
+                <text x="42" y="108" fill="#6B7280" font-size="11">Total Orgs</text>
+                <text x="42" y="142" fill="#1A3A5C" font-size="30" font-weight="800">128</text>
+                <text x="42" y="162" fill="#0F9D6E" font-size="10.5">7 new this month</text>
+              </g>
+              <g>
+                <rect x="252" y="80" width="216" height="100" rx="11" fill="#fff" stroke="#E5E7EB"/>
+                <text x="270" y="108" fill="#6B7280" font-size="11">Active Orgs</text>
+                <text x="270" y="142" fill="#1A3A5C" font-size="30" font-weight="800">119</text>
+                <text x="270" y="162" fill="#B7791F" font-size="10.5">3 suspended</text>
+              </g>
+              <g>
+                <rect x="480" y="80" width="216" height="100" rx="11" fill="#fff" stroke="#E5E7EB"/>
+                <text x="498" y="108" fill="#6B7280" font-size="11">Trial Orgs</text>
+                <text x="498" y="142" fill="#1A3A5C" font-size="30" font-weight="800">14</text>
+                <text x="498" y="162" fill="#6B7280" font-size="10.5">need conversion</text>
+              </g>
+              <!-- row 2 -->
+              <g>
+                <rect x="24" y="192" width="216" height="100" rx="11" fill="#fff" stroke="#E5E7EB"/>
+                <text x="42" y="220" fill="#6B7280" font-size="11">Total Users</text>
+                <text x="42" y="254" fill="#1A3A5C" font-size="30" font-weight="800">842</text>
+                <text x="42" y="274" fill="#0F9D6E" font-size="10.5">771 active</text>
+              </g>
+              <g>
+                <rect x="252" y="192" width="216" height="100" rx="11" fill="#fff" stroke="#E5E7EB"/>
+                <text x="270" y="220" fill="#6B7280" font-size="11">New Users (30d)</text>
+                <text x="270" y="254" fill="#1A3A5C" font-size="30" font-weight="800">63</text>
+                <text x="270" y="274" fill="#6B7280" font-size="10.5">recent signups</text>
+              </g>
+              <g>
+                <rect x="480" y="192" width="216" height="100" rx="11" fill="#fff" stroke="#E5E7EB"/>
+                <text x="498" y="220" fill="#6B7280" font-size="11">Actions (7d)</text>
+                <text x="498" y="254" fill="#1A3A5C" font-size="30" font-weight="800">9.4k</text>
+                <text x="498" y="274" fill="#6B7280" font-size="10.5">1.3k today</text>
+              </g>
+            </g>
+            <!-- callouts -->
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="690" cy="42" r="12" fill="#E8630A"/><text x="690" y="46" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="232" cy="92" r="12" fill="#E8630A"/><text x="232" y="96" fill="#fff" text-anchor="middle">2</text>
+            </g>
+          </svg>
+          <div class="help-figure-cap"><b>Sample figures shown.</b> Your dashboard reflects live platform data.</div>
+        </div>
+
+        <ol class="help-steps">
+          <li>The <strong>tab bar</strong> moves you between the six admin areas: Overview, Organisations, Super Admins, Audit Log, Workflows, and Platform Settings.</li>
+          <li>The <strong>summary cards</strong> show platform totals at a glance.</li>
+        </ol>
+
+        <h3>What each card tells you</h3>
+        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Card</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><b>Total Orgs</b></td><td>All organisations on the platform, with how many were created in the last 30 days.</td></tr>
+              <tr><td><b>Active Orgs</b></td><td>Organisations currently in an active state, with a count of any that are suspended.</td></tr>
+              <tr><td><b>Trial Orgs</b></td><td>Organisations still on trial — your conversion pipeline.</td></tr>
+              <tr><td><b>Total Users</b></td><td>All user accounts, with how many are active.</td></tr>
+              <tr><td><b>New Users (30d)</b></td><td>Sign-ups in the trailing 30 days.</td></tr>
+              <tr><td><b>Actions (7d)</b></td><td>Action-queue items generated across all orgs in the last 7 days, with a today figure — a good proxy for overall engagement.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ════════════════ 3 · ORGANISATIONS ════════════════ -->
+      <section class="help-section" id="organisations">
+        <h2><span class="num">03</span> Managing organisations</h2>
+        <p class="lead">The Organisations tab is where most of your day-to-day work happens. It lists every organisation on the platform with search, filters, and quick actions on each row.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Platform Admin · Organisations</span></div>
+          <svg viewBox="0 0 720 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The organisations toolbar with search and filters, and a table with per-row action buttons.">
+            <rect width="720" height="360" fill="#F6F7F9"/>
+            <!-- toolbar -->
+            <rect x="24" y="22" width="250" height="34" rx="8" fill="#fff" stroke="#E5E7EB"/>
+            <text x="42" y="44" fill="#9CA3AF" font-family="sans-serif" font-size="12">🔍 Search organisations…</text>
+            <rect x="286" y="22" width="118" height="34" rx="8" fill="#fff" stroke="#E5E7EB"/>
+            <text x="300" y="44" fill="#2B3340" font-family="sans-serif" font-size="12">All statuses ▾</text>
+            <rect x="416" y="22" width="100" height="34" rx="8" fill="#fff" stroke="#E5E7EB"/>
+            <text x="430" y="44" fill="#2B3340" font-family="sans-serif" font-size="12">All plans ▾</text>
+            <rect x="556" y="22" width="140" height="34" rx="8" fill="#E8630A"/>
+            <text x="626" y="44" fill="#fff" font-family="sans-serif" font-size="12" font-weight="600" text-anchor="middle">+ New Organisation</text>
+            <!-- table head -->
+            <rect x="24" y="72" width="672" height="32" fill="#EAF0F6"/>
+            <g font-family="sans-serif" font-size="10.5" fill="#1A3A5C" font-weight="700">
+              <text x="42" y="92">ORGANISATION</text>
+              <text x="250" y="92">STATUS</text>
+              <text x="330" y="92">PLAN</text>
+              <text x="408" y="92">MEMBERS</text>
+              <text x="486" y="92">OWNER</text>
+              <text x="600" y="92">ACTIONS</text>
+            </g>
+            <!-- rows -->
+            <g font-family="sans-serif" font-size="11.5" fill="#2B3340">
+              <!-- row 1 -->
+              <rect x="24" y="104" width="672" height="44" fill="#fff" stroke="#EEF0F3"/>
+              <text x="42" y="124" fill="#C9540A" font-weight="600">Northwind Sales</text>
+              <text x="42" y="139" fill="#9CA3AF" font-size="9.5">ID: 1042</text>
+              <rect x="250" y="118" width="52" height="18" rx="9" fill="#E7F6EF"/><text x="276" y="131" fill="#0F9D6E" font-size="10" text-anchor="middle">active</text>
+              <rect x="330" y="118" width="36" height="18" rx="9" fill="#EAF0F6"/><text x="348" y="131" fill="#1A3A5C" font-size="10" text-anchor="middle">Pro</text>
+              <text x="408" y="130">18 / 25</text>
+              <text x="486" y="130" fill="#6B7280" font-size="10.5">ana@northwind.co</text>
+              <!-- action buttons -->
+              <rect x="588" y="116" width="24" height="22" rx="6" fill="#EAF0F6"/><text x="600" y="131" text-anchor="middle" font-size="11">👁</text>
+              <rect x="614" y="116" width="24" height="22" rx="6" fill="#E8EFFE"/><text x="626" y="131" text-anchor="middle" font-size="11">🔧</text>
+              <rect x="640" y="116" width="24" height="22" rx="6" fill="#FBF3E2"/><text x="652" y="131" text-anchor="middle" font-size="11">⏸</text>
+              <rect x="666" y="116" width="24" height="22" rx="6" fill="#FBEAEA"/><text x="678" y="131" text-anchor="middle" font-size="11">🗑</text>
+              <!-- row 2 -->
+              <rect x="24" y="148" width="672" height="44" fill="#fff" stroke="#EEF0F3"/>
+              <text x="42" y="168" fill="#C9540A" font-weight="600">Vertex Group</text>
+              <text x="42" y="183" fill="#9CA3AF" font-size="9.5">ID: 1051</text>
+              <rect x="250" y="162" width="44" height="18" rx="9" fill="#FBF3E2"/><text x="272" y="175" fill="#B7791F" font-size="10" text-anchor="middle">trial</text>
+              <rect x="330" y="162" width="50" height="18" rx="9" fill="#EAF0F6"/><text x="355" y="175" fill="#1A3A5C" font-size="10" text-anchor="middle">Starter</text>
+              <text x="408" y="174">4 / 5</text>
+              <text x="486" y="174" fill="#6B7280" font-size="10.5">lee@vertex.io</text>
+              <rect x="588" y="160" width="24" height="22" rx="6" fill="#EAF0F6"/><text x="600" y="175" text-anchor="middle" font-size="11">👁</text>
+              <rect x="614" y="160" width="24" height="22" rx="6" fill="#E8EFFE"/><text x="626" y="175" text-anchor="middle" font-size="11">🔧</text>
+              <rect x="640" y="160" width="24" height="22" rx="6" fill="#FBF3E2"/><text x="652" y="175" text-anchor="middle" font-size="11">⏸</text>
+              <rect x="666" y="160" width="24" height="22" rx="6" fill="#FBEAEA"/><text x="678" y="175" text-anchor="middle" font-size="11">🗑</text>
+              <!-- row 3 suspended -->
+              <rect x="24" y="192" width="672" height="44" fill="#FCFAFA" stroke="#EEF0F3"/>
+              <text x="42" y="212" fill="#C9540A" font-weight="600">Acme Partners</text>
+              <text x="42" y="227" fill="#9CA3AF" font-size="9.5">ID: 1033</text>
+              <rect x="250" y="206" width="74" height="18" rx="9" fill="#FBEAEA"/><text x="287" y="219" fill="#DC2626" font-size="10" text-anchor="middle">suspended</text>
+              <rect x="330" y="206" width="36" height="18" rx="9" fill="#EAF0F6"/><text x="348" y="219" fill="#1A3A5C" font-size="10" text-anchor="middle">Pro</text>
+              <text x="408" y="218">11 / 25</text>
+              <text x="486" y="218" fill="#6B7280" font-size="10.5">ops@acme.com</text>
+              <rect x="588" y="204" width="24" height="22" rx="6" fill="#EAF0F6"/><text x="600" y="219" text-anchor="middle" font-size="11">👁</text>
+              <rect x="614" y="204" width="24" height="22" rx="6" fill="#E8EFFE"/><text x="626" y="219" text-anchor="middle" font-size="11">🔧</text>
+              <rect x="640" y="204" width="24" height="22" rx="6" fill="#E7F6EF"/><text x="652" y="219" text-anchor="middle" font-size="11">▶</text>
+              <rect x="666" y="204" width="24" height="22" rx="6" fill="#FBEAEA"/><text x="678" y="219" text-anchor="middle" font-size="11">🗑</text>
+            </g>
+            <text x="42" y="262" fill="#9CA3AF" font-family="sans-serif" font-size="11">128 total</text>
+            <!-- callouts -->
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="262" cy="26" r="12" fill="#E8630A"/><text x="262" y="30" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="400" cy="13" r="12" fill="#E8630A"/><text x="400" y="17" fill="#fff" text-anchor="middle">2</text>
+              <circle cx="626" cy="12" r="12" fill="#E8630A"/><text x="626" y="16" fill="#fff" text-anchor="middle">3</text>
+              <circle cx="195" cy="126" r="12" fill="#E8630A"/><text x="195" y="130" fill="#fff" text-anchor="middle">4</text>
+              <circle cx="639" cy="103" r="12" fill="#E8630A"/><text x="639" y="107" fill="#fff" text-anchor="middle">5</text>
+            </g>
+          </svg>
+          <div class="help-figure-cap"><b>Sample organisations shown.</b></div>
+        </div>
+
+        <ol class="help-steps">
+          <li><strong>Search</strong> filters the list by organisation name as you type.</li>
+          <li><strong>Status</strong> and <strong>Plan</strong> dropdowns narrow the list — combine them to find, say, all <em>trial</em> orgs on the <em>Starter</em> plan.</li>
+          <li><strong>+ New Organisation</strong> opens the create dialog (see <a href="#creating-orgs">Creating an organisation</a>).</li>
+          <li>Click an organisation's <strong>name</strong> to open its detail drawer.</li>
+          <li>The <strong>row actions</strong> give you one-click controls — covered just below.</li>
+        </ol>
+
+        <h3>Row actions</h3>
+        <div class="chip-row"><span class="chip-glyph">👁</span><div class="chip-body"><b>View details</b> — opens the organisation's detail drawer (same as clicking the name).</div></div>
+        <div class="chip-row"><span class="chip-glyph is-blue">🔧</span><div class="chip-body"><b>Support mode</b> — enter the org as a support session to see what they see. Always logged. See <a href="#support-mode">Support mode</a>.</div></div>
+        <div class="chip-row"><span class="chip-glyph is-amber" style="background:var(--amber-soft);border-color:#f0dca8">⏸</span><div class="chip-body"><b>Suspend</b> — freezes the organisation. Members can't use the product until you reactivate. Suspended rows are visually muted.</div></div>
+        <div class="chip-row"><span class="chip-glyph is-green">▶</span><div class="chip-body"><b>Reactivate</b> — appears in place of Suspend for an already-suspended org, restoring access.</div></div>
+        <div class="chip-row"><span class="chip-glyph is-red">🗑</span><div class="chip-body"><b>Delete</b> — permanently removes the organisation. This is destructive and irreversible — see the warning below.</div></div>
+
+        <div class="note note--danger">
+          <span class="ic">⚠️</span>
+          <div>
+            <p><b>Deleting an organisation is permanent.</b> To prevent accidents, the confirmation dialog asks you to type the organisation's exact name before the Delete button activates. Prefer <b>Suspend</b> whenever you only need to pause access — it's fully reversible.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════════════ 4 · CREATING ORGS ════════════════ -->
+      <section class="help-section" id="creating-orgs">
+        <h2><span class="num">04</span> Creating an organisation</h2>
+        <p class="lead">Use <strong>+ New Organisation</strong> on the Organisations tab to provision a brand-new customer workspace. You set the basics here; everything else — members, modules, integrations — is configured afterwards from the detail drawer.</p>
+
+        <h3>Fields you'll set</h3>
+        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Field</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td><b>Name</b></td><td>The organisation's display name across the platform.</td></tr>
+              <tr><td><b>Plan</b></td><td>One of <span class="pill pill--grey">Free</span> <span class="pill pill--navy">Starter</span> <span class="pill pill--navy">Pro</span> <span class="pill pill--navy">Enterprise</span>. Sets the commercial tier; you can change it later.</td></tr>
+              <tr><td><b>Max Users</b></td><td>The seat cap. The members list shows usage as <code>active / max</code>.</td></tr>
+              <tr><td><b>Notes</b></td><td>Internal notes visible only to super admins (e.g. account context, special terms).</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note note--tip">
+          <span class="ic">💡</span>
+          <div>
+            <p><b>New orgs start clean.</b> After creating one, open its detail drawer to add the first user (or send an invite), then provision the <a href="#modules">modules</a> the customer has bought. A module the customer hasn't been provisioned simply won't appear for their team.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════════════════ 5 · ORG DETAIL ════════════════ -->
+      <section class="help-section" id="org-detail">
+        <h2><span class="num">05</span> Inside an organisation</h2>
+        <p class="lead">Clicking an organisation opens its detail drawer — the control panel for that single customer. It has three working areas: organisation details, members, and module provisioning.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Organisation detail</span></div>
+          <svg viewBox="0 0 720 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The organisation detail drawer with details, members and module sections.">
+            <rect width="720" height="380" fill="#EEF1F4"/>
+            <!-- drawer -->
+            <rect x="190" y="0" width="530" height="380" fill="#fff"/>
+            <line x1="190" y1="0" x2="190" y2="380" stroke="#E5E7EB"/>
+            <!-- header -->
+            <text x="214" y="40" fill="#1A3A5C" font-family="sans-serif" font-size="16" font-weight="800">Northwind Sales</text>
+            <text x="694" y="40" fill="#9CA3AF" font-family="sans-serif" font-size="15" text-anchor="end">✕</text>
+            <line x1="190" y1="56" x2="720" y2="56" stroke="#EEF0F3"/>
+            <!-- details section -->
+            <text x="214" y="84" fill="#1A3A5C" font-family="sans-serif" font-size="12.5" font-weight="700">Organisation Details</text>
+            <rect x="620" y="72" width="74" height="22" rx="6" fill="#fff" stroke="#E5E7EB"/><text x="657" y="87" fill="#2B3340" font-family="sans-serif" font-size="10.5" text-anchor="middle">✏️ Edit</text>
+            <g font-family="sans-serif" font-size="11" fill="#6B7280">
+              <text x="214" y="112">Plan</text><text x="380" y="112" fill="#1A3A5C" font-weight="600">Pro</text>
+              <text x="214" y="132">Seats</text><text x="380" y="132" fill="#1A3A5C" font-weight="600">18 / 25</text>
+              <text x="214" y="152">Status</text><text x="380" y="152" fill="#0F9D6E" font-weight="600">active</text>
+            </g>
+            <line x1="214" y1="166" x2="694" y2="166" stroke="#EEF0F3"/>
+            <!-- members section -->
+            <text x="214" y="190" fill="#1A3A5C" font-family="sans-serif" font-size="12.5" font-weight="700">Members (18)</text>
+            <rect x="540" y="178" width="74" height="22" rx="6" fill="#E8EFFE"/><text x="577" y="193" fill="#2563EB" font-family="sans-serif" font-size="10" text-anchor="middle">➕ Create</text>
+            <rect x="620" y="178" width="74" height="22" rx="6" fill="#E7F6EF"/><text x="657" y="193" fill="#0F9D6E" font-family="sans-serif" font-size="10" text-anchor="middle">📧 Invite</text>
+            <g font-family="sans-serif" font-size="10.5">
+              <rect x="214" y="206" width="480" height="26" rx="6" fill="#F6F7F9"/>
+              <text x="226" y="223" fill="#2B3340">ana@northwind.co</text>
+              <rect x="600" y="210" width="50" height="18" rx="9" fill="#FDEFE4"/><text x="625" y="223" fill="#C9540A" text-anchor="middle">admin ▾</text>
+              <text x="676" y="223" fill="#DC2626">✕</text>
+              <rect x="214" y="236" width="480" height="26" rx="6" fill="#F6F7F9"/>
+              <text x="226" y="253" fill="#2B3340">marco@northwind.co</text>
+              <rect x="600" y="240" width="56" height="18" rx="9" fill="#EAF0F6"/><text x="628" y="253" fill="#1A3A5C" text-anchor="middle">member ▾</text>
+              <text x="676" y="253" fill="#DC2626">✕</text>
+            </g>
+            <line x1="214" y1="278" x2="694" y2="278" stroke="#EEF0F3"/>
+            <!-- modules section -->
+            <text x="214" y="302" fill="#1A3A5C" font-family="sans-serif" font-size="12.5" font-weight="700">Modules</text>
+            <g font-family="sans-serif" font-size="10.5">
+              <rect x="214" y="312" width="234" height="26" rx="6" fill="#fff" stroke="#E5E7EB"/>
+              <text x="226" y="329" fill="#2B3340">🎯 Prospecting</text>
+              <rect x="408" y="316" width="32" height="18" rx="9" fill="#E8630A"/><circle cx="432" cy="325" r="6" fill="#fff"/>
+              <rect x="460" y="312" width="234" height="26" rx="6" fill="#fff" stroke="#E5E7EB"/>
+              <text x="472" y="329" fill="#2B3340">📄 Contracts (CLM)</text>
+              <rect x="654" y="316" width="32" height="18" rx="9" fill="#D7DCE2"/><circle cx="662" cy="325" r="6" fill="#fff"/>
+            </g>
+            <!-- callouts -->
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="668" cy="83" r="12" fill="#E8630A"/><text x="668" y="87" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="577" cy="189" r="12" fill="#1A3A5C" stroke="#fff" stroke-width="1.5"/><text x="577" y="193" fill="#fff" text-anchor="middle">2</text>
+              <circle cx="432" cy="325" r="12" fill="#1A3A5C" stroke="#fff" stroke-width="1.5"/><text x="432" y="329" fill="#fff" text-anchor="middle">3</text>
+            </g>
+          </svg>
+          <div class="help-figure-cap"><b>The detail drawer</b> slides in from the right over the organisations list.</div>
+        </div>
+
+        <h3>Organisation details</h3>
+        <p>Click <strong>✏️ Edit</strong> <span class="pill pill--ember">1</span> to change the <strong>Name</strong>, <strong>Plan</strong>, <strong>Max Users</strong> (seat cap), and internal <strong>Notes</strong>. Save writes the change immediately. The read-only view also surfaces the org ID, status, seat usage, and creation date.</p>
+
+        <h3>Members &amp; invites</h3>
+        <p>The members area <span class="pill pill--navy">2</span> gives you two ways to add people:</p>
+        <div class="chip-row"><span class="chip-glyph is-blue">➕</span><div class="chip-body"><b>Create User</b> — set first/last name, email, a temporary password (use the 🎲 button to generate one), and a role. The person is prompted to change their password on first login.</div></div>
+        <div class="chip-row"><span class="chip-glyph is-green">📧</span><div class="chip-body"><b>Invite</b> — send (or copy) an invite link for an email + role. Links expire in 7 days; the recipient registers through the link and auto-joins the org.</div></div>
+        <p>For existing members you can <strong>change their role</strong> from the inline dropdown or <strong>remove</strong> them with the ✕. Org-level roles are <span class="pill pill--ember">Owner</span> <span class="pill pill--navy">Admin</span> <span class="pill pill--grey">Member</span> <span class="pill pill--grey">Viewer</span>.</p>
+
+        <div class="note note--info">
+          <span class="ic">ℹ️</span>
+          <div><p><b>Org roles vs. platform roles.</b> These roles control what a person can do <em>inside their own organisation</em>. They are unrelated to platform Super Admin access, which is managed separately under <a href="#super-admins">Super admins</a>.</p></div>
+        </div>
+      </section>
+
+      <!-- ════════════════ 6 · MODULES ════════════════ -->
+      <section class="help-section" id="modules">
+        <h2><span class="num">06</span> Provisioning modules</h2>
+        <p class="lead">Modules are the major capability areas of GoWarmCRM. As a super admin you control which modules an organisation is <em>allowed</em> to use; the org's own admin then decides which allowed modules to actually turn on.</p>
+
+        <p>In the detail drawer's <strong>Modules</strong> section <span class="pill pill--navy">3</span>, flip the <strong>Allowed</strong> toggle for each module. There are two distinct states worth understanding:</p>
+
+        <div class="chip-row"><span class="chip-glyph">🔓</span><div class="chip-body"><b>Allowed</b> (you control) — whether the platform has provisioned this module for the org. This usually maps to what the customer has purchased.</div></div>
+        <div class="chip-row"><span class="chip-glyph">✅</span><div class="chip-body"><b>Enabled</b> (org admin controls) — whether the org has switched the module on for their team. You see this as a read-only indicator.</div></div>
+
+        <div class="note note--warn">
+          <span class="ic">🔁</span>
+          <div><p><b>Disallowing forces off.</b> If you turn <em>Allowed</em> off for a module the org had enabled, the platform automatically forces its <em>Enabled</em> state off too. Re-allowing it later lets the org turn it back on — it doesn't re-enable automatically.</p></div>
+        </div>
+
+        <h3>The five modules</h3>
+        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Module</th><th>What it adds</th></tr></thead>
+            <tbody>
+              <tr><td>🎯 <b>Prospecting</b></td><td>Prospect pipeline, outreach sequences, ICP scoring, and sender accounts.</td></tr>
+              <tr><td>📄 <b>Contract Lifecycle Management</b></td><td>Create contracts, legal review, e-signature, and versioning.</td></tr>
+              <tr><td>🤝 <b>Sales → Implementation Handover</b></td><td>A structured handover workflow on deal close — checklist, stakeholders, commitments.</td></tr>
+              <tr><td>🎧 <b>Customer Support &amp; Service</b></td><td>Case management, SLA tiers, playbook-driven workflows, and team assignment.</td></tr>
+              <tr><td>🏢 <b>Agency Client Management</b></td><td>Manage client accounts — portals, team scoping, and outreach tracking.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ════════════════ 7 · SUPPORT MODE ════════════════ -->
+      <section class="help-section" id="support-mode">
+        <h2><span class="num">07</span> Support mode</h2>
+        <p class="lead">Support mode lets you enter an organisation to troubleshoot from the inside — seeing the product the way that customer's admin sees it. It's the fastest way to diagnose a "it doesn't work for us" report.</p>
+
+        <ol class="help-steps">
+          <li>On the Organisations tab, click the <strong>🔧 Support mode</strong> action on the org's row.</li>
+          <li>Confirm the prompt. You'll see a confirmation that <strong>support mode is active</strong> for that organisation.</li>
+          <li>Work through the issue, then exit when you're done.</li>
+        </ol>
+
+        <div class="note note--warn">
+          <span class="ic">📋</span>
+          <div><p><b>Support mode is always logged.</b> The confirmation prompt reminds you of this before you start. Every session is written to the <a href="#audit">Audit Log</a> with the target organisation — so use it for genuine support and diagnostics.</p></div>
+        </div>
+      </section>
+
+      <!-- ════════════════ 8 · SUPER ADMINS ════════════════ -->
+      <section class="help-section" id="super-admins">
+        <h2><span class="num">08</span> Super admins</h2>
+        <p class="lead">The Super Admins tab manages who else holds platform-level access. Grants and revocations here are what actually turn the <strong>Super User</strong> role on or off for a person.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Platform Admin · Super Admins</span></div>
+          <svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The grant-access form and the list of current super admins.">
+            <rect width="720" height="250" fill="#F6F7F9"/>
+            <!-- grant form -->
+            <rect x="24" y="22" width="672" height="58" rx="11" fill="#fff" stroke="#E5E7EB"/>
+            <text x="42" y="44" fill="#1A3A5C" font-family="sans-serif" font-size="11.5" font-weight="700">Grant super admin access</text>
+            <rect x="42" y="50" width="280" height="22" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="54" y="65" fill="#9CA3AF" font-family="sans-serif" font-size="10.5">person@company.com</text>
+            <rect x="332" y="50" width="240" height="22" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="344" y="65" fill="#9CA3AF" font-family="sans-serif" font-size="10.5">notes (optional)</text>
+            <rect x="586" y="50" width="92" height="22" rx="6" fill="#E8630A"/><text x="632" y="65" fill="#fff" font-family="sans-serif" font-size="10.5" font-weight="600" text-anchor="middle">Grant access</text>
+            <!-- list -->
+            <g font-family="sans-serif" font-size="11.5">
+              <rect x="24" y="96" width="672" height="40" rx="9" fill="#fff" stroke="#E5E7EB"/>
+              <text x="42" y="115" fill="#1A3A5C" font-weight="600">sudheer@gowarmcrm.com</text>
+              <text x="42" y="129" fill="#9CA3AF" font-size="9.5">Granted by system · you</text>
+              <rect x="590" y="106" width="90" height="22" rx="6" fill="#EEF0F3"/><text x="635" y="121" fill="#9CA3AF" font-size="10" text-anchor="middle">Cannot revoke self</text>
+              <rect x="24" y="144" width="672" height="40" rx="9" fill="#fff" stroke="#E5E7EB"/>
+              <text x="42" y="163" fill="#1A3A5C" font-weight="600">priya@gowarmcrm.com</text>
+              <text x="42" y="177" fill="#9CA3AF" font-size="9.5">Granted by sudheer · 12 Mar 2026</text>
+              <rect x="606" y="154" width="74" height="22" rx="6" fill="#FBEAEA"/><text x="643" y="169" fill="#DC2626" font-size="10" text-anchor="middle">Revoke</text>
+            </g>
+            <!-- callouts -->
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="632" cy="40" r="12" fill="#E8630A"/><text x="632" y="44" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="643" cy="142" r="12" fill="#E8630A"/><text x="643" y="146" fill="#fff" text-anchor="middle">2</text>
+            </g>
+          </svg>
+        </div>
+
+        <ol class="help-steps">
+          <li>To <strong>grant</strong> access, enter the person's email, add an optional note for context, and choose <strong>Grant access</strong>. They gain the Super User role on their next session.</li>
+          <li>To <strong>revoke</strong>, use the Revoke button on their row. Revoked entries are kept in the list (marked revoked) so the history stays visible.</li>
+        </ol>
+
+        <div class="note note--info">
+          <span class="ic">🛡️</span>
+          <div><p><b>You can't revoke yourself.</b> Your own row shows the action disabled — a safeguard against locking the platform out. Ask another super admin if you need your own access changed.</p></div>
+        </div>
+      </section>
+
+      <!-- ════════════════ 9 · AUDIT ════════════════ -->
+      <section class="help-section" id="audit">
+        <h2><span class="num">09</span> The audit log</h2>
+        <p class="lead">The Audit Log is the platform's immutable record of every super-admin action. It's your accountability trail — useful for support reviews, security checks, and answering "who changed this and when?".</p>
+
+        <p>Each entry records the action taken, the target (org or user), who performed it, and when. Typical events include creating or editing organisations, suspending or deleting orgs, creating or removing users, granting or revoking super-admin access, and entering support mode.</p>
+
+        <div class="note note--info">
+          <span class="ic">📋</span>
+          <div><p><b>It's append-only.</b> Entries can't be edited or deleted from the interface — that's what makes the log trustworthy. Treat it as the source of truth when reconstructing what happened on an account.</p></div>
+        </div>
+      </section>
+
+      <!-- ════════════════ 10 · WORKFLOWS ════════════════ -->
+      <section class="help-section" id="workflows">
+        <h2><span class="num">10</span> Platform workflows</h2>
+        <p class="lead">The Workflows tab is where you build automation that operates at the platform level — rules that apply across organisations rather than inside any single one. It has two sub-views.</p>
+
+        <div class="chip-row"><span class="chip-glyph">⚙️</span><div class="chip-body"><b>Workflows &amp; Rules</b> — a visual canvas for defining platform-scope rules and their branching logic.</div></div>
+        <div class="chip-row"><span class="chip-glyph">📋</span><div class="chip-body"><b>Execution Log</b> — a record of when those platform workflows ran and what they did, for verification and troubleshooting.</div></div>
+
+        <div class="note note--tip">
+          <span class="ic">💡</span>
+          <div><p><b>Platform vs. org workflows.</b> Rules built here apply at the platform scope. Each organisation's own admin can build org-scoped workflows separately inside their Org Admin area — the two don't collide.</p></div>
+        </div>
+      </section>
+
+      <!-- ════════════════ 11 · PLATFORM SETTINGS ════════════════ -->
+      <section class="help-section" id="platform-settings">
+        <h2><span class="num">11</span> Platform settings</h2>
+        <p class="lead">Platform Settings holds configuration that cascades to <em>every</em> organisation. The guiding rule: org admins can add their own settings on top of these defaults, but they can't remove what you set at the platform level.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Platform Admin · Platform Settings</span></div>
+          <svg viewBox="0 0 720 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The three platform-settings sub-tabs: Email Filter Defaults, CRM Integrations, and AI Providers.">
+            <rect width="720" height="170" fill="#F6F7F9"/>
+            <line x1="24" y1="56" x2="696" y2="56" stroke="#E5E7EB"/>
+            <g font-family="sans-serif" font-size="12">
+              <rect x="24" y="28" width="180" height="28" rx="7" fill="#fff" stroke="#E5E7EB"/>
+              <text x="114" y="46" fill="#1A3A5C" font-weight="600" text-anchor="middle">📧 Email Filter Defaults</text>
+              <text x="280" y="46" fill="#6B7280">🔌 CRM Integrations</text>
+              <text x="430" y="46" fill="#6B7280">🧠 AI Providers</text>
+            </g>
+            <rect x="24" y="78" width="672" height="72" rx="11" fill="#fff" stroke="#E5E7EB"/>
+            <text x="42" y="104" fill="#1A3A5C" font-family="sans-serif" font-size="11.5" font-weight="700">Platform email-filter defaults</text>
+            <text x="42" y="124" fill="#6B7280" font-family="sans-serif" font-size="11">These tags cascade to all organisations. Org admins can add their own but cannot remove these.</text>
+            <g font-family="sans-serif" font-size="10.5">
+              <rect x="42" y="132" width="86" height="18" rx="9" fill="#F6F7F9" stroke="#E5E7EB"/><text x="85" y="145" fill="#374151" text-anchor="middle">no-reply  ×</text>
+              <rect x="134" y="132" width="96" height="18" rx="9" fill="#F6F7F9" stroke="#E5E7EB"/><text x="182" y="145" fill="#374151" text-anchor="middle">newsletter  ×</text>
+            </g>
+          </svg>
+        </div>
+
+        <div class="chip-row"><span class="chip-glyph">📧</span><div class="chip-body"><b>Email Filter Defaults</b> — baseline tags/filters that apply to every org's email handling. Org admins see these as read-only defaults in their own Email Settings and can layer their own on top.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🔌</span><div class="chip-body"><b>CRM Integrations</b> — global feature gates for the CRM connectors. This is where the platform's <b>Salesforce write-back</b> capability is switched on or off.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🧠</span><div class="chip-body"><b>AI Providers</b> — platform-level AI provider configuration that underpins AI features across orgs.</div></div>
+
+        <div class="note note--warn">
+          <span class="ic">⚠️</span>
+          <div><p><b>A platform gate is permission, not activation.</b> Enabling Salesforce write-back here does <em>not</em> turn it on for any organisation — it only allows org admins to enable it. Each org must still switch write-back on themselves in their Salesforce settings.</p></div>
+        </div>
+      </section>
+
+      <!-- ════════════════ REFERENCE ════════════════ -->
+      <section class="help-section" id="reference">
+        <h2><span class="num">12</span> Reference</h2>
+        <p class="lead">Quick lookups for the values you'll see throughout Platform Admin.</p>
+
+        <h3>Organisation statuses</h3>
+        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><span class="pill pill--green">active</span></td><td>Live and fully usable.</td></tr>
+              <tr><td><span class="pill pill--amber">trial</span></td><td>On a trial — part of your conversion pipeline.</td></tr>
+              <tr><td><span class="pill pill--red">suspended</span></td><td>Access frozen. Reversible — reactivate from the row action.</td></tr>
+              <tr><td><span class="pill pill--grey">cancelled</span></td><td>No longer an active customer.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Plans</h3>
+        <p><span class="pill pill--grey">Free</span> <span class="pill pill--navy">Starter</span> <span class="pill pill--navy">Pro</span> <span class="pill pill--navy">Enterprise</span> — set on creation and editable any time from the detail drawer. Plans are commercial tiers; the seat cap is controlled separately via <b>Max Users</b>.</p>
+
+        <h3>Org-level roles</h3>
+        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Role</th><th>Typical use</th></tr></thead>
+            <tbody>
+              <tr><td><span class="pill pill--ember">Owner</span></td><td>The org's principal account holder.</td></tr>
+              <tr><td><span class="pill pill--navy">Admin</span></td><td>Can administer the organisation (the Org Admin workspace).</td></tr>
+              <tr><td><span class="pill pill--grey">Member</span></td><td>A standard user / sales rep.</td></tr>
+              <tr><td><span class="pill pill--grey">Viewer</span></td><td>Read-oriented access.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note note--tip">
+          <span class="ic">🧭</span>
+          <div><p><b>Where org admins take over.</b> Once you've provisioned an org, its admin configures playbooks, stages, diagnostic rules, integrations, and team structure from their own Org Admin workspace — documented in the <em>Org Admin Guide</em> (coming next).</p></div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<button class="to-top" aria-label="Back to top">↑</button>
+<script>
+/* ============================================================
+   GoWarmCRM — Help Center shared behavior
+   Vanilla JS, no dependencies. Safe to drop in under any CSP.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  /* ---------- Mobile nav toggle ---------- */
+  var shell   = document.querySelector('.help-shell');
+  var menuBtn = document.querySelector('.help-menu-btn');
+  var scrim   = document.querySelector('.help-scrim');
+  function closeNav() { if (shell) shell.classList.remove('nav-open'); }
+  if (menuBtn && shell) {
+    menuBtn.addEventListener('click', function () { shell.classList.toggle('nav-open'); });
+  }
+  if (scrim) scrim.addEventListener('click', closeNav);
+
+  /* ---------- Section nav: smooth scroll + close mobile ---------- */
+  var navLinks = Array.prototype.slice.call(document.querySelectorAll('.help-nav a[href^="#"]'));
+  navLinks.forEach(function (a) {
+    a.addEventListener('click', function () { closeNav(); });
+  });
+
+  /* ---------- Scroll-spy: highlight active section in nav ---------- */
+  var sections = Array.prototype.slice.call(document.querySelectorAll('.help-section[id]'));
+  var byId = {};
+  navLinks.forEach(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    byId[id] = a;
+  });
+
+  function setActive(id) {
+    navLinks.forEach(function (a) { a.classList.remove('active'); });
+    if (byId[id]) byId[id].classList.add('active');
+  }
+
+  if ('IntersectionObserver' in window && sections.length) {
+    var visible = {};
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting ? e.intersectionRatio : 0; });
+      var best = null, bestR = 0;
+      sections.forEach(function (s) {
+        var r = visible[s.id] || 0;
+        if (r > bestR) { bestR = r; best = s.id; }
+      });
+      if (best) setActive(best);
+    }, { rootMargin: '-64px 0px -55% 0px', threshold: [0, .15, .35, .6, 1] });
+    sections.forEach(function (s) { io.observe(s); });
+  }
+
+  /* ---------- Search / filter sections ---------- */
+  var search = document.querySelector('.help-search input');
+  var empty  = document.querySelector('.search-empty');
+  if (search && sections.length) {
+    var debounce;
+    search.addEventListener('input', function () {
+      clearTimeout(debounce);
+      debounce = setTimeout(runFilter, 120);
+    });
+    function runFilter() {
+      var q = search.value.trim().toLowerCase();
+      var anyVisible = false;
+      sections.forEach(function (s) {
+        if (!q) { s.classList.remove('is-hidden'); anyVisible = true; return; }
+        var hit = (s.textContent || '').toLowerCase().indexOf(q) !== -1;
+        s.classList.toggle('is-hidden', !hit);
+        if (hit) anyVisible = true;
+      });
+      // dim nav items whose section is hidden
+      navLinks.forEach(function (a) {
+        var id = a.getAttribute('href').slice(1);
+        var sec = document.getElementById(id);
+        a.style.display = (!q || (sec && !sec.classList.contains('is-hidden'))) ? '' : 'none';
+      });
+      if (empty) empty.classList.toggle('show', !!q && !anyVisible);
+    }
+  }
+
+  /* ---------- Back to top ---------- */
+  var toTop = document.querySelector('.to-top');
+  if (toTop) {
+    window.addEventListener('scroll', function () {
+      toTop.classList.toggle('show', window.scrollY > 600);
+    }, { passive: true });
+    toTop.addEventListener('click', function () {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  }
+})();
+
+</script>
+</body>
+</html>

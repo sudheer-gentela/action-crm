@@ -1,0 +1,1385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Org Admin Guide · GoWarmCRM Help</title>
+<meta name="robots" content="noindex" />
+<style>
+/* ============================================================
+   GoWarmCRM — Help Center shared theme
+   Self-contained. No external fonts or CDNs (CSP-safe drop-in).
+   Palette: Ember #E8630A · Navy #1A3A5C
+   ============================================================ */
+
+:root {
+  /* Brand */
+  --ember:        #E8630A;
+  --ember-dark:   #C9540A;
+  --ember-soft:   #FDEFE4;
+  --ember-line:   #F6C9A6;
+  --navy:         #1A3A5C;
+  --navy-700:     #234a73;
+  --navy-soft:    #EAF0F6;
+
+  /* Neutrals */
+  --paper:        #FFFFFF;
+  --canvas:       #F6F7F9;
+  --line:         #E5E7EB;
+  --line-soft:    #EEF0F3;
+  --text:         #2B3340;
+  --muted:        #6B7280;
+  --faint:        #9CA3AF;
+
+  /* Semantic */
+  --green:        #0F9D6E;
+  --green-soft:   #E7F6EF;
+  --amber:        #B7791F;
+  --amber-soft:   #FBF3E2;
+  --red:          #DC2626;
+  --red-soft:     #FBEAEA;
+  --blue:         #2563EB;
+  --blue-soft:    #E8EFFE;
+
+  /* Geometry */
+  --radius:       12px;
+  --radius-sm:    8px;
+  --shadow:       0 1px 2px rgba(16,24,40,.05), 0 8px 24px rgba(16,24,40,.06);
+  --shadow-sm:    0 1px 2px rgba(16,24,40,.06);
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --sidebar-w: 280px;
+  --maxw: 860px;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--text);
+  background: var(--canvas);
+  font-size: 15px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ------------------------------------------------------------
+   App shell: fixed sidebar + scrolling content
+   ------------------------------------------------------------ */
+.help-shell { display: flex; min-height: 100vh; }
+
+.help-sidebar {
+  width: var(--sidebar-w);
+  flex: 0 0 var(--sidebar-w);
+  background: var(--navy);
+  color: #fff;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 22px 0 28px;
+}
+
+.help-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 0 96px;
+}
+
+.help-content-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 0 40px;
+}
+
+/* ------------------------------------------------------------
+   Brand block in sidebar
+   ------------------------------------------------------------ */
+.help-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 22px 18px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(255,255,255,.10);
+}
+.help-brand-mark {
+  width: 34px; height: 34px;
+  border-radius: 9px;
+  background: var(--ember);
+  display: grid; place-items: center;
+  flex: 0 0 34px;
+}
+.help-brand-name { font-weight: 700; font-size: 15px; letter-spacing: .2px; line-height: 1.15; }
+.help-brand-name .warm { color: var(--ember); }
+.help-brand-sub { font-size: 11.5px; color: rgba(255,255,255,.55); margin-top: 1px; }
+
+/* role pill on sidebar */
+.help-role-pill {
+  margin: 14px 22px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: rgba(232,99,10,.20);
+  border: 1px solid rgba(232,99,10,.5);
+  padding: 5px 11px;
+  border-radius: 999px;
+}
+.help-role-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ember); }
+
+/* ------------------------------------------------------------
+   Sidebar nav (table of contents)
+   ------------------------------------------------------------ */
+.help-nav { padding: 10px 14px 0; }
+.help-nav-group-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,.40);
+  padding: 16px 10px 6px;
+}
+.help-nav a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  color: rgba(255,255,255,.78);
+  text-decoration: none;
+  font-size: 13.5px;
+  line-height: 1.35;
+  transition: background .12s, color .12s;
+}
+.help-nav a .ic { width: 17px; text-align: center; flex: 0 0 17px; opacity: .9; }
+.help-nav a:hover { background: rgba(255,255,255,.07); color: #fff; }
+.help-nav a.active {
+  background: var(--ember);
+  color: #fff;
+  font-weight: 600;
+}
+.help-nav a.active .ic { opacity: 1; }
+
+.help-nav-foot {
+  margin: 22px 22px 0;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255,255,255,.10);
+  font-size: 11.5px;
+  color: rgba(255,255,255,.45);
+}
+.help-nav-foot a { color: rgba(255,255,255,.75); }
+
+/* ------------------------------------------------------------
+   Top bar inside content (search + breadcrumb)
+   ------------------------------------------------------------ */
+.help-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(246,247,249,.86);
+  backdrop-filter: saturate(140%) blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.help-topbar-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 13px 40px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.help-crumb { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.help-crumb b { color: var(--navy); font-weight: 600; }
+.help-search {
+  margin-left: auto;
+  position: relative;
+  width: 270px;
+  max-width: 45vw;
+}
+.help-search input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px 8px 32px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--text);
+}
+.help-search input:focus {
+  outline: none;
+  border-color: var(--ember);
+  box-shadow: 0 0 0 3px var(--ember-soft);
+}
+.help-search .mag {
+  position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+  color: var(--faint); font-size: 13px; pointer-events: none;
+}
+
+/* ------------------------------------------------------------
+   Hero
+   ------------------------------------------------------------ */
+.help-hero { padding: 44px 0 8px; }
+.help-eyebrow {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ember);
+}
+.help-eyebrow::before {
+  content: ""; width: 22px; height: 2px; background: var(--ember); border-radius: 2px;
+}
+.help-hero h1 {
+  font-size: 33px;
+  line-height: 1.12;
+  margin: 14px 0 10px;
+  color: var(--navy);
+  letter-spacing: -.02em;
+  font-weight: 800;
+}
+.help-hero p { font-size: 16px; color: var(--muted); max-width: 60ch; margin: 0; }
+
+/* ------------------------------------------------------------
+   Sections
+   ------------------------------------------------------------ */
+.help-section { padding-top: 52px; scroll-margin-top: 70px; }
+.help-section > h2 {
+  font-size: 23px;
+  color: var(--navy);
+  letter-spacing: -.01em;
+  font-weight: 800;
+  margin: 0 0 4px;
+  display: flex; align-items: baseline; gap: 10px;
+}
+.help-section > h2 .num {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ember);
+  font-variant-numeric: tabular-nums;
+  background: var(--ember-soft);
+  border-radius: 6px;
+  padding: 2px 8px;
+  align-self: center;
+}
+.help-section > .lead { font-size: 15.5px; color: var(--muted); margin: 6px 0 22px; max-width: 64ch; }
+
+.help-section h3 {
+  font-size: 17px; color: var(--navy); font-weight: 700;
+  margin: 30px 0 8px; letter-spacing: -.01em;
+}
+.help-section h4 {
+  font-size: 14px; color: var(--navy); font-weight: 700;
+  margin: 20px 0 4px; text-transform: none;
+}
+.help-section p { margin: 0 0 13px; }
+.help-section a { color: var(--ember-dark); text-decoration: none; border-bottom: 1px solid var(--ember-line); }
+.help-section a:hover { border-bottom-color: var(--ember); }
+.help-section ul, .help-section ol { margin: 0 0 14px; padding-left: 22px; }
+.help-section li { margin: 5px 0; }
+.help-section strong { color: var(--navy); font-weight: 650; }
+code, .kbd {
+  font-family: var(--mono);
+  font-size: .86em;
+  background: var(--navy-soft);
+  color: var(--navy-700);
+  padding: 1.5px 6px;
+  border-radius: 5px;
+}
+
+/* ------------------------------------------------------------
+   Figure / screen-map
+   ------------------------------------------------------------ */
+.help-figure {
+  margin: 8px 0 22px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.help-figure-bar {
+  display: flex; align-items: center; gap: 7px;
+  padding: 9px 14px;
+  background: var(--navy-soft);
+  border-bottom: 1px solid var(--line);
+}
+.help-figure-bar .tl { display: flex; gap: 6px; }
+.help-figure-bar .tl i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+.help-figure-bar .tl i:nth-child(1){ background:#F56C6C; }
+.help-figure-bar .tl i:nth-child(2){ background:#F5B942; }
+.help-figure-bar .tl i:nth-child(3){ background:#3CC97B; }
+.help-figure-bar .tt { font-size: 12px; color: var(--muted); font-weight: 600; margin-left: 4px; }
+.help-figure svg { display: block; width: 100%; height: auto; }
+.help-figure-cap {
+  padding: 9px 14px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border-top: 1px solid var(--line-soft);
+  background: #FCFCFD;
+}
+.help-figure-cap b { color: var(--navy); }
+
+/* numbered callout list paired with a figure */
+.help-steps { counter-reset: step; list-style: none; padding-left: 0; margin: 6px 0 16px; }
+.help-steps > li {
+  position: relative;
+  padding-left: 38px;
+  margin: 12px 0;
+  min-height: 26px;
+}
+.help-steps > li::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute; left: 0; top: 0;
+  width: 26px; height: 26px;
+  background: var(--ember);
+  color: #fff;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 13px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------
+   Callouts
+   ------------------------------------------------------------ */
+.note {
+  display: flex; gap: 11px;
+  padding: 13px 15px;
+  border-radius: var(--radius-sm);
+  margin: 16px 0;
+  font-size: 14px;
+  border: 1px solid;
+  line-height: 1.55;
+}
+.note .ic { flex: 0 0 auto; font-size: 15px; line-height: 1.5; }
+.note p { margin: 0 0 6px; }
+.note p:last-child { margin: 0; }
+.note--tip   { background: var(--ember-soft); border-color: var(--ember-line); color: #7a3a08; }
+.note--info  { background: var(--blue-soft);  border-color: #c5d7fb; color: #1e3a8a; }
+.note--warn  { background: var(--amber-soft); border-color: #f0dca8; color: #7a5a13; }
+.note--danger{ background: var(--red-soft);   border-color: #f3c9c9; color: #991b1b; }
+.note b { color: inherit; }
+
+/* ------------------------------------------------------------
+   Tables (reference)
+   ------------------------------------------------------------ */
+.help-table-wrap { overflow-x: auto; margin: 6px 0 18px; border: 1px solid var(--line); border-radius: var(--radius); }
+table.ref {
+  width: 100%; border-collapse: collapse; font-size: 13.5px; background: var(--paper);
+}
+table.ref th, table.ref td { text-align: left; padding: 10px 14px; vertical-align: top; }
+table.ref thead th {
+  background: var(--navy-soft); color: var(--navy);
+  font-size: 11px; letter-spacing: .05em; text-transform: uppercase; font-weight: 700;
+  border-bottom: 1px solid var(--line);
+}
+table.ref tbody tr + tr td { border-top: 1px solid var(--line-soft); }
+table.ref td code { white-space: nowrap; }
+
+/* status / plan pills used in tables */
+.pill { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.pill--green { background: var(--green-soft); color: var(--green); }
+.pill--amber { background: var(--amber-soft); color: var(--amber); }
+.pill--red   { background: var(--red-soft);   color: var(--red); }
+.pill--grey  { background: #EEF0F3; color: #5b6471; }
+.pill--navy  { background: var(--navy-soft);  color: var(--navy); }
+.pill--ember { background: var(--ember-soft); color: var(--ember-dark); }
+
+/* ------------------------------------------------------------
+   Action chip (for "what each button does" rows)
+   ------------------------------------------------------------ */
+.chip-row { display: flex; align-items: flex-start; gap: 12px; margin: 9px 0; }
+.chip-glyph {
+  flex: 0 0 auto;
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  display: grid; place-items: center;
+  font-size: 15px;
+  background: var(--navy-soft);
+  border: 1px solid var(--line);
+}
+.chip-glyph.is-blue  { background: var(--blue-soft);  border-color:#c5d7fb; }
+.chip-glyph.is-green { background: var(--green-soft); border-color:#bfe7d4; }
+.chip-glyph.is-red   { background: var(--red-soft);   border-color:#f3c9c9; }
+.chip-body { font-size: 14px; padding-top: 2px; }
+.chip-body b { color: var(--navy); }
+
+/* ------------------------------------------------------------
+   Landing (index) cards
+   ------------------------------------------------------------ */
+.lp { max-width: 980px; margin: 0 auto; padding: 64px 32px 80px; }
+.lp-hero { text-align: center; margin-bottom: 46px; }
+.lp-hero .help-brand-mark { width: 52px; height: 52px; border-radius: 13px; margin: 0 auto 20px; }
+.lp-hero h1 { font-size: 38px; color: var(--navy); font-weight: 800; letter-spacing: -.02em; margin: 0 0 12px; }
+.lp-hero p { font-size: 17px; color: var(--muted); margin: 0 auto; max-width: 56ch; }
+.lp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+.lp-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 26px 24px;
+  box-shadow: var(--shadow-sm);
+  transition: transform .14s, box-shadow .14s, border-color .14s;
+  position: relative;
+}
+.lp-card:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: var(--ember-line); }
+.lp-card .ic {
+  width: 46px; height: 46px; border-radius: 11px; display: grid; place-items: center;
+  font-size: 22px; margin-bottom: 16px; background: var(--ember-soft);
+}
+.lp-card h3 { font-size: 18px; color: var(--navy); font-weight: 700; margin: 0 0 6px; }
+.lp-card p { font-size: 13.5px; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
+.lp-card .who { font-size: 11.5px; font-weight: 600; color: var(--ember-dark); text-transform: uppercase; letter-spacing: .05em; }
+.lp-card .arrow { position: absolute; top: 24px; right: 24px; color: var(--faint); font-size: 18px; transition: transform .14s, color .14s; }
+.lp-card:hover .arrow { transform: translateX(3px); color: var(--ember); }
+.lp-card.is-soon { opacity: .72; }
+.lp-card.is-soon .badge-soon {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); background: #EEF0F3; padding: 3px 8px; border-radius: 6px;
+}
+.lp-foot { text-align: center; margin-top: 46px; font-size: 13px; color: var(--faint); }
+
+/* ------------------------------------------------------------
+   Search "no results" + hidden state
+   ------------------------------------------------------------ */
+.help-section.is-hidden { display: none; }
+.search-empty {
+  display: none;
+  padding: 40px 0; text-align: center; color: var(--muted); font-size: 15px;
+}
+.search-empty.show { display: block; }
+
+/* back to top */
+.to-top {
+  position: fixed; right: 22px; bottom: 22px;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: var(--navy); color: #fff; border: none; cursor: pointer;
+  font-size: 18px; box-shadow: var(--shadow); opacity: 0; pointer-events: none;
+  transition: opacity .2s; z-index: 40;
+}
+.to-top.show { opacity: 1; pointer-events: auto; }
+.to-top:hover { background: var(--ember); }
+
+/* ------------------------------------------------------------
+   Mobile
+   ------------------------------------------------------------ */
+.help-menu-btn {
+  display: none;
+  background: var(--navy); color:#fff; border:none; border-radius: 8px;
+  width: 38px; height: 38px; font-size: 18px; cursor: pointer;
+}
+.help-scrim { display:none; }
+
+@media (max-width: 900px) {
+  :root { --sidebar-w: 256px; }
+  .help-content-inner, .help-topbar-inner { padding-left: 22px; padding-right: 22px; }
+  .help-sidebar {
+    position: fixed; left: 0; top: 0; z-index: 60;
+    transform: translateX(-100%); transition: transform .22s ease;
+    box-shadow: 0 0 40px rgba(0,0,0,.3);
+  }
+  .help-shell.nav-open .help-sidebar { transform: translateX(0); }
+  .help-shell.nav-open .help-scrim {
+    display: block; position: fixed; inset: 0; background: rgba(15,23,42,.5); z-index: 55;
+  }
+  .help-menu-btn { display: grid; place-items: center; }
+  .help-search { width: auto; flex: 1; max-width: none; }
+  .help-hero h1 { font-size: 27px; }
+  .help-crumb { display: none; }
+}
+
+@media (max-width: 560px) {
+  .help-content-inner, .help-topbar-inner { padding-left: 16px; padding-right: 16px; }
+  .lp { padding: 40px 18px 60px; }
+  .lp-hero h1 { font-size: 29px; }
+}
+
+</style>
+</head>
+<body>
+<div class="help-shell">
+
+  <!-- ───────────────────────── SIDEBAR ───────────────────────── -->
+  <aside class="help-sidebar">
+    <div class="help-brand">
+      <div class="help-brand-mark" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
+          <path d="M36 6 C26 18 12 26 14 44 C16 58 26 68 36 72 C46 68 56 58 58 44 C60 26 46 18 36 6Z" fill="#FDE68A"/>
+          <path d="M36 22 C31 30 26 36 28 46 C30 53 33 58 36 62 C39 58 42 53 44 46 C46 36 41 30 36 22Z" fill="#fff"/>
+        </svg>
+      </div>
+      <div>
+        <div class="help-brand-name">Go<span class="warm">Warm</span> CRM</div>
+        <div class="help-brand-sub">Help Center</div>
+      </div>
+    </div>
+
+    <div class="help-role-pill"><span class="dot"></span> Org Admin</div>
+
+    <nav class="help-nav">
+      <div class="help-nav-group-label">Getting started</div>
+      <a href="#access"><span class="ic">🚪</span> Opening Org Admin</a>
+
+      <div class="help-nav-group-label">Team</div>
+      <a href="#members"><span class="ic">👥</span> Members &amp; roles</a>
+      <a href="#hierarchy"><span class="ic">🏢</span> Hierarchy</a>
+      <a href="#teams"><span class="ic">🏷️</span> Teams &amp; dimensions</a>
+      <a href="#invitations"><span class="ic">✉️</span> Invitations</a>
+
+      <div class="help-nav-group-label">Sales process</div>
+      <a href="#playbooks"><span class="ic">📘</span> Playbooks</a>
+      <a href="#stages"><span class="ic">🏷️</span> Stages</a>
+      <a href="#org-roles"><span class="ic">🎭</span> Organization roles</a>
+      <a href="#products"><span class="ic">📦</span> Product catalog</a>
+
+      <div class="help-nav-group-label">Sales execution insights</div>
+      <a href="#deal-health"><span class="ic">🏥</span> Deal Health</a>
+      <a href="#icp-scoring"><span class="ic">🎯</span> ICP Scoring</a>
+      <a href="#diagnostic-rules"><span class="ic">⚙️</span> Diagnostic Rules</a>
+
+      <div class="help-nav-group-label">Auto action execution</div>
+      <a href="#ai-agent"><span class="ic">🤖</span> AI Agent</a>
+      <a href="#ai-providers"><span class="ic">🧠</span> AI Providers</a>
+      <a href="#actions-ai"><span class="ic">✨</span> Actions AI</a>
+      <a href="#ai-usage"><span class="ic">📊</span> AI Usage</a>
+
+      <div class="help-nav-group-label">Data quality</div>
+      <a href="#duplicates"><span class="ic">🔍</span> Duplicates</a>
+      <a href="#workflows"><span class="ic">⚙️</span> Workflows</a>
+      <a href="#email-settings"><span class="ic">📧</span> Email Settings</a>
+      <a href="#tracking-domain"><span class="ic">🔗</span> Tracking Domain</a>
+      <a href="#custom-fields"><span class="ic">🧱</span> Custom Fields</a>
+
+      <div class="help-nav-group-label">Connections</div>
+      <a href="#integrations"><span class="ic">🔌</span> Integrations</a>
+      <a href="#crm-sync"><span class="ic">☁️</span> Salesforce &amp; HubSpot</a>
+      <a href="#settings"><span class="ic">⚙️</span> Org Settings</a>
+
+      <div class="help-nav-group-label">Modules</div>
+      <a href="#modules"><span class="ic">🧩</span> Enabling modules</a>
+      <a href="#module-config"><span class="ic">🛠️</span> Configuring a module</a>
+
+      <div class="help-nav-group-label">Reference</div>
+      <a href="#reference"><span class="ic">📖</span> Roles &amp; sync timing</a>
+
+      <div class="help-nav-foot">
+        <a href="index.html">← All guides</a>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="help-scrim"></div>
+
+  <!-- ───────────────────────── CONTENT ───────────────────────── -->
+  <main class="help-content">
+
+    <div class="help-topbar">
+      <div class="help-topbar-inner">
+        <button class="help-menu-btn" aria-label="Open navigation">☰</button>
+        <span class="help-crumb">Help Center · <b>Org Admin Guide</b></span>
+        <div class="help-search">
+          <span class="mag">🔍</span>
+          <input type="search" placeholder="Search this guide…" aria-label="Search this guide" />
+        </div>
+      </div>
+    </div>
+
+    <div class="help-content-inner">
+
+      <header class="help-hero">
+        <span class="help-eyebrow">Organisation Administration</span>
+        <h1>Org Admin Guide</h1>
+        <p>How to set up and run GoWarmCRM for your team — your people and structure, your sales process, the diagnostics that drive the action queue, your AI and integrations, and the modules your org uses.</p>
+      </header>
+
+      <div class="search-empty">No sections match your search. Try a different term.</div>
+
+      <!-- ════════════════ ACCESS ════════════════ -->
+      <section class="help-section" id="access">
+        <h2><span class="num">01</span> Opening Org Admin</h2>
+        <p class="lead">Org Admin is a dedicated workspace, separate from your everyday CRM. You enter it by switching your active role — your normal Member view stays exactly as you left it.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Org Admin console</span></div>
+          <svg viewBox="0 0 720 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The Org Admin console: a grouped left navigation (Team, Sales Process, Sales Execution Insights, and more) beside the settings content area.">
+            <rect width="720" height="380" fill="#F6F7F9"/>
+            <!-- inner left nav -->
+            <rect x="0" y="0" width="214" height="380" fill="#fff" stroke="#E5E7EB"/>
+            <text x="20" y="34" fill="#1A3A5C" font-family="sans-serif" font-size="13" font-weight="800">Org Admin</text>
+            <g font-family="sans-serif" font-size="10" fill="#9CA3AF" font-weight="700" letter-spacing="0.5">
+              <text x="20" y="60">TEAM</text>
+            </g>
+            <g font-family="sans-serif" font-size="11.5" fill="#374151">
+              <rect x="12" y="66" width="190" height="24" rx="6" fill="#FDEFE4"/>
+              <text x="26" y="82" fill="#C9540A" font-weight="600">👥 Members</text>
+              <text x="26" y="104">🏢 Hierarchy</text>
+              <text x="26" y="124">🏷️ Teams</text>
+              <text x="26" y="144">✉️ Invitations</text>
+            </g>
+            <text x="20" y="170" fill="#9CA3AF" font-family="sans-serif" font-size="10" font-weight="700">SALES PROCESS</text>
+            <g font-family="sans-serif" font-size="11.5" fill="#374151">
+              <text x="26" y="190">📘 Playbooks</text>
+              <text x="26" y="210">🏷️ Stages</text>
+              <text x="26" y="230">🎭 Org Roles</text>
+            </g>
+            <text x="20" y="256" fill="#9CA3AF" font-family="sans-serif" font-size="10" font-weight="700">SALES EXECUTION INSIGHTS</text>
+            <g font-family="sans-serif" font-size="11.5" fill="#374151">
+              <text x="26" y="276">🏥 Deal Health</text>
+              <text x="26" y="296">🎯 ICP Scoring</text>
+              <text x="26" y="316">⚙️ Diagnostic Rules</text>
+            </g>
+            <text x="20" y="342" fill="#9CA3AF" font-family="sans-serif" font-size="10" font-weight="700">AUTO ACTION EXECUTION · …</text>
+            <!-- content -->
+            <text x="244" y="40" fill="#1A3A5C" font-family="sans-serif" font-size="16" font-weight="800">Members</text>
+            <text x="244" y="60" fill="#6B7280" font-family="sans-serif" font-size="11.5">Manage team members, roles, and permissions</text>
+            <rect x="244" y="78" width="150" height="62" rx="10" fill="#fff" stroke="#E5E7EB"/>
+            <rect x="404" y="78" width="150" height="62" rx="10" fill="#fff" stroke="#E5E7EB"/>
+            <rect x="564" y="78" width="132" height="62" rx="10" fill="#fff" stroke="#E5E7EB"/>
+            <rect x="244" y="156" width="452" height="180" rx="10" fill="#fff" stroke="#E5E7EB"/>
+            <!-- callouts -->
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="190" cy="78" r="12" fill="#E8630A"/><text x="190" y="82" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="200" cy="168" r="12" fill="#1A3A5C" stroke="#fff" stroke-width="1.5"/><text x="200" y="172" fill="#fff" text-anchor="middle">2</text>
+              <circle cx="470" cy="40" r="12" fill="#1A3A5C" stroke="#fff" stroke-width="1.5"/><text x="470" y="44" fill="#fff" text-anchor="middle">3</text>
+            </g>
+          </svg>
+          <div class="help-figure-cap"><b>The Org Admin console.</b> A grouped left nav drives a settings panel on the right.</div>
+        </div>
+
+        <ol class="help-steps">
+          <li>Switch your role to <strong>Org Admin</strong> from the user card at the bottom of the main sidebar, then open <strong>Org Admin</strong> (🔑). Only members with the Owner or Admin role see this option.</li>
+          <li>The <strong>grouped left nav</strong> organises every setting into sections — Team, Sales Process, Sales Execution Insights, Auto Action Execution, Data Quality, General, and Modules.</li>
+          <li>The <strong>content panel</strong> shows the screen you've selected, with a title and one-line description at the top so you always know where you are.</li>
+        </ol>
+
+        <div class="note note--info">
+          <span class="ic">🧭</span>
+          <div><p><b>This guide follows the nav.</b> Each section below maps to a screen in that left nav, in the same order. Use the search box up top to jump straight to a setting by name.</p></div>
+        </div>
+
+        <div class="note note--tip">
+          <span class="ic">💡</span>
+          <div><p><b>A sensible setup order.</b> If you're configuring a new org from scratch: start with <a href="#members">Members</a> and <a href="#stages">Stages</a>, then tune <a href="#deal-health">Deal Health</a> and <a href="#diagnostic-rules">Diagnostic Rules</a> (these power the action queue), connect your <a href="#crm-sync">CRM</a>, and finish by enabling the <a href="#modules">modules</a> your team needs.</p></div>
+        </div>
+      </section>
+
+      <!-- ════════════════ MEMBERS ════════════════ -->
+      <section class="help-section" id="members">
+        <h2><span class="num">02</span> Members &amp; roles</h2>
+        <p class="lead">The Members screen is your team roster. Here you set each person's role, assign them to a department, and see how active they are.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Org Admin · Members</span></div>
+          <svg viewBox="0 0 720 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The role legend cards and the member list with role dropdowns and activity counts.">
+            <rect width="720" height="340" fill="#F6F7F9"/>
+            <text x="24" y="34" fill="#1A3A5C" font-family="sans-serif" font-size="15" font-weight="800">👥 Team Members</text>
+            <!-- role legend -->
+            <g font-family="sans-serif" font-size="10.5">
+              <rect x="24" y="48" width="160" height="58" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <rect x="36" y="58" width="58" height="18" rx="9" fill="#EFE7FB"/><text x="65" y="71" fill="#7c3aed" text-anchor="middle">👑 Owner</text>
+              <text x="36" y="92" fill="#6B7280">Full control</text>
+              <rect x="192" y="48" width="160" height="58" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <rect x="204" y="58" width="54" height="18" rx="9" fill="#E8EFFE"/><text x="231" y="71" fill="#2563eb" text-anchor="middle">🔑 Admin</text>
+              <text x="204" y="92" fill="#6B7280">Manage members + data</text>
+              <rect x="360" y="48" width="160" height="58" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <rect x="372" y="58" width="62" height="18" rx="9" fill="#E7F6EF"/><text x="403" y="71" fill="#0F9D6E" text-anchor="middle">👤 Member</text>
+              <text x="372" y="92" fill="#6B7280">Full CRM access</text>
+              <rect x="528" y="48" width="168" height="58" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <rect x="540" y="58" width="56" height="18" rx="9" fill="#EEF0F3"/><text x="568" y="71" fill="#5b6471" text-anchor="middle">👁 Viewer</text>
+              <text x="540" y="92" fill="#6B7280">Read-only</text>
+            </g>
+            <!-- member rows -->
+            <g font-family="sans-serif" font-size="11.5">
+              <rect x="24" y="120" width="672" height="46" rx="9" fill="#fff" stroke="#E5E7EB"/>
+              <circle cx="48" cy="143" r="13" fill="#1A3A5C"/><text x="48" y="147" fill="#fff" font-size="10" text-anchor="middle">AN</text>
+              <text x="72" y="139" fill="#1A3A5C" font-weight="600">Ana Ng</text>
+              <text x="72" y="155" fill="#9CA3AF" font-size="9.5">Joined 4 Feb 2026 · 312 actions</text>
+              <rect x="420" y="131" width="110" height="24" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="434" y="147" fill="#374151">🔑 Admin ▾</text>
+              <rect x="544" y="131" width="130" height="24" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="558" y="147" fill="#374151">Sales ▾</text>
+              <rect x="24" y="172" width="672" height="46" rx="9" fill="#fff" stroke="#E5E7EB"/>
+              <circle cx="48" cy="195" r="13" fill="#0F9D6E"/><text x="48" y="199" fill="#fff" font-size="10" text-anchor="middle">MR</text>
+              <text x="72" y="191" fill="#1A3A5C" font-weight="600">Marco Reyes</text>
+              <text x="72" y="207" fill="#9CA3AF" font-size="9.5">Joined 18 Mar 2026 · 88 actions</text>
+              <rect x="420" y="183" width="110" height="24" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="434" y="199" fill="#374151">👤 Member ▾</text>
+              <rect x="544" y="183" width="130" height="24" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="558" y="199" fill="#374151">Implementation ▾</text>
+            </g>
+            <!-- callouts -->
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="184" cy="48" r="12" fill="#E8630A"/><text x="184" y="52" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="475" cy="131" r="12" fill="#E8630A"/><text x="475" y="135" fill="#fff" text-anchor="middle">2</text>
+              <circle cx="609" cy="131" r="12" fill="#E8630A"/><text x="609" y="135" fill="#fff" text-anchor="middle">3</text>
+            </g>
+          </svg>
+        </div>
+
+        <ol class="help-steps">
+          <li>The <strong>role legend</strong> explains what each of the four system roles can do — a quick reference while you assign them.</li>
+          <li>Change anyone's <strong>role</strong> from the inline dropdown on their row. Admins can manage members but can't change an Owner; the Owner can change anyone.</li>
+          <li>Assign a <strong>department</strong> (Sales, Legal, Implementation, Customer Support, Finance, Executive). Departments route work — for example, handovers and cases flow to the right people.</li>
+        </ol>
+
+        <h3>The four roles</h3>
+        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Role</th><th>Can do</th></tr></thead>
+            <tbody>
+              <tr><td><span class="pill" style="background:#EFE7FB;color:#7c3aed">👑 Owner</span></td><td>Full control — org settings, billing, all data. Cannot be removed.</td></tr>
+              <tr><td><span class="pill pill--navy">🔑 Admin</span></td><td>Manage members, invitations, integrations, and all CRM data.</td></tr>
+              <tr><td><span class="pill pill--green">👤 Member</span></td><td>Full CRM access — deals, contacts, emails, AI. Cannot manage users.</td></tr>
+              <tr><td><span class="pill pill--grey">👁 Viewer</span></td><td>Read-only access to all CRM data. Cannot create or edit records.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>The Members screen also shows summary stats for your team at the top, and each row shows the join date and a running <b>actions</b> count so you can see engagement at a glance.</p></div></div>
+      </section>
+
+      <!-- ════════════════ HIERARCHY ════════════════ -->
+      <section class="help-section" id="hierarchy">
+        <h2><span class="num">03</span> Hierarchy</h2>
+        <p class="lead">Hierarchy is your reporting structure — who reports to whom. It's what gives managers visibility into (and edit access over) their team's deals and prospecting work.</p>
+        <p>Set each person's manager to build the reporting tree. Once it's in place, a manager can see and act on their direct and indirect reports' items, rolling up the whole branch beneath them. This structure also feeds team reporting and the manager-visibility controls used elsewhere in the product.</p>
+        <div class="note note--tip"><span class="ic">💡</span><div><p><b>Hierarchy vs. Teams.</b> Hierarchy is the vertical chain of command (manager → report). <a href="#teams">Teams</a> are horizontal groupings by segment, product, geography, or motion. Most orgs use both.</p></div></div>
+      </section>
+
+      <!-- ════════════════ TEAMS ════════════════ -->
+      <section class="help-section" id="teams">
+        <h2><span class="num">04</span> Teams &amp; dimensions</h2>
+        <p class="lead">Teams let you group users along the dimensions that matter to your business — market segment, role, product line, geography, and sales motion. Team Dimensions is where you define the vocabulary those groupings use.</p>
+
+        <h3>Team Dimensions</h3>
+        <p>Before you build teams, set up the <strong>dimensions</strong> you want to organise by. Each dimension has a label (for example, <em>Market Segment</em> or <em>Region</em>) and its set of values. GoWarmCRM keeps separate dimension vocabularies for your internal teams and for customer-side teams, so you can model both sides of a deal accurately.</p>
+
+        <h3>Teams</h3>
+        <p>With dimensions defined, create teams and assign members to them. Teams give you a way to slice reporting, scope work, and segment your motion without forcing everyone into a single rigid hierarchy.</p>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Set up <b>Team Dimensions first</b> — teams reference the dimension values you create there, so defining the vocabulary up front keeps your team structure consistent.</p></div></div>
+      </section>
+
+      <!-- ════════════════ INVITATIONS ════════════════ -->
+      <section class="help-section" id="invitations">
+        <h2><span class="num">05</span> Invitations</h2>
+        <p class="lead">Invite new people to your organisation by email. Each invite carries the role they'll get when they join.</p>
+        <ol class="help-steps">
+          <li>Under <strong>New Invitation</strong>, enter the colleague's email and (optionally) a short personal message.</li>
+          <li>Choose the role they'll receive on joining, then send. They get a link to register and auto-join your org.</li>
+          <li>Track sent invites in the list below — pending invitations stay visible until they're accepted or expire.</li>
+        </ol>
+        <div class="note note--tip"><span class="ic">💡</span><div><p>Inviting is the self-serve path — the person sets their own password. If you'd rather create an account directly with a temporary password, an account can also be provisioned for you by a platform super admin.</p></div></div>
+      </section>
+
+      <!-- ════════════════ PLAYBOOKS ════════════════ -->
+      <section class="help-section" id="playbooks">
+        <h2><span class="num">06</span> Playbooks</h2>
+        <p class="lead">Playbooks are the reusable plays your team runs — the structured steps and templates behind deals, prospecting, CLM, and more. The Playbooks screen is where you manage which playbooks exist and how they're organised.</p>
+        <p>Use <strong>Playbook Types</strong> to organise plays by the area they belong to. Playbooks then supply the templates the rest of the product draws on — for example, the step templates that the action queue uses, and the STRAP plays that strategic planning generates from.</p>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Playbooks connect to several other screens: the <a href="#actions-ai">Actions AI</a> settings decide whether AI enhances playbook-generated steps, and the per-module configuration can seed starter plays for you (see <a href="#module-config">Configuring a module</a>).</p></div></div>
+      </section>
+
+      <!-- ════════════════ STAGES ════════════════ -->
+      <section class="help-section" id="stages">
+        <h2><span class="num">07</span> Stages</h2>
+        <p class="lead">Stages define your pipelines. GoWarmCRM keeps two separate stage sets — one for <strong>deals</strong> and one for <strong>prospecting</strong> — so each pipeline reflects how that work actually flows.</p>
+        <ol class="help-steps">
+          <li>Pick the pipeline you're editing — <strong>Deal</strong> stages or <strong>Prospect</strong> stages.</li>
+          <li>Add a stage by name (for example, <em>Technical Review</em> for deals or <em>Cold Outreach</em> for prospecting), then drag to reorder so the sequence matches your process.</li>
+        </ol>
+        <div class="note note--warn"><span class="ic">⚠️</span><div><p><b>Stages ripple outward.</b> Several diagnostics and your CRM stage-mapping depend on these stages. If you rename or reorder stages after going live, review your <a href="#crm-sync">Salesforce/HubSpot stage mapping</a> so synced records still land in the right place.</p></div></div>
+      </section>
+
+      <!-- ════════════════ ORG ROLES ════════════════ -->
+      <section class="help-section" id="org-roles">
+        <h2><span class="num">08</span> Organization roles</h2>
+        <p class="lead">These are the <em>functional</em> roles people play on deals, prospects, and plays — distinct from the four system roles that control product permissions. Think buyer-side and seller-side roles like Economic Buyer, Champion, or Solutions Engineer.</p>
+        <p>The screen separates <strong>System Roles</strong> (the built-in set GoWarmCRM ships with) from <strong>Custom Roles</strong> (ones you add). Add a custom role by name, and deactivate any system role you don't use so it stops cluttering pickers across deals, prospecting, and playbooks.</p>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Organization roles appear wherever you assign people to a deal or account — they're how multi-threading and stakeholder coverage get measured.</p></div></div>
+      </section>
+
+      <!-- ════════════════ PRODUCTS ════════════════ -->
+      <section class="help-section" id="products">
+        <h2><span class="num">09</span> Product catalog</h2>
+        <p class="lead">The Product Catalog holds the products and services your team can add as line items on deals. A well-kept catalog keeps deal values consistent and makes reporting trustworthy.</p>
+        <p>Organise products into <strong>Product Groups</strong> (with their own parent/level labels, e.g. <em>Product Line</em>), and define each product's <strong>billing frequency</strong>, <strong>fee type</strong>, <strong>list price</strong>, and <strong>unit label</strong>. Search and status filters help you keep a large catalog tidy, and inactive products can be retired without deleting their history.</p>
+      </section>
+
+      <!-- ════════════════ DEAL HEALTH ════════════════ -->
+      <section class="help-section" id="deal-health">
+        <h2><span class="num">10</span> Deal Health</h2>
+        <p class="lead">Deal Health scores every open deal so reps and managers can see which deals are solid and which need attention. You control how that score is calculated — across six dimensions, each made of signals you can weight and toggle.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Org Admin · Deal Health</span></div>
+          <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The six Deal Health dimensions, each expandable into signal toggles, with a Weights tab.">
+            <rect width="720" height="320" fill="#F6F7F9"/>
+            <!-- tabs -->
+            <g font-family="sans-serif" font-size="11.5">
+              <rect x="24" y="20" width="96" height="26" rx="7" fill="#E8630A"/><text x="72" y="37" fill="#fff" text-anchor="middle" font-weight="600">📋 Parameters</text>
+              <text x="138" y="37" fill="#6B7280">⚖️ Weights</text>
+              <text x="222" y="37" fill="#6B7280">🤖 AI Usage</text>
+            </g>
+            <!-- dimension cards -->
+            <g font-family="sans-serif" font-size="11.5" fill="#1A3A5C">
+              <rect x="24" y="58" width="330" height="50" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="40" y="80" font-weight="600">Close Date Credibility</text>
+              <text x="40" y="98" fill="#6B7280" font-size="10">Buyer-confirmed date · slipped · tied to event</text>
+              <rect x="318" y="74" width="22" height="18" rx="9" fill="#E8630A"/>
+              <rect x="364" y="58" width="332" height="50" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="380" y="80" font-weight="600">Buyer Engagement &amp; Power</text>
+              <text x="380" y="98" fill="#6B7280" font-size="10">Economic buyer · exec meeting · multi-threaded</text>
+              <rect x="660" y="74" width="22" height="18" rx="9" fill="#E8630A"/>
+              <rect x="24" y="116" width="330" height="50" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="40" y="138" font-weight="600">Process Completion</text>
+              <text x="40" y="156" fill="#6B7280" font-size="10">Legal/procurement · security review</text>
+              <rect x="318" y="132" width="22" height="18" rx="9" fill="#E8630A"/>
+              <rect x="364" y="116" width="332" height="50" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="380" y="138" font-weight="600">Deal Size Realism</text>
+              <text x="380" y="156" fill="#6B7280" font-size="10">Value vs segment avg · expanded · scope approved</text>
+              <rect x="660" y="132" width="22" height="18" rx="9" fill="#E8630A"/>
+              <rect x="24" y="174" width="330" height="50" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="40" y="196" font-weight="600">Competitive &amp; Pricing Risk</text>
+              <text x="40" y="214" fill="#6B7280" font-size="10">Competitive · price sensitivity · discount pending</text>
+              <rect x="318" y="190" width="22" height="18" rx="9" fill="#E8630A"/>
+              <rect x="364" y="174" width="332" height="50" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="380" y="196" font-weight="600">Momentum &amp; Activity</text>
+              <text x="380" y="214" fill="#6B7280" font-size="10">No meeting in 14d · slow response</text>
+              <rect x="660" y="190" width="22" height="18" rx="9" fill="#E8630A"/>
+            </g>
+            <!-- expanded signals -->
+            <rect x="24" y="234" width="672" height="68" rx="10" fill="#fff" stroke="#F6C9A6"/>
+            <text x="40" y="256" fill="#C9540A" font-family="sans-serif" font-size="11" font-weight="700">Close Date Credibility — signals</text>
+            <g font-family="sans-serif" font-size="10.5" fill="#374151">
+              <rect x="40" y="266" width="16" height="16" rx="4" fill="#E8630A"/><text x="64" y="278">Buyer-confirmed close date</text>
+              <rect x="250" y="266" width="16" height="16" rx="4" fill="#E8630A"/><text x="274" y="278">Close date slipped</text>
+              <rect x="430" y="266" width="16" height="16" rx="4" fill="#D7DCE2"/><text x="454" y="278">Tied to buyer event</text>
+            </g>
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="170" cy="20" r="12" fill="#E8630A"/><text x="170" y="24" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="329" cy="58" r="12" fill="#E8630A"/><text x="329" y="62" fill="#fff" text-anchor="middle">2</text>
+              <circle cx="64" cy="234" r="12" fill="#E8630A"/><text x="64" y="238" fill="#fff" text-anchor="middle">3</text>
+            </g>
+          </svg>
+          <div class="help-figure-cap"><b>Six dimensions, each a set of toggleable signals.</b></div>
+        </div>
+
+        <ol class="help-steps">
+          <li>On the <strong>Parameters</strong> tab, expand each of the six dimensions to see its signals.</li>
+          <li>Toggle which <strong>signals</strong> contribute. A dimension's switch turns the whole group on or off.</li>
+          <li>Switch to the <strong>Weights</strong> tab to set how much each dimension counts toward the overall score — so what matters most to your business carries the most weight.</li>
+        </ol>
+
+        <h3>The six dimensions</h3>
+        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Dimension</th><th>What it measures</th></tr></thead>
+            <tbody>
+              <tr><td><b>Close Date Credibility</b></td><td>Whether the close date is real — buyer-confirmed, hasn't slipped, tied to a buyer event.</td></tr>
+              <tr><td><b>Buyer Engagement &amp; Power</b></td><td>Economic buyer identified, exec meeting held, multi-threaded across stakeholders.</td></tr>
+              <tr><td><b>Process Completion</b></td><td>Legal/procurement engaged, security/IT review started.</td></tr>
+              <tr><td><b>Deal Size Realism</b></td><td>Value vs. segment average, recent expansion, buyer-approved scope.</td></tr>
+              <tr><td><b>Competitive &amp; Pricing Risk</b></td><td>Competitive deal, price sensitivity flagged, discount approval pending.</td></tr>
+              <tr><td><b>Momentum &amp; Activity</b></td><td>No buyer meeting recently, response times slower than the historical norm.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note note--tip"><span class="ic">💡</span><div><p>The <b>AI Usage</b> tab shows token consumption for any AI used in health scoring, so you can keep an eye on cost.</p></div></div>
+      </section>
+
+      <!-- ════════════════ ICP SCORING ════════════════ -->
+      <section class="help-section" id="icp-scoring">
+        <h2><span class="num">11</span> ICP Scoring</h2>
+        <p class="lead">ICP Scoring defines your Ideal Customer Profile and scores prospects against it. A good ICP model tells reps where to spend their time — and feeds the prospecting diagnostics that flag low-fit outreach.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Org Admin · ICP Scoring</span></div>
+          <svg viewBox="0 0 720 270" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A scoring category with baseline score, weight distribution, and a scoring rule defining field, match, and outcomes.">
+            <rect width="720" height="270" fill="#F6F7F9"/>
+            <!-- weight distribution -->
+            <rect x="24" y="22" width="672" height="46" rx="10" fill="#fff" stroke="#E5E7EB"/>
+            <text x="40" y="40" fill="#1A3A5C" font-family="sans-serif" font-size="11.5" font-weight="700">Weight Distribution</text>
+            <rect x="40" y="48" width="300" height="10" rx="5" fill="#EAF0F6"/>
+            <rect x="40" y="48" width="150" height="10" rx="5" fill="#E8630A"/>
+            <rect x="190" y="48" width="90" height="10" rx="5" fill="#F5A623"/>
+            <text x="360" y="56" fill="#6B7280" font-family="sans-serif" font-size="10">Firmographics 50% · Tech 30% · Intent 20%</text>
+            <!-- category -->
+            <rect x="24" y="80" width="672" height="170" rx="11" fill="#fff" stroke="#E5E7EB"/>
+            <text x="40" y="104" fill="#1A3A5C" font-family="sans-serif" font-size="12.5" font-weight="700">Firmographics</text>
+            <text x="540" y="104" fill="#6B7280" font-family="sans-serif" font-size="10.5">Baseline Score</text>
+            <rect x="624" y="92" width="56" height="22" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="652" y="107" fill="#374151" font-family="sans-serif" font-size="11" text-anchor="middle">50</text>
+            <text x="40" y="128" fill="#9CA3AF" font-family="sans-serif" font-size="10" font-weight="700">SCORING RULES</text>
+            <!-- a rule -->
+            <rect x="40" y="138" width="640" height="96" rx="9" fill="#FBFCFD" stroke="#EEF0F3"/>
+            <g font-family="sans-serif" font-size="10.5">
+              <text x="54" y="158" fill="#6B7280">Label</text>
+              <rect x="54" y="162" width="180" height="22" rx="6" fill="#fff" stroke="#E5E7EB"/><text x="64" y="177" fill="#374151">Enterprise headcount</text>
+              <text x="250" y="158" fill="#6B7280">Field</text>
+              <rect x="250" y="162" width="150" height="22" rx="6" fill="#fff" stroke="#E5E7EB"/><text x="260" y="177" fill="#374151">employee_count ▾</text>
+              <text x="416" y="158" fill="#6B7280">Match</text>
+              <rect x="416" y="162" width="120" height="22" rx="6" fill="#fff" stroke="#E5E7EB"/><text x="426" y="177" fill="#374151">&gt; 1000</text>
+              <!-- outcomes -->
+              <rect x="54" y="198" width="150" height="24" rx="6" fill="#E7F6EF"/><text x="64" y="214" fill="#0F9D6E">If match  +20</text>
+              <rect x="214" y="198" width="160" height="24" rx="6" fill="#FBEAEA"/><text x="224" y="214" fill="#DC2626">If no match  −10</text>
+              <rect x="384" y="198" width="150" height="24" rx="6" fill="#EEF0F3"/><text x="394" y="214" fill="#5b6471">If empty  0</text>
+            </g>
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="40" cy="80" r="12" fill="#E8630A"/><text x="40" y="84" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="652" cy="92" r="12" fill="#E8630A"/><text x="652" y="96" fill="#fff" text-anchor="middle">2</text>
+              <circle cx="40" cy="138" r="12" fill="#E8630A"/><text x="40" y="142" fill="#fff" text-anchor="middle">3</text>
+            </g>
+          </svg>
+        </div>
+
+        <ol class="help-steps">
+          <li>Group your criteria into <strong>categories</strong> (for example, Firmographics, Technographics, Intent) and set a <strong>weight</strong> for each in the Weight Distribution.</li>
+          <li>Give each category a <strong>baseline score</strong> — the starting point before any rules adjust it.</li>
+          <li>Add <strong>scoring rules</strong>. Each rule looks at a <strong>field</strong>, applies a <strong>match</strong> condition, and adds or subtracts points for <em>match</em>, <em>no match</em>, and <em>empty</em> cases.</li>
+        </ol>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Each prospect is scored across all <b>enabled</b> categories. Within a category the score starts at the baseline, then each rule nudges it up or down — so you can express both "must-haves" and "nice-to-haves" precisely.</p></div></div>
+      </section>
+
+      <!-- ════════════════ DIAGNOSTIC RULES ════════════════ -->
+      <section class="help-section" id="diagnostic-rules">
+        <h2><span class="num">12</span> Diagnostic Rules</h2>
+        <p class="lead">Diagnostic Rules are the thresholds that drive GoWarmCRM's action queue. Every night (and in real time where noted), the platform checks your data against these numbers and raises actions when something needs attention. Tuning them tunes how much your team gets nudged.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Org Admin · Diagnostic Rules</span></div>
+          <svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Threshold inputs grouped by module — Deals, Prospecting and others — with Edit and Summary sub-tabs.">
+            <rect width="720" height="300" fill="#F6F7F9"/>
+            <g font-family="sans-serif" font-size="11.5">
+              <rect x="24" y="20" width="74" height="26" rx="7" fill="#E8630A"/><text x="61" y="37" fill="#fff" text-anchor="middle" font-weight="600">Edit</text>
+              <text x="116" y="37" fill="#6B7280">Summary</text>
+            </g>
+            <!-- Deals group -->
+            <rect x="24" y="56" width="672" height="104" rx="11" fill="#fff" stroke="#E5E7EB"/>
+            <text x="40" y="80" fill="#1A3A5C" font-family="sans-serif" font-size="12.5" font-weight="700">💼 Deals</text>
+            <g font-family="sans-serif" font-size="10.5">
+              <text x="40" y="104" fill="#6B7280">Stagnant days (real-time)</text>
+              <rect x="200" y="92" width="48" height="20" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="224" y="106" fill="#374151" text-anchor="middle">7</text>
+              <text x="270" y="104" fill="#6B7280">Stagnant days (nightly)</text>
+              <rect x="420" y="92" width="48" height="20" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="444" y="106" fill="#374151" text-anchor="middle">14</text>
+              <text x="40" y="136" fill="#6B7280">Close imminent window</text>
+              <rect x="200" y="124" width="48" height="20" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="224" y="138" fill="#374151" text-anchor="middle">30</text>
+              <text x="270" y="136" fill="#6B7280">High-value threshold</text>
+              <rect x="420" y="124" width="70" height="20" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="455" y="138" fill="#374151" text-anchor="middle">$50k</text>
+            </g>
+            <!-- Prospecting group -->
+            <rect x="24" y="170" width="672" height="84" rx="11" fill="#fff" stroke="#E5E7EB"/>
+            <text x="40" y="194" fill="#1A3A5C" font-family="sans-serif" font-size="12.5" font-weight="700">🔭 Prospecting</text>
+            <g font-family="sans-serif" font-size="10.5">
+              <text x="40" y="218" fill="#6B7280">Ghosting days</text>
+              <rect x="200" y="206" width="48" height="20" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="224" y="220" fill="#374151" text-anchor="middle">10</text>
+              <text x="270" y="218" fill="#6B7280">Hot lead response window</text>
+              <rect x="450" y="206" width="48" height="20" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="474" y="220" fill="#374151" text-anchor="middle">2h</text>
+              <text x="40" y="244" fill="#6B7280">Low ICP threshold</text>
+              <rect x="200" y="232" width="48" height="20" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="224" y="246" fill="#374151" text-anchor="middle">40</text>
+            </g>
+            <rect x="586" y="264" width="110" height="26" rx="7" fill="#E8630A"/><text x="641" y="281" fill="#fff" font-family="sans-serif" font-size="11" font-weight="600" text-anchor="middle">Save changes</text>
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="98" cy="20" r="12" fill="#E8630A"/><text x="98" y="24" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="224" cy="92" r="12" fill="#E8630A"/><text x="224" y="96" fill="#fff" text-anchor="middle">2</text>
+              <circle cx="586" cy="264" r="12" fill="#1A3A5C" stroke="#fff" stroke-width="1.5"/><text x="586" y="268" fill="#fff" text-anchor="middle">3</text>
+            </g>
+          </svg>
+          <div class="help-figure-cap"><b>Sample thresholds shown.</b> Each module has its own group.</div>
+        </div>
+
+        <ol class="help-steps">
+          <li>The <strong>Edit</strong> tab holds the thresholds; the <strong>Summary</strong> tab gives a read-only overview of everything that's configured.</li>
+          <li>Each module — Deals, Cases, Handovers, Prospecting, Accounts, STRAP — has its own group of <strong>numeric thresholds</strong>. Adjust a value to make a check stricter or looser.</li>
+          <li><strong>Save</strong> to apply. Changes take effect on the next nightly run (and immediately for the real-time checks).</li>
+        </ol>
+
+        <h3>What the thresholds cover</h3>
+        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Module</th><th>Example thresholds</th></tr></thead>
+            <tbody>
+              <tr><td>💼 <b>Deals</b></td><td>Stagnant days (real-time &amp; nightly), close-imminent window, high-value threshold.</td></tr>
+              <tr><td>🎧 <b>Cases</b></td><td>Stale case days, pending-customer days.</td></tr>
+              <tr><td>🤝 <b>Handovers</b></td><td>No-kickoff days, stalled days.</td></tr>
+              <tr><td>🔭 <b>Prospecting</b></td><td>Stale outreach days, ghosting days, hot-lead response window, low-ICP threshold, wrong-channel attempts/response.</td></tr>
+              <tr><td>🏢 <b>Accounts</b></td><td>Stale account days, expansion-stalled days, renewal window, whitespace minimums (roles &amp; contacts).</td></tr>
+              <tr><td>🎯 <b>STRAP</b></td><td>Minimum age before a strategic plan is re-validated.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note note--warn"><span class="ic">⚠️</span><div><p><b>These shape your team's daily workload.</b> Tighter thresholds surface more actions sooner; looser ones reduce noise. If reps say the queue is too noisy (or too quiet), this is the screen to adjust.</p></div></div>
+      </section>
+
+      <!-- ════════════════ AI AGENT ════════════════ -->
+      <section class="help-section" id="ai-agent">
+        <h2><span class="num">13</span> AI Agent</h2>
+        <p class="lead">The AI Agent framework lets GoWarmCRM go beyond suggestions and propose actions your team can review and approve. This screen controls what the agent is allowed to do and shows how its proposals are performing.</p>
+        <p>Enable the agentic capabilities you want, and review the <strong>proposal stats</strong> — counts of proposals that are Pending, Executed, Rejected, Failed, or Expired, plus a running Total. The screen also surfaces token usage so you can track the cost of agentic work.</p>
+        <div class="note note--tip"><span class="ic">💡</span><div><p>Watch the <b>Rejected</b> and <b>Failed</b> counts early on — a high rejection rate usually means a setting needs tightening or your playbooks need refining before you let the agent do more.</p></div></div>
+      </section>
+
+      <!-- ════════════════ AI PROVIDERS ════════════════ -->
+      <section class="help-section" id="ai-providers">
+        <h2><span class="num">14</span> AI Providers</h2>
+        <p class="lead">Choose which AI provider and model power your org's AI features, manage your API keys, and decide whether users can bring their own keys.</p>
+        <ol class="help-steps">
+          <li>Pick a <strong>provider and model</strong> — Anthropic (Claude), OpenAI (GPT-4o mini), Grok (xAI), or a custom gateway endpoint.</li>
+          <li>Add your organisation's <strong>API key</strong>. When an org key is set, your org uses it; otherwise GoWarmCRM falls back to the platform default.</li>
+          <li>Set the <strong>user policy</strong> for whether individuals may configure their own provider keys.</li>
+        </ol>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>The screen clearly shows whether you're on <b>Org key set</b> or <b>Using platform fallback</b>, and warns you about unsaved changes before you navigate away.</p></div></div>
+      </section>
+
+      <!-- ════════════════ ACTIONS AI ════════════════ -->
+      <section class="help-section" id="actions-ai">
+        <h2><span class="num">15</span> Actions AI</h2>
+        <p class="lead">Actions AI decides where AI <em>enhances</em> the actions GoWarmCRM generates from your rules and playbooks. You turn enhancement on per action type, and choose how strategic plans (STRAPs) get written.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Org Admin · Actions AI</span></div>
+          <svg viewBox="0 0 720 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Per-action-type AI enhancement toggles, and the STRAP generation mode choice between Both, Playbook only, and AI only.">
+            <rect width="720" height="280" fill="#F6F7F9"/>
+            <text x="24" y="34" fill="#1A3A5C" font-family="sans-serif" font-size="14" font-weight="800">✨ Actions AI Settings</text>
+            <!-- toggles -->
+            <g font-family="sans-serif" font-size="11">
+              <rect x="24" y="50" width="328" height="46" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="40" y="70" fill="#1A3A5C" font-weight="600">💼 Deal Actions</text>
+              <text x="40" y="86" fill="#6B7280" font-size="9.5">Enhance at-risk / high-value deal actions</text>
+              <rect x="318" y="64" width="22" height="18" rx="9" fill="#E8630A"/>
+              <rect x="364" y="50" width="332" height="46" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="380" y="70" fill="#1A3A5C" font-weight="600">🎯 STRAP Actions</text>
+              <text x="380" y="86" fill="#6B7280" font-size="9.5">Refine strategic plan steps</text>
+              <rect x="660" y="64" width="22" height="18" rx="9" fill="#E8630A"/>
+              <rect x="24" y="104" width="328" height="46" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="40" y="124" fill="#1A3A5C" font-weight="600">📄 Contract Actions</text>
+              <text x="40" y="140" fill="#6B7280" font-size="9.5">Off by default — CLM plays are structured</text>
+              <rect x="318" y="118" width="22" height="18" rx="9" fill="#D7DCE2"/>
+              <rect x="364" y="104" width="332" height="46" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="380" y="124" fill="#1A3A5C" font-weight="600">🔭 Prospecting Actions</text>
+              <text x="380" y="140" fill="#6B7280" font-size="9.5">Off by default — simpler actions</text>
+              <rect x="660" y="118" width="22" height="18" rx="9" fill="#D7DCE2"/>
+            </g>
+            <!-- STRAP mode -->
+            <text x="24" y="178" fill="#1A3A5C" font-family="sans-serif" font-size="12" font-weight="700">STRAP generation mode</text>
+            <g font-family="sans-serif" font-size="10.5">
+              <rect x="24" y="188" width="218" height="72" rx="10" fill="#FDEFE4" stroke="#F6C9A6"/>
+              <text x="40" y="210" fill="#C9540A" font-weight="700">⚖️ Both (user chooses)</text>
+              <text x="40" y="228" fill="#7a3a08" font-size="9.5">Side-by-side; rep picks &amp;</text>
+              <text x="40" y="241" fill="#7a3a08" font-size="9.5">edits, then confirms</text>
+              <rect x="252" y="188" width="206" height="72" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="268" y="210" fill="#1A3A5C" font-weight="700">📘 Playbook only</text>
+              <text x="268" y="228" fill="#6B7280" font-size="9.5">Template every time. Fast,</text>
+              <text x="268" y="241" fill="#6B7280" font-size="9.5">consistent. No AI call.</text>
+              <rect x="468" y="188" width="228" height="72" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="484" y="210" fill="#1A3A5C" font-weight="700">🤖 AI only</text>
+              <text x="484" y="228" fill="#6B7280" font-size="9.5">Always AI; falls back to</text>
+              <text x="484" y="241" fill="#6B7280" font-size="9.5">playbook if unavailable</text>
+            </g>
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="350" cy="73" r="12" fill="#E8630A"/><text x="350" y="77" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="24" cy="178" r="12" fill="#E8630A"/><text x="24" y="182" fill="#fff" text-anchor="middle">2</text>
+            </g>
+          </svg>
+        </div>
+
+        <ol class="help-steps">
+          <li>Toggle <strong>AI enhancement per action type</strong>. Deal and STRAP actions benefit most; Contract and Prospecting actions are off by default because those plays are already well structured.</li>
+          <li>Pick a <strong>STRAP generation mode</strong>: <em>Both</em> (rep compares AI and playbook side-by-side and chooses), <em>Playbook only</em> (fast, consistent, no AI call), or <em>AI only</em> (AI writes it, falling back to the playbook if AI is unavailable).</li>
+        </ol>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Enhancement here relies on the provider you set in <a href="#ai-providers">AI Providers</a>. If no AI is available, GoWarmCRM safely falls back to the playbook template.</p></div></div>
+      </section>
+
+      <!-- ════════════════ AI USAGE ════════════════ -->
+      <section class="help-section" id="ai-usage">
+        <h2><span class="num">16</span> AI Usage</h2>
+        <p class="lead">A running dashboard of your org's AI consumption — useful for budgeting and for spotting which features are driving cost.</p>
+        <p>You'll see <strong>total tokens</strong>, <strong>estimated cost</strong>, and <strong>average tokens per call</strong> over a selectable window, a breakdown <strong>by call type</strong>, and a <strong>daily history</strong>. Use the time-range control to compare recent days against your baseline.</p>
+        <div class="note note--tip"><span class="ic">💡</span><div><p>If cost climbs, cross-reference this screen with <a href="#actions-ai">Actions AI</a> and <a href="#ai-agent">AI Agent</a> — those are the biggest levers on token spend.</p></div></div>
+      </section>
+
+      <!-- ════════════════ DUPLICATES ════════════════ -->
+      <section class="help-section" id="duplicates">
+        <h2><span class="num">17</span> Duplicates</h2>
+        <p class="lead">Duplicate detection keeps your contacts and accounts clean by flagging likely duplicates based on rules you control.</p>
+        <p>Configure which <strong>match signals</strong> count — for example, email match or domain match — and set the <strong>visibility scope</strong> (such as own contacts only vs. across the org). When records match, GoWarmCRM surfaces them so they can be merged rather than silently piling up.</p>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Cleaner data makes every other feature better — health scores, ICP scoring, and diagnostics all assume your records aren't fragmented across duplicates.</p></div></div>
+      </section>
+
+      <!-- ════════════════ WORKFLOWS ════════════════ -->
+      <section class="help-section" id="workflows">
+        <h2><span class="num">18</span> Workflows</h2>
+        <p class="lead">Workflows are your org's data-integrity rules and automations for deals, contacts, and accounts. This is the org-scoped counterpart to the platform workflows a super admin manages.</p>
+        <div class="chip-row"><span class="chip-glyph">⚙️</span><div class="chip-body"><b>Workflows &amp; Rules</b> — a visual canvas for building rules with sequential gates, branching, and dependencies.</div></div>
+        <div class="chip-row"><span class="chip-glyph">📋</span><div class="chip-body"><b>Execution Log</b> — a history of workflow runs and any open violations, so you can verify automations and catch records that fell out of policy.</div></div>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>These run within your organisation only. They complement — rather than override — the platform-level workflows configured by super admins.</p></div></div>
+      </section>
+
+      <!-- ════════════════ EMAIL SETTINGS ════════════════ -->
+      <section class="help-section" id="email-settings">
+        <h2><span class="num">19</span> Email Settings</h2>
+        <p class="lead">Control which emails GoWarmCRM syncs and how they get matched to deals, prospects, and accounts. Good filters keep noise (newsletters, no-reply addresses, internal chatter) out of your CRM timeline.</p>
+        <p>Add filter entries — for example, addresses or patterns to exclude — and define your internal domains so the system can tell internal from external correspondence. Your platform super admin may have set baseline filters that apply to every org; you can add your own on top of those, but you can't remove the platform defaults.</p>
+        <div class="note note--tip"><span class="ic">💡</span><div><p>Start permissive, then tighten. It's easier to add an exclusion when you spot noise than to discover that an over-aggressive filter hid an important thread.</p></div></div>
+      </section>
+
+      <!-- ════════════════ TRACKING DOMAIN ════════════════ -->
+      <section class="help-section" id="tracking-domain">
+        <h2><span class="num">20</span> Tracking Domain</h2>
+        <p class="lead">A per-customer tracking domain keeps email open/click tracking aligned with <em>your</em> sending reputation, instead of a shared one. It's a single DNS record on a domain you own.</p>
+        <ol class="help-steps">
+          <li>Choose the subdomain you want to use for tracked links.</li>
+          <li>Add the <strong>CNAME record</strong> GoWarmCRM shows you to your domain's DNS.</li>
+          <li>Come back and <strong>verify</strong> — once the record resolves, tracked links route through your own domain.</li>
+        </ol>
+        <div class="note note--warn"><span class="ic">⚠️</span><div><p>DNS changes can take time to propagate. If verification doesn't pass immediately, wait and retry rather than re-creating the record. Until it's verified, tracking still works on the default domain.</p></div></div>
+      </section>
+
+      <!-- ════════════════ CUSTOM FIELDS ════════════════ -->
+      <section class="help-section" id="custom-fields">
+        <h2><span class="num">21</span> Custom Fields</h2>
+        <p class="lead">Custom fields let you capture data unique to your business on the records you care about. Definitions are scoped — they can apply to an entity type or to a specific campaign — so you only see the fields that are relevant where you are.</p>
+        <p>Create field definitions, import options in bulk by CSV, and the fields become available in the relevant record views and column pickers. Custom field values also feed the personalization context, so the data you capture here can flow into outreach.</p>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Because custom fields can power both reporting and personalization, name them clearly and consistently — future-you (and your reps) will thank you.</p></div></div>
+      </section>
+
+      <!-- ════════════════ INTEGRATIONS ════════════════ -->
+      <section class="help-section" id="integrations">
+        <h2><span class="num">22</span> Integrations</h2>
+        <p class="lead">Connect the tools your team already lives in — email, calendar, cloud files, and meeting transcripts — so GoWarmCRM can sync the right context automatically.</p>
+
+        <h3>Email &amp; Calendar</h3>
+        <p>Enable org-wide connections for <strong>Microsoft</strong> (Outlook email, calendar, OneDrive files) and <strong>Google</strong> (Gmail, Google Calendar, Google Drive). Turning these on lets your members link their accounts for email sync and calendar events. You can also scope visibility (for example, own accounts only).</p>
+
+        <h3>Meeting &amp; Transcript Integrations</h3>
+        <p>Configure transcript providers — such as Zoom, Teams, and Fireflies — so meeting recordings and transcripts flow into the relevant deals and contacts, ready for analysis.</p>
+      </section>
+
+      <!-- ════════════════ CRM SYNC ════════════════ -->
+      <section class="help-section" id="crm-sync">
+        <h2><span class="num">23</span> Salesforce &amp; HubSpot</h2>
+        <p class="lead">GoWarmCRM sits on top of your existing CRM. Connect Salesforce or HubSpot to keep records in sync, and map your stages and fields so data lands where you expect.</p>
+
+        <h3>☁️ Salesforce</h3>
+        <p>Connect your Salesforce org to sync <strong>contacts, accounts, deals, and leads</strong>. Records sync <strong>nightly at 04:00 UTC</strong>. Configure <strong>stage mapping</strong> and <strong>field mapping</strong> per org so Salesforce values translate cleanly to your GoWarmCRM pipeline.</p>
+
+        <h3>🟠 HubSpot</h3>
+        <p>Connect your HubSpot portal to sync <strong>companies, contacts, and deals</strong>, also on the <strong>nightly 04:00 UTC</strong> schedule, with the same per-org stage and field mapping.</p>
+
+        <div class="note note--warn"><span class="ic">⚠️</span><div><p><b>Write-back is gated.</b> Syncing reads from your CRM by default. Writing changes <em>back</em> to Salesforce must first be allowed at the platform level by a super admin — then you enable it here. If you don't see a write-back option, ask your platform admin to enable the capability.</p></div></div>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Review your CRM stage mapping whenever you change <a href="#stages">Stages</a> — the two need to stay aligned for synced records to land correctly.</p></div></div>
+      </section>
+
+      <!-- ════════════════ ORG SETTINGS ════════════════ -->
+      <section class="help-section" id="settings">
+        <h2><span class="num">24</span> Org Settings</h2>
+        <p class="lead">The organisation's basics — its name, your plan and limits, and ownership.</p>
+        <ul>
+          <li><strong>Organisation Name</strong> — your org's display name across the product.</li>
+          <li><strong>Plan &amp; Limits</strong> — your current plan, status, user seats, and member-since date (read-only here; plan and seats are set by your platform admin).</li>
+          <li><strong>Prospecting Email Limits</strong> — sending limits that keep your outreach within healthy bounds.</li>
+          <li><strong>Transfer ownership</strong> — hand the Owner role to another member when leadership changes.</li>
+        </ul>
+        <div class="note note--danger"><span class="ic">⚠️</span><div><p><b>Ownership transfer is significant.</b> The Owner has full control and can't be removed by others. Transfer it deliberately, and only to someone who should hold top-level control of the organisation.</p></div></div>
+      </section>
+
+      <!-- ════════════════ MODULES ════════════════ -->
+      <section class="help-section" id="modules">
+        <h2><span class="num">25</span> Enabling modules</h2>
+        <p class="lead">Modules are the major capability areas — Prospecting, CLM, Handover, Service, and Agency. The Modules screen is where you turn on the ones your team uses.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Org Admin · Modules</span></div>
+          <svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Module cards with enable toggles; a module not provisioned by the platform appears locked.">
+            <rect width="720" height="250" fill="#F6F7F9"/>
+            <text x="24" y="34" fill="#1A3A5C" font-family="sans-serif" font-size="14" font-weight="800">🧩 Modules</text>
+            <g font-family="sans-serif" font-size="11">
+              <rect x="24" y="50" width="332" height="58" rx="11" fill="#fff" stroke="#E5E7EB"/>
+              <text x="40" y="74" fill="#1A3A5C" font-weight="700">🎯 Prospecting</text>
+              <text x="40" y="92" fill="#6B7280" font-size="9.5">Pipeline, sequences, ICP scoring, senders</text>
+              <rect x="320" y="68" width="24" height="20" rx="10" fill="#E8630A"/><circle cx="334" cy="78" r="7" fill="#fff"/>
+              <rect x="364" y="50" width="332" height="58" rx="11" fill="#fff" stroke="#E5E7EB"/>
+              <text x="380" y="74" fill="#1A3A5C" font-weight="700">📄 Contract Lifecycle (CLM)</text>
+              <text x="380" y="92" fill="#6B7280" font-size="9.5">Contracts, legal review, e-sign, versioning</text>
+              <rect x="660" y="68" width="24" height="20" rx="10" fill="#E8630A"/><circle cx="674" cy="78" r="7" fill="#fff"/>
+              <rect x="24" y="116" width="332" height="58" rx="11" fill="#fff" stroke="#E5E7EB"/>
+              <text x="40" y="140" fill="#1A3A5C" font-weight="700">🤝 Handover S→I</text>
+              <text x="40" y="158" fill="#6B7280" font-size="9.5">Structured handover on deal close</text>
+              <rect x="320" y="134" width="24" height="20" rx="10" fill="#D7DCE2"/><circle cx="330" cy="144" r="7" fill="#fff"/>
+              <rect x="364" y="116" width="332" height="58" rx="11" fill="#FBFBFC" stroke="#E5E7EB"/>
+              <text x="380" y="140" fill="#9CA3AF" font-weight="700">🏢 Agency  🔒</text>
+              <text x="380" y="158" fill="#9CA3AF" font-size="9.5">Not provisioned — ask your platform admin</text>
+            </g>
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="332" cy="50" r="12" fill="#E8630A"/><text x="332" y="54" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="540" cy="116" r="12" fill="#E8630A"/><text x="540" y="120" fill="#fff" text-anchor="middle">2</text>
+            </g>
+          </svg>
+        </div>
+
+        <ol class="help-steps">
+          <li><strong>Enable</strong> a module to add it to your team's product — its nav entry and features appear for members.</li>
+          <li>A module the platform hasn't <strong>provisioned</strong> for your org appears locked. If you need it, ask your platform super admin to provision it (see the Super Admin guide's module section).</li>
+        </ol>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Enabling a module here adds its own configuration screen to the nav — covered next.</p></div></div>
+      </section>
+
+      <!-- ════════════════ MODULE CONFIG ════════════════ -->
+      <section class="help-section" id="module-config">
+        <h2><span class="num">26</span> Configuring a module</h2>
+        <p class="lead">Once enabled, each module gets its own settings screen. They share a common shape — a <strong>General</strong> area and a <strong>Seed</strong> panel — plus settings specific to that module.</p>
+
+        <div class="chip-row"><span class="chip-glyph">⚙️</span><div class="chip-body"><b>General</b> — turn the module on/off and set module-wide options. Prospecting's General also includes policies like <em>campaign deletion by owners</em> and <em>whether managers can edit team members' items</em>.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🌱</span><div class="chip-body"><b>Seed</b> — load starter data (sample plays, stages, or configuration) so a freshly enabled module isn't empty. A fast way to get a module usable on day one.</div></div>
+
+        <h3>Module-specific settings</h3>
+        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Module</th><th>Extra settings</th></tr></thead>
+            <tbody>
+              <tr><td>🎯 <b>Prospecting</b></td><td>Skill inputs, sending schedule, prospecting playbook, <b>Call Settings</b> &amp; <b>Twilio</b> calling setup, escalation policy, and enrichment.</td></tr>
+              <tr><td>📄 <b>CLM</b></td><td>E-signature configuration and contract templates.</td></tr>
+              <tr><td>🤝 <b>Handover</b></td><td>Handover workflow options.</td></tr>
+              <tr><td>🎧 <b>Service</b></td><td>General configuration and <b>SLA tiers</b>.</td></tr>
+              <tr><td>🏢 <b>Agency</b></td><td>Client portal and team configuration.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note note--tip"><span class="ic">💡</span><div><p><b>Setting up calling?</b> Prospecting's Twilio panel provisions a calling subaccount and a browser softphone for your org. Pair it with Call Settings to choose how calls connect (bridge, softphone, or both).</p></div></div>
+      </section>
+
+      <!-- ════════════════ REFERENCE ════════════════ -->
+      <section class="help-section" id="reference">
+        <h2><span class="num">27</span> Reference</h2>
+        <p class="lead">Quick lookups for values used across Org Admin.</p>
+
+        <h3>System roles (permissions)</h3>
+        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Role</th><th>Scope</th></tr></thead>
+            <tbody>
+              <tr><td><span class="pill" style="background:#EFE7FB;color:#7c3aed">👑 Owner</span></td><td>Everything, including billing and ownership. Cannot be removed.</td></tr>
+              <tr><td><span class="pill pill--navy">🔑 Admin</span></td><td>Members, invitations, integrations, all CRM data.</td></tr>
+              <tr><td><span class="pill pill--green">👤 Member</span></td><td>Full CRM use; no user management.</td></tr>
+              <tr><td><span class="pill pill--grey">👁 Viewer</span></td><td>Read-only.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Departments</h3>
+        <p><span class="pill pill--navy">Sales</span> <span class="pill" style="background:#EFE7FB;color:#7c3aed">Legal</span> <span class="pill pill--green">Implementation</span> <span class="pill pill--amber">Customer Support</span> <span class="pill pill--red">Finance</span> <span class="pill" style="background:#E0F2F5;color:#0891b2">Executive</span> — assigned per member; route work to the right people.</p>
+
+        <h3>CRM sync timing</h3>
+        <p>Salesforce and HubSpot both sync <strong>nightly at 04:00 UTC</strong>. Stage and field mapping is configured per org under <a href="#crm-sync">Salesforce &amp; HubSpot</a>.</p>
+
+        <div class="note note--tip"><span class="ic">🧭</span><div><p><b>Where reps take over.</b> Once you've configured the org, your team works the action queue, prospecting sequences, calls, and meeting insights day to day — that's covered in the <em>End-User Guide</em> (coming next).</p></div></div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<button class="to-top" aria-label="Back to top">↑</button>
+<script>
+/* ============================================================
+   GoWarmCRM — Help Center shared behavior
+   Vanilla JS, no dependencies. Safe to drop in under any CSP.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  /* ---------- Mobile nav toggle ---------- */
+  var shell   = document.querySelector('.help-shell');
+  var menuBtn = document.querySelector('.help-menu-btn');
+  var scrim   = document.querySelector('.help-scrim');
+  function closeNav() { if (shell) shell.classList.remove('nav-open'); }
+  if (menuBtn && shell) {
+    menuBtn.addEventListener('click', function () { shell.classList.toggle('nav-open'); });
+  }
+  if (scrim) scrim.addEventListener('click', closeNav);
+
+  /* ---------- Section nav: smooth scroll + close mobile ---------- */
+  var navLinks = Array.prototype.slice.call(document.querySelectorAll('.help-nav a[href^="#"]'));
+  navLinks.forEach(function (a) {
+    a.addEventListener('click', function () { closeNav(); });
+  });
+
+  /* ---------- Scroll-spy: highlight active section in nav ---------- */
+  var sections = Array.prototype.slice.call(document.querySelectorAll('.help-section[id]'));
+  var byId = {};
+  navLinks.forEach(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    byId[id] = a;
+  });
+
+  function setActive(id) {
+    navLinks.forEach(function (a) { a.classList.remove('active'); });
+    if (byId[id]) byId[id].classList.add('active');
+  }
+
+  if ('IntersectionObserver' in window && sections.length) {
+    var visible = {};
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting ? e.intersectionRatio : 0; });
+      var best = null, bestR = 0;
+      sections.forEach(function (s) {
+        var r = visible[s.id] || 0;
+        if (r > bestR) { bestR = r; best = s.id; }
+      });
+      if (best) setActive(best);
+    }, { rootMargin: '-64px 0px -55% 0px', threshold: [0, .15, .35, .6, 1] });
+    sections.forEach(function (s) { io.observe(s); });
+  }
+
+  /* ---------- Search / filter sections ---------- */
+  var search = document.querySelector('.help-search input');
+  var empty  = document.querySelector('.search-empty');
+  if (search && sections.length) {
+    var debounce;
+    search.addEventListener('input', function () {
+      clearTimeout(debounce);
+      debounce = setTimeout(runFilter, 120);
+    });
+    function runFilter() {
+      var q = search.value.trim().toLowerCase();
+      var anyVisible = false;
+      sections.forEach(function (s) {
+        if (!q) { s.classList.remove('is-hidden'); anyVisible = true; return; }
+        var hit = (s.textContent || '').toLowerCase().indexOf(q) !== -1;
+        s.classList.toggle('is-hidden', !hit);
+        if (hit) anyVisible = true;
+      });
+      // dim nav items whose section is hidden
+      navLinks.forEach(function (a) {
+        var id = a.getAttribute('href').slice(1);
+        var sec = document.getElementById(id);
+        a.style.display = (!q || (sec && !sec.classList.contains('is-hidden'))) ? '' : 'none';
+      });
+      if (empty) empty.classList.toggle('show', !!q && !anyVisible);
+    }
+  }
+
+  /* ---------- Back to top ---------- */
+  var toTop = document.querySelector('.to-top');
+  if (toTop) {
+    window.addEventListener('scroll', function () {
+      toTop.classList.toggle('show', window.scrollY > 600);
+    }, { passive: true });
+    toTop.addEventListener('click', function () {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  }
+})();
+
+</script>
+</body>
+</html>

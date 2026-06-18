@@ -446,12 +446,28 @@ export default function Sidebar({
             />
           )}
 
-          {/* Help & Guides — opens the role-aware docs in a new tab. Shown for
-              every role. The static help bundle lives in /public/help/ and routes
-              by role via the URL hash (#super-admin / #org-admin / #member). */}
+          {/* Help & Guides — hard-gated. We open a blank tab synchronously (so
+              the browser keeps it tied to the click and doesn't block it), ask
+              the backend for a short-lived signed grant for the current role,
+              then point the tab at the gated help URL. Access is enforced
+              server-side; this only decides which guide opens. */}
           <button
             className="sb-nav-item"
-            onClick={() => window.open(`/help/index.html#${activeRole}`, '_blank', 'noopener')}
+            onClick={() => {
+              const w = window.open('about:blank', '_blank');
+              if (w) { try { w.opener = null; } catch (e) {} }
+              const API = process.env.REACT_APP_API_URL || '';
+              const token = localStorage.getItem('token');
+              fetch(`${API}/help/grant?role=${encodeURIComponent(activeRole)}`, {
+                headers: { Authorization: `Bearer ${token}` },
+              })
+                .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+                .then((d) => {
+                  const url = `${API}/help/${d.primary}?t=${encodeURIComponent(d.token)}`;
+                  if (w) w.location = url; else window.open(url, '_blank');
+                })
+                .catch(() => { if (w) w.close(); });
+            }}
             title={collapsed ? 'Help & Guides' : ''}
           >
             <span className="sb-nav-icon">❓</span>
