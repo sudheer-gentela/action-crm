@@ -120,8 +120,13 @@ router.patch('/preferences', async (req, res) => {
 // Separate from 'ui' namespace to keep concerns clean.
 
 const PROSPECTING_PREF_DEFAULTS = {
-  ai_provider:     '',   // '' = use org default
-  ai_model:        '',   // '' = use org default
+  // ORPHANED 2026-06 — written by the "My Preferences → Prospecting AI" page
+  // but never read. The effective per-user model is resolved by
+  // AIClientResolver from action_config.ai_settings (set on AI Settings →
+  // Preferences). Commenting these out of the allow-list stops PATCH from
+  // persisting them and GET from defaulting them; product_context still works.
+  // ai_provider:     '',   // '' = use org default
+  // ai_model:        '',   // '' = use org default
   product_context: '',   // '' = use org default
 };
 

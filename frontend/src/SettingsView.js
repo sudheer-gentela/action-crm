@@ -854,8 +854,12 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
 
   // ── Prospecting AI preferences ────────────────────────────────────────────
   const [aiPrefs, setAiPrefs]         = useState({
-    ai_provider:     '',   // '' = use org default
-    ai_model:        '',
+    // ORPHANED 2026-06 — provider/model written here were never read by the
+    // model-resolution path. Effective per-user model lives in
+    // action_config.ai_settings (AI Settings → Preferences), resolved by
+    // AIClientResolver. Kept commented to preserve shape/history.
+    // ai_provider:     '',   // '' = use org default
+    // ai_model:        '',
     product_context: '',
   });
   const [orgAiDefaults, setOrgAiDefaults] = useState({});
@@ -907,8 +911,10 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
       // AI preferences
       const prospPrefs = prefsRes?.preferences || {};
       setAiPrefs({
-        ai_provider:     prospPrefs.ai_provider     || '',
-        ai_model:        prospPrefs.ai_model        || '',
+        // ORPHANED 2026-06 — see Prospecting AI section below. Not loaded into
+        // state because nothing reads them; the resolver uses action_config.
+        // ai_provider:     prospPrefs.ai_provider     || '',
+        // ai_model:        prospPrefs.ai_model        || '',
         product_context: prospPrefs.product_context || '',
       });
 
@@ -991,6 +997,9 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
       const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
       // Save user_preferences (prospecting namespace)
+      // NOTE 2026-06 — aiPrefs now holds only product_context; ai_provider/
+      // ai_model are orphaned (see state init) and the backend allow-list no
+      // longer accepts them, so sending the object as-is is safe.
       await fetch(`${API}/users/me/preferences/prospecting`, {
         method:  'PATCH',
         headers,
@@ -1524,7 +1533,16 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
             </button>
           </div>
 
-          {/* AI Provider + Model */}
+          {/* ── AI Provider + Model ──────────────────────────────────────────
+              ORPHANED 2026-06. These selectors wrote to
+              user_preferences.preferences->'prospecting'->{ai_provider,ai_model},
+              which NOTHING reads. The effective per-user model is resolved by
+              AIClientResolver from action_config.ai_settings, set on the
+              "AI Settings → Preferences" page. Changing these here had no effect,
+              so they are commented out to remove the illusion of control.
+              Re-enable only if AIClientResolver is wired to read the prospecting
+              blob. Original markup preserved below:
+
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
             <div style={{ flex: 1, minWidth: 180 }}>
               <label style={{ fontSize: 12, color: '#6b7280', display: 'block', marginBottom: 4 }}>
@@ -1557,6 +1575,13 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
               </select>
             </div>
           </div>
+              ────────────────────────────────────────────────────────────── */}
+
+          {/* Breadcrumb replacing the orphaned provider/model selectors */}
+          <p className="sv-hint" style={{ margin: '0 0 16px' }}>
+            AI provider &amp; model for prospecting are controlled under{' '}
+            <strong>AI Settings → Preferences</strong>.
+          </p>
 
           {/* Product context */}
           <div style={{ marginBottom: 16 }}>

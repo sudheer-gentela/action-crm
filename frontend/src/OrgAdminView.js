@@ -19,6 +19,8 @@ import OATwilioSettings from './OATwilioSettings';
 import OAAIProviderSettings from './OAAIProviderSettings';
 import OAProspectingSkillConfig from './OAProspectingSkillConfig';
 import { TrackingDomainSettings } from './prospecting/TrackingSettings';   // Insights/WBR Phase 7
+// (a) with the other OA imports (near line ~18, by `import OATwilioSettings`)
+import OALinkedInAutomation from './OALinkedInAutomation';
 
 // ═══════════════════════════════════════════════════════════════════
 // ORG ADMIN VIEW — per-organisation administration
