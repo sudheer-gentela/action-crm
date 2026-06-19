@@ -1790,6 +1790,11 @@ router.post('/', async (req, res) => {
       // the floor, so the "Add to GoWarmCRM" button created the prospect but
       // never assigned the campaign or enrolled in the sequence.
       campaignId = null, sequenceId = null,
+      // v1.20: durable fsd_profile URN captured by the extension, owner-bound to
+      // the profile slug. When present we dedup URN-first (then slug) so a
+      // vanity-slug change updates the existing prospect's URL instead of
+      // creating a duplicate. Absent (manual/email creation) → unchanged path.
+      memberUrn = null,
     } = req.body;
 
     if (!firstName || !lastName) {
@@ -1810,6 +1815,92 @@ router.post('/', async (req, res) => {
             code: 'DUPLICATE_EMAIL',
             existingProspectId: dup.id,
           },
+        });
+      }
+    }
+
+    // ── v1.20: URN-first dedup (only when the capture supplied a member_urn) ──
+    // The fsd_profile URN is a stable identity; the /in/<slug> in linkedin_url
+    // is mutable. So we match URN first, then fall back to slug to BACKFILL the
+    // URN onto a pre-URN row. On a match we UPDATE the existing prospect (taking
+    // the incoming URL so a slug change is healed, COALESCE-backfilling empty
+    // fields, never overwriting an existing good member_urn) and return it
+    // instead of inserting a duplicate. If URN matches one row and slug another
+    // (a pre-existing duplicate), URN wins and the stale slug row is left for a
+    // later cleanup pass — we never merge in the hot path.
+    if (memberUrn) {
+      const incomingSlug = (linkedinUrl || '').match(/\/in\/([^/?#]+)/);
+      const slugLc = incomingSlug ? decodeURIComponent(incomingSlug[1]).toLowerCase() : null;
+
+      let match = null, matchedBy = null;
+      const byUrn = await db.query(
+        `SELECT * FROM prospects
+          WHERE org_id = $1 AND member_urn = $2 AND deleted_at IS NULL
+          ORDER BY id ASC LIMIT 1`,
+        [req.orgId, memberUrn]
+      );
+      if (byUrn.rows.length > 0) { match = byUrn.rows[0]; matchedBy = 'member_urn'; }
+
+      if (!match && slugLc) {
+        const bySlug = await db.query(
+          `SELECT * FROM prospects
+            WHERE org_id = $1 AND deleted_at IS NULL AND linkedin_url IS NOT NULL
+              AND LOWER(REGEXP_REPLACE(linkedin_url, '.*/in/([^/?#]+).*', '\\1')) = $2
+            ORDER BY id ASC LIMIT 1`,
+          [req.orgId, slugLc]
+        );
+        if (bySlug.rows.length > 0) { match = bySlug.rows[0]; matchedBy = 'linkedin_slug'; }
+      }
+
+      if (match) {
+        const urlUpdated = !!(linkedinUrl && match.linkedin_url && linkedinUrl !== match.linkedin_url);
+        const upd = await db.query(
+          `UPDATE prospects SET
+             linkedin_url      = COALESCE($1, linkedin_url),
+             member_urn        = COALESCE(member_urn, $2),
+             linkedin_headline = COALESCE(linkedin_headline, $3),
+             location          = COALESCE(location, $4),
+             company_name      = COALESCE(company_name, $5),
+             updated_at        = CURRENT_TIMESTAMP
+           WHERE id = $6 AND org_id = $7
+           RETURNING *`,
+          [linkedinUrl || null, memberUrn, linkedinHeadline || null,
+           location || null, companyName || null, match.id, req.orgId]
+        );
+        const prospectRow = upd.rows[0] || match;
+
+        await db.query(
+          `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
+           VALUES ($1, $2, $3, 'updated', $4)`,
+          [req.orgId, prospectRow.id, req.user.userId,
+           urlUpdated
+             ? `Matched existing prospect by ${matchedBy}; LinkedIn URL updated (vanity-slug change)`
+             : `Matched existing prospect by ${matchedBy} during capture`]
+        ).catch(() => { /* activity log is best-effort */ });
+
+        // Honour campaign + sequence the same way the insert path does.
+        let enrollment = null, enrollmentError = null;
+        if (campaignId != null || sequenceId != null) {
+          try {
+            ({ enrollment, enrollmentError } = await assignCampaignAndEnroll({
+              orgId:      req.orgId,
+              userId:     req.user.userId,
+              prospectId: prospectRow.id,
+              campaignId,
+              sequenceId,
+            }));
+            if (campaignId != null) prospectRow.campaign_id = parseInt(campaignId, 10);
+          } catch (assignErr) {
+            enrollmentError = assignErr.message;
+          }
+        }
+
+        return res.status(200).json({
+          prospect: prospectRow,
+          enrollment,
+          enrollmentError,
+          matched: matchedBy,
+          urlUpdated,
         });
       }
     }
@@ -1861,19 +1952,19 @@ router.post('/', async (req, res) => {
       `INSERT INTO prospects (
          org_id, owner_id, first_name, last_name, email, phone, linkedin_url,
          title, linkedin_headline, location, company_name, company_domain, company_size,
-         company_industry, account_id, source, playbook_id, tags,
+         company_industry, account_id, source, playbook_id, tags, member_urn,
          stage, stage_changed_at
        ) VALUES (
          $1, $2, $3, $4, $5, $6, $7,
          $8, $9, $10, $11, $12, $13,
-         $14, $15, $16, $17, $18,
+         $14, $15, $16, $17, $18, $19,
          'target', CURRENT_TIMESTAMP
        ) RETURNING *`,
       [
         req.orgId, req.user.userId, firstName, lastName, email, phone, linkedinUrl,
         title, linkedinHeadline || null, location, companyName, prospectCompanyDomain, companySize,
         companyIndustry, resolvedAccountId, source || 'manual', resolvedPlaybookId,
-        JSON.stringify(tags || []),
+        JSON.stringify(tags || []), memberUrn || null,
       ]
     );
 

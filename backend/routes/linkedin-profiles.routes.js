@@ -331,6 +331,9 @@ router.post('/upsert', async (req, res) => {
       fields = {},
       source = 'extension',
       link_to,
+      // v1.20: durable fsd_profile URN, COALESCE-persisted onto the linked
+      // prospect's member_urn (never overwrites an existing good one).
+      member_urn = null,
     } = req.body || {};
 
     if (!rawUrl) {
@@ -499,6 +502,7 @@ router.post('/upsert', async (req, res) => {
            linkedin_about    = COALESCE($3, linkedin_about),
            linkedin_activity = $4::jsonb,
            location          = COALESCE($5, location),
+           member_urn        = COALESCE(member_urn, $8),
            updated_at        = CURRENT_TIMESTAMP
          WHERE id = $6 AND org_id = $7`,
         [
@@ -509,6 +513,7 @@ router.post('/upsert', async (req, res) => {
           merged.location,
           linkProspectId,
           req.orgId,
+          member_urn || null,
         ]
       );
       linked = { entity_type: 'prospect', entity_id: linkProspectId };
