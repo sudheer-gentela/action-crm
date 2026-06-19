@@ -546,6 +546,35 @@ async function failAndPause(client, info) {
  *
  * @returns {Promise<number>} rows reaped
  */
+// ── Effective LinkedIn intent (auto-send gate + signature) ────────────────────
+// Explicit sequence_steps.step_intent always wins. When it is NULL — the "Auto"
+// default in the builder, or any templated sequence that previously couldn't set
+// it — fall back to the SAME inference the personalization dispatcher uses, so a
+// first-position LinkedIn step is recognised as a connection_request by the
+// auto-send gate and the signature rule too, not only by personalisation.
+// Only LinkedIn is inferred here; other channels return their explicit value.
+// Best-effort: any lookup failure returns null, which keeps the safe
+// human-actioned draft path — never an accidental auto-send.
+async function resolveEffectiveLinkedinIntent(step, enrollment) {
+  if (step.channel !== 'linkedin') return step.step_intent || null;
+  if (step.step_intent) return step.step_intent;          // explicit override wins
+  try {
+    const [allSteps, engagementHistory] = await Promise.all([
+      PersonalizationDispatcher.loadSequenceSteps(enrollment.seq_id, enrollment.org_id),
+      PersonalizationDispatcher.loadEngagementHistory(enrollment.prospect_id, enrollment.org_id),
+    ]);
+    return PersonalizationDispatcher.inferIntent({
+      channel: 'linkedin', step, allSteps, engagementHistory,
+    }) || null;
+  } catch (err) {
+    console.warn(
+      `SequenceStepFirer: LinkedIn intent inference failed for enrollment ${enrollment.id} ` +
+      `step ${step.id}: ${err.message}`
+    );
+    return null;   // safe fallback → human-actioned draft, not auto-send
+  }
+}
+
 async function reapStaleSending(client, staleMinutes = 30) {
   const stale = await client.query(
     `SELECT l.id, l.org_id, l.enrollment_id, l.sequence_step_id, l.prospect_id,
@@ -836,6 +865,12 @@ const SequenceStepFirer = {
           // ── DRAFT BRANCH ──────────────────────────────────────────────────
           if (step.channel !== 'email' || (effectiveRequireApproval && !hasApprovedSchedule)) {
 
+            // Effective intent drives BOTH the auto-send gate and the signature
+            // rule below. Explicit step.step_intent wins; a NULL LinkedIn step is
+            // inferred (so "Auto" and templated sequences still auto-send their
+            // first-touch connection request).
+            const effectiveIntent = await resolveEffectiveLinkedinIntent(step, enrollment);
+
             // ── LinkedIn connection-request AUTO-SEND gate (opt-in) ──────────
             // Optional, defensive, off by default. When BOTH the org-admin
             // master toggle is on AND this rep has explicitly opted in, a
@@ -849,7 +884,7 @@ const SequenceStepFirer = {
             // challenge) live at claim time / in the extension — see
             // LinkedInAutoSendService + background.js. This is a knowing,
             // disclosed LinkedIn-ToS tradeoff the org+rep both accept.
-            if (step.channel === 'linkedin' && step.step_intent === 'connection_request') {
+            if (step.channel === 'linkedin' && effectiveIntent === 'connection_request') {
               let gate = { enabled: false };
               try {
                 gate = await LinkedInAutomationConfig.resolveForUser(client, {
@@ -954,7 +989,7 @@ const SequenceStepFirer = {
             if (sender) {
               if (step.channel === 'email' && sender.signature) {
                 body = appendSignature(body, sender.signature);
-              } else if (step.channel === 'linkedin' && step.step_intent !== 'connection_request') {
+              } else if (step.channel === 'linkedin' && effectiveIntent !== 'connection_request') {
                 const liSig = sender.linkedin_signature || sender.signature;
                 if (liSig) body = appendSignature(body, liSig);
               }

@@ -480,4 +480,8 @@ module.exports = {
   EMAIL_INTENTS,
   LINKEDIN_INTENTS,
   SKILL_FOR_CHANNEL,
+  // Exported so SequenceStepFirer can resolve a NULL LinkedIn step's intent
+  // via the SAME inference used here (avoids duplicating the event mapping).
+  loadSequenceSteps,
+  loadEngagementHistory,
 };

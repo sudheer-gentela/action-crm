@@ -319,8 +319,13 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
       mode: aiEnabled ? s.mode : 'manual',
       personalize_config: aiEnabled ? s.personalize_config : null,
       // Slice 3: empty string from the dropdown means "Auto" — send null so the
-      // DB column is NULL (the dispatcher's inference branch).
-      step_intent: aiEnabled && s.step_intent && s.step_intent.length > 0 ? s.step_intent : null,
+      // DB column is NULL (inference applies at fire time). LinkedIn intent is
+      // persisted even when AI is off, because it also gates LinkedIn auto-send
+      // (the firer reads the literal value before falling back to inference);
+      // email intent only matters when AI is on.
+      step_intent: (s.step_intent && s.step_intent.length > 0 && (aiEnabled || s.channel === 'linkedin'))
+        ? s.step_intent
+        : null,
     }));
     // Sequence-level personalization default is meaningless with AI off.
     const effectivePersonalizeDefault = aiEnabled ? personalizeConfigDefault : null;
@@ -871,11 +876,13 @@ function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireAp
               based on channel + position + engagement history. Explicit
               picks bypass inference — useful for forcing a breakup or
               skipping straight to a post-accept DM. */}
-          {aiEnabled && (step.channel === 'email' || step.channel === 'linkedin') && (
+          {((aiEnabled && step.channel === 'email') || step.channel === 'linkedin') && (
             <div>
               <label style={labelStyle}>
                 Step intent <span style={{ fontWeight: 400, color: '#9ca3af', fontSize: 10 }}>
-                  — controls which AI template runs for this step
+                  {step.channel === 'linkedin'
+                    ? '— "Connection request" turns on LinkedIn auto-send for this step (and picks the AI template when AI is on)'
+                    : '— controls which AI template runs for this step'}
                 </span>
               </label>
               <select
@@ -889,7 +896,7 @@ function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireAp
               </select>
               {step.step_intent && (
                 <div style={{ fontSize: 10, color: '#92400e', marginTop: 4 }}>
-                  Override active — the dispatcher will use this intent, not the inferred one.
+                  Set explicitly — this intent is used as-is, bypassing auto-inference.
                 </div>
               )}
             </div>
