@@ -34,6 +34,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { apiFetch } from './prospecting/prospectingShared';
 import WbrGrid from './prospecting/WbrGrid';                  // Insights/WBR Phase 5
 import InsightsPanel from './prospecting/InsightsPanel';      // Insights/WBR Phase 5
+import LinkedInRiskPanel from './prospecting/LinkedInRiskPanel';
 import './TeamReportingView.css';
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -340,8 +341,8 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         allCampaigns={allCampaigns}
         showCampaignDropdown={showCampaignDropdown}
         onToggleCampaignDropdown={() => setShowCampaignDropdown(s => !s)}
-        showCampaignFilter={tab !== 'campaign' && tab !== 'insights'}   // tab 'campaign' IS the campaign list; insights are org-level
-        showWindowPicker={tab !== 'wbr' && tab !== 'insights'}          // WBR/insight windows are fixed by design
+        showCampaignFilter={tab !== 'campaign' && tab !== 'insights' && tab !== 'linkedin'}   // tab 'campaign' IS the campaign list; insights org-level; LinkedIn risk has no campaign filter
+        showWindowPicker={tab !== 'wbr' && tab !== 'insights' && tab !== 'linkedin'}           // WBR/insight windows fixed; LinkedIn risk has its own window picker
       />
 
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
@@ -417,6 +418,10 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         />
       )}
 
+      {tab === 'linkedin' && (
+        <LinkedInRiskPanel depth={depth} />
+      )}
+
       {prospectPanel && (
         <ProspectListPanel
           context={prospectPanel}
@@ -463,6 +468,7 @@ function TabBar({ tab, onTabChange }) {
     { key: 'sequence', label: 'By sequence' },
     { key: 'wbr',      label: 'WBR' },        // Insights/WBR Phase 5
     { key: 'insights', label: 'Insights' },   // Insights/WBR Phase 5
+    { key: 'linkedin', label: 'LinkedIn risk' },
   ];
   return (
     <div className="trv-tabbar">

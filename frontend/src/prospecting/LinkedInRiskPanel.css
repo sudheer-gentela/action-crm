@@ -1,0 +1,100 @@
+/* LinkedInRiskPanel — matches GoWarmCRM's palette (Teal #0F9D8E accent, slate
+   neutrals: #111827 text, #6b7280 muted, #e5e7eb borders, #f3f4f6 surfaces).
+   Reuses trv-toolbar / trv-select / trv-window-btn from TeamReportingView.css
+   for the control bar; everything below is panel-specific. */
+
+.lir-root { padding: 4px 0 16px; }
+
+.lir-toolbar { position: relative; }
+.lir-toolbar-right { margin-left: auto; }
+
+/* Column chooser */
+.lir-colmenu { position: relative; }
+.lir-colmenu-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+  background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(17, 24, 39, 0.08); padding: 8px; min-width: 180px;
+}
+.lir-colmenu-hint { font-size: 12px; color: #94a3b8; padding: 4px 8px 8px; }
+.lir-colmenu-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  font-size: 13px; color: #111827; cursor: pointer; border-radius: 6px;
+}
+.lir-colmenu-row:hover { background: #f3f4f6; }
+.lir-colmenu-row.disabled { color: #94a3b8; cursor: not-allowed; }
+.lir-colmenu-row input { accent-color: #0F9D8E; }
+
+/* Summary rollup cards */
+.lir-cards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 12px; margin: 16px 0 20px;
+}
+.lir-card { background: #f9fafb; border: 1px solid #f0f1f3; border-radius: 10px; padding: 12px 14px; }
+.lir-card-label { font-size: 12px; color: #6b7280; }
+.lir-card-value { font-size: 24px; font-weight: 600; color: #111827; margin-top: 2px; }
+.lir-card-sub { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+
+/* Per-person table */
+.lir-section-label { font-size: 13px; color: #6b7280; margin-bottom: 8px; }
+.lir-table-wrap { overflow-x: auto; }
+.lir-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.lir-table th, .lir-table td {
+  padding: 9px 10px; border-bottom: 1px solid #f0f1f3; text-align: right; white-space: nowrap;
+}
+.lir-table th { font-weight: 500; color: #6b7280; font-size: 12px; }
+.lir-table th.lir-l, .lir-table td.lir-l { text-align: left; }
+.lir-num { font-variant-numeric: tabular-nums; }
+
+.lir-seat { display: inline-flex; flex-direction: column; line-height: 1.3; text-decoration: none; }
+a.lir-seat:hover .lir-seat-name { color: #0F9D8E; text-decoration: underline; }
+.lir-seat-name { font-weight: 500; color: #111827; }
+.lir-seat-handle { font-size: 11px; color: #94a3b8; }
+
+/* Severity colours */
+.lir-danger        { color: #dc2626; }
+.lir-table td.lir-danger { font-weight: 600; }
+.lir-warning       { color: #b45309; }
+.lir-success       { color: #0F9D8E; }
+.lir-info          { color: #0F9D8E; }
+.lir-muted         { color: #94a3b8; }
+.lir-muted-strong  { color: #6b7280; }
+
+/* Action / event lists */
+.lir-block { margin-top: 22px; }
+.lir-block-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.lir-block-title { font-size: 14px; font-weight: 500; color: #111827; }
+.lir-list { border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; }
+.lir-list-row {
+  display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+  border-bottom: 1px solid #f0f1f3; font-size: 13px;
+}
+.lir-list-row:last-child { border-bottom: none; }
+.lir-list-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.lir-list-name { color: #111827; }
+.lir-reason {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+  color: #6b7280; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lir-when { font-size: 12px; color: #94a3b8; min-width: 56px; text-align: right; }
+
+.lir-link { font-size: 12px; color: #0F9D8E; text-decoration: none; white-space: nowrap; }
+.lir-link:hover { text-decoration: underline; }
+.lir-link-quiet { font-size: 11px; color: #94a3b8; text-decoration: none; }
+.lir-link-quiet:hover { color: #0F9D8E; text-decoration: underline; }
+
+/* Pills + tags */
+.lir-pill { font-size: 11px; padding: 2px 9px; border-radius: 999px; }
+.lir-pill-info { background: #e6f5f3; color: #0c6b60; }
+.lir-tag {
+  font-size: 11px; padding: 2px 8px; border-radius: 6px; min-width: 66px; text-align: center; text-transform: lowercase;
+}
+.lir-tag-danger  { background: #fdeaea; color: #b91c1c; }
+.lir-tag-warning { background: #fdf2e3; color: #9a5b06; }
+.lir-tag-muted   { background: #f1f3f5; color: #6b7280; }
+
+/* States */
+.lir-empty { padding: 28px 12px; text-align: center; color: #94a3b8; font-size: 14px; }
+.lir-error {
+  margin: 12px 0; padding: 10px 14px; border-radius: 8px;
+  background: #fdeaea; color: #b91c1c; font-size: 13px;
+}

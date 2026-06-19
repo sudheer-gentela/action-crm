@@ -226,14 +226,26 @@ router.post('/report-failure', async (req, res) => {
 // The two are mutually exclusive (limited regex excludes challenge terms and
 // vice-versa) so "Aborted: limited" can't double-count as a challenge.
 //
+// Also reports a URN-readiness risk: prospects with an imminent LinkedIn send
+// (scheduled/sending) but NO stored member_urn will fall back to the live
+// resolve (queryId-dependent) instead of a durable URN — a softer risk than
+// limited/challenge, surfaced per-seat (urnMissing/urnPending/urnCoveragePct),
+// in the org rollup (summary), and as an actionable list (urnMissingSample) of
+// profiles to revisit. Derived from member_urn IS NULL, so it self-clears when
+// the URN later backfills.
+//
 //   GET /risk?window=24h|7d|30d&userIds=1,2&depth=direct|plus1|plus2|all
 //   resp: { ok, window, since, scope:{type,userIds},
+//           summary:{ sent, failed, limited, challenge, riskEvents, pending,
+//                     urnMissing, urnPending, urnCoveragePct, seats },
 //           seats:[ { userId, publicIdentifier, displayName,
 //                     sent, failed, limited, challenge, riskEvents, pending,
+//                     urnMissing, urnPending, urnCoveragePct,
 //                     lastRiskAt, lastChallengeAt } ],
 //           recentEvents:[ { logId, userId, prospectId, name, linkedinUrl,
-//                            riskKind, reason, firedAt } ] }
-const RISK_WINDOWS = { '24h': '24 hours', '7d': '7 days', '30d': '30 days' };
+//                            riskKind, reason, firedAt } ],
+//           urnMissingSample:[ { prospectId, userId, name, linkedinUrl } ] }
+const RISK_WINDOWS = { '24h': '24 hours', '7d': '7 days', '30d': '30 days', '90d': '90 days', 'all': '100 years' };
 const RE_LIMITED   = "(limit|quota|429|exceeded)";
 const RE_CHALLENGE = "(challenge|captcha)";
 
@@ -253,12 +265,16 @@ router.get('/risk', async (req, res) => {
       depth: req.query.depth,
       explicitUserIds: parseIntList(req.query.userIds),
     });
-    const userIds = scope.userIds;   // always non-empty; always includes viewer
+    // 'Just me' — a manager narrowing to their own numbers. Intersect to the
+    // viewer (still inside their resolved scope, so it's safe).
+    const selfOnly = req.query.selfOnly === '1' || req.query.selfOnly === 'true';
+    const userIds = selfOnly ? [viewerId] : scope.userIds;   // scope.userIds always includes viewer
+    const scopeType = selfOnly ? 'self' : scope.scope;
 
     const winKey   = RISK_WINDOWS[String(req.query.window)] ? String(req.query.window) : '7d';
     const interval = RISK_WINDOWS[winKey];
-    const windowMs = { '24h': 86400000, '7d': 7 * 86400000, '30d': 30 * 86400000 }[winKey];
-    const since    = new Date(Date.now() - windowMs).toISOString();
+    const windowMs = { '24h': 86400000, '7d': 7 * 86400000, '30d': 30 * 86400000, '90d': 90 * 86400000 }[winKey];
+    const since    = windowMs ? new Date(Date.now() - windowMs).toISOString() : null;  // null = all time
 
     // Per-seat aggregation. Windowed measures require fired_at in range; pending
     // (scheduled/sending) is a live backlog gauge, so it ignores the window.
@@ -269,10 +285,16 @@ router.get('/risk', async (req, res) => {
               COUNT(*) FILTER (WHERE ssl.status = 'failed' AND ssl.fired_at >= now() - $3::interval AND ssl.error_message ~* '${RE_LIMITED}')          AS limited,
               COUNT(*) FILTER (WHERE ssl.status = 'failed' AND ssl.fired_at >= now() - $3::interval AND ssl.error_message ~* '${RE_CHALLENGE}')        AS challenge,
               COUNT(*) FILTER (WHERE ssl.status IN ('scheduled','sending'))                                                                            AS pending,
+              -- Readiness risk: imminent sends (scheduled/sending) whose prospect
+              -- has no stored member_urn will fall back to the fragile live
+              -- resolve at send time. Counted by DISTINCT prospect.
+              COUNT(DISTINCT ssl.prospect_id) FILTER (WHERE ssl.status IN ('scheduled','sending'))                          AS urn_pending,
+              COUNT(DISTINCT ssl.prospect_id) FILTER (WHERE ssl.status IN ('scheduled','sending') AND p.member_urn IS NULL) AS urn_missing,
               MAX(ssl.fired_at) FILTER (WHERE ssl.status = 'failed' AND ssl.error_message ~* '(${RE_LIMITED}|${RE_CHALLENGE})')                         AS last_risk_at,
               MAX(ssl.fired_at) FILTER (WHERE ssl.status = 'failed' AND ssl.error_message ~* '${RE_CHALLENGE}')                                         AS last_challenge_at
          FROM sequence_step_logs ssl
          JOIN sequence_enrollments se ON se.id = ssl.enrollment_id AND se.org_id = ssl.org_id
+         JOIN prospects p             ON p.id  = ssl.prospect_id    AND p.org_id  = ssl.org_id
         WHERE ssl.org_id  = $1
           AND ssl.channel = 'linkedin'
           AND se.enrolled_by = ANY($2::int[])
@@ -281,8 +303,10 @@ router.get('/risk', async (req, res) => {
       [orgId, userIds, interval]
     );
 
-    // Hydrate seat display from the LinkedIn seat identity (more meaningful for
-    // risk than the GoWarm user name — it's the account that's exposed).
+    // Hydrate display: LinkedIn seat identity (the account at risk) + the GoWarm
+    // user name. Both keyed by user_id; a user may have enrollments without a
+    // seat row, so names come from users (authoritative) and the handle from
+    // the seat when present.
     const seatRows = await db.query(
       `SELECT user_id, public_identifier, display_name
          FROM user_linkedin_seats
@@ -291,25 +315,40 @@ router.get('/risk', async (req, res) => {
     );
     const seatById = new Map(seatRows.rows.map(s => [s.user_id, s]));
 
+    const userRows = await db.query(
+      `SELECT id, TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS name
+         FROM users WHERE org_id = $1 AND id = ANY($2::int[])`,
+      [orgId, userIds]
+    );
+    const nameById = new Map(userRows.rows.map(u => [u.id, u.name || null]));
+
     const seats = agg.rows.map(r => {
       const s = seatById.get(r.user_id) || {};
-      const limited   = Number(r.limited)   || 0;
-      const challenge = Number(r.challenge) || 0;
+      const handle = s.public_identifier || null;
+      const limited    = Number(r.limited)     || 0;
+      const challenge  = Number(r.challenge)   || 0;
+      const urnPending = Number(r.urn_pending) || 0;
+      const urnMissing = Number(r.urn_missing) || 0;
       return {
         userId:           r.user_id,
-        publicIdentifier: s.public_identifier || null,
-        displayName:      s.display_name || null,
+        name:             nameById.get(r.user_id) || s.display_name || null,   // GoWarm user name
+        publicIdentifier: handle,                                              // LinkedIn seat handle
+        displayName:      s.display_name || null,                              // LinkedIn display name
+        profileUrl:       handle ? `https://www.linkedin.com/in/${handle}` : null,
         sent:             Number(r.sent)    || 0,
         failed:           Number(r.failed)  || 0,
         limited,
         challenge,
         riskEvents:       limited + challenge,
         pending:          Number(r.pending) || 0,
+        urnMissing,
+        urnPending,
+        urnCoveragePct:   urnPending ? Math.round(((urnPending - urnMissing) / urnPending) * 100) : null,
         lastRiskAt:       r.last_risk_at      || null,
         lastChallengeAt:  r.last_challenge_at || null,
       };
     }).sort((a, b) =>
-      (b.challenge - a.challenge) || (b.limited - a.limited) || (b.failed - a.failed)
+      (b.challenge - a.challenge) || (b.limited - a.limited) || (b.failed - a.failed) || (b.urnMissing - a.urnMissing)
     );
 
     // Recent failures in-window for investigation (all failures, tagged by kind
@@ -345,13 +384,56 @@ router.get('/risk', async (req, res) => {
       firedAt:     e.fired_at,
     }));
 
+    // Actionable list: prospects with an imminent LinkedIn send but no stored
+    // URN — revisit these profiles to capture the URN (or let them ride the
+    // live-resolve fallback). Capped; distinct per prospect.
+    const urnMissing = await db.query(
+      `SELECT DISTINCT ON (p.id) p.id AS prospect_id, se.enrolled_by AS user_id,
+              p.first_name, p.last_name, p.linkedin_url
+         FROM sequence_step_logs ssl
+         JOIN sequence_enrollments se ON se.id = ssl.enrollment_id AND se.org_id = ssl.org_id
+         JOIN prospects p             ON p.id  = ssl.prospect_id    AND p.org_id  = ssl.org_id
+        WHERE ssl.org_id  = $1
+          AND ssl.channel = 'linkedin'
+          AND ssl.status IN ('scheduled','sending')
+          AND p.member_urn IS NULL
+          AND se.enrolled_by = ANY($2::int[])
+        ORDER BY p.id DESC
+        LIMIT 50`,
+      [orgId, userIds]
+    );
+    const urnMissingSample = urnMissing.rows.map(p => ({
+      prospectId:  p.prospect_id,
+      userId:      p.user_id,
+      name:        `${p.first_name || ''} ${p.last_name || ''}`.trim() || null,
+      linkedinUrl: p.linkedin_url || null,
+    }));
+
+    // Org-level rollup across the seats in scope — the "risk pattern for the
+    // organization" at a glance (admins see the whole org; managers their team).
+    const summary = seats.reduce((a, s) => ({
+      sent:       a.sent       + s.sent,
+      failed:     a.failed     + s.failed,
+      limited:    a.limited    + s.limited,
+      challenge:  a.challenge  + s.challenge,
+      riskEvents: a.riskEvents + s.riskEvents,
+      pending:    a.pending    + s.pending,
+      urnMissing: a.urnMissing + s.urnMissing,
+      urnPending: a.urnPending + s.urnPending,
+      seats:      a.seats + 1,
+    }), { sent:0, failed:0, limited:0, challenge:0, riskEvents:0, pending:0, urnMissing:0, urnPending:0, seats:0 });
+    summary.urnCoveragePct = summary.urnPending
+      ? Math.round(((summary.urnPending - summary.urnMissing) / summary.urnPending) * 100) : null;
+
     res.json({
       ok: true,
       window: winKey,
       since,
-      scope: { type: scope.scope, userIds },
+      scope: { type: scopeType, userIds, depth: scope.depth },
+      summary,
       seats,
       recentEvents,
+      urnMissingSample,
     });
   } catch (err) {
     console.error('linkedin-autosend/risk error:', err.message);
