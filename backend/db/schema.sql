@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict gAQzdUadoFdyYkGMYevKzY57pXlxTUixIXExalrf0t3zgFLvLVnB5rage5ORB6A
+\restrict 1RK4oigAda0aZN3dHtdoogIXcRzvhe1MC2yPJtAhori8ezOb4oFBDfuIxLl3d2x
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -3200,7 +3200,8 @@ CREATE TABLE public.org_action_config (
     call_settings jsonb DEFAULT '{}'::jsonb NOT NULL,
     enrichment jsonb DEFAULT '{}'::jsonb NOT NULL,
     campaign_settings jsonb DEFAULT '{}'::jsonb NOT NULL,
-    prospecting_escalation jsonb DEFAULT '{}'::jsonb NOT NULL
+    prospecting_escalation jsonb DEFAULT '{}'::jsonb NOT NULL,
+    linkedin_automation jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 
 
@@ -3219,6 +3220,13 @@ COMMENT ON COLUMN public.org_action_config.ai_settings IS 'Shape: { master_enabl
             generation_mode: ["playbook","rules","ai"],
             ai_provider: "anthropic"|"openai"|"gemini",
             default_model: string }';
+
+
+--
+-- Name: COLUMN org_action_config.linkedin_automation; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.org_action_config.linkedin_automation IS 'Optional LinkedIn connection-request auto-send. Org-admin master toggle + defensive guardrails (daily cap, jitter band, human-hours window, lease ttl). Empty = SYSTEM_DEFAULTS (disabled). Per-user opt-in lives in user_preferences.preferences->''linkedin_auto_connect''.';
 
 
 --
@@ -4707,6 +4715,7 @@ CREATE TABLE public.prospects (
     linkedin_activity jsonb DEFAULT '[]'::jsonb NOT NULL,
     linkedin_enrichment_meta jsonb DEFAULT '{}'::jsonb NOT NULL,
     campaign_id integer,
+    member_urn text,
     CONSTRAINT chk_prospect_revisit_disposition CHECK (((revisit_disposition IS NULL) OR (revisit_disposition = ANY (ARRAY['kill'::text, 'long_term'::text, 'unable_to_decide'::text]))))
 );
 
@@ -4723,6 +4732,13 @@ COMMENT ON COLUMN public.prospects.research_meta IS 'Metadata about the AI gener
 --
 
 COMMENT ON COLUMN public.prospects.linkedin_headline IS 'Free-text headline shown on the prospect''s LinkedIn profile. Distinct from title (job title). Populated by the Chrome extension.';
+
+
+--
+-- Name: COLUMN prospects.member_urn; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospects.member_urn IS 'Stable LinkedIn fsd_profile URN (urn:li:fsd_profile:ΓÇª). Captured by the Chrome extension, owner-bound to the profile slug. Preferred over linkedin_url for auto-send targeting and capture-time dedup (slug-change resilient). Nullable, non-unique by design.';
 
 
 --
@@ -5031,6 +5047,8 @@ CREATE TABLE public.sequence_step_logs (
     personalize_sources jsonb,
     approved_at timestamp with time zone,
     approved_by integer,
+    claimed_by_seat text,
+    lease_expires_at timestamp with time zone,
     CONSTRAINT sequence_step_logs_status_check CHECK (((status)::text = ANY (ARRAY[('draft'::character varying)::text, ('sent'::character varying)::text, ('completed'::character varying)::text, ('replied'::character varying)::text, ('skipped'::character varying)::text, ('active'::character varying)::text, ('failed'::character varying)::text, ('scheduled'::character varying)::text, ('sending'::character varying)::text])))
 );
 
@@ -5047,6 +5065,20 @@ COMMENT ON COLUMN public.sequence_step_logs.approved_at IS 'When a rep approved 
 --
 
 COMMENT ON COLUMN public.sequence_step_logs.approved_by IS 'users.id of the rep who approved the draft for paced sending. NULL for auto-send rows.';
+
+
+--
+-- Name: COLUMN sequence_step_logs.claimed_by_seat; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequence_step_logs.claimed_by_seat IS 'LinkedIn public_identifier (user_linkedin_seats) that leased this row for auto-send. NULL for email/manual rows.';
+
+
+--
+-- Name: COLUMN sequence_step_logs.lease_expires_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequence_step_logs.lease_expires_at IS 'When a sending-status LinkedIn auto-send lease expires and may be reclaimed to scheduled. NULL when not leased.';
 
 
 --
@@ -5854,7 +5886,8 @@ CREATE TABLE public.users (
     twilio_did character varying(32),
     twilio_did_sid character varying(64),
     twilio_did_provisioned_at timestamp with time zone,
-    timezone text
+    timezone text,
+    calling_enabled boolean DEFAULT true NOT NULL
 );
 
 
@@ -10660,6 +10693,13 @@ CREATE INDEX idx_prospects_linkedin_slug ON public.prospects USING btree (org_id
 
 
 --
+-- Name: idx_prospects_member_urn; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_prospects_member_urn ON public.prospects USING btree (org_id, member_urn) WHERE ((member_urn IS NOT NULL) AND (deleted_at IS NULL));
+
+
+--
 -- Name: idx_prospects_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10853,6 +10893,13 @@ CREATE INDEX idx_seq_step_logs_draft_overdue ON public.sequence_step_logs USING 
 --
 
 CREATE INDEX idx_seq_step_logs_enrollment_id ON public.sequence_step_logs USING btree (enrollment_id);
+
+
+--
+-- Name: idx_seq_step_logs_li_lease; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_seq_step_logs_li_lease ON public.sequence_step_logs USING btree (lease_expires_at) WHERE (((channel)::text = 'linkedin'::text) AND ((status)::text = 'sending'::text));
 
 
 --
@@ -14942,5 +14989,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict gAQzdUadoFdyYkGMYevKzY57pXlxTUixIXExalrf0t3zgFLvLVnB5rage5ORB6A
+\unrestrict 1RK4oigAda0aZN3dHtdoogIXcRzvhe1MC2yPJtAhori8ezOb4oFBDfuIxLl3d2x
 

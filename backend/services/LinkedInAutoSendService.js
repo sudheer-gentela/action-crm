@@ -113,7 +113,7 @@ async function claimForSeat(client, { orgId, userId, seatSlug, limit, leaseMinut
   // guaranteed by the lease join; re-scope here defensively.
   const prospectIds = [...new Set(leased.rows.map(r => r.prospect_id))];
   const pRes = await client.query(
-    `SELECT id, first_name, last_name, linkedin_url
+    `SELECT id, first_name, last_name, linkedin_url, member_urn
        FROM prospects
       WHERE org_id = $1 AND id = ANY($2::int[])`,
     [orgId, prospectIds]
@@ -131,6 +131,7 @@ async function claimForSeat(client, { orgId, userId, seatSlug, limit, leaseMinut
       prospect: {
         name:        `${p.first_name || ''} ${p.last_name || ''}`.trim() || null,
         linkedinUrl: p.linkedin_url || null,
+        memberUrn:   p.member_urn || null,
       },
     };
   });
