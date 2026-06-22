@@ -24,6 +24,7 @@
 
 const dns = require('dns').promises;
 const db = require('../config/database');
+const { registrableDomain } = require('../utils/domainMatch');
 
 const CNAME_TARGET = () => process.env.TRACKING_CNAME_TARGET || 'track.gowarmcrm.com';
 const CF_API = 'https://api.cloudflare.com/client/v4';
@@ -123,6 +124,45 @@ async function verify(orgId, id) {
     return { id, hostname: row.hostname, status: 'failed', error_message: msg };
   };
 
+  // ── Same-zone shortcut ──────────────────────────────────────────────────────
+  // A tracking host inside our OWN platform zone (e.g. a gowarmcrm.com
+  // subdomain, where the CNAME target also lives) is NOT a Cloudflare-for-SaaS
+  // custom hostname: CF rejects custom hostnames already in the zone, and the
+  // zone's Universal SSL already covers first-level subdomains. A *proxied*
+  // same-zone record also hides its CNAME from resolveCname, so the external
+  // DNS+CF path below would fail spuriously. Instead, probe the live tracking
+  // endpoint over HTTPS and activate when it serves. The open endpoint returns
+  // the 1x1 pixel for ANY token, so this probe is side-effect-free.
+  if (registrableDomain(row.hostname) === registrableDomain(CNAME_TARGET())) {
+    try {
+      const res = await _fetchImpl(`https://${row.hostname}/t/o/probe`, { method: 'GET' });
+      const ct = String(res.headers?.get?.('content-type') || '').toLowerCase();
+      if (res.status === 200 && ct.startsWith('image/')) {
+        await db.query(
+          `UPDATE tracking_domains
+              SET status = 'active', cf_hostname_id = NULL, error_message = NULL,
+                  last_checked_at = now(), updated_at = now()
+            WHERE id = $1`,
+          [id]
+        );
+        return {
+          id, hostname: row.hostname, status: 'active',
+          note: "Tracking host is live (same-zone — served by your zone's certificate; no Cloudflare-for-SaaS hostname needed).",
+        };
+      }
+      return fail(
+        `https://${row.hostname}/t/o/ returned HTTP ${res.status} (expected a 200 image). ` +
+        `Add a PROXIED CNAME ${row.hostname} → ${CNAME_TARGET()} in your zone and make sure the app answers at this host, then Verify again.`
+      );
+    } catch (e) {
+      return fail(
+        `Could not reach https://${row.hostname}/t/o/ — ${e.message}. ` +
+        `Add a PROXIED CNAME ${row.hostname} → ${CNAME_TARGET()} and allow a few minutes for propagation, then Verify again.`
+      );
+    }
+  }
+
+  // ── External-domain path (Cloudflare for SaaS) ──────────────────────────────
   // 1) DNS: CNAME must resolve to the target.
   let cnames = [];
   try {

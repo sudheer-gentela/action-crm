@@ -26,6 +26,7 @@
 
 const crypto = require('crypto');
 const db = require('../config/database');
+const { registrableDomain, emailDomain } = require('../utils/domainMatch');
 
 const TOO_SOON_SECONDS = 10;
 
@@ -70,13 +71,51 @@ function verifyToken(token) {
 
 // ── decoration ───────────────────────────────────────────────────────────────
 
-/** Org's active tracking hostname or null. */
-async function getActiveHostname(client, orgId) {
+/**
+ * Pick the org's active tracking hostname that ALIGNS with the sending
+ * address (shares its registrable domain), so a gowarmcrm.com send is tracked
+ * on a gowarmcrm.com host and a gowarm.info send on a gowarm.info host.
+ *
+ * Selection rules (deterministic — no arbitrary LIMIT 1):
+ *   • If a sender is given and an active host shares its registrable domain,
+ *     use that host.
+ *   • If no aligned host exists and there are MULTIPLE active hosts, return
+ *     null — refuse to guess and cross-domain the links (this is the bug the
+ *     old `LIMIT 1` introduced).
+ *   • If there is exactly ONE active host (or no sender was supplied), use it.
+ *     This preserves the original behaviour for single-domain orgs and any
+ *     legacy caller that doesn't pass a sender.
+ */
+async function getActiveHostname(client, orgId, senderEmail) {
   const r = await client.query(
-    `SELECT hostname FROM tracking_domains WHERE org_id = $1 AND status = 'active' LIMIT 1`,
+    `SELECT hostname FROM tracking_domains
+      WHERE org_id = $1 AND status = 'active'
+      ORDER BY id`,
     [orgId]
   );
-  return r.rows[0]?.hostname || null;
+  const hosts = r.rows.map((x) => x.hostname).filter(Boolean);
+  if (hosts.length === 0) return null;
+
+  const senderDom = senderEmail ? registrableDomain(emailDomain(senderEmail)) : null;
+  if (senderDom) {
+    const aligned = hosts.find((h) => registrableDomain(h) === senderDom);
+    if (aligned) return aligned;
+    if (hosts.length > 1) {
+      console.warn(
+        `[EmailTracking] org=${orgId} no tracking domain aligned with sender '${senderEmail}' ` +
+        `among [${hosts.join(', ')}] — sending untracked rather than cross-domain.`
+      );
+      return null;
+    }
+    // Single active host that doesn't align: keep tracking (prior behaviour),
+    // but it will be cross-domain. Log so it's visible.
+    console.warn(
+      `[EmailTracking] org=${orgId} sole tracking domain '${hosts[0]}' does not align with ` +
+      `sender '${senderEmail}' — tracking cross-domain.`
+    );
+    return hosts[0];
+  }
+  return hosts[0];
 }
 
 /** Campaign toggles via the prospect's campaign. Default OFF (D39, amended:
@@ -119,12 +158,12 @@ function decorate(html, { host, orgId, stepLogId, opens, clicks }) {
  * Send-path entry point. Returns decorated HTML, or the ORIGINAL html on any
  * gate failure or error — this function must never break a send.
  */
-async function decorateHtml(client, { orgId, prospectId, stepLogId, html }) {
+async function decorateHtml(client, { orgId, prospectId, stepLogId, html, senderEmail }) {
   try {
     const toggles = await getCampaignTracking(client, orgId, prospectId);
     if (!toggles.opens && !toggles.clicks) return html;
-    const host = await getActiveHostname(client, orgId);
-    if (!host) return html;   // D40: no active domain → no tracking, no fallback
+    const host = await getActiveHostname(client, orgId, senderEmail);
+    if (!host) return html;   // D40: no active/aligned domain → no tracking, no fallback
     return decorate(html, { host, orgId, stepLogId, opens: toggles.opens, clicks: toggles.clicks });
   } catch (err) {
     console.error(`[EmailTracking] decorate failed org=${orgId} log=${stepLogId}: ${err.message} — sending untracked`);
