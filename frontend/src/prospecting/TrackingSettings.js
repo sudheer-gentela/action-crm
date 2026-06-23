@@ -116,7 +116,7 @@ export function TrackingDomainSettings() {
         </div>
       ))}
 
-      {domains !== null && !domains.some((d) => d.status === 'active') && (
+      {domains !== null && (
         <div style={S.row}>
           <input
             style={S.input}
