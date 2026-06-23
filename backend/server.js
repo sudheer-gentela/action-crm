@@ -71,6 +71,14 @@ app.options('*', cors(corsOptions));
 // hits this guard.
 app.use((req, res, next) => {
   if (req.method === 'OPTIONS') return next();
+
+  // Public, logged-out-safe endpoint. The extension polls it with a raw
+  // fetch that carries no auth and no extension key (by design — the version
+  // check must work when the user is signed out), and the install page reads
+  // it from a normal web origin. It must bypass this guard, or the in-extension
+  // version check 403s and the update banner freezes at a stale value.
+  if (req.path === '/api/extension/version') return next();
+
   const origin = req.headers.origin || '';
   if (!origin.startsWith('chrome-extension://')) return next();
 
