@@ -1,0 +1,44 @@
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 2026_30_linkedin_profile_capture_meta.sql
+--
+-- Per-item merge metadata for the experience/education jsonb sections on
+-- linkedin_profiles, stored in a SEPARATE column so the section arrays stay
+-- clean for consumers (SkillContextService, linkedinSnippets, the LLM prompt
+-- context, and the extension's diff view all read .experience/.education
+-- directly — they must never see merge bookkeeping).
+--
+-- WHY: the extension upsert previously REPLACED the whole experience/education
+-- array on every capture. That silently dropped roles a capture didn't see and
+-- stomped any rep correction on the next scrape. We are moving to a union merge
+-- keyed by a stable item identity (company|title|start_date|end_date for
+-- experience; school|degree|start_year for education): re-encountered items are
+-- refreshed (richer-wins on unlocked fields), unseen items are retained, and
+-- non-matching items are kept as NEW so the rep can adjudicate. capture_meta
+-- carries the bookkeeping that makes that safe:
+--
+--   {
+--     "experience": {
+--       "items": {
+--         "<itemKey>": {
+--           "locked_fields": ["description"],   -- rep-edited; scrape may not overwrite
+--           "suppressed":    false,             -- rep removed this role; do not resurrect
+--           "first_seen":    "2026-06-01T...Z",
+--           "last_seen":     "2026-06-24T...Z"
+--         }
+--       }
+--     },
+--     "education": { "items": { ... } }
+--   }
+--
+-- last_seen is recorded now (free) so a future "stale role" aging/flagging pass
+-- can be added without another migration. No removal/aging behavior ships here.
+--
+-- Additive + nullable with a default: ADD COLUMN ... DEFAULT '{}'::jsonb is a
+-- metadata-only change in modern PostgreSQL (no table rewrite). Existing rows
+-- read as an empty meta object, which the merge treats as "no locks, nothing
+-- suppressed" — i.e. current behavior until a rep edits something. Safe to run
+-- more than once.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE linkedin_profiles
+  ADD COLUMN IF NOT EXISTS capture_meta jsonb NOT NULL DEFAULT '{}'::jsonb;

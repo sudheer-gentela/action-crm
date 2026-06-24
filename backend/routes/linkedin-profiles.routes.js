@@ -285,6 +285,164 @@ function mergeActivity(existing, incoming) {
   return out.slice(0, 200);
 }
 
+// ── Keyed section merge: experience / education (v1.22) ───────────────────────
+//
+// Replaces the old whole-array overwrite with a union keyed by a STABLE,
+// flat composite identity. Deliberately not fuzzy: if a key field changes
+// (a date added later, an edited title), the item gets a NEW key and is
+// surfaced as a new role for the rep to adjudicate — the server never guesses
+// two captures are the same role. See migration 2026_30 for the rationale.
+const _norm = (s) => (s == null ? '' : String(s)).trim().toLowerCase().replace(/\s+/g, ' ');
+function expItemKey(it) {
+  return [_norm(it.company), _norm(it.title), _norm(it.start_date), _norm(it.end_date)].join('|');
+}
+function eduItemKey(it) {
+  return [_norm(it.school), _norm(it.degree), _norm(it.start_year)].join('|');
+}
+
+// Per-field "richer wins" for the NON-key fields that can legitimately differ
+// between two captures of the same item (key fields are identical by definition
+// of a match, so only these vary). Longer non-empty string wins; a present
+// number wins over null; an empty incoming value never blanks a stored value.
+function richerValue(field, existingVal, incomingVal) {
+  const isNum = field === 'duration_months' || field === 'end_year' || field === 'start_year';
+  if (isNum) {
+    if (incomingVal == null) return existingVal ?? null;
+    return incomingVal;                               // present incoming wins (incl. over null)
+  }
+  const e = existingVal == null ? '' : String(existingVal);
+  const i = incomingVal == null ? '' : String(incomingVal);
+  if (i.length === 0) return existingVal ?? null;     // never blank out with empty
+  if (e.length === 0) return incomingVal;
+  return i.length >= e.length ? incomingVal : existingVal;   // richer (longer) wins
+}
+
+// Generic union merge for a keyed section. Returns { items, meta }.
+//
+//   suppressed key            → excluded from output, never resurrected by a scrape
+//   matched key               → per field: a LOCKED field keeps its STORED value
+//                               unless this request re-locks it (rep edited now);
+//                               an unlocked field uses richerValue()
+//   incoming key not existing → added as NEW (rep adjudicates any apparent dup)
+//   existing key not incoming → retained as-is (union); last_seen unchanged
+//   orphan meta (key gone, not suppressed) → pruned
+//
+// `directives` are this-request rep actions, keys already computed by the caller
+// with the same field order as keyFn:
+//   { lock:[{key,fields}], unlock:[{key,fields}], suppress:[key], unsuppress:[key] }
+function mergeKeyedSection({ existingItems, incomingItems, keyFn, lockableFields,
+                             sectionMeta, directives, now, sortFn }) {
+  const fields = lockableFields;
+  const meta   = { items: { ...(sectionMeta && sectionMeta.items ? sectionMeta.items : {}) } };
+  // clone nested item-meta so we don't mutate the caller's object
+  for (const k of Object.keys(meta.items)) {
+    meta.items[k] = {
+      locked_fields: [...(meta.items[k].locked_fields || [])],
+      suppressed:    !!meta.items[k].suppressed,
+      first_seen:    meta.items[k].first_seen || null,
+      last_seen:     meta.items[k].last_seen  || null,
+    };
+  }
+  const getMeta = (k) => (meta.items[k] ||
+    (meta.items[k] = { locked_fields: [], suppressed: false, first_seen: now, last_seen: null }));
+
+  // Apply this-request directives to meta first.
+  const relockedNow = {};   // key -> Set(fields) the rep is setting in THIS request
+  (directives && directives.lock || []).forEach(d => {
+    const m = getMeta(d.key);
+    relockedNow[d.key] = relockedNow[d.key] || new Set();
+    (d.fields || []).filter(f => fields.includes(f)).forEach(f => {
+      if (!m.locked_fields.includes(f)) m.locked_fields.push(f);
+      relockedNow[d.key].add(f);
+    });
+  });
+  (directives && directives.unlock || []).forEach(d => {
+    const m = getMeta(d.key);
+    m.locked_fields = m.locked_fields.filter(f => !(d.fields || []).includes(f));
+  });
+  (directives && directives.suppress   || []).forEach(k => { getMeta(k).suppressed = true;  });
+  (directives && directives.unsuppress || []).forEach(k => { getMeta(k).suppressed = false; });
+
+  const existingByKey = new Map();
+  (existingItems || []).forEach(it => existingByKey.set(keyFn(it), it));
+
+  const out = [];
+  const usedKeys = new Set();
+  const seenIncoming = new Set();
+
+  for (const inc of (incomingItems || [])) {
+    const k = keyFn(inc);
+    if (seenIncoming.has(k)) continue;        // dedupe identical items within one capture
+    seenIncoming.add(k);
+    const m = getMeta(k);
+    m.last_seen = now;
+    if (m.suppressed) { usedKeys.add(k); continue; }   // rep removed it — stays gone
+
+    const prev = existingByKey.get(k);
+    if (prev) {
+      const merged = { ...prev };
+      for (const f of fields) {
+        if (m.locked_fields.includes(f)) {
+          merged[f] = (relockedNow[k] && relockedNow[k].has(f)) ? inc[f] : prev[f];
+        } else {
+          merged[f] = richerValue(f, prev[f], inc[f]);
+        }
+      }
+      out.push(merged);
+    } else {
+      m.first_seen = m.first_seen || now;
+      out.push({ ...inc });
+    }
+    usedKeys.add(k);
+  }
+
+  // Retain existing items not present in this capture (union), unless suppressed.
+  for (const it of (existingItems || [])) {
+    const k = keyFn(it);
+    if (usedKeys.has(k)) continue;
+    if (meta.items[k] && meta.items[k].suppressed) continue;
+    out.push(it);
+    usedKeys.add(k);
+  }
+
+  // Prune orphan meta: keys no longer present AND not suppressed.
+  for (const k of Object.keys(meta.items)) {
+    if (!usedKeys.has(k) && !meta.items[k].suppressed) delete meta.items[k];
+  }
+
+  if (sortFn) out.sort(sortFn);
+  return { items: out, meta };
+}
+
+// Sort experience current-first: open-ended roles (no end_date) first, then by
+// start_date descending. Education: most-recent end/start year first.
+function sortExperience(a, b) {
+  const aOpen = !a.end_date, bOpen = !b.end_date;
+  if (aOpen !== bOpen) return aOpen ? -1 : 1;
+  const as = a.start_date ? Date.parse(a.start_date) : -Infinity;
+  const bs = b.start_date ? Date.parse(b.start_date) : -Infinity;
+  return bs - as;
+}
+function sortEducation(a, b) {
+  const ay = a.end_year || a.start_year || -Infinity;
+  const by = b.end_year || b.start_year || -Infinity;
+  return by - ay;
+}
+
+// Build the directives object the merge expects from the client's `edits` block
+// for one section. The client sends key FIELDS; we recompute the composite key
+// here with the same keyFn so client and server never disagree on identity.
+function buildDirectives(sectionEdits, keyFn) {
+  if (!sectionEdits || typeof sectionEdits !== 'object') return {};
+  const k = (kf) => keyFn(kf || {});
+  return {
+    lock:       (sectionEdits.lock       || []).map(d => ({ key: k(d.key), fields: d.fields || [] })),
+    unlock:     (sectionEdits.unlock     || []).map(d => ({ key: k(d.key), fields: d.fields || [] })),
+    suppress:   (sectionEdits.suppress   || []).map(kf => k(kf)),
+    unsuppress: (sectionEdits.unsuppress || []).map(kf => k(kf)),
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/linkedin-profiles/upsert
 // ─────────────────────────────────────────────────────────────────────────────
@@ -411,21 +569,80 @@ router.post('/upsert', async (req, res) => {
     );
     const existing = existingRes.rows[0] || null;
 
+    const now = new Date();
+    const nowIso = now.toISOString();
+
+    // Rep edit directives for this request (locks / unlocks / suppress /
+    // unsuppress), recomputed into composite keys server-side. `edits` is
+    // optional; a plain scrape sends none.
+    const edits = (req.body && typeof req.body.edits === 'object' && req.body.edits) || {};
+    const existingMeta = (existing && existing.capture_meta) || {};
+
+    // Run the keyed merge for a section when the client sent that section
+    // (non-empty OR explicit []), or when there are directives to apply even
+    // without a re-capture (e.g. a rep removing a role from the panel). When
+    // neither, leave the stored section and its meta untouched.
+    const hasDir = (sec) => sec && (
+      (sec.lock && sec.lock.length) || (sec.unlock && sec.unlock.length) ||
+      (sec.suppress && sec.suppress.length) || (sec.unsuppress && sec.unsuppress.length));
+
+    let mergedExp  = existing?.experience || [];
+    let mergedEdu  = existing?.education  || [];
+    let expMeta    = existingMeta.experience || { items: {} };
+    let eduMeta    = existingMeta.education  || { items: {} };
+
+    if (inExp !== null || hasDir(edits.experience)) {
+      const r = mergeKeyedSection({
+        existingItems:  existing?.experience || [],
+        incomingItems:  inExp || [],
+        keyFn:          expItemKey,
+        lockableFields: ['location', 'description', 'duration_months'],
+        sectionMeta:    expMeta,
+        directives:     buildDirectives(edits.experience, expItemKey),
+        now:            nowIso,
+        sortFn:         sortExperience,
+      });
+      mergedExp = r.items; expMeta = r.meta;
+    }
+    if (inEdu !== null || hasDir(edits.education)) {
+      const r = mergeKeyedSection({
+        existingItems:  existing?.education || [],
+        incomingItems:  inEdu || [],
+        keyFn:          eduItemKey,
+        lockableFields: ['field_of_study', 'end_year'],
+        sectionMeta:    eduMeta,
+        directives:     buildDirectives(edits.education, eduItemKey),
+        now:            nowIso,
+        sortFn:         sortEducation,
+      });
+      mergedEdu = r.items; eduMeta = r.meta;
+    }
+
     // Compute merged values.
     const merged = {
       full_name:  inFullName ?? existing?.full_name ?? null,
       headline:   inHeadline ?? existing?.headline  ?? null,
       location:   inLocation ?? existing?.location  ?? null,
       about:      inAbout    ?? existing?.about     ?? null,
-      experience: inExp && inExp.length ? inExp : (existing?.experience || []),
-      education:  inEdu && inEdu.length ? inEdu : (existing?.education  || []),
+      experience: mergedExp,
+      education:  mergedEdu,
       activity:   inActivity ? mergeActivity(existing?.activity || [], inActivity)
                              : (existing?.activity || []),
     };
 
-    const now = new Date();
+    // capture_meta carries per-item merge bookkeeping (locks/suppressions/
+    // provenance) in a SEPARATE column so the section arrays stay clean for
+    // consumers. Preserve any other keys already present.
+    const mergedCaptureMeta = {
+      ...(existing?.capture_meta || {}),
+      experience: expMeta,
+      education:  eduMeta,
+    };
+
     const basicsTouched   = (inFullName || inHeadline || inLocation) ? now : null;
     const aboutTouched    = inAbout != null               ? now : null;
+    // "touched" reflects an actual capture of that section (non-empty incoming),
+    // independent of merge outcome, so the *_captured_at stamps stay meaningful.
     const expTouched      = inExp      && inExp.length    ? now : null;
     const eduTouched      = inEdu      && inEdu.length    ? now : null;
     const activityTouched = inActivity && inActivity.length ? now : null;
@@ -440,10 +657,11 @@ router.post('/upsert', async (req, res) => {
            source, last_captured_at,
            last_basics_captured_at, last_about_captured_at,
            last_exp_captured_at,    last_edu_captured_at,
-           last_activity_captured_at
+           last_activity_captured_at,
+           capture_meta
          )
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,
-                 $11,$12,$13,$14,$15,$16,$17)
+                 $11,$12,$13,$14,$15,$16,$17,$18::jsonb)
          RETURNING *`,
         [
           req.orgId, slug, rawUrl,
@@ -453,6 +671,7 @@ router.post('/upsert', async (req, res) => {
           JSON.stringify(merged.activity),
           source, now,
           basicsTouched, aboutTouched, expTouched, eduTouched, activityTouched,
+          JSON.stringify(mergedCaptureMeta),
         ]
       );
       profile = insRes.rows[0];
@@ -473,7 +692,8 @@ router.post('/upsert', async (req, res) => {
            last_about_captured_at    = COALESCE($14, last_about_captured_at),
            last_exp_captured_at      = COALESCE($15, last_exp_captured_at),
            last_edu_captured_at      = COALESCE($16, last_edu_captured_at),
-           last_activity_captured_at = COALESCE($17, last_activity_captured_at)
+           last_activity_captured_at = COALESCE($17, last_activity_captured_at),
+           capture_meta              = $18::jsonb
          WHERE id = $1 AND org_id = $2
          RETURNING *`,
         [
@@ -484,6 +704,7 @@ router.post('/upsert', async (req, res) => {
           JSON.stringify(merged.activity),
           source, now,
           basicsTouched, aboutTouched, expTouched, eduTouched, activityTouched,
+          JSON.stringify(mergedCaptureMeta),
         ]
       );
       profile = updRes.rows[0];
