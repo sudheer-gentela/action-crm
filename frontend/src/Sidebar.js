@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import NotificationBell from './NotificationBell';
 import './Sidebar.css';
 
 // ─────────────────────────────────────────────────────────────
@@ -375,6 +376,7 @@ export default function Sidebar({
             </svg>
           </div>
           {!collapsed && <span className="sb-brand-name">Go<span className="sb-brand-warm">Warm</span> <span className="sb-brand-crm">CRM</span></span>}
+          {!collapsed && <NotificationBell />}
           <button
             className="sb-toggle-btn"
             onClick={isMobile ? onClose : onToggleCollapse}
