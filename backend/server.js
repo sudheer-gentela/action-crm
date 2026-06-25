@@ -226,7 +226,7 @@ app.use('/api/ai',            require('./routes/ai.routes'));
 app.use('/api/prompts',       require('./routes/prompts.routes'));
 app.use('/api/salesforce',    require('./routes/salesforce.routes'));
 app.use('/api/hubspot',       require('./routes/hubspot.routes'));
-
+app.use('/api/slack',         require('./routes/slack.routes'));   // ← add this line
 
 app.use('/api/org/admin/ai',    require('./routes/ai-admin.routes'));
 app.use('/api/me/ai',           require('./routes/ai-user.routes'));

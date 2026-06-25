@@ -3,6 +3,7 @@
  * Panel: OAIntegrations. */
 import React, { useState, useEffect } from 'react';
 import OAMeetingSettings from '../../OAMeetingSettings';
+import SlackConnect from '../../SlackConnect';
 import { apiService } from '../../apiService';
 
 export default function OAIntegrations({ orgId }) {
@@ -106,6 +107,7 @@ export default function OAIntegrations({ orgId }) {
   const SUB_TABS = [
     { id: 'email-calendar', label: '📧 Email & Calendar' },
     { id: 'meeting',        label: '🎙️ Meeting & Transcripts' },
+    { id: 'slack',          label: '💬 Slack Notifications' },
   ];
 
   const subTabStyle = (id) => ({
@@ -295,6 +297,18 @@ export default function OAIntegrations({ orgId }) {
 
       {/* ── Meeting & Transcripts tab ──────────────────────────────── */}
       {subTab === 'meeting' && <OAMeetingSettings orgId={orgId} />}
+
+      {/* ── Slack Notifications tab ─────────────────────────────────── */}
+      {subTab === 'slack' && (
+        <div>
+          <p style={{ fontSize: 14, color: '#6b7280', marginBottom: 20, lineHeight: 1.6 }}>
+            Connect your Slack workspace so reps and their managers receive action,
+            escalation, and revisit notifications as Slack DMs. Each member chooses
+            which categories they want under <strong>Settings → Notifications</strong>.
+          </p>
+          <SlackConnect />
+        </div>
+      )}
     </div>
   );
 }

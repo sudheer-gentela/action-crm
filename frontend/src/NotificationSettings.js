@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { apiService } from './apiService';
+import { apiService, slackAPI } from './apiService';
 import './NotificationSettings.css';
 
 const HOURS_OPTIONS = [
@@ -167,6 +167,7 @@ function TeamsModal({ orgTeams, dealTeams, onClose }) {
 export default function NotificationSettings() {
   const [prefs,        setPrefs]        = useState(null);
   const [members,      setMembers]      = useState([]);
+  const [slackConnected, setSlackConnected] = useState(false);
   const [loading,      setLoading]      = useState(true);
   const [saving,       setSaving]       = useState(false);
   const [saved,        setSaved]        = useState(false);
@@ -186,6 +187,10 @@ export default function NotificationSettings() {
       ]);
       setPrefs(prefsRes.data.preferences);
       setMembers(membersRes.data.members || []);
+      // Non-fatal: whether the org has Slack connected (gates the Slack section)
+      slackAPI.getStatus()
+        .then(r => setSlackConnected(!!r?.data?.connected))
+        .catch(() => setSlackConnected(false));
     } catch (err) {
       setError('Failed to load notification settings');
     } finally {
@@ -222,6 +227,19 @@ export default function NotificationSettings() {
   };
 
   const set = (key, val) => setPrefs(p => ({ ...p, [key]: val }));
+
+  // Nested setters for the channels prefs (master switch + per-category map).
+  const setSlackEnabled = (val) => setPrefs(p => ({
+    ...p,
+    channels: { ...(p.channels || {}), slack_enabled: val },
+  }));
+  const setSlackCategory = (cat, val) => setPrefs(p => ({
+    ...p,
+    channels: {
+      ...(p.channels || {}),
+      slack_categories: { ...((p.channels || {}).slack_categories || {}), [cat]: val },
+    },
+  }));
 
   const toggleSpecificUser = userId => setPrefs(prev => {
     const ids  = prev.specific_user_ids || [];
@@ -314,6 +332,47 @@ export default function NotificationSettings() {
           />
         </div>
       </div>
+
+      {/* ── Slack delivery (only when the org has Slack connected) ────────── */}
+      {slackConnected && (() => {
+        const ch  = prefs.channels || {};
+        const cat = ch.slack_categories || {};
+        return (
+          <>
+            <div className="ns-section-label" style={{ marginTop: 24 }}>Slack</div>
+            <div className="ns-card">
+              <div className="ns-toggle-row">
+                <div>
+                  <div className="ns-card-title">Send notifications to Slack</div>
+                  <div className="ns-card-desc">Get your notifications as Slack direct messages, in addition to the in-app bell. Pick which kinds below.</div>
+                </div>
+                <Toggle checked={!!ch.slack_enabled} onChange={setSlackEnabled} />
+              </div>
+
+              {ch.slack_enabled && (
+                <div className="ns-subsettings">
+                  <div className="ns-toggle-row">
+                    <div className="ns-card-desc">Overdue action alerts</div>
+                    <Toggle checked={cat.immediate !== false} onChange={v => setSlackCategory('immediate', v)} />
+                  </div>
+                  <div className="ns-toggle-row">
+                    <div className="ns-card-desc">Escalations (to managers / skip-level)</div>
+                    <Toggle checked={cat.escalation !== false} onChange={v => setSlackCategory('escalation', v)} />
+                  </div>
+                  <div className="ns-toggle-row">
+                    <div className="ns-card-desc">Revisit reminders</div>
+                    <Toggle checked={cat.revisit !== false} onChange={v => setSlackCategory('revisit', v)} />
+                  </div>
+                  <div className="ns-toggle-row">
+                    <div className="ns-card-desc">Daily digests</div>
+                    <Toggle checked={!!cat.digest} onChange={v => setSlackCategory('digest', v)} />
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        );
+      })()}
 
       {/* ── Who gets notified (only when an alert is on) ──────────────────── */}
       {anyAlert && (<>

@@ -992,6 +992,21 @@ export const salesforceAPI = {
   },
 };
 
+export const slackAPI = {
+  getAuthUrl: async () => {
+    const response = await fetch(`${API_BASE_URL}/slack/connect`, { headers: getAuthHeaders() });
+    return response.json();
+  },
+  getStatus: async () => {
+    const response = await fetch(`${API_BASE_URL}/slack/status`, { headers: getAuthHeaders() });
+    return response.json();
+  },
+  disconnect: async () => {
+    const response = await fetch(`${API_BASE_URL}/slack/disconnect`, { method: 'POST', headers: getAuthHeaders() });
+    return response.json();
+  },
+};
+
 export const hubspotAPI = {
   getAuthUrl: async () => {
     const response = await fetch(`${API_BASE_URL}/hubspot/connect`, { headers: getAuthHeaders() });

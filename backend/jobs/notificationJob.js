@@ -11,6 +11,7 @@
 
 const Queue              = require('bull');
 const notificationService = require('../services/notificationService');
+const notificationDelivery = require('../services/notificationDelivery.service');
 const db                  = require('../config/database');
 
 // ── Queue setup ───────────────────────────────────────────────────────────────
@@ -25,7 +26,7 @@ const notificationQueue = new Queue('team-notifications', process.env.REDIS_URL,
 
 // ── Job processor ─────────────────────────────────────────────────────────────
 notificationQueue.process(async (job) => {
-  const { type, orgId, actionId, userId, overdueActions, prospectId, accountId, meta, targetTier } = job.data;
+  const { type, orgId, actionId, userId, overdueActions, prospectId, accountId, meta, targetTier, notificationId } = job.data;
 
   console.log(`[notifications] Processing job ${job.id}: type=${type} org=${orgId}`);
 
@@ -74,6 +75,12 @@ notificationQueue.process(async (job) => {
   } else if (type === 'prospecting_escalation') {
     job.progress(20);
     const result = await notificationService.processProspectingEscalation(orgId, actionId, targetTier);
+    job.progress(100);
+    return result;
+
+  } else if (type === 'slack_delivery') {
+    job.progress(20);
+    const result = await notificationDelivery.deliverSlack(orgId, notificationId);
     job.progress(100);
     return result;
 

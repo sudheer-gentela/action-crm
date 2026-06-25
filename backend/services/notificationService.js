@@ -223,6 +223,21 @@ async function createNotification(orgId, userId, type, title, body, entityType, 
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     RETURNING id, created_at
   `, [orgId, userId, type, title, body, entityType || null, entityId || null, JSON.stringify(metadata)]);
+
+  // Best-effort cross-channel fan-out (currently Slack). The in-app row above is
+  // the source of truth; delivery runs on the worker queue so it can't slow or
+  // break the notification write. Lazy require avoids a load-time cycle with
+  // notificationJob (which requires this module).
+  try {
+    const { notificationQueue } = require('../jobs/notificationJob');
+    notificationQueue.add(
+      { type: 'slack_delivery', orgId, userId, notificationId: notif.id },
+      { jobId: `slack-del-${notif.id}` }
+    ).catch(err => console.warn('[notifications] slack enqueue failed:', err.message));
+  } catch (err) {
+    console.warn('[notifications] slack enqueue unavailable:', err.message);
+  }
+
   return notif;
 }
 
@@ -383,6 +398,13 @@ const DEFAULT_PREFS = {
   // without disabling the whole org.
   prospecting_immediate_alert:   true,
   prospecting_daily_digest:      true,
+  // Delivery channels. Master switch per channel + per-category routing when on.
+  // slack_enabled defaults OFF (opt-in); category defaults apply once a rep
+  // turns Slack on. Digests are off by default — too noisy as DMs.
+  channels: {
+    slack_enabled:    false,
+    slack_categories: { immediate: true, escalation: true, revisit: true, digest: false },
+  },
 };
 
 async function getUserNotificationPrefs(userId, orgId) {
@@ -394,7 +416,19 @@ async function getUserNotificationPrefs(userId, orgId) {
   `, [userId, orgId]);
 
   const saved = row?.esc ? (typeof row.esc === 'string' ? JSON.parse(row.esc) : row.esc) : {};
-  return { ...DEFAULT_PREFS, ...saved };
+  const merged = { ...DEFAULT_PREFS, ...saved };
+  // channels needs a deep merge — a shallow spread would drop category defaults
+  // for any sub-key the saved blob doesn't mention.
+  const savedCh = saved.channels || {};
+  merged.channels = {
+    ...DEFAULT_PREFS.channels,
+    ...savedCh,
+    slack_categories: {
+      ...DEFAULT_PREFS.channels.slack_categories,
+      ...(savedCh.slack_categories || {}),
+    },
+  };
+  return merged;
 }
 
 async function setUserNotificationPrefs(userId, orgId, patch) {
@@ -402,6 +436,7 @@ async function setUserNotificationPrefs(userId, orgId, patch) {
     'immediate_alert', 'immediate_hours', 'daily_digest',
     'notify_deal_team', 'notify_my_teams', 'fallback_mode', 'specific_user_ids',
     'prospecting_immediate_alert', 'prospecting_daily_digest',
+    'channels',
   ];
   const safe    = {};
   for (const key of allowed) {
@@ -420,6 +455,24 @@ async function setUserNotificationPrefs(userId, orgId, patch) {
     safe.specific_user_ids = Array.isArray(safe.specific_user_ids)
       ? safe.specific_user_ids.filter(id => Number.isInteger(id))
       : [];
+  }
+
+  // Normalize the channels object to a complete, well-typed shape so we never
+  // persist a partial blob. Frontend sends the full channels object on save.
+  if (safe.channels !== undefined) {
+    const inCh  = (safe.channels && typeof safe.channels === 'object') ? safe.channels : {};
+    const inCat = (inCh.slack_categories && typeof inCh.slack_categories === 'object')
+      ? inCh.slack_categories : {};
+    const def   = DEFAULT_PREFS.channels;
+    safe.channels = {
+      slack_enabled: inCh.slack_enabled === undefined ? def.slack_enabled : !!inCh.slack_enabled,
+      slack_categories: {
+        immediate:  inCat.immediate  === undefined ? def.slack_categories.immediate  : !!inCat.immediate,
+        escalation: inCat.escalation === undefined ? def.slack_categories.escalation : !!inCat.escalation,
+        revisit:    inCat.revisit    === undefined ? def.slack_categories.revisit    : !!inCat.revisit,
+        digest:     inCat.digest     === undefined ? def.slack_categories.digest     : !!inCat.digest,
+      },
+    };
   }
 
   // Upsert — conflict on composite PK (user_id, org_id)
