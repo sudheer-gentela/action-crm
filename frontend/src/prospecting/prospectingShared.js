@@ -140,6 +140,7 @@ export function apiFetch(path, options = {}, _isRetry = false) {
     const err = new Error(errMsg);
     err.status = r.status;
     err.code = errCode;
+    err.body = errBody;   // full parsed payload (e.g. needs_reconnect, senders) for callers
     return Promise.reject(err);
   });
 }

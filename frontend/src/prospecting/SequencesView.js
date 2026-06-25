@@ -215,7 +215,11 @@ function SequencesView({ prospects, search }) {
       setDrafts(prev => prev.filter(d => d.id !== draft.id));
       setDraftEdits(prev => { const n = { ...prev }; delete n[draft.id]; return n; });
     } catch (err) {
-      setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], approving: false, error: err.message } }));
+      const reconnect = err.status === 409 && err.body?.needs_reconnect;
+      const msg = reconnect
+        ? `${(err.body.senders?.[0]?.email) || 'Your email sender'} is disconnected — reconnect it in Settings → My Preferences → Outreach Sender Accounts, then approve again.`
+        : err.message;
+      setDraftEdits(prev => ({ ...prev, [draft.id]: { ...prev[draft.id], approving: false, error: msg } }));
     }
   };
 
@@ -365,7 +369,12 @@ function SequencesView({ prospects, search }) {
         (result.skipped ? ` ${result.skipped} skipped (not an email draft or already queued).` : '')
       );
     } catch (err) {
-      setError('Approve & queue failed: ' + err.message);
+      if (err.status === 409 && err.body?.needs_reconnect) {
+        const who = err.body.senders?.[0]?.email || 'Your email sender';
+        setError(`${who} is disconnected — reconnect it in Settings → My Preferences → Outreach Sender Accounts, then approve again.`);
+      } else {
+        setError('Approve & queue failed: ' + err.message);
+      }
     } finally {
       setBulkApproving(false);
     }

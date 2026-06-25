@@ -3826,7 +3826,7 @@ router.get('/:id/sender-summary', async (req, res) => {
     const sRes = await pool.query(
       `SELECT id, email, provider, display_name, is_active,
               emails_sent_today, daily_limit, last_reset_at, last_sent_at,
-              created_at
+              created_at, account_data
          FROM prospecting_sender_accounts
         WHERE org_id = $1
           AND user_id = $2
@@ -3842,7 +3842,7 @@ router.get('/:id/sender-summary', async (req, res) => {
     // "you have 1 active + 2 inactive senders, here's how to reactivate."
     const inactiveRes = await pool.query(
       `SELECT id, email, provider, display_name, is_active,
-              emails_sent_today, daily_limit
+              emails_sent_today, daily_limit, account_data
          FROM prospecting_sender_accounts
         WHERE org_id = $1
           AND user_id = $2
@@ -3862,6 +3862,10 @@ router.get('/:id/sender-summary', async (req, res) => {
     function computeHealth(s) {
       const sentToday = sentTodayFor(s);
       const dailyLimit = s.daily_limit || 0;
+      const th = s.account_data && s.account_data.token_health;
+      if (th && th.status === 'revoked') {
+        return { health: 'revoked', reason: 'Disconnected — reconnect this account to resume sending.' };
+      }
       if (!s.is_active) {
         return { health: 'warning', reason: 'Connected but inactive. Reactivate under Settings → Email senders.' };
       }
@@ -3884,23 +3888,31 @@ router.get('/:id/sender-summary', async (req, res) => {
           provider: s.provider,
           display_name: s.display_name,
           is_active: true,
+          revoked: h.health === 'revoked',
           emails_sent_today: sentTodayFor(s),
           daily_limit: s.daily_limit || 0,
           health: h.health,
           health_reason: h.reason,
         };
       }),
-      ...inactiveRes.rows.map(s => ({
-        id: s.id,
-        email: s.email,
-        provider: s.provider,
-        display_name: s.display_name,
-        is_active: false,
-        emails_sent_today: 0,
-        daily_limit: s.daily_limit || 0,
-        health: 'warning',
-        health_reason: 'Inactive — not in round-robin rotation.',
-      })),
+      ...inactiveRes.rows.map(s => {
+        const th = s.account_data && s.account_data.token_health;
+        const revoked = !!(th && th.status === 'revoked');
+        return {
+          id: s.id,
+          email: s.email,
+          provider: s.provider,
+          display_name: s.display_name,
+          is_active: false,
+          revoked,
+          emails_sent_today: 0,
+          daily_limit: s.daily_limit || 0,
+          health: revoked ? 'revoked' : 'warning',
+          health_reason: revoked
+            ? 'Disconnected — reconnect this account to resume sending.'
+            : 'Inactive — not in round-robin rotation.',
+        };
+      }),
     ];
 
     // Aggregate health across all ACTIVE senders. The overall rollup is the

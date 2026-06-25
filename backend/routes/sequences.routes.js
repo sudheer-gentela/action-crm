@@ -37,6 +37,7 @@ const router  = express.Router();
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
 const { pool }          = require('../config/database');
+const SenderTokenHealth = require('../services/SenderTokenHealth');   // pre-approve sender credential guard
 const TokenTrackingService = require('../services/TokenTrackingService');
 const { resolvePersonalizeConfig } = require('../services/personalizeConfig');
 // Slice 3: personalisation runs through the dispatcher, which walks every
@@ -1546,6 +1547,14 @@ async function approveDraftLogs(orgId, userId, logIds, sendAt) {
   const ids = (logIds || []).map(Number).filter(Number.isInteger);
   if (!ids.length) return { approved: 0, skipped: 0, approvedIds: [] };
 
+  // Pre-flight: confirm the rep still has a sender that can actually deliver.
+  // Approving only flips drafts → 'scheduled'; the firer sends later. Without
+  // this, a dead token lets approval "succeed" and silently fail hours later.
+  // assertUserCanSend probes the rep's active senders, marks/notifies any dead
+  // ones, and throws { needsReconnect, senders } if NONE can send — which the
+  // route handlers turn into a 409 the UI renders as a one-click reconnect.
+  await SenderTokenHealth.assertUserCanSend(pool, orgId, userId);
+
   const upd = await pool.query(
     `UPDATE sequence_step_logs ssl
         SET status            = 'scheduled',
@@ -1598,6 +1607,13 @@ router.post('/drafts/approve', async (req, res) => {
   try {
     res.json(await approveDraftLogs(req.orgId, req.user.userId, logIds, sendAt));
   } catch (err) {
+    if (err && err.needsReconnect) {
+      return res.status(409).json({
+        error: { message: err.message },
+        needs_reconnect: true,
+        senders: err.senders || [],
+      });
+    }
     console.error('POST /sequences/drafts/approve', err);
     res.status(500).json({ error: { message: 'Failed to approve drafts' } });
   }
@@ -1608,6 +1624,13 @@ router.post('/drafts/:logId/approve', async (req, res) => {
   try {
     res.json(await approveDraftLogs(req.orgId, req.user.userId, [req.params.logId], req.body?.sendAt));
   } catch (err) {
+    if (err && err.needsReconnect) {
+      return res.status(409).json({
+        error: { message: err.message },
+        needs_reconnect: true,
+        senders: err.senders || [],
+      });
+    }
     console.error('POST /sequences/drafts/:logId/approve', err);
     res.status(500).json({ error: { message: 'Failed to approve draft' } });
   }

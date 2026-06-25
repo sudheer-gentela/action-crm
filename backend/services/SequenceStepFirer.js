@@ -45,6 +45,7 @@ const { sendEmail: sendOutlookEmail } = require('./outlookService');
 const { plainTextToHtml }             = require('./emailFormatter');
 const PersonalizationDispatcher       = require('./PersonalizationDispatcher');  // lazy JIT personalisation
 const LinkedInAutomationConfig        = require('./linkedinAutomationConfig');   // org→user→system auto-connect gate
+const SenderTokenHealth               = require('./SenderTokenHealth');          // dead-credential detect / deactivate / notify
 
 // ── Template renderer ─────────────────────────────────────────────────────────
 function renderTemplate(template, prospect, account) {
@@ -1198,6 +1199,54 @@ const SequenceStepFirer = {
               throw new Error(`Unsupported sender provider: ${sender.provider}`);
             }
           } catch (sendErr) {
+            // A dead sender credential (invalid_grant) is a SENDER problem, not a
+            // per-enrollment one — pausing every enrollment that happens to land
+            // on it (and re-hitting the provider for each) is wrong. Instead:
+            // deactivate the sender + notify the rep ONCE, then decide based on
+            // whether a healthy sender remains:
+            //   • another sender available → release this claim back to
+            //     'scheduled' so the next tick fails over to it automatically.
+            //   • none left → fall through to the original fail+pause so the
+            //     enrollment still parks with an owner action (no infinite retry).
+            // All NON-revocation errors keep the original fail+pause behaviour.
+            if (SenderTokenHealth.isRevokedError(sendErr)) {
+              await SenderTokenHealth.handleRevokedAtSend(client, {
+                sender,
+                orgId:  enrollment.org_id,
+                userId: enrollment.enrolled_by,
+                reason: sendErr.message,
+              });
+              // Is there still a sender that can carry this (now or after its
+              // cooldown/daily window)? The picker already excludes the
+              // just-deactivated one (is_active=false on the same connection).
+              const failover = await pickEmailSenderWithCapacity(
+                client, enrollment.org_id, enrollment.enrolled_by, clientId, settings, new Date(), allowedSenderIds
+              );
+              const hasOtherSender =
+                !!failover.sender || failover.status === 'cooling_down' || failover.status === 'all_maxed';
+              if (hasOtherSender) {
+                // Release the claim → retried next tick by a healthy sender.
+                await client.query(
+                  `UPDATE sequence_step_logs
+                      SET status='scheduled', fired_at=NULL
+                    WHERE id=$1 AND status='sending'`,
+                  [logId]
+                );
+                errors++;
+                continue;
+              }
+              // No healthy sender left → park with a clear, actionable message.
+              await failAndPause(client, {
+                orgId: enrollment.org_id, enrollmentId: enrollment.id, stepId: step.id,
+                prospectId: enrollment.prospect_id, enrolledBy: enrollment.enrolled_by,
+                seqName: enrollment.seq_name, stepOrder: enrollment.current_step,
+                channel: 'email',
+                message: 'Email sender disconnected — reconnect in Settings → Outreach, then resume.',
+              });
+              errors++;
+              continue;
+            }
+
             await failAndPause(client, {
               orgId: enrollment.org_id, enrollmentId: enrollment.id, stepId: step.id,
               prospectId: enrollment.prospect_id, enrolledBy: enrollment.enrolled_by,

@@ -55,6 +55,10 @@ function mapSenderRow(row) {
     linkedinSignature:  row.linkedin_signature,
     createdAt:          row.created_at,
     updatedAt:          row.updated_at,
+    // Verified credential health (stamped by SenderTokenHealth: the firer on a
+    // failed send, the daily sweep, and manual /validate). null = not yet
+    // checked → treat as healthy/unknown in the UI.
+    tokenHealth:        (row.account_data && row.account_data.token_health) || null,
   };
 }
 
@@ -250,77 +254,13 @@ router.post('/:id/validate', async (req, res) => {
       return res.json({ valid: false, reason: 'No refresh token — please reconnect this account.' });
     }
 
-    // Try a lightweight token refresh to confirm the credential is still valid
-    const axios = require('axios');
-    if (sender.provider === 'gmail') {
-      try {
-        const params = new URLSearchParams({
-          client_id:     process.env.GOOGLE_CLIENT_ID,
-          client_secret: process.env.GOOGLE_CLIENT_SECRET,
-          refresh_token: sender.refresh_token,
-          grant_type:    'refresh_token',
-        });
-        const response = await axios.post(
-          'https://oauth2.googleapis.com/token',
-          params.toString(),
-          { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-        );
-        // Persist the fresh access token
-        await db.query(
-          `UPDATE prospecting_sender_accounts
-              SET access_token = $1, expires_at = $2, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $3`,
-          [response.data.access_token, new Date(Date.now() + response.data.expires_in * 1000), sender.id]
-        );
-        return res.json({ valid: true });
-      } catch (err) {
-        const isRevoked = /invalid_grant|Token has been expired or revoked/i.test(
-          err.response?.data?.error || err.message
-        );
-        return res.json({
-          valid: false,
-          reason: isRevoked
-            ? 'Access was revoked — please reconnect this account.'
-            : `Token validation failed: ${err.message}`,
-        });
-      }
-    }
-
-    // Outlook — attempt a refresh via tokenService
-    if (sender.provider === 'outlook') {
-      try {
-        const tenantId = process.env.MICROSOFT_TENANT_ID;
-        const params = new URLSearchParams({
-          client_id:     process.env.MICROSOFT_CLIENT_ID,
-          client_secret: process.env.MICROSOFT_CLIENT_SECRET,
-          refresh_token: sender.refresh_token,
-          grant_type:    'refresh_token',
-          scope:         'https://graph.microsoft.com/Mail.Send offline_access',
-        });
-        const response = await axios.post(
-          `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
-          params.toString(),
-          { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-        );
-        await db.query(
-          `UPDATE prospecting_sender_accounts
-              SET access_token = $1, expires_at = $2, updated_at = CURRENT_TIMESTAMP
-            WHERE id = $3`,
-          [response.data.access_token, new Date(Date.now() + response.data.expires_in * 1000), sender.id]
-        );
-        return res.json({ valid: true });
-      } catch (err) {
-        const isRevoked = /invalid_grant|AADSTS/i.test(err.response?.data?.error || err.message);
-        return res.json({
-          valid: false,
-          reason: isRevoked
-            ? 'Access was revoked — please reconnect this account.'
-            : `Token validation failed: ${err.message}`,
-        });
-      }
-    }
-
-    return res.json({ valid: false, reason: 'Unknown provider' });
+    // Delegate to the shared health service: it probes the credential, refreshes
+    // + stamps healthy on success, or deactivates + stamps + notifies on a
+    // confirmed revocation. Response contract is unchanged ({ valid, reason }).
+    const SenderTokenHealth = require('../services/SenderTokenHealth');
+    const r = await SenderTokenHealth.validateAndPersist(db, sender, { notify: true });
+    if (r.valid) return res.json({ valid: true });
+    return res.json({ valid: false, reason: r.reason });
   } catch (error) {
     console.error('Validate sender error:', error);
     res.status(500).json({ error: { message: 'Failed to validate sender account' } });

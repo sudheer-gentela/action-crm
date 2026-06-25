@@ -79,7 +79,7 @@ router.get('/callback', async (req, res) => {
     console.log('   State:', state ? 'Present' : 'Missing');
     console.log('   Error:', oauthError || 'None');
 
-    const frontendUrl = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://action-crm.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://app.gowarmcrm.com';
     console.log('   Frontend URL:', frontendUrl);
 
     if (oauthError) {
@@ -264,7 +264,7 @@ router.get('/callback', async (req, res) => {
 
   } catch (error) {
     console.error('❌ Error in OAuth callback:', error);
-    const frontendUrl = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://action-crm.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://app.gowarmcrm.com';
     res.redirect(`${frontendUrl}/?error=auth_failed&message=${encodeURIComponent(error.message)}`);
   }
 });

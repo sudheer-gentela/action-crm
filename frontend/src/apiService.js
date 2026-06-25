@@ -382,6 +382,10 @@ twilio: {
     getConnectUrl: (provider, label) => api.get(`/prospecting-senders/connect-url?provider=${provider}${label ? '&label=' + encodeURIComponent(label) : ''}`),
     update: (id, data) => api.patch(`/prospecting-senders/${id}`, data),
     remove: (id) => api.delete(`/prospecting-senders/${id}`),
+    // Live-checks a sender's OAuth credential; refreshes + stamps health, or
+    // reports { valid: false, reason } if revoked. Backs the health badge and
+    // the "check before reconnect" affordance.
+    validate: (id) => api.post(`/prospecting-senders/${id}/validate`),
   },
 
   // ── NEW: Org outreach limits (admin only) ─────────────────────────────────

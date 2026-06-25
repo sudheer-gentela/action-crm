@@ -11,7 +11,7 @@
 //
 // Backend: GET /api/prospecting-campaigns/:id/sender-summary
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { apiFetch } from './prospectingShared';
 import { writeHash } from '../hashNav';
 
@@ -19,6 +19,7 @@ const HEALTH_STYLES = {
   healthy:      { bg: '#ecfdf5', fg: '#065f46', border: '#a7f3d0', dot: '#10b981', label: 'Healthy' },
   warning:      { bg: '#fffbeb', fg: '#92400e', border: '#fde68a', dot: '#f59e0b', label: 'Warning' },
   over_limit:   { bg: '#fef2f2', fg: '#991b1b', border: '#fecaca', dot: '#ef4444', label: 'Over limit' },
+  revoked:      { bg: '#fef2f2', fg: '#991b1b', border: '#fecaca', dot: '#ef4444', label: 'Disconnected' },
   unconfigured: { bg: '#f3f4f6', fg: '#6b7280', border: '#e5e7eb', dot: '#9ca3af', label: 'Not connected' },
 };
 
@@ -46,23 +47,53 @@ export default function SenderSummaryTile({ campaignId }) {
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState('');
   const [expanded, setExpanded] = useState(false);
+  const [reconnecting, setReconnecting] = useState(null); // sender.id mid-reconnect
 
-  useEffect(() => {
+  // Start a re-auth for an existing sender: jump straight to its provider's
+  // consent screen. The OAuth callback upserts on (user_id, email), so this
+  // refreshes that same sender row rather than creating a new one.
+  const handleReconnect = async (s) => {
+    setReconnecting(s.id);
+    try {
+      const provider = s.provider === 'outlook' ? 'outlook' : 'gmail';
+      const r = await apiFetch(`/prospecting-senders/connect-url?provider=${provider}`);
+      if (r?.authUrl) { window.location.href = r.authUrl; return; }
+      setError('Could not start reconnect.');
+      setReconnecting(null);
+    } catch (err) {
+      setError('Failed to start reconnect: ' + (err.message || ''));
+      setReconnecting(null);
+    }
+  };
+
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
+  const load = useCallback(async ({ silent = false } = {}) => {
     if (!campaignId) return;
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      try {
-        const r = await apiFetch(`/prospecting-campaigns/${campaignId}/sender-summary`);
-        if (!cancelled) { setData(r); setError(''); }
-      } catch (err) {
-        if (!cancelled) setError(err.message || 'Failed to load sender info');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
+    if (!silent) setLoading(true);
+    try {
+      const r = await apiFetch(`/prospecting-campaigns/${campaignId}/sender-summary`);
+      if (mountedRef.current) { setData(r); setError(''); }
+    } catch (err) {
+      if (mountedRef.current) setError(err.message || 'Failed to load sender info');
+    } finally {
+      if (mountedRef.current && !silent) setLoading(false);
+    }
   }, [campaignId]);
+
+  // Initial / campaign-change load.
+  useEffect(() => { load(); }, [load]);
+
+  // Re-fetch when the tab regains focus — e.g. after returning from the
+  // provider's OAuth reconnect screen — so a just-reconnected sender drops out
+  // of the disconnected state without a manual refresh. silent=true keeps the
+  // current data visible (no "Loading…" flash) while it refreshes in place.
+  useEffect(() => {
+    const onFocus = () => load({ silent: true });
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [load]);
 
   if (loading) {
     return (
@@ -101,6 +132,7 @@ export default function SenderSummaryTile({ campaignId }) {
       : [];
   const activeCount = email.active_count ?? senders.filter(s => s.is_active).length;
   const inactiveCount = email.inactive_count ?? senders.filter(s => !s.is_active).length;
+  const disconnectedSenders = senders.filter(s => s.revoked || s.health === 'revoked');
 
   return (
     <div style={tileStyle}>
@@ -130,6 +162,26 @@ export default function SenderSummaryTile({ campaignId }) {
             {emailHealth.label}
           </span>
         </div>
+
+        {disconnectedSenders.length > 0 && (
+          <div style={{ marginTop: 8, marginBottom: 8, padding: '8px 10px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#991b1b', marginBottom: 6 }}>
+              ⚠ {disconnectedSenders.length} sender{disconnectedSenders.length === 1 ? '' : 's'} disconnected — reconnect to resume sending.
+            </div>
+            {disconnectedSenders.map(s => (
+              <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, padding: '3px 0' }}>
+                <span style={{ flex: 1, color: '#7f1d1d', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.email}</span>
+                <button
+                  onClick={() => handleReconnect(s)}
+                  disabled={reconnecting === s.id}
+                  style={{ padding: '3px 10px', background: '#dc2626', border: '1px solid #dc2626', borderRadius: 6, fontSize: 11, color: '#fff', cursor: 'pointer', fontWeight: 600 }}
+                >
+                  {reconnecting === s.id ? 'Opening…' : 'Reconnect'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
         {email.configured && activeCount === 1 && senders[0] && (
           <div style={{ fontSize: 11, color: '#6b7280' }}>

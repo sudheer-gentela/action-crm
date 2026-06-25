@@ -847,6 +847,9 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
   const [error, setError]           = useState('');
   const [flash, setFlash]           = useState(null); // { type: 'success'|'error', msg }
   const [connecting, setConnecting] = useState(null); // 'gmail'|'outlook'|null
+  const [reconnecting, setReconnecting] = useState(null); // sender.id mid-reconnect
+  const [checking, setChecking]     = useState(null); // sender.id mid-validate
+  const [checkMsg, setCheckMsg]     = useState({});    // { [senderId]: { ok, reason } }
   const [editingId, setEditingId]   = useState(null);
   const [editValues, setEditValues] = useState({});
   const [phone,       setPhone]       = useState('');
@@ -1061,6 +1064,40 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
     } catch (e) {
       showFlash('error', 'Failed to start connection: ' + (e.response?.data?.error?.message || e.message));
       setConnecting(null);
+    }
+  };
+
+  // ── Reconnect an EXISTING sender (re-auth in place) ───────────────────────
+  // Unlike "Connect Gmail/Outlook" (which adds a new inbox and prompts for a
+  // label), this jumps STRAIGHT to the provider's consent screen for this same
+  // account — no label prompt. The OAuth callback upserts on (user_id, email),
+  // so re-authing the same account refreshes THIS row's tokens and clears its
+  // revoked health stamp; it does not create a duplicate box.
+  const handleReconnect = async (sender) => {
+    setReconnecting(sender.id);
+    try {
+      const res = await apiService.prospectingSenders.getConnectUrl(sender.provider, sender.label || '');
+      const { authUrl } = res.data;
+      window.location.href = authUrl;
+    } catch (e) {
+      showFlash('error', 'Failed to start reconnect: ' + (e.response?.data?.error?.message || e.message));
+      setReconnecting(null);
+    }
+  };
+
+  // ── Verify a sender's credential without sending a test email ─────────────
+  // Refreshes + re-stamps health server-side; we reload so the badge updates.
+  const handleCheck = async (sender) => {
+    setChecking(sender.id);
+    setCheckMsg(prev => ({ ...prev, [sender.id]: null }));
+    try {
+      const res = await apiService.prospectingSenders.validate(sender.id);
+      setCheckMsg(prev => ({ ...prev, [sender.id]: { ok: !!res.data?.valid, reason: res.data?.reason || null } }));
+      loadData();
+    } catch (e) {
+      setCheckMsg(prev => ({ ...prev, [sender.id]: { ok: false, reason: e.response?.data?.error?.message || e.message } }));
+    } finally {
+      setChecking(null);
     }
   };
 
@@ -1430,11 +1467,31 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
                               {sender.label}
                             </span>
                           )}
-                          {!sender.isActive && (
-                            <span style={{ fontSize: 11, padding: '1px 7px', background: '#fef3c7', borderRadius: 10, color: '#92400e' }}>
-                              Paused
-                            </span>
-                          )}
+                          {(() => {
+                            const h = sender.tokenHealth;
+                            if (h && h.status === 'revoked') {
+                              return (
+                                <span title={h.reason || ''} style={{ fontSize: 11, padding: '1px 7px', background: '#fef2f2', borderRadius: 10, color: '#b91c1c', fontWeight: 600 }}>
+                                  ⚠ Disconnected
+                                </span>
+                              );
+                            }
+                            if (!sender.isActive) {
+                              return (
+                                <span style={{ fontSize: 11, padding: '1px 7px', background: '#fef3c7', borderRadius: 10, color: '#92400e' }}>
+                                  Paused
+                                </span>
+                              );
+                            }
+                            if (h && h.status === 'healthy' && h.checked_at) {
+                              return (
+                                <span style={{ fontSize: 11, padding: '1px 7px', background: '#ecfdf5', borderRadius: 10, color: '#065f46' }}>
+                                  ✓ Verified {new Date(h.checked_at).toLocaleDateString()}
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                         <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#6b7280' }}>
                           <span>
@@ -1464,19 +1521,49 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
                           )}
                         </div>
                       </div>
-                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                        <button
-                          onClick={() => startEdit(sender)}
-                          style={{ padding: '5px 12px', background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12, cursor: 'pointer' }}
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => handleRemove(sender)}
-                          style={{ padding: '5px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, color: '#dc2626', cursor: 'pointer' }}
-                        >
-                          Remove
-                        </button>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6, flexShrink: 0 }}>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button
+                            onClick={() => handleReconnect(sender)}
+                            disabled={reconnecting === sender.id}
+                            title="Re-authorize this account with its provider"
+                            style={sender.tokenHealth?.status === 'revoked'
+                              ? { padding: '5px 12px', background: '#dc2626', border: '1px solid #dc2626', borderRadius: 6, fontSize: 12, color: '#fff', cursor: 'pointer', fontWeight: 600 }
+                              : { padding: '5px 12px', background: '#fff', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12, color: '#374151', cursor: 'pointer' }}
+                          >
+                            {reconnecting === sender.id ? 'Opening…' : 'Reconnect'}
+                          </button>
+                          <button
+                            onClick={() => handleCheck(sender)}
+                            disabled={checking === sender.id}
+                            title="Verify the connection without sending"
+                            style={{ padding: '5px 12px', background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12, cursor: 'pointer' }}
+                          >
+                            {checking === sender.id ? 'Checking…' : 'Check'}
+                          </button>
+                          <button
+                            onClick={() => startEdit(sender)}
+                            style={{ padding: '5px 12px', background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 12, cursor: 'pointer' }}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleRemove(sender)}
+                            style={{ padding: '5px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 12, color: '#dc2626', cursor: 'pointer' }}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        {sender.tokenHealth?.status === 'revoked' && sender.tokenHealth?.detected_at && (
+                          <span style={{ fontSize: 11, color: '#b91c1c' }}>
+                            Stopped working {new Date(sender.tokenHealth.detected_at).toLocaleDateString()}
+                          </span>
+                        )}
+                        {checkMsg[sender.id] && (
+                          <span style={{ fontSize: 11, color: checkMsg[sender.id].ok ? '#065f46' : '#b91c1c' }}>
+                            {checkMsg[sender.id].ok ? '✓ Connection healthy' : (checkMsg[sender.id].reason || 'Connection problem')}
+                          </span>
+                        )}
                       </div>
                     </div>
                   )}

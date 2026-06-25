@@ -451,6 +451,7 @@ app.listen(PORT, () => {
   try {
     const cron = require('node-cron');
     require('./jobs/modelDiscoveryScheduler').startScheduler();
+    require('./jobs/senderTokenHealthScheduler').startScheduler();
 
     // Hourly: expire stale agent proposals
     cron.schedule('0 * * * *', async () => {

@@ -58,7 +58,7 @@ router.get('/connect', async (req, res) => {
 router.get('/callback', async (req, res) => {
   try {
     const { code, state, error: oauthError } = req.query;
-    const frontendUrl = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://action-crm.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://app.gowarmcrm.com';
 
     console.log('📥 Google OAuth Callback received');
 
@@ -246,7 +246,7 @@ router.get('/callback', async (req, res) => {
     res.redirect(`${frontendUrl}/?google_connected=true`);
   } catch (error) {
     console.error('❌ Error in Google OAuth callback:', error);
-    const frontendUrl = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://action-crm.vercel.app';
+    const frontendUrl = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://app.gowarmcrm.com';
     res.redirect(`${frontendUrl}/?error=google_auth_failed&message=${encodeURIComponent(error.message)}`);
   }
 });
