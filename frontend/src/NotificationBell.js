@@ -6,6 +6,7 @@
 // Click on notification → marks read + navigates to related entity.
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import api from './apiService';
 import { writeHash } from './hashNav';
 import './NotificationBell.css';
@@ -45,8 +46,29 @@ export default function NotificationBell({ onNavigateToAction }) {
   const [open,          setOpen]          = useState(false);
   const [loading,       setLoading]       = useState(false);
   const [pollMs,        setPollMs]        = useState(DEFAULT_POLL_MS);
-  const dropdownRef = useRef(null);
+  const dropdownRef = useRef(null);   // bell wrapper (for outside-click)
+  const bellRef     = useRef(null);   // the bell button (anchor for positioning)
+  const panelRef    = useRef(null);   // the portaled dropdown panel
   const pollRef     = useRef(null);
+  const [coords, setCoords] = useState({ top: 0, left: 0 });
+
+  // Compute the panel position from the bell's on-screen rect. The panel is
+  // portaled to <body> (so the sidebar's overflow:hidden can't clip it) and
+  // positioned fixed, aligned under the bell's left edge, clamped to the
+  // viewport so it never spills off either side.
+  const PANEL_WIDTH = 360;
+  const computePosition = useCallback(() => {
+    const el = bellRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const margin = 8;
+    let left = r.left;
+    if (left + PANEL_WIDTH > window.innerWidth - margin) {
+      left = Math.max(margin, window.innerWidth - PANEL_WIDTH - margin);
+    }
+    left = Math.max(margin, left);
+    setCoords({ top: r.bottom + margin, left });
+  }, []);
 
   // ── Fetch the org-configured poll interval (backend-only setting) ──────────
   useEffect(() => {
@@ -82,21 +104,35 @@ export default function NotificationBell({ onNavigateToAction }) {
     return () => clearInterval(pollRef.current);
   }, [fetchNotifications, pollMs]);
 
-  // ── Close on outside click ────────────────────────────────────────────────
+  // ── Close on outside click (bell wrapper OR the portaled panel) ───────────
   useEffect(() => {
     if (!open) return;
     function handleClick(e) {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
-        setOpen(false);
-      }
+      const inBell  = dropdownRef.current && dropdownRef.current.contains(e.target);
+      const inPanel = panelRef.current && panelRef.current.contains(e.target);
+      if (!inBell && !inPanel) setOpen(false);
     }
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, [open]);
 
+  // ── Keep the portaled panel anchored to the bell on scroll / resize ───────
+  useEffect(() => {
+    if (!open) return;
+    computePosition();
+    const onMove = () => computePosition();
+    window.addEventListener('scroll', onMove, true); // capture: catch nested scroll containers
+    window.addEventListener('resize', onMove);
+    return () => {
+      window.removeEventListener('scroll', onMove, true);
+      window.removeEventListener('resize', onMove);
+    };
+  }, [open, computePosition]);
+
   // ── Open dropdown: fetch fresh data ──────────────────────────────────────
   const handleOpen = () => {
     const next = !open;
+    if (next) computePosition();
     setOpen(next);
     if (next) fetchNotifications();
   };
@@ -149,6 +185,7 @@ export default function NotificationBell({ onNavigateToAction }) {
   return (
     <div className="nb-wrapper" ref={dropdownRef}>
       <button
+        ref={bellRef}
         className={`nb-bell ${open ? 'nb-bell--active' : ''}`}
         onClick={handleOpen}
         title="Notifications"
@@ -160,8 +197,12 @@ export default function NotificationBell({ onNavigateToAction }) {
         )}
       </button>
 
-      {open && (
-        <div className="nb-dropdown">
+      {open && createPortal(
+        <div
+          className="nb-dropdown"
+          ref={panelRef}
+          style={{ position: 'fixed', top: coords.top, left: coords.left, right: 'auto' }}
+        >
           {/* Header */}
           <div className="nb-dropdown-header">
             <span className="nb-dropdown-title">Notifications</span>
@@ -219,7 +260,8 @@ export default function NotificationBell({ onNavigateToAction }) {
               }
             </div>
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
