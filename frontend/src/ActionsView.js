@@ -621,7 +621,19 @@ const SOURCE_META = {
   ai_generated:    { label: '🤖 AI',      bg: '#f0fdf4', color: '#15803d', border: '#bbf7d0' },
   playbook:        { label: '📘 Play',    bg: '#eff6ff', color: '#2563eb', border: '#bfdbfe' },
   auto_generated:  { label: '⚙️ Rules',   bg: '#fefce8', color: '#a16207', border: '#fde68a' },
+  // System / non-AI sources. Without explicit entries these fell through to the
+  // default below, which used to be ai_generated — mislabeling system actions as "AI".
+  sequence_send_failed:     { label: '⚠️ System', bg: '#fef2f2', color: '#b91c1c', border: '#fecaca' },
+  linkedin_autosend_failed: { label: '⚠️ System', bg: '#fef2f2', color: '#b91c1c', border: '#fecaca' },
+  linkedin_refresh_nudge:   { label: '🔗 LinkedIn', bg: '#f1f5f9', color: '#475569', border: '#cbd5e1' },
+  sla_sweep:       { label: '⏱ SLA',      bg: '#f1f5f9', color: '#475569', border: '#cbd5e1' },
+  crm_sync:        { label: '🔄 Sync',     bg: '#f1f5f9', color: '#475569', border: '#cbd5e1' },
+  manual:          { label: '✋ Manual',   bg: '#f1f5f9', color: '#475569', border: '#cbd5e1' },
 };
+
+// Neutral fallback for any source not explicitly mapped above — must NOT be the
+// AI badge, or unrecognized system sources misreport as AI-generated.
+const SOURCE_DEFAULT = { label: '⚙️ System', bg: '#f1f5f9', color: '#475569', border: '#cbd5e1' };
 
 const MODULE_META = {
   deals:       { icon: '💼', label: 'Deals',       color: '#4f46e5', bg: '#eef2ff' },
@@ -865,7 +877,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
         const pri = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
         const st = STATUS_META[action.status] || STATUS_META.yet_to_start;
         const due = tableDueLabel(action.dueDate);
-        const src = SOURCE_META[action.source] || SOURCE_META.ai_generated;
+        const src = SOURCE_META[action.source] || SOURCE_DEFAULT;
         const isComplete = action.status === 'completed';
 
         return (
