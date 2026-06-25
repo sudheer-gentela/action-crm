@@ -527,6 +527,8 @@ twilio: {
   teamNotifications: {
     getPreferences:   () => api.get('/team-notifications/preferences'),
     updatePreferences:(data) => api.patch('/team-notifications/preferences', data),
+    testSlack:        () => api.post('/team-notifications/test-slack'),
+    setSlackEmail:    (slack_email) => api.patch('/team-notifications/slack-email', { slack_email }),
     getOrgMembers:    () => api.get('/team-notifications/org-members'),
     triggerImmediate: () => api.post('/team-notifications/trigger/immediate'),
     triggerDigest:    () => api.post('/team-notifications/trigger/digest'),

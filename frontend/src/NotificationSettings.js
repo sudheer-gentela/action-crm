@@ -168,6 +168,9 @@ export default function NotificationSettings() {
   const [prefs,        setPrefs]        = useState(null);
   const [members,      setMembers]      = useState([]);
   const [slackConnected, setSlackConnected] = useState(false);
+  const [slackTest, setSlackTest] = useState({ status: 'idle', message: '' });
+  const [slackEmail, setSlackEmail] = useState('');
+  const [slackEmailSaved, setSlackEmailSaved] = useState(false);
   const [loading,      setLoading]      = useState(true);
   const [saving,       setSaving]       = useState(false);
   const [saved,        setSaved]        = useState(false);
@@ -187,6 +190,7 @@ export default function NotificationSettings() {
       ]);
       setPrefs(prefsRes.data.preferences);
       setMembers(membersRes.data.members || []);
+      setSlackEmail(prefsRes.data.slack_email || '');
       // Non-fatal: whether the org has Slack connected (gates the Slack section)
       slackAPI.getStatus()
         .then(r => setSlackConnected(!!r?.data?.connected))
@@ -240,6 +244,39 @@ export default function NotificationSettings() {
       slack_categories: { ...((p.channels || {}).slack_categories || {}), [cat]: val },
     },
   }));
+
+  const saveSlackEmail = async () => {
+    try {
+      await apiService.teamNotifications.setSlackEmail(slackEmail.trim());
+      setSlackEmailSaved(true);
+      setSlackTest({ status: 'idle', message: '' }); // clear any prior test result
+      setTimeout(() => setSlackEmailSaved(false), 2500);
+    } catch (e) {
+      setSlackTest({ status: 'err', message: e?.response?.data?.error || 'Could not save Slack email.' });
+    }
+  };
+
+  // Send a one-off test DM and translate the delivery result into a message.
+  const handleSlackTest = async () => {
+    setSlackTest({ status: 'sending', message: '' });
+    try {
+      const res = await apiService.teamNotifications.testSlack();
+      const r = res.data?.result || {};
+      if (r.delivered >= 1) {
+        setSlackTest({ status: 'ok', message: '✅ Sent — check your GoWarmCRM DMs in Slack.' });
+      } else if (r.reason === 'not_connected') {
+        setSlackTest({ status: 'err', message: 'Slack isn’t connected for your org yet. An admin connects it under Org Admin → Integrations → Slack Notifications.' });
+      } else if (r.reason === 'no_targets') {
+        setSlackTest({ status: 'err', message: 'Couldn’t find you on Slack. Your GoWarmCRM email likely differs from your Slack email — they must match.' });
+      } else if (r.results?.[0]?.error) {
+        setSlackTest({ status: 'err', message: `Slack error: ${r.results[0].error}` });
+      } else {
+        setSlackTest({ status: 'err', message: `Not delivered${r.reason ? ` (${r.reason})` : ''}.` });
+      }
+    } catch (e) {
+      setSlackTest({ status: 'err', message: e?.response?.data?.error || 'Test failed.' });
+    }
+  };
 
   const toggleSpecificUser = userId => setPrefs(prev => {
     const ids  = prev.specific_user_ids || [];
@@ -366,6 +403,38 @@ export default function NotificationSettings() {
                   <div className="ns-toggle-row">
                     <div className="ns-card-desc">Daily digests</div>
                     <Toggle checked={!!cat.digest} onChange={v => setSlackCategory('digest', v)} />
+                  </div>
+
+                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f3f4f6' }}>
+                    <div className="ns-card-desc" style={{ marginBottom: 6 }}>
+                      Slack email <span style={{ color: '#9ca3af' }}>— set this if your Slack email differs from your login email</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <input
+                        type="email"
+                        value={slackEmail}
+                        onChange={e => setSlackEmail(e.target.value)}
+                        placeholder="you@yourcompany.com"
+                        style={{ flex: '1 1 240px', minWidth: 200, padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 14 }}
+                      />
+                      <button className="ns-view-link" onClick={saveSlackEmail}>Save email</button>
+                      {slackEmailSaved && <span style={{ fontSize: 13, color: '#059669' }}>Saved ✓</span>}
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #f3f4f6', display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <button
+                      className="ns-view-link"
+                      onClick={handleSlackTest}
+                      disabled={slackTest.status === 'sending'}
+                    >
+                      {slackTest.status === 'sending' ? '⏳ Sending…' : '📨 Send test message'}
+                    </button>
+                    {slackTest.message && (
+                      <span style={{ fontSize: 13, color: slackTest.status === 'ok' ? '#059669' : '#b91c1c' }}>
+                        {slackTest.message}
+                      </span>
+                    )}
                   </div>
                 </div>
               )}

@@ -21,7 +21,7 @@ const LOOKUP_RETRY_MS = 24 * 60 * 60 * 1000; // don't re-lookup a no-match user 
  */
 async function resolveSlackUserId({ client, orgId, userId }) {
   const { rows: [u] } = await pool.query(
-    `SELECT email, slack_user_id, slack_lookup_at FROM users WHERE id = $1 AND org_id = $2`,
+    `SELECT email, slack_email, slack_user_id, slack_lookup_at FROM users WHERE id = $1 AND org_id = $2`,
     [userId, orgId]
   );
   if (!u) return null;
@@ -32,9 +32,12 @@ async function resolveSlackUserId({ client, orgId, userId }) {
     return null;
   }
 
+  // Prefer an explicit Slack email override; fall back to the login email.
+  const lookupEmail = u.slack_email || u.email;
+
   let slackId = null;
   try {
-    const r = await client.users.lookupByEmail({ email: u.email });
+    const r = await client.users.lookupByEmail({ email: lookupEmail });
     slackId = r?.user?.id || null;
   } catch (e) {
     // users_not_found / invalid_email etc. — silent skip per the agreed fallback

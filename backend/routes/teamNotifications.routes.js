@@ -24,6 +24,7 @@ const router  = express.Router();
 const authenticateToken     = require('../middleware/auth.middleware');
 const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
 const notificationService   = require('../services/notificationService');
+const notificationDelivery  = require('../services/notificationDelivery.service');
 const { notificationQueue } = require('../jobs/notificationJob');
 const { pool }              = require('../config/database');
 
@@ -56,32 +57,6 @@ router.get('/', async (req, res) => {
   } catch (err) {
     console.error('GET /team-notifications error:', err);
     res.status(500).json({ error: { message: err.message } });
-  }
-});
-
-/**
- * GET /api/team-notifications/config
- * Returns client-facing notification settings. Currently the bell poll
- * interval, configurable per-org WITHOUT a frontend screen:
- *   organizations.settings.notifications.bell_poll_seconds   (per-org override)
- *   env NOTIFICATION_BELL_POLL_SECONDS                       (deployment default)
- *   else 600s (10 min)
- * Clamped to [30s, 3600s] so a bad value can't hammer or freeze polling.
- */
-router.get('/config', async (req, res) => {
-  const DEFAULT_SECONDS = 600;
-  try {
-    const r = await pool.query('SELECT settings FROM organizations WHERE id = $1', [req.orgId]);
-    const fromOrg = Number(r.rows[0]?.settings?.notifications?.bell_poll_seconds);
-    const fromEnv = Number(process.env.NOTIFICATION_BELL_POLL_SECONDS);
-    let pollSeconds = Number.isFinite(fromOrg) && fromOrg > 0 ? fromOrg
-                    : Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv
-                    : DEFAULT_SECONDS;
-    pollSeconds = Math.min(Math.max(Math.round(pollSeconds), 30), 3600);
-    res.json({ pollSeconds });
-  } catch (err) {
-    console.error('GET /team-notifications/config error:', err.message);
-    res.json({ pollSeconds: DEFAULT_SECONDS }); // safe default — never block the bell
   }
 });
 
@@ -126,7 +101,10 @@ router.patch('/:id/read', async (req, res) => {
 router.get('/preferences', async (req, res) => {
   try {
     const prefs = await notificationService.getUserNotificationPrefs(req.user.userId, req.orgId);
-    res.json({ preferences: prefs });
+    const { rows: [u] } = await pool.query(
+      `SELECT slack_email FROM users WHERE id = $1`, [req.user.userId]
+    );
+    res.json({ preferences: prefs, slack_email: u?.slack_email || '' });
   } catch (err) {
     console.error('GET /team-notifications/preferences error:', err);
     res.status(500).json({ error: { message: err.message } });
@@ -150,6 +128,61 @@ router.patch('/preferences', async (req, res) => {
   } catch (err) {
     console.error('PATCH /team-notifications/preferences error:', err);
     res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+/**
+ * POST /api/team-notifications/test-slack
+ * Sends a one-off test Slack DM to the requesting user, synchronously, so the UI
+ * gets immediate pass/fail feedback. Exercises the REAL delivery path (install
+ * lookup → email→Slack-ID resolution → chat.postMessage) but bypasses the
+ * category filter (the user explicitly clicked "test"). Inserts the notification
+ * row directly rather than via createNotification, so it does NOT also enqueue an
+ * async delivery (which would double-send).
+ */
+/**
+ * PATCH /api/team-notifications/slack-email
+ * Sets (or clears, with empty string) the user's Slack email override — the
+ * address used to match them on Slack when it differs from their login email.
+ * Clears the cached slack_user_id so the next send re-resolves with the new email.
+ */
+router.patch('/slack-email', async (req, res) => {
+  try {
+    const raw = (req.body?.slack_email || '').trim();
+    if (raw && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) {
+      return res.status(400).json({ success: false, error: 'Please enter a valid email address.' });
+    }
+    await pool.query(
+      `UPDATE users SET slack_email = $2, slack_user_id = NULL, slack_lookup_at = NULL WHERE id = $1`,
+      [req.user.userId, raw || null]
+    );
+    res.json({ success: true, slack_email: raw });
+  } catch (err) {
+    console.error('PATCH /team-notifications/slack-email error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/test-slack', async (req, res) => {
+  try {
+    const orgId  = req.orgId;
+    const userId = req.user.userId;
+
+    const { rows: [notif] } = await pool.query(`
+      INSERT INTO notifications (org_id, user_id, type, title, body, entity_type, entity_id, metadata)
+      VALUES ($1, $2, 'slack_test', $3, $4, NULL, NULL, '{}'::jsonb)
+      RETURNING id
+    `, [
+      orgId, userId,
+      'Test notification from GoWarmCRM',
+      'If you can see this in Slack, your Slack delivery is working. ✅',
+    ]);
+
+    const result = await notificationDelivery.deliverSlack(orgId, notif.id, { bypassPrefs: true });
+    res.json({ success: true, result });
+  } catch (err) {
+    console.error('POST /team-notifications/test-slack error:', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
