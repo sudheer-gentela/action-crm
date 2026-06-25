@@ -166,7 +166,7 @@ async function notifyRevokedOnce(db, { orgId, userId, sender, reason }) {
     if (dup.rows.length) return;
 
     const { createNotification } = require('./notificationService');
-    await createNotification(
+    const notif = await createNotification(
       orgId,
       userId,
       'sender_token_revoked',
@@ -177,6 +177,49 @@ async function notifyRevokedOnce(db, { orgId, userId, sender, reason }) {
       sender.id,
       { email: sender.email, provider: sender.provider, reason: reason || null }
     );
+    const notificationId = (notif && notif.id) || null;
+
+    const DeliveryLog = require('./notificationDeliveryLog');
+    // Audit the in-app delivery.
+    await DeliveryLog.record(db, {
+      orgId, userId, notificationId, channel: 'in_app', status: 'sent',
+      subject: 'Email sender needs reconnecting',
+      metadata: { senderId: sender.id, email: sender.email, provider: sender.provider },
+    });
+
+    // Best-effort immediate email (only fires if SMTP is configured server-side;
+    // otherwise systemMailer just logs and skips). Deduped along with the in-app
+    // notification above, so it's at most one email per sender until reconnected.
+    try {
+      const { rows: [u] } = await db.query('SELECT email FROM users WHERE id = $1', [userId]);
+      if (u && u.email) {
+        const { sendSystemEmail } = require('./systemMailer');
+        const emailSubject = `Action needed: reconnect ${sender.email}`;
+        const r = await sendSystemEmail({
+          to: u.email,
+          subject: emailSubject,
+          html:
+            `<p>Your outreach sender <strong>${sender.email}</strong> can no longer send — `
+            + `its connection expired or was revoked.</p>`
+            + `<p>Reconnect it in <a href="https://app.gowarmcrm.com/#/settings/preferences">`
+            + `Settings → My Preferences → Outreach Sender Accounts</a> to resume your sequences.</p>`
+            + (reason ? `<p style="color:#6b7280;font-size:12px">Details: ${reason}</p>` : ''),
+          text:
+            `Your outreach sender ${sender.email} can no longer send (expired or revoked). `
+            + `Reconnect it at https://app.gowarmcrm.com/#/settings/preferences to resume your sequences.`,
+        });
+        // Audit the email delivery (sent / failed / skipped-when-unconfigured).
+        await DeliveryLog.record(db, {
+          orgId, userId, notificationId, channel: 'email', recipient: u.email,
+          subject: emailSubject,
+          status: r && r.sent ? 'sent' : (r && r.reason === 'smtp_not_configured' ? 'skipped' : 'failed'),
+          reason: r && r.sent ? null : (r && r.reason) || null,
+          metadata: { senderId: sender.id },
+        });
+      }
+    } catch (mailErr) {
+      console.warn(`SenderTokenHealth: revoke email failed for sender ${sender?.id}:`, mailErr.message);
+    }
   } catch (e) {
     // Never let a notification failure block the send/sweep path.
     console.warn(`SenderTokenHealth: notify failed for sender ${sender?.id}:`, e.message);

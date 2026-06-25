@@ -542,6 +542,7 @@ twilio: {
     },
     markRead:    (ids = []) => api.patch('/team-notifications/read', { ids }),
     markOneRead: (id) => api.patch(`/team-notifications/${id}/read`),
+    config:      () => api.get('/team-notifications/config'),
   },
 
   orgHierarchy: {

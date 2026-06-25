@@ -60,6 +60,32 @@ router.get('/', async (req, res) => {
 });
 
 /**
+ * GET /api/team-notifications/config
+ * Returns client-facing notification settings. Currently the bell poll
+ * interval, configurable per-org WITHOUT a frontend screen:
+ *   organizations.settings.notifications.bell_poll_seconds   (per-org override)
+ *   env NOTIFICATION_BELL_POLL_SECONDS                       (deployment default)
+ *   else 600s (10 min)
+ * Clamped to [30s, 3600s] so a bad value can't hammer or freeze polling.
+ */
+router.get('/config', async (req, res) => {
+  const DEFAULT_SECONDS = 600;
+  try {
+    const r = await pool.query('SELECT settings FROM organizations WHERE id = $1', [req.orgId]);
+    const fromOrg = Number(r.rows[0]?.settings?.notifications?.bell_poll_seconds);
+    const fromEnv = Number(process.env.NOTIFICATION_BELL_POLL_SECONDS);
+    let pollSeconds = Number.isFinite(fromOrg) && fromOrg > 0 ? fromOrg
+                    : Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv
+                    : DEFAULT_SECONDS;
+    pollSeconds = Math.min(Math.max(Math.round(pollSeconds), 30), 3600);
+    res.json({ pollSeconds });
+  } catch (err) {
+    console.error('GET /team-notifications/config error:', err.message);
+    res.json({ pollSeconds: DEFAULT_SECONDS }); // safe default — never block the bell
+  }
+});
+
+/**
  * PATCH /api/team-notifications/read
  * Mark notifications as read.
  * Body: { ids: [1, 2, 3] }  — mark specific IDs

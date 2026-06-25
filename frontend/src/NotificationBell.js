@@ -7,9 +7,10 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import api from './apiService';
+import { writeHash } from './hashNav';
 import './NotificationBell.css';
 
-const POLL_INTERVAL_MS = 300_000; // 5 minutes (configurable — change this value to adjust polling frequency)
+const DEFAULT_POLL_MS = 600_000; // 10 min default; org can override via backend (organizations.settings.notifications.bell_poll_seconds)
 
 // ── Relative time formatter ───────────────────────────────────────────────────
 function timeAgo(dateStr) {
@@ -28,6 +29,7 @@ function timeAgo(dateStr) {
 const TYPE_CONFIG = {
   notification_immediate: { icon: '🚨', label: 'Overdue',      color: '#dc2626' },
   notification_digest:    { icon: '📋', label: 'Daily Digest', color: '#d97706' },
+  sender_token_revoked:   { icon: '⚠️', label: 'Sender disconnected', color: '#dc2626' },
 };
 function getTypeConfig(type) {
   return TYPE_CONFIG[type] || { icon: '🔔', label: 'Notification', color: '#6366f1' };
@@ -42,8 +44,21 @@ export default function NotificationBell({ onNavigateToAction }) {
   const [unreadCount,   setUnreadCount]   = useState(0);
   const [open,          setOpen]          = useState(false);
   const [loading,       setLoading]       = useState(false);
+  const [pollMs,        setPollMs]        = useState(DEFAULT_POLL_MS);
   const dropdownRef = useRef(null);
   const pollRef     = useRef(null);
+
+  // ── Fetch the org-configured poll interval (backend-only setting) ──────────
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/team-notifications/config')
+      .then(res => {
+        const secs = res?.data?.pollSeconds;
+        if (!cancelled && Number.isFinite(secs) && secs > 0) setPollMs(secs * 1000);
+      })
+      .catch(() => {}); // keep the default on any failure
+    return () => { cancelled = true; };
+  }, []);
 
   // ── Fetch notifications ───────────────────────────────────────────────────
   const fetchNotifications = useCallback(async (quietly = false) => {
@@ -60,12 +75,12 @@ export default function NotificationBell({ onNavigateToAction }) {
     }
   }, []);
 
-  // ── Polling ───────────────────────────────────────────────────────────────
+  // ── Polling (interval is org-configurable; re-arms when pollMs loads) ──────
   useEffect(() => {
     fetchNotifications();
-    pollRef.current = setInterval(() => fetchNotifications(true), POLL_INTERVAL_MS);
+    pollRef.current = setInterval(() => fetchNotifications(true), pollMs);
     return () => clearInterval(pollRef.current);
-  }, [fetchNotifications]);
+  }, [fetchNotifications, pollMs]);
 
   // ── Close on outside click ────────────────────────────────────────────────
   useEffect(() => {
@@ -100,13 +115,21 @@ export default function NotificationBell({ onNavigateToAction }) {
       }
     }
 
-    // Navigate to entity if it's an action
-    if (notif.entity_type === 'action' && notif.entity_id && onNavigateToAction) {
-      onNavigateToAction(notif.entity_id);
+    // Navigate based on entity type. Settings/actions navigation works
+    // standalone via the global 'navigate' event App.js listens for, so the
+    // bell functions even when no onNavigateToAction prop is wired in.
+    if (notif.entity_type === 'prospecting_sender') {
+      writeHash(['settings', 'preferences']);
+      window.dispatchEvent(new CustomEvent('navigate', { detail: 'settings' }));
       setOpen(false);
-    } else if (notif.metadata?.action_ids?.length && onNavigateToAction) {
+    } else if (notif.entity_type === 'action' && notif.entity_id) {
+      if (onNavigateToAction) onNavigateToAction(notif.entity_id);
+      else window.dispatchEvent(new CustomEvent('navigate', { detail: 'actions' }));
+      setOpen(false);
+    } else if (notif.metadata?.action_ids?.length) {
       // Digest — navigate to actions view
-      onNavigateToAction(null);
+      if (onNavigateToAction) onNavigateToAction(null);
+      else window.dispatchEvent(new CustomEvent('navigate', { detail: 'actions' }));
       setOpen(false);
     }
   };
