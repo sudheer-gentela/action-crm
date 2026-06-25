@@ -144,6 +144,17 @@ router.get('/callback', async (req, res) => {
       );
 
       console.log('✅ Prospecting sender account saved for:', email);
+      // Auto-resume: reconnecting a dead sender continues the steps it broke
+      // (recent failures only — see SENDER_AUTO_RESUME_WINDOW_HOURS). Best-effort.
+      try {
+        const { resumeAfterReconnect } = require('../services/resumePausedEnrollments');
+        const r = await resumeAfterReconnect(pool, {
+          orgId: stateData.orgId, userId: stateData.userId, senderEmail: email, mode: 'send',
+        });
+        if (r.enrollments) console.log(`↻ Auto-resumed ${r.enrollments} enrollment(s), completed ${r.actions} action(s) for ${email}`);
+      } catch (e) {
+        console.warn('Auto-resume on reconnect (gmail) failed:', e.message);
+      }
       const returnTo = (typeof stateData.returnTo === 'string' && stateData.returnTo.startsWith('/'))
         ? stateData.returnTo : '/settings/preferences';
       return res.redirect(`${frontendUrl}/?prospecting_sender_connected=true#${returnTo}`);

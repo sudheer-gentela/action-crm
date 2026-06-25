@@ -176,6 +176,15 @@ router.get('/callback', async (req, res) => {
       );
 
       console.log('✅ Prospecting sender account (Outlook) saved for:', email);
+      try {
+        const { resumeAfterReconnect } = require('../services/resumePausedEnrollments');
+        const r = await resumeAfterReconnect(pool, {
+          orgId: stateData.orgId, userId: stateData.userId, senderEmail: email, mode: 'send',
+        });
+        if (r.enrollments) console.log(`↻ Auto-resumed ${r.enrollments} enrollment(s), completed ${r.actions} action(s) for ${email}`);
+      } catch (e) {
+        console.warn('Auto-resume on reconnect (outlook) failed:', e.message);
+      }
       const returnTo = (typeof stateData.returnTo === 'string' && stateData.returnTo.startsWith('/'))
         ? stateData.returnTo : '/settings/preferences';
       return res.redirect(`${frontendUrl}/?prospecting_sender_connected=true#${returnTo}`);
