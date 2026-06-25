@@ -109,17 +109,29 @@ router.get('/org-limits', async (req, res) => {
 // of oauth_tokens.
 router.get('/connect-url', async (req, res) => {
   try {
-    const { provider, label } = req.query;
+    const { provider, label, returnTo } = req.query;
 
     if (!['gmail', 'outlook'].includes(provider)) {
       return res.status(400).json({ error: { message: 'provider must be gmail or outlook' } });
     }
+
+    // Sanitize returnTo to an in-app hash route on our OWN origin. The callback
+    // appends it after '#', so it can only ever be a fragment of frontendUrl —
+    // but we still allowlist the shape (leading '/', safe chars, not '//') to
+    // avoid anything odd landing in the URL. Anything invalid → My Preferences.
+    const safeReturnTo = (typeof returnTo === 'string'
+      && returnTo.startsWith('/')
+      && !returnTo.startsWith('//')
+      && /^\/[A-Za-z0-9/_-]*$/.test(returnTo))
+      ? returnTo
+      : '/settings/preferences';
 
     const state = Buffer.from(JSON.stringify({
       userId:    req.user.userId,
       orgId:     req.orgId,
       mode:      'prospecting',
       label:     label || null,
+      returnTo:  safeReturnTo,
       timestamp: Date.now(),
     })).toString('base64');
 

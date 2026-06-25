@@ -144,7 +144,9 @@ router.get('/callback', async (req, res) => {
       );
 
       console.log('✅ Prospecting sender account saved for:', email);
-      return res.redirect(`${frontendUrl}/?prospecting_sender_connected=true`);
+      const returnTo = (typeof stateData.returnTo === 'string' && stateData.returnTo.startsWith('/'))
+        ? stateData.returnTo : '/settings/preferences';
+      return res.redirect(`${frontendUrl}/?prospecting_sender_connected=true#${returnTo}`);
     }
 
 // ── ADD THIS BLOCK immediately after the closing brace of the prospecting block,

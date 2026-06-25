@@ -1058,7 +1058,8 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
     setConnecting(provider);
     try {
       const label = window.prompt(`Optional label for this ${provider === 'gmail' ? 'Gmail' : 'Outlook'} account (e.g. "Work email"):`) || '';
-      const res = await apiService.prospectingSenders.getConnectUrl(provider, label);
+      const returnTo = (window.location.hash || '').replace(/^#/, '') || '/settings/preferences';
+      const res = await apiService.prospectingSenders.getConnectUrl(provider, label, returnTo);
       const { authUrl } = res.data;
       window.location.href = authUrl;
     } catch (e) {
@@ -1076,7 +1077,8 @@ function UserPreferencesSettings({ showAIOnly = false, showSendersOnly = false }
   const handleReconnect = async (sender) => {
     setReconnecting(sender.id);
     try {
-      const res = await apiService.prospectingSenders.getConnectUrl(sender.provider, sender.label || '');
+      const returnTo = (window.location.hash || '').replace(/^#/, '') || '/settings/preferences';
+      const res = await apiService.prospectingSenders.getConnectUrl(sender.provider, sender.label || '', returnTo);
       const { authUrl } = res.data;
       window.location.href = authUrl;
     } catch (e) {

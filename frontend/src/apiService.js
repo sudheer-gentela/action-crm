@@ -379,7 +379,7 @@ twilio: {
   prospectingSenders: {
     getAll: () => api.get('/prospecting-senders'),
     getOrgLimits: () => api.get('/prospecting-senders/org-limits'),
-    getConnectUrl: (provider, label) => api.get(`/prospecting-senders/connect-url?provider=${provider}${label ? '&label=' + encodeURIComponent(label) : ''}`),
+    getConnectUrl: (provider, label, returnTo) => api.get(`/prospecting-senders/connect-url?provider=${provider}${label ? '&label=' + encodeURIComponent(label) : ''}${returnTo ? '&returnTo=' + encodeURIComponent(returnTo) : ''}`),
     update: (id, data) => api.patch(`/prospecting-senders/${id}`, data),
     remove: (id) => api.delete(`/prospecting-senders/${id}`),
     // Live-checks a sender's OAuth credential; refreshes + stamps health, or

@@ -56,7 +56,9 @@ export default function SenderSummaryTile({ campaignId }) {
     setReconnecting(s.id);
     try {
       const provider = s.provider === 'outlook' ? 'outlook' : 'gmail';
-      const r = await apiFetch(`/prospecting-senders/connect-url?provider=${provider}`);
+      const returnTo = (window.location.hash || '').replace(/^#/, '');
+      const qs = `provider=${provider}` + (returnTo ? `&returnTo=${encodeURIComponent(returnTo)}` : '');
+      const r = await apiFetch(`/prospecting-senders/connect-url?${qs}`);
       if (r?.authUrl) { window.location.href = r.authUrl; return; }
       setError('Could not start reconnect.');
       setReconnecting(null);
