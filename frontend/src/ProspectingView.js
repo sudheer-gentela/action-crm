@@ -127,16 +127,60 @@ export default function ProspectingView() {
     return Number.isInteger(id) && id > 0 && String(id) === candidate ? id : null;
   });
 
-  // Restore the prospect drawer once the list has loaded (find-in-list —
-  // the drawer expects the list-row shape). One-shot; an id outside the
-  // current scope/filters falls back to the list and the write-effect
-  // below trims the stale segment.
+  // Guards the one-shot id-fetch fallback so it fires at most one request
+  // even if the effect re-runs while that request is in flight (loading
+  // toggles on every refetch). pendingHashProspectId is itself one-shot
+  // (set once on mount, never re-set), so this never needs resetting.
+  const fallbackProspectFetched = useRef(false);
+
+  // Restore the prospect drawer for a deep-linked id (#/prospecting/<id>,
+  // e.g. the extension's "Open in GoWarmCRM" link). Two paths, one-shot:
+  //
+  //   Fast path — the id is in the loaded list (the rep's own in-scope
+  //   pipeline): open that row directly. No extra request; unchanged from
+  //   before.
+  //
+  //   Fallback — the id is valid but NOT in the loaded set (owned by a
+  //   subordinate while scope='mine', filtered out, or paginated away, or
+  //   the list legitimately came back empty): confirm it's accessible in
+  //   this org via GET /prospects/:id, then open the drawer with a minimal
+  //   { id }. The drawer (ProspectDetailPanel) self-fetches full detail by
+  //   id, so it only needs the id — it does NOT depend on the list-row
+  //   shape. A cross-org / deleted id 404s here and is dropped silently;
+  //   the hash-mirror effect below then trims the stale segment.
+  //
+  // Gated on `loading` (not prospects.length) so an out-of-scope id still
+  // resolves when the in-scope list comes back empty.
   useEffect(() => {
-    if (!pendingHashProspectId || prospects.length === 0) return;
-    const target = prospects.find(pr => pr.id === pendingHashProspectId);
-    if (target) setSelectedProspect(target);
-    setPendingHashProspectId(null);
-  }, [pendingHashProspectId, prospects]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!pendingHashProspectId || loading) return;
+
+    const wantedId = pendingHashProspectId;
+    const target   = prospects.find(pr => pr.id === wantedId);
+    if (target) {
+      setSelectedProspect(target);
+      setPendingHashProspectId(null);
+      return;
+    }
+
+    if (fallbackProspectFetched.current) return; // already attempted the fetch
+    fallbackProspectFetched.current = true;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch(`/prospects/${wantedId}`);
+        if (!cancelled && res?.prospect?.id) {
+          // Minimal object — the drawer loads everything else by id.
+          setSelectedProspect({ id: res.prospect.id });
+        }
+      } catch (_) {
+        // Not found / not permitted in this org — fall back to the list.
+      } finally {
+        if (!cancelled) setPendingHashProspectId(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pendingHashProspectId, prospects, loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Mirror the open prospect into the hash. Skipped in campaigns mode
   // (numeric segment there belongs to CampaignsView).
