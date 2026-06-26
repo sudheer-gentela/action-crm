@@ -630,6 +630,18 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   // pill is ever re-introduced.
   const currentStageIdx = prospectStages.findIndex(s => s.key === prospect.stage);
 
+  // ── Owner display ──────────────────────────────────────────────────────────
+  // The drawer can now be deep-linked (e.g. the extension's "Open in
+  // GoWarmCRM" link / #/prospecting/<id>), which may open a prospect that
+  // sits outside the rep's current scope filter — i.e. one owned by another
+  // rep. Always surface the owner so it's unmistakable whose prospect this
+  // is, and flag it distinctly when it isn't the current user's. Mirrors the
+  // owner-badge pattern already used in CampaignsView.
+  let currentUserId = null;
+  try { currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id ?? null; } catch (_) { /* ignore */ }
+  const ownerName    = [prospect.owner?.first_name, prospect.owner?.last_name].filter(Boolean).join(' ');
+  const ownedByOther = currentUserId != null && prospect.owner_id != null && prospect.owner_id !== currentUserId;
+
   return (
     <div className="pv-detail-overlay" onClick={onClose}>
       <div className={`pv-detail-panel${anyDrawerOpen ? ' pv-detail-panel--with-drawer' : ''}`} onClick={e => e.stopPropagation()}>
@@ -640,6 +652,24 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
             {prospect.title && <span className="pv-detail-title">{prospect.title}</span>}
             {(prospect.company_name || prospect.account?.name) && (
               <span className="pv-detail-company">at {prospect.account?.name || prospect.company_name}</span>
+            )}
+            {/* Owner — always shown so the rep knows whose prospect this is.
+                Emphasized when it's someone else's (a deep-link can open a
+                prospect outside the rep's own pipeline). */}
+            {ownedByOther ? (
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                marginTop: 5, padding: '2px 8px', borderRadius: 10,
+                background: '#FEF3C7', border: '1px solid #FDE68A',
+                color: '#92400E', fontSize: 11, fontWeight: 600,
+                width: 'fit-content',
+              }}>
+                👤 Owned by {ownerName || 'another rep'} — not you
+              </span>
+            ) : (
+              <span style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#6b7280' }}>
+                👤 {ownerName ? <>Owner: {ownerName}{prospect.owner_id != null && prospect.owner_id === currentUserId ? ' (you)' : ''}</> : 'Unassigned'}
+              </span>
             )}
             {/* Active enrollment scheduled-fire indicator. When there's an
                 active enrollment with a future next_step_due, show when the
