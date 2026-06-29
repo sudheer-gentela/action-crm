@@ -623,11 +623,11 @@ async function _upsertProspect(orgId, crmType, record, ownerId, accountId, stage
 
   const ins = await pool.query(`
     INSERT INTO prospects (
-      org_id, owner_id, first_name, last_name, email, phone, title, location,
+      org_id, owner_id, created_by, first_name, last_name, email, phone, title, location,
       linkedin_url, company_name, company_domain, company_size, company_industry,
       source, icp_score, account_id, stage,
       external_refs, created_at, updated_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb, NOW(), NOW())
+    ) VALUES ($1, $2, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb, NOW(), NOW())
     ON CONFLICT DO NOTHING
     RETURNING id
   `, [

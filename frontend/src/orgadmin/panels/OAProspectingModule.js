@@ -10,25 +10,30 @@ import { ModuleSubTabs, OAModuleGeneral, OAModuleSeedPanel } from '../shared';
 import OACallSettings from './OACallSettings';
 import OACampaignDeletePolicy from './OACampaignDeletePolicy';
 import OAManagerEditPolicy from './OAManagerEditPolicy';
+import OAProspectVisibilityPolicy from './OAProspectVisibilityPolicy';
 import OAProspectingEnrichment from './OAProspectingEnrichment';
 import OAProspectingEscalation from './OAProspectingEscalation';
 import OALinkedInAutomation from '../../OALinkedInAutomation';
 
-const ORG_AI_MODELS = {
-  anthropic: [
-    { value: 'claude-haiku-4-5-20251001',  label: 'Claude Haiku (fast, economical)' },
-    { value: 'claude-sonnet-4-5-20251022', label: 'Claude Sonnet (balanced)' },
-    { value: 'claude-opus-4-5-20251022',   label: 'Claude Opus (most capable)' },
-  ],
-  openai: [
-    { value: 'gpt-4o-mini', label: 'GPT-4o Mini (fast, economical)' },
-    { value: 'gpt-4o',      label: 'GPT-4o (most capable)' },
-  ],
-  gemini: [
-    { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (fast)' },
-    { value: 'gemini-1.5-pro',   label: 'Gemini 1.5 Pro (most capable)' },
-  ],
-};
+// ORG_AI_MODELS — hard-coded model catalog, REPLACED 2026-06 by a live fetch of
+// GET /org/admin/ai/providers (backend/config/aiProviders.js + ModelDiscovery),
+// so the Default Model dropdown reflects the current registry instead of drifting.
+// Kept commented as a breadcrumb in case the endpoint is ever unavailable.
+// const ORG_AI_MODELS = {
+//   anthropic: [
+//     { value: 'claude-haiku-4-5-20251001',  label: 'Claude Haiku (fast, economical)' },
+//     { value: 'claude-sonnet-4-5-20251022', label: 'Claude Sonnet (balanced)' },
+//     { value: 'claude-opus-4-5-20251022',   label: 'Claude Opus (most capable)' },
+//   ],
+//   openai: [
+//     { value: 'gpt-4o-mini', label: 'GPT-4o Mini (fast, economical)' },
+//     { value: 'gpt-4o',      label: 'GPT-4o (most capable)' },
+//   ],
+//   gemini: [
+//     { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash (fast)' },
+//     { value: 'gemini-1.5-pro',   label: 'Gemini 1.5 Pro (most capable)' },
+//   ],
+// };
 
 export default function OAProspectingModule() {
   const API    = process.env.REACT_APP_API_URL;
@@ -50,6 +55,9 @@ export default function OAProspectingModule() {
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState(false);
   const [flash,   setFlash]   = useState(null);
+  // Live AI model catalog from GET /org/admin/ai/providers (replaces the old
+  // hard-coded ORG_AI_MODELS). Shape: [{ id, label, models: [{ id, label, tier }] }].
+  const [aiProviders, setAiProviders] = useState([]);
 
   const showFlash = (type, msg) => {
     setFlash({ type, msg });
@@ -61,7 +69,9 @@ export default function OAProspectingModule() {
       fetch(`${API}/org/admin/prospecting/ai-config`, { headers }).then(r => r.json()),
       fetch(`${API}/prompts/org/prospecting`, { headers }).then(r => r.json()),
       fetch(`${API}/org/admin/seed-status`, { headers }).then(r => r.json()),
-    ]).then(([cfgRes, promptRes, seedRes]) => {
+      // Self-catch so a providers hiccup can't blank the rest of the panel.
+      fetch(`${API}/org/admin/ai/providers`, { headers }).then(r => r.json()).catch(() => ({ providers: [] })),
+    ]).then(([cfgRes, promptRes, seedRes, provRes]) => {
       const c = cfgRes || {};
       setCfg({
         ai_provider:     c.ai_provider     || 'anthropic',
@@ -71,6 +81,7 @@ export default function OAProspectingModule() {
       setOrgResearchPrompt(promptRes?.prompts?.prospecting_research || '');
       setOrgDraftPrompt(promptRes?.prompts?.prospecting_draft       || '');
       setSeedDone(!!seedRes?.status?.prospecting);
+      setAiProviders(Array.isArray(provRes?.providers) ? provRes.providers : []);
     }).catch(() => {}).finally(() => setLoading(false));
   }, []); // eslint-disable-line
 
@@ -118,6 +129,26 @@ export default function OAProspectingModule() {
     }
   };
 
+  // Provider list from the same live registry (replaces the hard-coded
+  // anthropic/openai/gemini options). Preserve the saved provider as a lone
+  // option if it's missing from the catalog or the registry hasn't loaded.
+  const providerOptions = aiProviders.map(p => ({ value: p.id, label: p.label || p.id }));
+  if (cfg.ai_provider && !providerOptions.some(o => o.value === cfg.ai_provider)) {
+    providerOptions.unshift({ value: cfg.ai_provider, label: cfg.ai_provider });
+  }
+
+  // Models for the currently-selected provider, sourced from the live AI
+  // registry instead of a hard-coded list, so newly-released or discovered
+  // models appear automatically. If the saved model isn't in the catalog (or
+  // the registry hasn't loaded yet), surface it as a lone option so the current
+  // selection is never silently dropped.
+  const providerEntry  = aiProviders.find(p => p.id === cfg.ai_provider);
+  const providerModels = Array.isArray(providerEntry?.models) ? providerEntry.models : [];
+  const modelOptions   = providerModels.map(m => ({ value: m.id, label: m.label || m.id }));
+  if (cfg.ai_model && !modelOptions.some(o => o.value === cfg.ai_model)) {
+    modelOptions.unshift({ value: cfg.ai_model, label: cfg.ai_model });
+  }
+
   return (
     <div className="sv-panel">
       <div className="sv-panel-header">
@@ -147,6 +178,7 @@ export default function OAProspectingModule() {
           />
           <OACampaignDeletePolicy />
           <OAManagerEditPolicy />
+          <OAProspectVisibilityPolicy />
         </>
       )}
 
@@ -239,9 +271,20 @@ export default function OAProspectingModule() {
                   onChange={e => setCfg(p => ({ ...p, ai_provider: e.target.value, ai_model: '' }))}
                   style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
                 >
+                  {/* Hard-coded provider options REPLACED 2026-06 by the live
+                      registry fetch (GET /org/admin/ai/providers). Kept as a
+                      breadcrumb in case the endpoint is ever unavailable.
                   <option value="anthropic">Anthropic (Claude)</option>
                   <option value="openai">OpenAI (GPT)</option>
                   <option value="gemini">Google (Gemini)</option>
+                  */}
+                  {providerOptions.length === 0 ? (
+                    <option value="">{loading ? 'Loading providers…' : 'No providers available'}</option>
+                  ) : (
+                    providerOptions.map(p => (
+                      <option key={p.value} value={p.value}>{p.label}</option>
+                    ))
+                  )}
                 </select>
               </div>
               <div style={{ flex: 1, minWidth: 220 }}>
@@ -251,9 +294,13 @@ export default function OAProspectingModule() {
                   onChange={e => setCfg(p => ({ ...p, ai_model: e.target.value }))}
                   style={{ width: '100%', padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}
                 >
-                  {(ORG_AI_MODELS[cfg.ai_provider] || ORG_AI_MODELS.anthropic).map(m => (
-                    <option key={m.value} value={m.value}>{m.label}</option>
-                  ))}
+                  {modelOptions.length === 0 ? (
+                    <option value="">{loading ? 'Loading models…' : 'No models available'}</option>
+                  ) : (
+                    modelOptions.map(m => (
+                      <option key={m.value} value={m.value}>{m.label}</option>
+                    ))
+                  )}
                 </select>
               </div>
             </div>

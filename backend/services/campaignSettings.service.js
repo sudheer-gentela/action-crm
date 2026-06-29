@@ -36,6 +36,14 @@ const SYSTEM_DEFAULTS = {
   // view-only on subordinates' items unless the owner grants access). Read by
   // services/AccessPolicy.js canEditItem.
   manager_can_edit: false,
+  // Prospect cross-owner visibility: when TRUE, a rep may open the FULL detail
+  // of a prospect only when its owner is within their reporting scope (self /
+  // their team for a manager / all for an admin). Prospects owned outside that
+  // scope return a restricted payload so the UI can show "owned by <name>,
+  // another rep in your org" without leaking detail. ABSENT ⇒ FALSE ⇒ current
+  // behavior: anyone in the org may open any prospect's detail (owner is
+  // highlighted in the UI either way). Read by GET /prospects/:id.
+  restrict_prospect_view_to_scope: false,
 };
 
 class CampaignSettingsService {
@@ -112,6 +120,13 @@ class CampaignSettingsService {
         case 'manager_can_edit':
           if (typeof val !== 'boolean') {
             throw _err('manager_can_edit must be a boolean');
+          }
+          out[key] = val;
+          break;
+
+        case 'restrict_prospect_view_to_scope':
+          if (typeof val !== 'boolean') {
+            throw _err('restrict_prospect_view_to_scope must be a boolean');
           }
           out[key] = val;
           break;

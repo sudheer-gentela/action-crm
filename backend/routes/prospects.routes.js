@@ -17,6 +17,13 @@ const CFDefs  = require('../services/CustomFieldDefService');
 // services/CampaignAccess.js for the rules.
 const CampaignAccess = require('../services/CampaignAccess');
 
+// Prospect ownership/visibility feature: AccessPolicy resolves the viewer's
+// reporting scope (self/team/all); CampaignSettings reads the org-level
+// restrict_prospect_view_to_scope switch. Both used by GET /:id and the
+// owner-reassignment endpoints below.
+const AccessPolicy   = require('../services/AccessPolicy');
+const CampaignSettings = require('../services/campaignSettings.service');
+
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -830,12 +837,12 @@ router.post('/bulk', async (req, res) => {
 
         const insertRes = await db.query(
           `INSERT INTO prospects (
-             org_id, owner_id, first_name, last_name, email, phone, linkedin_url,
+             org_id, owner_id, created_by, first_name, last_name, email, phone, linkedin_url,
              title, location, company_name, company_domain, company_size,
              company_industry, account_id, source, playbook_id, tags, campaign_id,
              stage, stage_changed_at
            ) VALUES (
-             $1, $2, $3, $4, $5, $6, $7,
+             $1, $2, $2, $3, $4, $5, $6, $7,
              $8, $9, $10, $11, $12,
              $13, $14, $15, $16, $17, $18,
              'target', CURRENT_TIMESTAMP
@@ -1339,16 +1346,39 @@ router.get('/by-linkedin-url', async (req, res) => {
   }
 });
 
+// ── GET /assignable-owners — active org users a prospect can be reassigned to ─
+// Powers the owner-reassignment dropdown in the prospect drawer. Registered
+// BEFORE GET /:id so the literal path isn't captured by the :id param. Returns
+// every active user in the org; the reassign endpoint re-validates the target.
+router.get('/assignable-owners', async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT u.id, u.first_name, u.last_name, u.email
+         FROM org_users ou
+         JOIN users u ON u.id = ou.user_id
+        WHERE ou.org_id = $1 AND ou.is_active = TRUE
+        ORDER BY u.first_name, u.last_name`,
+      [req.orgId]
+    );
+    res.json({ owners: result.rows });
+  } catch (error) {
+    console.error('Assignable owners error:', error);
+    res.status(500).json({ error: { message: 'Failed to load assignable owners' } });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const result = await db.query(
       `SELECT p.*,
               acc.name AS account_name, acc.domain AS account_domain,
               u.first_name AS owner_first_name, u.last_name AS owner_last_name,
+              cb.first_name AS creator_first_name, cb.last_name AS creator_last_name,
               c.first_name AS linked_contact_first_name, c.last_name AS linked_contact_last_name
        FROM prospects p
        LEFT JOIN accounts acc ON p.account_id = acc.id
        LEFT JOIN users u ON p.owner_id = u.id
+       LEFT JOIN users cb ON p.created_by = cb.id
        LEFT JOIN contacts c ON p.contact_id = c.id
        WHERE p.id = $1 AND p.org_id = $2 AND p.deleted_at IS NULL`,
       [req.params.id, req.orgId]
@@ -1359,6 +1389,45 @@ router.get('/:id', async (req, res) => {
     }
 
     const row = result.rows[0];
+
+    // ── Cross-owner visibility gate ──────────────────────────────────────────
+    // Default OFF (restrict_prospect_view_to_scope absent/false): anyone in the
+    // org sees full detail — unchanged behavior. When the org admin turns it ON,
+    // a viewer sees full detail only when the prospect's owner is within their
+    // reporting scope (self / their team for a manager / all for an admin).
+    // Otherwise we return a restricted payload: enough to show "owned by <name>,
+    // another rep in your org" and nothing else. Resolved via the same
+    // ReportingScopeService the rest of the module uses.
+    const { restrict_prospect_view_to_scope } = await CampaignSettings.getForOrg(req.orgId);
+    let canViewFull = true;
+    if (restrict_prospect_view_to_scope === true) {
+      const { userIds } = await AccessPolicy.resolveScope(req, { depth: 'all' });
+      canViewFull = Array.isArray(userIds) && userIds.includes(row.owner_id);
+    }
+
+    if (!canViewFull) {
+      return res.json({
+        restricted: true,
+        prospect: {
+          id:         row.id,
+          owner_id:   row.owner_id,
+          first_name: row.first_name,
+          last_name:  row.last_name,
+          company_name: row.company_name,
+          owner:   { first_name: row.owner_first_name, last_name: row.owner_last_name },
+        },
+      });
+    }
+
+    // Who may reassign this prospect's owner: the owner, an org admin, or a
+    // manager-of-owner. Note this is NOT gated by manager_can_edit (that policy
+    // governs item edits, not ownership hand-off). Surfaced so the drawer can
+    // show/hide the reassign control without re-deriving authorization.
+    const isManagerOfOwner = Array.isArray(req.subordinateIds) && req.subordinateIds.includes(row.owner_id);
+    const canReassignOwner =
+      row.owner_id === req.userId ||
+      isManagerOfOwner ||
+      (await CampaignAccess.isAdmin(req));
 
     const activities = await db.query(
       `SELECT * FROM prospecting_activities
@@ -1382,7 +1451,9 @@ router.get('/:id', async (req, res) => {
         ...row,
         account: row.account_id ? { id: row.account_id, name: row.account_name, domain: row.account_domain } : null,
         owner:   { first_name: row.owner_first_name, last_name: row.owner_last_name },
+        creator: { first_name: row.creator_first_name, last_name: row.creator_last_name },
         linkedContact: row.contact_id ? { id: row.contact_id, first_name: row.linked_contact_first_name, last_name: row.linked_contact_last_name } : null,
+        can_reassign_owner: canReassignOwner,
       },
       activities: activities.rows,
       actions:    actions.rows,
@@ -1390,6 +1461,83 @@ router.get('/:id', async (req, res) => {
   } catch (error) {
     console.error('Get prospect detail error:', error);
     res.status(500).json({ error: { message: 'Failed to fetch prospect' } });
+  }
+});
+
+// ── PUT /:id/owner — reassign a prospect's owner ─────────────────────────────
+// Authorized for the current owner, a manager-of-owner, or an org admin (NOT
+// gated by manager_can_edit — that governs item edits, not ownership hand-off).
+// Changes owner_id only; created_by (the immutable creator) is never touched.
+// Body: { ownerId: int } — must be an active user in this org.
+router.put('/:id/owner', async (req, res) => {
+  try {
+    const prospectId = parseInt(req.params.id, 10);
+    const newOwnerId = parseInt((req.body || {}).ownerId, 10);
+    if (!Number.isInteger(newOwnerId)) {
+      return res.status(400).json({ error: { message: 'ownerId must be a valid user id' } });
+    }
+
+    const cur = await db.query(
+      `SELECT id, owner_id FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+      [prospectId, req.orgId]
+    );
+    if (cur.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+    const currentOwnerId = cur.rows[0].owner_id;
+
+    // Authorization: owner OR manager-of-owner OR admin.
+    const isManagerOfOwner = Array.isArray(req.subordinateIds) && req.subordinateIds.includes(currentOwnerId);
+    const allowed =
+      currentOwnerId === req.userId ||
+      isManagerOfOwner ||
+      (await CampaignAccess.isAdmin(req));
+    if (!allowed) {
+      return res.status(403).json({ error: {
+        message: 'Only the owner, their manager, or an admin can reassign this prospect.',
+      } });
+    }
+
+    // Target must be an active user in this org.
+    const target = await db.query(
+      `SELECT u.id, u.first_name, u.last_name
+         FROM org_users ou JOIN users u ON u.id = ou.user_id
+        WHERE ou.org_id = $1 AND ou.user_id = $2 AND ou.is_active = TRUE`,
+      [req.orgId, newOwnerId]
+    );
+    if (target.rows.length === 0) {
+      return res.status(400).json({ error: { message: 'New owner must be an active user in this org.' } });
+    }
+
+    if (newOwnerId === currentOwnerId) {
+      return res.json({
+        prospect: { id: prospectId, owner_id: currentOwnerId },
+        owner: { first_name: target.rows[0].first_name, last_name: target.rows[0].last_name },
+        unchanged: true,
+      });
+    }
+
+    const upd = await db.query(
+      `UPDATE prospects SET owner_id = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2 AND org_id = $3
+      RETURNING id, owner_id`,
+      [newOwnerId, prospectId, req.orgId]
+    );
+
+    const newOwnerName = [target.rows[0].first_name, target.rows[0].last_name].filter(Boolean).join(' ');
+    await db.query(
+      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
+       VALUES ($1, $2, $3, 'owner_changed', $4)`,
+      [req.orgId, prospectId, req.userId, `Owner reassigned to ${newOwnerName}`]
+    );
+
+    res.json({
+      prospect: upd.rows[0],
+      owner: { first_name: target.rows[0].first_name, last_name: target.rows[0].last_name },
+    });
+  } catch (error) {
+    console.error('Reassign prospect owner error:', error);
+    res.status(500).json({ error: { message: 'Failed to reassign owner' } });
   }
 });
 
@@ -1950,12 +2098,12 @@ router.post('/', async (req, res) => {
 
     const result = await db.query(
       `INSERT INTO prospects (
-         org_id, owner_id, first_name, last_name, email, phone, linkedin_url,
+         org_id, owner_id, created_by, first_name, last_name, email, phone, linkedin_url,
          title, linkedin_headline, location, company_name, company_domain, company_size,
          company_industry, account_id, source, playbook_id, tags, member_urn,
          stage, stage_changed_at
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7,
+         $1, $2, $2, $3, $4, $5, $6, $7,
          $8, $9, $10, $11, $12, $13,
          $14, $15, $16, $17, $18, $19,
          'target', CURRENT_TIMESTAMP

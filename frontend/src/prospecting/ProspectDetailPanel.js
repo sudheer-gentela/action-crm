@@ -20,6 +20,16 @@ import CustomFieldsPanel from '../customfields/CustomFieldsPanel';
 function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   const { allStages, prospectStages } = useStages();
   const [prospect, setProspect] = useState(null);
+  // Prospect ownership/visibility feature: `restricted` is set when the org's
+  // restrict_prospect_view_to_scope policy hides this prospect's detail (owned
+  // outside the viewer's scope). The reassign* state drives the owner-reassign
+  // control (owner / manager-of-owner / admin only).
+  const [restricted, setRestricted] = useState(false);
+  const [showReassign, setShowReassign] = useState(false);
+  const [ownerOptions, setOwnerOptions] = useState(null); // null = not yet loaded
+  const [reassignTo, setReassignTo] = useState('');
+  const [reassignSaving, setReassignSaving] = useState(false);
+  const [reassignError, setReassignError] = useState(null);
   const [actions, setActions] = useState([]);
   const [activities, setActivities] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -347,6 +357,14 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
       try {
         setLoading(true);
         const res = await apiFetch(`/prospects/${prospectId}`);
+        // Restricted by the org visibility policy: show the minimal "owned by
+        // another rep" payload and skip all further detail loads.
+        if (res.restricted) {
+          setRestricted(true);
+          setProspect(res.prospect);
+          return;
+        }
+        setRestricted(false);
         setProspect(res.prospect);
         setActions(res.actions || []);
         setActivities(res.activities || []);
@@ -386,6 +404,48 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
     setActiveTab(t);
     if (t === 'intel')    fetchContext();
     if (t === 'activity') loadProspectDrafts();
+  };
+
+  // ── Owner reassignment ─────────────────────────────────────────────────────
+  const openReassign = async () => {
+    setShowReassign(true);
+    setReassignError(null);
+    setReassignTo(prospect?.owner_id != null ? String(prospect.owner_id) : '');
+    if (ownerOptions === null) {
+      try {
+        const res = await apiFetch('/prospects/assignable-owners');
+        setOwnerOptions(res.owners || []);
+      } catch (err) {
+        setOwnerOptions([]);
+        setReassignError('Could not load users to assign.');
+      }
+    }
+  };
+
+  const handleReassign = async () => {
+    const ownerId = parseInt(reassignTo, 10);
+    if (!Number.isInteger(ownerId) || ownerId === prospect?.owner_id) {
+      setShowReassign(false);
+      return;
+    }
+    setReassignSaving(true);
+    setReassignError(null);
+    try {
+      await apiFetch(`/prospects/${prospectId}/owner`, {
+        method: 'PUT',
+        body: JSON.stringify({ ownerId }),
+      });
+      setShowReassign(false);
+      // Refetch so the header, owner, and activity reflect the new owner.
+      const res = await apiFetch(`/prospects/${prospectId}`);
+      if (res.restricted) { setRestricted(true); setProspect(res.prospect); }
+      else { setProspect(res.prospect); setActivities(res.activities || []); }
+      if (typeof onUpdate === 'function') onUpdate();
+    } catch (err) {
+      setReassignError(err.message || 'Failed to reassign owner.');
+    } finally {
+      setReassignSaving(false);
+    }
   };
 
   const handleEditSave = async () => {
@@ -623,6 +683,38 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
 
   if (!prospect) return null;
 
+  // Restricted by the org visibility policy: this prospect is owned outside the
+  // viewer's scope. Show only that it exists and who owns it — no detail.
+  if (restricted) {
+    const blockedOwner = [prospect.owner?.first_name, prospect.owner?.last_name].filter(Boolean).join(' ');
+    return (
+      <div className="pv-detail-overlay" onClick={onClose}>
+        <div className="pv-detail-panel" onClick={e => e.stopPropagation()}>
+          <div className="pv-detail-header">
+            <div className="pv-detail-header-left">
+              <h3>{prospect.first_name} {prospect.last_name}</h3>
+              {prospect.company_name && (
+                <span className="pv-detail-company">at {prospect.company_name}</span>
+              )}
+            </div>
+            <button className="pv-detail-close" onClick={onClose}>×</button>
+          </div>
+          <div style={{ padding: 32, textAlign: 'center', color: '#6b7280' }}>
+            <div style={{ fontSize: 30, marginBottom: 12 }} aria-hidden>🔒</div>
+            <div style={{ fontWeight: 600, color: '#374151', marginBottom: 6 }}>
+              This prospect belongs to another rep
+            </div>
+            <p style={{ fontSize: 13, lineHeight: 1.5, maxWidth: 380, margin: '0 auto' }}>
+              {blockedOwner
+                ? <>It’s currently owned by <strong>{blockedOwner}</strong> in your org. Your admin has limited prospect visibility to each owner’s team, so the full detail isn’t shown here.</>
+                : <>It’s owned by another rep in your org. Your admin has limited prospect visibility to each owner’s team, so the full detail isn’t shown here.</>}
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // stageCfg was previously used to drive the stage pill at the top of
   // the detail header — removed because the stage progress bar below the
   // action row already shows the current stage, and Move Stage dropdown
@@ -641,6 +733,12 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
   try { currentUserId = JSON.parse(localStorage.getItem('user') || '{}').id ?? null; } catch (_) { /* ignore */ }
   const ownerName    = [prospect.owner?.first_name, prospect.owner?.last_name].filter(Boolean).join(' ');
   const ownedByOther = currentUserId != null && prospect.owner_id != null && prospect.owner_id !== currentUserId;
+  // Creator is immutable and recorded separately from owner; shown only when it
+  // differs from the current owner (after a reassignment) to avoid redundancy.
+  const creatorName  = [prospect.creator?.first_name, prospect.creator?.last_name].filter(Boolean).join(' ');
+  const showCreator  = creatorName && creatorName !== ownerName;
+  const canReassign  = prospect.can_reassign_owner === true;
+  const TEAL_LINK    = '#0F9D8E'; // brand teal (matches prospectingShared TEAL)
 
   return (
     <div className="pv-detail-overlay" onClick={onClose}>
@@ -670,6 +768,75 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
               <span style={{ display: 'block', marginTop: 4, fontSize: 12, color: '#6b7280' }}>
                 👤 {ownerName ? <>Owner: {ownerName}{prospect.owner_id != null && prospect.owner_id === currentUserId ? ' (you)' : ''}</> : 'Unassigned'}
               </span>
+            )}
+            {/* Creator — immutable; shown when it differs from the current owner. */}
+            {showCreator && (
+              <span style={{ display: 'block', marginTop: 2, fontSize: 11, color: '#9ca3af' }}>
+                ✍️ Created by {creatorName}
+              </span>
+            )}
+            {/* Reassign owner — owner / manager-of-owner / admin only (gated by
+                the backend's can_reassign_owner flag). */}
+            {canReassign && !showReassign && (
+              <button
+                onClick={openReassign}
+                style={{
+                  display: 'inline-block', marginTop: 4, padding: 0,
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: TEAL_LINK, fontSize: 11, fontWeight: 500,
+                }}
+              >
+                Reassign owner
+              </button>
+            )}
+            {canReassign && showReassign && (
+              <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 280 }}>
+                <select
+                  value={reassignTo}
+                  onChange={e => setReassignTo(e.target.value)}
+                  disabled={ownerOptions === null || reassignSaving}
+                  style={{
+                    fontSize: 12, padding: '5px 8px', borderRadius: 6,
+                    border: '1px solid #d1d5db', color: '#374151',
+                  }}
+                >
+                  {ownerOptions === null
+                    ? <option>Loading…</option>
+                    : ownerOptions.map(o => (
+                        <option key={o.id} value={String(o.id)}>
+                          {[o.first_name, o.last_name].filter(Boolean).join(' ')}
+                          {o.id === prospect.owner_id ? ' (current)' : ''}
+                        </option>
+                      ))}
+                </select>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    onClick={handleReassign}
+                    disabled={reassignSaving || ownerOptions === null}
+                    style={{
+                      fontSize: 12, fontWeight: 600, padding: '5px 12px', borderRadius: 6,
+                      background: TEAL_LINK, color: '#fff', border: 'none',
+                      cursor: reassignSaving ? 'default' : 'pointer', opacity: reassignSaving ? 0.7 : 1,
+                    }}
+                  >
+                    {reassignSaving ? 'Saving…' : 'Save'}
+                  </button>
+                  <button
+                    onClick={() => { setShowReassign(false); setReassignError(null); }}
+                    disabled={reassignSaving}
+                    style={{
+                      fontSize: 12, padding: '5px 10px', borderRadius: 6,
+                      background: 'none', border: '1px solid #d1d5db', color: '#6b7280',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {reassignError && (
+                  <span style={{ fontSize: 11, color: '#b91c1c' }}>{reassignError}</span>
+                )}
+              </div>
             )}
             {/* Active enrollment scheduled-fire indicator. When there's an
                 active enrollment with a future next_step_due, show when the

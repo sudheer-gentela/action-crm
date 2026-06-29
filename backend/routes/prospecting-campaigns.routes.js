@@ -1032,6 +1032,53 @@ router.put('/org/manager-edit-policy', async (req, res) => {
   }
 });
 
+// GET  /org/prospect-visibility-policy → { enabled }  — org-wide "restrict
+//   prospect detail to the viewer's reporting scope" switch
+//   (restrict_prospect_view_to_scope). Admin/owner only. Stored in
+//   org_action_config.campaign_settings via CampaignSettingsService and read by
+//   GET /prospects/:id. Default OFF — anyone in the org may open any prospect's
+//   detail; the owner is highlighted in the UI either way. When ON, a viewer
+//   sees full detail only for prospects whose owner is in their scope (self /
+//   their team / all for an admin); others show an "owned by another rep"
+//   placeholder.
+router.get('/org/prospect-visibility-policy', async (req, res) => {
+  try {
+    if (!(await CampaignAccess.isAdmin(req))) {
+      return res.status(403).json({ error: {
+        message: "You don't have permission to view the prospect-visibility policy. Admins only.",
+      } });
+    }
+    const { restrict_prospect_view_to_scope } = await CampaignSettings.getForOrg(req.orgId);
+    res.json({ enabled: restrict_prospect_view_to_scope === true });
+  } catch (err) {
+    console.error('campaigns GET /org/prospect-visibility-policy', err);
+    res.status(500).json({ error: { message: 'Failed to load prospect-visibility policy' } });
+  }
+});
+router.put('/org/prospect-visibility-policy', async (req, res) => {
+  try {
+    if (!(await CampaignAccess.isAdmin(req))) {
+      return res.status(403).json({ error: {
+        message: "You don't have permission to change the prospect-visibility policy. Admins only.",
+      } });
+    }
+    const { enabled } = req.body || {};
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: { message: 'enabled must be a boolean' } });
+    }
+    const saved = await CampaignSettings.setForOrg(
+      req.orgId, { restrict_prospect_view_to_scope: enabled }, req.user.userId
+    );
+    res.json({ enabled: saved.restrict_prospect_view_to_scope === true });
+  } catch (err) {
+    if (err.status === 400) {
+      return res.status(400).json({ error: { message: err.message } });
+    }
+    console.error('campaigns PUT /org/prospect-visibility-policy', err);
+    res.status(500).json({ error: { message: 'Failed to update prospect-visibility policy' } });
+  }
+});
+
 // ── GET /:id — one campaign + funnel + multi-channel outreach metrics ────────
 //
 // Outreach metrics now span three channels:
