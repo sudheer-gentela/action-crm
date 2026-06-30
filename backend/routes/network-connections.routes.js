@@ -26,6 +26,7 @@ const requireModule     = require('../middleware/requireModule.middleware');
 
 const Ingest = require('../services/NetworkConnectionIngestService');
 const Diff   = require('../services/NetworkJobChangeDiffService');
+const Plays  = require('../services/NetworkJobChangePlayService');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -71,7 +72,12 @@ router.post('/snapshot', async (req, res) => {
         ownerId:       req.user.userId,
         newSnapshotId: ingest.snapshotId,
       });
-      return { ingest, diff };
+      // P1: classify champion-left + mint churn-risk actions for new company_change events.
+      const plays = await Plays.routeChampionLeftForSnapshot(client, {
+        orgId:   req.orgId,
+        ownerId: req.user.userId,
+      });
+      return { ingest, diff, plays };
     });
 
     return res.json({ ok: true, ...result });
