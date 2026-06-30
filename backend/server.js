@@ -528,17 +528,19 @@ app.listen(PORT, () => {
     // to run a manual "Check & update". Server-side reminder only — never opens
     // LinkedIn or polls Voyager (see LinkedInRefreshNudge for why).
 
-    cron.schedule('0 14 * * 1', async () => {
+
+   cron.schedule('0 14 * * 1', async () => {
       try {
         const { pool } = require('./config/database');
         const { inserted } = await require('./services/LinkedInRefreshNudge').nudgeStaleSeats(pool);
-        const { created } = await require('./services/NetworkExportNudge').nudgeStaleExports(pool);
-        if (inserted > 0) {console.log(`🔗 LinkedIn refresh-nudge Cron: ${inserted} nudge(s) created`);}
-	if (created  > 0) {console.log(`📤 Network export-nudge: ${created} reminder(s)`);
+        const { created }  = await require('./services/NetworkExportNudge').nudgeStaleExports(pool);
+        if (inserted > 0) { console.log(`🔗 LinkedIn refresh-nudge Cron: ${inserted} nudge(s) created`); }
+        if (created  > 0) { console.log(`📤 Network export-nudge: ${created} reminder(s)`); }
       } catch (err) {
         console.error('🔗 LinkedIn refresh-nudge Cron error:', err.message);
       }
     });
+
 
     // Nightly 04:30 UTC: Salesforce write-back (30 min after inbound sync)
     cron.schedule('30 4 * * *', async () => {
