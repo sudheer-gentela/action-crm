@@ -282,6 +282,9 @@ app.use('/api/team-notifications',  require('./routes/teamNotifications.routes')
 app.use('/api/users/me',            require('./routes/user-preferences.routes'));
 app.use('/api/users/me',            require('./routes/user-phone.routes'));   // Phase 3 — rep phone
 app.use('/api/linkedin-profiles',   require('./routes/linkedin-profiles.routes'));
+
+app.use('/api/network-connections', require('./routes/network-connections.routes')); // network roster + job-change detection
+
 // Bulk LinkedIn connection-acceptance sync from the Chrome extension
 // ("Check & update sent / accepted" popup buttons). Seat-bound + owner-scoped.
 app.use('/api/linkedin-connections', require('./routes/linkedin-connections.routes'));
