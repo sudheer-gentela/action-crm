@@ -28,6 +28,7 @@ import DiscardProspectModal from './prospecting/DiscardProspectModal';
 import SequencesView        from './prospecting/SequencesView';
 import CampaignsView        from './prospecting/CampaignsView';
 import ResearchQueueView    from './prospecting/ResearchQueueView';
+import NetworkUploadPanel   from './prospecting/NetworkUploadPanel';
 import CallsInboxView       from './prospecting/CallsInboxView';
 import ProspectingInbox     from './prospecting/ProspectingInbox';
 
@@ -44,7 +45,7 @@ import './OutreachComposer.css';
 // (a campaign id, #/prospecting/campaigns/14) is owned by CampaignsView.
 // Each owner reads its own segment on mount and rewrites the hash only when
 // ITS segment changes — never touching segments it doesn't own.
-const PV_HASH_MODES = ['pipeline', 'list', 'account', 'campaigns', 'research', 'inbox', 'sequences', 'calls'];
+const PV_HASH_MODES = ['pipeline', 'list', 'account', 'campaigns', 'research', 'inbox', 'sequences', 'calls', 'network'];
 
 // Sub-views where the GLOBAL prospect-pool strips (stage pills + LinkedIn
 // funnel banner) are hidden — these views are about a different entity
@@ -865,6 +866,7 @@ export default function ProspectingView() {
               { key: 'inbox',     icon: '📥', label: 'Inbox' },
               { key: 'sequences', icon: '📨', label: 'Sequences' },
               { key: 'calls',     icon: '📞', label: 'Calls' },
+              { key: 'network',   icon: '🕸️', label: 'Network' },
             ].map(v => (
               <button
                 key={v.key}
@@ -1215,6 +1217,8 @@ export default function ProspectingView() {
             if (p) setSelectedProspect({ ...p, _openTab: 'calls' });
           }}
         />
+      ) : viewMode === 'network' ? (
+        <NetworkUploadPanel />
       ) : (
         <ProspectingInbox
           key={draftsDeepLink ? `dl-${draftsDeepLink.campaignId}` : 'inbox'}

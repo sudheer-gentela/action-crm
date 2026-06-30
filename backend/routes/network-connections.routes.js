@@ -156,6 +156,7 @@ router.get('/events', async (req, res) => {
       req.orgId,
       `SELECT e.id, e.event_type, e.from_company, e.from_title, e.to_company, e.to_title,
               e.detected_at, e.detection_source, e.confidence,
+              e.is_from_customer_account, e.is_into_target_account, e.is_into_icp_role,
               c.full_name, c.linkedin_url, c.member_urn, c.connected_on
          FROM connection_job_events e
          JOIN linkedin_connections c ON c.id = e.connection_id AND c.org_id = e.org_id
