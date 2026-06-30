@@ -27,6 +27,8 @@ const requireModule     = require('../middleware/requireModule.middleware');
 const Ingest = require('../services/NetworkConnectionIngestService');
 const Diff   = require('../services/NetworkJobChangeDiffService');
 const Plays  = require('../services/NetworkJobChangePlayService');
+const Config = require('../services/NetworkJobChangeConfig');
+const { createNotification } = require('../services/notificationService');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -77,8 +79,37 @@ router.post('/snapshot', async (req, res) => {
         orgId:   req.orgId,
         ownerId: req.user.userId,
       });
-      return { ingest, diff, plays };
+      // P2: classify inbound moves into target accounts → warm-intro plays.
+      const inbound = await Plays.routeInboundTargetForSnapshot(client, {
+        orgId:   req.orgId,
+        ownerId: req.user.userId,
+      });
+      return { ingest, diff, plays, inbound };
     });
+
+    // Payoff-forward (D5): surface the result on the bell + Slack so the rep
+    // sees value immediately. Best-effort — never block the response.
+    try {
+      const d = result.diff || {};
+      const p = result.plays || {};
+      const moves = (d.byType && (d.byType.company_change || 0)) || 0;
+      if ((d.events || 0) > 0 || (p.championLeft || 0) > 0) {
+        const bits = [];
+        if (moves) bits.push(`${moves} job change${moves === 1 ? '' : 's'}`);
+        if (p.championLeft) bits.push(`${p.championLeft} champion${p.championLeft === 1 ? '' : 's'} left a customer`);
+        const inb = result.inbound || {};
+        if (inb.intoTarget) bits.push(`${inb.intoTarget} into target accounts`);
+        const totalPromoted = (p.promoted || 0) + (inb.promoted || 0);
+        if (totalPromoted) bits.push(`${totalPromoted} promoted to prospects`);
+        await createNotification(
+          req.orgId, req.user.userId, 'network_snapshot_done',
+          'Network sync complete',
+          bits.length ? `Found ${bits.join(', ')}.` : `Processed ${result.ingest.rows} connections.`,
+          'network', result.ingest.snapshotId,
+          { diff: d, plays: p }
+        );
+      }
+    } catch (e) { console.warn('network snapshot notification failed (non-blocking):', e.message); }
 
     return res.json({ ok: true, ...result });
   } catch (err) {
@@ -98,6 +129,13 @@ router.get('/events', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
     const params = [req.orgId, req.user.userId];
     let where = `e.org_id = $1 AND e.owner_id = $2`;
+
+    // View scope (D10): 'champion_left' shows only champion-left events; 'all' shows everything.
+    // (Org-wide RevOps firehose is a separate P2 view.)
+    const cfg = await Config.resolveForUser(db, { orgId: req.orgId, userId: req.user.userId });
+    if (cfg.notifyScope === 'champion_left') {
+      where += ` AND e.is_from_customer_account = true`;
+    }
 
     if (req.query.type) { params.push(req.query.type); where += ` AND e.event_type = $${params.length}`; }
     if (req.query.before) { params.push(req.query.before); where += ` AND e.detected_at < $${params.length}`; }

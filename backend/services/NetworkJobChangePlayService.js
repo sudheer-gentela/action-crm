@@ -26,9 +26,10 @@ const { slugFromUrl } = require('./NetworkConnectionIngestService');
 const Config = require('./NetworkJobChangeConfig');
 
 const CHAMPION_ROLES   = new Set(['champion', 'decision_maker', 'economic_buyer']); // D11
-const CHURN_SOURCE_RULE  = 'champion_left';
-const PURSUE_SOURCE_RULE = 'pursue_champion';
-const PROSPECT_SOURCE    = 'network_job_change';
+const CHURN_SOURCE_RULE   = 'champion_left';
+const PURSUE_SOURCE_RULE  = 'pursue_champion';
+const INBOUND_SOURCE_RULE = 'inbound_target';
+const PROSPECT_SOURCE      = 'network_job_change';
 
 // ── Pure predicate (exported for unit tests; no DB) ───────────────────────────
 function isChampionRole(roleType, dealContactRows = []) {
@@ -143,7 +144,7 @@ async function upsertChurnAction(client, { orgId, assigneeId, ctx, connection, e
 // Mirrors POST /prospects: match member_urn, then slug, else insert. On match,
 // the prospect MOVED, so company/title are updated to the new role (URN/URL
 // COALESCE-backfilled). Links linkedin_connections.prospect_id back.
-async function promoteConnectionToProspect(client, { orgId, connection, event }) {
+async function promoteConnectionToProspect(client, { orgId, connection, event, accountId = null }) {
   if (connection.prospect_id) {
     return { prospectId: connection.prospect_id, created: false };
   }
@@ -187,9 +188,10 @@ async function promoteConnectionToProspect(client, { orgId, connection, event })
          title        = COALESCE($3, title),
          member_urn   = COALESCE(member_urn, $4),
          linkedin_url = COALESCE(linkedin_url, $5),
+         account_id   = COALESCE(account_id, $7),
          updated_at   = CURRENT_TIMESTAMP
        WHERE id = $1 AND org_id = $6`,
-      [match, newCompany, newTitle, memberUrn, linkedinUrl, orgId]
+      [match, newCompany, newTitle, memberUrn, linkedinUrl, orgId, accountId]
     );
     prospectId = match; created = false;
   } else {
@@ -202,11 +204,11 @@ async function promoteConnectionToProspect(client, { orgId, connection, event })
        ) VALUES (
          $1, $2, $2, $3, $4, NULL, NULL, $5,
          $6, NULL, NULL, $7, NULL, NULL,
-         NULL, NULL, $8, NULL, '[]'::jsonb, $9,
+         NULL, $10, $8, NULL, '[]'::jsonb, $9,
          'target', CURRENT_TIMESTAMP
        ) RETURNING id`,
       [orgId, connection.owner_id, firstName, lastName, linkedinUrl,
-       newTitle, newCompany, PROSPECT_SOURCE, memberUrn]
+       newTitle, newCompany, PROSPECT_SOURCE, memberUrn, accountId]
     );
     prospectId = ins.rows[0].id; created = true;
   }
@@ -328,14 +330,150 @@ async function routeChampionLeftForSnapshot(client, { orgId, ownerId }) {
   return { evaluated, championLeft, churnActions, promoted, pursueActions, autoPromote };
 }
 
+// ── Resolve a move's NEW company → a target account ───────────────────────────
+// CSV gives a company NAME (no domain), so match exact-normalized name against
+// accounts that are targets (account_type='target') or have an OPEN deal.
+// Fuzzy/suffix-stripping matching stays DISABLED (D3) — conservative, low false
+// positives. (Future: enable suffix-strip + token-set behind a flag.)
+async function findTargetAccountContext(client, { orgId, event }) {
+  const company = (event.to_company || '').trim();
+  if (!company) return { matched: false };
+  const norm = company.toLowerCase();
+
+  const res = await client.query(
+    `SELECT a.id, a.name, a.owner_id
+       FROM accounts a
+      WHERE a.org_id = $1 AND a.deleted_at IS NULL
+        AND lower(btrim(a.name)) = $2
+        AND ( a.account_type = 'target'
+           OR EXISTS (
+                SELECT 1 FROM deals d
+                 WHERE d.account_id = a.id AND d.deleted_at IS NULL
+                   AND COALESCE(d.stage_type, '') NOT IN ('won', 'lost')
+              ) )
+      LIMIT 1`,
+    [orgId, norm]
+  );
+  if (!res.rows[0]) return { matched: false };
+  const a = res.rows[0];
+  return { matched: true, accountId: a.id, accountName: a.name, accountOwnerId: a.owner_id };
+}
+
+// ── Inbound warm-intro action on the new prospect (index-backed dedup) ─────────
+async function upsertInboundAction(client, { orgId, assigneeId, prospectId, accountName, connection, event }) {
+  const who = connection.full_name || 'Your connection';
+  const title = `Warm intro: ${who} just joined ${accountName || event.to_company}`;
+  const description =
+    `${who} moved to ${accountName || event.to_company}, a target account — and you already `
+    + `have a 1st-degree connection. Reach out to open a warm path / request an intro.`;
+
+  const ins = await client.query(
+    `INSERT INTO prospecting_actions
+        (org_id, user_id, prospect_id, title, description, action_type, channel,
+         status, priority, due_date, source, source_rule, metadata)
+     VALUES ($1, $2, $3, $4, $5, 'follow_up', 'linkedin',
+             'pending', 'high', NOW(), $6, $7, $8::jsonb)
+     ON CONFLICT (prospect_id, source_rule)
+       WHERE prospect_id IS NOT NULL AND source_rule IS NOT NULL
+       DO NOTHING
+     RETURNING id`,
+    [orgId, assigneeId, prospectId, title, description,
+     PROSPECT_SOURCE, INBOUND_SOURCE_RULE,
+     JSON.stringify({ connectionId: connection.connection_id, toCompany: event.to_company })]
+  );
+  return ins.rows[0] ? ins.rows[0].id : null;
+}
+
+// ── Orchestrator: inbound target-account moves ────────────────────────────────
+// Independent of champion-left (a move into a target account fires regardless of
+// where the person came from). Idempotent on is_into_target_account.
+async function routeInboundTargetForSnapshot(client, { orgId, ownerId }) {
+  const cfg = await Config.resolveForUser(client, { orgId, userId: ownerId });
+  const autoPromote = cfg.autoPromoteOnMove;
+
+  const evRes = await client.query(
+    `SELECT e.id AS event_id, e.connection_id, e.from_company, e.to_company,
+            c.member_urn, c.linkedin_url, c.prospect_id, c.full_name,
+            c.first_name, c.last_name, c.title, c.company_name, c.owner_id
+       FROM connection_job_events e
+       JOIN linkedin_connections c ON c.id = e.connection_id AND c.org_id = e.org_id
+      WHERE e.org_id = $1 AND e.owner_id = $2
+        AND e.event_type = 'company_change'
+        AND e.is_into_target_account IS NULL`,
+    [orgId, ownerId]
+  );
+
+  let evaluated = 0, intoTarget = 0, promoted = 0, inboundActions = 0;
+
+  for (const row of evRes.rows) {
+    evaluated++;
+    const connection = {
+      connection_id: row.connection_id,
+      member_urn: row.member_urn, linkedin_url: row.linkedin_url,
+      prospect_id: row.prospect_id, full_name: row.full_name,
+      first_name: row.first_name, last_name: row.last_name,
+      title: row.title, company_name: row.company_name, owner_id: row.owner_id,
+    };
+    const event = { from_company: row.from_company, to_company: row.to_company };
+
+    const ctx = await findTargetAccountContext(client, { orgId, event });
+
+    if (!ctx.matched) {
+      await client.query(
+        `UPDATE connection_job_events SET is_into_target_account = false
+          WHERE id = $1 AND org_id = $2`,
+        [row.event_id, orgId]
+      );
+      continue;
+    }
+
+    intoTarget++;
+    await client.query(
+      `UPDATE connection_job_events
+          SET is_into_target_account = true, to_account_id = $3
+        WHERE id = $1 AND org_id = $2`,
+      [row.event_id, orgId, ctx.accountId]
+    );
+
+    if (autoPromote) {
+      const { prospectId } = await promoteConnectionToProspect(
+        client, { orgId, connection, event, accountId: ctx.accountId }
+      );
+      if (prospectId) {
+        promoted++;
+        await client.query(
+          `UPDATE connection_job_events SET promoted_prospect_id = COALESCE(promoted_prospect_id, $3)
+            WHERE id = $1 AND org_id = $2`,
+          [row.event_id, orgId, prospectId]
+        );
+        if (await upsertInboundAction(client, {
+          orgId, assigneeId: ownerId, prospectId, accountName: ctx.accountName, connection, event,
+        })) inboundActions++;
+      }
+    }
+  }
+
+  if (evaluated) {
+    console.log(
+      `🎯 InboundTarget org=${orgId} owner=${ownerId} evaluated=${evaluated} ` +
+      `intoTarget=${intoTarget} promoted=${promoted} inbound=${inboundActions} autoPromote=${autoPromote}`
+    );
+  }
+  return { evaluated, intoTarget, promoted, inboundActions };
+}
+
 module.exports = {
   routeChampionLeftForSnapshot,
+  routeInboundTargetForSnapshot,
   findChampionContext,
+  findTargetAccountContext,
   promoteConnectionToProspect,
   upsertChurnAction,
   upsertPursueAction,
+  upsertInboundAction,
   isChampionRole,
   CHAMPION_ROLES,
   CHURN_SOURCE_RULE,
   PURSUE_SOURCE_RULE,
+  INBOUND_SOURCE_RULE,
 };
