@@ -1,45 +1,36 @@
 // services/NetworkJobChangePlayService.js
 //
 // P1 routing for network job-change events (Design & Execution Tracker §G-P1).
-// FIRST play (D4): champion-left CHURN risk.
+// Champion-left → BOTH plays (design §F):
+//   (a) CHURN risk on the OLD customer account  (actions table)
+//   (b) PURSUE champion at the NEW company       (promote → prospect + prospecting_action)
 //
-// For each unclassified company_change event, resolve the moved person to a
-// CHAMPION contact at a CUSTOMER account (account_type='customer', D12). If
-// matched, it's a champion-leaving-a-customer signal:
-//   • stamp the event: is_from_customer_account=true, from_account_id
-//   • mint a churn-risk action on the OLD account (re-multithread)
-// If not matched, mark the event is_from_customer_account=false so it isn't
-// re-evaluated (idempotent re-runs).
+// Flow per unclassified company_change event:
+//   1. Resolve the moved person to a CHAMPION contact at a CUSTOMER account
+//      (account_type='customer', D12) — person-centric (slug / contact_identities
+//      / prospect-conversion), NOT company-string matching (CSV has no domain).
+//   2. If matched: stamp event (is_from_customer_account, from_account_id) and
+//      mint the churn-risk action on the old account.
+//   3. If auto-promote is ON (D2, default ON via NetworkJobChangeConfig): promote
+//      the connection to a prospect at the NEW company (URN-first dedup, mirrors
+//      POST /prospects), mint the pursue-champion action, stamp
+//      promoted_prospect_id.
+//   4. If not matched: mark is_from_customer_account=false (idempotent re-runs).
 //
-// PERSON-CENTRIC by design (matches the coverage rule in §C): we link the
-// connection to a known contact via contacts.linkedin_url (slug), the canonical
-// contact_identities resolver, or prospect conversion — NOT by matching the
-// company name string (the CSV has no domain, D3). A pure network connection
-// with no contact linkage at the customer simply won't fire — accepted for v1.
-//
-// The churn play lands in the `actions` table (account-level), mirroring
-// ActionPersister's column conventions (source='auto_generated', source_rule,
-// status 'yet_to_start'). There is no (account_id, source_rule) unique index,
-// so dedup is app-level (INSERT … WHERE NOT EXISTS) — no new index on the
-// populated actions table.
-//
-// NOT here (next slice): pursue-champion play at the NEW company + auto-promote
-// to prospect (D2). That needs the prospect-promotion path + config.
+// Dedup: churn action is app-level (no account source_rule index); pursue action
+// uses the existing uq_pactions_prospect_source_rule via ON CONFLICT DO NOTHING.
 
 'use strict';
 
 const { slugFromUrl } = require('./NetworkConnectionIngestService');
+const Config = require('./NetworkJobChangeConfig');
 
-// D11 default champion vocabulary — maps to real contacts.role_type CHECK values
-// (champion/decision_maker/economic_buyer) + deal_contacts is_primary/role.
-// Could move to org config later.
-const CHAMPION_ROLES = new Set(['champion', 'decision_maker', 'economic_buyer']);
-
-const CHURN_SOURCE_RULE = 'champion_left';
+const CHAMPION_ROLES   = new Set(['champion', 'decision_maker', 'economic_buyer']); // D11
+const CHURN_SOURCE_RULE  = 'champion_left';
+const PURSUE_SOURCE_RULE = 'pursue_champion';
+const PROSPECT_SOURCE    = 'network_job_change';
 
 // ── Pure predicate (exported for unit tests; no DB) ───────────────────────────
-// A contact is a "champion" if their role_type qualifies, OR any of their
-// deal_contacts links for the account is primary / a champion role.
 function isChampionRole(roleType, dealContactRows = []) {
   if (roleType && CHAMPION_ROLES.has(String(roleType).toLowerCase())) return true;
   for (const dc of dealContactRows) {
@@ -49,26 +40,21 @@ function isChampionRole(roleType, dealContactRows = []) {
   return false;
 }
 
-// ── Resolve a moved connection → champion contact at a customer account ────────
-// @returns { matched:false } | { matched:true, accountId, accountName, accountOwnerId, contactId, roleType, via }
+// ── Resolve moved connection → champion contact at a customer account ─────────
 async function findChampionContext(client, { orgId, connection }) {
-  const slug = slugFromUrl(connection.linkedin_url || connection.linkedinUrl);
-  const idValues = [connection.member_urn || connection.memberUrn,
-                    connection.linkedin_url || connection.linkedinUrl]
+  const slug = slugFromUrl(connection.linkedin_url);
+  const idValues = [connection.member_urn, connection.linkedin_url]
                     .filter(Boolean).map((v) => String(v).toLowerCase());
-  const prospectId = connection.prospect_id || connection.prospectId || null;
+  const prospectId = connection.prospect_id || null;
 
-  // Candidate contacts at CUSTOMER accounts, via three linkage paths.
   const res = await client.query(
     `WITH cand AS (
-        -- (a) direct slug match on contacts.linkedin_url
         SELECT c.id, c.account_id, c.role_type
           FROM contacts c
          WHERE c.org_id = $1 AND c.deleted_at IS NULL
            AND $2::text IS NOT NULL
            AND lower(substring(c.linkedin_url from '/in/([^/?#]+)')) = $2
         UNION
-        -- (b) canonical identity resolver (match by value or by slug-in-value)
         SELECT c.id, c.account_id, c.role_type
           FROM contact_identities ci
           JOIN contacts c ON c.id = ci.canonical_contact_id
@@ -78,7 +64,6 @@ async function findChampionContext(client, { orgId, connection }) {
               OR ($2::text IS NOT NULL
                   AND lower(substring(ci.identity_value from '/in/([^/?#]+)')) = $2) )
         UNION
-        -- (c) prospect this connection was promoted from, later converted to a contact
         SELECT c.id, c.account_id, c.role_type
           FROM contacts c
          WHERE c.org_id = $1 AND c.deleted_at IS NULL
@@ -95,7 +80,6 @@ async function findChampionContext(client, { orgId, connection }) {
   if (!res.rows.length) return { matched: false };
 
   for (const cand of res.rows) {
-    // deal_contacts links for this contact on deals at this account
     const dc = await client.query(
       `SELECT dc.role, dc.is_primary
          FROM deal_contacts dc
@@ -111,16 +95,15 @@ async function findChampionContext(client, { orgId, connection }) {
         accountOwnerId: cand.account_owner_id,
         contactId: cand.contact_id,
         roleType: cand.role_type,
-        via: 'role',
       };
     }
   }
   return { matched: false };
 }
 
-// ── Mint the churn-risk action (app-level dedup) ──────────────────────────────
+// ── (a) Churn-risk action on the OLD account (app-level dedup) ─────────────────
 async function upsertChurnAction(client, { orgId, assigneeId, ctx, connection, event }) {
-  const sourceId = `${CHURN_SOURCE_RULE}:${connection.connection_id || connection.id}:${ctx.accountId}`;
+  const sourceId = `${CHURN_SOURCE_RULE}:${connection.connection_id}:${ctx.accountId}`;
   const who = connection.full_name || 'A champion';
   const left = event.from_company || ctx.accountName || 'a customer account';
   const title = `Churn risk: ${who} left ${left}`;
@@ -153,16 +136,124 @@ async function upsertChurnAction(client, { orgId, assigneeId, ctx, connection, e
     [orgId, assigneeId, ctx.accountId, ctx.contactId,
      title, description, CHURN_SOURCE_RULE, sourceId, suggested]
   );
-  return ins.rows[0] ? ins.rows[0].id : null; // null = dedup hit (already open)
+  return ins.rows[0] ? ins.rows[0].id : null;
 }
 
-// ── Orchestrator: classify + route champion-left for a snapshot's events ───────
-// Idempotent: only touches company_change events not yet classified
-// (is_from_customer_account IS NULL). Called from POST /snapshot after the diff.
+// ── Promote a moved connection → prospect at the NEW company (URN-first dedup) ──
+// Mirrors POST /prospects: match member_urn, then slug, else insert. On match,
+// the prospect MOVED, so company/title are updated to the new role (URN/URL
+// COALESCE-backfilled). Links linkedin_connections.prospect_id back.
+async function promoteConnectionToProspect(client, { orgId, connection, event }) {
+  if (connection.prospect_id) {
+    return { prospectId: connection.prospect_id, created: false };
+  }
+
+  const memberUrn   = connection.member_urn || null;
+  const linkedinUrl = connection.linkedin_url || null;
+  const slug        = slugFromUrl(linkedinUrl);
+  const firstName   = connection.first_name || (connection.full_name || '').trim().split(/\s+/)[0] || 'Unknown';
+  const lastName    = connection.last_name  || (connection.full_name || '').trim().split(/\s+/).slice(1).join(' ') || '';
+  const newCompany  = event.to_company || connection.company_name || null;
+  const newTitle    = connection.title || null;
+
+  // URN-first → slug dedup.
+  let match = null;
+  if (memberUrn) {
+    const r = await client.query(
+      `SELECT id FROM prospects
+        WHERE org_id = $1 AND member_urn = $2 AND deleted_at IS NULL
+        ORDER BY id ASC LIMIT 1`,
+      [orgId, memberUrn]
+    );
+    if (r.rows[0]) match = r.rows[0].id;
+  }
+  if (!match && slug) {
+    const r = await client.query(
+      `SELECT id FROM prospects
+        WHERE org_id = $1 AND deleted_at IS NULL AND linkedin_url IS NOT NULL
+          AND lower(substring(linkedin_url from '/in/([^/?#]+)')) = $2
+        ORDER BY id ASC LIMIT 1`,
+      [orgId, slug]
+    );
+    if (r.rows[0]) match = r.rows[0].id;
+  }
+
+  let prospectId, created;
+  if (match) {
+    // They moved → reflect the new company/title; backfill URN/URL.
+    await client.query(
+      `UPDATE prospects SET
+         company_name = COALESCE($2, company_name),
+         title        = COALESCE($3, title),
+         member_urn   = COALESCE(member_urn, $4),
+         linkedin_url = COALESCE(linkedin_url, $5),
+         updated_at   = CURRENT_TIMESTAMP
+       WHERE id = $1 AND org_id = $6`,
+      [match, newCompany, newTitle, memberUrn, linkedinUrl, orgId]
+    );
+    prospectId = match; created = false;
+  } else {
+    const ins = await client.query(
+      `INSERT INTO prospects (
+         org_id, owner_id, created_by, first_name, last_name, email, phone, linkedin_url,
+         title, linkedin_headline, location, company_name, company_domain, company_size,
+         company_industry, account_id, source, playbook_id, tags, member_urn,
+         stage, stage_changed_at
+       ) VALUES (
+         $1, $2, $2, $3, $4, NULL, NULL, $5,
+         $6, NULL, NULL, $7, NULL, NULL,
+         NULL, NULL, $8, NULL, '[]'::jsonb, $9,
+         'target', CURRENT_TIMESTAMP
+       ) RETURNING id`,
+      [orgId, connection.owner_id, firstName, lastName, linkedinUrl,
+       newTitle, newCompany, PROSPECT_SOURCE, memberUrn]
+    );
+    prospectId = ins.rows[0].id; created = true;
+  }
+
+  await client.query(
+    `UPDATE linkedin_connections SET prospect_id = $3, updated_at = now()
+      WHERE id = $1 AND org_id = $2`,
+    [connection.connection_id, orgId, prospectId]
+  );
+
+  return { prospectId, created };
+}
+
+// ── (b) Pursue-champion action on the new prospect (index-backed dedup) ────────
+async function upsertPursueAction(client, { orgId, assigneeId, prospectId, connection, event }) {
+  const who = connection.full_name || 'Your contact';
+  const title = `Reconnect: ${who} moved to ${event.to_company || 'a new company'}`;
+  const description =
+    `${who} just changed companies. Congratulate them and explore whether `
+    + `${event.to_company || 'their new company'} is a fit — a warm path you already have.`;
+
+  const ins = await client.query(
+    `INSERT INTO prospecting_actions
+        (org_id, user_id, prospect_id, title, description, action_type, channel,
+         status, priority, due_date, source, source_rule, metadata)
+     VALUES ($1, $2, $3, $4, $5, 'follow_up', 'linkedin',
+             'pending', 'high', NOW(), $6, $7, $8::jsonb)
+     ON CONFLICT (prospect_id, source_rule)
+       WHERE prospect_id IS NOT NULL AND source_rule IS NOT NULL
+       DO NOTHING
+     RETURNING id`,
+    [orgId, assigneeId, prospectId, title, description,
+     PROSPECT_SOURCE, PURSUE_SOURCE_RULE,
+     JSON.stringify({ connectionId: connection.connection_id, toCompany: event.to_company })]
+  );
+  return ins.rows[0] ? ins.rows[0].id : null;
+}
+
+// ── Orchestrator ──────────────────────────────────────────────────────────────
 async function routeChampionLeftForSnapshot(client, { orgId, ownerId }) {
+  const cfg = await Config.resolveForUser(client, { orgId, userId: ownerId });
+  const autoPromote = cfg.autoPromoteOnMove;
+
   const evRes = await client.query(
     `SELECT e.id AS event_id, e.connection_id, e.from_company, e.to_company,
-            c.member_urn, c.linkedin_url, c.prospect_id, c.full_name, c.owner_id
+            c.member_urn, c.linkedin_url, c.prospect_id, c.full_name,
+            c.first_name, c.last_name, c.title, c.company_name, c.owner_id
        FROM connection_job_events e
        JOIN linkedin_connections c ON c.id = e.connection_id AND c.org_id = e.org_id
       WHERE e.org_id = $1 AND e.owner_id = $2
@@ -171,17 +262,16 @@ async function routeChampionLeftForSnapshot(client, { orgId, ownerId }) {
     [orgId, ownerId]
   );
 
-  let evaluated = 0, championLeft = 0, actionsCreated = 0;
+  let evaluated = 0, championLeft = 0, churnActions = 0, promoted = 0, pursueActions = 0;
 
   for (const row of evRes.rows) {
     evaluated++;
     const connection = {
       connection_id: row.connection_id,
-      member_urn: row.member_urn,
-      linkedin_url: row.linkedin_url,
-      prospect_id: row.prospect_id,
-      full_name: row.full_name,
-      owner_id: row.owner_id,
+      member_urn: row.member_urn, linkedin_url: row.linkedin_url,
+      prospect_id: row.prospect_id, full_name: row.full_name,
+      first_name: row.first_name, last_name: row.last_name,
+      title: row.title, company_name: row.company_name, owner_id: row.owner_id,
     };
     const event = { from_company: row.from_company, to_company: row.to_company };
 
@@ -189,8 +279,7 @@ async function routeChampionLeftForSnapshot(client, { orgId, ownerId }) {
 
     if (!ctx.matched) {
       await client.query(
-        `UPDATE connection_job_events
-            SET is_from_customer_account = false
+        `UPDATE connection_job_events SET is_from_customer_account = false
           WHERE id = $1 AND org_id = $2`,
         [row.event_id, orgId]
       );
@@ -205,25 +294,48 @@ async function routeChampionLeftForSnapshot(client, { orgId, ownerId }) {
       [row.event_id, orgId, ctx.accountId]
     );
 
-    const assigneeId = ctx.accountOwnerId || ownerId; // account owner, else the rep who knows them
-    const actionId = await upsertChurnAction(client, { orgId, assigneeId, ctx, connection, event });
-    if (actionId) actionsCreated++;
+    // (a) churn risk on the old account
+    const churnAssignee = ctx.accountOwnerId || ownerId;
+    if (await upsertChurnAction(client, { orgId, assigneeId: churnAssignee, ctx, connection, event })) {
+      churnActions++;
+    }
+
+    // (b) pursue champion at the new company (auto-promote gated, D2)
+    if (autoPromote) {
+      const { prospectId } = await promoteConnectionToProspect(client, { orgId, connection, event });
+      if (prospectId) {
+        promoted++;
+        await client.query(
+          `UPDATE connection_job_events SET promoted_prospect_id = $3
+            WHERE id = $1 AND org_id = $2`,
+          [row.event_id, orgId, prospectId]
+        );
+        // pursue action assigned to the rep who holds the relationship
+        if (await upsertPursueAction(client, { orgId, assigneeId: ownerId, prospectId, connection, event })) {
+          pursueActions++;
+        }
+      }
+    }
   }
 
   if (evaluated) {
     console.log(
       `🛟 ChampionLeft org=${orgId} owner=${ownerId} evaluated=${evaluated} ` +
-      `championLeft=${championLeft} churnActions=${actionsCreated}`
+      `championLeft=${championLeft} churn=${churnActions} promoted=${promoted} ` +
+      `pursue=${pursueActions} autoPromote=${autoPromote}`
     );
   }
-  return { evaluated, championLeft, actionsCreated };
+  return { evaluated, championLeft, churnActions, promoted, pursueActions, autoPromote };
 }
 
 module.exports = {
   routeChampionLeftForSnapshot,
   findChampionContext,
+  promoteConnectionToProspect,
   upsertChurnAction,
-  isChampionRole,       // exported for unit tests
+  upsertPursueAction,
+  isChampionRole,
   CHAMPION_ROLES,
   CHURN_SOURCE_RULE,
+  PURSUE_SOURCE_RULE,
 };
