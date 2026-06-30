@@ -84,7 +84,12 @@ router.post('/snapshot', async (req, res) => {
         orgId:   req.orgId,
         ownerId: req.user.userId,
       });
-      return { ingest, diff, plays, inbound };
+      // P2: catch-all ICP re-engage for moves into senior buying roles.
+      const icp = await Plays.routeIcpMoveForSnapshot(client, {
+        orgId:   req.orgId,
+        ownerId: req.user.userId,
+      });
+      return { ingest, diff, plays, inbound, icp };
     });
 
     // Payoff-forward (D5): surface the result on the bell + Slack so the rep
@@ -99,7 +104,9 @@ router.post('/snapshot', async (req, res) => {
         if (p.championLeft) bits.push(`${p.championLeft} champion${p.championLeft === 1 ? '' : 's'} left a customer`);
         const inb = result.inbound || {};
         if (inb.intoTarget) bits.push(`${inb.intoTarget} into target accounts`);
-        const totalPromoted = (p.promoted || 0) + (inb.promoted || 0);
+        const ic = result.icp || {};
+        if (ic.icpMoves) bits.push(`${ic.icpMoves} into ICP roles`);
+        const totalPromoted = (p.promoted || 0) + (inb.promoted || 0) + (ic.promoted || 0);
         if (totalPromoted) bits.push(`${totalPromoted} promoted to prospects`);
         await createNotification(
           req.orgId, req.user.userId, 'network_snapshot_done',

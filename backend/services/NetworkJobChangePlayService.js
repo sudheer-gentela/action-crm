@@ -24,11 +24,13 @@
 
 const { slugFromUrl } = require('./NetworkConnectionIngestService');
 const Config = require('./NetworkJobChangeConfig');
+const ProspectClassifier = require('./ProspectClassifier');
 
 const CHAMPION_ROLES   = new Set(['champion', 'decision_maker', 'economic_buyer']); // D11
 const CHURN_SOURCE_RULE   = 'champion_left';
 const PURSUE_SOURCE_RULE  = 'pursue_champion';
 const INBOUND_SOURCE_RULE = 'inbound_target';
+const ICP_SOURCE_RULE      = 'icp_move';
 const PROSPECT_SOURCE      = 'network_job_change';
 
 // ── Pure predicate (exported for unit tests; no DB) ───────────────────────────
@@ -462,18 +464,122 @@ async function routeInboundTargetForSnapshot(client, { orgId, ownerId }) {
   return { evaluated, intoTarget, promoted, inboundActions };
 }
 
+// ── ICP re-engage action (index-backed dedup) ─────────────────────────────────
+async function upsertIcpAction(client, { orgId, assigneeId, prospectId, cls, connection, event }) {
+  const who = connection.full_name || 'Your connection';
+  const company = event.to_company || connection.company_name || 'their company';
+  const role = connection.title || event.to_title || 'a new role';
+  const title = `Re-engage: ${who} is now ${role}`;
+  const description =
+    `${who} moved into ${role} at ${company} — an ICP-fit role `
+    + `(${cls.function}/${cls.seniority}). Congratulate them and explore whether there's a fit.`;
+
+  const ins = await client.query(
+    `INSERT INTO prospecting_actions
+        (org_id, user_id, prospect_id, title, description, action_type, channel,
+         status, priority, due_date, source, source_rule, metadata)
+     VALUES ($1, $2, $3, $4, $5, 'follow_up', 'linkedin',
+             'pending', 'medium', NOW(), $6, $7, $8::jsonb)
+     ON CONFLICT (prospect_id, source_rule)
+       WHERE prospect_id IS NOT NULL AND source_rule IS NOT NULL
+       DO NOTHING
+     RETURNING id`,
+    [orgId, assigneeId, prospectId, title, description,
+     PROSPECT_SOURCE, ICP_SOURCE_RULE,
+     JSON.stringify({ connectionId: connection.connection_id, fn: cls.function, seniority: cls.seniority })]
+  );
+  return ins.rows[0] ? ins.rows[0].id : null;
+}
+
+// ── Orchestrator: moved into an ICP role anywhere ─────────────────────────────
+// The catch-all re-engage play. Title-only ICP signal via ProspectClassifier
+// (decision_maker = senior buying role). Runs AFTER champion-left + inbound, and
+// SKIPS firing when a stronger play already covered the event (from_customer or
+// into_target) — but still records is_into_icp_role for the digest/feed.
+// Idempotent on is_into_icp_role; handles company_change AND role_change.
+async function routeIcpMoveForSnapshot(client, { orgId, ownerId }) {
+  const cfg = await Config.resolveForUser(client, { orgId, userId: ownerId });
+  const autoPromote = cfg.autoPromoteOnMove;
+
+  const evRes = await client.query(
+    `SELECT e.id AS event_id, e.connection_id, e.event_type, e.from_company, e.to_company, e.to_title,
+            e.is_from_customer_account, e.is_into_target_account,
+            c.member_urn, c.linkedin_url, c.prospect_id, c.full_name,
+            c.first_name, c.last_name, c.title, c.company_name, c.owner_id
+       FROM connection_job_events e
+       JOIN linkedin_connections c ON c.id = e.connection_id AND c.org_id = e.org_id
+      WHERE e.org_id = $1 AND e.owner_id = $2
+        AND e.event_type IN ('company_change', 'role_change')
+        AND e.is_into_icp_role IS NULL`,
+    [orgId, ownerId]
+  );
+
+  let evaluated = 0, icpMoves = 0, promoted = 0, icpActions = 0;
+
+  for (const row of evRes.rows) {
+    evaluated++;
+    const title = row.title || row.to_title || '';
+    const cls = ProspectClassifier.classifyTitle(title);
+    const isIcp = cls.decision_maker === true;
+
+    await client.query(
+      `UPDATE connection_job_events SET is_into_icp_role = $3 WHERE id = $1 AND org_id = $2`,
+      [row.event_id, orgId, isIcp]
+    );
+    if (!isIcp) continue;
+    icpMoves++;
+
+    // A stronger play already fired for this move → don't add a redundant ICP one.
+    if (row.is_from_customer_account === true || row.is_into_target_account === true) continue;
+    if (!autoPromote) continue;
+
+    const connection = {
+      connection_id: row.connection_id,
+      member_urn: row.member_urn, linkedin_url: row.linkedin_url,
+      prospect_id: row.prospect_id, full_name: row.full_name,
+      first_name: row.first_name, last_name: row.last_name,
+      title: row.title, company_name: row.company_name, owner_id: row.owner_id,
+    };
+    const event = { from_company: row.from_company, to_company: row.to_company, to_title: row.to_title };
+
+    const { prospectId } = await promoteConnectionToProspect(client, { orgId, connection, event });
+    if (prospectId) {
+      promoted++;
+      await client.query(
+        `UPDATE connection_job_events SET promoted_prospect_id = COALESCE(promoted_prospect_id, $3)
+          WHERE id = $1 AND org_id = $2`,
+        [row.event_id, orgId, prospectId]
+      );
+      if (await upsertIcpAction(client, { orgId, assigneeId: ownerId, prospectId, cls, connection, event })) {
+        icpActions++;
+      }
+    }
+  }
+
+  if (evaluated) {
+    console.log(
+      `🧭 IcpMove org=${orgId} owner=${ownerId} evaluated=${evaluated} ` +
+      `icp=${icpMoves} promoted=${promoted} actions=${icpActions} autoPromote=${autoPromote}`
+    );
+  }
+  return { evaluated, icpMoves, promoted, icpActions };
+}
+
 module.exports = {
   routeChampionLeftForSnapshot,
   routeInboundTargetForSnapshot,
+  routeIcpMoveForSnapshot,
   findChampionContext,
   findTargetAccountContext,
   promoteConnectionToProspect,
   upsertChurnAction,
   upsertPursueAction,
   upsertInboundAction,
+  upsertIcpAction,
   isChampionRole,
   CHAMPION_ROLES,
   CHURN_SOURCE_RULE,
   PURSUE_SOURCE_RULE,
   INBOUND_SOURCE_RULE,
+  ICP_SOURCE_RULE,
 };
