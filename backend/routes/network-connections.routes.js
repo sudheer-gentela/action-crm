@@ -28,6 +28,7 @@ const Ingest = require('../services/NetworkConnectionIngestService');
 const Diff   = require('../services/NetworkJobChangeDiffService');
 const Plays  = require('../services/NetworkJobChangePlayService');
 const Config = require('../services/NetworkJobChangeConfig');
+const UrnBackfill = require('../services/NetworkUrnBackfill');
 const { createNotification } = require('../services/notificationService');
 
 router.use(authenticateToken);
@@ -69,6 +70,9 @@ router.post('/snapshot', async (req, res) => {
         source,
         rows:    connections,
       });
+      // P2: marry member_urn from prospects onto the just-ingested roster rows
+      // (owner-scoped) so champion/prospect resolution can use the stable URN.
+      await UrnBackfill.backfillUrns(client, { orgId: req.orgId, ownerId: req.user.userId });
       const diff = await Diff.runDiffForSnapshot(client, {
         orgId:         req.orgId,
         ownerId:       req.user.userId,
