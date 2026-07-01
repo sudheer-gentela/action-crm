@@ -187,43 +187,58 @@ async function ingestSnapshot(client, { orgId, ownerId, seatId = null, source = 
   const snapshotId = snapRes.rows[0].id;
   const importedAt = snapRes.rows[0].imported_at;
 
-  // 3 + 4. Resolve each row into the roster, then record the raw row.
-  // Per-row upsert is fine at dogfood volume (cf. 2026_29 note); batch later if needed.
+  // 3 + 4. Resolve rows into the roster, then record raw rows — both BATCHED via
+  // unnest() so a 2,782-row upload is a handful of statements, not ~5,500. A key
+  // can appear only once per ON CONFLICT statement, so keyable rows are deduped
+  // by identity_key first (last occurrence wins, matching the old sequential
+  // upsert order); every raw row is still written to the audit table.
+  const CHUNK = 5000;
   let inserted = 0, updated = 0, skipped = 0;
-  const seenKeys = new Set();
 
+  const keyableByKey = new Map();   // identity_key -> normalized (last wins)
+  const rawRows = [];               // every row: { key|null, n }
   for (const raw of rows) {
     const n = normalizeRow(raw);
     for (const w of n.warnings) warnings.push(w);
-
     if (!n.identityKey) {
-      // Unusable row — still keep the raw row for audit, unresolved.
-      await client.query(
-        `INSERT INTO connection_snapshot_rows
-            (org_id, snapshot_id, connection_id, raw_first_name, raw_last_name,
-             raw_email, raw_company, raw_position, raw_connected_on, resolved)
-         VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, $8, false)`,
-        [orgId, snapshotId, n.firstName, n.lastName, n.email, n.company, n.position, n.connRaw]
-      );
+      rawRows.push({ key: null, n });
       skipped++;
       continue;
     }
-
-    if (seenKeys.has(n.identityKey)) {
-      // Two rows in the SAME export resolving to one key — same-name+same-day
-      // collision (rare). Accepted for v1; flag for audit (§8 ambiguity).
+    if (keyableByKey.has(n.identityKey)) {
+      // Same key twice in ONE export (same-name+same-day, no URL) — rare; flag.
       warnings.push({ type: 'duplicate_key_in_snapshot', key: n.identityKey, name: n.fullName });
     }
-    seenKeys.add(n.identityKey);
+    keyableByKey.set(n.identityKey, n);
+    rawRows.push({ key: n.identityKey, n });
+  }
 
-    // Upsert roster. (xmax = 0) distinguishes insert from update for counts.
+  // 3. Batched roster upsert. (xmax = 0) still distinguishes insert from update
+  //    per row inside a multi-row INSERT.
+  const keyToConn = new Map();
+  const uniqueKeyed = [...keyableByKey.values()];
+  for (let i = 0; i < uniqueKeyed.length; i += CHUNK) {
+    const part = uniqueKeyed.slice(i, i + CHUNK);
+    const identity_key = [], member_urn = [], linkedin_url = [], full_name = [],
+          first_name = [], last_name = [], company_name = [], title = [], connected_on = [];
+    for (const n of part) {
+      identity_key.push(n.identityKey); member_urn.push(n.memberUrn);
+      linkedin_url.push(n.linkedinUrl); full_name.push(n.fullName);
+      first_name.push(n.firstName); last_name.push(n.lastName);
+      company_name.push(n.company); title.push(n.position); connected_on.push(n.connectedOn);
+    }
     const up = await client.query(
       `INSERT INTO linkedin_connections
           (org_id, owner_id, identity_key, member_urn, linkedin_url,
            full_name, first_name, last_name, company_name, title, connected_on,
            status, first_seen_at, last_seen_in_snapshot_at, missing_since, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-               'active', now(), $12, NULL, now())
+       SELECT $1::int, $2::int, t.identity_key, t.member_urn, t.linkedin_url,
+              t.full_name, t.first_name, t.last_name, t.company_name, t.title, t.connected_on::date,
+              'active', now(), $3::timestamptz, NULL, now()
+         FROM unnest($4::text[], $5::text[], $6::text[], $7::text[], $8::text[],
+                     $9::text[], $10::text[], $11::text[], $12::text[])
+           AS t(identity_key, member_urn, linkedin_url, full_name, first_name,
+                last_name, company_name, title, connected_on)
        ON CONFLICT (org_id, owner_id, identity_key) DO UPDATE SET
           company_name             = EXCLUDED.company_name,
           title                    = EXCLUDED.title,
@@ -237,21 +252,37 @@ async function ingestSnapshot(client, { orgId, ownerId, seatId = null, source = 
           missing_since            = NULL,
           status                   = 'active',
           updated_at               = now()
-       RETURNING id, (xmax = 0) AS inserted`,
-      [orgId, ownerId, n.identityKey, n.memberUrn, n.linkedinUrl,
-       n.fullName, n.firstName, n.lastName, n.company, n.position, n.connectedOn,
-       importedAt]
+       RETURNING id, identity_key, (xmax = 0) AS inserted`,
+      [orgId, ownerId, importedAt,
+       identity_key, member_urn, linkedin_url, full_name,
+       first_name, last_name, company_name, title, connected_on]
     );
-    const connectionId = up.rows[0].id;
-    if (up.rows[0].inserted) inserted++; else updated++;
+    for (const r of up.rows) {
+      keyToConn.set(r.identity_key, r.id);
+      if (r.inserted) inserted++; else updated++;
+    }
+  }
 
+  // 4. Batched raw-row audit insert (every row; keyable rows linked to their id).
+  for (let i = 0; i < rawRows.length; i += CHUNK) {
+    const part = rawRows.slice(i, i + CHUNK);
+    const conn = [], rfn = [], rln = [], re = [], rc = [], rp = [], rco = [], resolved = [];
+    for (const { key, n } of part) {
+      const cid = key ? (keyToConn.get(key) ?? null) : null;
+      conn.push(cid);
+      rfn.push(n.firstName); rln.push(n.lastName); re.push(n.email);
+      rc.push(n.company); rp.push(n.position); rco.push(n.connRaw);
+      resolved.push(!!cid);
+    }
     await client.query(
       `INSERT INTO connection_snapshot_rows
           (org_id, snapshot_id, connection_id, raw_first_name, raw_last_name,
            raw_email, raw_company, raw_position, raw_connected_on, resolved)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)`,
-      [orgId, snapshotId, connectionId, n.firstName, n.lastName,
-       n.email, n.company, n.position, n.connRaw]
+       SELECT $1::int, $2::int, t.connection_id, t.rfn, t.rln, t.re, t.rc, t.rp, t.rco, t.resolved
+         FROM unnest($3::int[], $4::text[], $5::text[], $6::text[], $7::text[],
+                     $8::text[], $9::text[], $10::bool[])
+           AS t(connection_id, rfn, rln, re, rc, rp, rco, resolved)`,
+      [orgId, snapshotId, conn, rfn, rln, re, rc, rp, rco, resolved]
     );
   }
 

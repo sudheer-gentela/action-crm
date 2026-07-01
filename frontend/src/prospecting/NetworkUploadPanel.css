@@ -102,3 +102,5 @@
 @media (prefers-reduced-motion: reduce) {
   .nup-drop, .nup-file-btn, .nup-primary { transition: none; }
 }
+
+.nup-proc-hint { font-size: 12px; color: #6b7280; margin-top: 10px; background: #f0fbf9; border: 1px solid #cdeee9; border-radius: 8px; padding: 9px 12px; }

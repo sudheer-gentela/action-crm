@@ -13,7 +13,7 @@ import './NetworkUploadPanel.css';
 // Strip the LinkedIn preamble (Notes: / quoted note / blank) and parse from the
 // real header row. Returns connection objects in the API's camelCase shape.
 function parseConnectionsCsv(text) {
-  const lines = text.split(/\r?\n/);
+  const lines = String(text).replace(/^\uFEFF/, '').split(/\r?\n/);
   const headerIdx = lines.findIndex((l) => /^"?\s*First Name\s*"?\s*,/i.test(l));
   if (headerIdx === -1) {
     throw new Error("This doesn't look like a LinkedIn Connections export — no \"First Name\" header row found.");
@@ -117,15 +117,25 @@ export default function NetworkUploadPanel() {
     if (!connections) return;
     setUploading(true); setUpErr('');
     try {
+      // Drop empty fields so the payload stays lean (more headroom under the API body limit).
+      const payload = connections.map((c) => {
+        const o = {};
+        for (const k in c) if (c[k] !== '') o[k] = c[k];
+        return o;
+      });
       const r = await apiFetch('/network-connections/snapshot', {
         method: 'POST',
-        body: JSON.stringify({ source: 'csv_export', connections }),
+        body: JSON.stringify({ source: 'csv_export', connections: payload }),
       });
       setResult(r);
       setConns(null); setFileName('');
       loadEvents();
     } catch (e) {
-      setUpErr(e.message || 'Upload failed. Please try again.');
+      setUpErr(
+        e.status === 413
+          ? 'This export is larger than the current upload limit. Contact support so we can raise it for your account.'
+          : (e.message || 'Upload failed. Please try again.')
+      );
     } finally {
       setUploading(false);
     }
@@ -181,7 +191,7 @@ export default function NetworkUploadPanel() {
             Choose Connections.csv
             <input
               type="file" accept=".csv,text/csv" className="nup-file-input"
-              onChange={(e) => handleFile(e.target.files?.[0])}
+              onChange={(e) => { handleFile(e.target.files?.[0]); e.target.value = ''; }}
             />
           </label>
           <span className="nup-drop-hint">or drag the file here</span>
@@ -219,6 +229,11 @@ export default function NetworkUploadPanel() {
               Cancel
             </button>
           </div>
+          {uploading && connections.length > 1000 && (
+            <div className="nup-proc-hint">
+              Processing {connections.length.toLocaleString()} connections — a first upload can take up to a minute. You can keep this tab open.
+            </div>
+          )}
           {uploadError && <div className="nup-alert nup-alert-err">{uploadError}</div>}
         </div>
       )}
