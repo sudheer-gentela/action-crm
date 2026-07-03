@@ -9,6 +9,10 @@ const PlaybookActionGenerator = require('../services/PlaybookActionGenerator');
 const ActionWriter            = require('../services/ActionWriter');
 const { resolveAccountId, normalizeLinkedInCompanyUrl } = require('../services/domainResolver');
 const { enrichAccountForProspect } = require('../services/enrichmentService');
+// Signal-Based Campaigns (P6): list-derived qualifiers → signals on import.
+const ListSignalIngestService = require('../services/ListSignalIngestService');
+const ListMappingService = require('../services/ListMappingService');
+const SignalActionSurfacer = require('../services/SignalActionSurfacer');
 const CF      = require('../services/CustomFieldService');
 const CFDefs  = require('../services/CustomFieldDefService');
 
@@ -468,7 +472,8 @@ router.post('/bulk', async (req, res) => {
   try {
     const { prospects: rows, source = 'csv_import', campaignId = null,
             mode = 'insert', matchField = 'linkedin_url',
-            moveExistingIds = [] } = req.body;
+            moveExistingIds = [],
+            signalMappings = null, signalMappingId = null } = req.body;
     const isUpsert     = mode === 'upsert';
     const isUpdateById = mode === 'update_by_id';
     // Ids the user explicitly chose (after preflight) to MOVE into this
@@ -610,6 +615,39 @@ router.post('/bulk', async (req, res) => {
       }
     };
 
+    // ── Signal-Based Campaigns (P6): list-derived qualifiers → signals ──────
+    // Resolve the column→signal mapping for this import ONCE: an inline
+    // signalMappings array wins; else a saved template by signalMappingId; else
+    // none (no signals written — the import behaves exactly as before). Every
+    // written signal is source='list'. Touched entities are collected so we can
+    // re-evaluate their campaigns' queues after the import (§6: on fresh capture).
+    let resolvedSignalMappings = [];
+    if (Array.isArray(signalMappings) && signalMappings.length) {
+      resolvedSignalMappings = ListSignalIngestService.cleanMappings(signalMappings);
+    } else if (signalMappingId) {
+      try {
+        const tpl = await ListMappingService.getTemplate({ orgId: req.orgId, id: parseInt(signalMappingId, 10), client: db });
+        if (tpl) resolvedSignalMappings = ListSignalIngestService.cleanMappings(tpl.mappings);
+      } catch (mapErr) {
+        console.warn('Bulk import: signal mapping template load failed:', mapErr.message);
+      }
+    }
+    const touchedForReeval = new Map(); // key entityType:id → { entityType, entityId }
+    const writeRowSignals = async (row, prospectId, accountId) => {
+      if (resolvedSignalMappings.length === 0) return;
+      try {
+        await ListSignalIngestService.ingestRowSignals({
+          orgId: req.orgId, row, accountId, prospectId,
+          mappings: resolvedSignalMappings, client: db,
+        });
+        // Track entities that may need a queue refresh (prospect + its account).
+        if (prospectId) touchedForReeval.set(`prospect:${prospectId}`, { entityType: 'prospect', entityId: prospectId });
+        if (accountId)  touchedForReeval.set(`account:${accountId}`,  { entityType: 'account',  entityId: accountId });
+      } catch (sigErr) {
+        console.warn('Bulk import row signal write failed:', sigErr.message);
+      }
+    };
+
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       const rowNum = i + 1;
@@ -667,6 +705,7 @@ router.post('/bulk', async (req, res) => {
             vals
           );
           await writeRowCustomFields(row, id, match.rows[0].account_id);
+          await writeRowSignals(row, id, match.rows[0].account_id);
           updated++;
           continue;
         } catch (idErr) {
@@ -730,6 +769,7 @@ router.post('/bulk', async (req, res) => {
               vals
             );
             await writeRowCustomFields(row, id, match.rows[0].account_id);
+            await writeRowSignals(row, id, match.rows[0].account_id);
             updated++;
             continue;
           }
@@ -870,6 +910,7 @@ router.post('/bulk', async (req, res) => {
         );
 
         await writeRowCustomFields(row, insertRes.rows[0].id, resolvedAccountId);
+        await writeRowSignals(row, insertRes.rows[0].id, resolvedAccountId);
         imported++;
       } catch (rowErr) {
         console.error(`Bulk import row ${rowNum} error:`, rowErr.message);
@@ -899,6 +940,24 @@ router.post('/bulk', async (req, res) => {
 
     console.log(`📥 Bulk import (${mode}): ${imported} inserted, ${updated} updated, ${moved} moved, ${skipped} skipped (org ${req.orgId})`);
 
+    // ── Signal-Based Campaigns (P6): refresh the queue for entities whose
+    // list signals just landed (§6: re-evaluate on fresh capture). Best-effort
+    // and AFTER the import commits its own work — a re-eval failure never fails
+    // the import. De-duped by entity across the whole batch.
+    let signalReeval = null;
+    if (touchedForReeval.size > 0) {
+      let reProcessed = 0, reUpserted = 0, reResolved = 0;
+      for (const { entityType, entityId } of touchedForReeval.values()) {
+        try {
+          const r = await SignalActionSurfacer.reevalOnCapture({ orgId: req.orgId, entityType, entityId });
+          reProcessed += r.processed; reUpserted += r.upserted; reResolved += r.resolved;
+        } catch (reErr) {
+          console.warn(`Bulk import re-eval failed (${entityType}:${entityId}):`, reErr.message);
+        }
+      }
+      signalReeval = { entitiesTouched: touchedForReeval.size, processed: reProcessed, upserted: reUpserted, resolved: reResolved };
+    }
+
     const parts = [];
     if (imported) parts.push(`imported ${imported}`);
     if (updated)  parts.push(`updated ${updated}`);
@@ -910,6 +969,7 @@ router.post('/bulk', async (req, res) => {
       moved,
       skipped,
       errors: errors.length > 0 ? errors : undefined,
+      signalReeval: signalReeval || undefined,
       message: parts.length
         ? `Done — ${parts.join(', ')}.`
         : 'No rows processed.',
