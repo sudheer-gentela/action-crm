@@ -97,6 +97,7 @@ export default function StagedCampaignModal({ onSaved, onClose }) {
   const [profileId, setProfileId] = useState('');       // '' = start blank
   const [functionKey, setFunctionKey] = useState('');   // primary target function
   const [functions, setFunctions] = useState([]);
+  const [catalog, setCatalog] = useState([]);           // org signal catalog (rep view)
   const [filters, setFilters] = useState([]);
   const [prioritizers, setPrioritizers] = useState([]);
 
@@ -125,7 +126,7 @@ export default function StagedCampaignModal({ onSaved, onClose }) {
         setProfiles(r.profiles || []);
       } catch { setProfiles([]); }
       try {
-        const r = await apiFetch('/prospecting-functions');   // P2 taxonomy (if routed)
+        const r = await apiFetch('/signal-catalog/functions');
         setFunctions(r.functions || []);
       } catch { setFunctions([]); }
       try {
@@ -138,6 +139,18 @@ export default function StagedCampaignModal({ onSaved, onClose }) {
       } catch { setSequences([]); }
     })();
   }, []);
+
+  // Load / re-resolve the signal catalog whenever the target function changes,
+  // so role-relative signals show their resolved label in the picker.
+  useEffect(() => {
+    (async () => {
+      try {
+        const qs = functionKey ? `?function=${encodeURIComponent(functionKey)}` : '';
+        const r = await apiFetch(`/signal-catalog${qs}`);
+        setCatalog(r.signals || []);
+      } catch { setCatalog([]); }
+    })();
+  }, [functionKey]);
 
   // Selecting a profile seeds its function tag + a read-only preview of what it
   // brings; the actual criteria copy happens server-side (template semantics),
@@ -325,6 +338,7 @@ export default function StagedCampaignModal({ onSaved, onClose }) {
                 subtitle="Must be true — defines who's in the pool."
                 role="filter"
                 rows={filters}
+                catalog={catalog.filter(s => s.capability === 'filter' || s.capability === 'both')}
                 onAdd={() => addRow('filter')}
                 onUpdate={(rid, patch) => updateRow('filter', rid, patch)}
                 onRemove={(rid) => removeRow('filter', rid)}
@@ -334,6 +348,7 @@ export default function StagedCampaignModal({ onSaved, onClose }) {
                 subtitle="Ranks higher and picks the angle — excludes nobody."
                 role="prioritize"
                 rows={prioritizers}
+                catalog={catalog.filter(s => s.capability === 'prioritize' || s.capability === 'both')}
                 onAdd={() => addRow('prioritize')}
                 onUpdate={(rid, patch) => updateRow('prioritize', rid, patch)}
                 onRemove={(rid) => removeRow('prioritize', rid)}
@@ -410,7 +425,8 @@ export default function StagedCampaignModal({ onSaved, onClose }) {
 }
 
 // ── Filter / Prioritize criteria editor ──────────────────────────────────────
-function CriteriaEditor({ title, subtitle, role, rows, onAdd, onUpdate, onRemove }) {
+function CriteriaEditor({ title, subtitle, role, rows, catalog = [], onAdd, onUpdate, onRemove }) {
+  const hasCatalog = catalog.length > 0;
   return (
     <div className="pv-form-section">
       <h4>{title}</h4>
@@ -419,12 +435,33 @@ function CriteriaEditor({ title, subtitle, role, rows, onAdd, onUpdate, onRemove
         const op = OPERATORS.find(o => o.value === row.operator);
         return (
           <div className="pv-criterion" key={row._rid}>
-            <input
-              className="pv-criterion-key"
-              placeholder="signal key (e.g. raised_recently)"
-              value={row.signal_key}
-              onChange={e => onUpdate(row._rid, { signal_key: e.target.value })}
-            />
+            {hasCatalog ? (
+              <select
+                className="pv-criterion-key"
+                value={row.signal_key}
+                onChange={e => {
+                  const sig = catalog.find(s => s.key === e.target.value);
+                  onUpdate(row._rid, {
+                    signal_key: e.target.value,
+                    label: sig ? (sig.resolvedLabel || sig.label) : '',
+                  });
+                }}
+              >
+                <option value="">Choose a signal…</option>
+                {catalog.map(s => (
+                  <option key={s.key} value={s.key}>
+                    {(s.resolvedLabel || s.label)}{s.repAdded ? ' · rep-added' : ''}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className="pv-criterion-key"
+                placeholder="signal key (e.g. raised_recently)"
+                value={row.signal_key}
+                onChange={e => onUpdate(row._rid, { signal_key: e.target.value })}
+              />
+            )}
             <select
               className="pv-criterion-op"
               value={row.operator}
@@ -445,6 +482,11 @@ function CriteriaEditor({ title, subtitle, role, rows, onAdd, onUpdate, onRemove
         );
       })}
       <button type="button" className="pv-add-criterion" onClick={onAdd}>+ Add {title.toLowerCase()}</button>
+      {!hasCatalog && (
+        <p className="pv-help pv-help-tight">
+          No catalog signals yet — add them in Settings → Prospecting → Signals, or type a key here.
+        </p>
+      )}
     </div>
   );
 }

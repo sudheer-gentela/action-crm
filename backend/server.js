@@ -190,6 +190,7 @@ app.use('/api/skills',     require('./routes/skills.routes'));
 app.use('/api/skill-runs', require('./routes/skill-runs.routes'));
 app.use('/api/prospecting-config', require('./routes/prospecting-config.routes'));
 app.use('/api/target-profiles', require('./routes/target-profiles.routes'));
+app.use('/api/signal-catalog', require('./routes/signal-catalog.routes'));
 
 app.use('/api/prospecting-wbr',      require('./routes/prospecting-wbr.routes'));
 app.use('/api/prospecting-insights', require('./routes/prospecting-insights.routes'));

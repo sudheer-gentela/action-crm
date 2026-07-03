@@ -13,6 +13,7 @@ import OAManagerEditPolicy from './OAManagerEditPolicy';
 import OAProspectVisibilityPolicy from './OAProspectVisibilityPolicy';
 import OAProspectingEnrichment from './OAProspectingEnrichment';
 import OAProspectingEscalation from './OAProspectingEscalation';
+import OASignalCatalog from './OASignalCatalog';
 import OALinkedInAutomation from '../../OALinkedInAutomation';
 
 // ORG_AI_MODELS — hard-coded model catalog, REPLACED 2026-06 by a live fetch of
@@ -159,7 +160,7 @@ export default function OAProspectingModule() {
       </div>
 
       <ModuleSubTabs
-        tabs={[['general', 'General'], ['ai', 'AI Settings'], ['skill-inputs', 'Skill inputs'], ['calls', 'Call Settings'], ['twilio', 'Twilio'], ['linkedin-automation', 'LinkedIn'], ['sending-schedule', 'Sending Schedule'], ['escalation', 'Escalation'], ['enrichment', 'Enrichment'], ['playbook', 'Playbook']]}
+        tabs={[['general', 'General'], ['ai', 'AI Settings'], ['skill-inputs', 'Skill inputs'], ['calls', 'Call Settings'], ['twilio', 'Twilio'], ['linkedin-automation', 'LinkedIn'], ['sending-schedule', 'Sending Schedule'], ['signals', 'Signals'], ['escalation', 'Escalation'], ['enrichment', 'Enrichment'], ['playbook', 'Playbook']]}
         active={subTab}
         onChange={setSubTab}
 
@@ -221,6 +222,11 @@ export default function OAProspectingModule() {
       {/* ── Escalation sub-tab ── */}
       {subTab === 'escalation' && (
         <OAProspectingEscalation />
+      )}
+
+      {/* ── Signals sub-tab (Signal-Based Campaigns, P4) ── */}
+      {subTab === 'signals' && (
+        <OASignalCatalog />
       )}
 
       {/* ── Enrichment sub-tab ── */}

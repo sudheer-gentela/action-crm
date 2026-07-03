@@ -34,6 +34,8 @@ const {
 } = require('../config/prospectingConfigSchema');
 // Signal-Based Campaigns (P3): start-from-profile seed for new campaigns.
 const TargetProfileService = require('../services/TargetProfileService');
+// Signal-Based Campaigns (P5): re-evaluate a campaign's pool → queue.
+const SignalActionSurfacer = require('../services/SignalActionSurfacer');
 // Slice 3: per-prospect personalisation now goes through the dispatcher,
 // which walks all sequence steps and calls the right per-channel skill
 // (outreach-email / outreach-linkedin) with the right step_intent. Replaces
@@ -2302,6 +2304,26 @@ router.put('/:id/delete-lock', async (req, res) => {
   } catch (err) {
     console.error('campaigns PUT /:id/delete-lock', err);
     res.status(500).json({ error: { message: 'Failed to update delete lock' } });
+  }
+});
+
+// ── POST /:id/reeval-signals — re-evaluate this campaign's pool → queue ───────
+// Signal-Based Campaigns (P5). Sweeps every prospect in the campaign through
+// CampaignSignalEngine and reconciles their signal actions (upsert qualifiers,
+// resolve those that dropped out). Used by the "refresh queue" affordance and
+// after a bulk import (P6). Freshness is applied inside the engine, so this is
+// also a manual "age the stale signals now" trigger.
+router.post('/:id/reeval-signals', async (req, res) => {
+  try {
+    const campaign = await loadCampaign(req.orgId, req.params.id);
+    if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanMutate(req, res, campaign))) return;
+
+    const result = await SignalActionSurfacer.surfaceForCampaign({ orgId: req.orgId, campaign });
+    res.json({ result });
+  } catch (err) {
+    console.error('campaigns POST /:id/reeval-signals', err);
+    res.status(500).json({ error: { message: 'Failed to re-evaluate campaign signals' } });
   }
 });
 

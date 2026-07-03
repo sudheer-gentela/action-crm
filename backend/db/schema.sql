@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict VuAGJnVgo4XrSAnCOkIoThGQJS17ZNoOUIH8mf4N1AaDhz5E82QM4KOYu8T1Ed7
+\restrict f6F3rzPuzdNVEcOluWLnZHlz4epeqfixW6lC11DuA5ktHBwUX0qxlRv22eLF8nQ
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -3055,6 +3055,48 @@ ALTER SEQUENCE public.entity_custom_fields_id_seq OWNED BY public.entity_custom_
 
 
 --
+-- Name: entity_signals; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.entity_signals (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    entity_type character varying(20) NOT NULL,
+    entity_id integer NOT NULL,
+    key character varying(100) NOT NULL,
+    signal_def_id integer,
+    value jsonb,
+    source character varying(30) NOT NULL,
+    observed_at timestamp with time zone DEFAULT now() NOT NULL,
+    confidence character varying(10) DEFAULT 'medium'::character varying NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT entity_signals_confidence_check CHECK (((confidence)::text = ANY ((ARRAY['high'::character varying, 'medium'::character varying, 'low'::character varying])::text[]))),
+    CONSTRAINT entity_signals_entity_type_check CHECK (((entity_type)::text = ANY ((ARRAY['account'::character varying, 'prospect'::character varying])::text[])))
+);
+
+
+--
+-- Name: entity_signals_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.entity_signals_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: entity_signals_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.entity_signals_id_seq OWNED BY public.entity_signals.id;
+
+
+--
 -- Name: linkedin_connections; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3573,6 +3615,50 @@ CREATE SEQUENCE public.org_action_config_id_seq
 --
 
 ALTER SEQUENCE public.org_action_config_id_seq OWNED BY public.org_action_config.id;
+
+
+--
+-- Name: org_functions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_functions (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    key character varying(100) NOT NULL,
+    label character varying(255),
+    placeholders jsonb DEFAULT '{}'::jsonb NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE org_functions; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.org_functions IS 'Org deltas over the code-level system function taxonomy (FunctionTaxonomyService.SYSTEM_FUNCTIONS). Row key matching a system key = partial override; new key = org-added function. placeholders is a PARTIAL map {leader|head|team|hire|tool ΓåÆ {label, keywords[]}} merged over the default.';
+
+
+--
+-- Name: org_functions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.org_functions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: org_functions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.org_functions_id_seq OWNED BY public.org_functions.id;
 
 
 --
@@ -4690,7 +4776,9 @@ CREATE TABLE public.prospecting_campaigns (
     sender_account_ids integer[],
     tracking_opens boolean DEFAULT false NOT NULL,
     tracking_clicks boolean DEFAULT false NOT NULL,
+    activity_type character varying(20) DEFAULT 'outreach'::character varying NOT NULL,
     CONSTRAINT chk_daily_activation_cap CHECK (((daily_activation_cap IS NULL) OR (daily_activation_cap > 0))),
+    CONSTRAINT chk_pc_activity_type CHECK (((activity_type)::text = ANY ((ARRAY['outreach'::character varying, 'field_event'::character varying, 'digital'::character varying, 'discovery'::character varying])::text[]))),
     CONSTRAINT chk_pc_cadence_minutes CHECK (((cadence_minutes IS NULL) OR ((cadence_minutes >= 1) AND (cadence_minutes <= 240)))),
     CONSTRAINT chk_pc_pacing_mode CHECK (((pacing_mode IS NULL) OR (pacing_mode = ANY (ARRAY['cadence'::text, 'spread'::text])))),
     CONSTRAINT chk_pc_share_weight CHECK (((share_weight IS NULL) OR ((share_weight >= 0) AND (share_weight <= 100)))),
@@ -4707,6 +4795,13 @@ CREATE TABLE public.prospecting_campaigns (
 --
 
 COMMENT ON COLUMN public.prospecting_campaigns.tracking_clicks IS 'Per-campaign click-tracking toggle (Phase 7, default OFF). Written ONLY via PUT /api/tracking-domains/campaign/:id/toggles ΓÇö isolated from the config-override replace semantics.';
+
+
+--
+-- Name: COLUMN prospecting_campaigns.activity_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_campaigns.activity_type IS 'Campaign purpose (D16): outreach | field_event | digital | discovery. Metadata only ΓÇö signal-based targeting is activity-agnostic; this drives which Execution fields the staged New Campaign shows (playbook/sequence/schedule are outreach-only). Existing rows default to outreach.';
 
 
 --
@@ -5588,6 +5683,57 @@ ALTER SEQUENCE public.sf_activity_log_id_seq OWNED BY public.sf_activity_log.id;
 
 
 --
+-- Name: signal_defs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.signal_defs (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    key character varying(100) NOT NULL,
+    label character varying(255) NOT NULL,
+    description text,
+    capability character varying(20) DEFAULT 'prioritize'::character varying NOT NULL,
+    scope character varying(20) DEFAULT 'company'::character varying NOT NULL,
+    function_tags jsonb DEFAULT '[]'::jsonb NOT NULL,
+    predicate_type character varying(20) DEFAULT 'boolean'::character varying NOT NULL,
+    reliability character varying(10) DEFAULT 'low'::character varying NOT NULL,
+    source_kind character varying(20) DEFAULT 'rep_validate'::character varying NOT NULL,
+    ttl_days integer,
+    default_hook text,
+    created_by integer,
+    active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT signal_defs_capability_check CHECK (((capability)::text = ANY ((ARRAY['filter'::character varying, 'prioritize'::character varying, 'both'::character varying])::text[]))),
+    CONSTRAINT signal_defs_predicate_type_check CHECK (((predicate_type)::text = ANY ((ARRAY['set'::character varying, 'number'::character varying, 'recency'::character varying, 'geo'::character varying, 'boolean'::character varying])::text[]))),
+    CONSTRAINT signal_defs_reliability_check CHECK (((reliability)::text = ANY ((ARRAY['high'::character varying, 'medium'::character varying, 'low'::character varying])::text[]))),
+    CONSTRAINT signal_defs_scope_check CHECK (((scope)::text = ANY ((ARRAY['company'::character varying, 'target_role'::character varying])::text[]))),
+    CONSTRAINT signal_defs_source_kind_check CHECK (((source_kind)::text = ANY ((ARRAY['list'::character varying, 'enrich'::character varying, 'harvest'::character varying, 'dataset'::character varying, 'rep_validate'::character varying])::text[]))),
+    CONSTRAINT signal_defs_ttl_days_check CHECK (((ttl_days IS NULL) OR (ttl_days > 0)))
+);
+
+
+--
+-- Name: signal_defs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.signal_defs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: signal_defs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.signal_defs_id_seq OWNED BY public.signal_defs.id;
+
+
+--
 -- Name: skill_prompt_versions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5927,6 +6073,51 @@ CREATE SEQUENCE public.super_admins_id_seq
 --
 
 ALTER SEQUENCE public.super_admins_id_seq OWNED BY public.super_admins.id;
+
+
+--
+-- Name: target_profiles; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.target_profiles (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    name character varying(255) NOT NULL,
+    description text,
+    function_tags jsonb DEFAULT '[]'::jsonb NOT NULL,
+    criteria jsonb DEFAULT '{"filters": [], "prioritizers": []}'::jsonb NOT NULL,
+    created_by integer,
+    active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE target_profiles; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.target_profiles IS 'Reusable, function-tagged Target Criteria sets (D3/D4). A campaign starts from one: criteria are COPIED into the campaign targeting override at creation (template, not live link). Org-shared (D10); created_by ΓçÆ rep-added.';
+
+
+--
+-- Name: target_profiles_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.target_profiles_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: target_profiles_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.target_profiles_id_seq OWNED BY public.target_profiles.id;
 
 
 --
@@ -6880,6 +7071,13 @@ ALTER TABLE ONLY public.entity_custom_fields ALTER COLUMN id SET DEFAULT nextval
 
 
 --
+-- Name: entity_signals id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_signals ALTER COLUMN id SET DEFAULT nextval('public.entity_signals_id_seq'::regclass);
+
+
+--
 -- Name: linkedin_connections id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -6947,6 +7145,13 @@ ALTER TABLE ONLY public.org_action_config ALTER COLUMN id SET DEFAULT nextval('p
 --
 
 ALTER TABLE ONLY public.org_credentials ALTER COLUMN id SET DEFAULT nextval('public.ai_credentials_id_seq'::regclass);
+
+
+--
+-- Name: org_functions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_functions ALTER COLUMN id SET DEFAULT nextval('public.org_functions_id_seq'::regclass);
 
 
 --
@@ -7216,6 +7421,13 @@ ALTER TABLE ONLY public.sf_activity_log ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
+-- Name: signal_defs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.signal_defs ALTER COLUMN id SET DEFAULT nextval('public.signal_defs_id_seq'::regclass);
+
+
+--
 -- Name: skill_runs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -7262,6 +7474,13 @@ ALTER TABLE ONLY public.super_admin_audit_log ALTER COLUMN id SET DEFAULT nextva
 --
 
 ALTER TABLE ONLY public.super_admins ALTER COLUMN id SET DEFAULT nextval('public.super_admins_id_seq'::regclass);
+
+
+--
+-- Name: target_profiles id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.target_profiles ALTER COLUMN id SET DEFAULT nextval('public.target_profiles_id_seq'::regclass);
 
 
 --
@@ -7949,6 +8168,14 @@ ALTER TABLE ONLY public.entity_custom_fields
 
 
 --
+-- Name: entity_signals entity_signals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_signals
+    ADD CONSTRAINT entity_signals_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: linkedin_connections linkedin_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8050,6 +8277,14 @@ ALTER TABLE ONLY public.org_action_config
 
 ALTER TABLE ONLY public.org_action_config
     ADD CONSTRAINT org_action_config_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: org_functions org_functions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_functions
+    ADD CONSTRAINT org_functions_pkey PRIMARY KEY (id);
 
 
 --
@@ -8565,6 +8800,14 @@ ALTER TABLE ONLY public.sf_activity_log
 
 
 --
+-- Name: signal_defs signal_defs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.signal_defs
+    ADD CONSTRAINT signal_defs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: skill_prompt_versions skill_prompt_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8650,6 +8893,14 @@ ALTER TABLE ONLY public.super_admins
 
 ALTER TABLE ONLY public.super_admins
     ADD CONSTRAINT super_admins_user_id_key UNIQUE (user_id);
+
+
+--
+-- Name: target_profiles target_profiles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.target_profiles
+    ADD CONSTRAINT target_profiles_pkey PRIMARY KEY (id);
 
 
 --
@@ -10401,6 +10652,20 @@ CREATE INDEX idx_enrichment_credit_log_provider_time ON public.enrichment_credit
 
 
 --
+-- Name: idx_entity_signals_org_entity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entity_signals_org_entity ON public.entity_signals USING btree (org_id, entity_type, entity_id);
+
+
+--
+-- Name: idx_entity_signals_org_key_observed; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_entity_signals_org_key_observed ON public.entity_signals USING btree (org_id, key, observed_at);
+
+
+--
 -- Name: idx_handover_commitments_handover; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10671,6 +10936,13 @@ CREATE INDEX idx_org_action_config_org ON public.org_action_config USING btree (
 --
 
 CREATE INDEX idx_org_credentials_lookup ON public.org_credentials USING btree (org_id, purpose, provider) WHERE (status = 'active'::text);
+
+
+--
+-- Name: idx_org_functions_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_org_functions_org ON public.org_functions USING btree (org_id);
 
 
 --
@@ -11514,6 +11786,13 @@ CREATE INDEX idx_sf_activity_log_org ON public.sf_activity_log USING btree (org_
 
 
 --
+-- Name: idx_signal_defs_org_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_signal_defs_org_active ON public.signal_defs USING btree (org_id, active);
+
+
+--
 -- Name: idx_skill_prompt_versions_skill; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -11651,6 +11930,13 @@ CREATE INDEX idx_super_admins_active ON public.super_admins USING btree (user_id
 --
 
 CREATE INDEX idx_super_admins_user_id ON public.super_admins USING btree (user_id);
+
+
+--
+-- Name: idx_target_profiles_org_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_target_profiles_org_active ON public.target_profiles USING btree (org_id, active);
 
 
 --
@@ -12067,10 +12353,24 @@ CREATE UNIQUE INDEX uq_ede_ndr_recipient ON public.email_delivery_events USING b
 
 
 --
+-- Name: uq_entity_signals_org_entity_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_entity_signals_org_entity_key ON public.entity_signals USING btree (org_id, entity_type, entity_id, key);
+
+
+--
 -- Name: uq_linkedin_connections_identity; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX uq_linkedin_connections_identity ON public.linkedin_connections USING btree (org_id, owner_id, identity_key);
+
+
+--
+-- Name: uq_org_functions_org_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_org_functions_org_key ON public.org_functions USING btree (org_id, key);
 
 
 --
@@ -12127,6 +12427,20 @@ CREATE UNIQUE INDEX uq_prospect_phones_prospect_phone ON public.prospect_phones 
 --
 
 CREATE UNIQUE INDEX uq_seq_step_logs_pending ON public.sequence_step_logs USING btree (enrollment_id, sequence_step_id) WHERE ((status)::text = ANY (ARRAY['scheduled'::text, 'sending'::text]));
+
+
+--
+-- Name: uq_signal_defs_org_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_signal_defs_org_key ON public.signal_defs USING btree (org_id, key);
+
+
+--
+-- Name: uq_target_profiles_org_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_target_profiles_org_name ON public.target_profiles USING btree (org_id, lower((name)::text)) WHERE active;
 
 
 --
@@ -12207,6 +12521,20 @@ CREATE TRIGGER trg_ecf_updated_at BEFORE UPDATE ON public.entity_custom_fields F
 
 
 --
+-- Name: entity_signals trg_entity_signals_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_entity_signals_updated_at BEFORE UPDATE ON public.entity_signals FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: org_functions trg_org_functions_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_org_functions_updated_at BEFORE UPDATE ON public.org_functions FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
 -- Name: org_integrations trg_org_integrations_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -12242,10 +12570,24 @@ CREATE TRIGGER trg_prospecting_campaigns_updated_at BEFORE UPDATE ON public.pros
 
 
 --
+-- Name: signal_defs trg_signal_defs_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_signal_defs_updated_at BEFORE UPDATE ON public.signal_defs FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
 -- Name: deals trg_sync_deal_stage_type; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER trg_sync_deal_stage_type BEFORE INSERT OR UPDATE OF stage ON public.deals FOR EACH ROW EXECUTE FUNCTION public.fn_sync_deal_stage_type();
+
+
+--
+-- Name: target_profiles trg_target_profiles_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_target_profiles_updated_at BEFORE UPDATE ON public.target_profiles FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 
 --
@@ -13671,6 +14013,22 @@ ALTER TABLE ONLY public.entity_custom_fields
 
 
 --
+-- Name: entity_signals entity_signals_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_signals
+    ADD CONSTRAINT entity_signals_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: entity_signals entity_signals_signal_def_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.entity_signals
+    ADD CONSTRAINT entity_signals_signal_def_id_fkey FOREIGN KEY (signal_def_id) REFERENCES public.signal_defs(id) ON DELETE SET NULL;
+
+
+--
 -- Name: accounts fk_accounts_org; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -13996,6 +14354,22 @@ ALTER TABLE ONLY public.org_action_config
 
 ALTER TABLE ONLY public.org_action_config
     ADD CONSTRAINT org_action_config_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: org_functions org_functions_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_functions
+    ADD CONSTRAINT org_functions_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: org_functions org_functions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_functions
+    ADD CONSTRAINT org_functions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -14863,6 +15237,22 @@ ALTER TABLE ONLY public.sf_activity_log
 
 
 --
+-- Name: signal_defs signal_defs_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.signal_defs
+    ADD CONSTRAINT signal_defs_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: signal_defs signal_defs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.signal_defs
+    ADD CONSTRAINT signal_defs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: skill_runs skill_runs_prompt_hash_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -14964,6 +15354,22 @@ ALTER TABLE ONLY public.super_admins
 
 ALTER TABLE ONLY public.super_admins
     ADD CONSTRAINT super_admins_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: target_profiles target_profiles_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.target_profiles
+    ADD CONSTRAINT target_profiles_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: target_profiles target_profiles_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.target_profiles
+    ADD CONSTRAINT target_profiles_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -15559,5 +15965,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict VuAGJnVgo4XrSAnCOkIoThGQJS17ZNoOUIH8mf4N1AaDhz5E82QM4KOYu8T1Ed7
+\unrestrict f6F3rzPuzdNVEcOluWLnZHlz4epeqfixW6lC11DuA5ktHBwUX0qxlRv22eLF8nQ
 
