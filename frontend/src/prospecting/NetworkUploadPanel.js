@@ -25,6 +25,12 @@ function parseConnectionsCsv(text) {
     email: col('Email Address'), company: col('Company'), position: col('Position'),
     connectedOn: col('Connected On'),
   };
+  // The full data archive contains other files that also start with "First Name"
+  // (Profile, Recommendations, Receipts). "Connected On" is unique to Connections.csv,
+  // so require it — otherwise the user picked the wrong file.
+  if (ci.connectedOn === -1) {
+    throw new Error('This looks like a different file from your LinkedIn archive. Please upload Connections.csv — the one with a "Connected On" column.');
+  }
   const at = (r, i) => (i >= 0 ? (r[i] || '').trim() : '');
   // Keep every data row (including privacy-blanked ones) so the row count stays
   // stable across exports — the server skips unkeyable rows itself.

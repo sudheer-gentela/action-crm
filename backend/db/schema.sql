@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 1RK4oigAda0aZN3dHtdoogIXcRzvhe1MC2yPJtAhori8ezOb4oFBDfuIxLl3d2x
+\restrict VuAGJnVgo4XrSAnCOkIoThGQJS17ZNoOUIH8mf4N1AaDhz5E82QM4KOYu8T1Ed7
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -305,7 +305,9 @@ CREATE TABLE public.accounts (
     external_refs jsonb DEFAULT '{}'::jsonb NOT NULL,
     needs_domain_review boolean DEFAULT false NOT NULL,
     linkedin_company_url character varying(500),
-    CONSTRAINT chk_account_disposition CHECK (((account_disposition IS NULL) OR ((account_disposition)::text = ANY ((ARRAY['kill_account'::character varying, 'long_term_account'::character varying, 'unable_to_decide_account'::character varying])::text[]))))
+    account_type character varying(20) DEFAULT 'none'::character varying NOT NULL,
+    CONSTRAINT chk_account_disposition CHECK (((account_disposition IS NULL) OR ((account_disposition)::text = ANY ((ARRAY['kill_account'::character varying, 'long_term_account'::character varying, 'unable_to_decide_account'::character varying])::text[])))),
+    CONSTRAINT chk_account_type CHECK (((account_type)::text = ANY ((ARRAY['none'::character varying, 'target'::character varying, 'customer'::character varying, 'churned'::character varying])::text[])))
 );
 
 
@@ -328,6 +330,13 @@ COMMENT ON COLUMN public.accounts.research_updated_at IS 'When research_notes wa
 --
 
 COMMENT ON COLUMN public.accounts.research_meta IS 'Metadata about the AI generation: provider, model, prompt_id, prompt_source, generated_by_user_id, generated_at.';
+
+
+--
+-- Name: COLUMN accounts.account_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.accounts.account_type IS 'Authoritative account classification (D12): none|target|customer|churned. customerΓåÆchurn play, targetΓåÆinbound play. Backfilled from won-deal/client_id, RevOps-overridable.';
 
 
 --
@@ -1244,6 +1253,190 @@ CREATE SEQUENCE public.competitors_id_seq
 --
 
 ALTER SEQUENCE public.competitors_id_seq OWNED BY public.competitors.id;
+
+
+--
+-- Name: connection_job_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.connection_job_events (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    owner_id integer NOT NULL,
+    connection_id bigint NOT NULL,
+    event_type text NOT NULL,
+    from_company text,
+    from_title text,
+    to_company text,
+    to_title text,
+    detected_at timestamp with time zone DEFAULT now() NOT NULL,
+    detection_source text DEFAULT 'csv_diff'::text NOT NULL,
+    dedup_key text,
+    confidence text DEFAULT 'medium'::text NOT NULL,
+    is_into_target_account boolean,
+    is_from_customer_account boolean,
+    is_into_icp_role boolean,
+    play_id integer,
+    promoted_prospect_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    from_account_id integer,
+    to_account_id integer,
+    CONSTRAINT chk_connection_job_events_confidence CHECK ((confidence = ANY (ARRAY['low'::text, 'medium'::text, 'high'::text]))),
+    CONSTRAINT chk_connection_job_events_source CHECK ((detection_source = ANY (ARRAY['csv_diff'::text, 'experience_diff'::text, 'catchup'::text]))),
+    CONSTRAINT chk_connection_job_events_type CHECK ((event_type = ANY (ARRAY['role_change'::text, 'company_change'::text, 'disconnect_confirmed'::text, 'new_connection'::text])))
+);
+
+
+--
+-- Name: TABLE connection_job_events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.connection_job_events IS 'Detected job-change log. event_type fires immediately for changes; disconnect_confirmed only after the two-cycle gate (D9). Classification flags + play/prospect linkage are P1+.';
+
+
+--
+-- Name: COLUMN connection_job_events.detected_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.connection_job_events.detected_at IS 'When GoWarm detected the change (diff time), NOT when the person actually moved ΓÇö the export only shows current role.';
+
+
+--
+-- Name: COLUMN connection_job_events.dedup_key; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.connection_job_events.dedup_key IS 'connection_id|to_company|normalized_to_title. One move = one event across detection sources (csv_diff/experience_diff/catchup).';
+
+
+--
+-- Name: COLUMN connection_job_events.from_account_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.connection_job_events.from_account_id IS 'Account the person LEFT, when the prior company resolves to a known account (set by P1+ classifier). Powers the churn play.';
+
+
+--
+-- Name: COLUMN connection_job_events.to_account_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.connection_job_events.to_account_id IS 'Account the person JOINED, when the new company resolves to a known account (set by P1+ classifier). Powers the target/pursue play.';
+
+
+--
+-- Name: connection_job_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.connection_job_events_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: connection_job_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.connection_job_events_id_seq OWNED BY public.connection_job_events.id;
+
+
+--
+-- Name: connection_snapshot_rows; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.connection_snapshot_rows (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    snapshot_id bigint NOT NULL,
+    connection_id bigint,
+    raw_first_name text,
+    raw_last_name text,
+    raw_email text,
+    raw_company text,
+    raw_position text,
+    raw_connected_on text,
+    resolved boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE connection_snapshot_rows; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.connection_snapshot_rows IS 'Raw six-field export rows as parsed, retained for audit and re-diff. Resolved to a linkedin_connections row; unresolved rows are candidate new connections.';
+
+
+--
+-- Name: connection_snapshot_rows_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.connection_snapshot_rows_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: connection_snapshot_rows_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.connection_snapshot_rows_id_seq OWNED BY public.connection_snapshot_rows.id;
+
+
+--
+-- Name: connection_snapshots; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.connection_snapshots (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    owner_id integer NOT NULL,
+    seat_id bigint,
+    source text NOT NULL,
+    imported_at timestamp with time zone DEFAULT now() NOT NULL,
+    row_count integer,
+    parse_warnings jsonb DEFAULT '[]'::jsonb NOT NULL,
+    is_complete boolean DEFAULT true NOT NULL,
+    prior_snapshot_id bigint,
+    CONSTRAINT chk_connection_snapshots_source CHECK ((source = ANY (ARRAY['csv_export'::text, 'extension_harvest'::text, 'on_demand'::text])))
+);
+
+
+--
+-- Name: TABLE connection_snapshots; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.connection_snapshots IS 'One header per network import. is_complete=false suppresses disconnect firing (large-network export gaps, ┬ºE). prior_snapshot_id is what the diff ran against.';
+
+
+--
+-- Name: COLUMN connection_snapshots.is_complete; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.connection_snapshots.is_complete IS 'Set false when row_count drops anomalously below the running max for this seat. Disconnect events are suppressed on incomplete snapshots.';
+
+
+--
+-- Name: connection_snapshots_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.connection_snapshots_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: connection_snapshots_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.connection_snapshots_id_seq OWNED BY public.connection_snapshots.id;
 
 
 --
@@ -2862,6 +3055,82 @@ ALTER SEQUENCE public.entity_custom_fields_id_seq OWNED BY public.entity_custom_
 
 
 --
+-- Name: linkedin_connections; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.linkedin_connections (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    owner_id integer NOT NULL,
+    identity_key text NOT NULL,
+    member_urn text,
+    linkedin_url text,
+    full_name text NOT NULL,
+    first_name text,
+    last_name text,
+    company_name text,
+    company_domain text,
+    title text,
+    connected_on date,
+    status text DEFAULT 'active'::text NOT NULL,
+    first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_in_snapshot_at timestamp with time zone,
+    missing_since timestamp with time zone,
+    prospect_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_linkedin_connections_status CHECK ((status = ANY (ARRAY['active'::text, 'pending_disconnect'::text, 'disconnected'::text])))
+);
+
+
+--
+-- Name: TABLE linkedin_connections; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.linkedin_connections IS 'Full 1st-degree LinkedIn network roster per (org, owner). Separate from prospects; promote-on-signal. identity_key (app-computed, URNΓåÆslugΓåÆname+connected_on) is the per-(org,owner) uniqueness anchor.';
+
+
+--
+-- Name: COLUMN linkedin_connections.identity_key; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.linkedin_connections.identity_key IS 'App-computed identity: urn:<urn> | slug:<lowerslug> | nd:<lowername>|<connected_on>. Single uniqueness guarantee per (org_id, owner_id). Upgraded URN-first via controlled merge in P2, never a blind UPDATE.';
+
+
+--
+-- Name: COLUMN linkedin_connections.connected_on; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.linkedin_connections.connected_on IS 'LinkedIn "Connected On" date. Immutable across exports ΓÇö survives a company change, so it anchors move detection in the CSV bridge key.';
+
+
+--
+-- Name: COLUMN linkedin_connections.prospect_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.linkedin_connections.prospect_id IS 'Set (P1+) when a qualifying job-change promotes this connection into a prospect. NULL means network-only.';
+
+
+--
+-- Name: linkedin_connections_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.linkedin_connections_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: linkedin_connections_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.linkedin_connections_id_seq OWNED BY public.linkedin_connections.id;
+
+
+--
 -- Name: linkedin_profiles; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2887,7 +3156,8 @@ CREATE TABLE public.linkedin_profiles (
     last_activity_captured_at timestamp without time zone,
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted_at timestamp without time zone
+    deleted_at timestamp without time zone,
+    capture_meta jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 
 
@@ -3103,6 +3373,54 @@ ALTER SEQUENCE public.merged_contacts_archive_id_seq OWNED BY public.merged_cont
 
 
 --
+-- Name: notification_deliveries; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.notification_deliveries (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    user_id integer,
+    notification_id integer,
+    channel character varying(20) NOT NULL,
+    recipient text,
+    subject text,
+    status character varying(20) DEFAULT 'sent'::character varying NOT NULL,
+    reason text,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_notif_delivery_channel CHECK (((channel)::text = ANY ((ARRAY['in_app'::character varying, 'email'::character varying, 'slack'::character varying, 'teams'::character varying])::text[]))),
+    CONSTRAINT chk_notif_delivery_status CHECK (((status)::text = ANY ((ARRAY['sent'::character varying, 'failed'::character varying, 'skipped'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE notification_deliveries; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.notification_deliveries IS 'Audit log of notification delivery attempts: who/when/channel/status. One row per attempt; multiple channels per logical notification.';
+
+
+--
+-- Name: notification_deliveries_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.notification_deliveries_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: notification_deliveries_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.notification_deliveries_id_seq OWNED BY public.notification_deliveries.id;
+
+
+--
 -- Name: notifications; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3201,7 +3519,8 @@ CREATE TABLE public.org_action_config (
     enrichment jsonb DEFAULT '{}'::jsonb NOT NULL,
     campaign_settings jsonb DEFAULT '{}'::jsonb NOT NULL,
     prospecting_escalation jsonb DEFAULT '{}'::jsonb NOT NULL,
-    linkedin_automation jsonb DEFAULT '{}'::jsonb NOT NULL
+    linkedin_automation jsonb DEFAULT '{}'::jsonb NOT NULL,
+    network_jobchange jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 
 
@@ -3227,6 +3546,13 @@ COMMENT ON COLUMN public.org_action_config.ai_settings IS 'Shape: { master_enabl
 --
 
 COMMENT ON COLUMN public.org_action_config.linkedin_automation IS 'Optional LinkedIn connection-request auto-send. Org-admin master toggle + defensive guardrails (daily cap, jitter band, human-hours window, lease ttl). Empty = SYSTEM_DEFAULTS (disabled). Per-user opt-in lives in user_preferences.preferences->''linkedin_auto_connect''.';
+
+
+--
+-- Name: COLUMN org_action_config.network_jobchange; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.org_action_config.network_jobchange IS 'Org-level network job-change config (partial, merged over SYSTEM_DEFAULTS by NetworkJobChangeConfig): auto_promote_on_move (D2), notify_scope (D10), export_cadence (D5). Per-user overrides in user_preferences.preferences->''network_jobchange''.';
 
 
 --
@@ -3439,6 +3765,29 @@ CREATE SEQUENCE public.org_roles_id_seq
 --
 
 ALTER SEQUENCE public.org_roles_id_seq OWNED BY public.org_roles.id;
+
+
+--
+-- Name: org_slack_installs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_slack_installs (
+    org_id integer NOT NULL,
+    slack_team_id text NOT NULL,
+    slack_team_name text,
+    bot_user_id text,
+    bot_token_ciphertext bytea NOT NULL,
+    bot_token_iv bytea NOT NULL,
+    bot_token_tag bytea NOT NULL,
+    bot_token_last4 text,
+    authed_user_id integer,
+    scopes text,
+    default_channel_id text,
+    status text DEFAULT 'active'::text NOT NULL,
+    installed_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT org_slack_installs_status_chk CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text])))
+);
 
 
 --
@@ -4716,6 +5065,7 @@ CREATE TABLE public.prospects (
     linkedin_enrichment_meta jsonb DEFAULT '{}'::jsonb NOT NULL,
     campaign_id integer,
     member_urn text,
+    created_by integer NOT NULL,
     CONSTRAINT chk_prospect_revisit_disposition CHECK (((revisit_disposition IS NULL) OR (revisit_disposition = ANY (ARRAY['kill'::text, 'long_term'::text, 'unable_to_decide'::text]))))
 );
 
@@ -5887,7 +6237,10 @@ CREATE TABLE public.users (
     twilio_did_sid character varying(64),
     twilio_did_provisioned_at timestamp with time zone,
     timezone text,
-    calling_enabled boolean DEFAULT true NOT NULL
+    calling_enabled boolean DEFAULT true NOT NULL,
+    slack_user_id text,
+    slack_lookup_at timestamp with time zone,
+    slack_email text
 );
 
 
@@ -6275,6 +6628,27 @@ ALTER TABLE ONLY public.competitors ALTER COLUMN id SET DEFAULT nextval('public.
 
 
 --
+-- Name: connection_job_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.connection_job_events ALTER COLUMN id SET DEFAULT nextval('public.connection_job_events_id_seq'::regclass);
+
+
+--
+-- Name: connection_snapshot_rows id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.connection_snapshot_rows ALTER COLUMN id SET DEFAULT nextval('public.connection_snapshot_rows_id_seq'::regclass);
+
+
+--
+-- Name: connection_snapshots id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.connection_snapshots ALTER COLUMN id SET DEFAULT nextval('public.connection_snapshots_id_seq'::regclass);
+
+
+--
 -- Name: contact_activities id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -6506,6 +6880,13 @@ ALTER TABLE ONLY public.entity_custom_fields ALTER COLUMN id SET DEFAULT nextval
 
 
 --
+-- Name: linkedin_connections id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.linkedin_connections ALTER COLUMN id SET DEFAULT nextval('public.linkedin_connections_id_seq'::regclass);
+
+
+--
 -- Name: linkedin_profiles id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -6531,6 +6912,13 @@ ALTER TABLE ONLY public.meetings ALTER COLUMN id SET DEFAULT nextval('public.mee
 --
 
 ALTER TABLE ONLY public.merged_contacts_archive ALTER COLUMN id SET DEFAULT nextval('public.merged_contacts_archive_id_seq'::regclass);
+
+
+--
+-- Name: notification_deliveries id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notification_deliveries ALTER COLUMN id SET DEFAULT nextval('public.notification_deliveries_id_seq'::regclass);
 
 
 --
@@ -7209,6 +7597,30 @@ ALTER TABLE ONLY public.competitors
 
 
 --
+-- Name: connection_job_events connection_job_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.connection_job_events
+    ADD CONSTRAINT connection_job_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: connection_snapshot_rows connection_snapshot_rows_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.connection_snapshot_rows
+    ADD CONSTRAINT connection_snapshot_rows_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: connection_snapshots connection_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.connection_snapshots
+    ADD CONSTRAINT connection_snapshots_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: contact_activities contact_activities_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7537,6 +7949,14 @@ ALTER TABLE ONLY public.entity_custom_fields
 
 
 --
+-- Name: linkedin_connections linkedin_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.linkedin_connections
+    ADD CONSTRAINT linkedin_connections_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: linkedin_profiles linkedin_profiles_org_slug_unique; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -7582,6 +8002,14 @@ ALTER TABLE ONLY public.meetings
 
 ALTER TABLE ONLY public.merged_contacts_archive
     ADD CONSTRAINT merged_contacts_archive_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: notification_deliveries notification_deliveries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notification_deliveries
+    ADD CONSTRAINT notification_deliveries_pkey PRIMARY KEY (id);
 
 
 --
@@ -7702,6 +8130,14 @@ ALTER TABLE ONLY public.org_roles
 
 ALTER TABLE ONLY public.org_roles
     ADD CONSTRAINT org_roles_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: org_slack_installs org_slack_installs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_slack_installs
+    ADD CONSTRAINT org_slack_installs_pkey PRIMARY KEY (org_id);
 
 
 --
@@ -8443,6 +8879,13 @@ CREATE INDEX idx_account_teams_account ON public.account_teams USING btree (acco
 --
 
 CREATE INDEX idx_account_teams_dimension ON public.account_teams USING btree (org_id, dimension);
+
+
+--
+-- Name: idx_accounts_account_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_accounts_account_type ON public.accounts USING btree (org_id, account_type) WHERE (((account_type)::text <> 'none'::text) AND (deleted_at IS NULL));
 
 
 --
@@ -9223,6 +9666,55 @@ CREATE INDEX idx_competitors_user ON public.competitors USING btree (user_id);
 
 
 --
+-- Name: idx_connection_job_events_connection; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_connection_job_events_connection ON public.connection_job_events USING btree (org_id, connection_id);
+
+
+--
+-- Name: idx_connection_job_events_from_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_connection_job_events_from_account ON public.connection_job_events USING btree (org_id, from_account_id) WHERE (from_account_id IS NOT NULL);
+
+
+--
+-- Name: idx_connection_job_events_owner_time; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_connection_job_events_owner_time ON public.connection_job_events USING btree (org_id, owner_id, detected_at DESC);
+
+
+--
+-- Name: idx_connection_job_events_to_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_connection_job_events_to_account ON public.connection_job_events USING btree (org_id, to_account_id) WHERE (to_account_id IS NOT NULL);
+
+
+--
+-- Name: idx_connection_snapshot_rows_connection; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_connection_snapshot_rows_connection ON public.connection_snapshot_rows USING btree (org_id, connection_id) WHERE (connection_id IS NOT NULL);
+
+
+--
+-- Name: idx_connection_snapshot_rows_snapshot; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_connection_snapshot_rows_snapshot ON public.connection_snapshot_rows USING btree (snapshot_id);
+
+
+--
+-- Name: idx_connection_snapshots_owner_time; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_connection_snapshots_owner_time ON public.connection_snapshots USING btree (org_id, owner_id, imported_at DESC);
+
+
+--
 -- Name: idx_contact_activities_contact; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -9944,6 +10436,34 @@ CREATE INDEX idx_handover_stakeholders_handover ON public.sales_handover_stakeho
 
 
 --
+-- Name: idx_linkedin_connections_company_domain; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_linkedin_connections_company_domain ON public.linkedin_connections USING btree (org_id, lower(company_domain)) WHERE (company_domain IS NOT NULL);
+
+
+--
+-- Name: idx_linkedin_connections_member_urn; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_linkedin_connections_member_urn ON public.linkedin_connections USING btree (org_id, member_urn) WHERE (member_urn IS NOT NULL);
+
+
+--
+-- Name: idx_linkedin_connections_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_linkedin_connections_owner ON public.linkedin_connections USING btree (org_id, owner_id);
+
+
+--
+-- Name: idx_linkedin_connections_slug; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_linkedin_connections_slug ON public.linkedin_connections USING btree (org_id, lower("substring"(linkedin_url, '/in/([^/?#]+)'::text))) WHERE (linkedin_url IS NOT NULL);
+
+
+--
 -- Name: idx_linkedin_profiles_activity_gin; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10074,6 +10594,27 @@ CREATE INDEX idx_meetings_start_time ON public.meetings USING btree (start_time)
 --
 
 CREATE INDEX idx_meetings_user ON public.meetings USING btree (user_id);
+
+
+--
+-- Name: idx_notif_deliveries_notification; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notif_deliveries_notification ON public.notification_deliveries USING btree (notification_id);
+
+
+--
+-- Name: idx_notif_deliveries_org_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notif_deliveries_org_created ON public.notification_deliveries USING btree (org_id, created_at DESC);
+
+
+--
+-- Name: idx_notif_deliveries_user_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notif_deliveries_user_created ON public.notification_deliveries USING btree (user_id, created_at DESC);
 
 
 --
@@ -10655,6 +11196,13 @@ CREATE INDEX idx_prospects_company_domain ON public.prospects USING btree (org_i
 --
 
 CREATE INDEX idx_prospects_contact ON public.prospects USING btree (contact_id) WHERE (contact_id IS NOT NULL);
+
+
+--
+-- Name: idx_prospects_created_by; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_prospects_created_by ON public.prospects USING btree (org_id, created_by);
 
 
 --
@@ -11484,6 +12032,13 @@ CREATE UNIQUE INDEX uq_cfd_org_target_key ON public.custom_field_defs USING btre
 
 
 --
+-- Name: uq_connection_job_events_dedup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_connection_job_events_dedup ON public.connection_job_events USING btree (org_id, dedup_key) WHERE (dedup_key IS NOT NULL);
+
+
+--
 -- Name: uq_dhd_grain; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -11509,6 +12064,13 @@ CREATE UNIQUE INDEX uq_ecf_entity_field_durable ON public.entity_custom_fields U
 --
 
 CREATE UNIQUE INDEX uq_ede_ndr_recipient ON public.email_delivery_events USING btree (org_id, ndr_external_id, failed_recipient) WHERE (ndr_external_id IS NOT NULL);
+
+
+--
+-- Name: uq_linkedin_connections_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_linkedin_connections_identity ON public.linkedin_connections USING btree (org_id, owner_id, identity_key);
 
 
 --
@@ -13509,6 +14071,14 @@ ALTER TABLE ONLY public.org_invites
 
 
 --
+-- Name: org_slack_installs org_slack_installs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_slack_installs
+    ADD CONSTRAINT org_slack_installs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: org_twilio_accounts org_twilio_accounts_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -14989,5 +15559,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 1RK4oigAda0aZN3dHtdoogIXcRzvhe1MC2yPJtAhori8ezOb4oFBDfuIxLl3d2x
+\unrestrict VuAGJnVgo4XrSAnCOkIoThGQJS17ZNoOUIH8mf4N1AaDhz5E82QM4KOYu8T1Ed7
 
