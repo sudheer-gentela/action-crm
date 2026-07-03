@@ -22,6 +22,7 @@ import CampaignConfigScreen from './CampaignConfigScreen';
 import CampaignBriefWizard from './CampaignBriefWizard';
 import PacingTile from './PacingTile';
 import BatchActivateModal from './BatchActivateModal';
+import StagedCampaignModal from './StagedCampaignModal';
 import EntityIdHint from '../EntityIdHint';
 import SendingScheduleSettings from '../SendingScheduleSettings';
 // Slice 4: preview drafts + sender visibility
@@ -457,11 +458,18 @@ export default function CampaignsView() {
         </div>
       )}
 
-      {(showCreate || editing) && (
+      {showCreate && !editing && (
+        <StagedCampaignModal
+          onSaved={handleSaved}
+          onClose={() => setShowCreate(false)}
+        />
+      )}
+
+      {editing && (
         <CampaignFormModal
           campaign={editing}
           onSaved={handleSaved}
-          onClose={() => { setShowCreate(false); setEditing(null); }}
+          onClose={() => setEditing(null)}
         />
       )}
 
@@ -2555,6 +2563,7 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
     start_date:          campaign?.start_date ? campaign.start_date.slice(0, 10) : '',
     end_date:            campaign?.end_date ? campaign.end_date.slice(0, 10) : '',
     status:              campaign?.status || 'active',
+    activity_type:       campaign?.activity_type || 'outreach',
   });
   // Schedule override state. Each field is null when the campaign inherits
   // the org default, or a value when it overrides. The campaign object from
@@ -2667,6 +2676,7 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
       start_date:          form.start_date || null,
       end_date:            form.end_date || null,
       status:              form.status,
+      activity_type:       form.activity_type,
       // Schedule overrides — backend treats null as "inherit from org".
       // We always send all fields so PUT can clear overrides cleanly.
       // linkedinReleaseCap persists into the repurposed daily_activation_cap.
@@ -2729,6 +2739,12 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
               onChange={e => set('description', e.target.value)}
               rows={2}
             />
+            <select value={form.activity_type} onChange={e => set('activity_type', e.target.value)}>
+              <option value="outreach">Purpose: Outreach</option>
+              <option value="field_event">Purpose: Field event</option>
+              <option value="digital">Purpose: Digital</option>
+              <option value="discovery">Purpose: Discovery</option>
+            </select>
           </div>
 
           <div className="pv-form-section">

@@ -30,7 +30,10 @@ const {
   sanitizeOrgConfig,
   emptyCampaignConfig,
   emptyOrgConfig,
+  cleanTargeting,
 } = require('../config/prospectingConfigSchema');
+// Signal-Based Campaigns (P3): start-from-profile seed for new campaigns.
+const TargetProfileService = require('../services/TargetProfileService');
 // Slice 3: per-prospect personalisation now goes through the dispatcher,
 // which walks all sequence steps and calls the right per-channel skill
 // (outreach-email / outreach-linkedin) with the right step_intent. Replaces
@@ -61,6 +64,7 @@ router.use(orgContext);
 router.use(requireModule('prospecting'));
 
 const VALID_STATUS = ['active', 'paused', 'completed', 'archived'];
+const VALID_ACTIVITY_TYPES = ['outreach', 'field_event', 'digital', 'discovery'];
 
 // Stage order used for funnel display. Kept in sync with prospects.routes.js
 // VALID_STAGES; terminal stages (disqualified/nurture) are reported separately.
@@ -710,8 +714,15 @@ router.post('/', async (req, res) => {
     playbook_id, default_sequence_id,
     goal_qualified, start_date, end_date,
     status = 'active',
+    activity_type = 'outreach',
     owner_id: bodyOwnerId,
     share_weight: bodyShareWeight,
+    // Signal-Based Campaigns (P3): optional targeting seed. A campaign may
+    // start from a Target Profile (target_profile_id) and/or supply an inline
+    // targeting block; both are copied into prospecting_config_override.targeting
+    // (template semantics — no live link to the profile).
+    target_profile_id: bodyProfileId,
+    targeting: bodyTargeting,
   } = req.body;
 
   if (!name || !name.trim()) {
@@ -719,6 +730,9 @@ router.post('/', async (req, res) => {
   }
   if (!VALID_STATUS.includes(status)) {
     return res.status(400).json({ error: { message: `status must be one of: ${VALID_STATUS.join(', ')}` } });
+  }
+  if (!VALID_ACTIVITY_TYPES.includes(activity_type)) {
+    return res.status(400).json({ error: { message: `activity_type must be one of: ${VALID_ACTIVITY_TYPES.join(', ')}` } });
   }
 
   // ── owner_id resolution ──────────────────────────────────────────────────
@@ -795,21 +809,50 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: { message: senderSel.error } });
     }
 
+    // ── Targeting seed (P3, D4) ──────────────────────────────────────────────
+    // Start from a Target Profile if given, merge any inline targeting on top,
+    // then copy the result into prospecting_config_override.targeting. This is
+    // a COPY — no live link to the profile (template semantics), so later
+    // profile edits never mutate this campaign. Absent both ⇒ no override (the
+    // campaign starts with empty targeting; every qualifier becomes a Work-time
+    // confirmation, per the "blank source allowed" rule).
+    let configOverride = null;
+    if (bodyProfileId != null || bodyTargeting != null) {
+      let targeting;
+      if (bodyProfileId != null) {
+        const profile = await TargetProfileService.getProfile({ orgId: req.orgId, id: parseInt(bodyProfileId, 10) });
+        if (!profile) {
+          return res.status(400).json({ error: { message: `Target profile ${bodyProfileId} not found in this org` } });
+        }
+        targeting = await TargetProfileService.applyToCampaign({
+          orgId: req.orgId, profileId: profile.id, overrides: bodyTargeting || null,
+        });
+      } else {
+        targeting = cleanTargeting(bodyTargeting);
+      }
+      // Persist as a config override that carries ONLY the targeting section;
+      // the resolver treats absent sections as "inherit", so this doesn't
+      // clobber any org-level personalization config.
+      const base = sanitizeCampaignConfig(null);
+      configOverride = { ...base, targeting };
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO prospecting_campaigns
              (org_id, name, description, solution, playbook_id, default_sequence_id,
-              goal_qualified, start_date, end_date, status, owner_id, created_by,
+              goal_qualified, start_date, end_date, status, activity_type, owner_id, created_by,
               daily_activation_cap, send_window_start_hour, send_window_end_hour,
               send_window_days, send_window_timezone,
               send_window_start_minute, start_mode, pacing_mode, cadence_minutes,
-              share_weight, sender_account_ids)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+              share_weight, sender_account_ids, prospecting_config_override)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
        RETURNING *`,
       [
         req.orgId, name.trim(), description || null, solution || null,
         playbook_id || null, default_sequence_id || null,
         goal_qualified || null, start_date || null, end_date || null,
         status,
+        activity_type,      // D16 — metadata; drives which Execution fields show
         resolvedOwnerId,    // owner_id — may differ from creator when admin assigns
         req.user.userId,    // created_by — always the actual creator (audit)
         sched.values.daily_activation_cap,
@@ -823,6 +866,7 @@ router.post('/', async (req, res) => {
         sched.values.cadence_minutes,
         shareWeightVal,
         senderSel.ids,      // sender_account_ids — NULL = all senders
+        configOverride ? JSON.stringify(configOverride) : null,
       ]
     );
 
@@ -1905,8 +1949,13 @@ router.put('/:id', async (req, res) => {
       name, description, solution,
       playbook_id, default_sequence_id,
       goal_qualified, start_date, end_date, status,
+      activity_type,
       owner_id: bodyOwnerId,
     } = req.body;
+
+    if (activity_type !== undefined && !VALID_ACTIVITY_TYPES.includes(activity_type)) {
+      return res.status(400).json({ error: { message: `activity_type must be one of: ${VALID_ACTIVITY_TYPES.join(', ')}` } });
+    }
 
     // ── owner_id reassignment — admin-only ──────────────────────────────────
     // Non-admins who pass owner_id get a clear 403 rather than a silent strip,
@@ -2015,6 +2064,7 @@ router.put('/:id', async (req, res) => {
          start_date             = $9,
          end_date               = $10,
          status                 = COALESCE($11, status),
+         activity_type          = COALESCE($24, activity_type),
          daily_activation_cap   = $12,
          send_window_start_hour = $13,
          send_window_end_hour   = $14,
@@ -2055,6 +2105,7 @@ router.put('/:id', async (req, res) => {
         incomingCadence   ? sched.values.cadence_minutes         : existing.cadence_minutes,
         shareWeightUpd,
         senderIdsUpd,       // sender_account_ids — NULL = all senders
+        activity_type !== undefined ? activity_type : null,  // $24 — COALESCE keeps existing when null
       ]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Campaign not found' } });

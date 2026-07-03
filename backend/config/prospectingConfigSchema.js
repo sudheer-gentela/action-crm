@@ -115,6 +115,23 @@ const FIT_REQUIREMENTS            = ['must', 'should', 'exclude'];
 const EMAIL_CAP_INTENTS           = ['default', 'first_touch', 'follow_up', 'breakup'];
 const LINKEDIN_CAP_INTENTS        = ['default', 'connection_request', 'post_accept', 'nurture_dm'];
 
+// ── Target Criteria (Signal-Based Campaigns, P3, D3). A `targeting` block is
+// the per-campaign set of filters + prioritizers, each referencing a catalog
+// signal by key (signal_defs.key, validated at the registry, not here — the
+// sanitizer only enforces SHAPE, so a targeting block stays writable before
+// the referenced signal is catalogued, mirroring the entity_custom_fields
+// nullable-def precedent). ROLE is the rep-facing term (D9); Reliability/Source
+// stay hidden and are NOT part of this block.
+//   filter      → "must be true" (pool membership, = qualifier)
+//   prioritize  → "ranks higher / picks the angle" (= trigger)
+// A signal_def's capability caps its role, but that clamp lives in the
+// registry/resolver — here we only validate the role is a legal value.
+const TARGETING_ROLES             = ['filter', 'prioritize'];
+// Predicate operators the criteria builder can emit. Kept intentionally small
+// and value-shape-agnostic — evaluation happens in the P5 campaign layer, so
+// this list only gates what the sanitizer will store.
+const TARGETING_OPERATORS         = ['is_true', 'is_false', 'one_of', 'gte', 'lte', 'within_days', 'in_geo', 'exists'];
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -333,6 +350,99 @@ function cleanRecencyDays(v) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Target Criteria (P3). A `targeting` block = { filters:[], prioritizers:[] }.
+// Each criterion references a catalog signal by `signal_key` and carries a
+// predicate ({ operator, value }) + optional per-function scoping. SHAPE-only
+// validation (no signal-existence check — see the enum comment above). A
+// criterion with no signal_key or an illegal operator is dropped silently, in
+// the same spirit as cleanFitRule.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// snake_case-ish key discipline, matching signal_defs.key / field_key.
+const SIGNAL_KEY_RE = /^[a-z][a-z0-9_]{0,99}$/;
+
+function cleanPredicate(p) {
+  const pred = (p && typeof p === 'object' && !Array.isArray(p)) ? p : {};
+  const operator = typeof pred.operator === 'string' ? pred.operator.trim() : '';
+  if (!TARGETING_OPERATORS.includes(operator)) return null;
+  // `value` is operator-shaped and evaluated later (P5); we only pass it
+  // through when present, coercing nothing. is_true/is_false/exists carry no
+  // value; the rest may. Arrays are cleaned to non-empty strings for one_of/
+  // in_geo; scalars pass through as-is (number/string) for gte/lte/within_days.
+  const out = { operator };
+  if (['one_of', 'in_geo'].includes(operator)) {
+    const vals = cleanStringArray(pred.value);
+    if (vals.length === 0) return null;         // a set predicate needs members
+    out.value = vals;
+  } else if (['gte', 'lte', 'within_days'].includes(operator)) {
+    const n = Number(pred.value);
+    if (!Number.isFinite(n)) return null;
+    out.value = n;
+  }
+  // is_true / is_false / exists: no value field.
+  return out;
+}
+
+function cleanTargetingCriterion(c, role) {
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return null;
+  const signalKey = typeof c.signal_key === 'string' ? c.signal_key.trim() : '';
+  if (!SIGNAL_KEY_RE.test(signalKey)) return null;
+
+  const predicate = cleanPredicate(c.predicate);
+  if (!predicate) return null;
+
+  // Optional per-function scoping: a criterion may pin to a function key so a
+  // role-relative signal ({leader}/{team}) resolves consistently. Absent =
+  // inherit the campaign's function. Shape-only (function existence lives in
+  // FunctionTaxonomyService).
+  const functionKey = typeof c.function_key === 'string' && SIGNAL_KEY_RE.test(c.function_key.trim())
+    ? c.function_key.trim() : null;
+
+  const label = typeof c.label === 'string' && c.label.trim() ? c.label.trim() : signalKey;
+
+  const out = { signal_key: signalKey, role, predicate, label };
+  if (functionKey) out.function_key = functionKey;
+  return out;
+}
+
+function cleanTargeting(input) {
+  const t = (input && typeof input === 'object' && !Array.isArray(input)) ? input : {};
+  // Accept either the split shape ({filters, prioritizers}) or a flat
+  // `criteria[]` with per-item role; normalize to the split shape.
+  let filters = [];
+  let prioritizers = [];
+
+  if (Array.isArray(t.criteria)) {
+    for (const c of t.criteria) {
+      const role = (c && TARGETING_ROLES.includes(c.role)) ? c.role : null;
+      if (!role) continue;
+      const cleaned = cleanTargetingCriterion(c, role);
+      if (cleaned) (role === 'filter' ? filters : prioritizers).push(cleaned);
+    }
+  } else {
+    filters      = (Array.isArray(t.filters)      ? t.filters      : []).map(c => cleanTargetingCriterion(c, 'filter')).filter(Boolean);
+    prioritizers = (Array.isArray(t.prioritizers) ? t.prioritizers : []).map(c => cleanTargetingCriterion(c, 'prioritize')).filter(Boolean);
+  }
+
+  // De-dupe by (signal_key, function_key) within each role — last write wins,
+  // preserving order of first appearance.
+  const dedupe = (arr) => {
+    const seen = new Map();
+    for (const c of arr) seen.set(`${c.signal_key}::${c.function_key || ''}`, c);
+    return [...seen.values()];
+  };
+
+  // The campaign's primary target function (which function the role-relative
+  // signals resolve against by default). Optional; shape-only.
+  const functionKey = typeof t.function_key === 'string' && SIGNAL_KEY_RE.test(t.function_key.trim())
+    ? t.function_key.trim() : null;
+
+  const out = { filters: dedupe(filters), prioritizers: dedupe(prioritizers) };
+  if (functionKey) out.function_key = functionKey;
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // sanitizeOrgConfig — takes arbitrary input, returns a clean org config object.
 // Always returns the full shape (empty arrays/objects rather than missing
 // keys) so buildOrgContext never has to null-guard.
@@ -361,6 +471,9 @@ function sanitizeOrgConfig(input) {
     title_classifier:  cleanTitleClassifier(c.title_classifier),
     outreach_caps:     cleanOutreachCaps(c.outreach_caps),
     hook_recency_days: cleanRecencyDays(c.hook_recency_days),
+    // Target Criteria (P3). Empty {filters:[],prioritizers:[]} = no targeting.
+    // Meaningful at the campaign layer; harmless as an org default.
+    targeting:         cleanTargeting(c.targeting),
   };
 }
 
@@ -437,4 +550,9 @@ module.exports = {
   cleanCaseStudy,
   cleanCaseStudyArray,
   cleanPitch,
+  // Target Criteria (P3) — reused by TargetProfileService + campaign routes.
+  cleanTargeting,
+  cleanTargetingCriterion,
+  TARGETING_ROLES,
+  TARGETING_OPERATORS,
 };
