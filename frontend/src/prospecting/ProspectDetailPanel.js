@@ -11,13 +11,14 @@ import InfoRow from './InfoRow';
 import LogCallModal from './LogCallModal';
 import OutreachComposer from '../OutreachComposer';
 import OutreachSkillPanel from './OutreachSkillPanel';
+import SignalWorkPanel from './SignalWorkPanel';
 import StrapPanel from '../StrapPanel';
 import SequenceEnrollModal from '../SequenceEnrollModal';
 import TwilioCallModal from '../TwilioCallModal';
 import ProspectPhonesPanel from './ProspectPhonesPanel';
 import CustomFieldsPanel from '../customfields/CustomFieldsPanel';
 
-function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
+function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpenProspect }) {
   const { allStages, prospectStages } = useStages();
   const [prospect, setProspect] = useState(null);
   // Prospect ownership/visibility feature: `restricted` is set when the org's
@@ -983,15 +984,18 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
           </div>
         )}
 
-        {/* Tabs */}
+        {/* Tabs — 'work' (Signal-Based Campaigns P7) only shows when the
+            prospect is in a campaign: the Work panel is the campaign-queue
+            experience (priority · why-now · validations · draft · outcome). */}
         <div className="pv-detail-tabs">
-          {['overview', 'linkedin', 'calls', 'intel', 'actions', 'activity'].map(t => (
+          {['overview', ...(prospect?.campaign_id ? ['work'] : []), 'linkedin', 'calls', 'intel', 'actions', 'activity'].map(t => (
             <button
               key={t}
               className={`pv-detail-tab ${activeTab === t ? 'active' : ''}`}
               onClick={() => handleTabChange(t)}
             >
               {t === 'overview' ? 'Overview'
+                : t === 'work' ? '⚡ Work'
                 : t === 'linkedin' ? (
                   <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <span style={{ background: '#0077B5', color: '#fff', borderRadius: 2, padding: '0px 4px', fontSize: 9, fontWeight: 700 }}>in</span>
@@ -1122,6 +1126,39 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate }) {
                   campaignId={prospect.campaign_id || null}
                 />
               </div>
+            </div>
+          )}
+
+          {activeTab === 'work' && (
+            <div className="pv-work-tab">
+              {/* Signal-Based Campaigns P7 — the Work panel. Validations write
+                  rep signals + re-eval live; the draft is signal-aware; the
+                  outcome buttons ride the existing prospecting-actions
+                  endpoints. onUseDraft reuses the same composer bridge as
+                  OutreachSkillPanel. */}
+              <SignalWorkPanel
+                prospectId={prospectId}
+                onUseDraft={({ messageSubject, messageBody }) =>
+                  openOutreach('email', { channel: 'email', messageSubject, messageBody })
+                }
+                onOpenProspect={(newId) => {
+                  if (onOpenProspect) onOpenProspect(newId, 'work');
+                }}
+                onUpdate={async () => {
+                  // Same refresh the action handlers use: re-pull the drawer's
+                  // prospect + actions + activities, then bubble to the parent
+                  // (board counts, queue).
+                  try {
+                    const res = await apiFetch(`/prospects/${prospectId}`);
+                    if (!res.restricted) {
+                      setProspect(res.prospect);
+                      setActions(res.actions || []);
+                      setActivities(res.activities || []);
+                    }
+                  } catch (_) { /* non-fatal */ }
+                  if (onUpdate) onUpdate();
+                }}
+              />
             </div>
           )}
 

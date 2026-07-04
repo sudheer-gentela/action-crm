@@ -28,6 +28,7 @@ import DiscardProspectModal from './prospecting/DiscardProspectModal';
 import SequencesView        from './prospecting/SequencesView';
 import CampaignsView        from './prospecting/CampaignsView';
 import ResearchQueueView    from './prospecting/ResearchQueueView';
+import WorkQueueView        from './prospecting/WorkQueueView';
 import NetworkUploadPanel   from './prospecting/NetworkUploadPanel';
 import CallsInboxView       from './prospecting/CallsInboxView';
 import ProspectingInbox     from './prospecting/ProspectingInbox';
@@ -45,13 +46,13 @@ import './OutreachComposer.css';
 // (a campaign id, #/prospecting/campaigns/14) is owned by CampaignsView.
 // Each owner reads its own segment on mount and rewrites the hash only when
 // ITS segment changes — never touching segments it doesn't own.
-const PV_HASH_MODES = ['pipeline', 'list', 'account', 'campaigns', 'research', 'inbox', 'sequences', 'calls', 'network'];
+const PV_HASH_MODES = ['pipeline', 'list', 'account', 'campaigns', 'work', 'research', 'inbox', 'sequences', 'calls', 'network'];
 
 // Sub-views where the GLOBAL prospect-pool strips (stage pills + LinkedIn
 // funnel banner) are hidden — these views are about a different entity
 // (campaigns, sequences, calls, research queue) and render their own
 // aggregates instead.
-const GLOBAL_STRIPS_HIDDEN_MODES = ['campaigns', 'sequences', 'calls', 'research', 'inbox'];
+const GLOBAL_STRIPS_HIDDEN_MODES = ['campaigns', 'sequences', 'calls', 'research', 'inbox', 'work'];
 
 function hashSegment(n) {
   const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/');
@@ -862,6 +863,7 @@ export default function ProspectingView() {
               { key: 'list',      icon: '≡',  label: 'List' },
               { key: 'account',   icon: '🏢', label: 'Accounts' },
               { key: 'campaigns', icon: '🚀', label: 'Campaigns' },
+              { key: 'work',      icon: '⚡', label: 'Work Queue' },
               { key: 'research',  icon: '🔬', label: 'Research Queue' },
               { key: 'inbox',     icon: '📥', label: 'Inbox' },
               { key: 'sequences', icon: '📨', label: 'Sequences' },
@@ -1205,6 +1207,18 @@ export default function ProspectingView() {
         <SequencesView prospects={prospects} search={debouncedSearch} />
       ) : viewMode === 'campaigns' ? (
         <CampaignsView scope={scope} onScopeChange={setScope} />
+      ) : viewMode === 'work' ? (
+        // Signal-Based Campaigns P7: the prioritized signal-action queue.
+        // Clicking a row opens the drawer at the Work tab; the drawer
+        // self-fetches by { id }, so an out-of-list prospect still opens.
+        <WorkQueueView
+          scope={scope}
+          search={debouncedSearch}
+          onSelectProspect={(prospectId) => {
+            const p = prospects.find(x => x.id === prospectId);
+            setSelectedProspect(p ? { ...p, _openTab: 'work' } : { id: prospectId, _openTab: 'work' });
+          }}
+        />
       ) : viewMode === 'research' ? (
         <ResearchQueueView />
       ) : viewMode === 'calls' ? (
@@ -1440,6 +1454,7 @@ export default function ProspectingView() {
           initialTab={selectedProspect._openTab || 'overview'}
           onClose={() => setSelectedProspect(null)}
           onUpdate={fetchProspects}
+          onOpenProspect={(id, tab) => setSelectedProspect({ id, _openTab: tab || 'work' })}
         />
       )}
 

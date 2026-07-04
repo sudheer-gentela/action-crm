@@ -666,6 +666,7 @@ async function runSkill({
 // ─────────────────────────────────────────────────────────────────────────────
 async function runProspectSkill({
   orgId, userId, prospectId, skillName, hookPreferences, stepIntent,
+  signalContext,
   dryRun = false, forceGenerate = false, explain = false,
 }) {
   if (!orgId || !userId || !prospectId) {
@@ -703,6 +704,20 @@ async function runProspectSkill({
   if (stepIntent && typeof stepIntent === 'string') {
     contextPayload.org_context = contextPayload.org_context || {};
     contextPayload.org_context.step_intent = stepIntent;
+  }
+
+  // P7 (Work stage): the layered-draft contract — "angle ← top active
+  // trigger's hook (or campaign angle) · specifics ← research + on-page
+  // validations" (design §7). The Work-panel draft route passes
+  // signalContext = { why_now, active_trigger, campaign, validated_facts[],
+  // outstanding_confirmations[] }; it rides org_context (the whole payload is
+  // serialized into the model's user message), so the skill sees the why-now
+  // hook and the rep-validated facts as first-class context. Additive: SKILL.md
+  // prompts are untouched (prompt-cache hashes stay stable) and absent
+  // signalContext the payload is byte-identical to pre-P7.
+  if (signalContext && typeof signalContext === 'object') {
+    contextPayload.org_context = contextPayload.org_context || {};
+    contextPayload.org_context.signal_context = signalContext;
   }
 
   // ── Fit gate (Pieces 1–3) ──────────────────────────────────────────────

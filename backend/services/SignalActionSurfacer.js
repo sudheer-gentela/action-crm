@@ -35,8 +35,28 @@
 
 const { pool } = require('../config/database');
 const CampaignSignalEngine = require('./CampaignSignalEngine');
+const SignalService = require('./SignalService');
 
 const SOURCE = 'signal';
+
+// P7 (Work stage, mutable contact set): the reserved prospect-level rep signal
+// written by WorkStageService.markNotInRole. When known-true, this prospect is
+// suppressed — its signal action is resolved and never re-surfaced by the
+// nightly sweep or on-capture re-evals, until a rep clears it. Kept here (not
+// in the engine) because it's a queue-membership fact, not a targeting
+// criterion. Must match WorkStageService.NOT_IN_ROLE_KEY (not imported to
+// avoid a dependency cycle: WorkStageService requires this module).
+const NOT_IN_ROLE_KEY = 'contact_not_in_role';
+
+// The verdict shape returned for a suppressed prospect — same keys as a real
+// engine verdict so metadata consumers never branch.
+function suppressedVerdict(prospectId) {
+  return {
+    prospectId, qualifies: false, suppressed: 'not_in_role',
+    priority: 'low', priorityScore: 0, whyNow: null, activeTrigger: null,
+    confirmations: [], filterResults: [], prioritizerResults: [],
+  };
+}
 
 const DUE_OFFSET_BY_PRIORITY = { high: 1, medium: 3, low: 7 };
 
@@ -78,6 +98,18 @@ function buildDescription(verdict) {
 async function surfaceForProspect({ orgId, campaign, prospect, systemUserId, now, client }) {
   const db = client || pool;
   const sourceRule = sourceRuleFor(campaign.id);
+
+  // ── P7: not-in-role suppression (checked BEFORE the engine — cheaper, and
+  //    a suppressed contact must resolve regardless of how well they qualify).
+  //    Rep-written + no TTL ⇒ durable until a rep clears it; the P1
+  //    reconciliation rule guarantees no vendor write can flip it back.
+  const notInRole = await SignalService.readSignal({
+    orgId, entityType: 'prospect', entityId: prospect.id, key: NOT_IN_ROLE_KEY, client,
+  });
+  if (notInRole && notInRole.state === 'known' && notInRole.value === true) {
+    const resolved = await _resolve(db, prospect.id, orgId, sourceRule);
+    return { upserted: 0, resolved, verdict: suppressedVerdict(prospect.id) };
+  }
 
   const verdict = await CampaignSignalEngine.evaluateProspect({ orgId, campaign, prospect, now, client });
 
@@ -129,8 +161,28 @@ async function surfaceForProspect({ orgId, campaign, prospect, systemUserId, now
        due_date     = EXCLUDED.due_date,
        metadata     = EXCLUDED.metadata,
        user_id      = EXCLUDED.user_id,
+       -- P7: a row WE auto-resolved re-opens when the prospect re-qualifies
+       -- (rep disqualifies via an on-page validation, then corrects it; or
+       -- clears not-in-role). Rows a REP completed (an outcome was recorded)
+       -- stay completed, and snoozed / in_progress rows stay put — only the
+       -- auto_completed+completed combination is ours to reverse.
+       status = CASE
+         WHEN prospecting_actions.status = 'completed' AND prospecting_actions.auto_completed
+           THEN 'pending'
+         ELSE prospecting_actions.status
+       END,
+       auto_completed = CASE
+         WHEN prospecting_actions.status = 'completed' AND prospecting_actions.auto_completed
+           THEN false
+         ELSE prospecting_actions.auto_completed
+       END,
+       completed_at = CASE
+         WHEN prospecting_actions.status = 'completed' AND prospecting_actions.auto_completed
+           THEN NULL
+         ELSE prospecting_actions.completed_at
+       END,
        updated_at   = NOW()
-     -- Preserve created_at + status so a snoozed / in_progress row stays put.
+     -- created_at preserved; status preserved EXCEPT the auto-resolved case above.
      RETURNING id, (xmax = 0) AS inserted`,
     [
       orgId, assignee, prospect.id,
