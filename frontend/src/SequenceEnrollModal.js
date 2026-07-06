@@ -493,7 +493,9 @@ export default function SequenceEnrollModal({ prospects, preSequenceId, onEnroll
                           {CHANNEL_ICONS[step.channel] || '📋'} {step.channel}
                         </span>
                         <span style={{ fontSize: 11, color: '#9ca3af' }}>
-                          {step.delay_days === 0 ? (idx === 0 ? 'Day 0' : 'same day') : `+${step.delay_days} days`}
+                          {(step.delay_days === 0 && !(step.delay_hours > 0))
+                            ? (idx === 0 ? 'Day 0' : 'same day')
+                            : `+${step.delay_days > 0 ? `${step.delay_days} day${step.delay_days === 1 ? '' : 's'}` : ''}${step.delay_hours > 0 ? ` ${step.delay_hours}h` : ''}`}
                         </span>
                         {draft && (
                           <span style={{

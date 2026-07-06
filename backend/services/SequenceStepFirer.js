@@ -62,10 +62,12 @@ function renderTemplate(template, prospect, account) {
   return template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
 }
 
-function calcDueDate(delayDays) {
-  const d = new Date();
-  d.setDate(d.getDate() + (parseInt(delayDays) || 0));
-  return d;
+// Hour-aware (WS3). NOTE: currently unreferenced inside the firer — advances
+// go through SendingSchedule.nextStepDue — kept aligned so any future caller
+// can't reintroduce day-only math.
+function calcDueDate(delayDays, delayHours = 0) {
+  const ms = ((parseInt(delayDays) || 0) * 24 + (parseInt(delayHours) || 0)) * 3600000;
+  return new Date(Date.now() + ms);
 }
 
 // ── Sender fetcher ────────────────────────────────────────────────────────────
@@ -658,7 +660,10 @@ const SequenceStepFirer = {
         `SELECT se.*, s.id AS seq_id, s.name AS seq_name,
                 s.require_approval AS seq_require_approval,
                 s.ai_enabled AS seq_ai_enabled,
+                s.stop_on_connection_accept AS seq_stop_on_accept,
                 p.campaign_id AS prospect_campaign_id,
+                p.channel_data->'linkedin'->>'connection_status' AS li_connection_status,
+                p.channel_data->'linkedin'->>'connected_at'      AS li_connected_at,
                 ss.channel AS current_step_channel
            FROM sequence_enrollments se
            JOIN sequences  s ON s.id = se.sequence_id
@@ -774,6 +779,80 @@ const SequenceStepFirer = {
             );
             stopped++;
             continue;
+          }
+
+          // ── Auto-stop: LinkedIn connection accepted since enrollment (WS2) ─
+          // Opt-in per sequence (sequences.stop_on_connection_accept). Mirrors
+          // the reply auto-stop above with a distinct terminal status so the
+          // funnel can tell "exited because connected" apart from "stopped".
+          //
+          // Post-enrollment guard: connected_at must be AFTER enrolled_at, so
+          // enrolling an already-connected prospect into a stop-on-accept
+          // sequence (re-engagement) does NOT insta-stop. connected_at is set
+          // by every acceptance writer (extension sync, manual linkedin-event,
+          // auto-send confirm — all via applyConnectionEvent semantics) and is
+          // never overwritten, so it's the reliable anchor. Status alone
+          // (connection_accepted or later) without a parseable post-enrollment
+          // connected_at intentionally does NOT stop — keep-running is the
+          // safe default.
+          //
+          // Detection remains pull-based (extension "Check & update accepted"),
+          // so an acceptance synced after a step already fired stops the
+          // enrollment at the NEXT tick, not retroactively.
+          if (enrollment.seq_stop_on_accept === true) {
+            const LI_ORDER = [
+              'connection_request_sent', 'connection_accepted',
+              'message_sent', 'reply_received', 'meeting_booked',
+            ];
+            const statusIdx   = LI_ORDER.indexOf(enrollment.li_connection_status || '');
+            const acceptedIdx = LI_ORDER.indexOf('connection_accepted');
+            const connectedAt = enrollment.li_connected_at
+              ? new Date(enrollment.li_connected_at) : null;
+            const acceptedAfterEnroll =
+              statusIdx >= acceptedIdx &&
+              connectedAt instanceof Date && !isNaN(connectedAt.getTime()) &&
+              connectedAt.getTime() > new Date(enrollment.enrolled_at).getTime();
+
+            if (acceptedAfterEnroll) {
+              await client.query(
+                `UPDATE sequence_enrollments
+                    SET status='connected', stopped_at=NOW(),
+                        stop_reason='connection_accepted'
+                  WHERE id=$1`,
+                [enrollment.id]
+              );
+              // Cancel pending rows (scheduled email + leased LinkedIn alike).
+              // A leased LinkedIn row flipped to 'skipped' degrades cleanly:
+              // confirmSent() requires status='sending' and returns
+              // NOT_CLAIMABLE, same race the reply-stop already tolerates.
+              await client.query(
+                `UPDATE sequence_step_logs SET status='skipped'
+                  WHERE enrollment_id=$1 AND status IN ('scheduled','sending')`,
+                [enrollment.id]
+              );
+              // Visible trail on the prospect timeline — this stop is the
+              // feature's whole point, unlike the silent reply-stop.
+              try {
+                await client.query(
+                  `INSERT INTO prospecting_activities
+                               (org_id, prospect_id, user_id, activity_type, description, metadata)
+                        VALUES ($1, $2, $3, 'sequence_stopped', $4, $5)`,
+                  [
+                    enrollment.org_id, enrollment.prospect_id, enrollment.enrolled_by,
+                    `Sequence stopped — LinkedIn connection accepted (${enrollment.seq_name})`,
+                    JSON.stringify({
+                      enrollmentId: enrollment.id, sequenceId: enrollment.seq_id,
+                      stopReason: 'connection_accepted',
+                      connectedAt: connectedAt.toISOString(),
+                    }),
+                  ]
+                );
+              } catch (actErr) {
+                console.warn(`SequenceStepFirer: connection-accepted stop activity log failed for enrollment ${enrollment.id}:`, actErr.message);
+              }
+              stopped++;
+              continue;
+            }
           }
 
           // ── Get the current step ──────────────────────────────────────────

@@ -1794,9 +1794,10 @@ function SequenceStepsModal({ sequenceId, sequenceName, onClose }) {
             const meta = CHANNEL_META[s.channel] || { icon: '•', label: s.channel };
             const hasTemplate = !!(s.subject_template || s.body_template || s.task_note);
             const expanded = openStep === s.id;
+            const hrsSuffix = (s.delay_hours > 0) ? ` ${s.delay_hours}h` : '';
             const delayLabel = i === 0
-              ? (s.delay_days > 0 ? `day ${s.delay_days}` : 'on enrollment')
-              : `+${s.delay_days} day${s.delay_days === 1 ? '' : 's'}`;
+              ? ((s.delay_days > 0 || s.delay_hours > 0) ? `day ${s.delay_days}${hrsSuffix}` : 'on enrollment')
+              : `+${s.delay_days} day${s.delay_days === 1 ? '' : 's'}${hrsSuffix}`;
             return (
               <div key={s.id} style={{ padding: '10px 16px', borderBottom: '1px solid #f8fafc' }}>
                 <div

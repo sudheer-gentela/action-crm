@@ -67,10 +67,10 @@ const STAGE_TRANSITIONS = {
 // enroll logic in sequences.routes.js POST /enroll.
 
 // Next-step-due calc (local mirror of sequences.routes.js calcDueDate).
-function calcDueDate(delayDays) {
-  const d = new Date();
-  d.setDate(d.getDate() + (parseInt(delayDays) || 0));
-  return d;
+// Hour-aware (WS3): effective delay = delay_days*24 + delay_hours hours.
+function calcDueDate(delayDays, delayHours = 0) {
+  const ms = ((parseInt(delayDays) || 0) * 24 + (parseInt(delayHours) || 0)) * 3600000;
+  return new Date(Date.now() + ms);
 }
 
 // Assigns the prospect to a campaign (if campaignId given) and enrolls it in a
@@ -111,10 +111,13 @@ async function assignCampaignAndEnroll({ orgId, userId, prospectId, campaignId, 
         enrollmentError = 'Sequence not found or not active';
       } else {
         const firstStep = await db.query(
-          `SELECT delay_days FROM sequence_steps WHERE sequence_id = $1 ORDER BY step_order LIMIT 1`,
+          `SELECT delay_days, delay_hours FROM sequence_steps WHERE sequence_id = $1 ORDER BY step_order LIMIT 1`,
           [parseInt(sequenceId, 10)]
         );
-        const nextDue = calcDueDate(firstStep.rows[0]?.delay_days ?? 0);
+        const nextDue = calcDueDate(
+          firstStep.rows[0]?.delay_days  ?? 0,
+          firstStep.rows[0]?.delay_hours ?? 0
+        );
 
         const er = await db.query(
           `INSERT INTO sequence_enrollments

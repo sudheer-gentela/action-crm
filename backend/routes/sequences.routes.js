@@ -61,11 +61,55 @@ router.use(authenticateToken, orgContext);
 // HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Calculate next_step_due based on delay_days from now (used by enroll) */
-function calcDueDate(delayDays) {
-  const d = new Date();
-  d.setDate(d.getDate() + (parseInt(delayDays) || 0));
-  return d;
+/** Calculate next_step_due based on delay_days + delay_hours from now (used by enroll) */
+function calcDueDate(delayDays, delayHours = 0) {
+  const ms = ((parseInt(delayDays) || 0) * 24 + (parseInt(delayHours) || 0)) * 3600000;
+  return new Date(Date.now() + ms);
+}
+
+/**
+ * Resolve which LinkedIn funnel event a manually-actioned LinkedIn step
+ * represents: 'connection_request_sent' or 'message_sent'.
+ *
+ * Replaces the old `step_order === 1` heuristic, which mislabeled a CR at
+ * step 2 (e.g. email-first sequences) as a message. Mirrors
+ * PersonalizationDispatcher.inferIntent:
+ *   1. Explicit sequence_steps.step_intent wins.
+ *   2. Already connected (channel_data.linkedin at/past connection_accepted)
+ *      → message_sent (re-engagement DM, never a duplicate CR).
+ *   3. Otherwise: first LinkedIn-channel step in the sequence → CR;
+ *      any later LinkedIn step → message_sent.
+ * Best-effort: any lookup failure falls back to message_sent (the
+ * non-inflating choice for "requests sent" funnel counts).
+ */
+async function resolveLinkedInLogStatus(client, {
+  sequenceId, stepId, stepIntent, connectionStatus,
+}) {
+  if (stepIntent) {
+    return stepIntent === 'connection_request'
+      ? 'connection_request_sent' : 'message_sent';
+  }
+  const STATUS_ORDER = [
+    'connection_request_sent', 'connection_accepted',
+    'message_sent', 'reply_received', 'meeting_booked',
+  ];
+  const acceptedIdx = STATUS_ORDER.indexOf('connection_accepted');
+  if (STATUS_ORDER.indexOf(connectionStatus || '') >= acceptedIdx) {
+    return 'message_sent';
+  }
+  try {
+    const r = await client.query(
+      `SELECT id FROM sequence_steps
+        WHERE sequence_id = $1 AND channel = 'linkedin'
+        ORDER BY step_order ASC
+        LIMIT 1`,
+      [sequenceId]
+    );
+    return (r.rows[0]?.id === stepId) ? 'connection_request_sent' : 'message_sent';
+  } catch (err) {
+    console.warn('resolveLinkedInLogStatus: first-step lookup failed:', err.message);
+    return 'message_sent';
+  }
 }
 
 /**
@@ -164,7 +208,7 @@ router.get('/', async (req, res) => {
 
 // POST /api/sequences  — body: { name, description, require_approval, ai_enabled, steps: [{channel, delay_days, subject_template, body_template, task_note, require_approval}] }
 router.post('/', async (req, res) => {
-  const { name, description, require_approval = true, ai_enabled = false, personalize_config_default = null, steps = [], visibility = 'shared', allow_manager_edit = false } = req.body;
+  const { name, description, require_approval = true, ai_enabled = false, personalize_config_default = null, steps = [], visibility = 'shared', allow_manager_edit = false, stop_on_connection_accept = false } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: { message: 'name is required' } });
   const vis = visibility === 'private' ? 'private' : 'shared';
 
@@ -173,12 +217,12 @@ router.post('/', async (req, res) => {
     await client.query('BEGIN');
 
     const seqRes = await client.query(
-      `INSERT INTO sequences (org_id, name, description, created_by, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      `INSERT INTO sequences (org_id, name, description, created_by, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit, stop_on_connection_accept)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [req.orgId, name.trim(), description || null, req.user.userId, require_approval,
        ai_enabled === true,
        personalize_config_default ? JSON.stringify(personalize_config_default) : null,
-       vis, allow_manager_edit === true]
+       vis, allow_manager_edit === true, stop_on_connection_accept === true]
     );
     const seq = seqRes.rows[0];
 
@@ -187,11 +231,11 @@ router.post('/', async (req, res) => {
       const s = steps[i];
       const sr = await client.query(
         `INSERT INTO sequence_steps
-                     (sequence_id, org_id, step_order, channel, delay_days,
+                     (sequence_id, org_id, step_order, channel, delay_days, delay_hours,
                       subject_template, body_template, task_note, require_approval,
                       personalize_config, step_intent)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-        [seq.id, req.orgId, i + 1, s.channel, s.delay_days ?? 0,
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+        [seq.id, req.orgId, i + 1, s.channel, s.delay_days ?? 0, s.delay_hours ?? 0,
          s.subject_template || null, s.body_template || null, s.task_note || null,
          s.require_approval !== undefined ? s.require_approval : null,
          s.personalize_config ? JSON.stringify(s.personalize_config) : null,
@@ -334,10 +378,11 @@ router.post('/enroll', async (req, res) => {
 
   // Get first step to calculate next_step_due
   const firstStepRes = await pool.query(
-    `SELECT delay_days FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order LIMIT 1`,
+    `SELECT delay_days, delay_hours FROM sequence_steps WHERE sequence_id=$1 ORDER BY step_order LIMIT 1`,
     [sequenceId]
   );
-  const firstDelayDays = firstStepRes.rows[0]?.delay_days ?? 0;
+  const firstDelayDays  = firstStepRes.rows[0]?.delay_days  ?? 0;
+  const firstDelayHours = firstStepRes.rows[0]?.delay_hours ?? 0;
 
   const enrolled = [];
   const skipped  = [];
@@ -348,7 +393,7 @@ router.post('/enroll', async (req, res) => {
 
     for (const prospectId of prospectIds) {
       try {
-        const nextDue = calcDueDate(firstDelayDays);
+        const nextDue = calcDueDate(firstDelayDays, firstDelayHours);
 
         // Pull per-prospect AI drafts if provided, keyed by step_order
         const prosSteps = personalisedSteps?.[prospectId] ?? {};
@@ -540,7 +585,7 @@ router.get('/enrollments/:enrollId', async (req, res) => {
       `SELECT ssl.id, ssl.status, ssl.fired_at, ssl.scheduled_send_at,
               ssl.subject, ssl.body, ssl.channel, ssl.error_message,
               ss.step_order, ss.channel AS step_channel, ss.task_note,
-              ss.delay_days, ss.id AS step_id
+              ss.delay_days, ss.delay_hours, ss.id AS step_id
          FROM sequence_step_logs ssl
          JOIN sequence_steps ss ON ss.id = ssl.sequence_step_id
         WHERE ssl.enrollment_id = $1
@@ -550,7 +595,7 @@ router.get('/enrollments/:enrollId', async (req, res) => {
 
     // All steps in the sequence (to build future planned steps)
     const stepsRes = await pool.query(
-      `SELECT id, step_order, channel, delay_days, subject_template,
+      `SELECT id, step_order, channel, delay_days, delay_hours, subject_template,
               body_template, task_note, require_approval
          FROM sequence_steps
         WHERE sequence_id = $1
@@ -579,6 +624,7 @@ router.get('/enrollments/:enrollId', async (req, res) => {
           step_id:          step.id,
           channel:          step.channel,
           delay_days:       step.delay_days,
+          delay_hours:      step.delay_hours ?? 0,
           task_note:        step.task_note || null,
           subject_template: step.subject_template || null,
           log_id:           log.id,
@@ -596,9 +642,9 @@ router.get('/enrollments/:enrollId', async (req, res) => {
       if (step.step_order === enrollment.current_step) {
         due = rollingDate;
       } else if (step.step_order > enrollment.current_step) {
-        const d = new Date(rollingDate);
-        d.setDate(d.getDate() + (parseInt(step.delay_days) || 0));
-        due = d;
+        const delayMs = ((parseInt(step.delay_days) || 0) * 24
+                       + (parseInt(step.delay_hours) || 0)) * 3600000;
+        due = new Date(rollingDate.getTime() + delayMs);
         rollingDate = due;
       }
 
@@ -610,6 +656,7 @@ router.get('/enrollments/:enrollId', async (req, res) => {
         step_id:           step.id,
         channel:           step.channel,
         delay_days:        step.delay_days,
+        delay_hours:       step.delay_hours ?? 0,
         task_note:         step.task_note || null,
         subject_template:  personalised?.subject || step.subject_template || null,
         body_template:     personalised?.body    || step.body_template    || null,
@@ -1213,6 +1260,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
               ssl.channel AS draft_channel,
               ss.step_order,
               ss.channel  AS step_channel,
+              ss.step_intent,
               se.enrolled_by, se.sequence_id,
               se.current_step, se.org_id AS enroll_org_id,
               s.name AS sequence_name
@@ -1433,7 +1481,14 @@ router.post('/drafts/:logId/send', async (req, res) => {
         'connection_request_sent', 'connection_accepted',
         'message_sent', 'reply_received', 'meeting_booked',
       ];
-      const liStatus   = draft.step_order === 1 ? 'connection_request_sent' : 'message_sent';
+      // Intent-aware (was: step_order === 1, which mislabeled a CR at step 2
+      // in email-first sequences as a message). See resolveLinkedInLogStatus.
+      const liStatus = await resolveLinkedInLogStatus(client, {
+        sequenceId:       draft.sequence_id,
+        stepId:           draft.sequence_step_id,
+        stepIntent:       draft.step_intent || null,
+        connectionStatus: li.connection_status || null,
+      });
       const currentIdx = STATUS_ORDER.indexOf(li.connection_status || '');
       const newIdx     = STATUS_ORDER.indexOf(liStatus);
       if (newIdx > currentIdx) {
@@ -1647,7 +1702,7 @@ router.post('/drafts/:logId/complete', async (req, res) => {
   try {
     // Load draft + enrollment context
     const draftRes = await client.query(
-      `SELECT ssl.*, ss.step_order, ss.channel,
+      `SELECT ssl.*, ss.step_order, ss.channel, ss.step_intent,
               se.enrolled_by, se.current_step,
               s.id AS seq_id, s.name AS sequence_name
          FROM sequence_step_logs ssl
@@ -1722,9 +1777,15 @@ router.post('/drafts/:logId/complete', async (req, res) => {
         'connection_request_sent', 'connection_accepted',
         'message_sent', 'reply_received', 'meeting_booked',
       ];
-      // Map sequence step order to LinkedIn status
-      // step 1 = connection request, step 2+ = message
-      const liStatus = draft.step_order === 1 ? 'connection_request_sent' : 'message_sent';
+      // Intent-aware (was: step_order === 1 — mislabeled a CR at step 2 in
+      // email-first sequences as a message). Explicit step_intent wins, then
+      // first-LinkedIn-step-in-sequence, with an already-connected guard.
+      const liStatus = await resolveLinkedInLogStatus(client, {
+        sequenceId:       draft.seq_id,
+        stepId:           draft.sequence_step_id,
+        stepIntent:       draft.step_intent || null,
+        connectionStatus: li.connection_status || null,
+      });
       const currentIdx = STATUS_ORDER.indexOf(li.connection_status || '');
       const newIdx     = STATUS_ORDER.indexOf(liStatus);
       if (newIdx > currentIdx) {
@@ -2137,7 +2198,7 @@ router.get('/:id', async (req, res) => {
 
 // PUT /api/sequences/:id
 router.put('/:id', async (req, res) => {
-  const { name, description, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit } = req.body;
+  const { name, description, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit, stop_on_connection_accept } = req.body;
   try {
     // Ownership gate — only the owner (or an admin, or a permitted manager) may
     // edit. Peers can view a shared sequence but not change it.
@@ -2167,6 +2228,10 @@ router.put('/:id', async (req, res) => {
     const ameProvided = allow_manager_edit !== undefined;
     const ameParam = allow_manager_edit === true;
 
+    // stop_on_connection_accept: undefined → leave as-is; otherwise set boolean.
+    const soaProvided = stop_on_connection_accept !== undefined;
+    const soaParam = stop_on_connection_accept === true;
+
     const { rows } = await pool.query(
       `UPDATE sequences SET name=$1, description=$2,
         require_approval=COALESCE($3, require_approval),
@@ -2174,14 +2239,16 @@ router.put('/:id', async (req, res) => {
         personalize_config_default = CASE WHEN $5::boolean THEN $6::jsonb ELSE personalize_config_default END,
         visibility = CASE WHEN $7::boolean THEN $8 ELSE visibility END,
         allow_manager_edit = CASE WHEN $9::boolean THEN $10::boolean ELSE allow_manager_edit END,
+        stop_on_connection_accept = CASE WHEN $11::boolean THEN $12::boolean ELSE stop_on_connection_accept END,
         updated_at=NOW()
-        WHERE id=$11 AND org_id=$12 RETURNING *`,
+        WHERE id=$13 AND org_id=$14 RETURNING *`,
       [name, description || null,
        require_approval !== undefined ? require_approval : null,
        ai_enabled !== undefined ? ai_enabled : null,
        pcdProvided, pcdParam,
        visProvided, visParam,
        ameProvided, ameParam,
+       soaProvided, soaParam,
        req.params.id, req.orgId]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
@@ -2270,7 +2337,7 @@ router.delete('/:id', async (req, res) => {
 
 // POST /api/sequences/:id/steps
 router.post('/:id/steps', async (req, res) => {
-  const { channel, delay_days, subject_template, body_template, task_note,
+  const { channel, delay_days, delay_hours, subject_template, body_template, task_note,
           require_approval, personalize_config, step_intent } = req.body;
   try {
     if (!(await gateSequenceEdit(req, res, req.params.id))) return;
@@ -2282,11 +2349,11 @@ router.post('/:id/steps', async (req, res) => {
 
     const { rows } = await pool.query(
       `INSERT INTO sequence_steps
-         (sequence_id, org_id, step_order, channel, delay_days,
+         (sequence_id, org_id, step_order, channel, delay_days, delay_hours,
           subject_template, body_template, task_note, require_approval,
           personalize_config, step_intent)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [req.params.id, req.orgId, nextOrder, channel, delay_days ?? 0,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [req.params.id, req.orgId, nextOrder, channel, delay_days ?? 0, delay_hours ?? 0,
        subject_template || null, body_template || null, task_note || null,
        require_approval !== undefined ? require_approval : null,
        personalize_config ? JSON.stringify(personalize_config) : null,
@@ -2301,7 +2368,7 @@ router.post('/:id/steps', async (req, res) => {
 
 // PUT /api/sequences/:id/steps/:stepId
 router.put('/:id/steps/:stepId', async (req, res) => {
-  const { channel, delay_days, subject_template, body_template, task_note,
+  const { channel, delay_days, delay_hours, subject_template, body_template, task_note,
           require_approval, personalize_config, step_intent } = req.body;
   try {
     if (!(await gateSequenceEdit(req, res, req.params.id))) return;
@@ -2320,15 +2387,15 @@ router.put('/:id/steps/:stepId', async (req, res) => {
 
     const { rows } = await pool.query(
       `UPDATE sequence_steps
-          SET channel=$1, delay_days=$2, subject_template=$3,
-              body_template=$4, task_note=$5,
-              require_approval=COALESCE($6, require_approval),
-              personalize_config = CASE WHEN $7::boolean THEN $8::jsonb ELSE personalize_config END,
-              step_intent = CASE WHEN $9::boolean THEN $10::text ELSE step_intent END,
+          SET channel=$1, delay_days=$2, delay_hours=$3, subject_template=$4,
+              body_template=$5, task_note=$6,
+              require_approval=COALESCE($7, require_approval),
+              personalize_config = CASE WHEN $8::boolean THEN $9::jsonb ELSE personalize_config END,
+              step_intent = CASE WHEN $10::boolean THEN $11::text ELSE step_intent END,
               updated_at=NOW()
-        WHERE id=$11 AND sequence_id=$12
+        WHERE id=$12 AND sequence_id=$13
         RETURNING *`,
-      [channel, delay_days ?? 0, subject_template || null,
+      [channel, delay_days ?? 0, delay_hours ?? 0, subject_template || null,
        body_template || null, task_note || null,
        require_approval !== undefined ? require_approval : null,
        pcProvided, pcParam,
@@ -2510,7 +2577,7 @@ Description: ${description || ''}
 Number of steps: ${stepCount || 5}
 Channel mix: ${channelMix || 'Mostly email with 1-2 LinkedIn touchpoints'}
 
-For each step include: channel (email|linkedin|call|task), delay_days (days after previous step), subject_template (for email/linkedin), body_template (for email/linkedin), task_note (for call/task).
+For each step include: channel (email|linkedin|call|task), delay_days (days after previous step), delay_hours (0-23, optional sub-day offset added to delay_days — use for same-day follow-ups like "2 hours after the email"), subject_template (for email/linkedin), body_template (for email/linkedin), task_note (for call/task).
 Use {{first_name}}, {{company}}, {{title}}, {{industry}} as personalisation tokens.
 
 Return JSON:
@@ -2522,6 +2589,7 @@ Return JSON:
       "step_order": 1,
       "channel": "email",
       "delay_days": 0,
+      "delay_hours": 0,
       "subject_template": "...",
       "body_template": "...",
       "task_note": ""
@@ -2782,6 +2850,9 @@ router.get('/:id/stats', async (req, res) => {
         completed: statusMap['completed'] || 0,
         stopped:   statusMap['stopped']   || 0,
         replied:   statusMap['replied']   || 0,
+        // WS2: enrollments auto-stopped because the LinkedIn connection was
+        // accepted (sequences.stop_on_connection_accept).
+        connected: statusMap['connected'] || 0,
       },
       stepFunnel,
     };

@@ -2438,11 +2438,12 @@ router.post('/:id/enroll-all', async (req, res) => {
 
     // First step delay → next_step_due.
     const firstStepRes = await client.query(
-      `SELECT delay_days FROM sequence_steps
+      `SELECT delay_days, delay_hours FROM sequence_steps
         WHERE sequence_id = $1 ORDER BY step_order LIMIT 1`,
       [sequenceId]
     );
-    const firstDelayDays = firstStepRes.rows[0]?.delay_days ?? 0;
+    const firstDelayDays  = firstStepRes.rows[0]?.delay_days  ?? 0;
+    const firstDelayHours = firstStepRes.rows[0]?.delay_hours ?? 0;
 
     // Resolve member list.
     const memberParams = [req.orgId, req.params.id];
@@ -2473,8 +2474,8 @@ router.post('/:id/enroll-all', async (req, res) => {
       alreadyEnrolled = new Set(enrRes.rows.map(r => r.prospect_id));
     }
 
-    const nextDue = new Date();
-    nextDue.setDate(nextDue.getDate() + firstDelayDays);
+    const nextDue = new Date(Date.now()
+      + (firstDelayDays * 24 + firstDelayHours) * 3600000);
 
     await client.query('BEGIN');
     const enrolled = [];
@@ -3396,6 +3397,8 @@ router.post('/:id/bulk-activate', async (req, res) => {
       `SELECT s.id, s.name,
               (SELECT delay_days FROM sequence_steps
                  WHERE sequence_id = s.id ORDER BY step_order LIMIT 1) AS first_delay,
+              (SELECT delay_hours FROM sequence_steps
+                 WHERE sequence_id = s.id ORDER BY step_order LIMIT 1) AS first_delay_hours,
               (SELECT channel     FROM sequence_steps
                  WHERE sequence_id = s.id ORDER BY step_order LIMIT 1) AS first_channel
          FROM sequences s
@@ -3408,7 +3411,8 @@ router.post('/:id/bulk-activate', async (req, res) => {
       } });
     }
     const seq = seqRes.rows[0];
-    const firstDelay   = parseInt(seq.first_delay, 10) || 0;
+    const firstDelay      = parseInt(seq.first_delay, 10) || 0;
+    const firstDelayHours = parseInt(seq.first_delay_hours, 10) || 0;
     // firstChannel was resolved earlier (capInfo) — reused below.
 
     // ── Slice 1: pre-schedule all N enrollments across days ────────────────
@@ -3459,10 +3463,12 @@ router.post('/:id/bulk-activate', async (req, res) => {
       now: new Date(),
     });
     // Apply the sequence's first_step delay (legacy: "first step fires N days
-    // after enrollment") on top of the scheduled slot. firstDelay=0 is the
-    // common case for prospecting sequences.
-    const finalSlots = firstDelay > 0
-      ? scheduledSlots.map(s => new Date(s.getTime() + firstDelay * 86400000))
+    // after enrollment") on top of the scheduled slot. Hour-aware (WS3):
+    // total offset = days*24 + hours. Zero delay is the common case for
+    // prospecting sequences.
+    const firstDelayMs = (firstDelay * 24 + firstDelayHours) * 3600000;
+    const finalSlots = firstDelayMs > 0
+      ? scheduledSlots.map(s => new Date(s.getTime() + firstDelayMs))
       : scheduledSlots;
 
     // Per-prospect processing — sequential to keep skill rate-limited and to

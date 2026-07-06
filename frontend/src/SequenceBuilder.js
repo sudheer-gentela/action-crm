@@ -74,6 +74,7 @@ function blankStep(order) {
     step_order:       order,
     channel:          'email',
     delay_days:       order === 1 ? 0 : 3,
+    delay_hours:      0,
     mode:             'ai',
     ai_generated:     false,
     subject_template: '',
@@ -114,6 +115,13 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
   const [aiEnabled, setAiEnabled] = useState(
     initialSequence?.ai_enabled !== undefined ? initialSequence.ai_enabled !== false : true
   );
+  // WS2: stop enrollments automatically when the prospect accepts the
+  // LinkedIn connection request (enrollment → status 'connected'). Default
+  // off — existing sequences keep running through acceptance unless the
+  // owner opts in here.
+  const [stopOnConnectionAccept, setStopOnConnectionAccept] = useState(
+    initialSequence?.stop_on_connection_accept === true
+  );
   const [steps, setSteps] = useState(
     (initialSequence?.steps || []).length > 0
       ? initialSequence.steps.map(s => ({
@@ -121,6 +129,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
           _id:                s.id,
           mode:               s.mode || 'manual',
           ai_generated:       false,
+          delay_hours:        s.delay_hours ?? 0,        // WS3: pre-migration rows
           require_approval:   s.require_approval !== undefined ? s.require_approval : null,
           personalize_config: s.personalize_config !== undefined ? s.personalize_config : null,
           step_intent:        s.step_intent || null,   // Slice 3
@@ -188,12 +197,14 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
     visibility,
     allowManagerEdit,
     aiEnabled,
+    stopOnConnectionAccept,
     personalizeConfigDefault,
     steps: steps.map(s => ({
       id:                 s.id ?? null,
       step_order:         s.step_order,
       channel:            s.channel,
       delay_days:         s.delay_days,
+      delay_hours:        s.delay_hours ?? 0,
       mode:               s.mode,
       subject_template:   s.subject_template || '',
       body_template:      s.body_template    || '',
@@ -264,7 +275,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
     try {
       const aiSteps = steps
         .filter(s => s.mode === 'ai')
-        .map(s => ({ step_order: s.step_order, channel: s.channel, delay_days: s.delay_days }));
+        .map(s => ({ step_order: s.step_order, channel: s.channel, delay_days: s.delay_days, delay_hours: s.delay_hours ?? 0 }));
 
       const res = await apiFetch('/sequences/ai-build', {
         method: 'POST',
@@ -342,6 +353,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             ai_enabled: aiEnabled,
             visibility,
             allow_manager_edit: allowManagerEdit,
+            stop_on_connection_accept: stopOnConnectionAccept,
             personalize_config_default: effectivePersonalizeDefault,
           }),
         });
@@ -385,6 +397,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             ai_enabled: aiEnabled,
             visibility,
             allow_manager_edit: allowManagerEdit,
+            stop_on_connection_accept: stopOnConnectionAccept,
             personalize_config_default: effectivePersonalizeDefault,
             steps: stepsPayload,
           }),
@@ -486,6 +499,48 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             <span style={{
               position: 'absolute', top: 3,
               left: aiEnabled ? 21 : 3,
+              width: 16, height: 16, borderRadius: '50%',
+              background: '#fff', transition: 'left 0.2s',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+            }} />
+          </button>
+        </div>
+
+        {/* WS2: stop-on-connection-accept toggle. Only meaningful for
+            sequences with a LinkedIn CR step, but always shown so the owner
+            can set it before adding the step. */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 14px', borderRadius: 8,
+          background: stopOnConnectionAccept ? TEAL_LIGHT : '#f9fafb',
+          border: `1px solid ${stopOnConnectionAccept ? TEAL + '40' : '#e5e7eb'}`,
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>
+              🤝 Stop when connection is accepted
+            </div>
+            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+              {stopOnConnectionAccept
+                ? 'Prospects who accept your LinkedIn request exit the sequence (status: connected). Remaining steps are skipped.'
+                : 'Prospects continue through all steps even after accepting your LinkedIn request.'}
+            </div>
+            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 3 }}>
+              Acceptance is detected when the Chrome extension syncs (“Check &amp; update accepted”) — run it regularly for timely exits.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setStopOnConnectionAccept(v => !v)}
+            style={{
+              position: 'relative', width: 40, height: 22, borderRadius: 11,
+              border: 'none', cursor: 'pointer', flexShrink: 0,
+              background: stopOnConnectionAccept ? TEAL : '#d1d5db',
+              transition: 'background 0.2s',
+            }}
+          >
+            <span style={{
+              position: 'absolute', top: 3,
+              left: stopOnConnectionAccept ? 21 : 3,
               width: 16, height: 16, borderRadius: '50%',
               background: '#fff', transition: 'left 0.2s',
               boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
@@ -804,7 +859,12 @@ function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireAp
 
         <span style={{ fontSize: 13, color: '#374151' }}>{channelCfg.label}</span>
         <span style={{ fontSize: 11, color: '#9ca3af' }}>
-          {step.delay_days === 0 ? (index === 0 ? 'Day 0' : 'same day') : `+${step.delay_days}d`}
+          {(() => {
+            const dd = step.delay_days || 0;
+            const dh = step.delay_hours || 0;
+            if (dd === 0 && dh === 0) return index === 0 ? 'Day 0' : 'same day';
+            return `+${dd > 0 ? `${dd}d` : ''}${dh > 0 ? `${dh}h` : ''}`;
+          })()}
         </span>
 
         {isAI && !step.ai_generated && (
@@ -861,12 +921,24 @@ function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireAp
                 {CHANNEL_OPTIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
               </select>
             </div>
-            <div style={{ width: 150 }}>
-              <label style={labelStyle}>{index === 0 ? 'Delay from enroll (days)' : 'Delay from prev (days)'}</label>
+            <div style={{ width: 110 }}>
+              <label style={labelStyle}>{index === 0 ? 'Delay (days)' : 'Delay from prev (days)'}</label>
               <input
                 type="number" min="0" max="365"
                 value={step.delay_days}
                 onChange={e => onChange('delay_days', parseInt(e.target.value) || 0)}
+                style={{ ...inputStyle, width: '100%' }}
+              />
+            </div>
+            <div style={{ width: 90 }}>
+              <label style={labelStyle}>+ hours</label>
+              <input
+                type="number" min="0" max="23"
+                value={step.delay_hours ?? 0}
+                onChange={e => {
+                  const v = parseInt(e.target.value) || 0;
+                  onChange('delay_hours', Math.min(23, Math.max(0, v)));
+                }}
                 style={{ ...inputStyle, width: '100%' }}
               />
             </div>

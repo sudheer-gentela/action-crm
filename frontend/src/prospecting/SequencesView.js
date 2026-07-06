@@ -610,6 +610,8 @@ function SequencesView({ prospects, search }) {
     completed: { bg: '#eff6ff', color: '#1d4ed8' },
     stopped:   { bg: '#fee2e2', color: '#991b1b' },
     replied:   { bg: '#f0fdf4', color: '#166534' },
+    // WS2: auto-stopped because the LinkedIn connection was accepted.
+    connected: { bg: '#e0f2fe', color: '#0369a1' },
   };
 
   return (
@@ -1148,9 +1150,9 @@ function SequencesView({ prospects, search }) {
                                           <span style={{ fontSize: 12, fontWeight: 600, color: '#374151', textTransform: 'capitalize' }}>
                                             {step.channel}
                                           </span>
-                                          {step.delay_days > 0 && (
+                                          {(step.delay_days > 0 || step.delay_hours > 0) && (
                                             <span style={{ fontSize: 11, color: '#9ca3af' }}>
-                                              +{step.delay_days}d
+                                              +{step.delay_days > 0 ? `${step.delay_days}d` : ''}{step.delay_hours > 0 ? `${step.delay_hours}h` : ''}
                                             </span>
                                           )}
                                           <span style={{
@@ -1356,6 +1358,7 @@ function SequencesView({ prospects, search }) {
                   {[
                     { key: 'active',    label: 'Active',    bg: '#d1fae5', color: '#065f46' },
                     { key: 'replied',   label: 'Replied',   bg: '#ccfbf1', color: '#0d9488' },
+                    { key: 'connected', label: 'Connected', bg: '#e0f2fe', color: '#0369a1' },
                     { key: 'completed', label: 'Completed', bg: '#eff6ff', color: '#1d4ed8' },
                     { key: 'paused',    label: 'Paused',    bg: '#fef3c7', color: '#92400e' },
                     { key: 'stopped',   label: 'Stopped',   bg: '#fee2e2', color: '#991b1b' },
@@ -1612,7 +1615,9 @@ function SequencesView({ prospects, search }) {
                           {step.channel}
                         </span>
                         <span style={{ fontSize: 12, color: '#9ca3af' }}>
-                          {step.delay_days === 0 ? 'Day 0 (on enroll)' : `Day +${step.delay_days}`}
+                          {(step.delay_days === 0 && !(step.delay_hours > 0))
+                            ? 'Day 0 (on enroll)'
+                            : `Day +${step.delay_days}${step.delay_hours > 0 ? ` ${step.delay_hours}h` : ''}`}
                         </span>
                         {step.require_approval === true && (
                           <span style={{ marginLeft: 'auto', fontSize: 10, padding: '2px 6px', borderRadius: 4, background: '#fef3c7', color: '#92400e', fontWeight: 600 }}>

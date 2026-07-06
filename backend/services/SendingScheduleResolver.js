@@ -518,13 +518,71 @@ function manualReleaseFor(from, delayDays, settings) {
  * firer can call it with the settings it already resolved per tick.
  */
 function nextStepDue(nextStep, settings) {
-  const delay = parseInt(nextStep.delay_days, 10) || 0;
+  const days  = parseInt(nextStep.delay_days,  10) || 0;
+  const hours = parseInt(nextStep.delay_hours, 10) || 0;
   if (MANUAL_CHANNELS.has(nextStep.channel)) {
-    return manualReleaseFor(new Date(), delay, settings);
+    // Hour-granular manual delay (WS3): "+Nh" means ELIGIBLE from
+    // now + total delay — skip the release-hour snap, clamp forward only
+    // across disallowed send-window days. delay_hours=0 keeps the original
+    // whole-day snap byte-identical.
+    if (hours > 0) {
+      return clampManualToAllowedDay(
+        new Date(Date.now() + stepDelayMs(nextStep)), settings
+      );
+    }
+    return manualReleaseFor(new Date(), days, settings);
   }
-  const d = new Date();
-  d.setDate(d.getDate() + delay);
-  return d;
+  return new Date(Date.now() + stepDelayMs(nextStep));
+}
+
+/**
+ * Total configured delay of a step in milliseconds.
+ * Effective delay = delay_days * 24h + delay_hours (0–23). Tolerates rows
+ * from before the 2026_42 migration (missing delay_hours → 0).
+ */
+function stepDelayMs(step) {
+  const days  = parseInt(step?.delay_days,  10) || 0;
+  const hours = parseInt(step?.delay_hours, 10) || 0;
+  return (days * 24 + hours) * 3600000;
+}
+
+/**
+ * next_step_due for a fresh ENROLLMENT (first step). now + total delay.
+ * Consolidates the three calcDueDate() copies (sequences.routes,
+ * prospects.routes, SequenceStepFirer) behind one hour-aware helper.
+ */
+function enrollDueDate(step) {
+  return new Date(Date.now() + stepDelayMs(step));
+}
+
+/**
+ * Clamp an hour-granular manual-channel due time FORWARD across disallowed
+ * send-window days. If `due` already lands on an allowed day it is returned
+ * unchanged (the firer passes manual channels regardless of hour; LinkedIn
+ * auto-send additionally enforces its own human-hours window in the
+ * extension). If it lands on a disallowed day, roll forward to the next
+ * allowed day at the manual release hour — same day-walk + DST anchoring as
+ * manualReleaseFor.
+ */
+function clampManualToAllowedDay(due, settings) {
+  const tz   = settings.sendWindowTimezone;
+  const days = (settings.sendWindowDays && settings.sendWindowDays.length)
+    ? settings.sendWindowDays : [0, 1, 2, 3, 4, 5, 6];
+  let cal = getLocalCalendarDate(due, tz);
+  if (days.includes(cal.dayOfWeek)) return due;
+  let cursor = due;
+  let guard = 0;
+  while (!days.includes(cal.dayOfWeek) && guard < 7) {
+    cursor = new Date(buildLocalTimestamp(cal.dayKey, 12, 0, tz).getTime() + 86400000);
+    cal = getLocalCalendarDate(cursor, tz);
+    guard++;
+  }
+  return buildLocalTimestamp(
+    cal.dayKey,
+    settings.manualReleaseHour,
+    settings.manualReleaseMinute || 0,
+    tz
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -634,6 +692,8 @@ module.exports = {
   isWithinWindow,
   manualReleaseFor,
   nextStepDue,
+  stepDelayMs,
+  enrollDueDate,
   _internal: {
     getLocalCalendarDate,
     buildLocalTimestamp,
