@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict f6F3rzPuzdNVEcOluWLnZHlz4epeqfixW6lC11DuA5ktHBwUX0qxlRv22eLF8nQ
+\restrict VgzD1hlZ4CyEqnmIa4UhbtKJKp0uxNj7xuzWxw571WYxd0HhixKUi5WeTKVN3xu
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -599,6 +599,59 @@ CREATE SEQUENCE public.actions_id_seq
 --
 
 ALTER SEQUENCE public.actions_id_seq OWNED BY public.actions.id;
+
+
+--
+-- Name: activity_inflow_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.activity_inflow_events (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    provider text NOT NULL,
+    dedupe_key text NOT NULL,
+    event_type text DEFAULT 'form_submission'::text NOT NULL,
+    form_name text,
+    occurred_at timestamp with time zone NOT NULL,
+    external_id text,
+    contact_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status text DEFAULT 'pending_review'::text NOT NULL,
+    resolution jsonb DEFAULT '{}'::jsonb NOT NULL,
+    error_detail text,
+    reviewed_by integer,
+    reviewed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_aie_event_type CHECK ((event_type = 'form_submission'::text)),
+    CONSTRAINT chk_aie_status CHECK ((status = ANY (ARRAY['pending_review'::text, 'processed'::text, 'skipped'::text, 'error'::text])))
+);
+
+
+--
+-- Name: TABLE activity_inflow_events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.activity_inflow_events IS 'P8 Motion-2 inbound activity log (HubSpot form submissions). Every inbound event is recorded here regardless of form_inflow.mode; auto mode executes immediately, review mode parks as pending_review. dedupe_key = provider-scoped idempotency (portal:contact:minute for HubSpot).';
+
+
+--
+-- Name: activity_inflow_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.activity_inflow_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: activity_inflow_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.activity_inflow_events_id_seq OWNED BY public.activity_inflow_events.id;
 
 
 --
@@ -3224,6 +3277,50 @@ ALTER SEQUENCE public.linkedin_profiles_id_seq OWNED BY public.linkedin_profiles
 
 
 --
+-- Name: list_signal_mappings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.list_signal_mappings (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    name character varying(255) NOT NULL,
+    source_kind character varying(30) DEFAULT 'csv'::character varying NOT NULL,
+    mappings jsonb DEFAULT '[]'::jsonb NOT NULL,
+    created_by integer,
+    active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE list_signal_mappings; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.list_signal_mappings IS 'Reusable columnΓåÆsignal mapping templates for Motion-1 list ingest (P6). mappings is a jsonb array of {column, signal_key, entity, value_type, confidence?}. Org-shared (D10); created_by ΓçÆ rep-added. Shape-only validated.';
+
+
+--
+-- Name: list_signal_mappings_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.list_signal_mappings_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: list_signal_mappings_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.list_signal_mappings_id_seq OWNED BY public.list_signal_mappings.id;
+
+
+--
 -- Name: meeting_attendees; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4678,7 +4775,8 @@ CREATE TABLE public.prospecting_actions (
     notification_sent_at timestamp with time zone,
     escalated_at timestamp with time zone,
     escalation_tier smallint DEFAULT 0 NOT NULL,
-    CONSTRAINT chk_paction_channel CHECK (((channel IS NULL) OR ((channel)::text = ANY ((ARRAY['email'::character varying, 'linkedin'::character varying, 'phone'::character varying, 'sms'::character varying, 'whatsapp'::character varying])::text[])))),
+    auto_completed boolean DEFAULT false NOT NULL,
+    CONSTRAINT chk_paction_channel CHECK (((channel IS NULL) OR ((channel)::text = ANY (ARRAY['email'::text, 'linkedin'::text, 'phone'::text, 'sms'::text, 'whatsapp'::text, 'general'::text])))),
     CONSTRAINT chk_paction_status CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'skipped'::character varying, 'failed'::character varying, 'snoozed'::character varying])::text[])))
 );
 
@@ -6721,6 +6819,13 @@ ALTER TABLE ONLY public.actions ALTER COLUMN id SET DEFAULT nextval('public.acti
 
 
 --
+-- Name: activity_inflow_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.activity_inflow_events ALTER COLUMN id SET DEFAULT nextval('public.activity_inflow_events_id_seq'::regclass);
+
+
+--
 -- Name: agent_proposals id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -7089,6 +7194,13 @@ ALTER TABLE ONLY public.linkedin_connections ALTER COLUMN id SET DEFAULT nextval
 --
 
 ALTER TABLE ONLY public.linkedin_profiles ALTER COLUMN id SET DEFAULT nextval('public.linkedin_profiles_id_seq'::regclass);
+
+
+--
+-- Name: list_signal_mappings id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.list_signal_mappings ALTER COLUMN id SET DEFAULT nextval('public.list_signal_mappings_id_seq'::regclass);
 
 
 --
@@ -7637,6 +7749,14 @@ ALTER TABLE ONLY public.action_suggestions
 
 ALTER TABLE ONLY public.actions
     ADD CONSTRAINT actions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: activity_inflow_events activity_inflow_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.activity_inflow_events
+    ADD CONSTRAINT activity_inflow_events_pkey PRIMARY KEY (id);
 
 
 --
@@ -8197,6 +8317,14 @@ ALTER TABLE ONLY public.linkedin_profiles
 
 ALTER TABLE ONLY public.linkedin_profiles
     ADD CONSTRAINT linkedin_profiles_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: list_signal_mappings list_signal_mappings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.list_signal_mappings
+    ADD CONSTRAINT list_signal_mappings_pkey PRIMARY KEY (id);
 
 
 --
@@ -9546,6 +9674,20 @@ CREATE INDEX idx_ai_token_usage_user_date ON public.ai_token_usage USING btree (
 
 
 --
+-- Name: idx_aie_org_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_aie_org_created ON public.activity_inflow_events USING btree (org_id, created_at DESC);
+
+
+--
+-- Name: idx_aie_org_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_aie_org_status ON public.activity_inflow_events USING btree (org_id, status) WHERE (status = 'pending_review'::text);
+
+
+--
 -- Name: idx_cacfg_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10754,6 +10896,13 @@ CREATE INDEX idx_linkedin_profiles_org ON public.linkedin_profiles USING btree (
 --
 
 CREATE INDEX idx_linkedin_profiles_slug ON public.linkedin_profiles USING btree (org_id, linkedin_slug) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_list_signal_mappings_org_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_list_signal_mappings_org_active ON public.list_signal_mappings USING btree (org_id, active);
 
 
 --
@@ -12304,6 +12453,13 @@ CREATE UNIQUE INDEX uq_actions_deal_source_rule ON public.actions USING btree (d
 
 
 --
+-- Name: uq_aie_org_provider_dedupe; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_aie_org_provider_dedupe ON public.activity_inflow_events USING btree (org_id, provider, dedupe_key);
+
+
+--
 -- Name: uq_cfd_org_campaign_target_key; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -12364,6 +12520,13 @@ CREATE UNIQUE INDEX uq_entity_signals_org_entity_key ON public.entity_signals US
 --
 
 CREATE UNIQUE INDEX uq_linkedin_connections_identity ON public.linkedin_connections USING btree (org_id, owner_id, identity_key);
+
+
+--
+-- Name: uq_list_signal_mappings_org_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_list_signal_mappings_org_name ON public.list_signal_mappings USING btree (org_id, lower((name)::text)) WHERE active;
 
 
 --
@@ -12486,6 +12649,13 @@ CREATE TRIGGER straps_updated_at BEFORE UPDATE ON public.straps FOR EACH ROW EXE
 
 
 --
+-- Name: activity_inflow_events trg_aie_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_aie_updated_at BEFORE UPDATE ON public.activity_inflow_events FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
 -- Name: custom_field_defs trg_cfd_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -12525,6 +12695,13 @@ CREATE TRIGGER trg_ecf_updated_at BEFORE UPDATE ON public.entity_custom_fields F
 --
 
 CREATE TRIGGER trg_entity_signals_updated_at BEFORE UPDATE ON public.entity_signals FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: list_signal_mappings trg_list_signal_mappings_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_list_signal_mappings_updated_at BEFORE UPDATE ON public.list_signal_mappings FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 
 --
@@ -12810,6 +12987,22 @@ ALTER TABLE ONLY public.actions
 
 ALTER TABLE ONLY public.actions
     ADD CONSTRAINT actions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: activity_inflow_events activity_inflow_events_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.activity_inflow_events
+    ADD CONSTRAINT activity_inflow_events_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: activity_inflow_events activity_inflow_events_reviewed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.activity_inflow_events
+    ADD CONSTRAINT activity_inflow_events_reviewed_by_fkey FOREIGN KEY (reviewed_by) REFERENCES public.users(id) ON DELETE SET NULL;
 
 
 --
@@ -14234,6 +14427,22 @@ ALTER TABLE ONLY public.users
 
 ALTER TABLE ONLY public.linkedin_profiles
     ADD CONSTRAINT linkedin_profiles_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: list_signal_mappings list_signal_mappings_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.list_signal_mappings
+    ADD CONSTRAINT list_signal_mappings_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: list_signal_mappings list_signal_mappings_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.list_signal_mappings
+    ADD CONSTRAINT list_signal_mappings_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -15965,5 +16174,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict f6F3rzPuzdNVEcOluWLnZHlz4epeqfixW6lC11DuA5ktHBwUX0qxlRv22eLF8nQ
+\unrestrict VgzD1hlZ4CyEqnmIa4UhbtKJKp0uxNj7xuzWxw571WYxd0HhixKUi5WeTKVN3xu
 

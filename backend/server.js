@@ -345,6 +345,7 @@ app.use('/api/org/admin', require('./routes/workflow.orgAdmin.routes'));
 // ── External webhooks (Zoom transcripts, etc.) ────────────────────────────
 // Note: /webhooks/* (no /api/ prefix) — see raw-body capture above.
 app.use('/webhooks/transcript', require('./routes/webhooks.routes'));
+app.use('/webhooks/activity',   require('./routes/activity-webhooks.routes')); // P8 Motion-2 (HubSpot forms)
 app.use('/api/transcripts',     require('./routes/transcripts.routes'));
 
 // ── Misc ──────────────────────────────────────────────────────────────────

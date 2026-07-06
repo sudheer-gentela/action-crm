@@ -12,7 +12,10 @@
  *   POST /trigger       → Manual sync trigger
  *   GET  /stages        → Live deal pipeline stage values (for Stage Mapping UI)
  *   GET  /settings      → Get org integration settings
- *   PATCH /settings     → Update stage_map, field_map, sync_objects
+ *   PATCH /settings     → Update stage_map, field_map, sync_objects, form_inflow
+ *   GET  /inflow        → Recent activity-inflow events (P8 form submissions)
+ *   POST /inflow/:id/approve → Execute a parked (pending_review) inflow event
+ *   POST /inflow/:id/dismiss → Skip a parked inflow event
  */
 
 const express           = require('express');
@@ -145,7 +148,7 @@ router.get('/settings', async (req, res) => {
 
 // PATCH /settings — update stage_map, field_map, sync_objects
 router.patch('/settings', async (req, res) => {
-  const ALLOWED_KEYS = ['sync_objects', 'stage_map', 'field_map'];
+  const ALLOWED_KEYS = ['sync_objects', 'stage_map', 'field_map', 'form_inflow'];
 
   const updates = {};
   for (const key of ALLOWED_KEYS) {
@@ -173,6 +176,53 @@ router.patch('/settings', async (req, res) => {
     res.json({ success: true, message: 'Settings updated' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── P8 — Activity inflow (HubSpot form submissions) ──────────────────────────
+
+const FormIngest = require('../services/HubSpotFormIngestService');
+
+// GET /inflow?status=pending_review&limit=50 — recent inflow events
+router.get('/inflow', async (req, res) => {
+  try {
+    const events = await FormIngest.listEvents({
+      orgId: req.orgId,
+      status: ['pending_review', 'processed', 'skipped', 'error'].includes(req.query.status)
+        ? req.query.status : null,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, data: events });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /inflow/:id/approve — execute a parked event now
+router.post('/inflow/:id/approve', async (req, res) => {
+  try {
+    const result = await FormIngest.approveEvent({
+      orgId: req.orgId,
+      eventId: parseInt(req.params.id, 10),
+      userId: req.user.userId,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /inflow/:id/dismiss — skip a parked event
+router.post('/inflow/:id/dismiss', async (req, res) => {
+  try {
+    const result = await FormIngest.dismissEvent({
+      orgId: req.orgId,
+      eventId: parseInt(req.params.id, 10),
+      userId: req.user.userId,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ success: false, error: err.message });
   }
 });
 

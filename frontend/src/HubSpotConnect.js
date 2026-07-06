@@ -8,6 +8,8 @@
  *   1. Connection   — connect / disconnect / status / manual sync trigger
  *   2. Stage Mapping — HubSpot deal stage → GoWarm stage keys
  *   3. Field Mapping — HubSpot property → GoWarm field mappings
+ *   4. Form Inflow  — P8 Motion-2: form submissions → prospects + signals
+ *      (mode auto/review, form allowlist, daily cap, event log w/ approve)
  *
  * Reuses SalesforceConnect.css for all styling — no new CSS needed.
  */
@@ -116,9 +118,10 @@ export default function HubSpotConnect({ onConnectionChange }) {
   const isConnected = status?.connected;
 
   const SUB_TABS = [
-    { id: 'connection', label: '🔌 Connection' },
-    { id: 'stage-map',  label: '🗺 Stage Mapping',  disabled: !isConnected },
-    { id: 'field-map',  label: '🔧 Field Mapping',  disabled: !isConnected },
+    { id: 'connection',  label: '🔌 Connection' },
+    { id: 'stage-map',   label: '🗺 Stage Mapping', disabled: !isConnected },
+    { id: 'field-map',   label: '🔧 Field Mapping', disabled: !isConnected },
+    { id: 'form-inflow', label: '📥 Form Inflow',   disabled: !isConnected },
   ];
 
   return (
@@ -173,6 +176,9 @@ export default function HubSpotConnect({ onConnectionChange }) {
         )}
         {subTab === 'field-map' && (
           <HSFieldMappingTab settings={settings} onSave={saveSetting} saving={saving} />
+        )}
+        {subTab === 'form-inflow' && (
+          <HSFormInflowTab settings={settings} onSave={saveSetting} saving={saving} setError={setError} setSuccess={setSuccess} />
         )}
       </div>
     </div>
@@ -577,6 +583,235 @@ function HSFieldMappingTab({ settings, onSave, saving }) {
       >
         {saving ? 'Saving…' : 'Save Field Mappings'}
       </button>
+    </div>
+  );
+}
+
+// ── HSFormInflowTab (P8 Motion-2) ─────────────────────────────────────────────
+//
+// Form submissions in HubSpot → prospects + a `submitted_form` trigger signal
+// in GoWarm. New contacts route: existing prospect's campaign → account's
+// active campaign → the system "Activity Tracking" campaign. Every inbound
+// event is logged below (auto mode included), so the first few are always
+// reviewable; review mode parks everything for explicit approval.
+
+const INFLOW_STATUS_META = {
+  pending_review: { label: 'Needs review', color: '#b45309', bg: '#fef3c7' },
+  processed:      { label: 'Processed',    color: '#166534', bg: '#dcfce7' },
+  skipped:        { label: 'Skipped',      color: '#6b7280', bg: '#f3f4f6' },
+  error:          { label: 'Error',        color: '#b91c1c', bg: '#fee2e2' },
+};
+
+const ROUTE_LABELS = {
+  existing_prospect: 'existing prospect',
+  account_campaign:  'account campaign',
+  default_campaign:  'Activity Tracking',
+};
+
+function HSFormInflowTab({ settings, onSave, saving, setError, setSuccess }) {
+  const fi = settings?.form_inflow || {};
+  const [mode,     setMode]     = useState(fi.mode === 'review' ? 'review' : 'auto');
+  const [forms,    setForms]    = useState(Array.isArray(fi.allowed_forms) ? fi.allowed_forms : []);
+  const [newForm,  setNewForm]  = useState('');
+  const [cap,      setCap]      = useState(Number.isInteger(fi.daily_create_cap) ? fi.daily_create_cap : 200);
+  const [dirty,    setDirty]    = useState(false);
+
+  const [events,        setEvents]        = useState([]);
+  const [eventsLoading, setEventsLoading] = useState(true);
+  const [statusFilter,  setStatusFilter]  = useState('');
+  const [actingId,      setActingId]      = useState(null);
+
+  const loadEvents = useCallback(async (status) => {
+    setEventsLoading(true);
+    try {
+      const res = await hubspotAPI.getInflow(status || undefined);
+      setEvents(res.data || []);
+    } catch (e) {
+      setError('Failed to load inflow events');
+    } finally {
+      setEventsLoading(false);
+    }
+  }, [setError]);
+
+  useEffect(() => { loadEvents(statusFilter); }, [loadEvents, statusFilter]);
+
+  const addForm = () => {
+    const f = newForm.trim();
+    if (!f || forms.some(x => x.toLowerCase() === f.toLowerCase())) return;
+    setForms(prev => [...prev, f]);
+    setNewForm(''); setDirty(true);
+  };
+  const removeForm = (f) => { setForms(prev => prev.filter(x => x !== f)); setDirty(true); };
+
+  const save = () => {
+    const capNum = parseInt(cap, 10);
+    onSave({ form_inflow: {
+      mode,
+      allowed_forms: forms,
+      daily_create_cap: Number.isInteger(capNum) && capNum > 0 ? capNum : 200,
+    }});
+    setDirty(false);
+  };
+
+  const act = async (id, action) => {
+    setActingId(id);
+    try {
+      if (action === 'approve') await hubspotAPI.approveInflow(id);
+      else await hubspotAPI.dismissInflow(id);
+      setSuccess(action === 'approve' ? 'Event approved and processed ✓' : 'Event dismissed');
+      await loadEvents(statusFilter);
+    } catch (e) {
+      setError(e.message || `Failed to ${action} event`);
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const contactLine = (ev) => {
+    const s = ev.contact_snapshot || {};
+    const name = [s.firstname, s.lastname].filter(Boolean).join(' ');
+    return name ? `${name}${s.email ? ` · ${s.email}` : ''}` : (s.email || `HubSpot contact #${ev.external_id}`);
+  };
+
+  return (
+    <div className="sf-section">
+      <p className="sf-section-desc">
+        When someone submits a form in HubSpot, GoWarm adds them as a prospect (routed to
+        their existing campaign, their account's active campaign, or the system{' '}
+        <strong>Activity Tracking</strong> campaign), records a <code>submitted_form</code>{' '}
+        signal, surfaces them in the Work Queue, and notifies the campaign owner.
+        Bulk contact imports never trigger inflow — only real form conversions do.
+      </p>
+
+      {/* One-time webhook setup */}
+      <div className="sf-prereqs">
+        <div className="sf-prereq-title">One-time setup (HubSpot developer portal → your app → Webhooks):</div>
+        <ul>
+          <li>Target URL: your GoWarm backend + <code>/webhooks/activity/hubspot</code></li>
+          <li>Subscriptions: <code>contact.propertyChange</code> on <code>recent_conversion_event_name</code> and <code>recent_conversion_date</code></li>
+          <li>No new scopes needed — requests are verified with your app's client secret (v3 signature)</li>
+        </ul>
+      </div>
+
+      {/* Settings */}
+      <div className="sf-field-row" style={{ marginTop: 16 }}>
+        <label className="sf-label">Mode</label>
+        <select className="sf-select" value={mode} onChange={e => { setMode(e.target.value); setDirty(true); }}>
+          <option value="auto">Auto — process form fills immediately (default)</option>
+          <option value="review">Review — park every form fill for approval below</option>
+        </select>
+      </div>
+
+      <div className="sf-field-row">
+        <label className="sf-label">Daily creation cap</label>
+        <input
+          className="sf-input"
+          type="number"
+          min="1"
+          style={{ maxWidth: 140 }}
+          value={cap}
+          onChange={e => { setCap(e.target.value); setDirty(true); }}
+        />
+        <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 8 }}>
+          Max new prospects created per day; extra form fills park for review. Updates to existing prospects are never capped.
+        </span>
+      </div>
+
+      <div className="sf-field-row" style={{ alignItems: 'flex-start' }}>
+        <label className="sf-label">Allowed forms</label>
+        <div style={{ flex: 1 }}>
+          {forms.length === 0 && (
+            <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
+              Empty = all form submissions are accepted. Add form names to restrict (e.g. "Demo Request").
+            </div>
+          )}
+          {forms.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+              {forms.map(f => (
+                <span key={f} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#eef2ff', color: '#3730a3', borderRadius: 12, padding: '2px 10px', fontSize: 12 }}>
+                  {f}
+                  <button onClick={() => removeForm(f)} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#3730a3', fontSize: 12, padding: 0 }}>✕</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              className="sf-input"
+              placeholder="HubSpot form / conversion name"
+              value={newForm}
+              onChange={e => setNewForm(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addForm()}
+            />
+            <button className="sf-btn sf-btn--ghost" onClick={addForm} disabled={!newForm.trim()}>Add</button>
+          </div>
+        </div>
+      </div>
+
+      <button
+        className="sf-btn sf-btn--primary"
+        style={{ marginTop: 8 }}
+        onClick={save}
+        disabled={saving || !dirty}
+      >
+        {saving ? 'Saving…' : 'Save Inflow Settings'}
+      </button>
+
+      {/* Event log */}
+      <div style={{ marginTop: 28, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#111827' }}>Recent form submissions</h4>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <select className="sf-select" style={{ fontSize: 12 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+            <option value="">All statuses</option>
+            <option value="pending_review">Needs review</option>
+            <option value="processed">Processed</option>
+            <option value="skipped">Skipped</option>
+            <option value="error">Error</option>
+          </select>
+          <button className="sf-btn sf-btn--ghost" onClick={() => loadEvents(statusFilter)} disabled={eventsLoading}>↻</button>
+        </div>
+      </div>
+
+      {eventsLoading && <div className="sf-empty-state" style={{ marginTop: 12 }}>Loading events…</div>}
+      {!eventsLoading && events.length === 0 && (
+        <div className="sf-empty-state" style={{ marginTop: 12 }}>
+          No form submissions yet. They'll appear here as soon as the webhook receives one.
+        </div>
+      )}
+
+      {!eventsLoading && events.map(ev => {
+        const meta = INFLOW_STATUS_META[ev.status] || INFLOW_STATUS_META.skipped;
+        const r = ev.resolution || {};
+        return (
+          <div key={ev.id} style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: '10px 14px', marginTop: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {contactLine(ev)}
+              </div>
+              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+                📝 {ev.form_name || 'form submission'} · {new Date(ev.occurred_at).toLocaleString()}
+                {r.routed_via && <> · → {r.campaign_name || ROUTE_LABELS[r.routed_via] || r.routed_via}{r.prospect_created ? ' (new prospect)' : ''}</>}
+                {r.skip_reason && <> · reason: {r.skip_reason}</>}
+                {r.parked_reason === 'daily_cap' && <> · ⚠ daily cap reached</>}
+                {ev.error_detail && <> · {ev.error_detail}</>}
+              </div>
+            </div>
+            <span style={{ fontSize: 11, fontWeight: 700, color: meta.color, background: meta.bg, borderRadius: 10, padding: '2px 10px', whiteSpace: 'nowrap' }}>
+              {meta.label}
+            </span>
+            {ev.status === 'pending_review' && (
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="sf-btn sf-btn--primary" style={{ fontSize: 12, padding: '4px 12px' }} onClick={() => act(ev.id, 'approve')} disabled={actingId === ev.id}>
+                  {actingId === ev.id ? '…' : 'Approve'}
+                </button>
+                <button className="sf-btn sf-btn--ghost" style={{ fontSize: 12, padding: '4px 12px' }} onClick={() => act(ev.id, 'dismiss')} disabled={actingId === ev.id}>
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

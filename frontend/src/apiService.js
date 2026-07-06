@@ -1047,4 +1047,21 @@ export const hubspotAPI = {
     if (!response.ok) throw new Error('Failed to fetch HubSpot stages');
     return response.json();
   },
+  // ── P8 — Form inflow (activity webhooks) ────────────────────────────────
+  getInflow: async (status) => {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    const response = await fetch(`${API_BASE_URL}/hubspot/inflow${qs}`, { headers: getAuthHeaders() });
+    if (!response.ok) throw new Error('Failed to fetch inflow events');
+    return response.json();
+  },
+  approveInflow: async (id) => {
+    const response = await fetch(`${API_BASE_URL}/hubspot/inflow/${id}/approve`, { method: 'POST', headers: getAuthHeaders() });
+    if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error || 'Failed to approve event'); }
+    return response.json();
+  },
+  dismissInflow: async (id) => {
+    const response = await fetch(`${API_BASE_URL}/hubspot/inflow/${id}/dismiss`, { method: 'POST', headers: getAuthHeaders() });
+    if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error || 'Failed to dismiss event'); }
+    return response.json();
+  },
 };
