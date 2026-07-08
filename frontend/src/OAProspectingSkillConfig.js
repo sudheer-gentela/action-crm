@@ -41,6 +41,9 @@ const EMPTY = {
   title_classifier: { function_rules: [], seniority_rules: [], decision_maker: { seniorities: [], functions: [] } },
   outreach_caps: { email: {}, linkedin: {} },
   hook_recency_days: null,
+  // When a sequence's steps are edited/reordered, do prospects already enrolled
+  // get the change ('live') or stay on the version they started ('freeze')?
+  sequence_edit_propagation: 'live',
 };
 
 export default function OAProspectingSkillConfig() {
@@ -122,6 +125,7 @@ export default function OAProspectingSkillConfig() {
           ['products',   'Products & Pitch'],
           ['icp',        'ICP & Fit'],
           ['guardrails', 'Guardrails & Limits'],
+          ['sequences',  'Sequence edits'],
         ].map(([key, label]) => (
           <button
             key={key}
@@ -212,6 +216,14 @@ export default function OAProspectingSkillConfig() {
         </>
       )}
 
+      {/* Tab 4 — Sequence edits */}
+      {tab === 'sequences' && (
+        <SequenceEditPolicyEditor
+          value={config.sequence_edit_propagation}
+          onChange={(v) => update({ sequence_edit_propagation: v })}
+        />
+      )}
+
       {/* Save bar */}
       <div style={{
         position: 'sticky', bottom: 0, marginTop: 8,
@@ -244,6 +256,77 @@ function btnStyle(primary, disabled) {
     background: primary ? '#6366f1' : '#fff',
     color: primary ? '#fff' : '#374151',
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SequenceEditPolicyEditor — org-wide policy for what happens to prospects who
+// are already mid-sequence when someone edits or reorders that sequence's steps.
+// Persisted as config.sequence_edit_propagation ('live' | 'freeze').
+// ─────────────────────────────────────────────────────────────────────────────
+function SequenceEditPolicyEditor({ value, onChange }) {
+  // Anything that isn't an explicit 'freeze' is treated as 'live' (matches the
+  // backend sanitizer default), so an unset value still selects "update them".
+  const selected = value === 'freeze' ? 'freeze' : 'live';
+
+  const OPTIONS = [
+    {
+      key:   'live',
+      label: 'Yes, update them',
+      desc:  'Prospects already in a sequence move to the edited version. Changes to steps they haven’t reached yet take effect on their next send; steps they’ve already received are unaffected.',
+    },
+    {
+      key:   'freeze',
+      label: 'No, keep them on the version they started',
+      desc:  'Prospects already in a sequence finish on the version that was live when they were enrolled. Edits and reorders apply only to prospects enrolled afterward.',
+    },
+  ];
+
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+        When you edit or reorder a sequence, apply changes to prospects already enrolled?
+      </div>
+      <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12 }}>
+        Applies org-wide to every sequence. Changing this does not retroactively affect
+        prospects who are already mid-sequence — it governs what happens the next time a
+        sequence is edited.
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxWidth: 620 }}>
+        {OPTIONS.map((opt) => {
+          const active = selected === opt.key;
+          return (
+            <label
+              key={opt.key}
+              style={{
+                display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer',
+                padding: '12px 14px', borderRadius: 8,
+                border: '1px solid ' + (active ? '#6366f1' : '#e5e7eb'),
+                background: active ? '#f5f5ff' : '#fff',
+              }}
+            >
+              <input
+                type="radio"
+                name="sequence_edit_propagation"
+                value={opt.key}
+                checked={active}
+                onChange={() => onChange(opt.key)}
+                style={{ marginTop: 2, cursor: 'pointer', accentColor: '#6366f1' }}
+              />
+              <span>
+                <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151' }}>
+                  {opt.label}
+                </span>
+                <span style={{ display: 'block', fontSize: 12, color: '#6b7280', marginTop: 3, lineHeight: 1.5 }}>
+                  {opt.desc}
+                </span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
