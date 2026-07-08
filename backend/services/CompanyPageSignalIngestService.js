@@ -91,6 +91,11 @@ const P10_EXTRA_DEFS = [
     capability: 'prioritize', ttlDays: 30, defaultHook: 'hiring right now',
     description: "The newest job posting's date, read from the company's Jobs tab (LinkedIn often states no total there — the freshest posting is the stated fact, and the why-now). The open-roles COUNT comes from enrichment or pages that state one.",
   },
+  {
+    key: 'recent_job_titles', label: 'Recently posted roles', predicateType: 'set',
+    capability: 'prioritize', ttlDays: 30, defaultHook: 'hiring for roles that signal your problem',
+    description: 'The visibly posted job titles from the company\'s Jobs tab (up to 10, with locations where shown). Not a total — the list of what\'s stated on the page. Context for reps and drafts ("saw you\'re hiring a…").',
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -200,6 +205,21 @@ function extractSignals(capture) {
   // prioritizers run off real hiring recency.
   const jobAt = _date(c.latestJobPostedAt);
   if (jobAt) push('recent_job_posting', jobAt.toISOString(), jobAt);
+
+  // v1.23.4 — the visibly posted roles themselves (titles + locations where
+  // shown). The value is an array of display strings; per-card detail stays
+  // in the capture/panel. Still never a total.
+  if (Array.isArray(c.recentJobs) && c.recentJobs.length) {
+    const titles = c.recentJobs
+      .map((j) => {
+        const t = j && typeof j.title === 'string' ? j.title.trim() : null;
+        if (!t) return null;
+        const loc = j.location && typeof j.location === 'string' ? j.location.trim() : null;
+        return loc ? `${t} (${loc})`.slice(0, 200) : t.slice(0, 200);
+      })
+      .filter(Boolean);
+    push('recent_job_titles', _strArray(titles, 25));
+  }
 
   return out;
 }

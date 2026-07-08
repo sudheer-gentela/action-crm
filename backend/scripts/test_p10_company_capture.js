@@ -262,6 +262,54 @@ async function testExtraction() {
     domJobs.window.__gowarmCompanyTest.parseRelativeTime('30+ days ago', NOW) === new Date(NOW.getTime() - 30 * 86400e3).toISOString());
   check('no job links → null (top-card pages unaffected)',
     domTop.window.__gowarmCompanyTest.extractLatestJobPostedAt(domTop.window.document, NOW) === null);
+
+  // ── v1.23.4 — the visible job cards themselves ─────────────────────────────
+  console.log('\nA5. v1.23.4 (job cards → titles/locations/ages)');
+  const gsCode = JSON.stringify({ included: [{ universalName: 'gainsight', name: 'Gainsight' }] }).replace(/</g, '\\u003c');
+  const domCards = new JSDOM(`<!DOCTYPE html><html><body>
+      <code>${gsCode}</code>
+      <ul>
+        <li><a href="https://www.linkedin.com/jobs/view/111">Quote Analyst – Salesforce CPQ</a>
+          <span>Gainsight</span><span>Greater Hyderabad Area</span>
+          <span>1 school alum works here</span><span>8 hours ago</span></li>
+        <li><a href="https://www.linkedin.com/jobs/view/222">Director, Technical Services</a>
+          <span>Gainsight</span><span>Greater Hyderabad Area</span><span>4 days ago</span></li>
+        <li><a href="https://www.linkedin.com/jobs/view/222">Director, Technical Services</a>
+          <span>duplicate card — same job id</span></li>
+        <li><a href="https://www.linkedin.com/jobs/search/?currentCompany=9">See More Jobs</a></li>
+      </ul>
+    </body></html>`,
+    { url: 'https://www.linkedin.com/company/gainsight/jobs/', runScripts: 'outside-only' });
+  domCards.window.__GOWARM_TEST__ = true;
+  domCards.window.eval(src);
+  const capCards = domCards.window.__gowarmCompanyTest.buildCapture('gainsight', domCards.window.document, NOW);
+  check('two unique jobs captured (duplicate id + See-More link excluded)',
+    Array.isArray(capCards.recentJobs) && capCards.recentJobs.length === 2, capCards.recentJobs);
+  const j0 = capCards.recentJobs[0];
+  check('title + location + posted age per card (company/alum lines filtered)',
+    j0.title === 'Quote Analyst – Salesforce CPQ' && j0.location === 'Greater Hyderabad Area'
+    && j0.postedAt === new Date(NOW.getTime() - 8 * 3600e3).toISOString(), j0);
+  check('second card parsed too', capCards.recentJobs[1].title === 'Director, Technical Services'
+    && capCards.recentJobs[1].postedAt === new Date(NOW.getTime() - 4 * 86400e3).toISOString());
+
+  // ── v1.23.5 — accumulation across the rep's own pagination ─────────────────
+  console.log('\nA6. v1.23.5 (mergeJobs: pages accumulate, dedupe, detail-upgrade, cap)');
+  const MJ = domCards.window.__gowarmCompanyTest.mergeJobs;
+  const page1 = [
+    { id: '111', title: 'Quote Analyst', location: null, postedAt: null },
+    { id: '222', title: 'Director, Technical Services', location: 'Hyderabad', postedAt: '2026-07-04T00:00:00.000Z' },
+  ];
+  const page2 = [
+    { id: '111', title: 'Quote Analyst', location: 'Greater Hyderabad Area', postedAt: '2026-07-07T16:00:00.000Z' }, // richer duplicate
+    { id: '333', title: 'Senior Compensation Analyst', location: 'Remote', postedAt: '2026-07-02T00:00:00.000Z' },
+  ];
+  const merged = MJ(page1, page2);
+  check('pages merge with dedupe (3 unique across 2 pages)', merged.length === 3, merged.map(j => j.id));
+  check('later scan UPGRADES a sparse record (location/age filled in)',
+    merged.find(j => j.id === '111').location === 'Greater Hyderabad Area' && merged.find(j => j.id === '111').postedAt === '2026-07-07T16:00:00.000Z');
+  check('newest-first ordering, undated would sink', merged[0].id === '111' && merged[1].id === '222' && merged[2].id === '333');
+  const many = MJ([], Array.from({ length: 40 }, (_, i) => ({ id: String(i), title: 'Role ' + i, postedAt: new Date(NOW.getTime() - i * 3600e3).toISOString() })));
+  check('cap holds at 25', many.length === 25 && many[0].id === '0');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -328,16 +376,26 @@ async function testIngest() {
     check('v1.23.3: recent_job_posting extracted with posting-date observed_at',
       rj && rj.value === '2026-07-07T16:00:00.000Z' && rj.observedAt.toISOString() === '2026-07-07T16:00:00.000Z', rj);
 
+    // v1.23.4 — the posted-roles list becomes a set signal (titles + locations)
+    const jt = Ingest.extractSignals({ ...CAP, recentJobs: [
+      { id: '111', title: 'Quote Analyst – Salesforce CPQ', location: 'Greater Hyderabad Area', postedAt: '2026-07-07T16:00:00.000Z' },
+      { id: '222', title: 'Director, Technical Services', location: null, postedAt: null },
+      { id: '333', title: '   ' },
+    ]}).find(i => i.key === 'recent_job_titles');
+    check('v1.23.4: recent_job_titles set built (location folded in, blanks dropped)',
+      jt && JSON.stringify(jt.value) === JSON.stringify(['Quote Analyst – Salesforce CPQ (Greater Hyderabad Area)','Director, Technical Services']), jt);
+
     const newDefs = (await pool.query(
       `SELECT key, source_kind, reliability, capability, predicate_type FROM signal_defs
-        WHERE org_id=$1 AND key IN ('company_headline','specialties','linkedin_followers','company_size_range','recent_job_posting')`, [orgId])).rows;
-    check('5 new defs ensured (harvest ⇒ medium; specialties/followers/size-range may Filter)',
-      newDefs.length === 5
+        WHERE org_id=$1 AND key IN ('company_headline','specialties','linkedin_followers','company_size_range','recent_job_posting','recent_job_titles')`, [orgId])).rows;
+    check('6 new defs ensured (harvest ⇒ medium; specialties/followers/size-range may Filter)',
+      newDefs.length === 6
       && newDefs.every(d => d.source_kind === 'harvest' && d.reliability === 'medium')
       && newDefs.find(d => d.key === 'specialties').capability === 'both'
       && newDefs.find(d => d.key === 'linkedin_followers').capability === 'both'
       && newDefs.find(d => d.key === 'company_size_range').capability === 'both'
       && newDefs.find(d => d.key === 'recent_job_posting').predicate_type === 'recency'
+      && newDefs.find(d => d.key === 'recent_job_titles').capability === 'prioritize'
       && newDefs.find(d => d.key === 'company_headline').capability === 'prioritize', newDefs);
 
     // ── matchAccount ──────────────────────────────────────────────────────
