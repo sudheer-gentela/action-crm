@@ -239,6 +239,29 @@ async function testExtraction() {
     capGs.description && capGs.description.length);
   check('entity-only pages keep the entity description (no Overview present)',
     /journ…$/.test(dom3.window.__gowarmCompanyTest.buildCapture('tenxme', dom3.window.document, NOW).description || 'x') === false); // dom3 has its own full entity description
+
+  // ── v1.23.3 — Jobs tab: no stated total, but posting ages exist ────────────
+  console.log('\nA4. v1.23.3 (newest job-posting age from the Jobs tab)');
+  const domJobs = new JSDOM(`<!DOCTYPE html><html><body>
+      <a href="https://www.linkedin.com/jobs/view/111">Quote Analyst – Salesforce CPQ</a>
+      <span>8 hours ago</span>
+      <a href="https://www.linkedin.com/jobs/view/222">Director, Technical Services</a>
+      <span>4 days ago</span>
+      <a href="https://www.linkedin.com/jobs/view/333">Senior Compensation Analyst</a>
+      <span>30+ days ago</span>
+      <span>See More Jobs</span>
+    </body></html>`,
+    { url: 'https://www.linkedin.com/company/gainsight/jobs/', runScripts: 'outside-only' });
+  domJobs.window.__GOWARM_TEST__ = true;
+  domJobs.window.eval(src);
+  const capJobs = domJobs.window.__gowarmCompanyTest.buildCapture('gainsight', domJobs.window.document, NOW);
+  check('NO fabricated open-roles count (page states none)', capJobs.jobOpenings === null);
+  check('newest posting age wins (8h, not 4d/30d)',
+    capJobs.latestJobPostedAt === new Date(NOW.getTime() - 8 * 3600e3).toISOString(), capJobs.latestJobPostedAt);
+  check('"30+ days ago" parses conservatively as 30d',
+    domJobs.window.__gowarmCompanyTest.parseRelativeTime('30+ days ago', NOW) === new Date(NOW.getTime() - 30 * 86400e3).toISOString());
+  check('no job links → null (top-card pages unaffected)',
+    domTop.window.__gowarmCompanyTest.extractLatestJobPostedAt(domTop.window.document, NOW) === null);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -299,15 +322,22 @@ async function testIngest() {
       && m2.linkedin_followers === 496 && m2.founded_year === 2024, m2);
     check('phone is panel-only, never a signal', !('phone' in m2));
 
+    // v1.23.3 — newest job posting date → recency signal with its own observed_at
+    const jobItems = Ingest.extractSignals({ ...CAP, latestJobPostedAt: '2026-07-07T16:00:00.000Z' });
+    const rj = jobItems.find(i => i.key === 'recent_job_posting');
+    check('v1.23.3: recent_job_posting extracted with posting-date observed_at',
+      rj && rj.value === '2026-07-07T16:00:00.000Z' && rj.observedAt.toISOString() === '2026-07-07T16:00:00.000Z', rj);
+
     const newDefs = (await pool.query(
       `SELECT key, source_kind, reliability, capability, predicate_type FROM signal_defs
-        WHERE org_id=$1 AND key IN ('company_headline','specialties','linkedin_followers','company_size_range')`, [orgId])).rows;
-    check('4 new defs ensured (harvest ⇒ medium; specialties/followers/size-range may Filter)',
-      newDefs.length === 4
+        WHERE org_id=$1 AND key IN ('company_headline','specialties','linkedin_followers','company_size_range','recent_job_posting')`, [orgId])).rows;
+    check('5 new defs ensured (harvest ⇒ medium; specialties/followers/size-range may Filter)',
+      newDefs.length === 5
       && newDefs.every(d => d.source_kind === 'harvest' && d.reliability === 'medium')
       && newDefs.find(d => d.key === 'specialties').capability === 'both'
       && newDefs.find(d => d.key === 'linkedin_followers').capability === 'both'
       && newDefs.find(d => d.key === 'company_size_range').capability === 'both'
+      && newDefs.find(d => d.key === 'recent_job_posting').predicate_type === 'recency'
       && newDefs.find(d => d.key === 'company_headline').capability === 'prioritize', newDefs);
 
     // ── matchAccount ──────────────────────────────────────────────────────

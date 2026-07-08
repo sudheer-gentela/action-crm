@@ -86,6 +86,11 @@ const P10_EXTRA_DEFS = [
     capability: 'both', ttlDays: 180, defaultHook: null,
     description: 'The LinkedIn-stated employee range (e.g. "1,001-5,000 employees"). Stored as the stated range string — headcount remains reserved for real counts (no fabricated numbers).',
   },
+  {
+    key: 'recent_job_posting', label: 'Recent job posting', predicateType: 'recency',
+    capability: 'prioritize', ttlDays: 30, defaultHook: 'hiring right now',
+    description: "The newest job posting's date, read from the company's Jobs tab (LinkedIn often states no total there — the freshest posting is the stated fact, and the why-now). The open-roles COUNT comes from enrichment or pages that state one.",
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -189,6 +194,12 @@ function extractSignals(capture) {
 
   const postAt = _date(c.latestPostAt);
   if (postAt) push(RECENT_POST_KEY, postAt.toISOString(), postAt);
+
+  // v1.23.3 — the newest job posting's date (the Jobs tab's stated fact when
+  // no total exists). observed_at = the posting date, so within_days
+  // prioritizers run off real hiring recency.
+  const jobAt = _date(c.latestJobPostedAt);
+  if (jobAt) push('recent_job_posting', jobAt.toISOString(), jobAt);
 
   return out;
 }
