@@ -206,6 +206,39 @@ async function testExtraction() {
   check('About dl: HQ city/country, founded, specialties',
     capDl.hqCity === 'Hyderabad' && capDl.hqCountry === 'India' && capDl.foundedYear === 2024
     && JSON.stringify(capDl.specialties) === JSON.stringify(['AI education','Prompt systems','Agent workflows']), capDl);
+
+  // ── v1.23.2 — Gainsight live-test fixes ────────────────────────────────────
+  console.log('\nA3. v1.23.2 (double-dd associated members + full Overview)');
+
+  // Live /about shape: Company size renders TWO <dd> siblings — the range,
+  // then "1,131 associated members" (with an ⓘ). Both must be read.
+  const TRUNCATED = 'Gainsight is the retention engine behind the world\'s most customer-centric companies. The Gainsight platform orchestrates the customer journ…';
+  const FULL_OVERVIEW = 'Gainsight is the retention engine behind the world\'s most customer-centric companies. The Gainsight platform orchestrates the customer journey from onboarding to outcomes. More than 2,000 companies trust Gainsight\'s applications and AI agents to drive learning, adoption, community connection and success for their customers. Learn more at www.gainsight.com. '
+    + 'Second paragraph with additional detail well past the three hundred character truncation point that the entity JSON exhibits on live pages today.';
+  const gsEntity = { universalName: 'gainsight', name: 'Gainsight', description: TRUNCATED, employeeCountRange: { start: 1001, end: 5000 } };
+  const domGs = new JSDOM(`<!DOCTYPE html><html><body>
+      <code>${JSON.stringify({ included: [gsEntity] }).replace(/</g, '\\u003c')}</code>
+      <h2>Overview</h2>
+      <p>${FULL_OVERVIEW.split('. Second paragraph')[0]}.</p>
+      <p>Second paragraph${FULL_OVERVIEW.split('. Second paragraph')[1]}</p>
+      <dl>
+        <dt>Company size</dt>
+        <dd>1,001-5,000 employees</dd>
+        <dd>1,131 associated members <span>ⓘ</span></dd>
+        <dt>Headquarters</dt><dd>San Francisco, California</dd>
+      </dl>
+    </body></html>`,
+    { url: 'https://www.linkedin.com/company/gainsight/about/', runScripts: 'outside-only' });
+  domGs.window.__GOWARM_TEST__ = true;
+  domGs.window.eval(src);
+  const capGs = domGs.window.__gowarmCompanyTest.buildCapture('gainsight', domGs.window.document, NOW);
+  check('associated members read from the SECOND dd → real headcount 1131', capGs.memberCount === 1131, capGs.memberCount);
+  check('range still captured alongside', capGs.sizeRange === '1,001-5,000 employees');
+  check('full Overview beats the truncated entity description',
+    capGs.description && capGs.description.length > 400 && !/journ…$/.test(capGs.description) && /Second paragraph/.test(capGs.description),
+    capGs.description && capGs.description.length);
+  check('entity-only pages keep the entity description (no Overview present)',
+    /journ…$/.test(dom3.window.__gowarmCompanyTest.buildCapture('tenxme', dom3.window.document, NOW).description || 'x') === false); // dom3 has its own full entity description
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -239,8 +272,10 @@ async function testIngest() {
     };
     let items = Ingest.extractSignals(CAP);
     const keys = items.map(i => i.key).sort();
-    check('capture → 7 keys (incl. recent_company_post)',
-      JSON.stringify(keys) === JSON.stringify(['active_job_postings','company_about','headcount','hq_city','hq_country','industry','recent_company_post']), keys);
+    check('capture → 8 keys (incl. recent_company_post + company_size_range)',
+      JSON.stringify(keys) === JSON.stringify(['active_job_postings','company_about','company_size_range','headcount','hq_city','hq_country','industry','recent_company_post']), keys);
+    check('size range persisted AS the stated string (v1.23.2)',
+      items.find(i => i.key === 'company_size_range').value === '51-200 employees');
     const post = items.find(i => i.key === 'recent_company_post');
     check('post signal: date value + observed_at = post date', post.value === '2026-07-01T00:00:00.000Z' && post.observedAt.toISOString() === '2026-07-01T00:00:00.000Z');
 
@@ -266,12 +301,13 @@ async function testIngest() {
 
     const newDefs = (await pool.query(
       `SELECT key, source_kind, reliability, capability, predicate_type FROM signal_defs
-        WHERE org_id=$1 AND key IN ('company_headline','specialties','linkedin_followers')`, [orgId])).rows;
-    check('3 new defs ensured (harvest ⇒ medium; specialties/followers may Filter)',
-      newDefs.length === 3
+        WHERE org_id=$1 AND key IN ('company_headline','specialties','linkedin_followers','company_size_range')`, [orgId])).rows;
+    check('4 new defs ensured (harvest ⇒ medium; specialties/followers/size-range may Filter)',
+      newDefs.length === 4
       && newDefs.every(d => d.source_kind === 'harvest' && d.reliability === 'medium')
       && newDefs.find(d => d.key === 'specialties').capability === 'both'
       && newDefs.find(d => d.key === 'linkedin_followers').capability === 'both'
+      && newDefs.find(d => d.key === 'company_size_range').capability === 'both'
       && newDefs.find(d => d.key === 'company_headline').capability === 'prioritize', newDefs);
 
     // ── matchAccount ──────────────────────────────────────────────────────
@@ -293,7 +329,7 @@ async function testIngest() {
     check('no matching account without create → soft ok:false', r.ok === false && r.reason === 'no_matching_account');
 
     r = await Ingest.ingestCompanyCapture({ orgId, userId: user.id, capture: CAP2, createIfMissing: true });
-    check('createIfMissing creates + writes', r.ok === true && r.accountId && r.written.length === 7, r);
+    check('createIfMissing creates + writes', r.ok === true && r.accountId && r.written.length === 8, r);
     const newAcc = (await pool.query(`SELECT * FROM accounts WHERE id=$1`, [r.accountId])).rows[0];
     check('created account carries domain + LinkedIn URL', newAcc.domain === 'newco.io' && /company\/newco/.test(newAcc.linkedin_company_url || ''));
 
@@ -306,7 +342,7 @@ async function testIngest() {
     r = await Ingest.ingestCompanyCapture({ orgId, userId: user.id, capture: CAP, createIfMissing: false });
     check('ingest onto matched account', r.ok === true && r.accountId === acc.id && r.matchedBy === 'linkedin_url');
     check('rep-claimed about skipped (rep_override), rest written',
-      r.skipped.length === 1 && r.skipped[0].key === 'company_about' && r.skipped[0].reason === 'rep_override' && r.written.length === 6, r.skipped);
+      r.skipped.length === 1 && r.skipped[0].key === 'company_about' && r.skipped[0].reason === 'rep_override' && r.written.length === 7, r.skipped);
     const sigs = (await pool.query(`SELECT key, value, source, confidence FROM entity_signals WHERE org_id=$1 AND entity_id=$2`, [orgId, acc.id])).rows;
     const byKey = Object.fromEntries(sigs.map(s => [s.key, s]));
     check('fresher page-read updated the stale vendor industry', byKey.industry.value === 'Software Development' && byKey.industry.source === 'extension' && byKey.industry.confidence === 'medium');

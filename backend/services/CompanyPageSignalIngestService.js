@@ -81,6 +81,11 @@ const P10_EXTRA_DEFS = [
     capability: 'both', ttlDays: 180, defaultHook: null,
     description: "The company page's follower count.",
   },
+  {
+    key: 'company_size_range', label: 'Company size (range)', predicateType: 'set',
+    capability: 'both', ttlDays: 180, defaultHook: null,
+    description: 'The LinkedIn-stated employee range (e.g. "1,001-5,000 employees"). Stored as the stated range string — headcount remains reserved for real counts (no fabricated numbers).',
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -176,6 +181,11 @@ function extractSignals(capture) {
   push('specialties',        _strArray(c.specialties, 25));
   push('linkedin_followers', _int(c.followers));
   push('founded_year',       _int(c.foundedYear));  // shared P9 key
+
+  // v1.23.2 — the range itself persists as a stated-range STRING signal
+  // ("1,001-5,000 employees"), targetable via one_of. headcount stays
+  // reserved for real counts (associated members / staffCount).
+  push('company_size_range', _str(c.sizeRange, 60));
 
   const postAt = _date(c.latestPostAt);
   if (postAt) push(RECENT_POST_KEY, postAt.toISOString(), postAt);
