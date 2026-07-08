@@ -1274,13 +1274,11 @@ router.get('/:id', async (req, res) => {
 
          UNION ALL
 
-         -- LinkedIn touches from prospecting_activities (extension or rep)
+         -- LinkedIn RESPONSES from prospecting_activities (extension or rep).
+         -- Outreach is counted authoritatively from sequence_step_logs below, so
+         -- this source contributes responses only.
          SELECT 'linkedin'::text AS channel,
                 CASE
-                  WHEN pa.metadata->>'event' IN (
-                    'connection_request_sent', 'message_sent',
-                    'inmail_sent',              'voice_note_sent'
-                  ) THEN 'outreach'
                   WHEN pa.metadata->>'event' = 'reply_received' THEN 'response'
                   ELSE NULL
                 END AS kind
@@ -1290,6 +1288,26 @@ router.get('/:id', async (req, res) => {
             AND p.campaign_id  = $2
             AND pa.activity_type = 'linkedin_event'
             AND pa.created_at  >= $3
+
+         UNION ALL
+
+         -- LinkedIn OUTREACH — authoritative from sequence_step_logs. A LinkedIn
+         -- step reaching sent/completed is the definitive record that the
+         -- connection request / message went out, regardless of which finalize
+         -- path ran (auto-send confirm, rep draft-send, manual "mark as done") or
+         -- how that path tagged its activity row. Counting from the activity
+         -- ledger undercounted here because only the auto-send path writes a
+         -- 'linkedin_event'; drafts/manual completions write other activity
+         -- types the by-channel roll-up doesn't match.
+         SELECT 'linkedin'::text AS channel, 'outreach'::text AS kind
+           FROM sequence_step_logs l
+           JOIN sequence_steps ss2 ON ss2.id = l.sequence_step_id
+                                  AND ss2.channel = 'linkedin'
+           JOIN prospects p ON p.id = l.prospect_id
+          WHERE l.org_id      = $1
+            AND p.campaign_id = $2
+            AND l.status      IN ('sent','completed')
+            AND l.fired_at   >= $3
 
          UNION ALL
 
@@ -1313,14 +1331,14 @@ router.get('/:id', async (req, res) => {
             AND p.campaign_id  = $2
             AND pa.activity_type = 'sequence_step_sent'
             AND (pa.metadata->>'emailId') IS NULL
-            -- DEDUP (LinkedIn): auto-sent connection-request steps also write
-            -- a first-class 'linkedin_event' activity in the same transaction
-            -- (LinkedInAutoSendService.confirmSent -> applyConnectionEvent).
-            -- That event row is already counted by the LinkedIn branch above,
-            -- so exclude the step activity here -- mirroring the emailId
-            -- guard for email steps.
-            AND NOT (    COALESCE(pa.metadata->>'channel','')   = 'linkedin'
-                     AND COALESCE(pa.metadata->>'auto_sent','') = 'true')
+            -- LinkedIn outreach is now counted authoritatively from
+            -- sequence_step_logs (above). Exclude any LinkedIn-tagged step
+            -- activity here to avoid double-counting. (Manual/draft LinkedIn
+            -- completions actually write activity_type='sequence_step_completed',
+            -- not 'sequence_step_sent', so they never reached this source anyway
+            -- — which is exactly why the old by-channel roll-up undercounted them.
+            -- Call + legacy-email step activities are unaffected.)
+            AND COALESCE(pa.metadata->>'channel','') <> 'linkedin'
             AND pa.created_at  >= $3
 
          UNION ALL
