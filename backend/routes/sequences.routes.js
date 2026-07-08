@@ -1217,26 +1217,19 @@ router.post('/scheduled/:logId/skip', async (req, res) => {
     // (If it isn't active, the row is still correctly skipped; we just don't move
     // the pointer — resume handles re-materializing the right step.)
     if (enrollment && enrollment.status === 'active' && enrollment.current_step === row.current_step) {
-      const nextStepRes = await client.query(
-        `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
-        [enrollment.sequence_id, row.current_step + 1]
+      // Identity-cursor advance (parity with the firer). Re-read the identity
+      // fields so applyAdvance moves current_step_id/channel too, not just the ordinal.
+      const eFull = await client.query(
+        `SELECT id, sequence_id, current_step, current_step_id, current_step_channel, steps_snapshot
+           FROM sequence_enrollments WHERE id=$1`,
+        [row.enrollment_id]
       );
-      if (nextStepRes.rows.length) {
-        const ns = nextStepRes.rows[0];
-        const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId, campaignId: null });
-        const nextDue  = SendingSchedule.nextStepDue(ns, settings);
-        await client.query(
-          `UPDATE sequence_enrollments SET current_step=$1, next_step_due=$2 WHERE id=$3`,
-          [row.current_step + 1, nextDue, row.enrollment_id]
-        );
-        advancedToStep = row.current_step + 1;
-      } else {
-        await client.query(
-          `UPDATE sequence_enrollments SET status='completed', completed_at=NOW() WHERE id=$1`,
-          [row.enrollment_id]
-        );
-        completed = true;
-      }
+      const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId, campaignId: null });
+      const adv = await EnrollmentStepResolver.applyAdvance(client, eFull.rows[0], {
+        computeDue: (s) => SendingSchedule.nextStepDue(s, settings),
+      });
+      if (adv.completed) { completed = true; }
+      else { advancedToStep = adv.step.step_order; }
     }
 
     await client.query(
@@ -1535,24 +1528,12 @@ router.post('/drafts/:logId/send', async (req, res) => {
     const enrollment = enrollRes.rows[0];
 
     if (enrollment) {
-      const nextStepRes = await client.query(
-        `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
-        [enrollment.seq_id, enrollment.current_step + 1]
-      );
-      if (nextStepRes.rows.length) {
-        const ns = nextStepRes.rows[0];
-        const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId, campaignId: null });
-        const nextDue  = SendingSchedule.nextStepDue(ns, settings);
-        await client.query(
-          `UPDATE sequence_enrollments SET current_step=$1, next_step_due=$2 WHERE id=$3`,
-          [enrollment.current_step + 1, nextDue, enrollment.id]
-        );
-      } else {
-        await client.query(
-          `UPDATE sequence_enrollments SET status='completed', completed_at=NOW() WHERE id=$1`,
-          [enrollment.id]
-        );
-      }
+      // Identity-cursor advance (parity with the firer). enrollment came from
+      // `se.*` so it carries current_step_id / current_step_channel / steps_snapshot.
+      const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId, campaignId: null });
+      await EnrollmentStepResolver.applyAdvance(client, enrollment, {
+        computeDue: (s) => SendingSchedule.nextStepDue(s, settings),
+      });
     }
 
     // ── 12. Mark any linked overdue action completed ───────────────────────
@@ -1722,6 +1703,7 @@ router.post('/drafts/:logId/complete', async (req, res) => {
     const draftRes = await client.query(
       `SELECT ssl.*, ss.step_order, ss.channel, ss.step_intent,
               se.enrolled_by, se.current_step,
+              se.current_step_id, se.current_step_channel, se.steps_snapshot,
               s.id AS seq_id, s.name AS sequence_name
          FROM sequence_step_logs ssl
          JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
@@ -1822,26 +1804,19 @@ router.post('/drafts/:logId/complete', async (req, res) => {
       );
     }
 
-    // ── 3. Advance enrollment to next step ────────────────────────────────
-    const nextStepRes = await client.query(
-      `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
-      [draft.seq_id, draft.current_step + 1]
-    );
-    if (nextStepRes.rows.length) {
-      const ns = nextStepRes.rows[0];
+    // ── 3. Advance enrollment to next step (identity-cursor, parity with firer) ──
+    {
       const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId, campaignId: null });
-      const nextDue  = SendingSchedule.nextStepDue(ns, settings);
-      await client.query(
-        `UPDATE sequence_enrollments
-            SET current_step=$1, next_step_due=$2
-          WHERE id=$3`,
-        [draft.current_step + 1, nextDue, draft.enrollment_id]
-      );
-    } else {
-      await client.query(
-        `UPDATE sequence_enrollments SET status='completed', completed_at=NOW() WHERE id=$1`,
-        [draft.enrollment_id]
-      );
+      await EnrollmentStepResolver.applyAdvance(client, {
+        id:                   draft.enrollment_id,
+        sequence_id:          draft.seq_id,
+        current_step:         draft.current_step,
+        current_step_id:      draft.current_step_id,
+        current_step_channel: draft.current_step_channel,
+        steps_snapshot:       draft.steps_snapshot,
+      }, {
+        computeDue: (s) => SendingSchedule.nextStepDue(s, settings),
+      });
     }
 
     // ── 4. Mark any linked prospecting action completed ───────────────────
@@ -1895,6 +1870,7 @@ router.post('/drafts/:logId/complete', async (req, res) => {
 async function discardDraftTx(client, orgId, userId, logId) {
   const draftRes = await client.query(
     `SELECT ssl.*, ss.step_order, se.enrolled_by, se.current_step,
+            se.current_step_id, se.current_step_channel, se.steps_snapshot,
             s.id AS seq_id, s.name AS sequence_name
        FROM sequence_step_logs ssl
        JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
@@ -1915,24 +1891,19 @@ async function discardDraftTx(client, orgId, userId, logId) {
   );
 
   let enrollmentCompleted = false;
-  const nextStepRes = await client.query(
-    `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
-    [draft.seq_id, draft.current_step + 1]
-  );
-  if (nextStepRes.rows.length) {
-    const ns = nextStepRes.rows[0];
+  {
     const settings = await SendingSchedule.resolveSettings({ orgId, campaignId: null });
-    const nextDue  = SendingSchedule.nextStepDue(ns, settings);
-    await client.query(
-      `UPDATE sequence_enrollments SET current_step=$1, next_step_due=$2 WHERE id=$3`,
-      [draft.current_step + 1, nextDue, draft.enrollment_id]
-    );
-  } else {
-    await client.query(
-      `UPDATE sequence_enrollments SET status='completed', completed_at=NOW() WHERE id=$1`,
-      [draft.enrollment_id]
-    );
-    enrollmentCompleted = true;
+    const adv = await EnrollmentStepResolver.applyAdvance(client, {
+      id:                   draft.enrollment_id,
+      sequence_id:          draft.seq_id,
+      current_step:         draft.current_step,
+      current_step_id:      draft.current_step_id,
+      current_step_channel: draft.current_step_channel,
+      steps_snapshot:       draft.steps_snapshot,
+    }, {
+      computeDue: (s) => SendingSchedule.nextStepDue(s, settings),
+    });
+    enrollmentCompleted = adv.completed;
   }
 
   await client.query(
