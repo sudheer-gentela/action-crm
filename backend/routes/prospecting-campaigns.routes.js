@@ -1312,6 +1312,14 @@ router.get('/:id', async (req, res) => {
             AND p.campaign_id  = $2
             AND pa.activity_type = 'sequence_step_sent'
             AND (pa.metadata->>'emailId') IS NULL
+            -- DEDUP (LinkedIn): auto-sent connection-request steps also write
+            -- a first-class 'linkedin_event' activity in the same transaction
+            -- (LinkedInAutoSendService.confirmSent -> applyConnectionEvent).
+            -- That event row is already counted by the LinkedIn branch above,
+            -- so exclude the step activity here -- mirroring the emailId
+            -- guard for email steps.
+            AND NOT (    COALESCE(pa.metadata->>'channel','')   = 'linkedin'
+                     AND COALESCE(pa.metadata->>'auto_sent','') = 'true')
             AND pa.created_at  >= $3
 
          UNION ALL
@@ -1709,6 +1717,11 @@ router.get('/:id/outreach-events', async (req, res) => {
           WHERE pa.org_id = $1 AND p.campaign_id = $2
             AND pa.activity_type = 'sequence_step_sent'
             AND (pa.metadata->>'emailId') IS NULL
+            -- DEDUP (LinkedIn): same guard as the byChannel query in GET /:id --
+            -- auto-sent connection requests are already represented by their
+            -- 'linkedin_event' row in the branch above.
+            AND NOT (    COALESCE(pa.metadata->>'channel','')   = 'linkedin'
+                     AND COALESCE(pa.metadata->>'auto_sent','') = 'true')
             AND pa.created_at >= $3
 
          UNION ALL
