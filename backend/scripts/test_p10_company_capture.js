@@ -310,6 +310,53 @@ async function testExtraction() {
   check('newest-first ordering, undated would sink', merged[0].id === '111' && merged[1].id === '222' && merged[2].id === '333');
   const many = MJ([], Array.from({ length: 40 }, (_, i) => ({ id: String(i), title: 'Role ' + i, postedAt: new Date(NOW.getTime() - i * 3600e3).toISOString() })));
   check('cap holds at 25', many.length === 25 && many[0].id === '0');
+
+  // ── v1.23.6 — the live SDUI card shape (from the DevTools screenshot) ──────
+  console.log('\nA7. v1.23.6 (SDUI job cards: lockup titles, no /jobs/view anchors)');
+  const domSdui = new JSDOM(`<!DOCTYPE html><html><body>
+      <code>${gsCode}</code>
+      <ul>
+        <li class="ember-view occludable-update" data-chameleon-result-urn="urn:li:jobPosting:41112223334">
+          <div class="job-card-square__text--2-line-large artdeco-entity-lockup__title ember-view">
+            <div class="job-card-square__title" dir="ltr">
+              <div class="visually-hidden">Quote Analyst – Salesforce CPQ with verification</div>
+              <span><span aria-hidden="true"><strong>Quote Analyst</strong> – Salesforce CPQ</span></span>
+            </div>
+          </div>
+          <span>Gainsight</span>
+          <span>Greater Hyderabad Area</span>
+          <span>1 school alum works here</span>
+          <span>22 hours ago</span>
+        </li>
+        <li class="job-card-square ember-view">
+          <div class="artdeco-entity-lockup__title">
+            <span><span aria-hidden="true">Principal Engineer</span><span class="visually-hidden">Principal Engineer</span></span>
+          </div>
+          <span>Gainsight</span>
+          <span>Bengaluru</span>
+          <span>1 week ago</span>
+        </li>
+        <li><a href="https://www.linkedin.com/company/gainsight/jobs/">Show all jobs</a></li>
+      </ul>
+    </body></html>`,
+    { url: 'https://www.linkedin.com/company/gainsight/jobs/', runScripts: 'outside-only' });
+  domSdui.window.__GOWARM_TEST__ = true;
+  domSdui.window.eval(src);
+  const capSdui = domSdui.window.__gowarmCompanyTest.buildCapture('gainsight', domSdui.window.document, NOW);
+  check('SDUI cards captured without any /jobs/view anchor',
+    Array.isArray(capSdui.recentJobs) && capSdui.recentJobs.length === 2, capSdui.recentJobs);
+  const s0 = capSdui.recentJobs.find(j => /Quote Analyst/.test(j.title));
+  check('visually-hidden duplicate stripped (title reads once, clean)',
+    s0 && s0.title === 'Quote Analyst – Salesforce CPQ', s0 && s0.title);
+  check('id from the jobPosting URN data attribute', s0.id === '41112223334');
+  check('location + age per SDUI card (company/alum filtered)',
+    s0.location === 'Greater Hyderabad Area' && s0.postedAt === new Date(NOW.getTime() - 22 * 3600e3).toISOString(), s0);
+  const s1 = capSdui.recentJobs.find(j => j.title === 'Principal Engineer');
+  check('no-id card falls back to a title key and still dedupes',
+    s1 && s1.id === 't:principal engineer' && s1.location === 'Bengaluru');
+  check('newest-first: 22h card leads', capSdui.recentJobs[0].title === 'Quote Analyst – Salesforce CPQ');
+  check('latestJobPostedAt gate passes on SDUI-only pages',
+    capSdui.latestJobPostedAt === new Date(NOW.getTime() - 22 * 3600e3).toISOString(), capSdui.latestJobPostedAt);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
