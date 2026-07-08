@@ -1,5 +1,12 @@
 // prospecting/SignalWorkPanel.js
 //
+// P9 addition: the "🔍 Enrich company" tap in the WHAT WE KNOW header —
+// POST /prospect-work/:id/enrich (BYOK provider chain via the existing
+// enrichment orchestrator; one credit → account fields fill-if-empty + the
+// v1 enrich signal set → fresh context). Soft failures surface as notices
+// (no key configured / cap reached / not found), never blocking errors.
+// Rep-edited signal values are never overwritten (rep_override).
+//
 // Signal-Based Campaigns — Phase 7: the Work panel, the rep experience of the
 // prioritized queue (design §7). Rendered as the "Work" tab in
 // ProspectDetailPanel (only when the prospect is in a campaign).
@@ -219,6 +226,7 @@ export default function SignalWorkPanel({ prospectId, onUseDraft, onOpenProspect
   const [ctx, setCtx]         = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy]       = useState(false);
+  const [enriching, setEnriching] = useState(false); // P9 enrich tap
   const [error, setError]     = useState(null);
   const [notice, setNotice]   = useState(null);
 
@@ -285,6 +293,46 @@ export default function SignalWorkPanel({ prospectId, onUseDraft, onOpenProspect
     } catch (err) {
       setError(err.message || 'Clear failed');
     } finally { setBusy(false); }
+  };
+
+  // P9 — one BYOK enrichment tap: fields applied + enrich signals written →
+  // fresh context. Soft failures (no key / cap / not found / no account)
+  // arrive as ctx.enrichment.ok === false — a notice, never an error state.
+  const ENRICH_FAIL_NOTICES = {
+    no_api_key:              'No enrichment key configured — an org admin can add an Apollo or CoreSignal key in Settings → Prospecting → Enrichment.',
+    no_providers_configured: 'No enrichment provider configured — an org admin can add a key in Settings → Prospecting → Enrichment.',
+    monthly_cap_reached:     'Monthly enrichment cap reached — the tap was not charged. An org admin can raise the cap in Settings.',
+    not_found:               'The provider had no record for this company — nothing was written.',
+    ambiguous:               'The provider returned multiple possible companies — nothing was written. Setting the account\'s domain usually disambiguates.',
+    prospect_has_no_account: 'This prospect has no account yet, so there\'s no company to enrich.',
+  };
+  const doEnrich = async () => {
+    setEnriching(true); setError(null); setNotice(null);
+    try {
+      const prevPriority = ctx?.verdict?.priority;
+      const fresh = await apiFetch(`/prospect-work/${prospectId}/enrich`, {
+        method: 'POST', body: JSON.stringify({}),
+      });
+      setCtx(fresh);
+      const e = fresh.enrichment || {};
+      if (!e.ok) {
+        setNotice(ENRICH_FAIL_NOTICES[e.reason] || `Enrichment didn't complete (${e.reason || 'unknown reason'}).`);
+      } else {
+        const n = (e.signals && e.signals.written) ? e.signals.written.length : 0;
+        const kept = (e.signals && e.signals.skipped) ? e.signals.skipped.filter(s => s.reason === 'rep_override').length : 0;
+        let msg = n > 0
+          ? `Enriched via ${e.provider} — ${n} signal${n === 1 ? '' : 's'} updated.`
+          : `Enriched via ${e.provider} — nothing new to write.`;
+        if (kept > 0) msg += ` ${kept} kept your edit${kept === 1 ? '' : 's'} (rep data always wins).`;
+        if (fresh.verdict && prevPriority && fresh.verdict.priority !== prevPriority) {
+          msg += ` Priority moved ${prevPriority} → ${fresh.verdict.priority}.`;
+        }
+        setNotice(msg);
+      }
+      if (onUpdate) onUpdate();
+    } catch (err) {
+      setError(err.message || 'Enrichment failed');
+    } finally { setEnriching(false); }
   };
 
   const doNotInRole = async () => {
@@ -446,7 +494,20 @@ export default function SignalWorkPanel({ prospectId, onUseDraft, onOpenProspect
 
       {/* ── 3. What we know ──────────────────────────────────────────────────── */}
       <div style={{ marginTop: 14 }}>
-        <div style={sectionTitle}>📡 WHAT WE KNOW ({ctx.signals.length})</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <div style={sectionTitle}>📡 WHAT WE KNOW ({ctx.signals.length})</div>
+          {/* P9: one BYOK enrichment tap — company signals only; person
+              enrichment (email/phone reveal) stays on its own Intel-tab
+              control. Rep-edited values are never overwritten. */}
+          <button
+            style={{ ...btn(false), fontSize: 11 }}
+            disabled={busy || enriching}
+            onClick={doEnrich}
+            title="Fetch company facts from your enrichment provider (Apollo/CoreSignal). Uses one credit. Your edits are never overwritten."
+          >
+            {enriching ? '⏳ Enriching…' : '🔍 Enrich company'}
+          </button>
+        </div>
         {ctx.signals.length === 0 ? (
           <div style={{ fontSize: 12, color: '#9ca3af' }}>No signals captured yet for this contact or their company.</div>
         ) : (

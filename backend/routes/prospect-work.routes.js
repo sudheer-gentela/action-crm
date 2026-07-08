@@ -17,6 +17,16 @@
 //   POST   /:prospectId/clear-not-in-role  undo suppression
 //   POST   /:prospectId/replace-contact    capture + classify a better contact
 //                                          seen on the page, switch to them
+//   POST   /:prospectId/enrich             P9: one BYOK enrichment tap —
+//                                          company fields applied (fill-if-
+//                                          empty) + the v1 enrich signal set
+//                                          written → account reeval → FRESH
+//                                          context returned with an
+//                                          `enrichment` summary. Soft
+//                                          failures (no key / cap reached /
+//                                          not found / no account) come back
+//                                          200 + enrichment.ok:false — the
+//                                          panel notices, never blocks.
 //   POST   /:prospectId/draft              layered draft: angle ← active
 //                                          trigger's hook / campaign angle,
 //                                          specifics ← research + validations,
@@ -38,6 +48,7 @@ const { orgContext }    = require('../middleware/orgContext.middleware');
 const requireModule     = require('../middleware/requireModule.middleware');
 const WorkStageService  = require('../services/WorkStageService');
 const SkillRunnerService = require('../services/SkillRunnerService');
+const EnrichmentSignalIngest = require('../services/EnrichmentSignalIngestService');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -183,6 +194,34 @@ router.post('/:prospectId/replace-contact', async (req, res) => {
 //   specifics   ← rep-validated facts (source='rep' signals) + saved research
 //                 (already inside the prospect context the skill builds)
 //   structure/voice ← the outreach skill itself. Never "just a template."
+// ── POST /:prospectId/enrich — P9 BYOK enrichment tap ────────────────────────
+// One provider call (existing chain/caps/credit-log via enrichmentService)
+// → fields applied fill-if-empty + the v1 enrich signal set written →
+// account-level reeval → the FRESH work context, with `enrichment` attached:
+//   { ok, provider, fieldsApplied, signals: { written[], skipped[] } }
+//   { ok: false, reason }  — soft failures (no_api_key / monthly_cap_reached /
+//                            not_found / prospect_has_no_account / ...);
+//   HTTP is 200 either way so the panel can notice without an error state.
+router.post('/:prospectId/enrich', async (req, res) => {
+  const prospectId = parseId(req.params.prospectId);
+  if (!prospectId) return res.status(400).json({ error: { message: 'Invalid prospect id' } });
+  try {
+    const enrichment = await EnrichmentSignalIngest.enrichForWorkPanel({
+      orgId: req.orgId, prospectId,
+    });
+
+    if (enrichment.reason === 'prospect_not_found') {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+
+    const ctx = await WorkStageService.buildWorkContext({ orgId: req.orgId, prospectId });
+    if (!ctx) return res.status(404).json({ error: { message: 'Prospect not found' } });
+    res.json({ ...ctx, enrichment });
+  } catch (err) {
+    sendServiceError(res, err, 'Enrichment failed');
+  }
+});
+
 router.post('/:prospectId/draft', async (req, res) => {
   const prospectId = parseId(req.params.prospectId);
   if (!prospectId) return res.status(400).json({ error: { message: 'Invalid prospect id' } });

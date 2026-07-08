@@ -287,6 +287,12 @@ async function enrichAccountByIdInternal(client, accountId, orgId) {
       status: Object.keys(applied).length > 0 ? 'fields_applied' : 'no_fields_applied',
       enriched: applied,
       provider: result.provider,
+      // P9 (Signal-Based Campaigns): pass the provider payload through so the
+      // enrich→signal adapter can ingest normalized signals from the SAME
+      // provider call (one credit → fields AND signals). Additive — existing
+      // callers ignore these keys.
+      data: data,
+      raw:  result.raw || null,
     };
 }
 
