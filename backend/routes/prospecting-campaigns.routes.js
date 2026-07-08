@@ -1324,6 +1324,27 @@ router.get('/:id', async (req, res) => {
 
          UNION ALL
 
+         -- Manually completed LinkedIn steps ("Mark as Done" on a LinkedIn
+         -- draft). That handler updates channel_data.linkedin (so the
+         -- connection funnel sees the request) and bumps outreach_count, but
+         -- its activity row is 'sequence_step_completed' — historically
+         -- invisible to this union, which made the byChannel LinkedIn number
+         -- undercount vs the funnel. It never writes a linkedin_event or
+         -- sequence_step_sent row (and the extension sync returns
+         -- already_recorded for these), so counting it here cannot
+         -- double-count against the branches above.
+         SELECT 'linkedin'::text AS channel,
+                'outreach'::text AS kind
+           FROM prospecting_activities pa
+           JOIN prospects p ON p.id = pa.prospect_id
+          WHERE pa.org_id      = $1
+            AND p.campaign_id  = $2
+            AND pa.activity_type = 'sequence_step_completed'
+            AND pa.metadata->>'channel' = 'linkedin'
+            AND pa.created_at  >= $3
+
+         UNION ALL
+
          -- Calls (both directions)
          SELECT 'call'::text AS channel,
                 CASE
@@ -1722,6 +1743,23 @@ router.get('/:id/outreach-events', async (req, res) => {
             -- 'linkedin_event' row in the branch above.
             AND NOT (    COALESCE(pa.metadata->>'channel','')   = 'linkedin'
                      AND COALESCE(pa.metadata->>'auto_sent','') = 'true')
+            AND pa.created_at >= $3
+
+         UNION ALL
+
+         -- Manually completed LinkedIn steps — same rationale as the
+         -- byChannel query in GET /:id (kept in lockstep so the drill-down
+         -- always sums to the clicked number).
+         SELECT 'linkedin'::text,
+                'outreach'::text,
+                pa.created_at,
+                p.id, p.first_name, p.last_name, p.company_name,
+                COALESCE(NULLIF(pa.description, ''), 'LinkedIn step completed')
+           FROM prospecting_activities pa
+           JOIN prospects p ON p.id = pa.prospect_id
+          WHERE pa.org_id = $1 AND p.campaign_id = $2
+            AND pa.activity_type = 'sequence_step_completed'
+            AND pa.metadata->>'channel' = 'linkedin'
             AND pa.created_at >= $3
 
          UNION ALL
