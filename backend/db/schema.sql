@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict VgzD1hlZ4CyEqnmIa4UhbtKJKp0uxNj7xuzWxw571WYxd0HhixKUi5WeTKVN3xu
+\restrict WBLlvmpOIbQqw4fDCLDhuSNN7VBRqNc6fgxIKAAQ6PErhnzrgiqREhVlwrYsT8X
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -5545,7 +5545,10 @@ CREATE TABLE public.sequence_enrollments (
     completed_at timestamp with time zone,
     stopped_at timestamp with time zone,
     stop_reason character varying(100),
-    personalised_steps jsonb DEFAULT '{}'::jsonb
+    personalised_steps jsonb DEFAULT '{}'::jsonb,
+    current_step_id integer,
+    current_step_channel character varying(50),
+    steps_snapshot jsonb
 );
 
 
@@ -5662,7 +5665,9 @@ CREATE TABLE public.sequence_steps (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     require_approval boolean,
     personalize_config jsonb,
-    step_intent text
+    step_intent text,
+    delay_hours integer DEFAULT 0 NOT NULL,
+    CONSTRAINT sequence_steps_delay_hours_chk CHECK (((delay_hours >= 0) AND (delay_hours <= 23)))
 );
 
 
@@ -5671,6 +5676,13 @@ CREATE TABLE public.sequence_steps (
 --
 
 COMMENT ON COLUMN public.sequence_steps.step_intent IS 'Optional override for personalization dispatcher. NULL = auto-infer. Email intents: first_touch, follow_up, breakup. LinkedIn intents: connection_request, post_accept_message, nurture_dm.';
+
+
+--
+-- Name: COLUMN sequence_steps.delay_hours; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequence_steps.delay_hours IS 'Sub-day delay (0-23h) added to delay_days. Effective delay = delay_days*24 + delay_hours hours from the previous step. Hours > 0 on a manual channel (linkedin/task/call) bypasses the manualReleaseHour snap: the step is eligible from prev + delay, clamped forward only across disallowed send-window days.';
 
 
 --
@@ -5712,6 +5724,7 @@ CREATE TABLE public.sequences (
     ai_enabled boolean DEFAULT false NOT NULL,
     visibility text DEFAULT 'shared'::text NOT NULL,
     allow_manager_edit boolean DEFAULT false NOT NULL,
+    stop_on_connection_accept boolean DEFAULT false NOT NULL,
     CONSTRAINT sequences_visibility_chk CHECK ((visibility = ANY (ARRAY['shared'::text, 'private'::text])))
 );
 
@@ -5721,6 +5734,13 @@ CREATE TABLE public.sequences (
 --
 
 COMMENT ON COLUMN public.sequences.ai_enabled IS 'Whether this sequence uses AI personalization. Drives the builder master toggle, the campaign drawer''s AI-config visibility, and the default runSkill for preview/bulk-activate. When FALSE, steps send their templates verbatim and no skill is called.';
+
+
+--
+-- Name: COLUMN sequences.stop_on_connection_accept; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequences.stop_on_connection_accept IS 'When true, the firer stops active enrollments (status=connected, stop_reason=connection_accepted) once the prospect''s LinkedIn connection is accepted after enrollment, and skips their pending step-log rows. Default false ΓÇö opt-in per sequence from the builder UI.';
 
 
 --
@@ -8900,7 +8920,7 @@ ALTER TABLE ONLY public.sequence_steps
 --
 
 ALTER TABLE ONLY public.sequence_steps
-    ADD CONSTRAINT sequence_steps_sequence_id_step_order_key UNIQUE (sequence_id, step_order);
+    ADD CONSTRAINT sequence_steps_sequence_id_step_order_key UNIQUE (sequence_id, step_order) DEFERRABLE INITIALLY DEFERRED;
 
 
 --
@@ -11827,6 +11847,13 @@ CREATE INDEX idx_sales_handovers_org_status ON public.sales_handovers USING btre
 --
 
 CREATE INDEX idx_sales_handovers_service_owner ON public.sales_handovers USING btree (assigned_service_owner_id, status);
+
+
+--
+-- Name: idx_seq_enroll_current_step_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_seq_enroll_current_step_id ON public.sequence_enrollments USING btree (current_step_id);
 
 
 --
@@ -15390,6 +15417,14 @@ ALTER TABLE ONLY public.sales_handovers
 
 
 --
+-- Name: sequence_enrollments sequence_enrollments_current_step_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_enrollments
+    ADD CONSTRAINT sequence_enrollments_current_step_id_fkey FOREIGN KEY (current_step_id) REFERENCES public.sequence_steps(id) ON DELETE SET NULL;
+
+
+--
 -- Name: sequence_enrollments sequence_enrollments_sequence_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -16174,5 +16209,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict VgzD1hlZ4CyEqnmIa4UhbtKJKp0uxNj7xuzWxw571WYxd0HhixKUi5WeTKVN3xu
+\unrestrict WBLlvmpOIbQqw4fDCLDhuSNN7VBRqNc6fgxIKAAQ6PErhnzrgiqREhVlwrYsT8X
 

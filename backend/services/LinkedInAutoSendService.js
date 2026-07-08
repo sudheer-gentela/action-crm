@@ -33,8 +33,9 @@
 //
 // IMPORTANT: every write here runs on the caller's transaction client.
 
-const SendingSchedule = require('./SendingScheduleResolver');
-const Sync            = require('./LinkedInConnectionSyncService');
+const SendingSchedule        = require('./SendingScheduleResolver');
+const Sync                   = require('./LinkedInConnectionSyncService');
+const EnrollmentStepResolver = require('./EnrollmentStepResolver'); // identity-cursor advance (parity with firer)
 
 // Rolling-window cap is intentionally 24h (not a calendar day): it's strictly
 // safer against a midnight reset being gamed, and it lines up naturally with the
@@ -172,7 +173,8 @@ async function confirmSent(client, { orgId, userId, seatSlug, logId, timeText })
   // Lock the leased row + its enrollment. Must be MY seat's in-flight lease.
   const rowRes = await client.query(
     `SELECT l.id, l.enrollment_id, l.sequence_step_id, l.prospect_id,
-            se.sequence_id, se.current_step, se.enrolled_by,
+            se.sequence_id, se.current_step, se.current_step_id,
+            se.current_step_channel, se.steps_snapshot, se.enrolled_by,
             s.name AS seq_name
        FROM sequence_step_logs l
        JOIN sequence_enrollments se ON se.id = l.enrollment_id
@@ -244,30 +246,27 @@ async function confirmSent(client, { orgId, userId, seatSlug, logId, timeText })
     console.warn(`LinkedInAutoSendService.confirmSent: activity log failed for enrollment ${row.enrollment_id}:`, actErr.message);
   }
 
-  // Advance the enrollment — identical shape to the firer's email advance.
+  // Advance the enrollment via the identity cursor — SAME path as the firer's
+  // email advance and the manual advance service. The old positional
+  // (current_step + 1) advance updated only current_step and left
+  // current_step_id pointing at the LinkedIn step, so the identity-based firer
+  // saw the enrollment as still on LinkedIn and it never progressed to email.
+  // applyAdvance resolves the next step by ordering within the enrollment's own
+  // plan (snapshot or live) and writes current_step, current_step_id and
+  // current_step_channel together, or completes the enrollment.
   const settings = await SendingSchedule.resolveSettings({ orgId });
-  const nextStepRes = await client.query(
-    `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
-    [row.sequence_id, row.current_step + 1]
-  );
-  if (nextStepRes.rows.length) {
-    const nextStep = nextStepRes.rows[0];
-    await client.query(
-      `UPDATE sequence_enrollments
-          SET current_step=$1, next_step_due=$2
-        WHERE id=$3`,
-      [row.current_step + 1, SendingSchedule.nextStepDue(nextStep, settings), row.enrollment_id]
-    );
-  } else {
-    await client.query(
-      `UPDATE sequence_enrollments
-          SET status='completed', completed_at=NOW()
-        WHERE id=$1`,
-      [row.enrollment_id]
-    );
-  }
+  const adv = await EnrollmentStepResolver.applyAdvance(client, {
+    id:                   row.enrollment_id,
+    sequence_id:          row.sequence_id,
+    current_step:         row.current_step,
+    current_step_id:      row.current_step_id,
+    current_step_channel: row.current_step_channel,
+    steps_snapshot:       row.steps_snapshot,
+  }, {
+    computeDue: (s) => SendingSchedule.nextStepDue(s, settings),
+  });
 
-  return { ok: true, advanced: nextStepRes.rows.length > 0 };
+  return { ok: true, advanced: !adv.completed };
 }
 
 // ── Report failure ───────────────────────────────────────────────────────────
