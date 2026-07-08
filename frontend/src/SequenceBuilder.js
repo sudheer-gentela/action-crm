@@ -974,8 +974,8 @@ function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireAp
             </div>
           )}
 
-          {/* Step-level approval override (email steps only) */}
-          {isEmailChannel && (
+          {/* Step-level approval override (email + LinkedIn steps) */}
+          {(isEmailChannel || step.channel === 'linkedin') && (
             <div style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               padding: '8px 12px', borderRadius: 7,
@@ -985,7 +985,14 @@ function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireAp
                 <span style={{ fontWeight: 600, color: '#374151' }}>Draft setting: </span>
                 {step.require_approval === null || step.require_approval === undefined
                   ? `Use sequence default (${seqRequireApproval ? 'draft' : 'auto-send'})`
-                  : step.require_approval ? 'Always draft' : 'Always auto-send'}
+                  : step.require_approval
+                    ? 'Always draft'
+                    : (step.channel === 'linkedin' ? 'Auto-send when enabled' : 'Always auto-send')}
+                {step.channel === 'linkedin' && (
+                  <span style={{ display: 'block', color: '#9ca3af', marginTop: 2 }}>
+                    “Send” auto-sends the connection request only when LinkedIn auto-send is enabled; otherwise it creates a draft.
+                  </span>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 4 }}>
                 {[

@@ -516,7 +516,7 @@ async function computeEmailProjection(orgId, userId, campaignId, settings, poolP
        FROM sequence_enrollments se
        JOIN sequence_steps ss
          ON ss.sequence_id = se.sequence_id
-        AND ss.step_order  = se.current_step
+        AND ss.id             = se.current_step_id
        JOIN prospects p ON p.id = se.prospect_id
       WHERE se.org_id        = $1
         AND se.enrolled_by   = $2
@@ -3455,7 +3455,7 @@ router.post('/:id/bulk-activate', async (req, res) => {
            FROM sequence_enrollments se
            JOIN sequence_steps ss
              ON ss.sequence_id = se.sequence_id
-            AND ss.step_order  = se.current_step
+            AND ss.id             = se.current_step_id
            JOIN prospects p ON p.id = se.prospect_id
           WHERE se.org_id      = $1
             AND se.enrolled_by = $2
@@ -3763,7 +3763,7 @@ router.get('/:id/schedule-preview', async (req, res) => {
            FROM sequence_enrollments se
            JOIN sequence_steps ss
              ON ss.sequence_id = se.sequence_id
-            AND ss.step_order  = se.current_step
+            AND ss.id             = se.current_step_id
            JOIN prospects p ON p.id = se.prospect_id
           WHERE se.org_id      = $1
             AND se.enrolled_by = $2

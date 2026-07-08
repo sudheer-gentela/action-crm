@@ -994,7 +994,14 @@ const SequenceStepFirer = {
             // challenge) live at claim time / in the extension — see
             // LinkedInAutoSendService + background.js. This is a knowing,
             // disclosed LinkedIn-ToS tradeoff the org+rep both accept.
-            if (step.channel === 'linkedin' && effectiveIntent === 'connection_request') {
+            // ── LinkedIn connection-request AUTO-SEND gate (opt-in) ──────────
+            // Only auto-send when the step is NOT set to require approval.
+            // effectiveRequireApproval = COALESCE(step, sequence).require_approval,
+            // so a step-level "Draft" (require_approval=true) forces the human-
+            // actioned draft path even when the org auto-send toggle is ON. A
+            // step-level "Send" / "Inherit" that resolves to false auto-sends when
+            // the gate is enabled; if the gate is off it falls through to a draft.
+            if (step.channel === 'linkedin' && effectiveIntent === 'connection_request' && !effectiveRequireApproval) {
               let gate = { enabled: false };
               try {
                 gate = await LinkedInAutomationConfig.resolveForUser(client, {

@@ -633,6 +633,14 @@ router.get('/enrollments/:enrollId', async (req, res) => {
       ? new Date(enrollment.next_step_due)
       : now;
 
+    // Resolve the current step's ordinal position by IDENTITY (current_step_id),
+    // reorder-safe, falling back to the stored ordinal if the cursor id isn't in
+    // the live step list. Prevents the timeline from marking the wrong step as
+    // "current" after a reorder. (Frozen-snapshot ordering isn't reflected in the
+    // projected future dates — acceptable for a preview.)
+    const curStepRow = stepsRes.rows.find(s => s.id === enrollment.current_step_id);
+    const curOrder = curStepRow ? curStepRow.step_order : enrollment.current_step;
+
     const timeline = stepsRes.rows.map(step => {
       const log = logByStep[step.step_order];
 
@@ -657,16 +665,20 @@ router.get('/enrollments/:enrollId', async (req, res) => {
       }
 
       let due;
-      if (step.step_order === enrollment.current_step) {
+      if (step.step_order === curOrder) {
         due = rollingDate;
-      } else if (step.step_order > enrollment.current_step) {
+      } else if (step.step_order > curOrder) {
         const delayMs = ((parseInt(step.delay_days) || 0) * 24
                        + (parseInt(step.delay_hours) || 0)) * 3600000;
         due = new Date(rollingDate.getTime() + delayMs);
         rollingDate = due;
       }
 
-      const personalised = enrollment.personalised_steps?.[step.step_order]
+      // personalised_steps is keyed by stable step ID (matches the firer's writer);
+      // the legacy step_order keys are read as a fallback for pre-migration data.
+      const personalised = enrollment.personalised_steps?.[step.id]
+        || enrollment.personalised_steps?.[String(step.id)]
+        || enrollment.personalised_steps?.[step.step_order]
         || enrollment.personalised_steps?.[String(step.step_order)];
 
       return {
@@ -2390,11 +2402,18 @@ router.put('/:id/steps/:stepId', async (req, res) => {
     const siProvided = step_intent !== undefined;
     const siParam = step_intent === undefined ? null : (step_intent || null);
 
+    // require_approval semantics mirror the above (null = Inherit is a real value,
+    // not "don't touch"). The old COALESCE swallowed an explicit null, so choosing
+    // "Inherit" in the builder could never clear a prior true/false — fixed here
+    // with a provided-flag so undefined=leave, null=set-inherit, bool=override.
+    const raProvided = require_approval !== undefined;
+    const raParam = require_approval === undefined ? null : require_approval; // null|true|false
+
     const { rows } = await client.query(
       `UPDATE sequence_steps
           SET channel=$1, delay_days=$2, delay_hours=$3, subject_template=$4,
               body_template=$5, task_note=$6,
-              require_approval=COALESCE($7, require_approval),
+              require_approval = CASE WHEN $14::boolean THEN $7::boolean ELSE require_approval END,
               personalize_config = CASE WHEN $8::boolean THEN $9::jsonb ELSE personalize_config END,
               step_intent = CASE WHEN $10::boolean THEN $11::text ELSE step_intent END,
               updated_at=NOW()
@@ -2402,10 +2421,11 @@ router.put('/:id/steps/:stepId', async (req, res) => {
         RETURNING *`,
       [channel, delay_days ?? 0, delay_hours ?? 0, subject_template || null,
        body_template || null, task_note || null,
-       require_approval !== undefined ? require_approval : null,
+       raParam,
        pcProvided, pcParam,
        siProvided, siParam,
-       req.params.stepId, req.params.id]
+       req.params.stepId, req.params.id,
+       raProvided]
     );
     if (!rows.length) {
       await client.query('ROLLBACK');
