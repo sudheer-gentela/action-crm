@@ -416,6 +416,55 @@ async function testExtraction() {
     [{ id: '333', title: 'Senior Analyst', location: 'United States', postedAt: null }]
   );
   check('same title different location → not collapsed', m9.length === 2);
+
+  // ── v1.23.10 — Home-page jobs module: unclassed SR duplicates + badge text ──
+  console.log('\nA11. v1.23.10 (title corruption on the Home-page module)');
+  const CJT = domCards.window.__gowarmCompanyTest.cleanJobTitle;
+  check('self-doubling halved',
+    CJT('Senior Manager, AI Response & Threat Senior Manager, AI Response & Threat') === 'Senior Manager, AI Response & Threat');
+  check('badge residue stripped (trailing Verified / with verification)',
+    CJT('Quote Analyst – Salesforce CPQ with verification') === 'Quote Analyst – Salesforce CPQ'
+    && CJT('Director, Technical Services Verified') === 'Director, Technical Services');
+  check('doubling + residue combined', CJT('Role X Role X Verified') === 'Role X');
+  check('legit titles untouched (Verified Systems Engineer keeps its word)',
+    CJT('Verified Systems Engineer') === 'Verified Systems Engineer');
+
+  // Home-page-shaped fixture: SR duplicate span WITHOUT visually-hidden class,
+  // badge text inline, location as a sibling leaf.
+  const domHome = new JSDOM(`<!DOCTYPE html><html><body>
+      <code>${gsCode}</code>
+      <ul>
+        <li class="job-card-square ember-view" data-job-id="777001">
+          <div class="artdeco-entity-lockup__title">
+            <span><span aria-hidden="true">Quote Analyst – Salesforce CPQ</span><span>Quote Analyst – Salesforce CPQ with verification</span></span>
+          </div>
+          <span>Gainsight</span><span>Greater Hyderabad Area</span><span>1 day ago</span>
+        </li>
+        <li class="job-card-square ember-view">
+          <div class="artdeco-entity-lockup__title">
+            <span><span aria-hidden="true">Senior Manager, AI Response &amp; Threat</span><span>Senior Manager, AI Response &amp; Threat Verified</span></span>
+          </div>
+          <span>Gainsight</span><span>United States</span><span>5 days ago</span>
+        </li>
+      </ul>
+    </body></html>`,
+    { url: 'https://www.linkedin.com/company/gainsight/', runScripts: 'outside-only' });
+  domHome.window.__GOWARM_TEST__ = true;
+  domHome.window.eval(src);
+  const capHome = domHome.window.__gowarmCompanyTest.buildCapture('gainsight', domHome.window.document, NOW);
+  check('home-module cards: clean single titles, no Verified, no location leak',
+    capHome.recentJobs.length === 2
+    && capHome.recentJobs[0].title === 'Quote Analyst – Salesforce CPQ'
+    && capHome.recentJobs[1].title === 'Senior Manager, AI Response & Threat', capHome.recentJobs);
+  check('locations still parsed from siblings', capHome.recentJobs[0].location === 'Greater Hyderabad Area' && capHome.recentJobs[1].location === 'United States');
+
+  // Cross-surface convergence: the corrupted variant merges with the clean one.
+  const MJ10 = domCards.window.__gowarmCompanyTest.mergeJobs;
+  const conv = MJ10(
+    [{ id: 't:quote analyst – salesforce cpq verified greater hyderabad area', title: 'Quote Analyst – Salesforce CPQ Verified', location: 'Greater Hyderabad Area', postedAt: null }],
+    [{ id: '777001', title: 'Quote Analyst – Salesforce CPQ', location: 'Greater Hyderabad Area', postedAt: '2026-07-07T00:00:00.000Z' }]
+  );
+  check('residue-corrupted twin converges via cleaned dedupe key', conv.length === 1 && conv[0].id === '777001', conv);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
