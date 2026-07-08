@@ -188,7 +188,7 @@ function extractSignals(capture) {
   // display-only in the panel (no fabricated headcount) and phone stays
   // panel-only (accounts carry no phone column); everything below is a signal.
   push('company_headline',   _str(c.tagline, HEADLINE_MAX_CHARS));
-  push('specialties',        _strArray(c.specialties, 25));
+  push('specialties',        _strArray(c.specialties, 50));
   push('linkedin_followers', _int(c.followers));
   push('founded_year',       _int(c.foundedYear));  // shared P9 key
 

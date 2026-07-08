@@ -374,6 +374,19 @@ async function testExtraction() {
     Array.isArray(capMany.recentJobs) && capMany.recentJobs.length === 14, capMany.recentJobs && capMany.recentJobs.length);
   check('newest-first held across the full set',
     capMany.recentJobs[0].title === 'Role 1' && capMany.recentJobs[13].title === 'Role 14');
+
+  // ── v1.23.8 — full specialties captured (Gainsight declares ~28) ───────────
+  console.log('\nA9. v1.23.8 (specialties cap 50)');
+  const specs = Array.from({ length: 28 }, (_, i) => 'Specialty ' + (i + 1));
+  const domSpec = new JSDOM(`<!DOCTYPE html><html><body>
+      <code>${JSON.stringify({ included: [{ universalName: 'gainsight', name: 'Gainsight', specialities: specs }] }).replace(/</g, '\\u003c')}</code>
+    </body></html>`,
+    { url: 'https://www.linkedin.com/company/gainsight/', runScripts: 'outside-only' });
+  domSpec.window.__GOWARM_TEST__ = true;
+  domSpec.window.eval(src);
+  const capSpec = domSpec.window.__gowarmCompanyTest.buildCapture('gainsight', domSpec.window.document, NOW);
+  check('all 28 specialties captured (old cap was 25)',
+    Array.isArray(capSpec.specialties) && capSpec.specialties.length === 28, capSpec.specialties && capSpec.specialties.length);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -448,6 +461,10 @@ async function testIngest() {
     ]}).find(i => i.key === 'recent_job_titles');
     check('v1.23.4: recent_job_titles set built (location folded in, blanks dropped)',
       jt && JSON.stringify(jt.value) === JSON.stringify(['Quote Analyst – Salesforce CPQ (Greater Hyderabad Area)','Director, Technical Services']), jt);
+
+    // v1.23.8 — specialties signal keeps all items up to 50
+    const sp = Ingest.extractSignals({ ...CAP, specialties: Array.from({ length: 28 }, (_, i) => 'S' + i) }).find(i => i.key === 'specialties');
+    check('v1.23.8: 28 specialties persist in the signal (cap now 50)', sp && sp.value.length === 28, sp && sp.value.length);
 
     const newDefs = (await pool.query(
       `SELECT key, source_kind, reliability, capability, predicate_type FROM signal_defs
