@@ -274,8 +274,11 @@ class StrapNightlySweep {
          AND s.entity_id  = d.id
          AND s.status     = 'active'
        LEFT JOIN pipeline_stages ps
-         ON ps.id = d.pipeline_stage_id
+         ON ps.org_id = d.org_id
+         AND ps.pipeline = 'sales'
+         AND ps.key = d.stage
        WHERE d.org_id  = $1
+         AND d.deleted_at IS NULL
          AND s.id IS NULL
          AND (ps.is_terminal IS NULL OR ps.is_terminal = false)
          AND d.stage NOT IN ('closed_won', 'closed_lost')
@@ -295,6 +298,7 @@ class StrapNightlySweep {
        INNER JOIN deals d
          ON d.account_id = a.id
          AND d.org_id    = $1
+         AND d.deleted_at IS NULL
          AND d.stage NOT IN ('closed_won', 'closed_lost')
        LEFT JOIN straps s
          ON s.entity_type = 'account'
@@ -339,6 +343,7 @@ class StrapNightlySweep {
          AND s.entity_id  = d.id
          AND s.status     = 'active'
        WHERE d.org_id = $1
+         AND d.deleted_at IS NULL
          AND d.stage  = 'closed_won'
          AND s.id IS NULL
        ORDER BY d.id`,
