@@ -357,6 +357,23 @@ async function testExtraction() {
   check('newest-first: 22h card leads', capSdui.recentJobs[0].title === 'Quote Analyst – Salesforce CPQ');
   check('latestJobPostedAt gate passes on SDUI-only pages',
     capSdui.latestJobPostedAt === new Date(NOW.getTime() - 22 * 3600e3).toISOString(), capSdui.latestJobPostedAt);
+
+  // ── v1.23.7 — pre-rendered carousels: capture past the old 10-card cap ─────
+  console.log('\nA8. v1.23.7 (per-scan cap 25: pre-rendered carousel fully captured)');
+  const manyCards = Array.from({ length: 14 }, (_, i) => `
+    <li class="job-card-square ember-view" data-job-id="90000${String(i).padStart(2,'0')}">
+      <div class="artdeco-entity-lockup__title"><span><span aria-hidden="true">Role ${i + 1}</span></span></div>
+      <span>Gainsight</span><span>Hyderabad</span><span>${i + 1} days ago</span>
+    </li>`).join('');
+  const domMany = new JSDOM(`<!DOCTYPE html><html><body><code>${gsCode}</code><ul>${manyCards}</ul></body></html>`,
+    { url: 'https://www.linkedin.com/company/gainsight/jobs/', runScripts: 'outside-only' });
+  domMany.window.__GOWARM_TEST__ = true;
+  domMany.window.eval(src);
+  const capMany = domMany.window.__gowarmCompanyTest.buildCapture('gainsight', domMany.window.document, NOW);
+  check('all 14 pre-rendered cards captured in ONE scan (old cap was 10)',
+    Array.isArray(capMany.recentJobs) && capMany.recentJobs.length === 14, capMany.recentJobs && capMany.recentJobs.length);
+  check('newest-first held across the full set',
+    capMany.recentJobs[0].title === 'Role 1' && capMany.recentJobs[13].title === 'Role 14');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
