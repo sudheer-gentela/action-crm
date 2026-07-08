@@ -53,6 +53,7 @@ const AIClientResolver = require('../services/ai/AIClientResolver');
 // go through the scope service for auth (silently drop out-of-scope userIds).
 const ReportingScopeService = require('../services/ReportingScopeService');
 const AccessPolicy          = require('../services/AccessPolicy');
+const EnrollmentStepResolver = require('../services/EnrollmentStepResolver'); // identity-cursor + freeze copy-on-write
 
 // ── Auth middleware on all routes ─────────────────────────────────────────────
 router.use(authenticateToken, orgContext);
@@ -384,6 +385,15 @@ router.post('/enroll', async (req, res) => {
   const firstDelayDays  = firstStepRes.rows[0]?.delay_days  ?? 0;
   const firstDelayHours = firstStepRes.rows[0]?.delay_hours ?? 0;
 
+  // step_order → step id map, so any AI drafts supplied at enroll (keyed by
+  // step_order in the request body) get stored under the stable step ID that the
+  // firer now reads personalised_steps by.
+  const stepMapRes = await pool.query(
+    `SELECT id, step_order FROM sequence_steps WHERE sequence_id=$1`,
+    [sequenceId]
+  );
+  const orderToStepId = new Map(stepMapRes.rows.map(r => [r.step_order, r.id]));
+
   const enrolled = [];
   const skipped  = [];
 
@@ -395,8 +405,14 @@ router.post('/enroll', async (req, res) => {
       try {
         const nextDue = calcDueDate(firstDelayDays, firstDelayHours);
 
-        // Pull per-prospect AI drafts if provided, keyed by step_order
-        const prosSteps = personalisedSteps?.[prospectId] ?? {};
+        // Pull per-prospect AI drafts if provided (request keys by step_order) and
+        // remap to step-ID keys so the firer's id-keyed cache picks them up.
+        const prosStepsByOrder = personalisedSteps?.[prospectId] ?? {};
+        const prosSteps = {};
+        for (const [ord, val] of Object.entries(prosStepsByOrder)) {
+          const sid = orderToStepId.get(Number(ord));
+          if (sid != null) prosSteps[String(sid)] = val;
+        }
 
         const er = await client.query(
           `INSERT INTO sequence_enrollments
@@ -408,6 +424,8 @@ router.post('/enroll', async (req, res) => {
         );
 
         if (er.rows.length) {
+          // Stamp the identity cursor (current_step_id + channel) for the first step.
+          await EnrollmentStepResolver.stampInitialCursor(client, er.rows[0].id, sequenceId);
           enrolled.push(er.rows[0]);
 
           // Write activity so enrollment appears in the prospect's Activity tab
@@ -2339,15 +2357,21 @@ router.delete('/:id', async (req, res) => {
 router.post('/:id/steps', async (req, res) => {
   const { channel, delay_days, delay_hours, subject_template, body_template, task_note,
           require_approval, personalize_config, step_intent } = req.body;
+  if (!(await gateSequenceEdit(req, res, req.params.id))) return;
+  const client = await pool.connect();
   try {
-    if (!(await gateSequenceEdit(req, res, req.params.id))) return;
-    const maxRes = await pool.query(
+    await client.query('BEGIN');
+    // Freeze in-flight prospects first (freeze-mode orgs) so the new step never
+    // appears in their pinned plan. No-op for 'live' orgs.
+    await EnrollmentStepResolver.freezeIfConfigured(client, req.orgId, req.params.id);
+
+    const maxRes = await client.query(
       `SELECT COALESCE(MAX(step_order), 0) AS max_order FROM sequence_steps WHERE sequence_id=$1`,
       [req.params.id]
     );
     const nextOrder = maxRes.rows[0].max_order + 1;
 
-    const { rows } = await pool.query(
+    const { rows } = await client.query(
       `INSERT INTO sequence_steps
          (sequence_id, org_id, step_order, channel, delay_days, delay_hours,
           subject_template, body_template, task_note, require_approval,
@@ -2359,10 +2383,14 @@ router.post('/:id/steps', async (req, res) => {
        personalize_config ? JSON.stringify(personalize_config) : null,
        step_intent || null]
     );
+    await client.query('COMMIT');
     res.status(201).json({ step: rows[0] });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('sequences POST /:id/steps', err);
     res.status(500).json({ error: { message: 'Failed to add step' } });
+  } finally {
+    client.release();
   }
 });
 
@@ -2370,8 +2398,14 @@ router.post('/:id/steps', async (req, res) => {
 router.put('/:id/steps/:stepId', async (req, res) => {
   const { channel, delay_days, delay_hours, subject_template, body_template, task_note,
           require_approval, personalize_config, step_intent } = req.body;
+  if (!(await gateSequenceEdit(req, res, req.params.id))) return;
+  const client = await pool.connect();
   try {
-    if (!(await gateSequenceEdit(req, res, req.params.id))) return;
+    await client.query('BEGIN');
+    // Freeze in-flight prospects first (freeze-mode orgs) so this content edit
+    // doesn't reach anyone already enrolled. No-op for 'live' orgs.
+    await EnrollmentStepResolver.freezeIfConfigured(client, req.orgId, req.params.id);
+
     // personalize_config: undefined → don't touch; null → clear (inherit); obj → set
     const pcParam = personalize_config === undefined
       ? null
@@ -2385,7 +2419,7 @@ router.put('/:id/steps/:stepId', async (req, res) => {
     const siProvided = step_intent !== undefined;
     const siParam = step_intent === undefined ? null : (step_intent || null);
 
-    const { rows } = await pool.query(
+    const { rows } = await client.query(
       `UPDATE sequence_steps
           SET channel=$1, delay_days=$2, delay_hours=$3, subject_template=$4,
               body_template=$5, task_note=$6,
@@ -2402,11 +2436,44 @@ router.put('/:id/steps/:stepId', async (req, res) => {
        siProvided, siParam,
        req.params.stepId, req.params.id]
     );
-    if (!rows.length) return res.status(404).json({ error: { message: 'Step not found' } });
+    if (!rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: { message: 'Step not found' } });
+    }
+
+    // For 'live' (non-frozen) in-flight enrollments only:
+    //   • invalidate any cached AI draft for this step (keyed by step id) so the
+    //     next tick regenerates against the edited template.
+    //   • re-sync the denormalized current_step_channel if this is the step the
+    //     prospect is currently on and its channel changed.
+    const stepId = Number(req.params.stepId);
+    await client.query(
+      `UPDATE sequence_enrollments
+          SET personalised_steps = personalised_steps - $1::text
+        WHERE sequence_id = $2 AND org_id = $3
+          AND status = 'active'
+          AND steps_snapshot IS NULL
+          AND personalised_steps ? $1::text`,
+      [String(stepId), req.params.id, req.orgId]
+    );
+    await client.query(
+      `UPDATE sequence_enrollments
+          SET current_step_channel = $1
+        WHERE sequence_id = $2 AND org_id = $3
+          AND status = 'active'
+          AND steps_snapshot IS NULL
+          AND current_step_id = $4`,
+      [rows[0].channel, req.params.id, req.orgId, stepId]
+    );
+
+    await client.query('COMMIT');
     res.json({ step: rows[0] });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('sequences PUT /:id/steps/:stepId', err);
     res.status(500).json({ error: { message: 'Failed to update step' } });
+  } finally {
+    client.release();
   }
 });
 
@@ -2416,6 +2483,14 @@ router.delete('/:id/steps/:stepId', async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Freeze in-flight prospects first (freeze-mode orgs) so a removed step is
+    // preserved in their pinned plan. No-op for 'live' orgs. NOTE: a step still
+    // referenced by sent/pending logs is protected by the sequence_step_logs FK
+    // (ON DELETE RESTRICT) and the delete will fail — unchanged pre-existing
+    // behaviour. current_step_id on enrollments is ON DELETE SET NULL, so a live
+    // enrollment sitting on the deleted step re-anchors via the resolver.
+    await EnrollmentStepResolver.freezeIfConfigured(client, req.orgId, req.params.id);
+
     const delRes = await client.query(
       `DELETE FROM sequence_steps WHERE id=$1 AND sequence_id=$2 RETURNING step_order`,
       [req.params.stepId, req.params.id]
@@ -2450,6 +2525,14 @@ router.post('/:id/steps/reorder', async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Pin in-flight prospects to the pre-edit plan if the org opted into
+    // 'freeze' propagation. No-op for 'live' (default) orgs. Must run BEFORE the
+    // renumber so the snapshot captures the current order.
+    await EnrollmentStepResolver.freezeIfConfigured(client, req.orgId, req.params.id);
+
+    // The per-row loop passes through a transiently-colliding step_order state;
+    // the UNIQUE (sequence_id, step_order) constraint was made DEFERRABLE
+    // INITIALLY DEFERRED (migration 2026_43) so it is validated once at COMMIT.
     for (const s of steps) {
       await client.query(
         `UPDATE sequence_steps SET step_order=$1 WHERE id=$2 AND sequence_id=$3`,

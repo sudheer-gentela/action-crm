@@ -52,6 +52,9 @@ class SequenceStepAdvanceService {
               ss.channel,
               se.id            AS enrollment_id,
               se.current_step,
+              se.current_step_id,
+              se.current_step_channel,
+              se.steps_snapshot,
               se.sequence_id,
               s.name           AS sequence_name
          FROM sequence_step_logs ssl
@@ -111,35 +114,25 @@ class SequenceStepAdvanceService {
     }
 
     // 4. Advance enrollment.
-    let completedEnrollment = false;
-    const nextStepRes = await client.query(
-      `SELECT * FROM sequence_steps
-        WHERE sequence_id=$1 AND step_order=$2`,
-      [ctx.sequence_id, ctx.current_step + 1]
-    );
-    if (nextStepRes.rows.length) {
-      const ns = nextStepRes.rows[0];
-      // Manual channels (linkedin/task/call) are released at the top of the day
-      // (manualReleaseHour) rather than inheriting the current clock time. Email
-      // keeps now + delay_days. Org-level window settings (campaignId omitted —
-      // this manual-completion path doesn't carry campaign context).
-      const settings = await SendingSchedule.resolveSettings({ orgId, campaignId: null });
-      const nextDue  = SendingSchedule.nextStepDue(ns, settings);
-      await client.query(
-        `UPDATE sequence_enrollments
-            SET current_step=$1, next_step_due=$2
-          WHERE id=$3`,
-        [ctx.current_step + 1, nextDue, ctx.enrollment_id]
-      );
-    } else {
-      await client.query(
-        `UPDATE sequence_enrollments
-            SET status='completed', completed_at=NOW()
-          WHERE id=$1`,
-        [ctx.enrollment_id]
-      );
-      completedEnrollment = true;
-    }
+    // Next step resolved by ordering within the enrollment's plan (frozen
+    // snapshot or live) and the cursor moved by identity — reorder-safe, and
+    // keeps current_step_id / current_step_channel in sync. Manual channels
+    // (linkedin/task/call) release at manualReleaseHour; email keeps now +
+    // delay_days. Org-level window settings (no campaign context on this path).
+    const EnrollmentStepResolver = require('./EnrollmentStepResolver');
+    const settings = await SendingSchedule.resolveSettings({ orgId, campaignId: null });
+    const enrollmentForAdvance = {
+      id:                   ctx.enrollment_id,
+      sequence_id:          ctx.sequence_id,
+      current_step:         ctx.current_step,
+      current_step_id:      ctx.current_step_id,
+      current_step_channel: ctx.current_step_channel,
+      steps_snapshot:       ctx.steps_snapshot,
+    };
+    const advanceResult = await EnrollmentStepResolver.applyAdvance(client, enrollmentForAdvance, {
+      computeDue: (s) => SendingSchedule.nextStepDue(s, settings),
+    });
+    const completedEnrollment = advanceResult.completed;
 
     // 5. Mark linked prospecting_actions completed (removes from ActionsView).
     await client.query(

@@ -447,6 +447,13 @@ function cleanTargeting(input) {
 // Always returns the full shape (empty arrays/objects rather than missing
 // keys) so buildOrgContext never has to null-guard.
 // ─────────────────────────────────────────────────────────────────────────────
+// When a sequence's steps are edited/reordered, do in-flight enrollments get the
+// change ('live', default) or stay pinned to the version they were enrolled on
+// ('freeze')? Read by EnrollmentStepResolver.editPropagationMode.
+function cleanEditPropagation(v) {
+  return v === 'freeze' ? 'freeze' : 'live';
+}
+
 function sanitizeOrgConfig(input) {
   const c = (input && typeof input === 'object') ? input : {};
   const g = (c.guardrails && typeof c.guardrails === 'object') ? c.guardrails : {};
@@ -474,6 +481,8 @@ function sanitizeOrgConfig(input) {
     // Target Criteria (P3). Empty {filters:[],prioritizers:[]} = no targeting.
     // Meaningful at the campaign layer; harmless as an org default.
     targeting:         cleanTargeting(c.targeting),
+    // Sequence edit/reorder propagation to in-flight enrollments. Default 'live'.
+    sequence_edit_propagation: cleanEditPropagation(c.sequence_edit_propagation),
   };
 }
 

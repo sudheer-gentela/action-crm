@@ -46,6 +46,7 @@ const { plainTextToHtml }             = require('./emailFormatter');
 const PersonalizationDispatcher       = require('./PersonalizationDispatcher');  // lazy JIT personalisation
 const LinkedInAutomationConfig        = require('./linkedinAutomationConfig');   // org→user→system auto-connect gate
 const SenderTokenHealth               = require('./SenderTokenHealth');          // dead-credential detect / deactivate / notify
+const EnrollmentStepResolver          = require('./EnrollmentStepResolver');     // identity-cursor + snapshot step resolution
 
 // ── Template renderer ─────────────────────────────────────────────────────────
 function renderTemplate(template, prospect, account) {
@@ -279,9 +280,19 @@ const AUTO_SEND_PREDICATE = `
 async function ensureStepPersonalized(client, enrollment, channel) {
   if (enrollment.seq_ai_enabled === false) return null;            // templated sequence
   if (channel !== 'email' && channel !== 'linkedin') return null;  // call/task → templates
-  const key = enrollment.current_step;
-  const existing = enrollment.personalised_steps?.[key]
-                ?? enrollment.personalised_steps?.[String(key)];
+
+  // Resolve the current step by identity (snapshot- and reorder-safe). The
+  // personalised-content cache is keyed by the step's stable ID — NOT the
+  // step_order ordinal — so a reorder can never serve step A's draft as step B.
+  // The dispatcher still filters by step_order (its public contract), so we
+  // resolve the current step once and use its id for the cache key and its
+  // step_order for the dispatcher call.
+  const curStep = await EnrollmentStepResolver.currentStep(client, enrollment);
+  if (!curStep) return null;
+  const cacheKey = String(curStep.id);
+  const orderKey = curStep.step_order;
+
+  const existing = enrollment.personalised_steps?.[cacheKey];
   if (existing) return existing;                                   // eager / prior tick
 
   let result;
@@ -291,17 +302,17 @@ async function ensureStepPersonalized(client, enrollment, channel) {
       userId:        enrollment.enrolled_by,
       sequenceId:    enrollment.seq_id,
       prospectId:    enrollment.prospect_id,
-      onlyStepOrder: key,
+      onlyStepOrder: orderKey,
     });
   } catch (err) {
-    console.warn(`SequenceStepFirer: JIT personalise failed for enrollment ${enrollment.id} step ${key}: ${err.message}`);
+    console.warn(`SequenceStepFirer: JIT personalise failed for enrollment ${enrollment.id} step ${orderKey} (id ${curStep.id}): ${err.message}`);
     return null;                                                   // fall back to template
   }
 
-  const ps = result.personalisedSteps?.[key] ?? result.personalisedSteps?.[String(key)] ?? null;
+  const ps = result.personalisedSteps?.[orderKey] ?? result.personalisedSteps?.[String(orderKey)] ?? null;
   if (!ps) return null;
 
-  const merged = { ...(enrollment.personalised_steps || {}), [key]: ps };
+  const merged = { ...(enrollment.personalised_steps || {}), [cacheKey]: ps };
   await client.query(
     `UPDATE sequence_enrollments SET personalised_steps = $1::jsonb WHERE id = $2`,
     [JSON.stringify(merged), enrollment.id]
@@ -334,14 +345,14 @@ async function ensureStepPersonalized(client, enrollment, channel) {
 async function normalizeManualDueTimes(client) {
   const SendingSchedule = require('./SendingScheduleResolver');
   const candRes = await client.query(
+    // Channel comes from the denormalized se.current_step_channel (kept in sync
+    // by enroll + advance), so this no longer depends on step_order === current_step,
+    // which breaks after a reorder and misses frozen (snapshot) enrollments.
     `SELECT se.id, se.org_id, se.next_step_due
        FROM sequence_enrollments se
-       JOIN sequence_steps ss
-         ON ss.sequence_id = se.sequence_id
-        AND ss.step_order  = se.current_step
       WHERE se.status = 'active'
         AND se.next_step_due IS NOT NULL
-        AND ss.channel IN ('linkedin','task','call')`
+        AND se.current_step_channel IN ('linkedin','task','call')`
   );
   if (!candRes.rows.length) return 0;
 
@@ -381,10 +392,16 @@ async function materializeRows(client, enrollmentIds = null) {
   }
 
   const candRes = await client.query(
+    // Identity-cursor join (ss.id = se.current_step_id) instead of the ordinal
+    // step_order = current_step. Reorder preserves step IDs, so this stays
+    // correct across reorders. steps_snapshot is selected so frozen enrollments
+    // can override content from their pinned plan (below).
     `SELECT se.id              AS enrollment_id,
             se.org_id,
             se.prospect_id,
             se.current_step,
+            se.current_step_id,
+            se.steps_snapshot,
             se.next_step_due,
             se.personalised_steps,
             ss.id              AS step_id,
@@ -397,8 +414,7 @@ async function materializeRows(client, enrollmentIds = null) {
             a.domain AS account_domain
        FROM sequence_enrollments se
        JOIN sequences s       ON s.id  = se.sequence_id
-       JOIN sequence_steps ss ON ss.sequence_id = se.sequence_id
-                             AND ss.step_order   = se.current_step
+       JOIN sequence_steps ss ON ss.id = se.current_step_id
        JOIN prospects p       ON p.id  = se.prospect_id
   LEFT JOIN accounts a        ON a.id  = p.account_id
       WHERE se.status = 'active'
@@ -426,10 +442,23 @@ async function materializeRows(client, enrollmentIds = null) {
       name: row.account_name, industry: row.account_industry, domain: row.account_domain,
     };
     const ps           = row.personalised_steps || {};
-    const personalised = ps[row.current_step] || ps[String(row.current_step)] || null;
+    // Personalised drafts are cached by stable step ID (reorder-safe).
+    const personalised = ps[String(row.current_step_id)] || null;
 
-    const subject = personalised?.subject ?? renderTemplate(row.subject_template, prospect, account);
-    const body    = personalised?.body    ?? renderTemplate(row.body_template,    prospect, account);
+    // Frozen enrollments (steps_snapshot present) send the templates pinned at
+    // freeze time, not whatever the live step has since been edited to.
+    let subjectTemplate = row.subject_template;
+    let bodyTemplate    = row.body_template;
+    if (Array.isArray(row.steps_snapshot) && row.steps_snapshot.length) {
+      const snap = row.steps_snapshot.find(s => s.id === row.current_step_id);
+      if (snap) {
+        subjectTemplate = snap.subject_template;
+        bodyTemplate    = snap.body_template;
+      }
+    }
+
+    const subject = personalised?.subject ?? renderTemplate(subjectTemplate, prospect, account);
+    const body    = personalised?.body    ?? renderTemplate(bodyTemplate,    prospect, account);
     const personalizeSourcesJson = personalised?.personalize_sources
       ? JSON.stringify(personalised.personalize_sources)
       : null;
@@ -657,6 +686,12 @@ const SequenceStepFirer = {
       // channel (channel-aware window: email-only steps gate on the window,
       // manual steps like LinkedIn/task/call create tasks regardless of hour).
       const dueRes = await client.query(
+        // current_step_channel is read from the denormalized enrollment column
+        // (kept in sync on enroll + advance), so this hot query no longer joins
+        // sequence_steps on step_order = current_step — a join that breaks after
+        // a reorder and can't see frozen (snapshot) enrollments at all. The exact
+        // step (live or snapshot) is resolved per-enrollment in the loop body via
+        // EnrollmentStepResolver.
         `SELECT se.*, s.id AS seq_id, s.name AS seq_name,
                 s.require_approval AS seq_require_approval,
                 s.ai_enabled AS seq_ai_enabled,
@@ -664,13 +699,10 @@ const SequenceStepFirer = {
                 p.campaign_id AS prospect_campaign_id,
                 p.channel_data->'linkedin'->>'connection_status' AS li_connection_status,
                 p.channel_data->'linkedin'->>'connected_at'      AS li_connected_at,
-                ss.channel AS current_step_channel
+                se.current_step_channel AS current_step_channel
            FROM sequence_enrollments se
            JOIN sequences  s ON s.id = se.sequence_id
            JOIN prospects  p ON p.id = se.prospect_id
-           LEFT JOIN sequence_steps ss
-                  ON ss.sequence_id = se.sequence_id
-                 AND ss.step_order  = se.current_step
           WHERE se.status = 'active'
             AND se.next_step_due <= NOW()
             -- Park enrollments whose current step already has a draft awaiting
@@ -692,9 +724,9 @@ const SequenceStepFirer = {
             AND NOT EXISTS (
               SELECT 1 FROM sequence_step_logs l
                WHERE l.enrollment_id    = se.id
-                 AND l.sequence_step_id = ss.id
+                 AND l.sequence_step_id = se.current_step_id
                  AND ( l.status = 'draft'
-                    OR (ss.channel = 'linkedin' AND l.status IN ('scheduled','sending')) )
+                    OR (se.current_step_channel = 'linkedin' AND l.status IN ('scheduled','sending')) )
             )
           ORDER BY se.next_step_due ASC, se.id ASC
           LIMIT 100`
@@ -856,13 +888,13 @@ const SequenceStepFirer = {
           }
 
           // ── Get the current step ──────────────────────────────────────────
-          const stepRes = await client.query(
-            `SELECT * FROM sequence_steps
-              WHERE sequence_id=$1 AND step_order=$2`,
-            [enrollment.seq_id, enrollment.current_step]
-          );
+          // Resolved by identity (current_step_id), from the enrollment's frozen
+          // snapshot if it has one, else live sequence_steps — with re-anchoring
+          // if the current step was deleted. Replaces the ordinal
+          // step_order = current_step lookup that a reorder would misalign.
+          const step = await EnrollmentStepResolver.currentStep(client, enrollment);
 
-          if (!stepRes.rows.length) {
+          if (!step) {
             await client.query(
               `UPDATE sequence_enrollments
                   SET status='completed', completed_at=NOW()
@@ -872,8 +904,6 @@ const SequenceStepFirer = {
             fired++;
             continue;
           }
-
-          const step = stepRes.rows[0];
 
           // ── Resolve effective approval setting ────────────────────────────
           // Step-level wins when explicitly set (not NULL).
@@ -902,9 +932,9 @@ const SequenceStepFirer = {
             : null;
 
           // ── Use personalised content if available, else render template ────
+          // Cached by stable step ID (reorder-safe), matching ensureStepPersonalized.
           const personalisedStep =
-            enrollment.personalised_steps?.[enrollment.current_step] ||
-            enrollment.personalised_steps?.[String(enrollment.current_step)];
+            enrollment.personalised_steps?.[String(step.id)];
 
           let subject = personalisedStep?.subject ?? renderTemplate(step.subject_template, prospect || {}, account);
           let body    = personalisedStep?.body    ?? renderTemplate(step.body_template,    prospect || {}, account);
@@ -1385,26 +1415,13 @@ const SequenceStepFirer = {
           }
 
           // ── Advance enrollment ──────────────────────────────────
-          const nextStepRes = await client.query(
-            `SELECT * FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
-            [enrollment.seq_id, enrollment.current_step + 1]
-          );
-          if (nextStepRes.rows.length) {
-            const nextStep = nextStepRes.rows[0];
-            await client.query(
-              `UPDATE sequence_enrollments
-                  SET current_step=$1, next_step_due=$2
-                WHERE id=$3`,
-              [enrollment.current_step + 1, SendingSchedule.nextStepDue(nextStep, settings), enrollment.id]
-            );
-          } else {
-            await client.query(
-              `UPDATE sequence_enrollments
-                  SET status='completed', completed_at=NOW()
-                WHERE id=$1`,
-              [enrollment.id]
-            );
-          }
+          // Next step is resolved by ordering within the enrollment's plan
+          // (snapshot or live) and the cursor is moved by identity — so a reorder
+          // reshapes only the *forward* path, never re-points the current step.
+          // Also keeps current_step_id / current_step_channel in sync.
+          await EnrollmentStepResolver.applyAdvance(client, enrollment, {
+            computeDue: (s) => SendingSchedule.nextStepDue(s, settings),
+          });
 
           fired++;
         } catch (stepErr) {
@@ -1424,12 +1441,9 @@ const SequenceStepFirer = {
             // errors never reached the health view). If the step can't be
             // resolved (failure before the step was known), skip the insert
             // rather than throw a new violation.
-            const stepLookup = await client.query(
-              `SELECT id FROM sequence_steps WHERE sequence_id=$1 AND step_order=$2`,
-              [enrollment.seq_id, enrollment.current_step]
-            );
-            const failStepId  = stepLookup.rows[0]?.id || null;
-            const failChannel = enrollment.current_step_channel || 'email';
+            const failStepResolved = await EnrollmentStepResolver.currentStep(client, enrollment);
+            const failStepId  = failStepResolved?.id || null;
+            const failChannel = enrollment.current_step_channel || failStepResolved?.channel || 'email';
             if (failStepId) {
               await client.query(
                 `INSERT INTO sequence_step_logs

@@ -130,6 +130,9 @@ async function assignCampaignAndEnroll({ orgId, userId, prospectId, campaignId, 
 
         if (er.rows.length) {
           enrollment = er.rows[0];
+          // Stamp the identity cursor (current_step_id + channel) for the first step.
+          const EnrollmentStepResolver = require('../services/EnrollmentStepResolver');
+          await EnrollmentStepResolver.stampInitialCursor(db, er.rows[0].id, parseInt(sequenceId, 10));
           // Activity log so the enrollment shows in the prospect's Activity tab.
           // Non-fatal — a failed log must not undo a successful enrollment.
           try {

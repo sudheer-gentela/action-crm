@@ -41,6 +41,7 @@ const SignalActionSurfacer = require('../services/SignalActionSurfacer');
 // (outreach-email / outreach-linkedin) with the right step_intent. Replaces
 // Slice 2's inline mapping of the retired outreach-personalization skill.
 const PersonalizationDispatcher = require('../services/PersonalizationDispatcher');
+const EnrollmentStepResolver = require('../services/EnrollmentStepResolver'); // identity-cursor stamp on enroll
 
 // Phase 3 — campaign-scoped sequence reporting: ?depth and ?userIds filters
 // on /:id/sequence-health go through the scope service for auth.
@@ -1324,27 +1325,6 @@ router.get('/:id', async (req, res) => {
 
          UNION ALL
 
-         -- Manually completed LinkedIn steps ("Mark as Done" on a LinkedIn
-         -- draft). That handler updates channel_data.linkedin (so the
-         -- connection funnel sees the request) and bumps outreach_count, but
-         -- its activity row is 'sequence_step_completed' — historically
-         -- invisible to this union, which made the byChannel LinkedIn number
-         -- undercount vs the funnel. It never writes a linkedin_event or
-         -- sequence_step_sent row (and the extension sync returns
-         -- already_recorded for these), so counting it here cannot
-         -- double-count against the branches above.
-         SELECT 'linkedin'::text AS channel,
-                'outreach'::text AS kind
-           FROM prospecting_activities pa
-           JOIN prospects p ON p.id = pa.prospect_id
-          WHERE pa.org_id      = $1
-            AND p.campaign_id  = $2
-            AND pa.activity_type = 'sequence_step_completed'
-            AND pa.metadata->>'channel' = 'linkedin'
-            AND pa.created_at  >= $3
-
-         UNION ALL
-
          -- Calls (both directions)
          SELECT 'call'::text AS channel,
                 CASE
@@ -1743,23 +1723,6 @@ router.get('/:id/outreach-events', async (req, res) => {
             -- 'linkedin_event' row in the branch above.
             AND NOT (    COALESCE(pa.metadata->>'channel','')   = 'linkedin'
                      AND COALESCE(pa.metadata->>'auto_sent','') = 'true')
-            AND pa.created_at >= $3
-
-         UNION ALL
-
-         -- Manually completed LinkedIn steps — same rationale as the
-         -- byChannel query in GET /:id (kept in lockstep so the drill-down
-         -- always sums to the clicked number).
-         SELECT 'linkedin'::text,
-                'outreach'::text,
-                pa.created_at,
-                p.id, p.first_name, p.last_name, p.company_name,
-                COALESCE(NULLIF(pa.description, ''), 'LinkedIn step completed')
-           FROM prospecting_activities pa
-           JOIN prospects p ON p.id = pa.prospect_id
-          WHERE pa.org_id = $1 AND p.campaign_id = $2
-            AND pa.activity_type = 'sequence_step_completed'
-            AND pa.metadata->>'channel' = 'linkedin'
             AND pa.created_at >= $3
 
          UNION ALL
@@ -2547,6 +2510,8 @@ router.post('/:id/enroll-all', async (req, res) => {
           [req.orgId, sequenceId, prospectId, req.user.userId, nextDue, JSON.stringify({})]
         );
         if (er.rows.length) {
+          // Stamp the identity cursor (current_step_id + channel) for the first step.
+          await EnrollmentStepResolver.stampInitialCursor(client, er.rows[0].id, sequenceId);
           enrolled.push(prospectId);
           // Mirror the activity write done by /api/sequences/enroll.
           try {
@@ -3545,6 +3510,14 @@ router.post('/:id/bulk-activate', async (req, res) => {
     const skipped     = [];
     let slotIndex     = 0;
 
+    // step_order → step id map for remapping AI drafts (dispatcher keys by
+    // step_order) to the stable step-ID keys the firer reads by.
+    const cEnrollStepMap = await pool.query(
+      `SELECT id, step_order FROM sequence_steps WHERE sequence_id=$1`,
+      [campaign.default_sequence_id]
+    );
+    const cEnrollOrderToId = new Map(cEnrollStepMap.rows.map(r => [r.step_order, r.id]));
+
     for (const prospectId of candidates) {
       let personalisedSteps = {};
       let skillStatus       = 'not_run';
@@ -3598,6 +3571,13 @@ router.post('/:id/bulk-activate', async (req, res) => {
         const nextDue = finalSlots[slotIndex];
         slotIndex++;
 
+        // Remap AI drafts step_order → step id so the firer's id-keyed cache reads them.
+        const personalisedById = {};
+        for (const [ord, val] of Object.entries(personalisedSteps || {})) {
+          const sid = cEnrollOrderToId.get(Number(ord));
+          if (sid != null) personalisedById[String(sid)] = val;
+        }
+
         const er = await pool.query(
           `INSERT INTO sequence_enrollments
                        (org_id, sequence_id, prospect_id, enrolled_by,
@@ -3606,7 +3586,7 @@ router.post('/:id/bulk-activate', async (req, res) => {
            ON CONFLICT (sequence_id, prospect_id) DO NOTHING
            RETURNING id`,
           [req.orgId, campaign.default_sequence_id, prospectId,
-           req.user.userId, nextDue, JSON.stringify(personalisedSteps)]
+           req.user.userId, nextDue, JSON.stringify(personalisedById)]
         );
 
         if (er.rows.length === 0) {
@@ -3615,6 +3595,9 @@ router.post('/:id/bulk-activate', async (req, res) => {
           skipped.push({ prospectId, reason: 'already_enrolled' });
           continue;
         }
+
+        // Stamp the identity cursor (current_step_id + channel) for the first step.
+        await EnrollmentStepResolver.stampInitialCursor(pool, er.rows[0].id, campaign.default_sequence_id);
 
         const enrollmentId = er.rows[0].id;
 
