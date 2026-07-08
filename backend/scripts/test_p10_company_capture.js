@@ -387,6 +387,35 @@ async function testExtraction() {
   const capSpec = domSpec.window.__gowarmCompanyTest.buildCapture('gainsight', domSpec.window.document, NOW);
   check('all 28 specialties captured (old cap was 25)',
     Array.isArray(capSpec.specialties) && capSpec.specialties.length === 28, capSpec.specialties && capSpec.specialties.length);
+
+  // ── v1.23.9 — cross-path duplicate reconciliation ──────────────────────────
+  console.log('\nA10. v1.23.9 (mergeJobs two-tier dedupe)');
+  const MJ9 = domCards.window.__gowarmCompanyTest.mergeJobs;
+  // Same job seen by both paths: numeric id vs t: fallback, same title+loc.
+  let m9 = MJ9(
+    [{ id: 't:principal engineer - ii', title: 'Principal Engineer - II', location: 'Bengaluru', postedAt: null }],
+    [{ id: '4111222333', title: 'Principal Engineer - II', location: 'Bengaluru', postedAt: '2026-07-01T00:00:00.000Z' }]
+  );
+  check('fallback + numeric same title/loc → ONE record, numeric id, details merged',
+    m9.length === 1 && m9[0].id === '4111222333' && m9[0].postedAt === '2026-07-01T00:00:00.000Z', m9);
+  // Reverse arrival order.
+  m9 = MJ9(
+    [{ id: '4111222333', title: 'Principal Engineer - II', location: 'Bengaluru', postedAt: '2026-07-01T00:00:00.000Z' }],
+    [{ id: 't:principal engineer - ii', title: 'Principal Engineer - II', location: 'Bengaluru', postedAt: null }]
+  );
+  check('reverse order too → one record, numeric id kept', m9.length === 1 && m9[0].id === '4111222333');
+  // Two DISTINCT numeric ids, identical title/loc → genuinely two postings.
+  m9 = MJ9(
+    [{ id: '111', title: 'GTM Data Architect', location: 'Greater Hyderabad Area', postedAt: '2026-07-01T00:00:00.000Z' }],
+    [{ id: '222', title: 'GTM Data Architect', location: 'Greater Hyderabad Area', postedAt: '2026-07-01T00:00:00.000Z' }]
+  );
+  check('two distinct numeric ids, same title → BOTH kept (reposts are real)', m9.length === 2);
+  // Same title, DIFFERENT locations, one fallback → distinct roles kept.
+  m9 = MJ9(
+    [{ id: 't:senior analyst', title: 'Senior Analyst', location: 'Bengaluru', postedAt: null }],
+    [{ id: '333', title: 'Senior Analyst', location: 'United States', postedAt: null }]
+  );
+  check('same title different location → not collapsed', m9.length === 2);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
