@@ -1702,12 +1702,9 @@ router.get('/:id/outreach-events', async (req, res) => {
 
          UNION ALL
 
+         -- LinkedIn RESPONSES only (outreach comes from sequence_step_logs below).
          SELECT 'linkedin'::text,
                 CASE
-                  WHEN pa.metadata->>'event' IN (
-                    'connection_request_sent', 'message_sent',
-                    'inmail_sent',              'voice_note_sent'
-                  ) THEN 'outreach'
                   WHEN pa.metadata->>'event' = 'reply_received' THEN 'response'
                   ELSE NULL
                 END,
@@ -1719,6 +1716,27 @@ router.get('/:id/outreach-events', async (req, res) => {
           WHERE pa.org_id = $1 AND p.campaign_id = $2
             AND pa.activity_type = 'linkedin_event'
             AND pa.created_at >= $3
+
+         UNION ALL
+
+         -- LinkedIn OUTREACH — authoritative from sequence_step_logs (matches the
+         -- byChannel count in GET /:id). A sent/completed LinkedIn step is the
+         -- definitive record, regardless of finalize path; the activity ledger
+         -- undercounted because only auto-send writes a 'linkedin_event'.
+         SELECT 'linkedin'::text,
+                'outreach'::text,
+                l.fired_at,
+                p.id, p.first_name, p.last_name, p.company_name,
+                CASE WHEN ss2.step_intent = 'message_sent'
+                       THEN 'message sent'
+                     ELSE 'connection request sent' END
+           FROM sequence_step_logs l
+           JOIN sequence_steps ss2 ON ss2.id = l.sequence_step_id
+                                  AND ss2.channel = 'linkedin'
+           JOIN prospects p ON p.id = l.prospect_id
+          WHERE l.org_id = $1 AND p.campaign_id = $2
+            AND l.status IN ('sent','completed')
+            AND l.fired_at >= $3
 
          UNION ALL
 
@@ -1736,11 +1754,10 @@ router.get('/:id/outreach-events', async (req, res) => {
           WHERE pa.org_id = $1 AND p.campaign_id = $2
             AND pa.activity_type = 'sequence_step_sent'
             AND (pa.metadata->>'emailId') IS NULL
-            -- DEDUP (LinkedIn): same guard as the byChannel query in GET /:id --
-            -- auto-sent connection requests are already represented by their
-            -- 'linkedin_event' row in the branch above.
-            AND NOT (    COALESCE(pa.metadata->>'channel','')   = 'linkedin'
-                     AND COALESCE(pa.metadata->>'auto_sent','') = 'true')
+            -- LinkedIn outreach is now sourced from sequence_step_logs (above);
+            -- exclude LinkedIn-tagged step activities here to avoid double-count.
+            -- Mirrors the byChannel count query in GET /:id.
+            AND COALESCE(pa.metadata->>'channel','') <> 'linkedin'
             AND pa.created_at >= $3
 
          UNION ALL
