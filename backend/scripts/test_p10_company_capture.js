@@ -124,6 +124,88 @@ async function testExtraction() {
     T.parseRelativeTime('5h', NOW) === new Date(NOW.getTime() - 5 * 3600e3).toISOString()
     && T.parseRelativeTime('1mo', NOW) === new Date(NOW.getTime() - 30 * 86400e3).toISOString()
     && T.parseRelativeTime('Promoted', NOW) === null);
+
+  // ── v1.23.1 — the fields the 10Xme live test showed missing ───────────────
+  console.log('\nA2. v1.23.1 extraction (URN industry / followers / tagline / About dl)');
+
+  // Dash-shaped entity: industry is a URN reference resolved via an included
+  // sibling entity; size only as employeeCountRange; followers behind a
+  // *followingState reference; tagline, foundedOn, specialities, phone inline.
+  const IND_URN = 'urn:li:fsd_industryV2:1999';
+  const FS_URN  = 'urn:li:fsd_followingState:acme';
+  const dashDoc = {
+    included: [
+      { entityUrn: IND_URN, name: 'E-Learning Providers' },
+      { entityUrn: FS_URN, followerCount: 496 },
+      {
+        entityUrn: 'urn:li:fsd_company:9999',
+        universalName: 'tenxme', name: '10Xme',
+        tagline: 'Premium AI education for ambitious professionals.',
+        '*industryV2Taxonomy': [IND_URN],
+        '*followingState': FS_URN,
+        employeeCountRange: { start: 2, end: 10 },
+        foundedOn: { year: 2024 },
+        specialities: ['AI education', 'Prompt systems', 'AI education'],
+        phone: { number: '+91 98765 43210' },
+        websiteUrl: 'https://10xme.biz',
+        description: 'Most professionals open ChatGPT, ask a question, get a generic answer, and move on.',
+      },
+    ],
+  };
+  const dom3 = new JSDOM(
+    `<!DOCTYPE html><html><body><code>${JSON.stringify(dashDoc).replace(/</g, '\\u003c')}</code></body></html>`,
+    { url: 'https://www.linkedin.com/company/tenxme/', runScripts: 'outside-only' }
+  );
+  dom3.window.__GOWARM_TEST__ = true;
+  dom3.window.eval(src);
+  const cap3 = dom3.window.__gowarmCompanyTest.buildCapture('tenxme', dom3.window.document, NOW);
+  check('industry resolved through the URN reference', cap3.industry === 'E-Learning Providers', cap3.industry);
+  check('tagline captured', cap3.tagline === 'Premium AI education for ambitious professionals.');
+  check('employeeCountRange → "2-10 employees" display range, NO fabricated headcount',
+    cap3.sizeRange === '2-10 employees' && cap3.memberCount === null, cap3.sizeRange);
+  check('followers via *followingState reference', cap3.followers === 496);
+  check('foundedOn.year / specialties (deduped) / phone.number captured',
+    cap3.foundedYear === 2024 && JSON.stringify(cap3.specialties) === JSON.stringify(['AI education','Prompt systems']) && cap3.phone === '+91 98765 43210', cap3);
+
+  // Top-card DOM fallback: NO usable entity — the visible summary line and
+  // the tagline above it carry the facts (the screenshot's exact shape).
+  const domTop = new JSDOM(`<!DOCTYPE html><html><body><section>
+      <h1>10Xme</h1>
+      <p>Premium AI education for ambitious professionals. Stop using AI like a chatbot.</p>
+      <p>E-Learning Providers · 496 followers · 2-10 employees</p>
+    </section></body></html>`,
+    { url: 'https://www.linkedin.com/company/tenxme/', runScripts: 'outside-only' });
+  domTop.window.__GOWARM_TEST__ = true;
+  domTop.window.eval(src);
+  const capTop = domTop.window.__gowarmCompanyTest.buildCapture('tenxme', domTop.window.document, NOW);
+  check('top-card fallback: industry + followers + size range parsed from the dotted line',
+    capTop.industry === 'E-Learning Providers' && capTop.followers === 496 && capTop.sizeRange === '2-10 employees', capTop);
+  check('top-card fallback: tagline from the previous sibling', /Premium AI education/.test(capTop.tagline || ''));
+  check('follower K-suffix parses ("12K followers" → 12000)',
+    domTop.window.__gowarmCompanyTest.parseFollowerCount('Software · 12K followers') === 12000);
+
+  // About-tab <dl>: the detailed facts block (Website / Phone / Industry /
+  // Company size incl. associated members / Headquarters / Founded / Specialties).
+  const domDl = new JSDOM(`<!DOCTYPE html><html><body><dl>
+      <dt>Website</dt><dd><a href="https://10xme.biz">10xme.biz</a></dd>
+      <dt>Phone</dt><dd><a href="tel:+919876543210">+91 98765 43210</a> Phone number is +91 98765 43210</dd>
+      <dt>Industry</dt><dd>E-Learning Providers</dd>
+      <dt>Company size</dt><dd>2-10 employees 13 associated members</dd>
+      <dt>Headquarters</dt><dd>Hyderabad, Telangana, India</dd>
+      <dt>Founded</dt><dd>2024</dd>
+      <dt>Specialties</dt><dd>AI education, Prompt systems, and Agent workflows</dd>
+    </dl></body></html>`,
+    { url: 'https://www.linkedin.com/company/tenxme/about/', runScripts: 'outside-only' });
+  domDl.window.__GOWARM_TEST__ = true;
+  domDl.window.eval(src);
+  const capDl = domDl.window.__gowarmCompanyTest.buildCapture('tenxme', domDl.window.document, NOW);
+  check('About dl: website→domain, phone via tel:, industry',
+    capDl.websiteDomain === '10xme.biz' && capDl.phone === '+919876543210' && capDl.industry === 'E-Learning Providers', capDl);
+  check('About dl: size range display-only BUT associated members is a real count',
+    capDl.sizeRange === '2-10 employees' && capDl.memberCount === 13);
+  check('About dl: HQ city/country, founded, specialties',
+    capDl.hqCity === 'Hyderabad' && capDl.hqCountry === 'India' && capDl.foundedYear === 2024
+    && JSON.stringify(capDl.specialties) === JSON.stringify(['AI education','Prompt systems','Agent workflows']), capDl);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -165,6 +247,32 @@ async function testIngest() {
     items = Ingest.extractSignals({ ...CAP, memberCount: null, jobOpenings: 0, latestPostAt: 'garbage' });
     check('no fabrication from range; postings 0 written; bad date skipped',
       !items.some(i => i.key === 'headcount') && items.find(i => i.key === 'active_job_postings').value === 0 && !items.some(i => i.key === 'recent_company_post'));
+
+    // ── v1.23.1: the new capture fields → signals ─────────────────────────
+    items = Ingest.extractSignals({
+      ...CAP,
+      tagline: 'Premium AI education for ambitious professionals.',
+      specialties: ['AI education', 'Prompt systems'],
+      followers: 496,
+      foundedYear: 2024,
+      phone: '+91 98765 43210', // panel-only — must NOT become a signal
+    });
+    const m2 = Object.fromEntries(items.map(i => [i.key, i.value]));
+    check('v1.23.1: headline/specialties/followers/founded_year extracted',
+      m2.company_headline === 'Premium AI education for ambitious professionals.'
+      && JSON.stringify(m2.specialties) === JSON.stringify(['AI education','Prompt systems'])
+      && m2.linkedin_followers === 496 && m2.founded_year === 2024, m2);
+    check('phone is panel-only, never a signal', !('phone' in m2));
+
+    const newDefs = (await pool.query(
+      `SELECT key, source_kind, reliability, capability, predicate_type FROM signal_defs
+        WHERE org_id=$1 AND key IN ('company_headline','specialties','linkedin_followers')`, [orgId])).rows;
+    check('3 new defs ensured (harvest ⇒ medium; specialties/followers may Filter)',
+      newDefs.length === 3
+      && newDefs.every(d => d.source_kind === 'harvest' && d.reliability === 'medium')
+      && newDefs.find(d => d.key === 'specialties').capability === 'both'
+      && newDefs.find(d => d.key === 'linkedin_followers').capability === 'both'
+      && newDefs.find(d => d.key === 'company_headline').capability === 'prioritize', newDefs);
 
     // ── matchAccount ──────────────────────────────────────────────────────
     const acc = (await pool.query(

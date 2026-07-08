@@ -54,6 +54,34 @@ const { normalizeLinkedInCompanyUrl, normalizeDomain, resolveAccountId } = requi
 
 const RECENT_POST_KEY = 'recent_company_post';
 const ABOUT_MAX_CHARS = 5000;
+const HEADLINE_MAX_CHARS = 300;
+
+// v1.23.1 additions — the fields the live-page test showed we were missing.
+// All harvest (page-read) ⇒ medium reliability; specialties/followers keep
+// 'both' (medium may Filter — only LOW clamps to Prioritize, RULE 1), the
+// headline is rep/draft context, not a predicate.
+const P10_EXTRA_DEFS = [
+  {
+    key: RECENT_POST_KEY, label: 'Recent company post', predicateType: 'recency',
+    capability: 'prioritize', ttlDays: 30, defaultHook: 'active on LinkedIn right now',
+    description: 'The company posted on LinkedIn recently (read from the company page by the extension). Activity, not news — recent_news is the separate news signal.',
+  },
+  {
+    key: 'company_headline', label: 'Company headline', predicateType: 'set',
+    capability: 'prioritize', ttlDays: 365, defaultHook: null,
+    description: "The company's LinkedIn tagline — the one-liner under the name. Context for reps and drafts, not a targeting predicate.",
+  },
+  {
+    key: 'specialties', label: 'Specialties', predicateType: 'set',
+    capability: 'both', ttlDays: 365, defaultHook: null,
+    description: 'Self-declared specialties from the LinkedIn company page.',
+  },
+  {
+    key: 'linkedin_followers', label: 'LinkedIn followers', predicateType: 'number',
+    capability: 'both', ttlDays: 180, defaultHook: null,
+    description: "The company page's follower count.",
+  },
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Defs: the shared P9 set (industry / headcount / hq / about / postings /
@@ -63,27 +91,26 @@ const ABOUT_MAX_CHARS = 5000;
 
 async function ensureDefs(orgId, client) {
   await EnrichmentSignalIngest.ensureEnrichDefs(orgId, client);
-  const existing = await SignalRegistry.getDef({ orgId, key: RECENT_POST_KEY, client });
-  if (existing) return existing;
-  try {
-    return await SignalRegistry.createDef({
-      orgId,
-      key: RECENT_POST_KEY,
-      label: 'Recent company post',
-      description: 'The company posted on LinkedIn recently (read from the company page by the extension). Activity, not news — recent_news is the separate news signal.',
-      capability: 'prioritize',
-      scope: 'company',
-      predicateType: 'recency',
-      sourceKind: 'harvest',
-      ttlDays: 30,
-      defaultHook: 'active on LinkedIn right now',
-      client,
-    });
-  } catch (err) {
-    if (/already exists/i.test(err.message)) {
-      return SignalRegistry.getDef({ orgId, key: RECENT_POST_KEY, client });
+  for (const def of P10_EXTRA_DEFS) {
+    const existing = await SignalRegistry.getDef({ orgId, key: def.key, client });
+    if (existing) continue;
+    try {
+      await SignalRegistry.createDef({
+        orgId,
+        key: def.key,
+        label: def.label,
+        description: def.description,
+        capability: def.capability,
+        scope: 'company',
+        predicateType: def.predicateType,
+        sourceKind: 'harvest',
+        ttlDays: def.ttlDays,
+        defaultHook: def.defaultHook || null,
+        client,
+      });
+    } catch (err) {
+      if (!/already exists/i.test(err.message)) throw err;
     }
-    throw err;
   }
 }
 
@@ -102,6 +129,13 @@ function _int(v) {
   if (v === null || v === undefined || v === '') return null;
   const n = Number(v);
   return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+function _strArray(v, max) {
+  if (!Array.isArray(v)) return null;
+  const arr = v.map((x) => (typeof x === 'string' ? x.trim() : null)).filter(Boolean);
+  const uniq = [...new Set(arr)].slice(0, max || arr.length);
+  return uniq.length ? uniq : null;
 }
 
 function _date(v) {
@@ -134,6 +168,14 @@ function extractSignals(capture) {
   push('company_about', _str(c.description, ABOUT_MAX_CHARS));
   push('headcount',     _int(c.memberCount));       // NEVER from sizeRange
   push('active_job_postings', _int(c.jobOpenings)); // stated 0 = known fact
+
+  // v1.23.1 — the fields the live-page test showed missing. sizeRange stays
+  // display-only in the panel (no fabricated headcount) and phone stays
+  // panel-only (accounts carry no phone column); everything below is a signal.
+  push('company_headline',   _str(c.tagline, HEADLINE_MAX_CHARS));
+  push('specialties',        _strArray(c.specialties, 25));
+  push('linkedin_followers', _int(c.followers));
+  push('founded_year',       _int(c.foundedYear));  // shared P9 key
 
   const postAt = _date(c.latestPostAt);
   if (postAt) push(RECENT_POST_KEY, postAt.toISOString(), postAt);
