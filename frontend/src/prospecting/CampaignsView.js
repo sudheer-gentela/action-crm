@@ -2042,7 +2042,7 @@ function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#1f2937', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {isEvents ? (r.prospect_name || '(unknown)') : (r.name || '(unknown)')}
-                  {!isEvents && r.linkedin_url && (
+                  {r.linkedin_url && (
                     <a
                       href={r.linkedin_url} target="_blank" rel="noopener noreferrer"
                       onClick={e => e.stopPropagation()}
@@ -2054,7 +2054,7 @@ function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
                 </div>
                 <div style={{ fontSize: 11, color: '#9ca3af', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {isEvents
-                    ? [r.company_name, r.detail].filter(Boolean).join(' · ')
+                    ? [r.title, r.company_name, r.detail].filter(Boolean).join(' · ')
                     : drill.type === 'enrolled'
                       ? [r.title, r.company_name].filter(Boolean).join(' · ')
                       : [r.title, r.company_name].filter(Boolean).join(' · ')}

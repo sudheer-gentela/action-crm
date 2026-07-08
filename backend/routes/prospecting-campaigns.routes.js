@@ -1785,6 +1785,23 @@ router.get('/:id/outreach-events', async (req, res) => {
       [req.orgId, req.params.id, rangeStart, kind, channel]
     );
 
+    // Enrich with LinkedIn profile URL + title so the LinkedIn drill-down can
+    // render clickable `in ↗` links like the connections modal. Kept as a small
+    // follow-up lookup (rather than threading two more columns through every
+    // branch of the UNION above) to avoid column-order fragility.
+    const prospectIds = [...new Set(rows.map(r => r.prospect_id).filter(Boolean))];
+    let profileById = {};
+    if (prospectIds.length) {
+      const prof = await pool.query(
+        `SELECT id, linkedin_url, title FROM prospects
+          WHERE org_id = $1 AND id = ANY($2::int[])`,
+        [req.orgId, prospectIds]
+      );
+      profileById = Object.fromEntries(
+        prof.rows.map(p => [p.id, { linkedin_url: p.linkedin_url || null, title: p.title || null }])
+      );
+    }
+
     res.json({
       range, channel, kind,
       total:  rows[0]?.total || 0,
@@ -1792,6 +1809,8 @@ router.get('/:id/outreach-events', async (req, res) => {
         prospect_id:   r.prospect_id,
         prospect_name: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
         company_name:  r.company_name || null,
+        title:         profileById[r.prospect_id]?.title || null,
+        linkedin_url:  profileById[r.prospect_id]?.linkedin_url || null,
         ts:            r.ts,
         channel:       r.channel,
         kind:          r.kind,
