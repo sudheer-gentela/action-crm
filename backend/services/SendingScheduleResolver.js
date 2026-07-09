@@ -94,7 +94,12 @@ const UNCAPPED_CHANNELS = new Set(['call', 'task']); // no daily volume cap at a
  *
  * If campaignId is omitted, returns the org-level effective settings.
  */
-async function resolveSettings({ orgId, campaignId = null }) {
+// `userId` is OPTIONAL. When supplied, the rep's personal LinkedIn connection
+// cap (user_preferences.preferences.outreach.linkedinConnectionCap) overrides
+// the org-level linkedinReleaseCap. LinkedIn is a personal account — one per
+// rep — so the rep, not the org, is the right owner of that ceiling. Email has
+// no equivalent: its ceiling lives on the sender account rows themselves.
+async function resolveSettings({ orgId, campaignId = null, userId = null }) {
   if (!orgId) throw new Error('resolveSettings: orgId is required');
 
   const [orgRes, campRes] = await Promise.all([
@@ -218,6 +223,32 @@ async function resolveSettings({ orgId, campaignId = null }) {
     resolved.sendWindowEndHour = repaired;
   }
 
+  // Per-rep LinkedIn connection cap. Resolution order:
+  //   user_preferences.outreach.linkedinConnectionCap → org → DEFAULTS.
+  // A campaign-level daily_activation_cap still wins over both (it resolved
+  // into linkedinReleaseCap above) — a campaign may pace slower than the rep's
+  // personal ceiling, never faster. Best-effort: any lookup failure leaves the
+  // org value in place rather than failing the whole resolve.
+  if (userId) {
+    try {
+      const { rows } = await pool.query(
+        `SELECT preferences->'outreach'->>'linkedinConnectionCap' AS cap
+           FROM user_preferences WHERE user_id = $1 AND org_id = $2`,
+        [userId, orgId]
+      );
+      const userCap = coerceInt(rows[0]?.cap);
+      if (userCap != null && userCap > 0) {
+        // A campaign override (daily_activation_cap) still binds as a ceiling.
+        const campOverride = coerceInt(camp.daily_activation_cap);
+        resolved.linkedinReleaseCap = (campOverride != null && campOverride > 0)
+          ? Math.min(campOverride, userCap)
+          : userCap;
+      }
+    } catch (err) {
+      console.warn(`[SendingSchedule] user LinkedIn cap lookup failed for user=${userId}:`, err.message);
+    }
+  }
+
   return Object.freeze(resolved);
 }
 
@@ -331,8 +362,30 @@ function scheduleBatchSlots({
 
   // Per-day cap source. For uncapped channels we use a large finite number so
   // the day-walk still terminates (release everything on the first valid day).
-  const capToday = isUncapped ? count + (sumExisting(existingByDay)) : (dayCap ? dayCap.todayRemaining : 0);
-  const capFull  = isUncapped ? count + (sumExisting(existingByDay)) : (dayCap ? dayCap.perDayFull   : 0);
+  //
+  // DEGENERATE CAP GUARD: a perDayFull of 0 (or a missing dayCap) used to make
+  // `usedToday >= dayCapN` true on EVERY day, so the walk burned all 730 safety
+  // iterations and returned []. Callers then read finalSlots[i] as undefined and
+  // wrote NULL next_step_due — an enrollment the firer can never pick up
+  // (`AND se.next_step_due IS NOT NULL`), silently, forever.
+  //
+  // Capacity is now enforced at FIRE time (per-mailbox daily limit + min-delay
+  // cooldown for email; per-rep connection cap for LinkedIn connection requests).
+  // The scheduler is a PACING hint, not a budget. So a zero/absent cap degrades
+  // to "pace by cadence and let the firer gate", never to "produce no slots".
+  const rawToday = dayCap ? dayCap.todayRemaining : 0;
+  const rawFull  = dayCap ? dayCap.perDayFull     : 0;
+  const degenerate = !isUncapped &&
+    (!(Number.isFinite(rawFull) && rawFull > 0));
+  if (degenerate) {
+    console.warn(
+      `[SendingSchedule] scheduleBatchSlots: non-positive perDayFull (${rawFull}) ` +
+      `for channel=${channel}; pacing by cadence and deferring to fire-time enforcement.`
+    );
+  }
+  const fallbackCap = count + sumExisting(existingByDay);
+  const capToday = (isUncapped || degenerate) ? fallbackCap : rawToday;
+  const capFull  = (isUncapped || degenerate) ? fallbackCap : rawFull;
 
   // on_activate means "start now": today's first batch is released immediately,
   // bypassing BOTH the send-day and start-hour gating for TODAY ONLY. All

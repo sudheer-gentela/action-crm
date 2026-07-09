@@ -263,46 +263,57 @@ async function leadingChannelOf(defaultSequenceId) {
   return r.rows[0]?.channel || 'email';
 }
 
-// Load the weighted-split pool for a given user + channel: every ACTIVE campaign
-// owned by the user whose leading channel matches, with its share_weight. Used to
-// normalize a campaign's slice of the channel budget. Returns:
-//   { members: [{ id, name, weight }], totalWeight, assignedCount, unsetCount }
-// (weight null = unset; excluded from totalWeight and flagged.)
-async function loadChannelPool(orgId, userId, channel) {
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper: how many OTHER active campaigns of this user can draw on the same
+// mailbox(es) as `campaignId`? A campaign with sender_account_ids = NULL uses
+// ALL of the rep's active senders, so it contends with everything.
+//
+// Purely informational — used to label the capacity box honestly. Nothing is
+// reserved: contending campaigns race, and the firer's fair-share ordering
+// arbitrates per (campaign, sender) at send time.
+// ─────────────────────────────────────────────────────────────────────────────
+async function countContendingCampaigns(orgId, userId, campaignId, senderIds) {
+  const mine = (Array.isArray(senderIds) && senderIds.length) ? new Set(senderIds) : null;
   const { rows } = await pool.query(
-    `SELECT c.id, c.name, c.share_weight,
-            (SELECT ss.channel FROM sequence_steps ss
-              WHERE ss.sequence_id = c.default_sequence_id
-              ORDER BY ss.step_order LIMIT 1) AS leading_channel
+    `SELECT c.id, c.name, c.sender_account_ids
        FROM prospecting_campaigns c
       WHERE c.org_id   = $1
         AND c.owner_id = $2
         AND c.status   = 'active'
+        AND c.id      <> $3
         AND c.default_sequence_id IS NOT NULL`,
-    [orgId, userId]
+    [orgId, userId, campaignId]
   );
-  const members = [];
-  let totalWeight = 0, assignedCount = 0, unsetCount = 0;
+
+  const contenders = [];
   for (const r of rows) {
-    const lead = r.leading_channel || 'email';
-    if (lead !== channel) continue;
-    const w = (r.share_weight != null) ? r.share_weight : null;
-    if (w != null && w > 0) { totalWeight += w; assignedCount++; }
-    else { unsetCount++; }
-    members.push({ id: r.id, name: r.name, weight: w });
+    const theirs = (Array.isArray(r.sender_account_ids) && r.sender_account_ids.length)
+      ? new Set(r.sender_account_ids)
+      : null;
+    // NULL on either side means "all the rep's senders" → guaranteed overlap.
+    const overlaps = (mine === null || theirs === null)
+      ? true
+      : [...theirs].some(id => mine.has(id));
+    if (overlaps) contenders.push({ id: r.id, name: r.name });
   }
-  return { members, totalWeight, assignedCount, unsetCount };
+  return { count: contenders.length, campaigns: contenders };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper: resolve the effective sending schedule for a campaign plus the
 // per-channel daily capacity for a given user (the one who would activate).
-// Returns { settings, firstChannel, channelCap, emailCapacity, allocation }.
+// Returns { settings, firstChannel, channelCap, emailCapacity, contention }.
 //   - emailCapacity is null unless firstChannel === 'email'.
 //   - channelCap.todayRemaining is Infinity for call/task (uncapped).
-//   - allocation describes the weighted slice when budgetMode='weighted'
-//     (null in shared mode). channelCap is REDUCED to the campaign's slice
-//     when weighted so the scheduler lays only that many slots/day.
+//   - contention (email only) reports how many OTHER active campaigns can draw
+//     on the same mailbox(es). Informational: capacity is enforced at fire
+//     time, not reserved here.
+//
+// NOTE: firstChannel governs the ACTIVATION batch's pacing only. Follow-up
+// steps get next_step_due from SendingSchedule.nextStepDue() — pure delay
+// math — so a LinkedIn-led sequence's email follow-ups and an email-led
+// sequence's LinkedIn requests are both budgeted at fire time, by the channel
+// they actually use. There is no cross-channel allocation to compute.
 // Used by GET /:id, schedule-preview, and bulk-activate so all three agree.
 // ─────────────────────────────────────────────────────────────────────────────
 async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenceId) {
@@ -342,80 +353,29 @@ async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenc
     : null;
   let channelCap = SendingSchedule.resolveChannelDailyCap(firstChannel, { emailCapacity, settings });
 
-  // ── Weighted split ──────────────────────────────────────────────────────
-  // In weighted mode, divide the channel's full daily budget by this campaign's
-  // normalized share. Uncapped channels (call/task) are never split.
+  // ── Contention (informational only) ─────────────────────────────────────
+  // Capacity is NOT pre-allocated. Email volume is bounded at fire time by the
+  // mailbox's daily limit + min-delay cooldown; LinkedIn connection requests by
+  // the rep's personal connection cap. When two active campaigns can draw on
+  // the same mailbox they simply race, and the firer's fair-share ordering
+  // decides who wins each tick. We surface the contention so the UI can be
+  // honest ("shared with 1 other campaign") instead of promising a split the
+  // system does not enforce.
   //
-  // Model A: the pool total is the ORG-LEVEL channel budget — NOT the campaign's
-  // own per-campaign cap. Otherwise a campaign's LinkedIn-cap override would
-  // shrink the pool it's splitting (e.g. "50% of 20" when the org budget is 25),
-  // which double-counts the two knobs. So for LinkedIn we re-resolve the
-  // org-level cap (campaignId omitted) and use that as the base. Email is
-  // already org-level (sender accounts), so it's unchanged.
-  let allocation = null;
-  if (settings.budgetMode === 'weighted' && Number.isFinite(channelCap.perDayFull)) {
-    // Org-level channel total (ignores this campaign's per-campaign override).
-    let poolTotal = channelCap.perDayFull;
-    if (firstChannel === 'linkedin') {
-      const orgSettings = await SendingSchedule.resolveSettings({ orgId }); // no campaignId
-      poolTotal = orgSettings.linkedinReleaseCap;
-    }
-    const pool_ = await loadChannelPool(orgId, userId, firstChannel);
-    const thisRow = pool_.members.find(m => m.id === Number(campaignId));
-    const thisWeight = thisRow ? thisRow.weight : null;
-    const totalWeight = pool_.totalWeight;
+  // Replaces the old weighted-split model, which divided an ALREADY
+  // sender-scoped capacity a second time by a channel-wide pool share — so two
+  // campaigns pinned to different mailboxes each lost half their throughput to
+  // a contention that did not exist. An unset share_weight also meant
+  // "excluded: 0/day", which silently produced enrollments that could never
+  // fire.
+  let contention = null;
+  if (firstChannel === 'email' && campaignId) {
+    contention = await countContendingCampaigns(orgId, userId, campaignId, senderIds);
+  }
 
-    // No-contention case: this campaign is the ONLY member of its channel pool
-    // (e.g. a single user with a single active campaign in this channel). There
-    // is nothing to split against, so it owns 100% of the channel budget —
-    // regardless of whether a share_weight was ever assigned. Weighted-split
-    // semantics only start to matter once 2+ campaigns contend for the same
-    // budget, so a lone campaign must NOT be excluded for an unset weight.
-    const isSolePoolMember =
-      thisRow != null &&
-      pool_.members.length === 1 &&
-      pool_.members[0].id === Number(campaignId);
+  if (campaignCap != null && Number.isFinite(channelCap.perDayFull)) {
 
-    if (!isSolePoolMember && (thisWeight == null || thisWeight <= 0 || totalWeight <= 0)) {
-      // Unset AND contended (≥2 in the pool) → excluded: 0 capacity.
-      allocation = {
-        mode: 'weighted', excluded: true, sharePct: 0,
-        poolMembers: pool_.assignedCount, unsetMembers: pool_.unsetCount,
-        fullChannelPerDay: poolTotal,
-      };
-      channelCap = { ...channelCap, todayRemaining: 0, perDayFull: 0 };
-    } else {
-      // sharePct = 1.0 when this campaign is the sole pool member (100% of the
-      // budget); otherwise its weight normalized over the pool's total weight.
-      const sharePct  = isSolePoolMember ? 1 : (thisWeight / totalWeight); // normalized 0..1
-      let perDay      = Math.max(0, Math.floor(poolTotal * sharePct));
-      const todayBase = (firstChannel === 'linkedin')
-        ? poolTotal
-        : (Number.isFinite(channelCap.todayRemaining)
-            ? Math.min(channelCap.todayRemaining, poolTotal)
-            : poolTotal);
-      let today       = Math.max(0, Math.floor(todayBase * sharePct));
-      // Per-campaign hard ceiling (option i — no redistribution of the slack):
-      // the campaign never releases more than its own cap/day, even if its
-      // share would allow more. Unused budget is simply not released.
-      let cappedBy = null;
-      if (campaignCap != null) {
-        if (perDay > campaignCap) { perDay = campaignCap; cappedBy = campaignCap; }
-        if (today  > campaignCap) { today  = campaignCap; cappedBy = campaignCap; }
-      }
-      allocation = {
-        mode: 'weighted', excluded: false, soleMember: isSolePoolMember,
-        sharePct: Math.round(sharePct * 100),
-        weight: thisWeight, totalWeight,
-        poolMembers: pool_.assignedCount, unsetMembers: pool_.unsetCount,
-        fullChannelPerDay: poolTotal,
-        allocatedPerDay: perDay,
-        campaignCap: cappedBy,   // non-null when the cap actually bound
-      };
-      channelCap = { ...channelCap, perDayFull: perDay, todayRemaining: today };
-    }
-  } else if (campaignCap != null && Number.isFinite(channelCap.perDayFull)) {
-    // SHARED mode (or any non-weighted capped channel): the per-campaign cap is
+    // The per-campaign cap (daily_activation_cap) is
     // still a hard ceiling. resolveSettings already lets a campaign override win
     // for linkedinReleaseCap, so channelCap is usually == campaignCap here, but
     // clamp explicitly so the guarantee holds regardless of how it was resolved.
@@ -429,54 +389,49 @@ async function resolveCampaignCapacity(orgId, campaignId, userId, defaultSequenc
     };
   }
 
-  return { settings, firstChannel, channelCap, emailCapacity, allocation };
+  return { settings, firstChannel, channelCap, emailCapacity, contention };
 }
 
 // Build a UI-friendly capacity descriptor (e.g. "2 × 50 = 100/day").
-function describeCapacity(firstChannel, channelCap, emailCapacity, settings, allocation = null) {
-  // Weighted split — show the campaign's slice and the basis.
-  if (allocation && allocation.mode === 'weighted') {
-    if (allocation.excluded) {
-      return {
-        kind: firstChannel, weighted: true, excluded: true,
-        perDayFull: 0, todayRemaining: 0,
-        label: `No share assigned — this campaign won't release in weighted mode until you set a percentage. (${allocation.unsetMembers} unset in this ${firstChannel} pool)`,
-      };
-    }
-    const base = firstChannel === 'linkedin' ? 'LinkedIn requests' : 'emails';
-    const capped = allocation.campaignCap != null;
-    return {
-      kind: firstChannel, weighted: true, excluded: false,
-      sharePct:       allocation.sharePct,
-      perDayFull:     allocation.allocatedPerDay,
-      todayRemaining: channelCap.todayRemaining,
-      fullChannelPerDay: allocation.fullChannelPerDay,
-      campaignCap:    allocation.campaignCap,
-      label: capped
-        ? `Capped at ${allocation.campaignCap}/day (share would allow more of ${allocation.fullChannelPerDay} ${base}/day)`
-        : `${allocation.sharePct}% of ${allocation.fullChannelPerDay} ${base}/day = ${allocation.allocatedPerDay}/day`,
-    };
-  }
+function describeCapacity(firstChannel, channelCap, emailCapacity, settings, contention = null) {
   if (firstChannel === 'email' && emailCapacity) {
     const perAccount = emailCapacity.perAccount.map(a => a.limit);
-    const label = emailCapacity.activeSenders > 0
-      ? `${emailCapacity.activeSenders} sender${emailCapacity.activeSenders === 1 ? '' : 's'} → ${emailCapacity.perDayFull}/day`
-      : 'No active email senders connected';
+    const n = emailCapacity.activeSenders;
+    const shared = contention && contention.count > 0;
+
+    let label;
+    if (n === 0) {
+      label = 'No active email senders connected';
+    } else if (shared) {
+      // Honest about the race. We do NOT project a split — nothing reserves it.
+      label = `Up to ${emailCapacity.perDayFull}/day from ${n} sender${n === 1 ? '' : 's'}, ` +
+              `shared with ${contention.count} other campaign${contention.count === 1 ? '' : 's'} ` +
+              `using the same mailbox${n === 1 ? '' : 'es'}`;
+    } else {
+      label = `${n} sender${n === 1 ? '' : 's'} → ${emailCapacity.perDayFull}/day`;
+    }
+
     return {
       kind: 'email',
       perDayFull:     emailCapacity.perDayFull,
       todayRemaining: emailCapacity.todayRemaining,
-      activeSenders:  emailCapacity.activeSenders,
+      activeSenders:  n,
       perAccountLimits: perAccount,
+      shared:         !!shared,
+      sharedWith:     shared ? contention.campaigns : [],
       label,
     };
   }
   if (firstChannel === 'linkedin') {
+    // The cap governs CONNECTION REQUESTS only — LinkedIn messages, tasks and
+    // calls are uncapped. A leading LinkedIn step is inferred as a connection
+    // request by resolveEffectiveLinkedinIntent() unless step_intent says
+    // otherwise, so this label holds for the overwhelmingly common case.
     return {
       kind: 'linkedin',
       perDayFull:     channelCap.perDayFull,
       todayRemaining: channelCap.todayRemaining,
-      label: `${channelCap.perDayFull} LinkedIn requests/day (release cap — sent manually)`,
+      label: `${channelCap.perDayFull} LinkedIn connection requests/day (sent manually)`,
     };
   }
   return { kind: 'uncapped', perDayFull: null, todayRemaining: null, label: 'No daily cap (window-limited)' };
@@ -486,15 +441,16 @@ function describeCapacity(firstChannel, channelCap, emailCapacity, settings, all
 // The real per-day email ceiling is the SHARED sender pool (Σ the selected/active
 // senders' daily limits), consumed by EVERY email send across all of this user's
 // campaigns — including follow-up email steps inside LinkedIn-led sequences. The
-// weighted "share" only divides leading-email campaigns, so on its own it
-// overstates what one campaign actually gets. This returns a realistic min–max
+// pool is consumed by every email send across the rep's campaigns, so a single
+// campaign's advertised ceiling overstates what it actually gets when it shares
+// a mailbox with another active campaign. This returns a realistic min–max
 // for THIS campaign for today (firm) and the next 7 days (an estimate: it's based
 // on each active enrollment's currently-scheduled NEXT send only, so future days
 // undercount follow-ups not yet laid down — labelled as such in the UI).
 //   poolPerDay → already reflects the campaign's selected senders (Phase 2),
 //   since it's passed straight from resolveEmailCapacity(perDayFull).
-//   campaignCeiling → this campaign's OWN per-day email ceiling (its weighted
-//   slice in weighted mode; = pool in shared mode). It's what we advertise as
+//   campaignCeiling → this campaign's OWN per-day email ceiling (= the pool,
+//   clamped by daily_activation_cap if set). It's what we advertise as
 //   "this campaign can send up to N/day" — the answer to "how many per day",
 //   independent of whether anything is enrolled yet.
 async function computeEmailProjection(orgId, userId, campaignId, settings, poolPerDay, campaignCeiling) {
@@ -882,114 +838,6 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Compute the per-channel budget allocation overview for a user (shared by
-// the GET overview and the PUT save-and-return).
-async function computeBudgetAllocation(orgId, userId) {
-  const settings = await SendingSchedule.resolveSettings({ orgId });
-  const channels = ['email', 'linkedin'];
-  const out = { budgetMode: settings.budgetMode, pools: {} };
-  for (const channel of channels) {
-    const pool_ = await loadChannelPool(orgId, userId, channel);
-    let channelTotal = null;
-    if (channel === 'email') {
-      const cap = await SendingSchedule.resolveEmailCapacity({ orgId, userId, settings });
-      channelTotal = cap.perDayFull;
-    } else if (channel === 'linkedin') {
-      channelTotal = settings.linkedinReleaseCap;
-    }
-    const members = pool_.members.map(m => {
-      const hasWeight = m.weight != null && m.weight > 0;
-      const effPct = (hasWeight && pool_.totalWeight > 0)
-        ? Math.round((m.weight / pool_.totalWeight) * 100) : 0;
-      return {
-        id: m.id, name: m.name, weight: m.weight,
-        excluded: !hasWeight,
-        effectivePct: effPct,
-        allocatedPerDay: (channelTotal != null && hasWeight)
-          ? Math.floor(channelTotal * (m.weight / pool_.totalWeight)) : 0,
-      };
-    });
-    out.pools[channel] = {
-      channelTotalPerDay: channelTotal,
-      totalWeight: pool_.totalWeight,
-      sumPct: members.reduce((a, b) => a + b.effectivePct, 0),
-      assignedCount: pool_.assignedCount,
-      unsetCount: pool_.unsetCount,
-      members,
-    };
-  }
-  return out;
-}
-
-// ── GET /budget-allocation — per-channel pool overview for the current user ──
-// Shows, for each capped channel (email, linkedin), every ACTIVE campaign the
-// user owns that leads with that channel, its share weight + normalized
-// effective %, and which campaigns are unset (excluded in weighted mode).
-// Powers the schedule panel's running-total display + "won't run" warning, and
-// the one-screen allocation editor.
-// MUST be registered before GET '/:id' so it isn't captured as an :id param.
-router.get('/budget-allocation', async (req, res) => {
-  try {
-    res.json(await computeBudgetAllocation(req.orgId, req.user.userId));
-  } catch (err) {
-    console.error('budget-allocation GET error:', err);
-    res.status(500).json({ error: { message: 'Failed to compute budget allocation' } });
-  }
-});
-
-// ── PUT /budget-allocation — set share_weight for several campaigns at once ───
-// Body: { allocations: [{ campaignId, shareWeight }] }. shareWeight 0..100, or
-// null/'' to clear (unset → excluded). Only the caller's OWN campaigns are
-// touched (owner_id = caller). Returns the recomputed allocation.
-// MUST be registered before PUT '/:id'.
-router.put('/budget-allocation', async (req, res) => {
-  const { allocations } = req.body;
-  if (!Array.isArray(allocations)) {
-    return res.status(400).json({ error: { message: 'allocations must be an array' } });
-  }
-  // Validate all before writing any.
-  const normalized = [];
-  for (const a of allocations) {
-    const cid = parseInt(a.campaignId, 10);
-    if (!Number.isFinite(cid)) {
-      return res.status(400).json({ error: { message: 'each allocation needs a numeric campaignId' } });
-    }
-    let w = null;
-    if (a.shareWeight !== null && a.shareWeight !== undefined && a.shareWeight !== '') {
-      w = parseInt(a.shareWeight, 10);
-      if (!Number.isFinite(w) || w < 0 || w > 100) {
-        return res.status(400).json({ error: { message: `shareWeight for campaign ${cid} must be 0..100` } });
-      }
-    }
-    normalized.push({ cid, w });
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    for (const { cid, w } of normalized) {
-      // Scoped to the caller's own campaigns in this org — can't edit others'.
-      await client.query(
-        `UPDATE prospecting_campaigns
-            SET share_weight = $1
-          WHERE id = $2 AND org_id = $3 AND owner_id = $4`,
-        [w, cid, req.orgId, req.user.userId]
-      );
-    }
-    await client.query('COMMIT');
-  } catch (txErr) {
-    await client.query('ROLLBACK');
-    console.error('budget-allocation PUT error:', txErr);
-    return res.status(500).json({ error: { message: 'Failed to save allocations: ' + txErr.message } });
-  } finally {
-    client.release();
-  }
-  try {
-    res.json(await computeBudgetAllocation(req.orgId, req.user.userId));
-  } catch (err) {
-    res.json({ ok: true }); // saved; recompute failed (non-fatal)
-  }
-});
 
 // ── Org-wide campaign-delete switch ──────────────────────────────────────────
 // GET  /org/delete-policy → { enabled }  — current org switch value.
@@ -1430,8 +1278,8 @@ router.get('/:id', async (req, res) => {
       scheduleBlock = {
         settings:     cap.settings,
         firstChannel: cap.firstChannel,
-        capacity:     describeCapacity(cap.firstChannel, cap.channelCap, cap.emailCapacity, cap.settings, cap.allocation),
-        allocation:   cap.allocation,
+        capacity:     describeCapacity(cap.firstChannel, cap.channelCap, cap.emailCapacity, cap.settings, cap.contention),
+        contention:   cap.contention,
       };
       // Realistic today + next-7-day projection for email-led campaigns. Pool
       // comes from the (already sender-selection-aware) email capacity.
@@ -3510,7 +3358,10 @@ router.post('/:id/bulk-activate', async (req, res) => {
     const tz = scheduleSettings.sendWindowTimezone;
     const existingByDay = {};
     if (Number.isFinite(channelCap.perDayFull)) {
-      const weighted = scheduleSettings.budgetMode === 'weighted';
+      // Always OWNER-WIDE. The weighted mode that scoped this per-campaign is
+      // gone; every campaign of this rep now draws on the same mailboxes, so
+      // the pre-booked slots of one must be visible to the next.
+      const weighted = false;
       const existingRes = await pool.query(
         `SELECT se.next_step_due
            FROM sequence_enrollments se
@@ -3647,7 +3498,17 @@ router.post('/:id/bulk-activate', async (req, res) => {
       // slot from the scheduler). The scheduler already accounted for
       // firstDelay above (see finalSlots build).
       try {
+        // BOUNDS CHECK: scheduleBatchSlots may return FEWER slots than
+        // candidates (it caps the day-walk at ~2 years). Reading past the end
+        // yields `undefined`, which node-postgres serializes as NULL — an
+        // ACTIVE enrollment with next_step_due = NULL is invisible to the firer
+        // (`AND se.next_step_due IS NOT NULL`) and can never fire, forever.
+        // Surface it as a skip instead of writing an unexecutable row.
         const nextDue = finalSlots[slotIndex];
+        if (!nextDue) {
+          skipped.push({ prospectId, reason: 'no_capacity' });
+          continue;   // do NOT advance slotIndex — no slot was consumed
+        }
         slotIndex++;
 
         // Remap AI drafts step_order → step id so the firer's id-keyed cache reads them.
@@ -3741,12 +3602,7 @@ router.post('/:id/bulk-activate', async (req, res) => {
     // exceeds today's room, surface a warning naming the real lever (sender
     // daily limit). Slots roll forward to the next available day automatically.
     let warning = null;
-    if (capInfo.allocation && capInfo.allocation.excluded) {
-      warning = {
-        code: 'NO_SHARE_ASSIGNED',
-        message: `This campaign has no share % assigned, so in weighted mode it won't release ${firstChannel} work. Assign it a percentage in the campaign's sending schedule, or switch the org budget mode back to shared.`,
-      };
-    } else if (firstChannel === 'email' && emailCapacity) {
+    if (firstChannel === 'email' && emailCapacity) {
       if (emailCapacity.activeSenders === 0) {
         warning = {
           code: 'NO_SENDERS',
@@ -3774,7 +3630,7 @@ router.post('/:id/bulk-activate', async (req, res) => {
       enrollments,
       skipped,
       cap: { ...limits, used: enrollments.length },
-      capacity: describeCapacity(firstChannel, channelCap, emailCapacity, scheduleSettings, capInfo.allocation),
+      capacity: describeCapacity(firstChannel, channelCap, emailCapacity, scheduleSettings, capInfo.contention),
       warning,
       campaignId: parseInt(req.params.id, 10),
       sequenceName: seq.name,
@@ -3836,7 +3692,9 @@ router.get('/:id/schedule-preview', async (req, res) => {
     // mode (matches bulk-activate so the preview equals what activation does).
     const existingByDay = {};
     if (Number.isFinite(channelCap.perDayFull)) {
-      const weighted = settings.budgetMode === 'weighted';
+      // Always OWNER-WIDE — see the matching note in bulk-activate. The preview
+      // must equal what activation actually does.
+      const weighted = false;
       const existingRes = await pool.query(
         `SELECT se.next_step_due
            FROM sequence_enrollments se
@@ -3891,7 +3749,7 @@ router.get('/:id/schedule-preview', async (req, res) => {
       requestedCount: count,
       channel,
       settings,
-      capacity: describeCapacity(channel, channelCap, capInfo.emailCapacity, settings, capInfo.allocation),
+      capacity: describeCapacity(channel, channelCap, capInfo.emailCapacity, settings, capInfo.contention),
       existingScheduled: Object.values(existingByDay).reduce((a, b) => a + b, 0),
       summary: slots.length > 0 ? {
         days:    byDay.length,

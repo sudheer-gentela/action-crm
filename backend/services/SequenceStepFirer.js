@@ -193,26 +193,65 @@ async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, se
 
   if (!rows.length) return { sender: null, status: 'no_accounts' };
 
-  const todayStr = now.toDateString();
+  // ── Mailbox-identity limits ─────────────────────────────────────────────────
+  // The daily limit and the min-delay cooldown are properties of the PHYSICAL
+  // MAILBOX, not of a row. Nothing stops two reps from connecting the same
+  // Gmail address: that produces two rows, each with its own daily_limit and
+  // its own emails_sent_today counter. Reading a single row's counter lets one
+  // address send 2x (or Nx) its stated limit, and lets rep B send while rep A's
+  // row is still inside its min-delay cooldown. Google does not care which
+  // user_id owned the row.
+  //
+  // So aggregate across every active row in the org sharing lower(email):
+  //   sentToday  = Σ counters (stale counter → 0, matching the reset semantics)
+  //   lastSentAt = MAX(last_sent_at)   — the cooldown clock for the address
+  //   effLimit   = MIN(effective limit) — the tightest declared limit wins;
+  //                a rep who set 20 must not be overridden by a rep who set 50
+  //
+  // NOTE this REDUCES effective capacity for any org currently double-connected
+  // to one address. That is the correct behaviour and it will look like a
+  // regression to them. See check (b) in 2026_48_capacity_model.sql.
+  const mailboxes = [...new Set(rows.map(r => (r.email || '').toLowerCase()).filter(Boolean))];
+  const mbAgg = new Map();
+  if (mailboxes.length) {
+    const agg = await dbClient.query(
+      `SELECT lower(email) AS mailbox,
+              SUM(CASE WHEN last_reset_at >= CURRENT_DATE
+                       THEN COALESCE(emails_sent_today, 0) ELSE 0 END)::int AS sent_today,
+              MAX(last_sent_at)                                             AS last_sent_at,
+              MIN(LEAST(COALESCE(daily_limit, $3::int), $4::int))::int      AS eff_limit
+         FROM prospecting_sender_accounts
+        WHERE org_id = $1
+          AND is_active = true
+          AND lower(email) = ANY($2::text[])
+        GROUP BY 1`,
+      [orgId, mailboxes, defaultLimit, ceiling]
+    );
+    for (const a of agg.rows) mbAgg.set(a.mailbox, a);
+  }
+
   let best = null, bestRemaining = 0;
   let anyCapacityButCooling = false;
   for (const row of rows) {
-    const effLimit = Math.min(
+    const mb = mbAgg.get((row.email || '').toLowerCase());
+    // Fall back to row-local values if the aggregate somehow missed (defensive).
+    const effLimit = mb ? mb.eff_limit : Math.min(
       (row.daily_limit != null && row.daily_limit > 0) ? row.daily_limit : defaultLimit,
       ceiling
     );
-    const resetToday = row.last_reset_at && new Date(row.last_reset_at).toDateString() === todayStr;
-    const sentToday  = resetToday ? (row.emails_sent_today || 0) : 0;
-    const remaining  = effLimit - sentToday;
-    if (remaining <= 0) continue; // at/over daily limit
+    const sentToday   = mb ? mb.sent_today : (row.emails_sent_today || 0);
+    const lastSentAt  = mb ? mb.last_sent_at : row.last_sent_at;
+    const remaining   = effLimit - sentToday;
+    if (remaining <= 0) continue; // mailbox at/over its daily limit
 
-    // Cooldown: effective min-delay, never below the org floor.
+    // Cooldown: effective min-delay, never below the org floor. Keyed on the
+    // mailbox's most recent send across ALL rows for that address.
     const effMinDelay = Math.max(
       (row.min_delay_minutes != null ? row.min_delay_minutes : defaultMinDelay),
       minDelayFloor
     );
-    const cooledDown = effMinDelay <= 0 || !row.last_sent_at ||
-      (now.getTime() - new Date(row.last_sent_at).getTime()) >= effMinDelay * 60000;
+    const cooledDown = effMinDelay <= 0 || !lastSentAt ||
+      (now.getTime() - new Date(lastSentAt).getTime()) >= effMinDelay * 60000;
     if (!cooledDown) { anyCapacityButCooling = true; continue; }
 
     if (remaining > bestRemaining) { best = row; bestRemaining = remaining; }
@@ -222,6 +261,112 @@ async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, se
   // too soon) from "all maxed" (no capacity left today). Both defer.
   if (anyCapacityButCooling) return { sender: null, status: 'cooling_down' };
   return { sender: null, status: 'all_maxed' };
+}
+
+// ── Fair-share load counters ─────────────────────────────────────────────────
+// Because the firer sends AT MOST ONE email per mailbox per tick (min-delay
+// cooldown), the order in which due enrollments are visited IS the allocation
+// mechanism. Ordering purely by next_step_due means whichever campaign laid the
+// earliest slots wins every tick, all day — and slots are laid at activation,
+// so "activated first" literally means "takes the whole day".
+//
+// Load is counted per (campaign, sender), not per campaign. A campaign sitting
+// on an uncontended mailbox must not be pushed to the back of the queue because
+// it has sent a lot today — its sends cost no other campaign anything. Ordering
+// it behind a campaign that is merely waiting on a busy mailbox's cooldown
+// leaves its own mailbox idle.
+//
+// Counts 'sending' as well as 'sent': a claim in flight has already consumed
+// the mailbox for this tick.
+async function emailLoadByCampaignSender(dbClient, orgIds) {
+  if (!orgIds.length) return new Map();
+  const { rows } = await dbClient.query(
+    `SELECT p.campaign_id, l.sender_account_id, COUNT(*)::int AS n
+       FROM sequence_step_logs l
+       JOIN prospects p ON p.id = l.prospect_id
+      WHERE l.org_id = ANY($1::int[])
+        AND l.channel = 'email'
+        AND l.status IN ('sending','sent')
+        AND l.fired_at >= CURRENT_DATE
+        AND l.sender_account_id IS NOT NULL
+        AND p.campaign_id IS NOT NULL
+      GROUP BY 1, 2`,
+    [orgIds]
+  );
+  const m = new Map();
+  for (const r of rows) m.set(`${r.campaign_id}:${r.sender_account_id}`, r.n);
+  return m;
+}
+
+// LinkedIn has no sender account — the rep IS the account — so load groups by
+// (campaign, rep) rather than (campaign, sender).
+async function linkedinLoadByCampaignRep(dbClient, orgIds) {
+  if (!orgIds.length) return new Map();
+  const { rows } = await dbClient.query(
+    `SELECT p.campaign_id, se.enrolled_by, COUNT(*)::int AS n
+       FROM sequence_step_logs l
+       JOIN sequence_enrollments se ON se.id = l.enrollment_id
+       JOIN prospects p ON p.id = l.prospect_id
+      WHERE l.org_id = ANY($1::int[])
+        AND l.channel = 'linkedin'
+        AND l.status IN ('draft','scheduled','sending','sent')
+        AND COALESCE(l.fired_at, l.scheduled_send_at) >= CURRENT_DATE
+        AND p.campaign_id IS NOT NULL
+      GROUP BY 1, 2`,
+    [orgIds]
+  );
+  const m = new Map();
+  for (const r of rows) m.set(`${r.campaign_id}:${r.enrolled_by}`, r.n);
+  return m;
+}
+
+// The rep's active mailboxes, used when a campaign pins no senders
+// (sender_account_ids IS NULL ⇒ "all of the rep's senders").
+async function activeSenderIdsForUser(dbClient, orgId, userId) {
+  const { rows } = await dbClient.query(
+    `SELECT id FROM prospecting_sender_accounts
+      WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true`,
+    [orgId, userId]
+  );
+  return rows.map(r => r.id);
+}
+
+// ── LinkedIn connection-request daily cap ────────────────────────────────────
+// LinkedIn is a personal account: one per rep, no sender-account row, and no
+// fire-time enforcement anywhere until now. `linkedinReleaseCap` existed only
+// inside scheduleBatchSlots, which paces the ACTIVATION batch (step 1) — so a
+// connection request arriving as a follow-up step in an email-led sequence blew
+// straight through the cap.
+//
+// The cap governs CONNECTION REQUESTS ONLY. LinkedIn messages, tasks and calls
+// are uncapped: they cost the rep nothing with LinkedIn's rate limiter.
+//
+// Counted statuses cover the whole released surface, not just confirmed sends:
+//   draft                     — released to the rep as a task to action
+//   scheduled / sending       — claimed by the browser extension for auto-send
+//   sent                      — confirmed
+// A request that was released and then abandoned still consumed the day's quota
+// as far as LinkedIn is concerned.
+//
+// "Today" is CURRENT_DATE, matching the reset semantics of
+// prospecting_sender_accounts.last_reset_at. Consistency with the email side
+// beats per-timezone precision here.
+async function linkedinConnectionRequestsToday(dbClient, orgId, userId) {
+  const { rows } = await dbClient.query(
+    `SELECT COUNT(*)::int AS n
+       FROM sequence_step_logs l
+       JOIN sequence_enrollments se ON se.id = l.enrollment_id
+      WHERE l.org_id      = $1
+        AND se.enrolled_by = $2
+        AND l.channel     = 'linkedin'
+        AND l.step_intent = 'connection_request'
+        AND l.status IN ('draft','scheduled','sending','sent')
+        -- fired_at is NULL on 'draft' and 'scheduled' rows (set only on send /
+        -- extension confirm), so anchor on when the row was RELEASED.
+        AND COALESCE(l.fired_at, l.scheduled_send_at) >= CURRENT_DATE`,
+    [orgId, userId]
+  );
+  return rows[0]?.n || 0;
 }
 
 // ── Append signature helper ───────────────────────────────────────────────────
@@ -768,11 +913,14 @@ const SequenceStepFirer = {
       // the DB for resolveSettings on every iteration.
       const SendingSchedule = require('./SendingScheduleResolver');
       const settingsCache = new Map();
-      const getSettings = async (orgId, campaignId) => {
-        const key = `${orgId}:${campaignId || 'null'}`;
+      // Keyed on userId as well: resolveSettings now folds in the rep's personal
+      // LinkedIn connection cap (user_preferences.outreach.linkedinConnectionCap),
+      // so two reps on the same campaign can resolve different linkedinReleaseCap.
+      const getSettings = async (orgId, campaignId, userId) => {
+        const key = `${orgId}:${campaignId || 'null'}:${userId || 'null'}`;
         if (!settingsCache.has(key)) {
           settingsCache.set(key,
-            await SendingSchedule.resolveSettings({ orgId, campaignId }));
+            await SendingSchedule.resolveSettings({ orgId, campaignId, userId }));
         }
         return settingsCache.get(key);
       };
@@ -799,7 +947,80 @@ const SequenceStepFirer = {
         return senderSelCache.get(key);
       };
 
-      for (const enrollment of dueRes.rows) {
+      // ── Fair-share ordering ───────────────────────────────────────────────
+      // The SQL above still orders by next_step_due (it needs SOME order to
+      // apply its LIMIT). Re-order the fetched batch here, where the load
+      // counters are available.
+      //
+      // Key, in order:
+      //   1. loadKey  — sends today on the LEAST-LOADED mailbox this campaign
+      //                 can reach. A campaign on an idle mailbox sorts first,
+      //                 regardless of how much it has already sent, because its
+      //                 sends cost nobody else anything.
+      //   2. inFlight — TIEBREAK ONLY. At equal load, an enrollment mid-sequence
+      //                 (current_step > 1) beats a fresh one. A prospect who
+      //                 misses step 1 by a day is fine; one who misses step 3
+      //                 gets a visibly broken cadence.
+      //   3. next_step_due, then id — the original deterministic order.
+      //
+      // KNOWN LIMIT: the SQL LIMIT still selects its 100 rows by next_step_due,
+      // so a backlog larger than 100 can crowd out a campaign before this sort
+      // ever sees it. Raising the LIMIT costs a per-enrollment reply-check query
+      // each tick, so it is deliberately left alone until a backlog that size is
+      // real. At one email per mailbox per tick, 100 is deep headroom.
+      const orgIds = [...new Set(dueRes.rows.map(r => r.org_id))];
+      let emailLoad = new Map(), liLoad = new Map();
+      try {
+        [emailLoad, liLoad] = await Promise.all([
+          emailLoadByCampaignSender(client, orgIds),
+          linkedinLoadByCampaignRep(client, orgIds),
+        ]);
+      } catch (loadErr) {
+        // Non-fatal: fall back to pure next_step_due order (previous behaviour).
+        console.warn('📨 fair-share load counters failed, falling back to FIFO:', loadErr.message);
+      }
+
+      // Resolve each campaign's reachable mailboxes once.
+      const reachCache = new Map();
+      const reachableSenders = async (orgId, campaignId, userId) => {
+        const key = `${orgId}:${campaignId || 'null'}:${userId}`;
+        if (!reachCache.has(key)) {
+          let ids = await getCampaignSenderIds(orgId, campaignId);
+          if (!ids || !ids.length) {
+            try { ids = await activeSenderIdsForUser(client, orgId, userId); }
+            catch { ids = []; }
+          }
+          reachCache.set(key, ids);
+        }
+        return reachCache.get(key);
+      };
+
+      const ordered = [];
+      for (const r of dueRes.rows) {
+        const ch = r.current_step_channel || 'email';
+        let loadKey = 0;
+        if (ch === 'email') {
+          const senders = await reachableSenders(r.org_id, r.prospect_campaign_id, r.enrolled_by);
+          // min over reachable mailboxes; no mailbox → 0 (it will fail-and-pause
+          // in the loop anyway, and must not be starved out of getting there).
+          loadKey = senders.length
+            ? Math.min(...senders.map(sid => emailLoad.get(`${r.prospect_campaign_id}:${sid}`) || 0))
+            : 0;
+        } else if (ch === 'linkedin') {
+          loadKey = liLoad.get(`${r.prospect_campaign_id}:${r.enrolled_by}`) || 0;
+        }
+        // call/task are uncapped — loadKey stays 0, so they keep FIFO order
+        // among themselves and never queue behind a busy mailbox.
+        ordered.push({ r, loadKey, inFlight: (r.current_step || 1) > 1 ? 0 : 1 });
+      }
+      ordered.sort((a, b) =>
+        (a.loadKey - b.loadKey) ||
+        (a.inFlight - b.inFlight) ||
+        (new Date(a.r.next_step_due) - new Date(b.r.next_step_due)) ||
+        (a.r.id - b.r.id)
+      );
+
+      for (const { r: enrollment } of ordered) {
         try {
           // ── Send-window gate ───────────────────────────────────────────────
           // Pre-scheduler already placed next_step_due inside the window at
@@ -810,7 +1031,7 @@ const SequenceStepFirer = {
           // For email steps we strictly enforce the window. For manual
           // channels (LinkedIn, task, call) we always pass — the firer
           // just creates a task row, no message leaves the system.
-          const settings = await getSettings(enrollment.org_id, enrollment.prospect_campaign_id);
+          const settings = await getSettings(enrollment.org_id, enrollment.prospect_campaign_id, enrollment.enrolled_by);
           const channel  = enrollment.current_step_channel || 'email';
           if (!SendingSchedule.isWithinWindow(new Date(), settings, channel)) {
             // Not an error; we'll try again next tick. No counter bump.
@@ -1012,6 +1233,28 @@ const SequenceStepFirer = {
             // first-touch connection request).
             const effectiveIntent = await resolveEffectiveLinkedinIntent(step, enrollment);
 
+            // ── LinkedIn connection-request DAILY CAP ────────────────────────
+            // Fire-time enforcement, symmetric with the email mailbox limit.
+            // Applies to BOTH paths below (extension auto-send and human draft)
+            // because both RELEASE a connection request into the rep's day.
+            // Over cap → defer to the next tick; the enrollment is untouched and
+            // next_step_due stays put, so it re-enters the queue tomorrow.
+            if (step.channel === 'linkedin' && effectiveIntent === 'connection_request') {
+              const liCap = settings.linkedinReleaseCap;
+              if (Number.isFinite(liCap) && liCap > 0) {
+                const usedToday = await linkedinConnectionRequestsToday(
+                  client, enrollment.org_id, enrollment.enrolled_by
+                );
+                if (usedToday >= liCap) {
+                  console.log(
+                    `SequenceStepFirer: deferring enrollment ${enrollment.id} — ` +
+                    `rep ${enrollment.enrolled_by} at LinkedIn connection cap (${usedToday}/${liCap})`
+                  );
+                  continue;
+                }
+              }
+            }
+
             // ── LinkedIn connection-request AUTO-SEND gate (opt-in) ──────────
             // Optional, defensive, off by default. When BOTH the org-admin
             // master toggle is on AND this rep has explicitly opted in, a
@@ -1065,11 +1308,11 @@ const SequenceStepFirer = {
                       `INSERT INTO sequence_step_logs
                                    (org_id, enrollment_id, sequence_step_id, prospect_id,
                                     channel, status, subject, body, scheduled_send_at, fired_at,
-                                    personalize_sources)
-                            VALUES ($1, $2, $3, $4, 'linkedin', 'scheduled', NULL, $5, NOW(), NULL, $6::jsonb)`,
+                                    personalize_sources, step_intent)
+                            VALUES ($1, $2, $3, $4, 'linkedin', 'scheduled', NULL, $5, NOW(), NULL, $6::jsonb, $7)`,
                       [
                         enrollment.org_id, enrollment.id, step.id, enrollment.prospect_id,
-                        note, personalizeSourcesJson,
+                        note, personalizeSourcesJson, effectiveIntent,
                       ]
                     );
                     try {
@@ -1148,8 +1391,8 @@ const SequenceStepFirer = {
               `INSERT INTO sequence_step_logs
                            (org_id, enrollment_id, sequence_step_id, prospect_id,
                             channel, status, subject, body, scheduled_send_at, fired_at,
-                            personalize_sources)
-                    VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, NOW(), NULL, $8::jsonb)`,
+                            personalize_sources, step_intent)
+                    VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, NOW(), NULL, $8::jsonb, $9)`,
               [
                 enrollment.org_id,
                 enrollment.id,
@@ -1159,6 +1402,7 @@ const SequenceStepFirer = {
                 subject,
                 body,
                 personalizeSourcesJson,
+                step.channel === 'linkedin' ? effectiveIntent : (step.step_intent || null),
               ]
             );
 
@@ -1288,12 +1532,16 @@ const SequenceStepFirer = {
           // Atomic claim: scheduled → sending. RETURNING the (possibly edited)
           // content. Zero rows ⇒ another tick claimed/cancelled it.
           const claim = await client.query(
+            // sender_account_id is stamped HERE, at claim time — not after the
+            // provider call succeeds. The fair-share counter must see in-flight
+            // claims, otherwise a sender that is mid-send looks idle and the
+            // next tick over-allocates to the same (campaign, sender) pair.
             `UPDATE sequence_step_logs
-                SET status='sending', fired_at=NOW()
+                SET status='sending', fired_at=NOW(), sender_account_id=$3
               WHERE enrollment_id=$1 AND sequence_step_id=$2 AND status='scheduled'
                 AND scheduled_send_at <= NOW()
               RETURNING id, subject, body`,
-            [enrollment.id, step.id]
+            [enrollment.id, step.id, sender.id]
           );
           if (claim.rowCount === 0) {
             continue; // claimed or cancelled elsewhere

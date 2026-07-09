@@ -100,4 +100,98 @@ router.put('/me/linkedin-auto-connect', async (req, res) => {
   }
 });
 
+// ── GET /me/linkedin-connection-cap ───────────────────────────────────────────
+// The rep's personal daily ceiling on LinkedIn CONNECTION REQUESTS. LinkedIn is
+// a personal account — one per rep — so the rep owns this number, not the org.
+// The org value is the default; the rep may set a lower (or higher) one.
+//
+// Storage: user_preferences.preferences.outreach.linkedinConnectionCap.
+// Read by SendingSchedule.resolveSettings({ orgId, campaignId, userId }), which
+// folds it into linkedinReleaseCap. A campaign's daily_activation_cap still
+// binds as a ceiling — a campaign may pace slower than the rep, never faster.
+//
+// The cap governs connection requests ONLY. LinkedIn messages, tasks and calls
+// are uncapped.
+router.get('/me/linkedin-connection-cap', async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT preferences->'outreach'->>'linkedinConnectionCap' AS cap
+         FROM user_preferences WHERE user_id = $1 AND org_id = $2`,
+      [req.user.userId, req.orgId]
+    );
+    const raw = rows[0]?.cap;
+    const userCap = (raw != null && raw !== '') ? parseInt(raw, 10) : null;
+
+    // Resolved effective value, so the UI can show "using the org default (25)".
+    const SendingSchedule = require('../services/SendingScheduleResolver');
+    const settings = await SendingSchedule.resolveSettings({
+      orgId: req.orgId, userId: req.user.userId,
+    });
+
+    res.json({
+      ok: true,
+      cap: Number.isFinite(userCap) && userCap > 0 ? userCap : null,  // null = unset
+      effective_cap: settings.linkedinReleaseCap,
+      source: (Number.isFinite(userCap) && userCap > 0) ? 'user' : 'org',
+    });
+  } catch (err) {
+    console.error('GET /me/linkedin-connection-cap:', err);
+    res.status(500).json({ error: { message: 'Failed to load connection cap' } });
+  }
+});
+
+// ── PUT /me/linkedin-connection-cap ───────────────────────────────────────────
+// body: { cap: number | null }. null / '' clears the override → org default.
+router.put('/me/linkedin-connection-cap', async (req, res) => {
+  const raw = req.body?.cap;
+  const clearing = (raw === null || raw === undefined || raw === '');
+  let cap = null;
+  if (!clearing) {
+    cap = parseInt(raw, 10);
+    if (!Number.isFinite(cap) || cap < 1 || cap > 200) {
+      return res.status(400).json({ error: { message: 'cap must be between 1 and 200, or null to clear' } });
+    }
+  }
+
+  try {
+    if (clearing) {
+      await db.query(
+        `UPDATE user_preferences
+            SET preferences = preferences #- '{outreach,linkedinConnectionCap}',
+                updated_at  = CURRENT_TIMESTAMP
+          WHERE user_id = $1 AND org_id = $2`,
+        [req.user.userId, req.orgId]
+      );
+    } else {
+      await db.query(
+        `INSERT INTO user_preferences (user_id, org_id, preferences, updated_at)
+              VALUES ($1, $2,
+                      jsonb_set('{}'::jsonb, '{outreach,linkedinConnectionCap}', $3::jsonb, true),
+                      CURRENT_TIMESTAMP)
+         ON CONFLICT (user_id, org_id) DO UPDATE
+            SET preferences = jsonb_set(
+                  COALESCE(user_preferences.preferences, '{}'::jsonb),
+                  '{outreach,linkedinConnectionCap}', $3::jsonb, true),
+                updated_at  = CURRENT_TIMESTAMP`,
+        [req.user.userId, req.orgId, JSON.stringify(cap)]
+      );
+    }
+
+    const SendingSchedule = require('../services/SendingScheduleResolver');
+    const settings = await SendingSchedule.resolveSettings({
+      orgId: req.orgId, userId: req.user.userId,
+    });
+    console.log(`⚙️  linkedin connection cap org=${req.orgId} user=${req.user.userId} → ${clearing ? 'unset' : cap}`);
+    res.json({
+      ok: true,
+      cap: clearing ? null : cap,
+      effective_cap: settings.linkedinReleaseCap,
+      source: clearing ? 'org' : 'user',
+    });
+  } catch (err) {
+    console.error('PUT /me/linkedin-connection-cap:', err);
+    res.status(500).json({ error: { message: 'Failed to save connection cap' } });
+  }
+});
+
 module.exports = router;

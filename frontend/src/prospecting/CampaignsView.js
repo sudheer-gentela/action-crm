@@ -2586,13 +2586,12 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
   // powers the read-only "N senders → X/day" line. Reflects the CURRENTLY
   // saved default sequence; refreshes after save.
   const [capacity, setCapacity] = useState(null);
-  // Weighted-split context: org budget mode + the per-channel pool overview
-  // (running totals across the user's active campaigns) for the share UI.
-  const [budgetMode, setBudgetMode] = useState('shared');
-  const [budgetAllocation, setBudgetAllocation] = useState(null);
-  const [shareWeight, setShareWeight] = useState(
-    campaign?.share_weight != null ? campaign.share_weight : ''
-  );
+  // budgetMode / budgetAllocation / shareWeight removed. Capacity is no longer
+  // pre-allocated: it is enforced at fire time by the mailbox's daily limit and
+  // min-delay cooldown (email) and the rep's personal connection cap (LinkedIn
+  // connection requests). Campaigns sharing a mailbox race; the firer's
+  // per-(campaign, sender) fair-share ordering arbitrates. See
+  // OrgSendingScheduleSettings.js.
   // Per-campaign sender selection (Phase 2). senders = the user's connected
   // sender accounts; selectedSenderIds = null/[] means "all senders" (default).
   const [senders, setSenders] = useState([]);
@@ -2640,9 +2639,14 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
             sendWindowTimezone:    ol.limits.sendWindowTimezone     ?? 'America/New_York',
             linkedinReleaseCap:    ol.limits.linkedinReleaseCap     ?? 25,
           });
-          setBudgetMode(ol.limits.budgetMode ?? 'shared');
         }
-      } catch { /* non-fatal */ }
+      } catch (err) {
+        // Non-fatal, but do NOT swallow silently. GET /org/outreach-limits is
+        // requireAdmin, so a Member gets a 403 here. Previously that 403 was
+        // indistinguishable from a real failure, and the defaults it left
+        // behind drove UI that contradicted the server. Log it.
+        console.warn('sending-schedule defaults unavailable (403 expected for non-admins):', err?.message || err);
+      }
       // Capacity hint (edit only) — the campaign-detail response carries the
       // computed per-channel capacity for the current user + saved sequence.
       if (campaign?.id) {
@@ -2651,12 +2655,6 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
           if (det?.schedule?.capacity) setCapacity(det.schedule.capacity);
         } catch { /* non-fatal */ }
       }
-      // Budget allocation overview — running totals per channel pool, for the
-      // weighted-split share UI.
-      try {
-        const ba = await apiFetch('/prospecting-campaigns/budget-allocation');
-        if (ba) setBudgetAllocation(ba);
-      } catch { /* non-fatal */ }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -2691,8 +2689,6 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
       pacing_mode:              schedule.pacingMode,
       cadence_minutes:          schedule.cadenceMinutes,
       // Weighted-split share (normalised within the leading channel pool).
-      // Empty string → null = unset (excluded in weighted mode).
-      share_weight:             shareWeight === '' ? null : parseInt(shareWeight, 10),
       // Per-campaign sender selection (Phase 2). Empty array → backend stores
       // NULL = "all senders". Always sent so a cleared selection persists.
       sender_account_ids:       Array.isArray(selectedSenderIds) ? selectedSenderIds : [],
@@ -2872,78 +2868,15 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
                   </div>
                 )}
 
-                {/* Weighted-split share % — only shown when org budget mode is
-                    'weighted'. The campaign's slice of its leading channel's
-                    daily budget. Unset = excluded (won't release). */}
-                {budgetMode === 'weighted' && (() => {
-                  // Which channel pool does this campaign belong to? Determined
-                  // by its leading step channel. We infer from budgetAllocation
-                  // (the campaign appears in exactly one channel pool once saved);
-                  // before save we can't know, so we show a generic note.
-                  let poolKey = null, pool = null;
-                  if (budgetAllocation?.pools && campaign?.id) {
-                    for (const k of Object.keys(budgetAllocation.pools)) {
-                      const m = budgetAllocation.pools[k].members.find(x => x.id === campaign.id);
-                      if (m) { poolKey = k; pool = budgetAllocation.pools[k]; break; }
-                    }
-                  }
-                  const w = shareWeight === '' ? null : parseInt(shareWeight, 10);
-                  // Live running total: other campaigns' weights in this pool + this one.
-                  let otherWeight = 0, otherCount = 0;
-                  if (pool) {
-                    for (const m of pool.members) {
-                      if (campaign?.id && m.id === campaign.id) continue;
-                      if (m.weight != null && m.weight > 0) { otherWeight += m.weight; otherCount++; }
-                    }
-                  }
-                  const liveTotal = otherWeight + (w && w > 0 ? w : 0);
-                  const effPct = (w && w > 0 && liveTotal > 0) ? Math.round((w / liveTotal) * 100) : 0;
-                  const channelTotal = pool?.channelTotalPerDay;
-                  const allocatedPerDay = (channelTotal != null && effPct)
-                    ? Math.floor(channelTotal * (w / liveTotal)) : null;
-
-                  return (
-                    <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid #f0f0f0' }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 4 }}>
-                        Campaign share %{poolKey ? ` (${poolKey} pool)` : ''}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 10 }}>
-                        Your org uses a weighted split. This campaign gets this % of its
-                        channel's daily budget, divided against the other campaigns in the
-                        same channel. Leave blank and the campaign won't release until you
-                        set a value. Percentages don't have to add to exactly 100 — they're
-                        normalised.
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <input
-                          type="number" min="0" max="100" value={shareWeight}
-                          placeholder="—"
-                          onChange={(e) => setShareWeight(e.target.value)}
-                          style={{ width: 90, padding: '6px 8px', borderRadius: 4, border: '1px solid #d1d5db', fontSize: 13 }}
-                        />
-                        <span style={{ fontSize: 12, color: '#6b7280' }}>% share</span>
-                      </div>
-                      {(w && w > 0) ? (
-                        <div style={{ fontSize: 12, color: '#0f766e', marginTop: 8 }}>
-                          Effective: <strong>{effPct}%</strong>
-                          {allocatedPerDay != null && <> → ~{allocatedPerDay}/day</>}
-                          {pool && <span style={{ color: '#9ca3af' }}>
-                            {' '}(sharing {poolKey} with {otherCount} other{otherCount === 1 ? '' : 's'})
-                          </span>}
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: 12, color: '#b45309', marginTop: 8 }}>
-                          ⚠ No share set — this campaign won't release in weighted mode.
-                        </div>
-                      )}
-                      {pool && pool.unsetCount > 0 && (w && w > 0) && (
-                        <div style={{ fontSize: 11, color: '#b45309', marginTop: 4 }}>
-                          {pool.unsetCount} other campaign{pool.unsetCount === 1 ? '' : 's'} in the {poolKey} pool {pool.unsetCount === 1 ? 'has' : 'have'} no share and won't run.
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
+                {/* Weighted-split share % — REMOVED with the weighted budget
+                    model. Capacity is enforced at fire time, not reserved here.
+                    This block was also invisible to any non-admin: budgetMode
+                    was read from GET /org/outreach-limits, which is
+                    requireAdmin, so a Member's 403 was swallowed by a
+                    non-fatal catch and budgetMode fell back to 'shared'. The
+                    capacity box (from the non-admin GET /:id) meanwhile
+                    reported weighted mode — the UI told you to set a share and
+                    hid the only control that could set it. */}
               </div>
             ) : (
               <p style={{ fontSize: 12, color: '#9ca3af', margin: '4px 0 0 20px' }}>
