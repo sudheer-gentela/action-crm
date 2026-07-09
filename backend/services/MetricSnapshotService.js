@@ -168,6 +168,7 @@ function familyStepLogs() {
                   THEN COALESCE(e.sender_account_id, 0) ELSE 0 END       AS sender_account_id,
              COALESCE(p.owner_id, 0)                                     AS owner_id,
              ${FIT_BAND_SQL}                                             AS fit_band,
+             COALESCE(se.variant_key, '-')                               AS variant_key,
          ${measureCols({
            sent: `CASE WHEN ssl.status IN ('sent','completed','replied') THEN 1 ELSE 0 END`,
            failed: `CASE WHEN ssl.status = 'failed' THEN 1 ELSE 0 END`,
@@ -194,6 +195,7 @@ function familyEnrollments() {
              0                                                           AS sender_account_id,
              COALESCE(p.owner_id, 0)                                     AS owner_id,
              ${FIT_BAND_SQL}                                             AS fit_band,
+             COALESCE(se.variant_key, '-')                               AS variant_key,
          ${measureCols({ enrolled: '1' })}
         FROM sequence_enrollments se
         JOIN prospects p ON p.id = se.prospect_id AND p.org_id = se.org_id
@@ -220,6 +222,7 @@ function familyActivities() {
              0                                                           AS sender_account_id,
              COALESCE(p.owner_id, 0)                                     AS owner_id,
              ${FIT_BAND_SQL}                                             AS fit_band,
+             '-'                                                         AS variant_key,
          ${measureCols({
            replies: `CASE WHEN a.activity_type IN ('response_received','email_received') THEN 1 ELSE 0 END`,
            ooo_replies: `CASE WHEN a.activity_type IN ('response_received','email_received')
@@ -257,6 +260,7 @@ function familyMeetings() {
              'none' AS channel, 0 AS sender_account_id,
              COALESCE(p.owner_id, 0)                                     AS owner_id,
              ${FIT_BAND_SQL}                                             AS fit_band,
+             '-'                                                         AS variant_key,
          ${measureCols({ meetings_booked: '1' })}
         FROM meetings m
         JOIN prospects p ON p.id = m.prospect_id AND p.org_id = m.org_id
@@ -288,6 +292,7 @@ function familyStageTransitions() {
              'none' AS channel, 0 AS sender_account_id,
              COALESCE(p.owner_id, 0)                                     AS owner_id,
              ${FIT_BAND_SQL}                                             AS fit_band,
+             '-'                                                         AS variant_key,
          ${measureCols({
            qualified: `CASE WHEN ${effType} = 'qualification' THEN 1 ELSE 0 END`,
            converted: `CASE WHEN ${effType} = 'converted' THEN 1 ELSE 0 END`,
@@ -314,6 +319,7 @@ function familyProspectsAdded() {
              'none' AS channel, 0 AS sender_account_id,
              COALESCE(p.owner_id, 0)                                     AS owner_id,
              ${FIT_BAND_SQL}                                             AS fit_band,
+             '-'                                                         AS variant_key,
          ${measureCols({ prospects_added: '1' })}
         FROM prospects p
        WHERE p.org_id = $1
@@ -335,6 +341,7 @@ function familyDeliveryEvents() {
              COALESCE(ede.sender_account_id, 0)                          AS sender_account_id,
              COALESCE(p.owner_id, 0)                                     AS owner_id,
              ${FIT_BAND_SQL}                                             AS fit_band,
+             '-'                                                         AS variant_key,
          ${measureCols({
            bounces_hard: `CASE WHEN ede.event_type = 'hard_bounce' THEN 1 ELSE 0 END`,
            bounces_soft: `CASE WHEN ede.event_type = 'soft_bounce' THEN 1 ELSE 0 END`,
@@ -356,6 +363,7 @@ function familyEngagementEvents() {
   return `
       SELECT f.d, f.campaign_id, f.sequence_id, f.sequence_step_id,
              'email' AS channel, f.sender_account_id, f.owner_id, f.fit_band,
+             f.variant_key,
          ${measureCols({ opens: 'f.opens', clicks: 'f.clicks' })}
         FROM (
           SELECT ${d}                                                  AS d,
@@ -365,6 +373,7 @@ function familyEngagementEvents() {
                  COALESCE(em.sender_account_id, 0)                     AS sender_account_id,
                  COALESCE(p.owner_id, 0)                               AS owner_id,
                  ${FIT_BAND_SQL}                                       AS fit_band,
+                 COALESCE(se.variant_key, '-')                         AS variant_key,
                  LEAST(SUM(CASE WHEN e2.event_type = 'open'  THEN 1 ELSE 0 END), 1)::int AS opens,
                  SUM(CASE WHEN e2.event_type = 'click' THEN 1 ELSE 0 END)::int           AS clicks
             FROM email_engagement_events e2
@@ -377,7 +386,7 @@ function familyEngagementEvents() {
              AND e2.occurred_at >= ($3::date - INTERVAL '2 days')
              AND e2.occurred_at <  ($4::date + INTERVAL '3 days')
              AND ${d} BETWEEN $3::date AND $4::date
-           GROUP BY 1, 2, 3, 4, 5, 6, 7, e2.step_log_id
+           GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, e2.step_log_id
         ) f`;
 }
 
@@ -407,16 +416,16 @@ async function computeRange(orgId, startDate, endDate, calendarOpt) {
   const insertSql = `
     INSERT INTO prospecting_metric_daily
       (org_id, metric_date, campaign_id, sequence_id, sequence_step_id,
-       channel, sender_account_id, owner_id, fit_band,
+       channel, sender_account_id, owner_id, fit_band, variant_key,
        ${MEASURES.join(', ')})
     SELECT $1, f.d, f.campaign_id, f.sequence_id, f.sequence_step_id,
-           f.channel, f.sender_account_id, f.owner_id, f.fit_band,
+           f.channel, f.sender_account_id, f.owner_id, f.fit_band, f.variant_key,
            ${MEASURES.map((m) => `SUM(f.${m})::int`).join(', ')}
       FROM (
 ${union}
       ) f
      GROUP BY f.d, f.campaign_id, f.sequence_id, f.sequence_step_id,
-              f.channel, f.sender_account_id, f.owner_id, f.fit_band`;
+              f.channel, f.sender_account_id, f.owner_id, f.fit_band, f.variant_key`;
 
   // withOrgTransaction handles BEGIN/COMMIT/ROLLBACK and sets the org RLS
   // context (config/database.js convention for new code paths).
@@ -438,9 +447,9 @@ ${union}
       const g = await client.query(
         `INSERT INTO prospecting_metric_daily
            (org_id, metric_date, campaign_id, sequence_id, sequence_step_id,
-            channel, sender_account_id, owner_id, fit_band, tasks_overdue)
+            channel, sender_account_id, owner_id, fit_band, variant_key, tasks_overdue)
          SELECT $1, $2::date, COALESCE(p.campaign_id, 0), 0, 0, 'none', 0,
-                COALESCE(pa.user_id, p.owner_id, 0), 'unknown', COUNT(*)::int
+                COALESCE(pa.user_id, p.owner_id, 0), 'unknown', '-', COUNT(*)::int
            FROM prospecting_actions pa
            JOIN prospects p ON p.id = pa.prospect_id AND p.org_id = pa.org_id
           WHERE pa.org_id = $1
@@ -449,7 +458,7 @@ ${union}
             AND pa.due_date < now()
           GROUP BY COALESCE(p.campaign_id, 0), COALESCE(pa.user_id, p.owner_id, 0)
          ON CONFLICT (org_id, metric_date, campaign_id, sequence_id, sequence_step_id,
-                      channel, sender_account_id, owner_id, fit_band)
+                      channel, sender_account_id, owner_id, fit_band, variant_key)
          DO UPDATE SET tasks_overdue = EXCLUDED.tasks_overdue, computed_at = now()`,
         [orgId, today]
       );

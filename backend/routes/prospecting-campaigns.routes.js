@@ -42,6 +42,7 @@ const SignalActionSurfacer = require('../services/SignalActionSurfacer');
 // Slice 2's inline mapping of the retired outreach-personalization skill.
 const PersonalizationDispatcher = require('../services/PersonalizationDispatcher');
 const EnrollmentStepResolver = require('../services/EnrollmentStepResolver'); // identity-cursor stamp on enroll
+const ExperimentAssigner     = require('../services/ExperimentAssigner');     // A/B arm assignment (2026_46)
 
 // Phase 3 — campaign-scoped sequence reporting: ?depth and ?userIds filters
 // on /:id/sequence-health go through the scope service for auth.
@@ -2555,13 +2556,18 @@ router.post('/:id/enroll-all', async (req, res) => {
         continue;
       }
       try {
+        // A/B (2026_46): pure hash of (sequence_id, prospect_id). null = no test.
+        const variantKey = await ExperimentAssigner.assignVariant(client, {
+          sequenceId, prospectId,
+        });
+
         const er = await client.query(
           `INSERT INTO sequence_enrollments
-                 (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps)
-           VALUES ($1,$2,$3,$4,$5,$6)
+                 (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps, variant_key)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
            ON CONFLICT (sequence_id, prospect_id) DO NOTHING
            RETURNING id`,
-          [req.orgId, sequenceId, prospectId, req.user.userId, nextDue, JSON.stringify({})]
+          [req.orgId, sequenceId, prospectId, req.user.userId, nextDue, JSON.stringify({}), variantKey]
         );
         if (er.rows.length) {
           // Stamp the identity cursor (current_step_id + channel) for the first step.
@@ -3577,6 +3583,21 @@ router.post('/:id/bulk-activate', async (req, res) => {
       let skillStatus       = 'not_run';
       let dispatchSummary   = null;
 
+      // A/B (2026_46). Resolved HERE, above the dispatcher, not next to the
+      // INSERT below: the dispatcher personalises FROM the step's template, and
+      // in a test that must be the ARM's template — but no enrollment row exists
+      // yet to read an arm from. This is exactly why ExperimentAssigner is a
+      // pure hash of (sequence_id, prospect_id) and never Math.random().
+      //
+      // v1 scope: routes/sequence-variants.routes.js refuses to create variants
+      // on an ai_enabled sequence, so wantSkill is always false when variantKey
+      // is non-null and the dispatcher never needs the arm. Lift that guard only
+      // together with the PersonalizationDispatcher.loadSequenceSteps patch, or
+      // the AI will personalise arm A's copy onto arm B enrollments.
+      const variantKey = await ExperimentAssigner.assignVariant(pool, {
+        sequenceId: campaign.default_sequence_id, prospectId,
+      });
+
       // Step 1: dispatch personalisation across all sequence steps (optional).
       if (wantSkill) {
         try {
@@ -3635,12 +3656,12 @@ router.post('/:id/bulk-activate', async (req, res) => {
         const er = await pool.query(
           `INSERT INTO sequence_enrollments
                        (org_id, sequence_id, prospect_id, enrolled_by,
-                        next_step_due, personalised_steps, status)
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'active')
+                        next_step_due, personalised_steps, status, variant_key)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'active', $7)
            ON CONFLICT (sequence_id, prospect_id) DO NOTHING
            RETURNING id`,
           [req.orgId, campaign.default_sequence_id, prospectId,
-           req.user.userId, nextDue, JSON.stringify(personalisedById)]
+           req.user.userId, nextDue, JSON.stringify(personalisedById), variantKey]
         );
 
         if (er.rows.length === 0) {

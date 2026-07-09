@@ -396,17 +396,31 @@ async function materializeRows(client, enrollmentIds = null) {
     // step_order = current_step. Reorder preserves step IDs, so this stays
     // correct across reorders. steps_snapshot is selected so frozen enrollments
     // can override content from their pinned plan (below).
-    `SELECT se.id              AS enrollment_id,
+    // A/B (2026_46): `varied` restricts the variant join to steps carrying >= 2
+    // ACTIVE arms, so a half-built test (one arm row) can never override the
+    // base step. When se.variant_key IS NULL the join misses and every column
+    // below reads exactly as it did pre-A/B.
+    `WITH varied AS (
+       SELECT sv.sequence_step_id
+         FROM sequence_step_variants sv
+        WHERE sv.status = 'active'
+        GROUP BY sv.sequence_step_id
+       HAVING COUNT(*) >= 2
+     )
+     SELECT se.id              AS enrollment_id,
             se.org_id,
             se.prospect_id,
             se.current_step,
             se.current_step_id,
             se.steps_snapshot,
+            se.variant_key,
             se.next_step_due,
             se.personalised_steps,
             ss.id              AS step_id,
             ss.subject_template,
             ss.body_template,
+            sv.subject_template AS variant_subject_template,
+            sv.body_template    AS variant_body_template,
             ss.step_intent,
             p.first_name, p.last_name, p.title,
             p.company_name, p.company_industry, p.company_domain,
@@ -417,6 +431,12 @@ async function materializeRows(client, enrollmentIds = null) {
        JOIN sequence_steps ss ON ss.id = se.current_step_id
        JOIN prospects p       ON p.id  = se.prospect_id
   LEFT JOIN accounts a        ON a.id  = p.account_id
+  LEFT JOIN varied v          ON v.sequence_step_id = ss.id
+  LEFT JOIN sequence_step_variants sv
+         ON sv.sequence_step_id  = ss.id
+        AND sv.variant_key       = se.variant_key
+        AND sv.status            = 'active'
+        AND v.sequence_step_id IS NOT NULL
       WHERE se.status = 'active'
         AND se.next_step_due IS NOT NULL
         AND ${AUTO_SEND_PREDICATE}
@@ -445,13 +465,27 @@ async function materializeRows(client, enrollmentIds = null) {
     // Personalised drafts are cached by stable step ID (reorder-safe).
     const personalised = ps[String(row.current_step_id)] || null;
 
-    // Frozen enrollments (steps_snapshot present) send the templates pinned at
-    // freeze time, not whatever the live step has since been edited to.
+    // Template precedence: personalised_steps → steps_snapshot → variant → base.
     let subjectTemplate = row.subject_template;
     let bodyTemplate    = row.body_template;
+
+    // A/B (2026_46): the arm's copy sits above the base step. A blank/NULL field
+    // on the arm row falls through, so an arm may vary the subject alone and
+    // inherit the body. No-op when se.variant_key IS NULL (the join missed).
+    if (row.variant_subject_template) subjectTemplate = row.variant_subject_template;
+    if (row.variant_body_template)    bodyTemplate    = row.variant_body_template;
+
+    // Frozen enrollments (steps_snapshot present) send the templates pinned at
+    // freeze time, not whatever the live step has since been edited to.
+    // Snapshots written on or after 2026_46 are ALREADY arm-resolved (freeze
+    // stamps variant_key onto every row), so they outrank the join above and
+    // must not be overlaid twice. Legacy snapshots have no variant_key key and
+    // still win over the base step, exactly as before — but they lose to the
+    // arm, because they were pinned before the test existed.
     if (Array.isArray(row.steps_snapshot) && row.steps_snapshot.length) {
       const snap = row.steps_snapshot.find(s => s.id === row.current_step_id);
-      if (snap) {
+      const snapIsArmResolved = snap && Object.prototype.hasOwnProperty.call(snap, 'variant_key');
+      if (snap && (snapIsArmResolved ? snap.variant_key === row.variant_key : !row.variant_key)) {
         subjectTemplate = snap.subject_template;
         bodyTemplate    = snap.body_template;
       }

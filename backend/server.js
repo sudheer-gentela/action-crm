@@ -337,6 +337,9 @@ app.use('/api/account-teams',   require('./routes/account-teams.routes'));
 app.use('/api/handovers',       require('./routes/handovers.routes'));
 app.use('/api/support',         require('./routes/support.routes'));
 app.use('/api/sequences',       require('./routes/sequences.routes'));
+// A/B variants (2026_46). Same base path, disjoint sub-paths — must mount AFTER
+// sequences.routes so its '/:id/steps/:stepId' handlers keep priority.
+app.use('/api/sequences',       require('./routes/sequence-variants.routes'));
 app.use('/api/clients',         require('./routes/clients.routes'));
 app.use('/api/portal',          require('./routes/client-portal.routes'));
 

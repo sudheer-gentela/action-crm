@@ -46,6 +46,7 @@ const REGISTRIES = {
       sequenceIds: 'sequence_id',
       channel: 'channel',
       fitBand: 'fit_band',
+      variantKey: 'variant_key',   // A/B arm (2026_46). '-' = unattributed.
     },
     metrics: {
       prospects_added:      { label: 'Prospects added',    type: 'count', num: 'prospects_added' },

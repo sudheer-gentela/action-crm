@@ -119,13 +119,20 @@ async function assignCampaignAndEnroll({ orgId, userId, prospectId, campaignId, 
           firstStep.rows[0]?.delay_hours ?? 0
         );
 
+        // A/B (2026_46): pure hash of (sequence_id, prospect_id). null when the
+        // sequence has no live test.
+        const ExperimentAssigner = require('../services/ExperimentAssigner');
+        const variantKey = await ExperimentAssigner.assignVariant(db, {
+          sequenceId: parseInt(sequenceId, 10), prospectId,
+        });
+
         const er = await db.query(
           `INSERT INTO sequence_enrollments
-                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps, variant_key)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
            ON CONFLICT (sequence_id, prospect_id) DO NOTHING
            RETURNING *`,
-          [orgId, parseInt(sequenceId, 10), prospectId, userId, nextDue, JSON.stringify({})]
+          [orgId, parseInt(sequenceId, 10), prospectId, userId, nextDue, JSON.stringify({}), variantKey]
         );
 
         if (er.rows.length) {

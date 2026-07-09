@@ -54,6 +54,7 @@ const AIClientResolver = require('../services/ai/AIClientResolver');
 const ReportingScopeService = require('../services/ReportingScopeService');
 const AccessPolicy          = require('../services/AccessPolicy');
 const EnrollmentStepResolver = require('../services/EnrollmentStepResolver'); // identity-cursor + freeze copy-on-write
+const ExperimentAssigner     = require('../services/ExperimentAssigner');     // A/B arm assignment (2026_46)
 
 // ── Auth middleware on all routes ─────────────────────────────────────────────
 router.use(authenticateToken, orgContext);
@@ -414,13 +415,20 @@ router.post('/enroll', async (req, res) => {
           if (sid != null) prosSteps[String(sid)] = val;
         }
 
+        // A/B (2026_46): pure hash of (sequence_id, prospect_id). Returns null
+        // when the sequence has no live test — variant_key stays NULL and every
+        // downstream read falls through to the base step templates.
+        const variantKey = await ExperimentAssigner.assignVariant(client, {
+          sequenceId, prospectId,
+        });
+
         const er = await client.query(
           `INSERT INTO sequence_enrollments
-                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps)
-                VALUES ($1,$2,$3,$4,$5,$6)
+                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps, variant_key)
+                VALUES ($1,$2,$3,$4,$5,$6,$7)
            ON CONFLICT (sequence_id, prospect_id) DO NOTHING
            RETURNING *`,
-          [req.orgId, sequenceId, prospectId, req.user.userId, nextDue, JSON.stringify(prosSteps)]
+          [req.orgId, sequenceId, prospectId, req.user.userId, nextDue, JSON.stringify(prosSteps), variantKey]
         );
 
         if (er.rows.length) {
@@ -621,6 +629,15 @@ router.get('/enrollments/:enrollId', async (req, res) => {
       [enrollment.seq_id]
     );
 
+    // A/B (2026_46): show the prospect's ARM copy in the timeline, not the base
+    // step. Display-only. No-op (and no query) when variant_key IS NULL.
+    if (enrollment.variant_key) {
+      const overlay = await EnrollmentStepResolver.loadVariantOverlay(
+        pool, enrollment.seq_id, enrollment.variant_key
+      );
+      stepsRes.rows = EnrollmentStepResolver.applyOverlay(stepsRes.rows, overlay);
+    }
+
     // Build a map of step_order → log (most recent if multiple)
     const logByStep = {};
     for (const log of logsRes.rows) {
@@ -799,9 +816,14 @@ router.get('/drafts', async (req, res) => {
         ssl.personalize_sources,
         ss.step_order,
         ss.channel         AS step_channel,
-        ss.subject_template AS step_subject_template,
-        ss.body_template    AS step_body_template,
-        se.sequence_id, se.enrolled_by,
+        -- A/B (2026_46): "sequence default" MUST be the enrollment's ARM copy,
+        -- not the base step. The UI offers these as a one-click revert; serving
+        -- base copy to an arm-B prospect would silently move them across arms.
+        -- COALESCE + NULLIF: a blank arm field falls back to the base step, so
+        -- an arm may vary the subject alone and inherit the body.
+        COALESCE(NULLIF(sv.subject_template, ''), ss.subject_template) AS step_subject_template,
+        COALESCE(NULLIF(sv.body_template, ''),    ss.body_template)    AS step_body_template,
+        se.sequence_id, se.enrolled_by, se.variant_key,
         s.name AS sequence_name,
         p.id AS prospect_id, p.first_name, p.last_name,
         p.email AS prospect_email, p.company_name, p.linkedin_url,
@@ -820,6 +842,20 @@ router.get('/drafts', async (req, res) => {
       JOIN sequences s             ON s.id   = se.sequence_id
       JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
       JOIN prospects p             ON p.id   = ssl.prospect_id
+      -- A/B (2026_46): resolve the enrollment's arm copy. Only steps with >= 2
+      -- ACTIVE arms are varied, so a half-built test never overrides the base
+      -- step. Misses entirely when se.variant_key IS NULL — pre-A/B enrollments
+      -- and non-test sequences read exactly as they did before.
+      LEFT JOIN LATERAL (
+        SELECT v.subject_template, v.body_template
+          FROM sequence_step_variants v
+         WHERE v.sequence_step_id = ss.id
+           AND v.variant_key      = se.variant_key
+           AND v.status           = 'active'
+           AND (SELECT COUNT(*) FROM sequence_step_variants v2
+                 WHERE v2.sequence_step_id = ss.id AND v2.status = 'active') >= 2
+         LIMIT 1
+      ) sv ON TRUE
       LEFT JOIN LATERAL (
         SELECT id, email, provider, label, display_name,
                signature, linkedin_signature, owner_type
