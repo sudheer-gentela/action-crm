@@ -45,6 +45,7 @@ export const STATIC_NAV_GROUPS = [
       { id: 'workflows',      icon: '⚙️', label: 'Workflows'      },
       { id: 'email-settings', icon: '📧', label: 'Email Settings'  },
       { id: 'tracking-domain', icon: '🔗', label: 'Tracking Domain' },   // Insights/WBR Phase 7
+      { id: 'tracking-diag',   icon: '🩺', label: 'Tracking Health' },  // Phase 7 diagnostics (read-only)
       { id: 'custom-fields',   icon: '🧱', label: 'Custom Fields'   },
     ],
   },
@@ -85,6 +86,7 @@ export const TAB_META = {
   'workflows':   { title: 'Workflows',       desc: 'Manage data-integrity workflows and standalone rules for deals, contacts, and accounts' },
   'email-settings': { title: 'Email Settings', desc: 'Configure which emails are synced and matched to deals, prospects, and accounts' },
   'tracking-domain': { title: 'Tracking Domain', desc: 'Per-customer CNAME domain for email open/click tracking — one DNS record on your domain keeps tracked links aligned with your sending reputation' },
+  'tracking-diag':   { title: 'Tracking Health',  desc: 'Verify open/click tracking end to end — gates, pixel injection, engagement events, and report rollup' },
   'custom-fields': { title: 'Custom Fields', desc: 'Define org-level custom fields for prospects, accounts, contacts, and deals' },
   'wf-log':      { title: 'Execution Log', desc: 'Workflow execution history and open violations' },
   'ai-agent':    { title: 'AI Agent',      desc: 'Agentic framework settings and token usage' },

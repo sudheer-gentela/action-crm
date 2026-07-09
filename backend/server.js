@@ -196,6 +196,7 @@ app.use('/api/list-mappings', require('./routes/list-mappings.routes'));
 app.use('/api/prospecting-wbr',      require('./routes/prospecting-wbr.routes'));
 app.use('/api/prospecting-insights', require('./routes/prospecting-insights.routes'));
 app.use('/api/tracking-domains',     require('./routes/tracking-domains.routes')); // Insights/WBR Phase 7
+app.use('/api/tracking-diagnostics', require('./routes/tracking-diagnostics.routes')); // Phase 7 diagnostics (read-only)
 app.use('/api/custom-fields',        require('./routes/custom-fields.routes'));
 app.use('/api/help',                 require('./routes/help.routes'));   // Help & Guides (signed-URL gated)
 
