@@ -51,7 +51,9 @@ router.get('/summary', async (req, res) => {
   try {
     const orgId = req.orgId;
 
-    const [domains, campaigns, events, snapshot] = await Promise.all([
+    // allSettled, not all: this page exists to REPORT breakage. One failing
+    // sub-query must degrade its own section, not 500 the whole diagnostic.
+    const [domains, campaigns, events, snapshot] = await Promise.allSettled([
       pool.query(
         `SELECT id, hostname, status, last_checked_at, error_message
            FROM tracking_domains WHERE org_id = $1 ORDER BY id`,
@@ -75,35 +77,54 @@ router.get('/summary', async (req, res) => {
       ),
       // Reports read THIS table, not the events table. If max_d lags today,
       // the nightly snapshot hasn't absorbed recent events yet.
+      //
+      // The date column is `metric_date`. (`d` is only a CTE alias inside
+      // MetricSnapshotService — it is NOT a column on this table.)
       pool.query(
-        `SELECT max(d)::text                          AS max_d,
+        `SELECT max(metric_date)::text                AS max_d,
                 COALESCE(sum(opens), 0)::int          AS opens,
                 COALESCE(sum(clicks), 0)::int         AS clicks
            FROM prospecting_metric_daily
-          WHERE org_id = $1 AND d >= CURRENT_DATE - 30`,
+          WHERE org_id = $1 AND metric_date >= CURRENT_DATE - 30`,
         [orgId]
       ),
     ]);
 
-    const activeHosts = domains.rows.filter((d) => d.status === 'active');
+    const errors = [];
+    const rowsOf = (settled, label, fallback) => {
+      if (settled.status === 'fulfilled') return settled.value.rows;
+      console.error(`[tracking-diagnostics] summary.${label}:`, settled.reason?.message);
+      // Route is owner/admin-gated — surfacing the DB message here saves a
+      // round trip through Railway logs.
+      errors.push({ section: label, message: settled.reason?.message || 'query failed' });
+      return fallback;
+    };
+
+    const domainRows   = rowsOf(domains,   'domains',   []);
+    const campaignRows = rowsOf(campaigns, 'campaigns', []);
+    const eventRows    = rowsOf(events,    'events',    []);
+    const snapshotRows = rowsOf(snapshot,  'snapshot',  []);
+
+    const activeHosts = domainRows.filter((d) => d.status === 'active');
 
     res.json({
       secret_configured: secretConfigured(),
-      domains: domains.rows,
+      domains: domainRows,
       active_host_count: activeHosts.length,
       // >1 active host + SequenceStepFirer not passing senderEmail means
       // getActiveHostname always returns hosts[0]. Surface it rather than
       // let it silently cross-domain every link.
       multi_host_warning: activeHosts.length > 1,
-      campaigns_with_tracking: campaigns.rows,
-      events: events.rows,
-      events_total: events.rows.reduce((a, r) => a + r.n, 0),
-      events_human: events.rows.filter((r) => !r.is_bot).reduce((a, r) => a + r.n, 0),
-      snapshot: snapshot.rows[0],
+      campaigns_with_tracking: campaignRows,
+      events: eventRows,
+      events_total: eventRows.reduce((a, r) => a + r.n, 0),
+      events_human: eventRows.filter((r) => !r.is_bot).reduce((a, r) => a + r.n, 0),
+      snapshot: snapshotRows[0] || null,
+      errors,
     });
   } catch (err) {
     console.error('[tracking-diagnostics] summary error:', err.message);
-    res.status(500).json({ error: { message: 'Failed to load tracking summary' } });
+    res.status(500).json({ error: { message: `Failed to load tracking summary: ${err.message}` } });
   }
 });
 
@@ -132,7 +153,7 @@ router.get('/step-logs', async (req, res) => {
     res.json({ step_logs: r.rows });
   } catch (err) {
     console.error('[tracking-diagnostics] step-logs error:', err.message);
-    res.status(500).json({ error: { message: 'Failed to load step logs' } });
+    res.status(500).json({ error: { message: `Failed to load step logs: ${err.message}` } });
   }
 });
 
@@ -238,7 +259,7 @@ router.get('/step-log/:id', async (req, res) => {
     });
   } catch (err) {
     console.error('[tracking-diagnostics] step-log error:', err.message);
-    res.status(500).json({ error: { message: 'Failed to run diagnostic' } });
+    res.status(500).json({ error: { message: `Failed to run diagnostic: ${err.message}` } });
   }
 });
 
