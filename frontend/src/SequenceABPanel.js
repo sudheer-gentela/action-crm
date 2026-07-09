@@ -221,6 +221,10 @@ export default function SequenceABPanel({ sequenceId, steps, aiEnabled, apiFetch
 
   const experiment     = data?.experiment || null;
   const variantsByStep = data?.variantsByStep || {};
+  // Experiment-level arm set (variant_key + weight) from activeArms(). Distinct
+  // from the per-step `arms` inside the step .map() below, which is that step's
+  // full variant rows.
+  const experimentArms = data?.arms || [];
   const variedIds      = new Set(data?.variedStepIds || []);
   const remaining      = data?.variedStepsRemaining ?? 0;
   const testIsLive     = !!data?.testIsLive;
@@ -359,7 +363,9 @@ export default function SequenceABPanel({ sequenceId, steps, aiEnabled, apiFetch
                   style={{ ...input, width: 90, padding: '5px 8px' }}
                 >
                   <option value="">—</option>
-                  {arms.map(a => <option key={a.variant_key} value={a.variant_key}>Arm {a.variant_key}</option>)}
+                  {experimentArms.map(a => (
+                    <option key={a.variant_key} value={a.variant_key}>Arm {a.variant_key}</option>
+                  ))}
                 </select>
                 <label style={{ fontSize: 12, color: '#374151', display: 'flex', alignItems: 'center', gap: 5 }}>
                   <input type="checkbox" checked={promote} onChange={e => setPromote(e.target.checked)} />
