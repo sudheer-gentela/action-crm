@@ -146,6 +146,139 @@ async function resolveCampaignFilter(orgId, scopeUserIds, requestedCampaignIds) 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Reply attribution — the single definition of "replied" for all three tabs
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// WHY THIS EXISTS
+//
+// These endpoints used to count replies as:
+//     COUNT(*) FILTER (WHERE ssl.status = 'replied')
+//
+// Nothing in the codebase ever writes that value. The only writer of the
+// string 'replied' is SequenceStepFirer.js, and it writes to
+// sequence_enrollments.status, not sequence_step_logs.status. So the REPLIED
+// column read 0 on every tab, for every org, forever — while the campaign
+// detail panel (prospecting-campaigns.routes.js, the `outreach` CTE) happily
+// showed real reply counts because it reads the `emails` table.
+//
+// sequence_enrollments.status='replied' is NOT a usable substitute either:
+// SequenceStepFirer only sets it when it next ticks an *active* enrollment,
+// so enrollments that already reached 'completed' never get marked. On a live
+// org this undercounts by an order of magnitude.
+//
+// So: replies come from `emails`, using the SAME predicate the campaign panel
+// uses, and reconcile with it by construction.
+//
+// GRAIN AND ATTRIBUTION
+//
+// An inbound email has no enrollment_id, so it can't be attributed to a rep /
+// sequence directly. We reach back to the most recent enrollment that PRECEDED
+// the reply (`se.enrolled_at < e.sent_at`), and take that enrollment's
+// enrolled_by / sequence_id, plus the prospect's campaign_id.
+//
+// `DISTINCT ON (e.id) ... ORDER BY e.id, se.enrolled_at DESC, se.id DESC`
+// guarantees exactly ONE row per inbound email. Without it, a prospect enrolled
+// twice (or by two reps) would have its single reply counted once per
+// enrollment. This is the difference between a reply *count* and a reply
+// *cross-join*, and it is the reason the CTE is not just a plain JOIN.
+//
+// The scope predicate (`se.enrolled_by = ANY(...)`) is applied BEFORE the
+// DISTINCT ON, so a reply lands on the most recent *in-scope* enrollment even
+// when a later out-of-scope enrollment exists. That is the correct behaviour
+// for a manager viewing a narrowed team.
+//
+// TIMESTAMP DISCIPLINE
+//
+// emails.sent_at is `timestamp without time zone`, holding UTC wall time (DB
+// convention). sequence_enrollments.enrolled_at is `timestamptz`. Mixing them
+// bare makes Postgres cast the naive value using the *session* TimeZone, which
+// is environment-dependent. Every comparison below is therefore explicit:
+//   * naive vs. window bound → `$n::timestamptz AT TIME ZONE 'UTC'` (→ naive)
+//   * naive vs. timestamptz  → `e.sent_at AT TIME ZONE 'UTC'`       (→ tz-aware)
+//
+// KNOWN LIMITS (deliberate — documented rather than hidden)
+//
+//   1. Email only. LinkedIn replies live in prospecting_activities as
+//      activity_type='linkedin_event' / metadata->>'event'='reply_received'.
+//      The campaign panel's email branch has the same blind spot, so the two
+//      surfaces agree. Widening both is a separate change.
+//   2. A reply to a prospect who was never enrolled in any sequence is not
+//      counted here (no rep to attribute it to). The campaign panel does count
+//      it, since it keys off campaign_id alone. Expect reporting <= campaign
+//      panel for orgs doing manual outreach outside sequences.
+//   3. `replied` is window-bounded by the reply's own timestamp, while `sent`
+//      is window-bounded by fired_at. repliedRate is therefore a period rate
+//      (replies received / sends made, same window), NOT a per-send cohort
+//      rate. Same convention MetricSnapshotService uses (design decision D18).
+//   4. We filter e.deleted_at IS NULL; the campaign panel currently does not.
+//      A soft-deleted reply will make the two differ by one. The one-line fix
+//      belongs in prospecting-campaigns.routes.js — flagged, not smuggled in.
+
+/**
+ * Build the `reply_events` CTE — one row per attributable inbound email.
+ *
+ * Assumes $1 = orgId and $2 = scopeUserIds::int[] in the caller's param list.
+ * Window bounds are passed by position because the three endpoints build their
+ * param arrays in different orders.
+ *
+ * @param {object} o
+ *   prospectAlias  alias for the prospects join (must be unique in the query)
+ *   startParam     e.g. '$3' — window start, bound as timestamptz
+ *   endParam       e.g. '$4' — window end, bound as timestamptz
+ *   campaignClause optional, e.g. `AND p_reply.campaign_id = ANY($5::int[])`
+ *   sequenceClause optional, e.g. `AND se.sequence_id = ANY($6::int[])`
+ * @returns {string} the CTE body, WITHOUT a trailing comma
+ */
+function replyEventsCte({
+  prospectAlias = 'p_reply',
+  startParam,
+  endParam,
+  campaignClause = '',
+  sequenceClause = '',
+}) {
+  return `
+     reply_events AS (
+       SELECT DISTINCT ON (e.id)
+         e.id                          AS email_id,
+         e.sent_at                     AS replied_at,
+         se.enrolled_by                AS user_id,
+         se.sequence_id                AS sequence_id,
+         ${prospectAlias}.campaign_id  AS campaign_id
+       FROM emails e
+       JOIN prospects ${prospectAlias}
+         ON ${prospectAlias}.id     = e.prospect_id
+        AND ${prospectAlias}.org_id = e.org_id
+       JOIN sequence_enrollments se
+         ON se.prospect_id = ${prospectAlias}.id
+        AND se.org_id      = e.org_id
+        AND se.enrolled_at < (e.sent_at AT TIME ZONE 'UTC')
+       WHERE e.org_id       = $1
+         AND se.enrolled_by = ANY($2::int[])
+         AND e.direction    IN ('received', 'inbound')
+         AND e.deleted_at   IS NULL
+         AND e.sent_at     >= (${startParam}::timestamptz AT TIME ZONE 'UTC')
+         AND e.sent_at     <= (${endParam}::timestamptz   AT TIME ZONE 'UTC')
+         -- Cold inbound (a prospect writing first) is not a reply.
+         AND EXISTS (
+           SELECT 1 FROM emails o
+            WHERE o.org_id      = e.org_id
+              AND o.prospect_id = e.prospect_id
+              AND o.direction   = 'sent'
+              AND o.deleted_at  IS NULL
+              AND o.sent_at     < e.sent_at
+         )
+         ${campaignClause}
+         ${sequenceClause}
+       ORDER BY e.id, se.enrolled_at DESC, se.id DESC
+     )`;
+}
+
+/** replied / sent as a 1-decimal percentage. 0 when there were no sends. */
+function _repliedRate(replied, sent) {
+  return sent > 0 ? +((replied / sent) * 100).toFixed(1) : 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/reporting/sequences/team-overview
 // ─────────────────────────────────────────────────────────────────────────────
 //
@@ -242,11 +375,12 @@ router.get('/sequences/team-overview', async (req, res) => {
 
     const perCampaignRes = await pool.query(
       `WITH log_agg AS (
+         -- NOTE: no 'replied' column here. sequence_step_logs.status never reaches
+         -- 'replied' (see replyEventsCte header). Replies come from reply_agg.
          SELECT
            p.campaign_id,
            COUNT(*) FILTER (WHERE ssl.status = 'draft')::int                              AS drafts,
            COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed'))::int                AS sent,
-           COUNT(*) FILTER (WHERE ssl.status = 'replied')::int                            AS replied,
            COUNT(*) FILTER (WHERE ssl.status = 'failed')::int                             AS failed,
            MAX(ssl.fired_at) AS last_fired_at
          FROM sequence_step_logs ssl
@@ -257,6 +391,20 @@ router.get('/sequences/team-overview', async (req, res) => {
            AND ssl.fired_at <= $${endIdx}::timestamptz
            AND se.enrolled_by = ANY($2::int[])
          GROUP BY p.campaign_id
+       ),
+       ${replyEventsCte({
+         prospectAlias: 'p_reply',
+         startParam: `$${startIdx}`,
+         endParam:   `$${endIdx}`,
+       })},
+       reply_agg AS (
+         -- Campaign-grain replies. Orphan replies (prospect with no campaign)
+         -- have nowhere to roll up to in this lens and are dropped — the
+         -- by-sequence tab is where they surface.
+         SELECT campaign_id, COUNT(*)::int AS replied
+           FROM reply_events
+          WHERE campaign_id IS NOT NULL
+          GROUP BY campaign_id
        ),
        enroll_agg AS (
          SELECT
@@ -294,7 +442,7 @@ router.get('/sequences/team-overview', async (req, res) => {
          COALESCE(e.enrolled, 0)  AS enrolled,
          COALESCE(l.drafts, 0)    AS drafts,
          COALESCE(l.sent, 0)      AS sent,
-         COALESCE(l.replied, 0)   AS replied,
+         COALESCE(rp.replied, 0)  AS replied,
          COALESCE(l.failed, 0)    AS failed,
          COALESCE(s.stalled, 0)   AS stalled,
          l.last_fired_at
@@ -303,6 +451,7 @@ router.get('/sequences/team-overview', async (req, res) => {
        LEFT JOIN log_agg    l ON l.campaign_id = c.id
        LEFT JOIN enroll_agg e ON e.campaign_id = c.id
        LEFT JOIN stalled_agg s ON s.campaign_id = c.id
+       LEFT JOIN reply_agg  rp ON rp.campaign_id = c.id
        WHERE ${campaignWhere}
        ORDER BY l.last_fired_at DESC NULLS LAST, c.id ASC`,
       campaignParams
@@ -336,6 +485,9 @@ router.get('/sequences/team-overview', async (req, res) => {
         replied:         r.replied,
         failed:          r.failed,
         stalled:         r.stalled,
+        // The UI's per-row "Reply rate" column reads this. It was never sent,
+        // so the column rendered '—' for every campaign.
+        repliedRate:     _repliedRate(r.replied, r.sent),
         lastActivityAt:  r.last_fired_at,
       };
     });
@@ -351,9 +503,7 @@ router.get('/sequences/team-overview', async (req, res) => {
     }, _emptyTotals());
 
     totals.activeCampaigns = campaigns.filter(c => c.enrolled > 0 || c.drafts > 0 || c.sent > 0 || c.replied > 0).length;
-    totals.repliedRate = totals.sent > 0
-      ? +((totals.replied / totals.sent) * 100).toFixed(1)
-      : 0;
+    totals.repliedRate = _repliedRate(totals.replied, totals.sent);
 
     // activeSequences and enrolledProspects need their own queries — keep
     // the response honest rather than guessing from campaign rows.
@@ -399,12 +549,18 @@ router.get('/sequences/team-overview', async (req, res) => {
 // Returns:
 //   {
 //     scope, period,
+//     totals: { enrolled, enrolledProspects, drafts, sent, replied, failed,
+//               stalled, repliedRate },
 //     reps: [ { userId, name, email, isDirect, depthFromManager,
 //               campaignsActive, sequencesActive, enrolled,
-//               drafts, sent, replied, failed, stalled,
+//               drafts, sent, replied, failed, stalled, repliedRate,
 //               lastActivityAt,
 //               topCampaigns: [ { campaignId, name, enrolled, sent } ] (max 3) } ]
 //   }
+//
+// `replied` is sourced from inbound `emails` via reply_events — NOT from
+// sequence_step_logs.status, which never reaches 'replied'. See the
+// replyEventsCte header above for the full rationale and known limits.
 //
 // Per the user's request, reps with zero activity in the window are
 // HIDDEN — we don't render zero-state rows. The reps array is built
@@ -439,6 +595,7 @@ router.get('/sequences/team-by-rep', async (req, res) => {
           endDate:   window.endISO,
           description: window.isoIntervalDescription,
         },
+        totals: _emptyTotals(),
         reps: [],
       });
     }
@@ -447,10 +604,12 @@ router.get('/sequences/team-by-rep', async (req, res) => {
     const params = [req.orgId, scopeUserIds, window.startISO, window.endISO];
     let campaignClauseLog = '';
     let campaignClauseEnroll = '';
+    let campaignClauseReply = '';
     if (campaignIdFilter && campaignIdFilter.length) {
       params.push(campaignIdFilter);
       campaignClauseLog    = `AND p_log.campaign_id    = ANY($5::int[])`;
       campaignClauseEnroll = `AND p_enroll.campaign_id = ANY($5::int[])`;
+      campaignClauseReply  = `AND p_reply.campaign_id  = ANY($5::int[])`;
     }
 
     // ── Per-rep aggregates ──────────────────────────────────────────
@@ -470,11 +629,12 @@ router.get('/sequences/team-by-rep', async (req, res) => {
 
     const perRepRes = await pool.query(
       `WITH log_agg AS (
+         -- NOTE: no 'replied' column here. sequence_step_logs.status never reaches
+         -- 'replied' (see replyEventsCte header). Replies come from reply_agg.
          SELECT
            se.enrolled_by AS user_id,
            COUNT(*) FILTER (WHERE ssl.status = 'draft')::int                AS drafts,
            COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed'))::int  AS sent,
-           COUNT(*) FILTER (WHERE ssl.status = 'replied')::int              AS replied,
            COUNT(*) FILTER (WHERE ssl.status = 'failed')::int               AS failed,
            MAX(ssl.fired_at) AS last_fired_at
          FROM sequence_step_logs ssl
@@ -486,6 +646,19 @@ router.get('/sequences/team-by-rep', async (req, res) => {
            AND ssl.fired_at <= $4::timestamptz
            ${campaignClauseLog}
          GROUP BY se.enrolled_by
+       ),
+       ${replyEventsCte({
+         prospectAlias: 'p_reply',
+         startParam: '$3',
+         endParam:   '$4',
+         campaignClause: campaignClauseReply,
+       })},
+       reply_agg AS (
+         -- Rep-grain replies, attributed via the enrollment that preceded the
+         -- reply. Exactly one row per inbound email (DISTINCT ON upstream).
+         SELECT user_id, COUNT(*)::int AS replied
+           FROM reply_events
+          GROUP BY user_id
        ),
        enroll_agg AS (
          SELECT
@@ -537,7 +710,7 @@ router.get('/sequences/team-by-rep', async (req, res) => {
          u.first_name, u.last_name, u.email,
          COALESCE(l.drafts, 0)            AS drafts,
          COALESCE(l.sent, 0)              AS sent,
-         COALESCE(l.replied, 0)           AS replied,
+         COALESCE(rp.replied, 0)          AS replied,
          COALESCE(l.failed, 0)            AS failed,
          COALESCE(e.enrolled, 0)          AS enrolled,
          COALESCE(s.stalled, 0)           AS stalled,
@@ -549,6 +722,7 @@ router.get('/sequences/team-by-rep', async (req, res) => {
        LEFT JOIN enroll_agg  e ON e.user_id = u.id
        LEFT JOIN stalled_agg s ON s.user_id = u.id
        LEFT JOIN active_state a ON a.user_id = u.id
+       LEFT JOIN reply_agg   rp ON rp.user_id = u.id
        WHERE u.id = ANY($2::int[])
        -- LEFT JOIN on log_agg so reps with zero activity in the window
        -- still appear with zero counters. Matches the "campaigns with
@@ -648,10 +822,41 @@ router.get('/sequences/team-by-rep', async (req, res) => {
         replied:          r.replied,
         failed:           r.failed,
         stalled:          r.stalled,
+        // The UI's per-row "Reply rate" column reads this. It was never sent,
+        // so the column rendered '—' even for reps with thousands of sends.
+        repliedRate:      _repliedRate(r.replied, r.sent),
         lastActivityAt:   r.last_fired_at,
         topCampaigns:     topCampaigns.get(r.user_id) || [],
       };
     });
+
+    // ── Totals row ──────────────────────────────────────────────────
+    //
+    // This endpoint never returned `totals`. TeamReportingView.js does
+    // `const totals = data.totals || {}`, so the Enrolled / Sent / Reply-rate
+    // summary cards silently rendered 0 / 0 / '—' while the table underneath
+    // showed the real numbers. Peer endpoints (team-overview, team-by-sequence)
+    // both build one; by-rep was the odd one out.
+    //
+    // Summed from the rep rows, so the cards can never disagree with the table.
+    const totals = reps.reduce((acc, r) => {
+      acc.enrolled += r.enrolled;
+      acc.drafts   += r.drafts;
+      acc.sent     += r.sent;
+      acc.replied  += r.replied;
+      acc.failed   += r.failed;
+      acc.stalled  += r.stalled;
+      return acc;
+    }, _emptyTotals());
+
+    totals.enrolledProspects = totals.enrolled;   // alias for the UI tile
+    totals.repliedRate       = _repliedRate(totals.replied, totals.sent);
+
+    // activeCampaigns / activeSequences are intentionally left at 0. Per-rep
+    // `campaignsActive` / `sequencesActive` are whole-history state counters —
+    // summing them across reps would double-count any campaign two reps share.
+    // The by-rep UI doesn't render those tiles; it derives "Active reps"
+    // client-side from the reps array. Don't fake a number nobody asked for.
 
     res.json({
       scope,
@@ -660,6 +865,7 @@ router.get('/sequences/team-by-rep', async (req, res) => {
         endDate:     window.endISO,
         description: window.isoIntervalDescription,
       },
+      totals,
       reps,
     });
   } catch (err) {
@@ -858,6 +1064,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
     const ccStall  = campaignClause ? `AND p_stall.campaign_id  = ANY(${campaignClause})` : '';
     const ccAct    = campaignClause ? `AND p_act.campaign_id    = ANY(${campaignClause})` : '';
     const ccConn   = campaignClause ? `AND p_conn.campaign_id   = ANY(${campaignClause})` : '';
+    const ccReply  = campaignClause ? `AND p_reply.campaign_id  = ANY(${campaignClause})` : '';
 
     // Per-sequence filter predicates for each CTE (applies the
     // user-supplied sequenceIds intersected with scope).
@@ -866,6 +1073,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
     const sfStall  = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
     const sfAct    = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
     const sfConn   = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
+    const sfReply  = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
     const sfOuter  = sequenceIdFilter !== null ? `AND s.id = ANY($${seqIdParamIdx}::int[])` : '';
 
     // ── Per-sequence aggregates ─────────────────────────────────────
@@ -886,11 +1094,12 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
 
     const perSeqRes = await pool.query(
       `WITH log_agg AS (
+         -- NOTE: no 'replied' column here. sequence_step_logs.status never reaches
+         -- 'replied' (see replyEventsCte header). Replies come from reply_agg.
          SELECT
            se.sequence_id,
            COUNT(*) FILTER (WHERE ssl.status = 'draft')::int                              AS drafts,
            COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed'))::int                AS sent,
-           COUNT(*) FILTER (WHERE ssl.status = 'replied')::int                            AS replied,
            COUNT(*) FILTER (WHERE ssl.status = 'failed')::int                             AS failed,
            MAX(ssl.fired_at)                                                              AS last_fired_at
          FROM sequence_step_logs ssl
@@ -903,6 +1112,21 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
            ${ccLog}
            ${sfLog}
          GROUP BY se.sequence_id
+       ),
+       ${replyEventsCte({
+         prospectAlias: 'p_reply',
+         startParam: '$3',
+         endParam:   '$4',
+         campaignClause: ccReply,
+         sequenceClause: sfReply,
+       })},
+       reply_agg AS (
+         -- Sequence-grain replies. Unlike the campaign lens, orphan prospects
+         -- (campaign_id IS NULL) are retained — surfacing them is precisely
+         -- why this endpoint exists (see header).
+         SELECT sequence_id, COUNT(*)::int AS replied
+           FROM reply_events
+          GROUP BY sequence_id
        ),
        enroll_agg AS (
          SELECT
@@ -983,7 +1207,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
          u.first_name, u.last_name, u.email,
          COALESCE(l.drafts, 0)              AS drafts,
          COALESCE(l.sent, 0)                AS sent,
-         COALESCE(l.replied, 0)             AS replied,
+         COALESCE(rp.replied, 0)            AS replied,
          COALESCE(l.failed, 0)              AS failed,
          COALESCE(e.enrolled, 0)            AS enrolled,
          COALESCE(e.distinct_campaigns, 0)  AS distinct_campaigns,
@@ -998,6 +1222,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
        LEFT JOIN stalled_agg  st ON st.sequence_id = s.id
        LEFT JOIN connected_agg cn ON cn.sequence_id = s.id
        LEFT JOIN active_state a  ON a.sequence_id = s.id
+       LEFT JOIN reply_agg    rp ON rp.sequence_id = s.id
        WHERE s.org_id = $1
          AND (
            -- Include any sequence that has any activity in scope (any CTE
@@ -1010,6 +1235,9 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
            OR st.sequence_id IS NOT NULL
            OR cn.sequence_id IS NOT NULL
            OR a.sequence_id  IS NOT NULL
+           -- A sequence whose only in-window signal is an inbound reply
+           -- (sends fired before the window) must still appear.
+           OR rp.sequence_id IS NOT NULL
          )
          ${sfOuter}
        ORDER BY l.last_fired_at DESC NULLS LAST, s.id ASC`,
@@ -1105,6 +1333,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
         replied:        r.replied,
         failed:         r.failed,
         stalled:        r.stalled,
+        repliedRate:    _repliedRate(r.replied, r.sent),
         lastActivityAt: r.last_fired_at,
         topUsers:       topUsers.get(r.sequence_id) || [],
       };
@@ -1173,9 +1402,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
     totals.activeCampaigns = acRes.rows[0]?.n || 0;
     totals.enrolledProspects = totals.enrolled;   // alias for the UI tile
 
-    totals.repliedRate = totals.sent > 0
-      ? +((totals.replied / totals.sent) * 100).toFixed(1)
-      : 0;
+    totals.repliedRate = _repliedRate(totals.replied, totals.sent);
 
     res.json({
       scope,
