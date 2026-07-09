@@ -18,6 +18,7 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import PersonalizeConfigBlock from './PersonalizeConfigBlock';
+import SequenceABPanel from './SequenceABPanel';   // A/B variants (2026_46)
 
 const API = process.env.REACT_APP_API_URL || '';
 
@@ -795,6 +796,18 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
         }}>
           + Add Step
         </button>
+
+        {/* A/B variants (2026_46). Self-contained: owns its own fetches, writes
+            straight to the API on click, and stays OUT of `stateSnapshot` — a
+            weight nudge must not light up "Save Changes", and an unsaved reorder
+            must not rewrite arm content. `initialSequence?.id` (not a local id)
+            because arms attach to a saved step. */}
+        <SequenceABPanel
+          sequenceId={initialSequence?.id ?? null}
+          steps={steps}
+          aiEnabled={aiEnabled}
+          apiFetch={apiFetch}
+        />
 
         {/* Token hint */}
         <div style={{
