@@ -1209,4 +1209,310 @@ function _emptyTotals() {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Activity reporting (Team Reporting → Activity tab)
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/reporting/activity
+//   Query: depth, windowDays | startDate+endDate, userId (optional drill-down)
+//
+//   Returns ATOMS ONLY — no rates are computed server-side. The client rolls
+//   atoms up using the viewer's active definition (see /activity-definition).
+//
+//   Action-state model (seven mutually exclusive states, both modules):
+//     auto_cleared   auto_completed = true (engine closed it)
+//     rep_completed  completed_at set / status 'completed', not auto
+//     snoozed | in_progress | skipped | failed   (per status)
+//     pending        everything else ('pending', deals 'yet_to_start')
+//   Cohort semantics: created_at within the window; state as of query time.
+//
+//   Sources: prospecting_actions.source passed through verbatim; deals split
+//   playbook (source_rule IS NOT NULL) vs manual. Deals `actions` has no
+//   org_id column — scoping is user_id ∈ resolved scope, which is org-safe
+//   because ReportingScopeService only ever returns this org's users.
+//
+//   Calls: counted by occurred_at, outcomes passed through verbatim.
+//   Deliveries: notification_deliveries by channel × status; per-rep failed
+//   counts are notifications TO the rep that didn't land (plumbing health).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ActivityConfig = require('../services/activityReportConfig');
+
+// Shared CASE expression — keep in lockstep with ActivityConfig.VALID_STATES.
+const ACTION_STATE_CASE = `
+  CASE
+    WHEN a.auto_completed = TRUE                                THEN 'auto_cleared'
+    WHEN a.completed_at IS NOT NULL OR a.status = 'completed'   THEN 'rep_completed'
+    WHEN a.status = 'snoozed'                                   THEN 'snoozed'
+    WHEN a.status = 'in_progress'                               THEN 'in_progress'
+    WHEN a.status = 'skipped'                                   THEN 'skipped'
+    WHEN a.status = 'failed'                                    THEN 'failed'
+    ELSE 'pending'
+  END`;
+
+router.get('/activity', async (req, res) => {
+  try {
+    const { startISO, endISO, isoIntervalDescription } = parseTimeWindow(req.query);
+
+    // Optional drill-down target. Passed through resolveReportingScope as
+    // explicitUserIds so out-of-scope IDs are silently dropped — the scope
+    // service is the auth gate, exactly like the sequence endpoints.
+    const drillUserId = req.query.userId !== undefined
+      ? parseInt(req.query.userId, 10) : null;
+    const explicitUserIds = Number.isInteger(drillUserId) ? [drillUserId] : null;
+
+    const scope = await ReportingScopeService.resolveReportingScope(
+      req.user.userId,
+      req.orgId,
+      { depth: req.query.depth, ...(explicitUserIds ? { explicitUserIds } : {}) }
+    );
+    const userIds = scope.userIds;
+
+    // Drill-down requested but target not in scope → the only survivor is
+    // the viewer themself (scope service always re-adds the viewer).
+    const drillDenied = Number.isInteger(drillUserId)
+      && !userIds.includes(drillUserId);
+    if (drillDenied) {
+      return res.status(403).json({ error: { message: 'User not in your reporting scope' } });
+    }
+
+    const windowParams = [req.orgId, userIds, startISO, endISO];
+
+    // ── Calls ────────────────────────────────────────────────────────────
+    const callsRes = await pool.query(
+      `SELECT c.user_id,
+              COALESCE(c.outcome, 'unknown')      AS outcome,
+              COUNT(*)::int                        AS n,
+              COALESCE(SUM(c.duration_seconds),0)::int AS duration_seconds
+         FROM calls c
+        WHERE c.org_id = $1
+          AND c.user_id = ANY($2::int[])
+          AND c.occurred_at >= $3::timestamptz
+          AND c.occurred_at <= $4::timestamptz
+        GROUP BY c.user_id, COALESCE(c.outcome, 'unknown')`,
+      windowParams
+    );
+
+    // ── Action atoms — prospecting ───────────────────────────────────────
+    const prospectingAtomsRes = await pool.query(
+      `SELECT a.user_id,
+              'prospecting'                        AS module,
+              COALESCE(a.source, 'manual')         AS source,
+              ${ACTION_STATE_CASE}                 AS state,
+              COUNT(*)::int                        AS n
+         FROM prospecting_actions a
+        WHERE a.org_id = $1
+          AND a.user_id = ANY($2::int[])
+          AND a.created_at >= $3::timestamptz
+          AND a.created_at <= $4::timestamptz
+        GROUP BY 1, 2, 3, 4`,
+      windowParams
+    );
+
+    // ── Action atoms — deals (no org_id column; user scope is org-safe) ──
+    const dealsAtomsRes = await pool.query(
+      `SELECT a.user_id,
+              'deals'                              AS module,
+              CASE WHEN a.source_rule IS NOT NULL THEN 'playbook' ELSE 'manual' END AS source,
+              ${ACTION_STATE_CASE}                 AS state,
+              COUNT(*)::int                        AS n
+         FROM actions a
+        WHERE a.user_id = ANY($1::int[])
+          AND a.created_at >= $2::timestamptz
+          AND a.created_at <= $3::timestamptz
+        GROUP BY 1, 2, 3, 4`,
+      [userIds, startISO, endISO]
+    );
+
+    // ── Notification deliveries ──────────────────────────────────────────
+    const deliveriesRes = await pool.query(
+      `SELECT d.user_id, d.channel, d.status, COUNT(*)::int AS n
+         FROM notification_deliveries d
+        WHERE d.org_id = $1
+          AND d.user_id = ANY($2::int[])
+          AND d.created_at >= $3::timestamptz
+          AND d.created_at <= $4::timestamptz
+        GROUP BY d.user_id, d.channel, d.status`,
+      windowParams
+    );
+
+    // ── Rep directory for the UI (names for every id that can appear) ───
+    const usersRes = await pool.query(
+      `SELECT id AS user_id, first_name || ' ' || last_name AS name
+         FROM users WHERE id = ANY($1::int[])`,
+      [userIds]
+    );
+
+    const payload = {
+      window: { start: startISO, end: endISO, description: isoIntervalDescription },
+      scope: {
+        scope: scope.scope,
+        depth: scope.depth,
+        sizeNote: scope.sizeNote,
+        userIds,
+      },
+      reps: usersRes.rows,
+      calls: callsRes.rows,
+      actionAtoms: [...prospectingAtomsRes.rows, ...dealsAtomsRes.rows],
+      deliveries: deliveriesRes.rows,
+      states: ActivityConfig.VALID_STATES,
+    };
+
+    // ── Drill-down extras ────────────────────────────────────────────────
+    if (Number.isInteger(drillUserId)) {
+      const drillParams = [req.orgId, drillUserId, startISO, endISO];
+
+      const recentCalls = await pool.query(
+        `SELECT c.id, c.outcome, c.duration_seconds, c.direction,
+                c.occurred_at,
+                p.first_name || ' ' || p.last_name AS prospect_name,
+                p.company_name
+           FROM calls c
+           LEFT JOIN prospects p ON p.id = c.prospect_id
+          WHERE c.org_id = $1 AND c.user_id = $2
+            AND c.occurred_at >= $3::timestamptz
+            AND c.occurred_at <= $4::timestamptz
+          ORDER BY c.occurred_at DESC
+          LIMIT 20`,
+        drillParams
+      );
+
+      // Open actions (both modules), oldest first — the "what's sitting" list.
+      const openActions = await pool.query(
+        `SELECT * FROM (
+            SELECT a.id, 'prospecting' AS module, a.title, a.status,
+                   a.created_at, a.due_date,
+                   p.first_name || ' ' || p.last_name AS about
+              FROM prospecting_actions a
+              LEFT JOIN prospects p ON p.id = a.prospect_id
+             WHERE a.org_id = $1 AND a.user_id = $2
+               AND a.auto_completed = FALSE
+               AND a.completed_at IS NULL
+               AND a.status IN ('pending','in_progress','snoozed')
+            UNION ALL
+            SELECT a.id, 'deals' AS module, a.title, a.status,
+                   a.created_at, a.due_date,
+                   d.name AS about
+              FROM actions a
+              LEFT JOIN deals d ON d.id = a.deal_id
+             WHERE a.user_id = $2
+               AND COALESCE(a.auto_completed, FALSE) = FALSE
+               AND a.completed_at IS NULL
+               AND a.status IN ('yet_to_start','in_progress','snoozed')
+          ) open_actions
+          ORDER BY created_at ASC
+          LIMIT 20`,
+        [req.orgId, drillUserId]
+      );
+
+      const failures = await pool.query(
+        `SELECT d.channel, d.reason, d.created_at
+           FROM notification_deliveries d
+          WHERE d.org_id = $1 AND d.user_id = $2 AND d.status = 'failed'
+            AND d.created_at >= $3::timestamptz
+            AND d.created_at <= $4::timestamptz
+          ORDER BY d.created_at DESC
+          LIMIT 10`,
+        drillParams
+      );
+
+      payload.drilldown = {
+        userId: drillUserId,
+        recentCalls: recentCalls.rows,
+        openActions: openActions.rows,
+        deliveryFailures: failures.rows,
+      };
+    }
+
+    res.json(payload);
+  } catch (err) {
+    console.error('GET /reporting/activity failed:', err);
+    res.status(500).json({ error: { message: 'Failed to load activity report' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/reporting/activity-definition
+//   → { system_default, org_default: {definition, source}, user: {active, definitions} }
+// PUT /api/reporting/activity-definition
+//   body.scope = 'org'  → { definition }              (org admin/owner only)
+//   body.scope = 'user' → { action: 'save',       name, definition, makeActive? }
+//                         { action: 'delete',     name }
+//                         { action: 'set_active', name|null }
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get('/activity-definition', async (req, res) => {
+  try {
+    const [orgDefault, userState] = await Promise.all([
+      ActivityConfig.getOrgDefault(req.orgId),
+      ActivityConfig.getUserState(req.user.userId, req.orgId),
+    ]);
+    res.json({
+      system_default: ActivityConfig.SYSTEM_DEFAULT,
+      valid_states:   ActivityConfig.VALID_STATES,
+      org_default:    orgDefault,
+      user:           userState,
+      max_user_definitions: ActivityConfig.MAX_USER_DEFINITIONS,
+    });
+  } catch (err) {
+    console.error('GET /reporting/activity-definition failed:', err);
+    res.status(500).json({ error: { message: 'Failed to load definitions' } });
+  }
+});
+
+router.put('/activity-definition', async (req, res) => {
+  try {
+    const { scope: defScope } = req.body || {};
+
+    if (defScope === 'org') {
+      // Mirrors ReportingScopeService admin semantics: admin OR owner.
+      // (requireRole('admin') alone would wrongly exclude owners.)
+      const adminRes = await pool.query(
+        `SELECT 1 FROM org_users
+          WHERE user_id = $1 AND org_id = $2
+            AND is_active = TRUE AND role IN ('admin', 'owner')`,
+        [req.user.userId, req.orgId]
+      );
+      if (adminRes.rows.length === 0) {
+        return res.status(403).json({ error: { message: 'Only an org admin can set the org default' } });
+      }
+      const result = await ActivityConfig.setOrgDefault(
+        req.orgId, req.body.definition, req.user.userId
+      );
+      return res.json({ org_default: result });
+    }
+
+    if (defScope === 'user') {
+      const { action } = req.body;
+      let state;
+      if (action === 'save') {
+        state = await ActivityConfig.saveUserDefinition(
+          req.user.userId, req.orgId, req.body.name, req.body.definition,
+          { makeActive: req.body.makeActive !== false }
+        );
+      } else if (action === 'delete') {
+        state = await ActivityConfig.deleteUserDefinition(
+          req.user.userId, req.orgId, req.body.name
+        );
+      } else if (action === 'set_active') {
+        state = await ActivityConfig.setActiveDefinition(
+          req.user.userId, req.orgId,
+          req.body.name === null ? null : String(req.body.name)
+        );
+      } else {
+        return res.status(400).json({ error: { message: "action must be 'save', 'delete', or 'set_active'" } });
+      }
+      return res.json({ user: state });
+    }
+
+    return res.status(400).json({ error: { message: "scope must be 'org' or 'user'" } });
+  } catch (err) {
+    const clientErr = /must be|unknown state|repeats|required|characters or fewer|up to|No saved definition/.test(err.message);
+    if (clientErr) {
+      return res.status(400).json({ error: { message: err.message } });
+    }
+    console.error('PUT /reporting/activity-definition failed:', err);
+    res.status(500).json({ error: { message: 'Failed to save definition' } });
+  }
+});
+
 module.exports = router;

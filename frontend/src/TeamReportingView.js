@@ -35,6 +35,7 @@ import { apiFetch } from './prospecting/prospectingShared';
 import WbrGrid from './prospecting/WbrGrid';                  // Insights/WBR Phase 5
 import InsightsPanel from './prospecting/InsightsPanel';      // Insights/WBR Phase 5
 import LinkedInRiskPanel from './prospecting/LinkedInRiskPanel';
+import ActivityTab from './prospecting/ActivityTab';
 import './TeamReportingView.css';
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -341,7 +342,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         allCampaigns={allCampaigns}
         showCampaignDropdown={showCampaignDropdown}
         onToggleCampaignDropdown={() => setShowCampaignDropdown(s => !s)}
-        showCampaignFilter={tab !== 'campaign' && tab !== 'insights' && tab !== 'linkedin'}   // tab 'campaign' IS the campaign list; insights org-level; LinkedIn risk has no campaign filter
+        showCampaignFilter={tab !== 'campaign' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'activity'}   // tab 'campaign' IS the campaign list; insights org-level; LinkedIn risk has no campaign filter; activity spans modules beyond campaigns
         showWindowPicker={tab !== 'wbr' && tab !== 'insights' && tab !== 'linkedin'}           // WBR/insight windows fixed; LinkedIn risk has its own window picker
       />
 
@@ -422,6 +423,10 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         <LinkedInRiskPanel depth={depth} />
       )}
 
+      {tab === 'activity' && (
+        <ActivityTab depth={depth} windowState={windowState} scope={scope} />
+      )}
+
       {prospectPanel && (
         <ProspectListPanel
           context={prospectPanel}
@@ -469,6 +474,7 @@ function TabBar({ tab, onTabChange }) {
     { key: 'wbr',      label: 'WBR' },        // Insights/WBR Phase 5
     { key: 'insights', label: 'Insights' },   // Insights/WBR Phase 5
     { key: 'linkedin', label: 'LinkedIn risk' },
+    { key: 'activity', label: 'Activity' },
   ];
   return (
     <div className="trv-tabbar">
