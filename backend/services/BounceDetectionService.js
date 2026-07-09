@@ -107,6 +107,27 @@ function isLikelyNdr(fromAddress, subject) {
   return NDR_SUBJECT_REGEX.test(String(subject || ''));
 }
 
+// Local-parts that are never a human prospect. Used to stop the prospecting
+// inbox's domain-match strategy from attaching machine mail (bounces, auto
+// -responders, calendar bots) to an arbitrary prospect who merely shares the
+// sending domain. Superset of NDR_LOCAL_PATTERNS.
+const ROLE_LOCAL_PATTERNS = [
+  'mailer-daemon', 'postmaster', 'noreply', 'no-reply', 'donotreply',
+  'do-not-reply', 'bounce', 'bounces', 'autoreply', 'auto-reply',
+  'notification', 'notifications', 'mailer', 'daemon',
+];
+
+/**
+ * True when the local-part marks this as an automated/role mailbox rather
+ * than a person. Deliberately conservative — matches on substring so
+ * 'bounces-1234@' and 'no-reply+tag@' are caught.
+ */
+function isRoleSender(fromAddress) {
+  const local = String(fromAddress || '').toLowerCase().split('@')[0];
+  if (!local) return false;
+  return ROLE_LOCAL_PATTERNS.some((p) => local.includes(p));
+}
+
 /** Extract the failed recipient address from the NDR body/subject.
  *  Patterns run over BOTH the raw text and a tag-stripped copy: HTML NDRs
  *  (Gmail wraps the address in tags) need stripping, while plaintext NDRs
@@ -227,30 +248,52 @@ async function matchToStepLog(client, orgId, failedRecipient) {
 }
 
 /**
- * Main entry point — called from Gate 1 in storeEmailToDatabase when
- * isLikelyNdr() fired. Parses, matches, persists. Never throws.
+ * Main entry point — called from Gate 1 in storeEmailToDatabase
+ * (jobs/syncScheduler.js) and from the prospecting inbox sync
+ * (routes/prospecting-inbox.routes.js) when isLikelyNdr() fired.
+ * Parses, matches, persists. Never throws.
  *
- * @param {object} client  pg client (the sync's connection)
- * @param {object} args    { orgId, userId, email, provider }
- *                         email = normalized sync object: { id, from, subject,
- *                         body?.content, bodyPreview, receivedDateTime? }
+ * @param {object} client  pg client (the sync's connection) or the db module
+ * @param {object} args    { orgId, userId, email, provider, senderMailbox? }
+ *
+ *   `email` accepts EITHER normalized shape:
+ *     syncScheduler:  { id, from: { address }, subject, body: { content },
+ *                       bodyPreview }
+ *     inbox sync:     { externalId, fromAddress, subject, body }
+ *   The two ingest paths normalize their providers differently; rather than
+ *   force one to adapt at the call site (and silently pass undefined into the
+ *   parser), we accept both here. Adding a third caller means adding its keys
+ *   to the three coalesces below — nothing else.
+ *
+ *   `senderMailbox` is the address that RECEIVED the NDR, used so the parser
+ *   never extracts our own address as the "failed recipient". When omitted we
+ *   fall back to users.email for `userId`. The inbox sync passes the
+ *   prospecting_sender_accounts address explicitly, because a rep can send
+ *   from a mailbox that is not their users.email — in that case the fallback
+ *   would compare against the wrong address and could mis-extract.
+ *
  * @returns {{ processed: boolean, eventType?: string, prospectId?: number|null,
  *             stepLogId?: number|null, enrollmentStopped?: boolean }}
  */
-async function processPotentialNdr(client, { orgId, userId, email, provider }) {
+async function processPotentialNdr(client, { orgId, userId, email, provider, senderMailbox }) {
   try {
-    const fromAddress = email?.from?.address || '';
-    const subject = email?.subject || '';
-    const body = email?.body?.content || email?.bodyPreview || '';
+    const externalId  = email?.id ?? email?.externalId ?? null;
+    const fromAddress = email?.from?.address || email?.fromAddress || '';
+    const subject     = email?.subject || '';
+    const body        = email?.body?.content || email?.bodyPreview ||
+                        (typeof email?.body === 'string' ? email.body : '') || '';
 
     // The mailbox that received this NDR (= the original sender). Used to
     // avoid extracting the user's own address as the "failed recipient".
-    const senderMailboxRes = await client.query(
-      `SELECT email FROM users WHERE id = $1`, [userId]
-    );
-    const senderMailbox = senderMailboxRes.rows[0]?.email || '';
+    let mailbox = senderMailbox || '';
+    if (!mailbox && userId) {
+      const senderMailboxRes = await client.query(
+        `SELECT email FROM users WHERE id = $1`, [userId]
+      );
+      mailbox = senderMailboxRes.rows[0]?.email || '';
+    }
 
-    const failedRecipient = extractFailedRecipient(body, subject, senderMailbox);
+    const failedRecipient = extractFailedRecipient(body, subject, mailbox);
     if (!failedRecipient) {
       // NDR-shaped but unparseable — record nothing, let Gate 1 drop it.
       console.warn(`[BounceDetection] org=${orgId} NDR without extractable recipient (subject="${String(subject).slice(0, 80)}")`);
@@ -273,7 +316,7 @@ async function processPotentialNdr(client, { orgId, userId, email, provider }) {
        DO NOTHING
        RETURNING id`,
       [
-        orgId, provider || null, email?.id || null, fromAddress || null,
+        orgId, provider || null, externalId, fromAddress || null,
         failedRecipient, eventType, smtpCode, diagnosticExcerpt(body || subject),
         link.prospect_id, link.step_log_id, link.sender_account_id, link.campaign_id,
       ]
@@ -353,6 +396,7 @@ async function processPotentialNdr(client, { orgId, userId, email, provider }) {
 
 module.exports = {
   isLikelyNdr,
+  isRoleSender,
   processPotentialNdr,
   // exported for tests
   extractFailedRecipient,

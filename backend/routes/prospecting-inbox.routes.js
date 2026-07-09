@@ -15,6 +15,7 @@ const db                = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
 const requireModule     = require('../middleware/requireModule.middleware');
+const BounceDetectionService = require('../services/BounceDetectionService');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -193,6 +194,7 @@ router.get('/', async (req, res) => {
 
       WHERE e.org_id       = $1
         AND e.prospect_id  IS NOT NULL
+        AND e.deleted_at   IS NULL
         ${userFilter}
         ${directionFilter}
         ${dateFilter}
@@ -215,6 +217,7 @@ router.get('/', async (req, res) => {
       LEFT JOIN prospecting_sender_accounts psa ON psa.id = e.sender_account_id
       WHERE e.org_id       = $1
         AND e.prospect_id  IS NOT NULL
+        AND e.deleted_at   IS NULL
         ${userFilter}
         ${directionFilter}
         ${dateFilter}
@@ -234,6 +237,7 @@ router.get('/', async (req, res) => {
       JOIN  users     u ON u.id = e.user_id
       WHERE e.org_id      = $1
         AND e.prospect_id IS NOT NULL
+        AND e.deleted_at  IS NULL
         ${userFilter}
         ${directionFilter}
         ${dateFilter}
@@ -381,6 +385,7 @@ router.get('/stats', async (req, res) => {
       LEFT JOIN prospecting_sender_accounts psa ON psa.id = e.sender_account_id
       WHERE e.org_id      = $1
         AND e.prospect_id IS NOT NULL
+        AND e.deleted_at  IS NULL
         ${userFilter}
         ${dateFilter}
         ${searchFilter}
@@ -566,7 +571,7 @@ router.post('/sync', async (req, res) => {
   const userId = req.user.userId;
   const days   = Math.min(parseInt(req.query.days || req.body?.days || 30), 90);
 
-  let saved = 0, skipped = 0, errors = [];
+  let saved = 0, skipped = 0, bounces = 0, errors = [];
 
   try {
     // 1. Load all active sender accounts for this org
@@ -787,8 +792,70 @@ router.post('/sync', async (req, res) => {
 
           console.log(`  📧 from="${fromAddr}" to=${JSON.stringify(toAddrs)} subject="${(email.subject||'').slice(0,50)}"`);
 
+          // ── Gate 0: bounces / NDRs are NOT replies ──────────────────────
+          //
+          // syncScheduler.js has always routed mailer-daemon/postmaster mail
+          // to BounceDetectionService before it can be stored (Gate 1 there).
+          // This sync path never had that gate, so an "Undeliverable: ..."
+          // message was:
+          //   1. matched to a prospect (usually via Strategy 3, because
+          //      Exchange sends the NDR from postmaster@<prospect domain>),
+          //   2. saved to `emails` as direction='received',
+          //   3. logged as an 'email_received' activity, and
+          //   4. used to advance the prospect outreach → engaged.
+          //
+          // Every downstream reply count (inbox, campaign panel, reporting)
+          // reads that emails row, so a dead address inflated the reply rate
+          // and moved a prospect forward in the funnel. Wrong four ways.
+          //
+          // Now: parse the delivery signal, then DROP. Never stored, never an
+          // activity, never a stage change. Same contract as Gate 1.
+          //
+          // Safety valve: a message from a prospect's OWN address is a real
+          // reply even if the subject happens to match an NDR pattern (e.g.
+          // a prospect forwarding a bounce back to us). An actual NDR never
+          // originates from the prospect's own mailbox — it comes from a role
+          // account on the mail server. So we only treat it as a bounce when
+          // the sender is not an exact prospect match, or is a role account.
+          const exactProspect = prospectByEmail[fromAddr];
+          const roleSender    = BounceDetectionService.isRoleSender(fromAddr);
+          const looksLikeNdr  = BounceDetectionService.isLikelyNdr(fromAddr, email.subject);
+
+          if (looksLikeNdr && (roleSender || !exactProspect)) {
+            let ndr = { processed: false };
+            try {
+              ndr = await BounceDetectionService.processPotentialNdr(db, {
+                orgId,
+                userId:        account.user_id,
+                email,                        // shape-tolerant; see the service
+                provider:      account.provider,
+                senderMailbox: account.email, // the mailbox that received it
+              });
+            } catch (ndrErr) {
+              // processPotentialNdr already swallows its own errors; this is
+              // belt-and-braces so a bounce can never break a reply sync.
+              console.warn(`    ⚠️  NDR processing failed: ${ndrErr.message}`);
+            }
+            bounces++;
+            skipped++;
+            console.log(
+              `    📮 Bounce dropped (not a reply)` +
+              (ndr.processed ? ` — ${ndr.eventType}, prospect=${ndr.prospectId || 'unmatched'}` : ' — unparseable')
+            );
+            continue;
+          }
+
+          // Machine mail that is not an NDR (auto-responders, calendar bots,
+          // notification senders). It is not a reply and must not advance a
+          // stage. We drop it rather than store it — the CRM inbox is for
+          // human correspondence.
+          if (roleSender && !exactProspect) {
+            console.log(`    🤖 Role-account sender dropped: ${fromAddr}`);
+            skipped++; continue;
+          }
+
           // Strategy 1: exact from_address match (normal replies)
-          let prospectId = prospectByEmail[fromAddr];
+          let prospectId = exactProspect;
           if (prospectId) console.log(`    ✅ Strategy 1 match (exact from_address): prospectId=${prospectId}`);
 
           // Strategy 2: to_address matches a prospect we previously sent to
@@ -802,7 +869,12 @@ router.post('/sync', async (req, res) => {
             }
           }
 
-          // Strategy 3: domain match — only when email arrived at our sender account
+          // Strategy 3: domain match — only when email arrived at our sender
+          // account. This is the loosest strategy: it attaches the mail to
+          // SOME prospect at that domain, not necessarily the right one. Gate 0
+          // and the role-account check above are what keep machine mail out of
+          // here; without them any postmaster@<prospect-domain> bounce landed
+          // on an arbitrary colleague of the real failed recipient.
           if (!prospectId && fromDomain) {
             const domainProspectId = prospectByDomain[fromDomain];
             if (domainProspectId) {
@@ -971,14 +1043,19 @@ router.post('/sync', async (req, res) => {
       }
     }
 
-    console.log(`\n✅ SYNC COMPLETE — saved: ${saved}, skipped: ${skipped}, errors: ${errors.length}`);
+    console.log(`\n✅ SYNC COMPLETE — saved: ${saved}, skipped: ${skipped}, bounces: ${bounces}, errors: ${errors.length}`);
     if (errors.length) console.log('❌ Errors:', JSON.stringify(errors, null, 2));
 
+    // `bounces` is reported separately from `skipped` so a rep can tell
+    // "nothing came back" from "everything came back undeliverable" — the
+    // latter is a sender-health problem, not a quiet week.
     res.json({
       success: true,
-      message: `Sync complete — ${saved} new repl${saved === 1 ? 'y' : 'ies'} saved`,
+      message: `Sync complete — ${saved} new repl${saved === 1 ? 'y' : 'ies'} saved` +
+               (bounces ? `, ${bounces} bounce${bounces === 1 ? '' : 's'} routed to delivery events` : ''),
       saved,
       skipped,
+      bounces,
       errors: errors.length ? errors : undefined,
     });
 
