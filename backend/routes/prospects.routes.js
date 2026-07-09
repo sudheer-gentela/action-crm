@@ -119,20 +119,21 @@ async function assignCampaignAndEnroll({ orgId, userId, prospectId, campaignId, 
           firstStep.rows[0]?.delay_hours ?? 0
         );
 
-        // A/B (2026_46): pure hash of (sequence_id, prospect_id). null when the
-        // sequence has no live test.
+        // A/B (2026_47): pure hash of (experiment_id, prospect_id). Both null
+        // when the sequence has no running experiment. No override here — this
+        // path is not admin-gated; pin arms from POST /api/sequences/enroll.
         const ExperimentAssigner = require('../services/ExperimentAssigner');
-        const variantKey = await ExperimentAssigner.assignVariant(db, {
+        const { experimentId, variantKey } = await ExperimentAssigner.assignVariant(db, {
           sequenceId: parseInt(sequenceId, 10), prospectId,
         });
 
         const er = await db.query(
           `INSERT INTO sequence_enrollments
-                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps, variant_key)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps, variant_key, experiment_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            ON CONFLICT (sequence_id, prospect_id) DO NOTHING
            RETURNING *`,
-          [orgId, parseInt(sequenceId, 10), prospectId, userId, nextDue, JSON.stringify({}), variantKey]
+          [orgId, parseInt(sequenceId, 10), prospectId, userId, nextDue, JSON.stringify({}), variantKey, experimentId]
         );
 
         if (er.rows.length) {

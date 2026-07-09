@@ -18,7 +18,7 @@
  * never re-points a live prospect at the wrong step. current_step (ordinal) is
  * used only as a re-anchor fallback when the current step was deleted.
  *
- * ── A/B variants (2026_46) ───────────────────────────────────────────────────
+ * ── A/B variants (2026_46, experiment-scoped in 2026_47) ─────────────────────
  * orderedSteps() now overlays the enrollment's arm copy onto the resolved plan.
  * This is THE seam: currentStep, nextStep, applyAdvance, the firer's manual /
  * draft path and sequenceStepAdvance.service all inherit it for free.
@@ -29,9 +29,16 @@
  * The auto-send due query in SequenceStepFirer bypasses this module (it joins
  * sequence_steps directly) — patch it separately.
  *
- * Overlay only fires for steps that are actually VARIED (>= 2 active variant
- * rows). A step with 0 or 1 variant rows keeps its base templates, so the
- * transient state while a rep builds a test never changes what ships.
+ * The overlay matches (experiment_id, sequence_step_id, variant_key) — never
+ * variant_key alone. A second experiment on the same step must NOT rewrite the
+ * copy of enrollments still in flight from the first. Because uq_ssv_exp_step_key
+ * makes that triple unique, at most one arm row can ever resolve.
+ *
+ * There is no `>= 2 active arms` guard here any more (2026_46 had one). It is an
+ * assignment-side concern: a half-built experiment has one arm, activeArms()
+ * returns [], no enrollment is ever stamped with its id, so its orphan row can
+ * never reach a send. A paused or concluded arm still resolves — enrollments
+ * already stamped with it must keep their treatment until they finish.
  *
  * Cost: when enrollment.variant_key is NULL — every enrollment in every org
  * that has never touched A/B — the overlay query is skipped entirely and this
@@ -51,30 +58,20 @@ function seqIdOf(enrollment) {
 
 /**
  * Map(step_id → { subject_template, body_template, personalize_config }) of the
- * arm's copy, restricted to steps that are genuinely varied. Empty map when the
- * arm has no rows (e.g. arm 'C' was added after this enrollment was assigned 'B'
- * and then removed) — callers then fall through to base templates, which is the
- * safe direction to fail.
+ * arm's copy for ONE experiment. Empty map when the arm has no rows (e.g. the
+ * arm was deleted after this enrollment was assigned to it) — callers then fall
+ * through to base templates, which is the safe direction to fail.
  */
-async function loadVariantOverlay(client, sequenceId, variantKey) {
+async function loadVariantOverlay(client, experimentId, variantKey) {
   const overlay = new Map();
-  if (!variantKey || sequenceId == null) return overlay;
+  if (!experimentId || !variantKey) return overlay;
 
   const { rows } = await client.query(
-    `WITH varied AS (
-       SELECT sv.sequence_step_id
-         FROM sequence_step_variants sv
-         JOIN sequence_steps ss ON ss.id = sv.sequence_step_id
-        WHERE ss.sequence_id = $1 AND sv.status = 'active'
-        GROUP BY sv.sequence_step_id
-       HAVING COUNT(*) >= 2
-     )
-     SELECT sv.sequence_step_id, sv.subject_template, sv.body_template,
+    `SELECT sv.sequence_step_id, sv.subject_template, sv.body_template,
             sv.personalize_config
        FROM sequence_step_variants sv
-       JOIN varied v ON v.sequence_step_id = sv.sequence_step_id
-      WHERE sv.variant_key = $2 AND sv.status = 'active'`,
-    [sequenceId, variantKey]
+      WHERE sv.experiment_id = $1 AND sv.variant_key = $2`,
+    [experimentId, variantKey]
   );
 
   for (const r of rows) {
@@ -121,7 +118,8 @@ function applyOverlay(steps, overlay) {
  * carry base copy, so they still want the overlay.
  */
 function snapshotIsVariantResolved(snap) {
-  return Array.isArray(snap) && snap.length > 0 && 'variant_key' in snap[0];
+  return Array.isArray(snap) && snap.length > 0
+    && Object.prototype.hasOwnProperty.call(snap[0], 'variant_key');
 }
 
 // ── Step resolution ──────────────────────────────────────────────────────────
@@ -135,7 +133,7 @@ async function orderedSteps(client, enrollment) {
     if (snapshotIsVariantResolved(snap)) return sorted;
     // Legacy snapshot: base copy pinned pre-2026_46. Overlay the arm on top.
     const overlay = await loadVariantOverlay(
-      client, seqIdOf(enrollment), enrollment.variant_key
+      client, enrollment.experiment_id, enrollment.variant_key
     );
     return applyOverlay(sorted, overlay);
   }
@@ -145,10 +143,12 @@ async function orderedSteps(client, enrollment) {
     [seqIdOf(enrollment)]
   );
   // Fast path: no arm, no second query. Identical SQL to the pre-A/B module.
+  // chk_se_arm_has_experiment guarantees variant_key and experiment_id are both
+  // set or both NULL, so one test covers both.
   if (!enrollment.variant_key) return rows;
 
   const overlay = await loadVariantOverlay(
-    client, seqIdOf(enrollment), enrollment.variant_key
+    client, enrollment.experiment_id, enrollment.variant_key
   );
   return applyOverlay(rows, overlay);
 }
@@ -260,10 +260,11 @@ const SNAPSHOT_COLS = [
 ];
 
 /** Project a resolved step down to the snapshot shape, stamped with its arm. */
-function toSnapshotRow(step, variantKey) {
+function toSnapshotRow(step, variantKey, experimentId) {
   const out = {};
   for (const c of SNAPSHOT_COLS) out[c] = step[c] ?? null;
-  out.variant_key = variantKey ?? null; // marker: this snapshot is variant-resolved
+  out.variant_key   = variantKey ?? null;   // marker: snapshot is arm-resolved
+  out.experiment_id = experimentId ?? null;
   return out;
 }
 
@@ -296,9 +297,11 @@ async function freezeIfConfigured(client, orgId, sequenceId) {
   );
   if (!steps.length) return 0;
 
-  // Which arms are actually about to be frozen? Usually exactly one: [null].
+  // Which (experiment, arm) pairs are about to be frozen? Usually exactly one:
+  // (null, null). Enrollments from a concluded experiment and from the running
+  // one can coexist here, and they must be pinned to DIFFERENT copy.
   const { rows: armRows } = await client.query(
-    `SELECT DISTINCT variant_key
+    `SELECT DISTINCT experiment_id, variant_key
        FROM sequence_enrollments
       WHERE sequence_id = $1
         AND org_id       = $2
@@ -309,9 +312,9 @@ async function freezeIfConfigured(client, orgId, sequenceId) {
   if (!armRows.length) return 0;
 
   let frozen = 0;
-  for (const { variant_key: arm } of armRows) {
-    const overlay = await loadVariantOverlay(client, sequenceId, arm);
-    const resolved = applyOverlay(steps, overlay).map((s) => toSnapshotRow(s, arm));
+  for (const { experiment_id: expId, variant_key: arm } of armRows) {
+    const overlay = await loadVariantOverlay(client, expId, arm);
+    const resolved = applyOverlay(steps, overlay).map((s) => toSnapshotRow(s, arm, expId));
 
     // IS NOT DISTINCT FROM: matches the NULL arm (not in a test) as well as 'A'/'B'.
     const r = await client.query(
@@ -321,8 +324,9 @@ async function freezeIfConfigured(client, orgId, sequenceId) {
           AND org_id       = $3
           AND status       = 'active'
           AND steps_snapshot IS NULL
-          AND variant_key IS NOT DISTINCT FROM $4`,
-      [JSON.stringify(resolved), sequenceId, orgId, arm]
+          AND variant_key   IS NOT DISTINCT FROM $4
+          AND experiment_id IS NOT DISTINCT FROM $5`,
+      [JSON.stringify(resolved), sequenceId, orgId, arm, expId]
     );
     frozen += r.rowCount;
   }

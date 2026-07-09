@@ -1,10 +1,10 @@
 /**
- * SequenceABPanel.js
+ * SequenceABPanel.js   (2026_47)
  *
  * DROP-IN LOCATION: frontend/src/SequenceABPanel.js
  *
- * Step-level A/B variants (migration 2026_46). Rendered inside SequenceBuilder,
- * below the steps list.
+ * Step-level A/B variants, scoped to an experiment. Rendered inside
+ * SequenceBuilder, below the steps list.
  *
  * Deliberately self-contained: it owns its own fetches and state and touches
  * nothing SequenceBuilder owns. In particular it stays OUT of the builder's
@@ -21,6 +21,12 @@
  *   - Editing arm copy while prospects are live in the test invalidates the
  *     result. The server 409s with AB_MID_TEST_EDIT; we surface the count and
  *     make the user confirm rather than silently retrying with the override.
+ *   - Concluding does NOT delete arms. Enrollments mid-cadence keep the
+ *     treatment they were randomised into until they finish. The panel says how
+ *     many those are, because a rep will otherwise expect the new copy to take
+ *     effect immediately.
+ *   - Results are scoped by experiment_id, not by a date window. A second test
+ *     on the same step reuses arm names A/B; only the id tells them apart.
  *
  * Props:
  *   sequenceId   — number | null   (null in create mode)
@@ -59,7 +65,11 @@ export default function SequenceABPanel({ sequenceId, steps, aiEnabled, apiFetch
   const [error,   setError]   = useState('');
   const [busy,    setBusy]    = useState(false);
   const [results, setResults] = useState(null);
-  const [since,   setSince]   = useState('');
+  const [history, setHistory] = useState([]);
+  const [viewExp, setViewExp] = useState('');   // '' = running / most recent
+  const [concluding, setConcluding] = useState(false);
+  const [winner,  setWinner]  = useState('');
+  const [promote, setPromote] = useState(true);
 
   const load = useCallback(async () => {
     if (!sequenceId) return;
@@ -73,7 +83,15 @@ export default function SequenceABPanel({ sequenceId, steps, aiEnabled, apiFetch
     }
   }, [sequenceId, apiFetch]);
 
-  useEffect(() => { load(); }, [load]);
+  const loadHistory = useCallback(async () => {
+    if (!sequenceId) return;
+    try {
+      const r = await apiFetch(`/sequences/${sequenceId}/experiments`);
+      setHistory(r.experiments || []);
+    } catch { /* history is decoration; never block the panel on it */ }
+  }, [sequenceId, apiFetch]);
+
+  useEffect(() => { load(); loadHistory(); }, [load, loadHistory]);
 
   // ── Create ─────────────────────────────────────────────────────────────────
   // The server seeds arm A from the step's current copy and creates B, so a step
@@ -133,13 +151,43 @@ export default function SequenceABPanel({ sequenceId, steps, aiEnabled, apiFetch
     }
   };
 
-  const loadResults = async () => {
+  const loadResults = useCallback(async (expId) => {
     setBusy(true); setError('');
     try {
-      const q = since ? `?since=${encodeURIComponent(since)}` : '';
+      const q = expId ? `?experimentId=${encodeURIComponent(expId)}` : '';
       setResults(await apiFetch(`/sequences/${sequenceId}/experiment${q}`));
     } catch (e) {
       setError(e.message || 'Could not load results');
+    } finally {
+      setBusy(false);
+    }
+  }, [sequenceId, apiFetch]);
+
+  // Concluding freezes the arms and stops new enrollments landing in them.
+  // promoteWinner copies the winning copy into the base step so future
+  // enrollments — which carry no arm — send it by default.
+  const conclude = async (expId, abandon = false) => {
+    if (!abandon && !winner) { setError('Pick a winning arm, or abandon the test.'); return; }
+    const verb = abandon ? 'Abandon' : 'Conclude';
+    if (!window.confirm(
+      `${verb} this experiment?\n\nArms are kept, not deleted — prospects already mid-cadence ` +
+      `keep the copy they were randomised into until they finish. ` +
+      (abandon ? '' : promote ? `Arm ${winner}'s copy will be written into the step for future enrollments.` : '')
+    )) return;
+
+    setBusy(true); setError('');
+    try {
+      const r = await apiFetch(`/sequences/${sequenceId}/experiments/${expId}/conclude`, {
+        method: 'POST',
+        body: JSON.stringify(abandon
+          ? { abandon: true }
+          : { winningVariantKey: winner, promoteWinner: promote }),
+      });
+      if (r.note) setError(r.note);
+      setConcluding(false); setWinner('');
+      await load(); await loadHistory();
+    } catch (e) {
+      setError(e.message || 'Could not conclude');
     } finally {
       setBusy(false);
     }
@@ -171,6 +219,7 @@ export default function SequenceABPanel({ sequenceId, steps, aiEnabled, apiFetch
     );
   }
 
+  const experiment     = data?.experiment || null;
   const variantsByStep = data?.variantsByStep || {};
   const variedIds      = new Set(data?.variedStepIds || []);
   const remaining      = data?.variedStepsRemaining ?? 0;
@@ -189,8 +238,10 @@ export default function SequenceABPanel({ sequenceId, steps, aiEnabled, apiFetch
           <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
             {loading ? 'Loading…'
               : testIsLive
-                ? `Live · ${variedIds.size} of ${data.maxVariedSteps} step${data.maxVariedSteps !== 1 ? 's' : ''} varied · ${enrolled} prospect${enrolled !== 1 ? 's' : ''} in test`
-                : 'No test running'}
+                ? `${experiment?.name || `Experiment #${experiment?.id}`} · ${variedIds.size} of ${data.maxVariedSteps} step${data.maxVariedSteps !== 1 ? 's' : ''} varied · ${enrolled} prospect${enrolled !== 1 ? 's' : ''} in test`
+                : history.length
+                  ? `No test running · ${history.length} past experiment${history.length !== 1 ? 's' : ''}`
+                  : 'No test running'}
           </div>
         </div>
         {testIsLive && (
@@ -212,8 +263,11 @@ export default function SequenceABPanel({ sequenceId, steps, aiEnabled, apiFetch
           will otherwise ask why they cannot hand-pick who sees which arm. */}
       <div style={{ fontSize: 11, color: '#6b7280', lineHeight: 1.6, marginBottom: 12 }}>
         Prospects are split by a hash of their id — you set the percentage, not the people.
-        Re-enrolling never moves a prospect between arms. Prospects already enrolled when you
-        start a test keep the base copy and are excluded from it.
+        Re-enrolling never moves a prospect between arms within one experiment, and each new
+        experiment reshuffles the pool. Prospects already enrolled when you start a test keep the
+        base copy and are excluded from it. Admins can pin one prospect to a named arm by passing
+        <code>variantKeyOverride</code> to <code>POST /api/sequences/enroll</code> — a known bias,
+        for inspecting copy, not for steering a test.
       </div>
 
       {eligible.length === 0 && (
@@ -281,17 +335,81 @@ export default function SequenceABPanel({ sequenceId, steps, aiEnabled, apiFetch
         </div>
       )}
 
+      {/* ── Conclude ────────────────────────────────────────────────────────── */}
+      {testIsLive && experiment && (
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #f3f4f6' }}>
+          {!concluding ? (
+            <button
+              onClick={() => setConcluding(true)} disabled={busy}
+              style={{
+                fontSize: 12, padding: '6px 12px', borderRadius: 6,
+                border: '1px solid #e5e7eb', background: '#fff', color: '#374151',
+                fontWeight: 600, cursor: busy ? 'wait' : 'pointer',
+              }}
+            >Conclude experiment</button>
+          ) : (
+            <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#111827', marginBottom: 8 }}>
+                Conclude “{experiment.name || `Experiment #${experiment.id}`}”
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: '#6b7280' }}>Winner</span>
+                <select
+                  value={winner} onChange={e => setWinner(e.target.value)}
+                  style={{ ...input, width: 90, padding: '5px 8px' }}
+                >
+                  <option value="">—</option>
+                  {arms.map(a => <option key={a.variant_key} value={a.variant_key}>Arm {a.variant_key}</option>)}
+                </select>
+                <label style={{ fontSize: 12, color: '#374151', display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <input type="checkbox" checked={promote} onChange={e => setPromote(e.target.checked)} />
+                  Write winner’s copy into the step
+                </label>
+                <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                  <button
+                    onClick={() => conclude(experiment.id, false)} disabled={busy}
+                    style={{ fontSize: 12, padding: '6px 12px', borderRadius: 6, border: 'none', background: TEAL, color: '#fff', fontWeight: 600, cursor: 'pointer' }}
+                  >Conclude</button>
+                  <button
+                    onClick={() => conclude(experiment.id, true)} disabled={busy}
+                    style={{ fontSize: 12, padding: '6px 12px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', cursor: 'pointer' }}
+                  >Abandon</button>
+                  <button
+                    onClick={() => { setConcluding(false); setWinner(''); }}
+                    style={{ fontSize: 12, padding: '6px 10px', borderRadius: 6, border: 'none', background: 'transparent', color: '#9ca3af', cursor: 'pointer' }}
+                  >Cancel</button>
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: '#6b7280', marginTop: 8, lineHeight: 1.6 }}>
+                Arms are kept, not deleted. The {enrolled} prospect{enrolled !== 1 ? 's' : ''} still mid-cadence
+                keep the copy they were randomised into — treatment is never switched under a prospect.
+                New enrollments carry no arm and use the base step copy.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Results ─────────────────────────────────────────────────────────── */}
-      {testIsLive && (
+      {(testIsLive || history.length > 0) && (
         <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #f3f4f6' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Results since</span>
-            <input
-              type="date" value={since} onChange={e => setSince(e.target.value)}
-              style={{ ...input, width: 150, padding: '5px 8px' }}
-            />
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Results</span>
+            <select
+              value={viewExp} onChange={e => setViewExp(e.target.value)}
+              style={{ ...input, width: 260, padding: '5px 8px' }}
+            >
+              <option value="">Running / most recent</option>
+              {history.map(h => (
+                <option key={h.id} value={h.id}>
+                  #{h.id} {h.name || '(unnamed)'} · {h.status}
+                  {h.winning_variant_key ? ` · won ${h.winning_variant_key}` : ''}
+                  {` · ${h.enrolled} enrolled`}
+                </option>
+              ))}
+            </select>
             <button
-              onClick={loadResults} disabled={busy}
+              onClick={() => loadResults(viewExp)} disabled={busy}
               style={{
                 fontSize: 12, padding: '6px 12px', borderRadius: 6,
                 border: '1px solid #e5e7eb', background: '#fff',
@@ -300,16 +418,10 @@ export default function SequenceABPanel({ sequenceId, steps, aiEnabled, apiFetch
             >Load</button>
           </div>
 
-          {!since && (
-            <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 8 }}>
-              Set a start date. There is no experiment identity yet — a second test on the same step
-              reuses the same arm names, so an unbounded window mixes them.
-            </div>
-          )}
-
           {results && <Results results={results} />}
         </div>
       )}
+
     </div>
   );
 }
@@ -422,13 +534,20 @@ function ArmEditor({ arms, busy, channel, onSave, onRemove }) {
 // showing a "winner" off 40 sends would be worse than showing nothing.
 
 function Results({ results }) {
+  const exp   = results.experiment;
   const arms  = results.arms || [];
   const steps = results.steps || [];
   const liSteps = steps.filter(s => s.channel === 'linkedin');
   const underpowered = arms.some(a => a.enrolled < 300);
 
+  if (!exp) return <div style={{ fontSize: 12, color: '#9ca3af' }}>No experiment on this sequence yet.</div>;
+
   return (
     <div>
+      <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>
+        #{exp.id} {exp.name || '(unnamed)'} · {exp.status}
+        {exp.winning_variant_key ? ` · declared winner ${exp.winning_variant_key}` : ''}
+      </div>
       <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ color: '#6b7280', textAlign: 'left' }}>

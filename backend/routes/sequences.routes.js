@@ -54,7 +54,8 @@ const AIClientResolver = require('../services/ai/AIClientResolver');
 const ReportingScopeService = require('../services/ReportingScopeService');
 const AccessPolicy          = require('../services/AccessPolicy');
 const EnrollmentStepResolver = require('../services/EnrollmentStepResolver'); // identity-cursor + freeze copy-on-write
-const ExperimentAssigner     = require('../services/ExperimentAssigner');     // A/B arm assignment (2026_46)
+const ExperimentAssigner     = require('../services/ExperimentAssigner');     // A/B arm assignment (2026_47)
+const CampaignAccess         = require('../services/CampaignAccess');        // isAdmin gate for A/B arm override
 
 // ── Auth middleware on all routes ─────────────────────────────────────────────
 router.use(authenticateToken, orgContext);
@@ -364,7 +365,21 @@ router.post('/ai-personalise-enrollment', async (req, res) => {
 // POST /api/sequences/enroll
 // body: { sequenceId, prospectIds: [id, ...], personalisedSteps?: { [prospectId]: { [step_order]: { subject, body, task_note } } } }
 router.post('/enroll', async (req, res) => {
-  const { sequenceId, prospectIds, personalisedSteps } = req.body;
+  const { sequenceId, prospectIds, personalisedSteps, variantKeyOverride } = req.body;
+
+  // A/B manual override (2026_47). Admin-only, single-prospect only. A pinned
+  // prospect is not a randomised one; pinning a batch would quietly destroy the
+  // randomisation the whole design rests on. bulk-activate never accepts it.
+  if (variantKeyOverride) {
+    if (!(await CampaignAccess.isAdmin(req))) {
+      return res.status(403).json({ error: { message: 'Only admins can pin a prospect to an A/B arm' } });
+    }
+    if (!Array.isArray(prospectIds) || prospectIds.length !== 1) {
+      return res.status(400).json({ error: {
+        message: 'variantKeyOverride applies to exactly one prospect. Pinning a batch would destroy randomisation.',
+        code: 'AB_OVERRIDE_BATCH' } });
+    }
+  }
   if (!sequenceId || !Array.isArray(prospectIds) || prospectIds.length === 0) {
     return res.status(400).json({ error: { message: 'sequenceId and prospectIds[] are required' } });
   }
@@ -415,20 +430,26 @@ router.post('/enroll', async (req, res) => {
           if (sid != null) prosSteps[String(sid)] = val;
         }
 
-        // A/B (2026_46): pure hash of (sequence_id, prospect_id). Returns null
-        // when the sequence has no live test — variant_key stays NULL and every
-        // downstream read falls through to the base step templates.
-        const variantKey = await ExperimentAssigner.assignVariant(client, {
-          sequenceId, prospectId,
+        // A/B (2026_47): pure hash of (experiment_id, prospect_id). Both nulls
+        // when the sequence has no running experiment — every downstream read
+        // then falls through to the base step templates.
+        //
+        // variantKeyOverride pins this prospect to a named arm. Admin-gated
+        // above; throws AB_BAD_OVERRIDE if the arm is not active in the running
+        // experiment, rather than silently falling back to the hash. Each
+        // override is a known, small bias — use it to inspect copy, not to steer
+        // a test. chk_se_arm_has_experiment forces both columns or neither.
+        const { experimentId, variantKey } = await ExperimentAssigner.assignVariant(client, {
+          sequenceId, prospectId, variantKeyOverride,
         });
 
         const er = await client.query(
           `INSERT INTO sequence_enrollments
-                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps, variant_key)
-                VALUES ($1,$2,$3,$4,$5,$6,$7)
+                       (org_id, sequence_id, prospect_id, enrolled_by, next_step_due, personalised_steps, variant_key, experiment_id)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
            ON CONFLICT (sequence_id, prospect_id) DO NOTHING
            RETURNING *`,
-          [req.orgId, sequenceId, prospectId, req.user.userId, nextDue, JSON.stringify(prosSteps), variantKey]
+          [req.orgId, sequenceId, prospectId, req.user.userId, nextDue, JSON.stringify(prosSteps), variantKey, experimentId]
         );
 
         if (er.rows.length) {
@@ -461,6 +482,12 @@ router.post('/enroll', async (req, res) => {
           skipped.push({ prospectId, reason: 'already enrolled' });
         }
       } catch (err) {
+        // A bad arm override is caller error, not a per-prospect skip: fail the
+        // whole call loudly rather than silently enrolling with the hashed arm.
+        if (err.code === 'AB_BAD_OVERRIDE') {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: { message: err.message, code: err.code } });
+        }
         skipped.push({ prospectId, reason: err.message });
       }
     }
@@ -633,7 +660,7 @@ router.get('/enrollments/:enrollId', async (req, res) => {
     // step. Display-only. No-op (and no query) when variant_key IS NULL.
     if (enrollment.variant_key) {
       const overlay = await EnrollmentStepResolver.loadVariantOverlay(
-        pool, enrollment.seq_id, enrollment.variant_key
+        pool, enrollment.experiment_id, enrollment.variant_key
       );
       stepsRes.rows = EnrollmentStepResolver.applyOverlay(stepsRes.rows, overlay);
     }
@@ -823,7 +850,7 @@ router.get('/drafts', async (req, res) => {
         -- an arm may vary the subject alone and inherit the body.
         COALESCE(NULLIF(sv.subject_template, ''), ss.subject_template) AS step_subject_template,
         COALESCE(NULLIF(sv.body_template, ''),    ss.body_template)    AS step_body_template,
-        se.sequence_id, se.enrolled_by, se.variant_key,
+        se.sequence_id, se.enrolled_by, se.variant_key, se.experiment_id,
         s.name AS sequence_name,
         p.id AS prospect_id, p.first_name, p.last_name,
         p.email AS prospect_email, p.company_name, p.linkedin_url,
@@ -842,20 +869,15 @@ router.get('/drafts', async (req, res) => {
       JOIN sequences s             ON s.id   = se.sequence_id
       JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
       JOIN prospects p             ON p.id   = ssl.prospect_id
-      -- A/B (2026_46): resolve the enrollment's arm copy. Only steps with >= 2
-      -- ACTIVE arms are varied, so a half-built test never overrides the base
-      -- step. Misses entirely when se.variant_key IS NULL — pre-A/B enrollments
-      -- and non-test sequences read exactly as they did before.
-      LEFT JOIN LATERAL (
-        SELECT v.subject_template, v.body_template
-          FROM sequence_step_variants v
-         WHERE v.sequence_step_id = ss.id
-           AND v.variant_key      = se.variant_key
-           AND v.status           = 'active'
-           AND (SELECT COUNT(*) FROM sequence_step_variants v2
-                 WHERE v2.sequence_step_id = ss.id AND v2.status = 'active') >= 2
-         LIMIT 1
-      ) sv ON TRUE
+      -- A/B (2026_47): resolve the enrollment's arm copy on the UNIQUE triple
+      -- (experiment_id, sequence_step_id, variant_key). This powers the UI's
+      -- one-click "revert to sequence default" — serving BASE copy to an arm-B
+      -- prospect would silently move them across arms mid-test. Misses entirely
+      -- when se.variant_key IS NULL, so non-test enrollments read as before.
+      LEFT JOIN sequence_step_variants sv
+             ON sv.experiment_id    = se.experiment_id
+            AND sv.sequence_step_id = ss.id
+            AND sv.variant_key      = se.variant_key
       LEFT JOIN LATERAL (
         SELECT id, email, provider, label, display_name,
                signature, linkedin_signature, owner_type

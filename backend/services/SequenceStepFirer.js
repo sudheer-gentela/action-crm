@@ -396,24 +396,23 @@ async function materializeRows(client, enrollmentIds = null) {
     // step_order = current_step. Reorder preserves step IDs, so this stays
     // correct across reorders. steps_snapshot is selected so frozen enrollments
     // can override content from their pinned plan (below).
-    // A/B (2026_46): `varied` restricts the variant join to steps carrying >= 2
-    // ACTIVE arms, so a half-built test (one arm row) can never override the
-    // base step. When se.variant_key IS NULL the join misses and every column
-    // below reads exactly as it did pre-A/B.
-    `WITH varied AS (
-       SELECT sv.sequence_step_id
-         FROM sequence_step_variants sv
-        WHERE sv.status = 'active'
-        GROUP BY sv.sequence_step_id
-       HAVING COUNT(*) >= 2
-     )
-     SELECT se.id              AS enrollment_id,
+    // A/B (2026_47): the arm join matches the UNIQUE triple
+    // (experiment_id, sequence_step_id, variant_key) — uq_ssv_exp_step_key — so
+    // it can add at most one row and never duplicates a candidate. Scoping by
+    // experiment_id is what stops a second test rewriting the copy of
+    // enrollments still in flight from the first. When se.variant_key IS NULL
+    // (equivalently experiment_id IS NULL, per chk_se_arm_has_experiment) the
+    // join misses and every column below reads exactly as it did pre-A/B.
+    // Status is deliberately NOT filtered: a paused or concluded arm must still
+    // resolve for the enrollments already stamped with it.
+    `SELECT se.id              AS enrollment_id,
             se.org_id,
             se.prospect_id,
             se.current_step,
             se.current_step_id,
             se.steps_snapshot,
             se.variant_key,
+            se.experiment_id,
             se.next_step_due,
             se.personalised_steps,
             ss.id              AS step_id,
@@ -431,12 +430,10 @@ async function materializeRows(client, enrollmentIds = null) {
        JOIN sequence_steps ss ON ss.id = se.current_step_id
        JOIN prospects p       ON p.id  = se.prospect_id
   LEFT JOIN accounts a        ON a.id  = p.account_id
-  LEFT JOIN varied v          ON v.sequence_step_id = ss.id
   LEFT JOIN sequence_step_variants sv
-         ON sv.sequence_step_id  = ss.id
+         ON sv.experiment_id     = se.experiment_id
+        AND sv.sequence_step_id  = ss.id
         AND sv.variant_key       = se.variant_key
-        AND sv.status            = 'active'
-        AND v.sequence_step_id IS NOT NULL
       WHERE se.status = 'active'
         AND se.next_step_due IS NOT NULL
         AND ${AUTO_SEND_PREDICATE}
@@ -469,7 +466,7 @@ async function materializeRows(client, enrollmentIds = null) {
     let subjectTemplate = row.subject_template;
     let bodyTemplate    = row.body_template;
 
-    // A/B (2026_46): the arm's copy sits above the base step. A blank/NULL field
+    // A/B (2026_47): the arm's copy sits above the base step. A blank/NULL field
     // on the arm row falls through, so an arm may vary the subject alone and
     // inherit the body. No-op when se.variant_key IS NULL (the join missed).
     if (row.variant_subject_template) subjectTemplate = row.variant_subject_template;
@@ -478,7 +475,7 @@ async function materializeRows(client, enrollmentIds = null) {
     // Frozen enrollments (steps_snapshot present) send the templates pinned at
     // freeze time, not whatever the live step has since been edited to.
     // Snapshots written on or after 2026_46 are ALREADY arm-resolved (freeze
-    // stamps variant_key onto every row), so they outrank the join above and
+    // stamps variant_key + experiment_id onto every row), so they outrank the join above and
     // must not be overlaid twice. Legacy snapshots have no variant_key key and
     // still win over the base step, exactly as before — but they lose to the
     // arm, because they were pinned before the test existed.
