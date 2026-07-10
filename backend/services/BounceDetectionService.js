@@ -324,7 +324,7 @@ async function processPotentialNdr(client, { orgId, userId, email, provider, sen
 
     // Duplicate (re-sync) — already fully processed previously.
     if (ins.rows.length === 0) {
-      return { processed: true, eventType, prospectId: link.prospect_id, stepLogId: link.step_log_id, enrollmentStopped: false, duplicate: true };
+      return { processed: true, eventType, failedRecipient, prospectId: link.prospect_id, stepLogId: link.step_log_id, enrollmentStopped: false, duplicate: true };
     }
     const eventId = ins.rows[0].id;
 
@@ -386,7 +386,12 @@ async function processPotentialNdr(client, { orgId, userId, email, provider, sen
       ` step_log=${link.step_log_id || 'n/a'} stopped=${enrollmentStopped}`
     );
 
-    return { processed: true, eventType, prospectId: link.prospect_id, stepLogId: link.step_log_id, enrollmentStopped };
+    // failedRecipient is returned so callers (NdrCleanupService, and the Bounce
+    // Cleanup admin panel) can show WHO actually bounced. It is frequently a
+    // different prospect from the one the NDR was wrongly attached to, because
+    // the old inbox sync matched on sending domain and picked an arbitrary
+    // colleague of the address that really failed.
+    return { processed: true, eventType, failedRecipient, prospectId: link.prospect_id, stepLogId: link.step_log_id, enrollmentStopped };
   } catch (err) {
     // Must never crash the sync.
     console.error(`[BounceDetection] org=${orgId} error:`, err.message);

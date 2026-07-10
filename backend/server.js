@@ -199,6 +199,7 @@ app.use('/api/tracking-domains',     require('./routes/tracking-domains.routes')
 app.use('/api/tracking-diagnostics', require('./routes/tracking-diagnostics.routes')); // Phase 7 diagnostics (read-only)
 app.use('/api/custom-fields',        require('./routes/custom-fields.routes'));
 app.use('/api/help',                 require('./routes/help.routes'));   // Help & Guides (signed-URL gated)
+app.use('/api/ndr-cleanup', 	     require('./routes/ndr-cleanup.routes'));
 
 // ── Core CRM ──────────────────────────────────────────────────────────────
 app.use('/api/auth',          require('./routes/auth.routes'));

@@ -16,6 +16,7 @@ import { buildNavGroups } from './orgadmin/helpers';
 
 import OATokenUsageModule from './orgadmin/panels/OATokenUsageModule';
 import OATrackingDiagnostics from './orgadmin/panels/OATrackingDiagnostics';
+import OANdrCleanup from './orgadmin/panels/OANdrCleanup';
 import OASalesforceSettings from './orgadmin/panels/OASalesforceSettings';
 import OAHubSpotSettings from './orgadmin/panels/OAHubSpotSettings';
 import OASettings from './orgadmin/panels/OASettings';
@@ -239,6 +240,7 @@ export default function OrgAdminView() {
             {/* ── Per-module settings pages (only reachable when module is enabled) ── */}
             {tab === 'ai-usage'          && <OATokenUsageModule />}
             {tab === 'tracking-diag'    && <OATrackingDiagnostics />}
+            {tab === 'ndr-cleanup'      && <OANdrCleanup />}
             {tab === 'mod-prospecting'  && <OAProspectingModule />}
             {tab === 'mod-contracts'    && <OACLMModule />}
             {tab === 'mod-handovers'    && <OAHandoverModule />}
