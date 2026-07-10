@@ -47,6 +47,12 @@ const ExperimentAssigner     = require('../services/ExperimentAssigner');     //
 // Phase 3 — campaign-scoped sequence reporting: ?depth and ?userIds filters
 // on /:id/sequence-health go through the scope service for auth.
 const ReportingScopeService = require('../services/ReportingScopeService');
+// Single definition of "a reply" (email + LinkedIn, channel-tagged), shared
+// with routes/reporting.routes.js. /:id/sequence-health used to count
+// sequence_step_logs.status = 'replied' — a value nothing writes — so its
+// REPLIED column read 0 while the campaign row above it showed the real
+// number. See services/ReplyEventsQuery.js.
+const { replyEventsCte, repliedRate: _healthRepliedRate } = require('../services/ReplyEventsQuery');
 
 // Slice 1 of sending-schedule feature: resolves daily cap + send window
 // (org default, optionally overridden per-campaign) and computes per-
@@ -2469,17 +2475,49 @@ router.post('/:id/enroll-all', async (req, res) => {
 // Phase 3 extensions (all optional, additive — backward compat preserved):
 //   ?depth=direct|plus1|plus2|all   filter to a scope of enrolled_by users
 //   ?userIds=1,2,3                   filter to a specific set (∩ with scope)
-//   ?startDate=ISO  ?endDate=ISO     time window for the byUser block
+//   ?startDate=ISO  ?endDate=ISO     time window
 //   ?windowDays=N                    alternative to start/end (default 7)
 //   ?groupBy=sequence|user|both      defaults to 'sequence' (current behavior).
 //                                    'user' or 'both' add a byUser[] array.
 //
-// The original 24h/7d aggregates remain on the same hardcoded windows
-// (back-compat); when ?userIds or ?depth is set, the per-sequence
-// numbers are restricted to that scope as well. The startDate/endDate/
-// windowDays params drive ONLY the new byUser[] block — they don't shift
-// the 24h/7d windows. See SEQUENCE_REPORTING_DESIGN.md Appendix A.3 for
-// the rationale (same compromise as /api/sequences/:id/stats).
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-07 FIX — the drill-down disagreed with the campaign row above it
+//
+// Two independent bugs made Team reporting → By campaign → (drill down) show
+// different numbers from the row that was clicked.
+//
+//   BUG 1 — REPLIES CAME FROM A COLUMN NOTHING WRITES.
+//     This endpoint counted `ssl.status = 'replied'`. Nothing in the codebase
+//     ever writes that value (SequenceStepFirer writes 'replied' to
+//     sequence_enrollments.status, not to sequence_step_logs.status), so
+//     `replied` and every reply rate on this surface were structurally 0 —
+//     while the campaign row, which sources replies from `emails` +
+//     `prospecting_activities`, showed 5 replies at 45.5%.
+//     Replies now come from services/ReplyEventsQuery.js, the SAME builder
+//     reporting.routes.js uses. The two surfaces reconcile by construction.
+//
+//   BUG 2 — THE WINDOW PICKER WAS IGNORED.
+//     The 24h/7d aggregates were hardcoded to NOW() - interval. The frontend
+//     passes ?windowDays=30 (or start/end), but that only ever reached the
+//     byUser block. So with "30d" selected the tiles summed 7d numbers, and
+//     the by-rep table below them summed 30d numbers — two windows, one panel.
+//     Each health[] row now carries an additional `window` block bounded by
+//     the requested window. last24h/last7d are UNCHANGED in shape and remain
+//     hardcoded, because CampaignsView.js's SequenceHealthTile calls this
+//     endpoint with no params at all and reads them directly.
+//
+//   Also: the per-sequence `stalled` counter anchored on NOW() - 7 days while
+//   reporting.routes.js anchors on endDate - 7 days. Identical for trailing
+//   windows, divergent for any Custom range ending in the past. Now aligned.
+//
+// The 24h/7d `replied` counters are ALSO now sourced from reply_events, so
+// CampaignsView's "Idle" pill and its "N replied" line stop reading 0 forever.
+//
+// CHANNEL SPLIT. `sent` counts every step log regardless of channel, so a
+// blended reply rate divides EMAIL replies by EMAIL + LINKEDIN sends. The
+// `window` block and byUser[] therefore expose sentEmail / sentLinkedin /
+// repliedEmail / repliedLinkedin and per-channel rates, matching the columns
+// the campaign, rep and sequence tabs now render.
 // ═════════════════════════════════════════════════════════════════════════════
 router.get('/:id/sequence-health', async (req, res) => {
   try {
@@ -2489,6 +2527,8 @@ router.get('/:id/sequence-health', async (req, res) => {
 
     const day  = `'24 hours'::interval`;
     const week = `'7 days'::interval`;
+
+    const campaignId = parseInt(req.params.id, 10);
 
     // ── Phase 3: parse optional filters ──────────────────────────────
     const groupBy = ['sequence', 'user', 'both'].includes(req.query.groupBy)
@@ -2510,37 +2550,66 @@ router.get('/:id/sequence-health', async (req, res) => {
       userFilterIds = scope.userIds;
     }
 
+    // ── The requested window, parsed BEFORE the aggregates (Bug 2) ────
+    // _parseCampaignHealthWindow defaults to the trailing 7 days, so a caller
+    // that passes nothing (CampaignsView.js) gets window === last7d and sees
+    // no behaviour change.
+    const w = _parseCampaignHealthWindow(req.query);
+
+    // reply_events is scanned once and bucketed three ways (24h / 7d / window),
+    // so its range must cover all three. For any trailing window this is just
+    // the window itself; for a Custom range ending last month it widens to
+    // include the trailing 7 days that last24h/last7d still describe.
+    const nowMs      = Date.now();
+    const sevenAgoMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+    const cteStartISO = new Date(Math.min(new Date(w.startISO).getTime(), sevenAgoMs)).toISOString();
+    const cteEndISO   = new Date(Math.max(new Date(w.endISO).getTime(), nowMs)).toISOString();
+
     // Rep-filter clause appended to each state query when a user filter
     // was opted into explicitly. When groupBy is non-default but no
     // user filter was set, the state queries stay unfiltered for
     // back-compat (only the byUser block uses the scope).
     let stateRepClause = '';
     const stateRepParam = (hasUserFilter && userFilterIds) ? userFilterIds : null;
-
-    // Build params and the rep clause. Original queries use 2 params
-    // ($1 = orgId, $2 = campaignId). When a rep filter is set, we add $3.
-    const aggParams = [req.orgId, req.params.id];
     if (stateRepParam) {
-      aggParams.push(stateRepParam);
       stateRepClause = `AND se.enrolled_by = ANY($3::int[])`;
     }
 
-    // Per-sequence aggregates scoped to this campaign's enrollments.
-    // We list only sequences that actually have at least one campaign
-    // enrollment — different from the global /health endpoint which lists
-    // every active sequence in the org.
+    // Each query below gets its OWN param array. They used to share one, which
+    // is why the window bounds could not be added without breaking the others:
+    // Postgres rejects a bind that supplies a parameter the statement does not
+    // reference. Positions $1/$2 (+ $3 when rep-filtered) are identical across
+    // all of them, so stateRepClause stays a single shared string.
+    const base = stateRepParam ? [req.orgId, req.params.id, stateRepParam]
+                               : [req.orgId, req.params.id];
+
+    // ── Per-sequence aggregates ──────────────────────────────────────
+    // Scoped to this campaign's enrollments. We list only sequences that
+    // actually have at least one campaign enrollment — different from the
+    // global /health endpoint which lists every active sequence in the org.
+    //
+    // NOTE: no `replied` counters here. ssl.status never reaches 'replied'
+    // (see services/ReplyEventsQuery.js header). Replies are joined in below.
+    const aggParams = [...base, w.startISO, w.endISO];
+    const wStart = `$${aggParams.length - 1}`;
+    const wEnd   = `$${aggParams.length}`;
+    const inWindow = `ssl.fired_at >= ${wStart}::timestamptz AND ssl.fired_at <= ${wEnd}::timestamptz`;
+
     const aggRes = await pool.query(
       `SELECT
          s.id    AS sequence_id,
          s.name  AS sequence_name,
          COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${day}  AND ssl.status = 'draft')::int                              AS drafts_24h,
          COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${day}  AND ssl.status IN ('sent','completed'))::int                AS sent_24h,
-         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${day}  AND ssl.status = 'replied')::int                            AS replied_24h,
          COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${day}  AND ssl.status = 'failed')::int                             AS failed_24h,
          COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${week} AND ssl.status = 'draft')::int                              AS drafts_7d,
          COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${week} AND ssl.status IN ('sent','completed'))::int                AS sent_7d,
-         COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${week} AND ssl.status = 'replied')::int                            AS replied_7d,
          COUNT(*) FILTER (WHERE ssl.fired_at >= NOW() - ${week} AND ssl.status = 'failed')::int                             AS failed_7d,
+         COUNT(*) FILTER (WHERE ${inWindow} AND ssl.status = 'draft')::int                                                  AS drafts_win,
+         COUNT(*) FILTER (WHERE ${inWindow} AND ssl.status IN ('sent','completed'))::int                                    AS sent_win,
+         COUNT(*) FILTER (WHERE ${inWindow} AND ssl.status IN ('sent','completed') AND ssl.channel = 'email')::int          AS sent_win_email,
+         COUNT(*) FILTER (WHERE ${inWindow} AND ssl.status IN ('sent','completed') AND ssl.channel = 'linkedin')::int       AS sent_win_linkedin,
+         COUNT(*) FILTER (WHERE ${inWindow} AND ssl.status = 'failed')::int                                                 AS failed_win,
          MAX(ssl.fired_at) AS last_fired_at
        FROM sequences s
        JOIN sequence_enrollments se ON se.sequence_id = s.id
@@ -2553,6 +2622,51 @@ router.get('/:id/sequence-health', async (req, res) => {
       ORDER BY s.id ASC`,
       aggParams
     );
+
+    // ── Per-sequence replies (Bug 1) ─────────────────────────────────
+    // One scan of reply_events, bucketed into 24h / 7d / window. When the
+    // caller sent no ?depth and no ?userIds we pass userParam=null so the
+    // reply counts stay unscoped, matching the unfiltered state queries above.
+    const replyParams = [req.orgId];
+    let replyUserParam = null;
+    if (stateRepParam) {
+      replyParams.push(stateRepParam);
+      replyUserParam = `$${replyParams.length}`;
+    }
+    replyParams.push([campaignId]);   const replyCampaignParam = `$${replyParams.length}`;
+    replyParams.push(cteStartISO);    const replyStartParam    = `$${replyParams.length}`;
+    replyParams.push(cteEndISO);      const replyEndParam      = `$${replyParams.length}`;
+    replyParams.push(w.startISO);     const replyWinStart      = `$${replyParams.length}`;
+    replyParams.push(w.endISO);       const replyWinEnd        = `$${replyParams.length}`;
+
+    // replied_at is naive UTC wall time (see ReplyEventsQuery header), so it is
+    // lifted to timestamptz before any comparison against NOW().
+    const rIn24h = `(replied_at AT TIME ZONE 'UTC') >= NOW() - ${day}`;
+    const rIn7d  = `(replied_at AT TIME ZONE 'UTC') >= NOW() - ${week}`;
+    const rInWin = `replied_at >= (${replyWinStart}::timestamptz AT TIME ZONE 'UTC')
+                AND replied_at <= (${replyWinEnd}::timestamptz   AT TIME ZONE 'UTC')`;
+
+    const replyRes = await pool.query(
+      `WITH ${replyEventsCte({
+         orgParam:      '$1',
+         userParam:     replyUserParam,
+         startParam:    replyStartParam,
+         endParam:      replyEndParam,
+         campaignParam: replyCampaignParam,
+       })}
+       SELECT
+         sequence_id,
+         COUNT(*) FILTER (WHERE ${rIn24h})::int                                        AS replied_24h,
+         COUNT(*) FILTER (WHERE ${rIn7d})::int                                         AS replied_7d,
+         COUNT(*) FILTER (WHERE ${rInWin})::int                                        AS replied_win,
+         COUNT(*) FILTER (WHERE (${rInWin}) AND channel = 'email')::int                AS replied_win_email,
+         COUNT(*) FILTER (WHERE (${rInWin}) AND channel = 'linkedin')::int             AS replied_win_linkedin
+       FROM reply_events
+       WHERE sequence_id IS NOT NULL
+       GROUP BY sequence_id`,
+      replyParams
+    );
+    const repliesBySeq = new Map(replyRes.rows.map(r => [r.sequence_id, r]));
 
     // Top errors per sequence within this campaign.
     const errRes = await pool.query(
@@ -2570,7 +2684,7 @@ router.get('/:id/sequence-health', async (req, res) => {
           ${stateRepClause}
      GROUP BY se.sequence_id, ssl.error_message
      ORDER BY se.sequence_id, count DESC`,
-      aggParams
+      base
     );
     const errorsBySeq = {};
     for (const row of errRes.rows) {
@@ -2581,6 +2695,10 @@ router.get('/:id/sequence-health', async (req, res) => {
     }
 
     // Stalled enrollments per sequence within this campaign.
+    // Anchored on the window's END minus 7 days, matching reporting.routes.js
+    // team-overview. Was NOW() - 7 days, which drifted on Custom ranges.
+    const stalledParams = [...base, w.endISO];
+    const stalledEnd = `$${stalledParams.length}`;
     const stalledRes = await pool.query(
       `SELECT se.sequence_id,
               COUNT(*)::int AS stalled
@@ -2594,40 +2712,81 @@ router.get('/:id/sequence-health', async (req, res) => {
         WHERE se.org_id     = $1
           AND p.campaign_id = $2
           AND se.status     = 'active'
-          AND COALESCE(ssl.last_fired, se.enrolled_at) < NOW() - ${week}
+          AND COALESCE(ssl.last_fired, se.enrolled_at) < ${stalledEnd}::timestamptz - ${week}
           ${stateRepClause}
      GROUP BY se.sequence_id`,
-      aggParams
+      stalledParams
     );
     const stalledBySeq = {};
     for (const row of stalledRes.rows) stalledBySeq[row.sequence_id] = row.stalled;
 
-    const health = aggRes.rows.map(r => ({
-      sequenceId:   r.sequence_id,
-      sequenceName: r.sequence_name,
-      last24h: {
-        drafts:  r.drafts_24h,
-        sent:    r.sent_24h,
-        replied: r.replied_24h,
-        failed:  r.failed_24h,
-      },
-      last7d: {
-        drafts:  r.drafts_7d,
-        sent:    r.sent_7d,
-        replied: r.replied_7d,
-        failed:  r.failed_7d,
-      },
-      lastFiredAt:        r.last_fired_at,
-      topErrors:          errorsBySeq[r.sequence_id] || [],
-      stalledEnrollments: stalledBySeq[r.sequence_id] || 0,
-    }));
+    const health = aggRes.rows.map(r => {
+      const rep = repliesBySeq.get(r.sequence_id) || {};
+      const repliedWinEmail = rep.replied_win_email || 0;
+      const repliedWinLi    = rep.replied_win_linkedin || 0;
+      return {
+        sequenceId:   r.sequence_id,
+        sequenceName: r.sequence_name,
+        // Hardcoded trailing buckets. Shape frozen — CampaignsView.js reads
+        // these directly and calls this endpoint with no query params.
+        last24h: {
+          drafts:  r.drafts_24h,
+          sent:    r.sent_24h,
+          replied: rep.replied_24h || 0,
+          failed:  r.failed_24h,
+        },
+        last7d: {
+          drafts:  r.drafts_7d,
+          sent:    r.sent_7d,
+          replied: rep.replied_7d || 0,
+          failed:  r.failed_7d,
+        },
+        // The block the drill-down panel actually renders. Bounded by the
+        // caller's ?windowDays / ?startDate+?endDate.
+        window: {
+          drafts:              r.drafts_win,
+          sent:                r.sent_win,
+          sentEmail:           r.sent_win_email,
+          sentLinkedin:        r.sent_win_linkedin,
+          replied:             rep.replied_win || 0,
+          repliedEmail:        repliedWinEmail,
+          repliedLinkedin:     repliedWinLi,
+          failed:              r.failed_win,
+          repliedRate:         _healthRepliedRate(rep.replied_win || 0, r.sent_win),
+          emailRepliedRate:    _healthRepliedRate(repliedWinEmail, r.sent_win_email),
+          linkedinRepliedRate: _healthRepliedRate(repliedWinLi, r.sent_win_linkedin),
+        },
+        lastFiredAt:        r.last_fired_at,
+        topErrors:          errorsBySeq[r.sequence_id] || [],
+        stalledEnrollments: stalledBySeq[r.sequence_id] || 0,
+      };
+    });
 
-    const response = { campaignId: parseInt(req.params.id, 10), health };
+    const response = {
+      campaignId,
+      health,
+      // Echoed on every call now (not just groupBy=user|both) so the UI can
+      // label the `window` block without guessing.
+      period: {
+        startDate:   w.startISO,
+        endDate:     w.endISO,
+        description: w.isoIntervalDescription,
+      },
+    };
 
     // ── Phase 3: byUser block (window-bound) ─────────────────────────
     if (groupBy === 'user' || groupBy === 'both') {
-      const w = _parseCampaignHealthWindow(req.query);
-      const buParams = [req.orgId, req.params.id, scope.userIds, w.startISO, w.endISO];
+      // $1 orgId · $2 campaignId · $3 scope.userIds · $4 winStart · $5 winEnd
+      // $6 campaignId[] · $7 cteStart · $8 cteEnd   (last three: reply_events)
+      const buParams = [
+        req.orgId, req.params.id, scope.userIds, w.startISO, w.endISO,
+        [campaignId], cteStartISO, cteEndISO,
+      ];
+
+      const buIn24h = `(replied_at AT TIME ZONE 'UTC') >= NOW() - ${day}`;
+      const buIn7d  = `(replied_at AT TIME ZONE 'UTC') >= NOW() - ${week}`;
+      const buInWin = `replied_at >= ($4::timestamptz AT TIME ZONE 'UTC')
+                   AND replied_at <= ($5::timestamptz AT TIME ZONE 'UTC')`;
 
       const buRes = await pool.query(
         `WITH log_agg AS (
@@ -2635,15 +2794,16 @@ router.get('/:id/sequence-health', async (req, res) => {
              se.enrolled_by AS user_id,
              COUNT(*) FILTER (WHERE ssl.status = 'draft')::int                              AS drafts,
              COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed'))::int                AS sent,
-             COUNT(*) FILTER (WHERE ssl.status = 'replied')::int                            AS replied,
+             COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed')
+                                    AND ssl.channel = 'email')::int                         AS sent_email,
+             COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed')
+                                    AND ssl.channel = 'linkedin')::int                      AS sent_linkedin,
              COUNT(*) FILTER (WHERE ssl.status = 'failed')::int                             AS failed,
              COUNT(*) FILTER (WHERE ssl.status = 'draft'    AND ssl.fired_at >= NOW() - INTERVAL '24 hours')::int               AS drafts_24h,
              COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed') AND ssl.fired_at >= NOW() - INTERVAL '24 hours')::int    AS sent_24h,
-             COUNT(*) FILTER (WHERE ssl.status = 'replied'  AND ssl.fired_at >= NOW() - INTERVAL '24 hours')::int               AS replied_24h,
              COUNT(*) FILTER (WHERE ssl.status = 'failed'   AND ssl.fired_at >= NOW() - INTERVAL '24 hours')::int               AS failed_24h,
              COUNT(*) FILTER (WHERE ssl.status = 'draft'    AND ssl.fired_at >= NOW() - INTERVAL '7 days')::int                 AS drafts_7d,
              COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed') AND ssl.fired_at >= NOW() - INTERVAL '7 days')::int      AS sent_7d,
-             COUNT(*) FILTER (WHERE ssl.status = 'replied'  AND ssl.fired_at >= NOW() - INTERVAL '7 days')::int                 AS replied_7d,
              COUNT(*) FILTER (WHERE ssl.status = 'failed'   AND ssl.fired_at >= NOW() - INTERVAL '7 days')::int                 AS failed_7d,
              MAX(ssl.fired_at) AS last_fired_at
            FROM sequence_step_logs ssl
@@ -2655,6 +2815,26 @@ router.get('/:id/sequence-health', async (req, res) => {
              AND ssl.fired_at  >= $4::timestamptz
              AND ssl.fired_at  <= $5::timestamptz
            GROUP BY se.enrolled_by
+         ),
+         ${replyEventsCte({
+           orgParam:      '$1',
+           userParam:     '$3',
+           startParam:    '$7',
+           endParam:      '$8',
+           campaignParam: '$6',
+         })},
+         reply_agg AS (
+           -- Rep-grain replies. Exactly one row per inbound event (DISTINCT ON
+           -- upstream), so these are counts, not a cross-join.
+           SELECT
+             user_id,
+             COUNT(*) FILTER (WHERE ${buInWin})::int                             AS replied,
+             COUNT(*) FILTER (WHERE (${buInWin}) AND channel = 'email')::int     AS replied_email,
+             COUNT(*) FILTER (WHERE (${buInWin}) AND channel = 'linkedin')::int  AS replied_linkedin,
+             COUNT(*) FILTER (WHERE ${buIn24h})::int                             AS replied_24h,
+             COUNT(*) FILTER (WHERE ${buIn7d})::int                              AS replied_7d
+           FROM reply_events
+           GROUP BY user_id
          ),
          enroll_agg AS (
            SELECT
@@ -2691,15 +2871,19 @@ router.get('/:id/sequence-health', async (req, res) => {
            u.id AS user_id, u.first_name, u.last_name, u.email,
            COALESCE(l.drafts, 0)    AS drafts,
            COALESCE(l.sent, 0)      AS sent,
-           COALESCE(l.replied, 0)   AS replied,
+           COALESCE(l.sent_email, 0)        AS sent_email,
+           COALESCE(l.sent_linkedin, 0)     AS sent_linkedin,
+           COALESCE(rp.replied, 0)          AS replied,
+           COALESCE(rp.replied_email, 0)    AS replied_email,
+           COALESCE(rp.replied_linkedin, 0) AS replied_linkedin,
            COALESCE(l.failed, 0)    AS failed,
            COALESCE(l.drafts_24h,  0) AS drafts_24h,
            COALESCE(l.sent_24h,    0) AS sent_24h,
-           COALESCE(l.replied_24h, 0) AS replied_24h,
+           COALESCE(rp.replied_24h, 0) AS replied_24h,
            COALESCE(l.failed_24h,  0) AS failed_24h,
            COALESCE(l.drafts_7d,   0) AS drafts_7d,
            COALESCE(l.sent_7d,     0) AS sent_7d,
-           COALESCE(l.replied_7d,  0) AS replied_7d,
+           COALESCE(rp.replied_7d, 0) AS replied_7d,
            COALESCE(l.failed_7d,   0) AS failed_7d,
            l.last_fired_at,
            COALESCE(e.enrolled, 0)            AS enrolled,
@@ -2707,6 +2891,7 @@ router.get('/:id/sequence-health', async (req, res) => {
            COALESCE(st.stalled, 0)            AS stalled
          FROM users u
          LEFT JOIN log_agg     l  ON l.user_id  = u.id
+         LEFT JOIN reply_agg   rp ON rp.user_id = u.id
          LEFT JOIN enroll_agg  e  ON e.user_id  = u.id
          LEFT JOIN stalled_agg st ON st.user_id = u.id
          WHERE u.id = ANY($3::int[])
@@ -2731,6 +2916,13 @@ router.get('/:id/sequence-health', async (req, res) => {
           replied:          r.replied,
           failed:           r.failed,
           stalled:          r.stalled,
+          sentEmail:            r.sent_email,
+          sentLinkedin:         r.sent_linkedin,
+          repliedEmail:         r.replied_email,
+          repliedLinkedin:      r.replied_linkedin,
+          repliedRate:          _healthRepliedRate(r.replied, r.sent),
+          emailRepliedRate:     _healthRepliedRate(r.replied_email, r.sent_email),
+          linkedinRepliedRate:  _healthRepliedRate(r.replied_linkedin, r.sent_linkedin),
           drafts_24h:       r.drafts_24h,
           sent_24h:         r.sent_24h,
           replied_24h:      r.replied_24h,
@@ -2743,11 +2935,6 @@ router.get('/:id/sequence-health', async (req, res) => {
           activeEnrollments: r.active_enrollments,
         };
       });
-      response.period = {
-        startDate:   w.startISO,
-        endDate:     w.endISO,
-        description: w.isoIntervalDescription,
-      };
       response.scope = scope;
     }
 

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict EPEAiLhaspqCyXgQYO9k5FMUHyo8XZIaoamGFYMMDdWmiUkWbZYI7mlWPPOCfKi
+\restrict 3z0InsyMg6BYkaqIiezfiTMxXjIsDkVUIrSOU5KmQiYsqU6QHGJEg947t0Dsvbh
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -5058,7 +5058,8 @@ CREATE TABLE public.prospecting_metric_daily (
     bounces_soft integer DEFAULT 0 NOT NULL,
     blocks integer DEFAULT 0 NOT NULL,
     opens integer DEFAULT 0 NOT NULL,
-    clicks integer DEFAULT 0 NOT NULL
+    clicks integer DEFAULT 0 NOT NULL,
+    variant_key text DEFAULT '-'::text NOT NULL
 );
 
 
@@ -5116,6 +5117,13 @@ COMMENT ON COLUMN public.prospecting_metric_daily.bounces_hard IS 'email_deliver
 --
 
 COMMENT ON COLUMN public.prospecting_metric_daily.opens IS 'Human-classified (is_bot=false) opens by occurred date. UNIQUE per (step_log, day) ΓÇö repeat opens of the same send on the same day count once. Directional metric (Apple MPP inflation).';
+
+
+--
+-- Name: COLUMN prospecting_metric_daily.variant_key; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_metric_daily.variant_key IS '''-'' = unattributed (no enrollment join, or enrollment not in a test). Never NULL ΓÇö sentinel keeps the unique grain sound, matching campaign_id=0 / fit_band=''unknown''.';
 
 
 --
@@ -5548,8 +5556,26 @@ CREATE TABLE public.sequence_enrollments (
     personalised_steps jsonb DEFAULT '{}'::jsonb,
     current_step_id integer,
     current_step_channel character varying(50),
-    steps_snapshot jsonb
+    steps_snapshot jsonb,
+    variant_key text,
+    experiment_id integer,
+    CONSTRAINT chk_se_arm_has_experiment CHECK (((variant_key IS NULL) = (experiment_id IS NULL))),
+    CONSTRAINT chk_se_variant_key CHECK (((variant_key IS NULL) OR (variant_key ~ '^[A-Z]$'::text)))
 );
+
+
+--
+-- Name: COLUMN sequence_enrollments.variant_key; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequence_enrollments.variant_key IS 'A/B arm, sticky for the life of the enrollment. NULL = not in a test (or enrolled before the sequence had variants). Assigned by ExperimentAssigner as a pure hash of (sequence_id, prospect_id) ΓÇö never Math.random().';
+
+
+--
+-- Name: COLUMN sequence_enrollments.experiment_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequence_enrollments.experiment_id IS 'The experiment this enrollment was randomised into. Together with variant_key it resolves the arm copy for life. NULL iff variant_key is NULL (chk_se_arm_has_experiment).';
 
 
 --
@@ -5570,6 +5596,63 @@ CREATE SEQUENCE public.sequence_enrollments_id_seq
 --
 
 ALTER SEQUENCE public.sequence_enrollments_id_seq OWNED BY public.sequence_enrollments.id;
+
+
+--
+-- Name: sequence_experiments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sequence_experiments (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    sequence_id integer NOT NULL,
+    name text,
+    hypothesis text,
+    status text DEFAULT 'running'::text NOT NULL,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    concluded_at timestamp with time zone,
+    winning_variant_key text,
+    conclusion_note text,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_sexp_closed CHECK ((((status = 'running'::text) AND (concluded_at IS NULL)) OR ((status <> 'running'::text) AND (concluded_at IS NOT NULL)))),
+    CONSTRAINT chk_sexp_status CHECK ((status = ANY (ARRAY['running'::text, 'concluded'::text, 'abandoned'::text]))),
+    CONSTRAINT chk_sexp_winner CHECK (((winning_variant_key IS NULL) OR (winning_variant_key ~ '^[A-Z]$'::text)))
+);
+
+
+--
+-- Name: TABLE sequence_experiments; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.sequence_experiments IS 'One A/B experiment over one sequence. At most one running at a time (uq_sexp_one_running). Concluding does NOT delete arms: in-flight enrollments keep reading their experiment''s copy until they finish, because switching treatment mid-cadence would corrupt both the prospect experience and the result.';
+
+
+--
+-- Name: COLUMN sequence_experiments.winning_variant_key; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequence_experiments.winning_variant_key IS 'Set at conclude time. Purely a record ΓÇö promoting the winner into sequence_steps is a separate, explicit action (POST /:id/experiments/:expId/conclude with promoteWinner: true).';
+
+
+--
+-- Name: sequence_experiments_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sequence_experiments_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sequence_experiments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.sequence_experiments_id_seq OWNED BY public.sequence_experiments.id;
 
 
 --
@@ -5595,7 +5678,9 @@ CREATE TABLE public.sequence_step_logs (
     approved_by integer,
     claimed_by_seat text,
     lease_expires_at timestamp with time zone,
-    CONSTRAINT sequence_step_logs_status_check CHECK (((status)::text = ANY (ARRAY[('draft'::character varying)::text, ('sent'::character varying)::text, ('completed'::character varying)::text, ('replied'::character varying)::text, ('skipped'::character varying)::text, ('active'::character varying)::text, ('failed'::character varying)::text, ('scheduled'::character varying)::text, ('sending'::character varying)::text])))
+    sender_account_id integer,
+    step_intent text,
+    CONSTRAINT sequence_step_logs_status_check CHECK (((status)::text = ANY ((ARRAY['draft'::character varying, 'sent'::character varying, 'completed'::character varying, 'replied'::character varying, 'skipped'::character varying, 'active'::character varying, 'failed'::character varying, 'scheduled'::character varying, 'sending'::character varying, 'superseded_duplicate'::character varying])::text[])))
 );
 
 
@@ -5645,6 +5730,79 @@ CREATE SEQUENCE public.sequence_step_logs_id_seq
 --
 
 ALTER SEQUENCE public.sequence_step_logs_id_seq OWNED BY public.sequence_step_logs.id;
+
+
+--
+-- Name: sequence_step_variants; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sequence_step_variants (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    sequence_step_id integer NOT NULL,
+    variant_key text NOT NULL,
+    subject_template text,
+    body_template text,
+    task_note text,
+    personalize_config jsonb,
+    weight integer DEFAULT 50 NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    experiment_id integer NOT NULL,
+    CONSTRAINT chk_ssv_key CHECK ((variant_key ~ '^[A-Z]$'::text)),
+    CONSTRAINT chk_ssv_status CHECK ((status = ANY (ARRAY['active'::text, 'paused'::text, 'concluded'::text]))),
+    CONSTRAINT chk_ssv_weight CHECK (((weight >= 0) AND (weight <= 100)))
+);
+
+
+--
+-- Name: TABLE sequence_step_variants; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.sequence_step_variants IS 'Step-level A/B copy. A step is varied iff it has >=2 active rows here. Arm keys are sequence-wide: an enrollment assigned B gets B copy on every varied step. Precedence at send: personalised_steps -> steps_snapshot -> variant -> base sequence_steps.';
+
+
+--
+-- Name: COLUMN sequence_step_variants.task_note; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequence_step_variants.task_note IS 'Present for model uniformity. Never written in v1 ΓÇö call/task steps are not variable (task_note is an instruction to a rep, not content sent to a prospect).';
+
+
+--
+-- Name: COLUMN sequence_step_variants.weight; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequence_step_variants.weight IS 'Relative split weight, 0-100. Read from the LOWEST step_order varied step only ΓÇö all varied steps in a sequence must declare the same arm set (enforced in routes/sequence-variants.routes.js).';
+
+
+--
+-- Name: COLUMN sequence_step_variants.experiment_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequence_step_variants.experiment_id IS 'Scopes the arm. The send-time overlay matches (experiment_id, sequence_step_id, variant_key) ΓÇö never variant_key alone, or a second test would rewrite the copy of enrollments still in flight from the first.';
+
+
+--
+-- Name: sequence_step_variants_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sequence_step_variants_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sequence_step_variants_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.sequence_step_variants_id_seq OWNED BY public.sequence_step_variants.id;
 
 
 --
@@ -5725,6 +5883,8 @@ CREATE TABLE public.sequences (
     visibility text DEFAULT 'shared'::text NOT NULL,
     allow_manager_edit boolean DEFAULT false NOT NULL,
     stop_on_connection_accept boolean DEFAULT false NOT NULL,
+    ab_max_varied_steps integer,
+    CONSTRAINT chk_seq_ab_max_varied CHECK (((ab_max_varied_steps IS NULL) OR ((ab_max_varied_steps >= 1) AND (ab_max_varied_steps <= 10)))),
     CONSTRAINT sequences_visibility_chk CHECK ((visibility = ANY (ARRAY['shared'::text, 'private'::text])))
 );
 
@@ -5741,6 +5901,13 @@ COMMENT ON COLUMN public.sequences.ai_enabled IS 'Whether this sequence uses AI 
 --
 
 COMMENT ON COLUMN public.sequences.stop_on_connection_accept IS 'When true, the firer stops active enrollments (status=connected, stop_reason=connection_accepted) once the prospect''s LinkedIn connection is accepted after enrollment, and skips their pending step-log rows. Default false ΓÇö opt-in per sequence from the builder UI.';
+
+
+--
+-- Name: COLUMN sequences.ab_max_varied_steps; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequences.ab_max_varied_steps IS 'Per-sequence override for the max number of steps that may carry active variants. NULL = fall back to org settings->prospecting_config->>ab_max_varied_steps, which itself defaults to 1. Raising this above 1 means a reply is no longer attributable to a single step ΓÇö you are testing the whole arm.';
 
 
 --
@@ -7525,10 +7692,24 @@ ALTER TABLE ONLY public.sequence_enrollments ALTER COLUMN id SET DEFAULT nextval
 
 
 --
+-- Name: sequence_experiments id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_experiments ALTER COLUMN id SET DEFAULT nextval('public.sequence_experiments_id_seq'::regclass);
+
+
+--
 -- Name: sequence_step_logs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.sequence_step_logs ALTER COLUMN id SET DEFAULT nextval('public.sequence_step_logs_id_seq'::regclass);
+
+
+--
+-- Name: sequence_step_variants id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_step_variants ALTER COLUMN id SET DEFAULT nextval('public.sequence_step_variants_id_seq'::regclass);
 
 
 --
@@ -7873,6 +8054,14 @@ ALTER TABLE ONLY public.cases
 
 ALTER TABLE ONLY public.cases
     ADD CONSTRAINT cases_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sequence_enrollments chk_se_active_has_due; Type: CHECK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE public.sequence_enrollments
+    ADD CONSTRAINT chk_se_active_has_due CHECK ((((status)::text <> 'active'::text) OR (next_step_due IS NOT NULL))) NOT VALID;
 
 
 --
@@ -8900,11 +9089,27 @@ ALTER TABLE ONLY public.sequence_enrollments
 
 
 --
+-- Name: sequence_experiments sequence_experiments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_experiments
+    ADD CONSTRAINT sequence_experiments_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: sequence_step_logs sequence_step_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.sequence_step_logs
     ADD CONSTRAINT sequence_step_logs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sequence_step_variants sequence_step_variants_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_step_variants
+    ADD CONSTRAINT sequence_step_variants_pkey PRIMARY KEY (id);
 
 
 --
@@ -11850,6 +12055,13 @@ CREATE INDEX idx_sales_handovers_service_owner ON public.sales_handovers USING b
 
 
 --
+-- Name: idx_se_experiment; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_se_experiment ON public.sequence_enrollments USING btree (experiment_id) WHERE (experiment_id IS NOT NULL);
+
+
+--
 -- Name: idx_seq_enroll_current_step_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -11948,6 +12160,13 @@ CREATE INDEX idx_sequences_org_id ON public.sequences USING btree (org_id);
 
 
 --
+-- Name: idx_sexp_sequence; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sexp_sequence ON public.sequence_experiments USING btree (sequence_id, status);
+
+
+--
 -- Name: idx_sf_activity_log_dir; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -12001,6 +12220,34 @@ CREATE INDEX idx_skill_runs_org_skill_created ON public.skill_runs USING btree (
 --
 
 CREATE INDEX idx_sla_tiers_org ON public.sla_tiers USING btree (org_id) WHERE (is_active = true);
+
+
+--
+-- Name: idx_ssl_email_fired; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ssl_email_fired ON public.sequence_step_logs USING btree (prospect_id, fired_at) WHERE (((channel)::text = 'email'::text) AND ((status)::text = ANY ((ARRAY['sending'::character varying, 'sent'::character varying])::text[])));
+
+
+--
+-- Name: idx_ssl_li_connreq_released; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ssl_li_connreq_released ON public.sequence_step_logs USING btree (org_id, COALESCE(fired_at, scheduled_send_at)) WHERE (((channel)::text = 'linkedin'::text) AND (step_intent = 'connection_request'::text));
+
+
+--
+-- Name: idx_ssl_sender_fired; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ssl_sender_fired ON public.sequence_step_logs USING btree (sender_account_id, fired_at) WHERE (sender_account_id IS NOT NULL);
+
+
+--
+-- Name: idx_ssv_exp_step; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ssv_exp_step ON public.sequence_step_variants USING btree (experiment_id, sequence_step_id);
 
 
 --
@@ -12588,7 +12835,7 @@ CREATE UNIQUE INDEX uq_pi_finding ON public.prospecting_insights USING btree (or
 -- Name: uq_pmd_grain; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX uq_pmd_grain ON public.prospecting_metric_daily USING btree (org_id, metric_date, campaign_id, sequence_id, sequence_step_id, channel, sender_account_id, owner_id, fit_band);
+CREATE UNIQUE INDEX uq_pmd_grain ON public.prospecting_metric_daily USING btree (org_id, metric_date, campaign_id, sequence_id, sequence_step_id, channel, sender_account_id, owner_id, fit_band, variant_key);
 
 
 --
@@ -12613,6 +12860,13 @@ CREATE UNIQUE INDEX uq_prospect_phones_prospect_phone ON public.prospect_phones 
 
 
 --
+-- Name: uq_seq_step_logs_fired; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_seq_step_logs_fired ON public.sequence_step_logs USING btree (enrollment_id, sequence_step_id) WHERE ((status)::text = ANY ((ARRAY['scheduled'::character varying, 'sending'::character varying, 'sent'::character varying, 'completed'::character varying, 'replied'::character varying])::text[]));
+
+
+--
 -- Name: uq_seq_step_logs_pending; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -12620,10 +12874,24 @@ CREATE UNIQUE INDEX uq_seq_step_logs_pending ON public.sequence_step_logs USING 
 
 
 --
+-- Name: uq_sexp_one_running; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_sexp_one_running ON public.sequence_experiments USING btree (sequence_id) WHERE (status = 'running'::text);
+
+
+--
 -- Name: uq_signal_defs_org_key; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX uq_signal_defs_org_key ON public.signal_defs USING btree (org_id, key);
+
+
+--
+-- Name: uq_ssv_exp_step_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_ssv_exp_step_key ON public.sequence_step_variants USING btree (experiment_id, sequence_step_id, variant_key);
 
 
 --
@@ -14425,6 +14693,14 @@ ALTER TABLE ONLY public.proposals
 
 
 --
+-- Name: sequence_step_logs fk_ssl_sender_account; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_step_logs
+    ADD CONSTRAINT fk_ssl_sender_account FOREIGN KEY (sender_account_id) REFERENCES public.prospecting_sender_accounts(id) ON DELETE SET NULL;
+
+
+--
 -- Name: storage_files fk_storage_files_org; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -15425,11 +15701,35 @@ ALTER TABLE ONLY public.sequence_enrollments
 
 
 --
+-- Name: sequence_enrollments sequence_enrollments_experiment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_enrollments
+    ADD CONSTRAINT sequence_enrollments_experiment_id_fkey FOREIGN KEY (experiment_id) REFERENCES public.sequence_experiments(id) ON DELETE SET NULL;
+
+
+--
 -- Name: sequence_enrollments sequence_enrollments_sequence_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.sequence_enrollments
     ADD CONSTRAINT sequence_enrollments_sequence_id_fkey FOREIGN KEY (sequence_id) REFERENCES public.sequences(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: sequence_experiments sequence_experiments_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_experiments
+    ADD CONSTRAINT sequence_experiments_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sequence_experiments sequence_experiments_sequence_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_experiments
+    ADD CONSTRAINT sequence_experiments_sequence_id_fkey FOREIGN KEY (sequence_id) REFERENCES public.sequences(id) ON DELETE CASCADE;
 
 
 --
@@ -15446,6 +15746,30 @@ ALTER TABLE ONLY public.sequence_step_logs
 
 ALTER TABLE ONLY public.sequence_step_logs
     ADD CONSTRAINT sequence_step_logs_sequence_step_id_fkey FOREIGN KEY (sequence_step_id) REFERENCES public.sequence_steps(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: sequence_step_variants sequence_step_variants_experiment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_step_variants
+    ADD CONSTRAINT sequence_step_variants_experiment_id_fkey FOREIGN KEY (experiment_id) REFERENCES public.sequence_experiments(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sequence_step_variants sequence_step_variants_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_step_variants
+    ADD CONSTRAINT sequence_step_variants_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sequence_step_variants sequence_step_variants_sequence_step_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sequence_step_variants
+    ADD CONSTRAINT sequence_step_variants_sequence_step_id_fkey FOREIGN KEY (sequence_step_id) REFERENCES public.sequence_steps(id) ON DELETE CASCADE;
 
 
 --
@@ -16209,5 +16533,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict EPEAiLhaspqCyXgQYO9k5FMUHyo8XZIaoamGFYMMDdWmiUkWbZYI7mlWPPOCfKi
+\unrestrict 3z0InsyMg6BYkaqIiezfiTMxXjIsDkVUIrSOU5KmQiYsqU6QHGJEg947t0Dsvbh
 

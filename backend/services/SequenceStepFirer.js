@@ -286,7 +286,12 @@ async function emailLoadByCampaignSender(dbClient, orgIds) {
        JOIN prospects p ON p.id = l.prospect_id
       WHERE l.org_id = ANY($1::int[])
         AND l.channel = 'email'
-        AND l.status IN ('sending','sent')
+        -- The firer's own send path leaves email rows at 'sent' (it does not
+        -- call sequenceStepAdvance). 'completed' is included defensively for
+        -- approval-path sends that route through /complete. Dropping it makes
+        -- an approved send vanish from today's load the moment the rep clicks
+        -- through, and the mailbox cap releases another one in its place.
+        AND l.status IN ('sending','sent','completed')
         AND l.fired_at >= CURRENT_DATE
         AND l.sender_account_id IS NOT NULL
         AND p.campaign_id IS NOT NULL
@@ -309,7 +314,8 @@ async function linkedinLoadByCampaignRep(dbClient, orgIds) {
        JOIN prospects p ON p.id = l.prospect_id
       WHERE l.org_id = ANY($1::int[])
         AND l.channel = 'linkedin'
-        AND l.status IN ('draft','scheduled','sending','sent')
+        -- 'completed' included for the same reason as the cap counter above.
+        AND l.status IN ('draft','scheduled','sending','sent','completed')
         AND COALESCE(l.fired_at, l.scheduled_send_at) >= CURRENT_DATE
         AND p.campaign_id IS NOT NULL
       GROUP BY 1, 2`,
@@ -360,7 +366,13 @@ async function linkedinConnectionRequestsToday(dbClient, orgId, userId) {
         AND se.enrolled_by = $2
         AND l.channel     = 'linkedin'
         AND l.step_intent = 'connection_request'
-        AND l.status IN ('draft','scheduled','sending','sent')
+        -- 'completed' is REQUIRED. When a rep actions a LinkedIn task, the
+        -- /complete endpoint (sequenceStepAdvance.service.js:83) flips the row
+        -- draft → completed. Omitting it meant a request dropped out of the
+        -- counter the moment the rep sent it, so the cap released another one:
+        -- the ceiling leaked one-for-one with how fast the rep worked.
+        -- 'skipped' stays out — the rep declined, LinkedIn never saw it.
+        AND l.status IN ('draft','scheduled','sending','sent','completed')
         -- fired_at is NULL on 'draft' and 'scheduled' rows (set only on send /
         -- extension confirm), so anchor on when the row was RELEASED.
         AND COALESCE(l.fired_at, l.scheduled_send_at) >= CURRENT_DATE`,
@@ -893,7 +905,18 @@ const SequenceStepFirer = {
         // a reorder and can't see frozen (snapshot) enrollments at all. The exact
         // step (live or snapshot) is resolved per-enrollment in the loop body via
         // EnrollmentStepResolver.
-        `SELECT se.*, s.id AS seq_id, s.name AS seq_name,
+        //
+        // PER-CHANNEL LIMIT. A flat `LIMIT 100 ORDER BY next_step_due` couples
+        // the channels: LinkedIn rows deferred by the connection cap do NOT get
+        // a draft row, so the "parked" NOT EXISTS guard below never sees them —
+        // they stay due, stay oldest, and re-occupy the batch every single tick
+        // for the rest of the day. With a large enough LinkedIn backlog they
+        // crowd email out of the window entirely and the mailbox idles while
+        // work is waiting. Partitioning by channel decouples them: each channel
+        // gets its own 100 oldest rows, and a saturated channel cannot starve a
+        // channel with capacity to spare.
+        `WITH due AS (
+         SELECT se.*, s.id AS seq_id, s.name AS seq_name,
                 s.require_approval AS seq_require_approval,
                 s.ai_enabled AS seq_ai_enabled,
                 s.stop_on_connection_accept AS seq_stop_on_accept,
@@ -929,8 +952,17 @@ const SequenceStepFirer = {
                  AND ( l.status = 'draft'
                     OR (se.current_step_channel = 'linkedin' AND l.status IN ('scheduled','sending')) )
             )
-          ORDER BY se.next_step_due ASC, se.id ASC
-          LIMIT 100`
+        )
+        SELECT * FROM (
+          SELECT due.*,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY due.current_step_channel
+                   ORDER BY due.next_step_due ASC, due.id ASC
+                 ) AS _chan_rn
+            FROM due
+        ) ranked
+        WHERE ranked._chan_rn <= 100
+        ORDER BY next_step_due ASC, id ASC`
       );
 
       // Resolve send-window settings per (orgId, campaignId) once and cache —

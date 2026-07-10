@@ -1116,32 +1116,63 @@ function DrilldownView({
 // ──────────────────────────────────────────────────────────────────────────
 // DrilldownDetail — body of the right-side panel
 // Per-sequence table + per-rep table, both from the same response.
+//
+// 2026-07 FIX. This panel used to disagree with the campaign row that opened
+// it, in two ways:
+//
+//   1. It summed `h.last7d.*`, a bucket the backend hardcodes to NOW() - 7
+//      days. The toolbar's window picker (24h / 7d / 30d / Custom) never
+//      reached those numbers. With "30d" selected, the tiles showed 7d totals
+//      while the By-rep table underneath showed 30d totals — two windows on
+//      one screen. It now reads `h.window.*`, which the backend bounds by the
+//      requested window. Tiles are relabelled accordingly (the window is
+//      already displayed in the toolbar, so "7d sent" was doubly wrong).
+//
+//   2. `replied` came from sequence_step_logs.status = 'replied', which
+//      nothing writes, so every reply count and rate here was 0. The backend
+//      now sources replies from the shared reply_events CTE.
+//
+// Columns mirror CampaignTab / RepTab: sends and replies are split by channel,
+// because a blended rate divides EMAIL replies by EMAIL + LINKEDIN sends.
 // ──────────────────────────────────────────────────────────────────────────
 function DrilldownDetail({ data, scope, onOpenProspects }) {
   const health = data.health || [];
   const byUser = data.byUser || [];
 
-  // Build totals from the per-sequence health rows. These match what the
-  // top-level campaign row showed — just rolled up from a different angle.
+  // Roll the per-sequence window blocks up to campaign level. These now match
+  // what the top-level campaign row showed — same window, same reply source.
   const totals = health.reduce((acc, h) => {
-    acc.sent     += h.last7d?.sent     || 0;
-    acc.replied  += h.last7d?.replied  || 0;
-    acc.failed   += h.last7d?.failed   || 0;
-    acc.drafts   += h.last7d?.drafts   || 0;
-    acc.stalled  += h.stalledEnrollments || 0;
+    const w = h.window || {};
+    acc.sent            += w.sent            || 0;
+    acc.sentEmail       += w.sentEmail       || 0;
+    acc.sentLinkedin    += w.sentLinkedin    || 0;
+    acc.replied         += w.replied         || 0;
+    acc.repliedEmail    += w.repliedEmail    || 0;
+    acc.repliedLinkedin += w.repliedLinkedin || 0;
+    acc.failed          += w.failed          || 0;
+    acc.drafts          += w.drafts          || 0;
+    acc.stalled         += h.stalledEnrollments || 0;
     return acc;
-  }, { sent: 0, replied: 0, failed: 0, drafts: 0, stalled: 0 });
-  const replyRate = totals.sent > 0 ? (totals.replied / totals.sent) * 100 : 0;
+  }, {
+    sent: 0, sentEmail: 0, sentLinkedin: 0,
+    replied: 0, repliedEmail: 0, repliedLinkedin: 0,
+    failed: 0, drafts: 0, stalled: 0,
+  });
+
+  const pct = (replied, sent) => (sent > 0 ? (replied / sent) * 100 : 0);
 
   return (
     <div className="trv-drill-detail">
       <div className="trv-drill-detail-tiles">
         <MetricTiles
           tiles={[
-            { label: '7d sent',     value: fmtNum(totals.sent) },
-            { label: '7d replied',  value: fmtNum(totals.replied) },
-            { label: 'Reply rate',  value: fmtPct(replyRate) },
-            { label: 'Stalled',     value: fmtNum(totals.stalled) },
+            { label: 'Sent',    value: fmtNum(totals.sent),
+              sub: channelSub(totals.sentEmail, totals.sentLinkedin) },
+            { label: 'Replied', value: fmtNum(totals.replied),
+              sub: channelSub(totals.repliedEmail, totals.repliedLinkedin) },
+            { label: 'Email reply rate', value: fmtPct(pct(totals.repliedEmail, totals.sentEmail)),
+              sub: `LinkedIn ${fmtPct(pct(totals.repliedLinkedin, totals.sentLinkedin))}` },
+            { label: 'Stalled', value: fmtNum(totals.stalled) },
           ]}
         />
       </div>
@@ -1155,35 +1186,46 @@ function DrilldownDetail({ data, scope, onOpenProspects }) {
             <thead>
               <tr>
                 <th>Sequence</th>
-                <th className="num">24h sent</th>
-                <th className="num">7d sent</th>
-                <th className="num">7d replied</th>
-                <th className="num">Stalled</th>
+                <th className="num" style={GROUP_EDGE}>Email sent</th>
+                <th className="num">Email replied</th>
+                <th className="num">Email reply %</th>
+                <th className="num" style={GROUP_EDGE}>LI sent</th>
+                <th className="num">LI replied</th>
+                <th className="num">LI reply %</th>
+                <th className="num" style={GROUP_EDGE}>Stalled</th>
                 <th className="num">Last activity</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {health.map(h => (
-                <tr key={h.sequenceId}>
-                  <td>{h.sequenceName}</td>
-                  <td className="num">{fmtNum(h.last24h?.sent)}</td>
-                  <td className="num">{fmtNum(h.last7d?.sent)}</td>
-                  <td className="num">{fmtNum(h.last7d?.replied)}</td>
-                  <td className={`num ${h.stalledEnrollments > 0 ? 'trv-warning' : ''}`}>{fmtNum(h.stalledEnrollments)}</td>
-                  <td className="num">{fmtDate(h.lastFiredAt)}</td>
-                  <td>
-                    {onOpenProspects && (
-                      <button
-                        className="trv-link-btn"
-                        onClick={() => onOpenProspects(h.sequenceId, h.sequenceName)}
-                      >
-                        prospects →
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {health.map(h => {
+                const w = h.window || {};
+                return (
+                  <tr key={h.sequenceId}>
+                    <td>{h.sequenceName}</td>
+                    <td className="num" style={GROUP_EDGE}>{fmtNum(w.sentEmail)}</td>
+                    <td className="num">{fmtNum(w.repliedEmail)}</td>
+                    <td className="num">{fmtPct(w.emailRepliedRate)}</td>
+                    <td className="num" style={GROUP_EDGE}>{fmtNum(w.sentLinkedin)}</td>
+                    <td className="num">{fmtNum(w.repliedLinkedin)}</td>
+                    <td className="num">{fmtPct(w.linkedinRepliedRate)}</td>
+                    <td className={`num ${h.stalledEnrollments > 0 ? 'trv-warning' : ''}`} style={GROUP_EDGE}>
+                      {fmtNum(h.stalledEnrollments)}
+                    </td>
+                    <td className="num">{fmtDate(h.lastFiredAt)}</td>
+                    <td>
+                      {onOpenProspects && (
+                        <button
+                          className="trv-link-btn"
+                          onClick={() => onOpenProspects(h.sequenceId, h.sequenceName)}
+                        >
+                          prospects →
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -1199,9 +1241,13 @@ function DrilldownDetail({ data, scope, onOpenProspects }) {
               <tr>
                 <th>Rep</th>
                 <th className="num">Enrolled</th>
-                <th className="num">Sent</th>
-                <th className="num">Replied</th>
-                <th className="num">Stalled</th>
+                <th className="num" style={GROUP_EDGE}>Email sent</th>
+                <th className="num">Email replied</th>
+                <th className="num">Email reply %</th>
+                <th className="num" style={GROUP_EDGE}>LI sent</th>
+                <th className="num">LI replied</th>
+                <th className="num">LI reply %</th>
+                <th className="num" style={GROUP_EDGE}>Stalled</th>
                 <th className="num">Last fired</th>
               </tr>
             </thead>
@@ -1213,9 +1259,13 @@ function DrilldownDetail({ data, scope, onOpenProspects }) {
                     {depthBadge(u)}
                   </td>
                   <td className="num">{fmtNum(u.enrolled)}</td>
-                  <td className="num">{fmtNum(u.sent)}</td>
-                  <td className="num">{fmtNum(u.replied)}</td>
-                  <td className={`num ${u.stalled > 0 ? 'trv-warning' : ''}`}>{fmtNum(u.stalled)}</td>
+                  <td className="num" style={GROUP_EDGE}>{fmtNum(u.sentEmail)}</td>
+                  <td className="num">{fmtNum(u.repliedEmail)}</td>
+                  <td className="num">{fmtPct(u.emailRepliedRate)}</td>
+                  <td className="num" style={GROUP_EDGE}>{fmtNum(u.sentLinkedin)}</td>
+                  <td className="num">{fmtNum(u.repliedLinkedin)}</td>
+                  <td className="num">{fmtPct(u.linkedinRepliedRate)}</td>
+                  <td className={`num ${u.stalled > 0 ? 'trv-warning' : ''}`} style={GROUP_EDGE}>{fmtNum(u.stalled)}</td>
                   <td className="num">{fmtDate(u.lastFiredAt)}</td>
                 </tr>
               ))}

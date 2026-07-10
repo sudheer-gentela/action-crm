@@ -39,6 +39,10 @@ const { pool } = require('../config/database');
 const authenticateToken      = require('../middleware/auth.middleware');
 const { orgContext }         = require('../middleware/orgContext.middleware');
 const ReportingScopeService  = require('../services/ReportingScopeService');
+// Single definition of "a reply" (email + LinkedIn, channel-tagged). Shared
+// with prospecting-campaigns.routes.js /:id/sequence-health so the campaign
+// row and its drill-down panel reconcile by construction, not by luck.
+const { replyEventsCte } = require('../services/ReplyEventsQuery');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -214,113 +218,18 @@ async function resolveCampaignFilter(orgId, scopeUserIds, requestedCampaignIds) 
 //      A soft-deleted reply will make the two differ by one. The one-line fix
 //      belongs in prospecting-campaigns.routes.js — flagged, not smuggled in.
 
-/**
- * Build the `reply_events` CTE — one row per attributable inbound reply,
- * across BOTH channels, each tagged with the channel it arrived on.
- *
- * Assumes $1 = orgId and $2 = scopeUserIds::int[] in the caller's param list.
- * Window bounds and optional filters are passed by position because the three
- * endpoints build their param arrays in different orders.
- *
- * EMAIL branch    — inbound `emails` following a real outbound (see header).
- * LINKEDIN branch — `prospecting_activities`. LinkedIn replies are stored in a
- *   single bucket activity_type='linkedin_event' with the specific event in
- *   metadata->>'event' (LinkedInConnectionSyncService.js, prospects.routes.js).
- *   Manually-logged responses land as activity_type='response_received' with
- *   metadata->>'channel'='linkedin'. Both count.
- *
- * WHY THE CHANNEL COLUMN EXISTS
- *
- * `log_agg.sent` counts every step log regardless of channel. On a sequence
- * whose step 1 is a LinkedIn touch and steps 2-3 are email, that means a
- * blended repliedRate divides EMAIL replies by EMAIL + LINKEDIN sends. On a
- * real campaign (166 LinkedIn sends, 174 email sends) that understates the
- * email reply rate by roughly half. Splitting the numerator and denominator by
- * channel is the only way the number means anything.
- *
- * @param {object} o
- *   startParam     e.g. '$3' — window start, bound as timestamptz
- *   endParam       e.g. '$4' — window end, bound as timestamptz
- *   campaignParam  optional e.g. '$5' — int[] of campaign ids
- *   sequenceParam  optional e.g. '$6' — int[] of sequence ids
- * @returns {string} the CTE body, WITHOUT a trailing comma
- */
-function replyEventsCte({ startParam, endParam, campaignParam = null, sequenceParam = null }) {
-  const ccEmail = campaignParam ? `AND p_reply.campaign_id    = ANY(${campaignParam}::int[])` : '';
-  const ccLi    = campaignParam ? `AND p_reply_li.campaign_id = ANY(${campaignParam}::int[])` : '';
-  const sfEmail = sequenceParam ? `AND se.sequence_id    = ANY(${sequenceParam}::int[])` : '';
-  const sfLi    = sequenceParam ? `AND se_li.sequence_id = ANY(${sequenceParam}::int[])` : '';
-
-  return `
-     reply_events AS (
-       -- ── EMAIL ────────────────────────────────────────────────────────
-       SELECT * FROM (
-         SELECT DISTINCT ON (e.id)
-           'email'::text        AS channel,
-           se.enrolled_by       AS user_id,
-           se.sequence_id       AS sequence_id,
-           p_reply.campaign_id  AS campaign_id
-         FROM emails e
-         JOIN prospects p_reply
-           ON p_reply.id     = e.prospect_id
-          AND p_reply.org_id = e.org_id
-         JOIN sequence_enrollments se
-           ON se.prospect_id = p_reply.id
-          AND se.org_id      = e.org_id
-          AND se.enrolled_at < (e.sent_at AT TIME ZONE 'UTC')
-         WHERE e.org_id       = $1
-           AND se.enrolled_by = ANY($2::int[])
-           AND e.direction    IN ('received', 'inbound')
-           AND e.deleted_at   IS NULL
-           AND e.sent_at     >= (${startParam}::timestamptz AT TIME ZONE 'UTC')
-           AND e.sent_at     <= (${endParam}::timestamptz   AT TIME ZONE 'UTC')
-           -- Cold inbound (a prospect writing first) is not a reply.
-           AND EXISTS (
-             SELECT 1 FROM emails o
-              WHERE o.org_id      = e.org_id
-                AND o.prospect_id = e.prospect_id
-                AND o.direction   = 'sent'
-                AND o.deleted_at  IS NULL
-                AND o.sent_at     < e.sent_at
-           )
-           ${ccEmail}
-           ${sfEmail}
-         ORDER BY e.id, se.enrolled_at DESC, se.id DESC
-       ) q_email
-
-       UNION ALL
-
-       -- ── LINKEDIN ─────────────────────────────────────────────────────
-       SELECT * FROM (
-         SELECT DISTINCT ON (a.id)
-           'linkedin'::text        AS channel,
-           se_li.enrolled_by       AS user_id,
-           se_li.sequence_id       AS sequence_id,
-           p_reply_li.campaign_id  AS campaign_id
-         FROM prospecting_activities a
-         JOIN prospects p_reply_li
-           ON p_reply_li.id     = a.prospect_id
-          AND p_reply_li.org_id = a.org_id
-         JOIN sequence_enrollments se_li
-           ON se_li.prospect_id = p_reply_li.id
-          AND se_li.org_id      = a.org_id
-          AND se_li.enrolled_at < (a.created_at AT TIME ZONE 'UTC')
-         WHERE a.org_id          = $1
-           AND se_li.enrolled_by = ANY($2::int[])
-           AND (
-                (a.activity_type = 'linkedin_event'
-                 AND a.metadata ->> 'event' = 'reply_received')
-             OR (a.activity_type = 'response_received'
-                 AND a.metadata ->> 'channel' = 'linkedin')
-           )
-           AND a.created_at >= (${startParam}::timestamptz AT TIME ZONE 'UTC')
-           AND a.created_at <= (${endParam}::timestamptz   AT TIME ZONE 'UTC')
-           ${ccLi}
-           ${sfLi}
-         ORDER BY a.id, se_li.enrolled_at DESC, se_li.id DESC
-       ) q_linkedin
-     )`;
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// The `reply_events` CTE now lives in services/ReplyEventsQuery.js so that
+// /api/prospecting-campaigns/:id/sequence-health (the drill-down panel) can
+// build its reply counts from the SAME definition. Before the extraction, the
+// drill-down counted sequence_step_logs.status = 'replied' — a value nothing
+// writes — so its REPLIED column and reply-rate tile read 0 while the campaign
+// row one click away showed the real number. See that file's header.
+//
+// The builder defaults orgParam='$1' and userParam='$2', which is exactly the
+// contract the three endpoints below already satisfy: every one of them binds
+// orgId at $1 and scopeUserIds::int[] at $2.
+// ─────────────────────────────────────────────────────────────────────────────
 
 /** replied / sent as a 1-decimal percentage. 0 when there were no sends. */
 function _repliedRate(replied, sent) {
