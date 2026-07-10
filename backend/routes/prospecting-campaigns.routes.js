@@ -58,6 +58,7 @@ const { replyEventsCte, repliedRate: _healthRepliedRate } = require('../services
 const {
   bounceEventsCte, BOUNCE_COUNTERS,
   delivered: _healthDelivered, deliveredRate: _healthDeliveredRate,
+  deliveryTelemetry: _healthDeliveryTelemetry,
 } = require('../services/BounceEventsQuery');
 
 // Slice 1 of sending-schedule feature: resolves daily cap + send window
@@ -2811,6 +2812,9 @@ router.get('/:id/sequence-health', async (req, res) => {
     const response = {
       campaignId,
       health,
+      // Same guard the tabs use: with no delivery events, `bounced` is 0 and
+      // `deliveredRate` is a meaningless 100%. Let the UI say "—" instead.
+      deliveryTelemetry: await _healthDeliveryTelemetry(pool, req.orgId),
       // Echoed on every call now (not just groupBy=user|both) so the UI can
       // label the `window` block without guessing.
       period: {

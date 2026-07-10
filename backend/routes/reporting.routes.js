@@ -46,7 +46,9 @@ const { replyEventsCte } = require('../services/ReplyEventsQuery');
 // Single definition of "a bounce". Shared with prospecting-campaigns.routes.js
 // /:id/sequence-health so the campaign row and its drill-down cannot disagree.
 const {
-  bounceEventsCte, BOUNCE_COUNTERS, delivered: _delivered, deliveredRate: _deliveredRate,
+  bounceEventsCte, BOUNCE_COUNTERS, UNDELIVERABLE_EVENT_TYPES,
+  delivered: _delivered, deliveredRate: _deliveredRate,
+  deliveryTelemetry: _deliveryTelemetry,
 } = require('../services/BounceEventsQuery');
 
 router.use(authenticateToken);
@@ -396,6 +398,7 @@ router.get('/sequences/team-overview', async (req, res) => {
             description: window.isoIntervalDescription,
           },
           totals:    _emptyTotals(),
+          deliveryTelemetry: await _deliveryTelemetry(pool, req.orgId),
           campaigns: [],
         });
       }
@@ -597,6 +600,10 @@ router.get('/sequences/team-overview', async (req, res) => {
         description: window.isoIntervalDescription,
       },
       totals,
+      // Whether `bounced` / `deliveredEmail` / `deliveredRate` mean anything at
+      // all. With no delivery telemetry every campaign scores a perfect 100%,
+      // which is indistinguishable from a healthy list. The UI renders "—".
+      deliveryTelemetry: await _deliveryTelemetry(pool, req.orgId),
       campaigns,
     });
   } catch (err) {
@@ -958,6 +965,10 @@ router.get('/sequences/team-by-rep', async (req, res) => {
         description: window.isoIntervalDescription,
       },
       totals,
+      // Whether `bounced` / `deliveredEmail` / `deliveredRate` mean anything at
+      // all. With no delivery telemetry every campaign scores a perfect 100%,
+      // which is indistinguishable from a healthy list. The UI renders "—".
+      deliveryTelemetry: await _deliveryTelemetry(pool, req.orgId),
       reps,
     });
   } catch (err) {
@@ -1535,6 +1546,10 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
         description: window.isoIntervalDescription,
       },
       totals,
+      // Whether `bounced` / `deliveredEmail` / `deliveredRate` mean anything at
+      // all. With no delivery telemetry every campaign scores a perfect 100%,
+      // which is indistinguishable from a healthy list. The UI renders "—".
+      deliveryTelemetry: await _deliveryTelemetry(pool, req.orgId),
       sequences,
     });
   } catch (err) {
@@ -2104,13 +2119,18 @@ router.get('/metric-drill', async (req, res) => {
 
     } else if (metric === 'bounced') {
       // Same CTE the aggregates use, in detail mode. One row per bounced SEND,
-      // classified by its worst verdict. Soft bounces are included in the list
-      // (they are real delivery events worth seeing) but the cell that launched
-      // this drill counted only hard + block, so `total` filters to match.
+      // classified by its worst verdict.
+      //
+      // The list must contain exactly what the clicked cell counted, or the
+      // `expected` check in the panel fires and the two disagree — the whole
+      // failure this endpoint exists to prevent. The cell counts hard bounces,
+      // so the drill filters to UNDELIVERABLE_EVENT_TYPES, the single source of
+      // truth for which verdicts are subtracted from `delivered`.
       const startParam    = P(window.startISO);
       const endParam      = P(window.endISO);
       const campaignParam = campaignIds ? P(campaignIds) : null;
       const sequenceParam = sequenceIds ? P(sequenceIds) : null;
+      const eventTypeParam = P(UNDELIVERABLE_EVENT_TYPES);
 
       sql = `
         WITH ${bounceEventsCte({
@@ -2118,7 +2138,7 @@ router.get('/metric-drill', async (req, res) => {
         })},
         filtered AS (
           SELECT * FROM bounce_events be
-           WHERE be.event_type IN ('hard_bounce','block')
+           WHERE be.event_type = ANY(${eventTypeParam}::text[])
         )
         SELECT
           COUNT(*) OVER ()::int AS total_count,
@@ -2294,6 +2314,9 @@ router.get('/metric-drill', async (req, res) => {
         });
       }
       if (metric === 'bounced') {
+        // eventType is always a hard bounce here (the drill filters to the
+        // subtracted set); the field is returned so the row can label itself
+        // if UNDELIVERABLE_EVENT_TYPES ever widens.
         const rejected = (r.failed_recipient || '').toLowerCase();
         const onRecord = (r.prospect_email  || '').toLowerCase();
         return _drillRow(r, {

@@ -1102,3 +1102,28 @@
   border-bottom-color: #7f1d1d;
 }
 .trv-status-danger { background: #fee2e2; color: #991b1b; }
+
+/* ── Unmeasured cells + the telemetry note ───────────────────────────────
+   An em-dash is not a zero. Muted, never tinted, never clickable — the point
+   is that there is nothing behind it to look at. */
+.trv-muted-cell {
+  color: #9ca3af;
+}
+.trv-telemetry-note {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #6b7280;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-left: 3px solid #9ca3af;
+  border-radius: 4px;
+}
+.trv-telemetry-note code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  background: #f3f4f6;
+  padding: 1px 4px;
+  border-radius: 3px;
+}

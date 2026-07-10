@@ -180,6 +180,11 @@ async function execute({ orgId, reprocess = false, apply = false, onLog = () => 
             fromAddress: n.from_address,
             subject: n.subject,
             body: n.body,
+            // When this NDR actually arrived. Without it matchToStepLog anchors
+            // on now(), finds no send within 14 days for a weeks-old bounce, and
+            // writes step_log_id = NULL — which BounceEventsQuery then discards,
+            // leaving Bounced = 0 no matter how many NDRs we reprocess.
+            sentAt: n.sent_at,
           },
           provider: n.provider,
         });

@@ -56,15 +56,30 @@
 // never happens. Ties break on detected_at ASC — the first verdict wins.
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// SOFT BOUNCES ARE NOT UNDELIVERABLE
+// ONLY HARD BOUNCES ARE SUBTRACTED
 //
 // A soft bounce is a full mailbox or a greylist — a retry, not a dead address.
-// Rolling it into the headline `Bounced` overstates list rot, and subtracting it
-// from `Delivered` is a lie about mail that usually arrives on the retry.
+// Subtracting it from `Delivered` is a lie about mail that usually arrives on
+// the retry.
 //
-//   bounced       = hard_bounce + block      ← the headline, subtracted
-//   bounced_soft  = soft_bounce              ← shown, never subtracted
+//   bounced       = hard_bounce              ← the headline, subtracted
+//   bounced_block = block                    ← shown, NOT subtracted
+//   bounced_soft  = soft_bounce              ← shown, NOT subtracted
 //   delivered     = sent_email − bounced
+//
+// A NOTE ON `block`, BECAUSE IT IS THE DEBATABLE ONE
+//
+// classify() returns 'block' for 5.7.x — access denied, recipient rejected,
+// spam-blocked. That mail did NOT arrive. Counting it inside `delivered`
+// therefore overstates delivery, and it is the metric a reputation problem
+// would show up in first: a blocklisted sending domain produces blocks, not
+// hard bounces, and `Deliv %` would stay green while the mailbox burns.
+//
+// It is excluded from the subtraction on the product owner's explicit call,
+// because a block is a sender problem rather than a dead address, and the two
+// warrant different responses. `bounced_block` is surfaced beside the headline
+// so it is never invisible. Flipping the decision is a one-line change to the
+// FILTER below and to `delivered()`.
 //
 // KNOWN LIMIT (deliberate)
 //
@@ -169,9 +184,18 @@ const BOUNCE_COUNTERS = `
          COUNT(*) FILTER (WHERE event_type = 'hard_bounce')::int      AS bounced_hard,
          COUNT(*) FILTER (WHERE event_type = 'block')::int            AS bounced_block,
          COUNT(*) FILTER (WHERE event_type = 'soft_bounce')::int      AS bounced_soft,
-         COUNT(*) FILTER (WHERE event_type IN ('hard_bounce','block'))::int AS bounced`;
+         -- The subtracted quantity. Hard bounces only: a dead address had no
+         -- opportunity to receive. Blocks and soft bounces are reported beside
+         -- it but left inside delivered (see header).
+         COUNT(*) FILTER (WHERE event_type = 'hard_bounce')::int      AS bounced`;
 
-/** delivered = sent − undeliverable. Never negative: bounce_events ⊆ sent. */
+/** The one event type that removes a send from `delivered`. */
+const UNDELIVERABLE_EVENT_TYPES = ['hard_bounce'];
+
+/**
+ * delivered = sent − hard bounces. Never negative: every bounce_events row is a
+ * step log that log_agg already counted as sent, so the subtrahend is bounded.
+ */
 function delivered(sentEmail, bounced) {
   return Math.max(0, (sentEmail || 0) - (bounced || 0));
 }
@@ -183,4 +207,55 @@ function deliveredRate(sentEmail, bounced) {
   return +((delivered(s, bounced) / s) * 100).toFixed(1);
 }
 
-module.exports = { bounceEventsCte, BOUNCE_COUNTERS, delivered, deliveredRate };
+// ─────────────────────────────────────────────────────────────────────────────
+// ABSENCE OF EVIDENCE IS NOT EVIDENCE OF DELIVERY
+//
+// We never receive positive delivery confirmation. There is no SMTP DSN for
+// success and no ESP webhook. `delivered` is therefore not "the mail arrived" —
+// it is "we sent it and no bounce came back." Those are the same number only
+// when bounces are actually being captured.
+//
+// If `email_delivery_events` is empty, `bounced` is 0 for every row and
+// `deliveredRate` prints a confident 100.0% for every campaign in the org. That
+// reading is indistinguishable from a healthy list, and it is wrong: it means
+// the delivery pipeline has told us nothing at all. On a live org the first
+// symptom of a broken NDR ingest would be a page full of perfect scores.
+//
+// So the counters are only meaningful in the presence of telemetry, and the API
+// says so explicitly rather than letting a zero speak for itself.
+//
+// COVERAGE START. Bounce capture began when Gate 0 landed in
+// routes/prospecting-inbox.routes.js — before that, NDRs were stored as
+// replies and no delivery event was ever written. `since` is the first
+// detected_at on record. A reporting window that opens before `since` contains
+// sends for which no bounce could have been recorded, so its delivery rate is
+// optimistic by an unknown amount. The UI flags the window rather than
+// pretending the boundary does not exist.
+//
+// (Historic NDRs recovered by NdrCleanupService are reprocessed with
+// detected_at = now(), so `since` reflects when we started *looking*, not when
+// the bounces happened. That is the honest reading either way.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Does this org have any delivery telemetry, and from when?
+ *
+ * @returns {Promise<{hasEvents: boolean, since: string|null}>}
+ */
+async function deliveryTelemetry(pool, orgId) {
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS n, MIN(detected_at) AS since
+       FROM email_delivery_events
+      WHERE org_id = $1`,
+    [orgId]
+  );
+  return {
+    hasEvents: (rows[0]?.n || 0) > 0,
+    since:     rows[0]?.since || null,
+  };
+}
+
+module.exports = {
+  bounceEventsCte, BOUNCE_COUNTERS, UNDELIVERABLE_EVENT_TYPES,
+  delivered, deliveredRate, deliveryTelemetry,
+};

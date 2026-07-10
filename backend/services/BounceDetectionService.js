@@ -211,10 +211,34 @@ async function getBounceConfig(client, orgId) {
 
 /**
  * Match the failed recipient back to the originating send.
- * Most recent email-channel step log for a prospect with that email,
- * fired within MATCH_WINDOW_DAYS. Returns linkage or nulls.
+ * Most recent email-channel step log for a prospect with that email, fired in
+ * the MATCH_WINDOW_DAYS BEFORE the NDR arrived. Returns linkage or nulls.
+ *
+ * ── 2026-07 FIX: the window was anchored on now(), not on the NDR ──────────
+ *
+ * `ssl.fired_at >= now() - 14 days` is correct for a live NDR, which lands
+ * hours after the send. It is silently wrong for an NDR replayed by
+ * NdrCleanupService: the originating send happened weeks ago, nothing matched,
+ * and every reprocessed bounce was written with step_log_id = NULL.
+ *
+ * That is not a cosmetic loss. reporting.routes.js builds `Bounced` from
+ * services/BounceEventsQuery.js, which INNER JOINs sequence_step_logs on
+ * step_log_id to guarantee bounced ⊆ sent (so `delivered` can never go
+ * negative). Unlinked events are therefore discarded from every delivery
+ * metric. Run the cleanup, watch email_delivery_events fill up, and still see
+ * Bounced = 0 and Deliv % = 100% on every campaign.
+ *
+ * `ndrAt` fixes both halves:
+ *   lower bound — search the 14 days before the NDR, not before today
+ *   upper bound — a send that fired AFTER the bounce cannot have caused it,
+ *                 and `ORDER BY fired_at DESC LIMIT 1` would happily pick one
+ *
+ * Live callers pass nothing and get now(), i.e. exactly the old behaviour plus
+ * the (harmless, correct) upper bound.
+ *
+ * @param {Date|string|null} ndrAt  when the NDR arrived. Defaults to now().
  */
-async function matchToStepLog(client, orgId, failedRecipient) {
+async function matchToStepLog(client, orgId, failedRecipient, ndrAt = null) {
   const r = await client.query(
     `SELECT ssl.id AS step_log_id, ssl.prospect_id, p.campaign_id, p.owner_id,
             e.sender_account_id
@@ -225,10 +249,11 @@ async function matchToStepLog(client, orgId, failedRecipient) {
         AND ssl.channel = 'email'
         AND ssl.status IN ('sent','completed','replied')
         AND LOWER(p.email) = $2
-        AND ssl.fired_at >= now() - ($3 || ' days')::interval
+        AND ssl.fired_at >= COALESCE($4::timestamptz, now()) - ($3 || ' days')::interval
+        AND ssl.fired_at <= COALESCE($4::timestamptz, now())
       ORDER BY ssl.fired_at DESC
       LIMIT 1`,
-    [orgId, failedRecipient, MATCH_WINDOW_DAYS]
+    [orgId, failedRecipient, MATCH_WINDOW_DAYS, ndrAt]
   );
   if (r.rows.length > 0) return r.rows[0];
 
@@ -280,6 +305,11 @@ async function processPotentialNdr(client, { orgId, userId, email, provider, sen
     const externalId  = email?.id ?? email?.externalId ?? null;
     const fromAddress = email?.from?.address || email?.fromAddress || '';
     const subject     = email?.subject || '';
+    // When the NDR arrived. Live callers don't set it (the message is minutes
+    // old); NdrCleanupService replays historic NDRs and must pass the original
+    // sent_at, or matchToStepLog searches the wrong fortnight. Shape-tolerant,
+    // like everything else read off `email` here.
+    const ndrAt       = email?.sentAt ?? email?.receivedAt ?? email?.receivedDateTime ?? null;
     const body        = email?.body?.content || email?.bodyPreview ||
                         (typeof email?.body === 'string' ? email.body : '') || '';
 
@@ -303,7 +333,7 @@ async function processPotentialNdr(client, { orgId, userId, email, provider, sen
     const text = `${subject}\n${body}`;
     const smtpCode = extractSmtpCode(text);
     const eventType = classify(smtpCode, text);
-    const link = await matchToStepLog(client, orgId, failedRecipient);
+    const link = await matchToStepLog(client, orgId, failedRecipient, ndrAt);
 
     const ins = await client.query(
       `INSERT INTO email_delivery_events
