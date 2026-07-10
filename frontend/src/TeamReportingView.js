@@ -1856,6 +1856,89 @@ function TimelineStep({ step }) {
           </button>
         )}
       </div>
+
+      {(step.inbound || []).length > 0 && (
+        <div className="trv-tl-inbound-group">
+          {step.inbound.map(ev => (
+            <TimelineInboundEvent key={`${ev.kind}-${ev.id}`} event={ev} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// TimelineInboundEvent — what came back, nested under the step it answers
+//
+// Three kinds, one card. A reply reads as a message; a bounce reads as a
+// delivery failure. Both hang off the step that caused them, so the panel
+// finally tells the whole story: we sent this, and this is what happened.
+//
+// `address_mismatch` on a bounce means the address the mail server actually
+// rejected is not the address on the prospect record. That is a stale contact
+// or a misattributed bounce, and it is the single most actionable thing on
+// this screen — so it gets called out rather than buried in the diagnostic.
+// ──────────────────────────────────────────────────────────────────────────
+function TimelineInboundEvent({ event: ev }) {
+  const [expanded, setExpanded] = useState(false);
+  const isBounce = ev.kind === 'bounce';
+
+  const label =
+    ev.kind === 'email_reply'    ? 'Reply' :
+    ev.kind === 'linkedin_reply' ? 'LinkedIn reply' :
+    ev.event_type === 'hard_bounce' ? 'Hard bounce' :
+    ev.event_type === 'soft_bounce' ? 'Soft bounce' :
+    ev.event_type === 'block'        ? 'Blocked' : 'Bounce';
+
+  const badgeClass = isBounce
+    ? (ev.event_type === 'soft_bounce' ? 'trv-tl-badge-warning' : 'trv-tl-badge-danger')
+    : 'trv-tl-badge-success';
+
+  const hasBody = !!ev.body;
+
+  return (
+    <div className={`trv-tl-inbound ${isBounce ? 'trv-tl-inbound-bounce' : ''}`}>
+      <div className="trv-tl-inbound-arrow" aria-hidden="true">↩</div>
+      <div className="trv-tl-inbound-card">
+        <div className="trv-tl-inbound-header">
+          <div className="trv-tl-step-meta">
+            <span className={`trv-tl-badge ${badgeClass}`}>{label}</span>
+            {ev.sentiment && <span className="trv-tl-channel">{ev.sentiment}</span>}
+            {isBounce && ev.enrollment_stopped && (
+              <span className="trv-tl-badge trv-tl-badge-warning">enrollment stopped</span>
+            )}
+          </div>
+          <div className="trv-tl-step-time">{fmtDate(ev.occurred_at)}</div>
+        </div>
+
+        {ev.from && <div className="trv-tl-inbound-from">{ev.from}</div>}
+        {ev.subject && <div className="trv-tl-step-subject">{ev.subject}</div>}
+
+        {isBounce && (
+          <div className="trv-tl-inbound-diag">
+            {ev.smtp_code && <span className="trv-tl-smtp">{ev.smtp_code}</span>}
+            {ev.failed_recipient && <span className="trv-tl-failed">{ev.failed_recipient}</span>}
+          </div>
+        )}
+        {isBounce && ev.address_mismatch && (
+          <div className="trv-tl-inbound-mismatch">
+            The rejected address differs from the address on this prospect.
+          </div>
+        )}
+        {isBounce && ev.diagnostic && (
+          <div className="trv-tl-inbound-body">{ev.diagnostic}</div>
+        )}
+
+        {!isBounce && hasBody && expanded && (
+          <div className="trv-tl-inbound-body" style={{ whiteSpace: 'pre-wrap' }}>{ev.body}</div>
+        )}
+        {!isBounce && hasBody && (
+          <button className="trv-tl-step-toggle" onClick={() => setExpanded(!expanded)}>
+            {expanded ? 'hide message' : 'show message'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

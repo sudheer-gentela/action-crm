@@ -619,6 +619,55 @@ router.get('/enrollments', async (req, res) => {
 // Returns enrollment + full step timeline:
 //   - Executed steps (from sequence_step_logs) with fired_at, subject, body, status
 //   - Future planned steps (from sequence_steps) with calculated due dates
+//   - `inbound[]` on each executed step: what came BACK after we sent it
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// INBOUND THREADING (2026-07)
+//
+// The timeline used to render only what we sent and what we plan to send. A
+// prospect could reply, or hard-bounce, and the panel whose whole job is to
+// explain the enrollment would say nothing about it. Three inbound sources now
+// nest under the step they answer:
+//
+//   email_reply     `emails`, direction received/inbound, deleted_at IS NULL
+//   linkedin_reply  `prospecting_activities`, linkedin_event/reply_received or
+//                   response_received with metadata->>'channel'='linkedin'
+//   bounce          `email_delivery_events`
+//
+// These are the SAME predicates services/ReplyEventsQuery.js uses to count
+// replies. A reply visible here is a reply counted there. `deleted_at IS NULL`
+// means an NDR quarantined by NdrCleanupService vanishes from the reply slot
+// and reappears on the same step as a bounce — which is the correct story.
+//
+// HOW AN INBOUND EVENT FINDS ITS STEP
+//
+//   * bounce  → `email_delivery_events.step_log_id` is a direct FK. Exact.
+//   * replies → the most recent executed log whose fired_at precedes the reply,
+//               preferring a log on the same channel.
+//
+// There is no message-threading key to use, and this is worth stating plainly
+// rather than discovering later: `emails.conversation_id` is written ONLY by
+// jobs/syncScheduler.js (the deals/contacts mailbox sync). Neither
+// SequenceStepFirer's outbound INSERT (services/SequenceStepFirer.js:1714) nor
+// the prospecting inbox's inbound INSERT (routes/prospecting-inbox.routes.js:923)
+// populates it, and no In-Reply-To / References header is stored anywhere. So
+// for sequence mail every conversation_id is NULL and provider-level threading
+// is unavailable. Timestamp anchoring is not a shortcut here — it is the only
+// signal that exists. When conversation_id IS present (a prospect whose mail
+// also flows through the deals sync) we use it, because it is strictly better.
+//
+// Populating conversation_id + external_id on both prospecting paths would let
+// this become exact. That is a separate change, flagged not smuggled.
+//
+// GRAIN
+//
+// Replies are scoped to `prospect_id` and `enrolled_at`, not to enrollment_id —
+// an inbound email carries no enrollment reference. A prospect enrolled twice
+// will therefore show the same reply on both enrollments. That mirrors what the
+// reply COUNT does (reply_events attributes to the most recent preceding
+// enrollment), so a manager reading one enrollment sees a true statement; it is
+// only across two open panels that the same reply appears twice.
+// ─────────────────────────────────────────────────────────────────────────────
 router.get('/enrollments/:enrollId', async (req, res) => {
   try {
     const er = await pool.query(
@@ -637,14 +686,183 @@ router.get('/enrollments/:enrollId', async (req, res) => {
     const logsRes = await pool.query(
       `SELECT ssl.id, ssl.status, ssl.fired_at, ssl.scheduled_send_at,
               ssl.subject, ssl.body, ssl.channel, ssl.error_message,
+              ssl.email_id,
+              oe.conversation_id AS out_conversation_id,
               ss.step_order, ss.channel AS step_channel, ss.task_note,
               ss.delay_days, ss.delay_hours, ss.id AS step_id
          FROM sequence_step_logs ssl
          JOIN sequence_steps ss ON ss.id = ssl.sequence_step_id
+         LEFT JOIN emails oe ON oe.id = ssl.email_id AND oe.org_id = $2
         WHERE ssl.enrollment_id = $1
         ORDER BY ss.step_order ASC, ssl.fired_at ASC NULLS LAST`,
-      [req.params.enrollId]
+      [req.params.enrollId, req.orgId]
     );
+
+    // ── Inbound: replies and bounces, anchored to the step they answer ──
+    //
+    // Keyed by STEP_ORDER, not by log id. Migration 2026_48 can leave a second
+    // 'superseded_duplicate' row on a (enrollment, step) pair, and the timeline
+    // renders exactly one log per step_order. Keying by log id would silently
+    // drop a reply anchored to the row that lost. Those rows are also excluded
+    // from the anchor set — a duplicate send is not a thing a prospect answered.
+    const inboundByStep = {};
+    const inboundUnanchored = [];
+    const stepOrderByLogId = new Map(logsRes.rows.map(l => [l.id, l.step_order]));
+    const DEAD_LOG_STATUS = new Set(['superseded_duplicate', 'skipped']);
+    const anchors = logsRes.rows
+      .filter(l => l.fired_at && !DEAD_LOG_STATUS.has(l.status))
+      .map(l => ({
+        stepOrder: l.step_order,
+        firedAt:   new Date(l.fired_at).getTime(),
+        channel:   l.channel,
+        convId:    l.out_conversation_id || null,
+      }))
+      .sort((a, b) => a.firedAt - b.firedAt);
+
+    /**
+     * Which step does this inbound event answer?
+     * conversation_id when the provider gave us one (never, for sequence mail
+     * — see header); otherwise the latest preceding log, same channel first.
+     */
+    function anchorFor(occurredAtIso, preferChannel, convId) {
+      if (convId) {
+        const byConv = anchors.find(a => a.convId && a.convId === convId);
+        if (byConv) return byConv.stepOrder;
+      }
+      const t = new Date(occurredAtIso).getTime();
+      if (Number.isNaN(t)) return null;
+      const preceding = anchors.filter(a => a.firedAt <= t);
+      if (!preceding.length) return null;
+      const sameChannel = preceding.filter(a => a.channel === preferChannel);
+      const candidates = sameChannel.length ? sameChannel : preceding;
+      return candidates[candidates.length - 1].stepOrder;
+    }
+
+    function push(stepOrder, item) {
+      if (stepOrder === null || stepOrder === undefined) { inboundUnanchored.push(item); return; }
+      (inboundByStep[stepOrder] = inboundByStep[stepOrder] || []).push(item);
+    }
+
+    // enrolled_at is timestamptz; emails.sent_at and prospecting_activities
+    // .created_at are `timestamp without time zone` holding UTC wall time. Every
+    // comparison is made explicit, and every value is returned AT TIME ZONE 'UTC'
+    // so node-postgres hands JS a real instant instead of re-reading the naive
+    // value in the server's local zone.
+    const [replyRes, liRes, bounceRes] = await Promise.all([
+      pool.query(
+        `SELECT e.id,
+                (e.sent_at AT TIME ZONE 'UTC') AS occurred_at,
+                e.subject, LEFT(e.body, 4000) AS body,
+                e.from_address, e.conversation_id
+           FROM emails e
+          WHERE e.org_id      = $1
+            AND e.prospect_id = $2
+            AND e.direction   IN ('received', 'inbound')
+            AND e.deleted_at  IS NULL
+            AND e.sent_at    >= ($3::timestamptz AT TIME ZONE 'UTC')
+          ORDER BY e.sent_at ASC`,
+        [req.orgId, enrollment.prospect_id, enrollment.enrolled_at]
+      ),
+      pool.query(
+        `SELECT a.id,
+                (a.created_at AT TIME ZONE 'UTC') AS occurred_at,
+                a.description,
+                a.metadata ->> 'note'      AS note,
+                a.metadata ->> 'sentiment' AS sentiment
+           FROM prospecting_activities a
+          WHERE a.org_id      = $1
+            AND a.prospect_id = $2
+            AND (
+                 (a.activity_type = 'linkedin_event'
+                  AND a.metadata ->> 'event' = 'reply_received')
+              OR (a.activity_type = 'response_received'
+                  AND a.metadata ->> 'channel' = 'linkedin')
+            )
+            AND a.created_at >= ($3::timestamptz AT TIME ZONE 'UTC')
+          ORDER BY a.created_at ASC`,
+        [req.orgId, enrollment.prospect_id, enrollment.enrolled_at]
+      ),
+      // step_log_id is the exact anchor. Rows where the NDR could not be linked
+      // to a send (step_log_id IS NULL) are still this prospect's bounces — we
+      // take them and anchor by time, rather than dropping the one event that
+      // explains why a sequence stopped.
+      pool.query(
+        `SELECT ede.id, ede.step_log_id, ede.event_type, ede.failed_recipient,
+                ede.smtp_code, ede.diagnostic_excerpt, ede.enrollment_stopped,
+                ede.detected_at AS occurred_at
+           FROM email_delivery_events ede
+          WHERE ede.org_id = $1
+            AND (
+                 ede.step_log_id IN (
+                   SELECT id FROM sequence_step_logs WHERE enrollment_id = $2
+                 )
+              OR (ede.step_log_id IS NULL
+                  AND ede.prospect_id = $3
+                  AND ede.detected_at >= $4::timestamptz)
+            )
+          ORDER BY ede.detected_at ASC`,
+        [req.orgId, req.params.enrollId, enrollment.prospect_id, enrollment.enrolled_at]
+      ),
+    ]);
+
+    for (const r of replyRes.rows) {
+      push(anchorFor(r.occurred_at, 'email', r.conversation_id), {
+        kind:        'email_reply',
+        id:          r.id,
+        occurred_at: r.occurred_at,
+        from:        r.from_address || null,
+        subject:     r.subject || null,
+        body:        r.body || null,
+      });
+    }
+
+    for (const r of liRes.rows) {
+      push(anchorFor(r.occurred_at, 'linkedin', null), {
+        kind:        'linkedin_reply',
+        id:          r.id,
+        occurred_at: r.occurred_at,
+        from:        null,
+        subject:     null,
+        body:        r.note || r.description || null,
+        sentiment:   r.sentiment || null,
+      });
+    }
+
+    for (const r of bounceRes.rows) {
+      // step_log_id is a direct FK — resolve it to the step it belongs to.
+      // Only when the NDR was never linked to a send do we fall back to time.
+      //
+      // email_delivery_events.step_log_id is bigint, and node-postgres returns
+      // int8 as a STRING (JS numbers can't hold the full range). sequence_step_logs.id
+      // is int4 and comes back as a number. Comparing them raw always misses, and
+      // every bounce would silently fall through to timestamp anchoring.
+      const stepLogId = r.step_log_id === null || r.step_log_id === undefined
+        ? null
+        : Number(r.step_log_id);
+      const exact = (stepLogId !== null && stepOrderByLogId.has(stepLogId))
+        ? stepOrderByLogId.get(stepLogId)
+        : anchorFor(r.occurred_at, 'email', null);
+      push(exact, {
+        kind:              'bounce',
+        id:                r.id,
+        occurred_at:       r.occurred_at,
+        event_type:        r.event_type,
+        failed_recipient:  r.failed_recipient || null,
+        smtp_code:         r.smtp_code || null,
+        diagnostic:        r.diagnostic_excerpt || null,
+        enrollment_stopped: r.enrollment_stopped === true,
+        // The NDR body names the address that actually failed. The old
+        // domain-match ingest attached bounces to an arbitrary colleague, so a
+        // mismatch here means either a stale prospect address or a
+        // misattributed bounce. Worth showing, not worth guessing about.
+        address_mismatch: !!(r.failed_recipient && enrollment.email
+          && r.failed_recipient.toLowerCase() !== String(enrollment.email).toLowerCase()),
+      });
+    }
+
+    for (const list of Object.values(inboundByStep)) {
+      list.sort((a, b) => new Date(a.occurred_at) - new Date(b.occurred_at));
+    }
 
     // All steps in the sequence (to build future planned steps)
     const stepsRes = await pool.query(
@@ -705,6 +923,7 @@ router.get('/enrollments/:enrollId', async (req, res) => {
           body:             log.body    || null,
           error_message:    log.error_message || null,
           is_future:        false,
+          inbound:          inboundByStep[step.step_order] || [],
         };
       }
 
@@ -743,10 +962,13 @@ router.get('/enrollments/:enrollId', async (req, res) => {
         error_message:     null,
         is_future:         true,
         is_personalised:   !!personalised,
+        inbound:           [],
       };
     });
 
-    res.json({ enrollment, logs: timeline });
+    // `logs` keeps its existing shape; `inbound` on each entry and
+    // `inbound_unanchored` are additive. Nothing that reads this today breaks.
+    res.json({ enrollment, logs: timeline, inbound_unanchored: inboundUnanchored });
   } catch (err) {
     console.error('enrollment GET /:id', err);
     res.status(500).json({ error: { message: 'Failed to load enrollment' } });

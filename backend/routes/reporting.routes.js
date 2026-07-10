@@ -1984,7 +1984,13 @@ router.get('/metric-drill', async (req, res) => {
         SELECT
           COUNT(*) OVER ()::int AS total_count,
           f.prospect_id, f.enrollment_id, f.channel, f.subject, f.body_raw,
-          f.replied_at AS occurred_at,
+          -- replied_at is timestamp WITHOUT time zone, holding UTC wall time
+          -- (both branches of reply_events emit it naive). node-postgres reads
+          -- a naive timestamp in the SERVER's local zone, so returning it raw
+          -- shifts every drill row's timestamp by the container's UTC offset.
+          -- Every other metric here sources fired_at / enrolled_at, which are
+          -- already timestamptz. Lift this one explicitly.
+          (f.replied_at AT TIME ZONE 'UTC') AS occurred_at,
           f.sequence_id, f.campaign_id,
           f.user_id AS rep_id,
           p.first_name, p.last_name, p.email AS prospect_email,

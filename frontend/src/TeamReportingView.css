@@ -1004,3 +1004,86 @@
   background: #f9fafb;
   border-top: 1px solid #f3f4f6;
 }
+
+/* ── Inbound events nested under the step they answer ────────────────────
+   Indented and rail-connected to the step above, so the eye reads
+   "we sent this → this came back" without a legend. A bounce is tinted red
+   because it is a failure of the send, not a response to it. */
+.trv-tl-inbound-group {
+  margin: 6px 0 0 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.trv-tl-inbound {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.trv-tl-inbound-arrow {
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.6;
+  flex-shrink: 0;
+}
+.trv-tl-inbound-card {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #d1fae5;
+  border-left: 3px solid #10b981;
+  border-radius: 0;
+  background: #f6fffb;
+  padding: 8px 10px;
+}
+.trv-tl-inbound-bounce .trv-tl-inbound-card {
+  border-color: #fecaca;
+  border-left-color: #dc2626;
+  background: #fffafa;
+}
+.trv-tl-inbound-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.trv-tl-inbound-from {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 4px;
+}
+.trv-tl-inbound-diag {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 5px;
+  font-size: 11px;
+}
+.trv-tl-smtp {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #991b1b;
+  background: #fee2e2;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.trv-tl-failed {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #991b1b;
+  word-break: break-all;
+}
+.trv-tl-inbound-mismatch {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #92400e;
+  background: #fef3c7;
+  padding: 4px 6px;
+  border-radius: 3px;
+}
+.trv-tl-inbound-body {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #4b5563;
+  max-height: 220px;
+  overflow-y: auto;
+}
