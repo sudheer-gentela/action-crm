@@ -691,6 +691,38 @@ function channelSub(email, linkedin) {
   return `${fmtNum(email)} email · ${fmtNum(linkedin)} LinkedIn`;
 }
 
+// ── Delivery ──────────────────────────────────────────────────────────────
+// `Sent` is attempted, not delivered. A hard-bounced address never had the
+// chance to reply, so it is subtracted out of the reply-rate denominator
+// server-side and shown here as its own column. Soft bounces are a retry, not
+// a dead address — they appear in the sub-line and the drill list, and are
+// never subtracted.
+//
+//   Delivered   = Email sent − (hard_bounce + block)
+//   Delivered % = Delivered / Email sent
+//
+// A delivery rate below ~95% is worth a look; below 90% the list is the
+// problem, not the copy. Tint at those thresholds rather than making the rep
+// do the arithmetic.
+const DELIVERY_WARN = 95;
+const DELIVERY_BAD  = 90;
+
+function deliveryClass(rate, sentEmail) {
+  if (!sentEmail) return '';
+  if (rate < DELIVERY_BAD)  return 'trv-danger';
+  if (rate < DELIVERY_WARN) return 'trv-warning';
+  return '';
+}
+
+/** "51 hard · 12 soft" — the sub-line under the Bounced tile. */
+function bounceSub(hard, block, soft) {
+  const parts = [];
+  if (hard)  parts.push(`${fmtNum(hard)} hard`);
+  if (block) parts.push(`${fmtNum(block)} blocked`);
+  if (soft)  parts.push(`${fmtNum(soft)} soft`);
+  return parts.length ? parts.join(' · ') : 'none';
+}
+
 // ── Metric drill-through ──────────────────────────────────────────────────
 // Every numeric cell below is evidence for a claim. Clicking one asks
 // GET /reporting/metric-drill for the rows that produced it, and the answer
@@ -707,7 +739,7 @@ function channelSub(email, linkedin) {
 //
 // Zero renders as inert text — there is nothing to look at, and a clickable 0
 // invites a click that opens an empty panel.
-const DRILLABLE = ['replied', 'sent', 'drafts', 'failed', 'enrolled', 'stalled'];
+const DRILLABLE = ['replied', 'sent', 'bounced', 'drafts', 'failed', 'enrolled', 'stalled'];
 
 /** Human label for a panel opened on a given metric/channel. */
 function drillTitle(metric, channel) {
@@ -715,6 +747,7 @@ function drillTitle(metric, channel) {
   const noun = {
     replied:  'replies',
     sent:     'sends',
+    bounced:  'bounces',
     drafts:   'drafts',
     failed:   'failures',
     enrolled: 'enrollments',
@@ -786,8 +819,10 @@ function RepTab({ data, loading, scope, windowState, onSetWindow, onDrill }) {
           { label: 'Enrolled',    value: fmtNum(totals.enrolled) },
           { label: 'Sent',        value: fmtNum(totals.sent),
             sub: channelSub(totals.sentEmail, totals.sentLinkedin) },
+          { label: 'Bounced',     value: fmtNum(totals.bounced),
+            sub: `${fmtPct(totals.deliveredRate)} delivered` },
           { label: 'Email reply rate', value: fmtPct(totals.emailRepliedRate),
-            sub: `LinkedIn ${fmtPct(totals.linkedinRepliedRate)}` },
+            sub: `of delivered · LinkedIn ${fmtPct(totals.linkedinRepliedRate)}` },
         ]}
       />
       <SmartEmpty rowsExist={reps.length > 0} allZero={allZero} windowState={windowState}
@@ -802,6 +837,8 @@ function RepTab({ data, loading, scope, windowState, onSetWindow, onDrill }) {
                 <th className="num">Enrolled</th>
                 <th className="num">Drafts</th>
                 <th className="num" style={GROUP_EDGE}>Email sent</th>
+                <th className="num">Bounced</th>
+                <th className="num">Deliv %</th>
                 <th className="num">Email replied</th>
                 <th className="num">Email reply %</th>
                 <th className="num" style={GROUP_EDGE}>LI sent</th>
@@ -832,6 +869,13 @@ function RepTab({ data, loading, scope, windowState, onSetWindow, onDrill }) {
                         drill={{ metric: 'drafts', userId: r.userId, subject: r.name }} />
                       <MetricCell value={r.sentEmail} onDrill={onDrill} style={GROUP_EDGE}
                         drill={{ metric: 'sent', channel: 'email', userId: r.userId, subject: r.name }} />
+                      <MetricCell value={r.bounced} onDrill={onDrill}
+                        className={r.bounced > 0 ? 'trv-danger' : ''}
+                        title={bounceSub(r.bouncedHard, r.bouncedBlock, r.bouncedSoft)}
+                        drill={{ metric: 'bounced', channel: 'email', userId: r.userId, subject: r.name }} />
+                      <td className={`num ${deliveryClass(r.deliveredRate, r.sentEmail)}`}>
+                        {r.sentEmail > 0 ? fmtPct(r.deliveredRate) : '—'}
+                      </td>
                       <MetricCell value={r.repliedEmail} onDrill={onDrill}
                         drill={{ metric: 'replied', channel: 'email', userId: r.userId, subject: r.name }} />
                       <td className="num">{fmtPct(r.emailRepliedRate)}</td>
@@ -848,7 +892,7 @@ function RepTab({ data, loading, scope, windowState, onSetWindow, onDrill }) {
                     </tr>
                     {expanded && (
                       <tr className="trv-expand-row">
-                        <td colSpan={12}>
+                        <td colSpan={14}>
                           <div className="trv-expand-grid">
                             <div className="trv-expand-block">
                               <div className="trv-expand-label">Last activity</div>
@@ -914,8 +958,12 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
           { label: 'Enrolled',         value: fmtNum(totals.enrolled) },
           { label: 'Sent',             value: fmtNum(totals.sent),
             sub: channelSub(totals.sentEmail, totals.sentLinkedin) },
+          { label: 'Delivered',        value: fmtNum(totals.deliveredEmail),
+            sub: `${fmtPct(totals.deliveredRate)} of email sent` },
+          { label: 'Bounced',          value: fmtNum(totals.bounced),
+            sub: bounceSub(totals.bouncedHard, totals.bouncedBlock, totals.bouncedSoft) },
           { label: 'Email reply rate', value: fmtPct(totals.emailRepliedRate),
-            sub: `LinkedIn ${fmtPct(totals.linkedinRepliedRate)}` },
+            sub: `of delivered · LinkedIn ${fmtPct(totals.linkedinRepliedRate)}` },
         ]}
       />
       <SmartEmpty rowsExist={campaigns.length > 0} allZero={allZero} windowState={windowState}
@@ -930,6 +978,9 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
                 <th>Owner</th>
                 <th className="num">Enrolled</th>
                 <th className="num" style={GROUP_EDGE}>Email sent</th>
+                <th className="num">Delivered</th>
+                <th className="num">Bounced</th>
+                <th className="num">Deliv %</th>
                 <th className="num">Email replied</th>
                 <th className="num">Email reply %</th>
                 <th className="num" style={GROUP_EDGE}>LI sent</th>
@@ -958,6 +1009,16 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
                         drill={{ metric: 'enrolled', campaignId: c.campaignId, subject: c.name }} />
                       <MetricCell value={c.sentEmail} onDrill={onDrill} style={GROUP_EDGE}
                         drill={{ metric: 'sent', channel: 'email', campaignId: c.campaignId, subject: c.name }} />
+                      {/* Delivered has no row source of its own — it is a
+                          subtraction. Sends and bounces are each drillable. */}
+                      <td className="num">{fmtNum(c.deliveredEmail)}</td>
+                      <MetricCell value={c.bounced} onDrill={onDrill}
+                        className={c.bounced > 0 ? 'trv-danger' : ''}
+                        title={bounceSub(c.bouncedHard, c.bouncedBlock, c.bouncedSoft)}
+                        drill={{ metric: 'bounced', channel: 'email', campaignId: c.campaignId, subject: c.name }} />
+                      <td className={`num ${deliveryClass(c.deliveredRate, c.sentEmail)}`}>
+                        {c.sentEmail > 0 ? fmtPct(c.deliveredRate) : '—'}
+                      </td>
                       <MetricCell value={c.repliedEmail} onDrill={onDrill}
                         drill={{ metric: 'replied', channel: 'email', campaignId: c.campaignId, subject: c.name }} />
                       <td className="num">{fmtPct(c.emailRepliedRate)}</td>
@@ -972,7 +1033,7 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
                     </tr>
                     {expanded && (
                       <tr className="trv-expand-row">
-                        <td colSpan={11}>
+                        <td colSpan={14}>
                           <div className="trv-expand-grid">
                             <div className="trv-expand-block">
                               <div className="trv-expand-label">Last activity</div>
@@ -1039,9 +1100,10 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenPro
           { label: 'Active sequences', value: fmtNum(totals.activeSequences) },
           { label: 'Enrolled',         value: fmtNum(totals.enrolled) },
           { label: 'Sent',             value: fmtNum(totals.sent) },
-          { label: 'Connected',        value: fmtNum(totals.connected) },
+          { label: 'Bounced',          value: fmtNum(totals.bounced),
+            sub: `${fmtPct(totals.deliveredRate)} delivered` },
           { label: 'Email reply rate', value: fmtPct(totals.emailRepliedRate),
-            sub: `LinkedIn ${fmtPct(totals.linkedinRepliedRate)}` },
+            sub: `of delivered · LinkedIn ${fmtPct(totals.linkedinRepliedRate)}` },
         ]}
       />
       <SmartEmpty rowsExist={sequences.length > 0} allZero={allZero} windowState={windowState}
@@ -1056,6 +1118,8 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenPro
                 <th>Owner</th>
                 <th className="num">Enrolled</th>
                 <th className="num">Sent</th>
+                <th className="num">Bounced</th>
+                <th className="num">Deliv %</th>
                 <th className="num">Connected</th>
                 <th className="num">Replied</th>
                 <th className="num">Stalled</th>
@@ -1082,8 +1146,15 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenPro
                         drill={{ metric: 'enrolled', sequenceId: s.sequenceId, subject: s.name }} />
                       <MetricCell value={s.sent} onDrill={onDrill}
                         drill={{ metric: 'sent', sequenceId: s.sequenceId, subject: s.name }} />
-                      {/* `connected` is a LinkedIn acceptance state, not one of the six
-                          drillable metrics — no row source to list. Left inert. */}
+                      <MetricCell value={s.bounced} onDrill={onDrill}
+                        className={s.bounced > 0 ? 'trv-danger' : ''}
+                        title={bounceSub(s.bouncedHard, s.bouncedBlock, s.bouncedSoft)}
+                        drill={{ metric: 'bounced', channel: 'email', sequenceId: s.sequenceId, subject: s.name }} />
+                      <td className={`num ${deliveryClass(s.deliveredRate, s.sentEmail)}`}>
+                        {s.sentEmail > 0 ? fmtPct(s.deliveredRate) : '—'}
+                      </td>
+                      {/* `connected` is a LinkedIn acceptance state, not a drillable
+                          metric — no row source to list. Left inert. */}
                       <td className="num" title={s.enrolled > 0 ? `${Math.round((s.connected / s.enrolled) * 100)}% of enrolled accepted` : undefined}>
                         {s.connected > 0
                           ? <span style={{ color: '#059669', fontWeight: 600 }}>{fmtNum(s.connected)}</span>
@@ -1104,7 +1175,7 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenPro
                     </tr>
                     {expanded && (
                       <tr className="trv-expand-row">
-                        <td colSpan={9}>
+                        <td colSpan={11}>
                           <div className="trv-expand-grid">
                             <div className="trv-expand-block">
                               <div className="trv-expand-label">Last activity</div>
@@ -1255,6 +1326,10 @@ function DrilldownDetail({ data, scope, onOpenProspects, onDrill, campaignId }) 
     acc.replied         += w.replied         || 0;
     acc.repliedEmail    += w.repliedEmail    || 0;
     acc.repliedLinkedin += w.repliedLinkedin || 0;
+    acc.bouncedHard     += w.bouncedHard     || 0;
+    acc.bouncedBlock    += w.bouncedBlock    || 0;
+    acc.bouncedSoft     += w.bouncedSoft     || 0;
+    acc.bounced         += w.bounced         || 0;
     acc.failed          += w.failed          || 0;
     acc.drafts          += w.drafts          || 0;
     acc.stalled         += h.stalledEnrollments || 0;
@@ -1262,10 +1337,15 @@ function DrilldownDetail({ data, scope, onOpenProspects, onDrill, campaignId }) 
   }, {
     sent: 0, sentEmail: 0, sentLinkedin: 0,
     replied: 0, repliedEmail: 0, repliedLinkedin: 0,
+    bouncedHard: 0, bouncedBlock: 0, bouncedSoft: 0, bounced: 0,
     failed: 0, drafts: 0, stalled: 0,
   });
 
-  const pct = (replied, sent) => (sent > 0 ? (replied / sent) * 100 : 0);
+  // Rates are recomputed from the summed numerator and denominator, never
+  // averaged across sequences. Same discipline the backend applies.
+  const pct = (num, den) => (den > 0 ? (num / den) * 100 : 0);
+  const deliveredEmail = Math.max(0, totals.sentEmail - totals.bounced);
+  const deliveredRate  = pct(deliveredEmail, totals.sentEmail);
 
   return (
     <div className="trv-drill-detail">
@@ -1274,11 +1354,12 @@ function DrilldownDetail({ data, scope, onOpenProspects, onDrill, campaignId }) 
           tiles={[
             { label: 'Sent',    value: fmtNum(totals.sent),
               sub: channelSub(totals.sentEmail, totals.sentLinkedin) },
-            { label: 'Replied', value: fmtNum(totals.replied),
-              sub: channelSub(totals.repliedEmail, totals.repliedLinkedin) },
-            { label: 'Email reply rate', value: fmtPct(pct(totals.repliedEmail, totals.sentEmail)),
-              sub: `LinkedIn ${fmtPct(pct(totals.repliedLinkedin, totals.sentLinkedin))}` },
-            { label: 'Stalled', value: fmtNum(totals.stalled) },
+            { label: 'Delivered', value: fmtNum(deliveredEmail),
+              sub: `${fmtPct(deliveredRate)} of email sent` },
+            { label: 'Bounced', value: fmtNum(totals.bounced),
+              sub: bounceSub(totals.bouncedHard, totals.bouncedBlock, totals.bouncedSoft) },
+            { label: 'Email reply rate', value: fmtPct(pct(totals.repliedEmail, deliveredEmail)),
+              sub: `of delivered · LinkedIn ${fmtPct(pct(totals.repliedLinkedin, totals.sentLinkedin))}` },
           ]}
         />
       </div>
@@ -1293,6 +1374,8 @@ function DrilldownDetail({ data, scope, onOpenProspects, onDrill, campaignId }) 
               <tr>
                 <th>Sequence</th>
                 <th className="num" style={GROUP_EDGE}>Email sent</th>
+                <th className="num">Bounced</th>
+                <th className="num">Deliv %</th>
                 <th className="num">Email replied</th>
                 <th className="num">Email reply %</th>
                 <th className="num" style={GROUP_EDGE}>LI sent</th>
@@ -1311,6 +1394,13 @@ function DrilldownDetail({ data, scope, onOpenProspects, onDrill, campaignId }) 
                     <td>{h.sequenceName}</td>
                     <MetricCell value={w.sentEmail} onDrill={onDrill} style={GROUP_EDGE}
                       drill={{ metric: 'sent', channel: 'email', campaignId, sequenceId: h.sequenceId, subject: h.sequenceName }} />
+                    <MetricCell value={w.bounced} onDrill={onDrill}
+                      className={w.bounced > 0 ? 'trv-danger' : ''}
+                      title={bounceSub(w.bouncedHard, w.bouncedBlock, w.bouncedSoft)}
+                      drill={{ metric: 'bounced', channel: 'email', campaignId, sequenceId: h.sequenceId, subject: h.sequenceName }} />
+                    <td className={`num ${deliveryClass(w.deliveredRate, w.sentEmail)}`}>
+                      {w.sentEmail > 0 ? fmtPct(w.deliveredRate) : '—'}
+                    </td>
                     <MetricCell value={w.repliedEmail} onDrill={onDrill}
                       drill={{ metric: 'replied', channel: 'email', campaignId, sequenceId: h.sequenceId, subject: h.sequenceName }} />
                     <td className="num">{fmtPct(w.emailRepliedRate)}</td>
@@ -1352,6 +1442,8 @@ function DrilldownDetail({ data, scope, onOpenProspects, onDrill, campaignId }) 
                 <th>Rep</th>
                 <th className="num">Enrolled</th>
                 <th className="num" style={GROUP_EDGE}>Email sent</th>
+                <th className="num">Bounced</th>
+                <th className="num">Deliv %</th>
                 <th className="num">Email replied</th>
                 <th className="num">Email reply %</th>
                 <th className="num" style={GROUP_EDGE}>LI sent</th>
@@ -1372,6 +1464,13 @@ function DrilldownDetail({ data, scope, onOpenProspects, onDrill, campaignId }) 
                     drill={{ metric: 'enrolled', campaignId, userId: u.userId, subject: u.name }} />
                   <MetricCell value={u.sentEmail} onDrill={onDrill} style={GROUP_EDGE}
                     drill={{ metric: 'sent', channel: 'email', campaignId, userId: u.userId, subject: u.name }} />
+                  <MetricCell value={u.bounced} onDrill={onDrill}
+                    className={u.bounced > 0 ? 'trv-danger' : ''}
+                    title={bounceSub(u.bouncedHard, u.bouncedBlock, u.bouncedSoft)}
+                    drill={{ metric: 'bounced', channel: 'email', campaignId, userId: u.userId, subject: u.name }} />
+                  <td className={`num ${deliveryClass(u.deliveredRate, u.sentEmail)}`}>
+                    {u.sentEmail > 0 ? fmtPct(u.deliveredRate) : '—'}
+                  </td>
                   <MetricCell value={u.repliedEmail} onDrill={onDrill}
                     drill={{ metric: 'replied', channel: 'email', campaignId, userId: u.userId, subject: u.name }} />
                   <td className="num">{fmtPct(u.emailRepliedRate)}</td>
@@ -1653,6 +1752,8 @@ function MetricDrillBody({ loading, error, result, metric, onPick }) {
 
   const { rows, total, unattributedReplies } = result;
   const showChannel = ['replied', 'sent', 'drafts', 'failed'].includes(metric);
+  const isBounce = metric === 'bounced';
+  const mismatches = isBounce ? rows.filter(r => r.addressMismatch).length : 0;
 
   return (
     <div className="trv-pp-list">
@@ -1679,6 +1780,18 @@ function MetricDrillBody({ loading, error, result, metric, onPick }) {
             {r.subject && <div className="trv-pp-subject">{r.subject}</div>}
             {r.snippet && <div className="trv-pp-snippet">{r.snippet}</div>}
             {r.errorMessage && <div className="trv-pp-snippet trv-warning">{r.errorMessage}</div>}
+            {isBounce && (
+              <div className="trv-tl-inbound-diag">
+                {r.smtpCode && <span className="trv-tl-smtp">{r.smtpCode}</span>}
+                {r.failedRecipient && <span className="trv-tl-failed">{r.failedRecipient}</span>}
+              </div>
+            )}
+            {isBounce && r.addressMismatch && (
+              <div className="trv-pp-snippet trv-warning">
+                Rejected address differs from the address on this prospect.
+              </div>
+            )}
+            {isBounce && r.diagnostic && <div className="trv-pp-snippet">{r.diagnostic}</div>}
             <div className="trv-pp-row-meta">
               {r.repName && <span>{r.repName}</span>}
               {r.repName && r.sequenceName && <span className="trv-pp-row-dot">·</span>}
@@ -1686,12 +1799,19 @@ function MetricDrillBody({ loading, error, result, metric, onPick }) {
             </div>
           </div>
           <div className="trv-pp-row-right">
-            {showChannel && r.channel && (
+            {isBounce ? (
+              <span className={`trv-pp-status ${r.eventType === 'block' ? 'trv-status-warning' : 'trv-status-danger'}`}>
+                {r.eventType === 'block' ? 'blocked' : 'hard'}
+              </span>
+            ) : showChannel && r.channel && (
               <span className={`trv-pp-status ${r.channel === 'email' ? 'trv-status-neutral' : 'trv-status-success'}`}>
                 {r.channel === 'linkedin' ? 'LinkedIn' : 'email'}
               </span>
             )}
             <div className="trv-pp-row-time">{fmtDate(r.occurredAt)}</div>
+            {isBounce && r.enrollmentStopped && (
+              <div className="trv-pp-row-time trv-warning">stopped</div>
+            )}
           </div>
         </button>
       ))}
@@ -1700,6 +1820,25 @@ function MetricDrillBody({ loading, error, result, metric, onPick }) {
           were never enrolled have no rep or sequence to attribute to, so no
           count on this page includes them. The campaign detail panel's funnel
           keys off campaign_id alone and does. Saying so beats being asked. */}
+      {/* The rejected address is parsed from the NDR body and is authoritative.
+          The pre-Gate-0 ingest attached bounces to whichever prospect shared the
+          sending domain, so a mismatch is a stale record or a misattribution —
+          the most actionable line here, and worth counting up front. */}
+      {isBounce && mismatches > 0 && (
+        <div className="trv-pp-footnote">
+          {mismatches} of these bounced from an address that isn't on the prospect record.
+          Either the record is stale or the bounce was misattributed by the old ingest path.
+        </div>
+      )}
+
+      {/* Soft bounces are a retry, not a dead address. They are excluded from
+          this list and from Delivered, and shown in the column tooltip. */}
+      {isBounce && (
+        <div className="trv-pp-footnote">
+          Hard bounces and blocks only. Soft bounces are retries and aren't subtracted from Delivered.
+        </div>
+      )}
+
       {metric === 'replied' && unattributedReplies > 0 && (
         <div className="trv-pp-footnote">
           {unattributedReplies} further {unattributedReplies === 1 ? 'reply' : 'replies'} in this

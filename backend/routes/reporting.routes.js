@@ -43,6 +43,11 @@ const ReportingScopeService  = require('../services/ReportingScopeService');
 // with prospecting-campaigns.routes.js /:id/sequence-health so the campaign
 // row and its drill-down panel reconcile by construction, not by luck.
 const { replyEventsCte } = require('../services/ReplyEventsQuery');
+// Single definition of "a bounce". Shared with prospecting-campaigns.routes.js
+// /:id/sequence-health so the campaign row and its drill-down cannot disagree.
+const {
+  bounceEventsCte, BOUNCE_COUNTERS, delivered: _delivered, deliveredRate: _deliveredRate,
+} = require('../services/BounceEventsQuery');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -237,45 +242,73 @@ function _repliedRate(replied, sent) {
 }
 
 /**
- * Attach the channel-split counters + per-channel rates to a row.
+ * Attach the channel-split + delivery counters and their rates to a row.
  * Kept in one place so by-rep / by-campaign / by-sequence can never drift.
  *
  * `repliedRate` stays the blended figure for backward compatibility, but it is
  * a lie on any mixed-channel sequence (email replies over email+LinkedIn
  * sends). Read emailRepliedRate / linkedinRepliedRate instead.
+ *
+ * DELIVERY
+ *
+ *   sent       — attempted. A step log at 'sent'/'completed'. Unchanged.
+ *   bounced    — hard_bounce + block. Undeliverable. A subset of sentEmail.
+ *   bouncedSoft— soft_bounce. A retry, not a dead address. Never subtracted.
+ *   delivered  — sentEmail − bounced. Cannot go negative (see BounceEventsQuery).
+ *
+ * `emailRepliedRate` now divides by DELIVERED, not by sent. A hard-bounced
+ * address had no opportunity to reply; leaving it in the denominator quietly
+ * punishes a campaign for a dead list rather than reporting one. The LinkedIn
+ * rate still divides by sends — LinkedIn has no bounce concept.
  */
 function _withChannelSplit(r) {
   const sentEmail        = r.sent_email        || 0;
   const sentLinkedin     = r.sent_linkedin     || 0;
   const repliedEmail     = r.replied_email     || 0;
   const repliedLinkedin  = r.replied_linkedin  || 0;
+  const bouncedHard      = r.bounced_hard      || 0;
+  const bouncedBlock     = r.bounced_block     || 0;
+  const bouncedSoft      = r.bounced_soft      || 0;
+  const bounced          = r.bounced           || 0;
+  const deliveredEmail   = _delivered(sentEmail, bounced);
   return {
     sentEmail,
     sentLinkedin,
     repliedEmail,
     repliedLinkedin,
-    emailRepliedRate:    _repliedRate(repliedEmail, sentEmail),
+    bouncedHard,
+    bouncedBlock,
+    bouncedSoft,
+    bounced,
+    deliveredEmail,
+    deliveredRate:       _deliveredRate(sentEmail, bounced),
+    emailRepliedRate:    _repliedRate(repliedEmail, deliveredEmail),
     linkedinRepliedRate: _repliedRate(repliedLinkedin, sentLinkedin),
   };
 }
 
-/** Zeroed channel-split block for totals reducers. */
-function _emptyChannelSplit() {
-  return { sentEmail: 0, sentLinkedin: 0, repliedEmail: 0, repliedLinkedin: 0 };
-}
-
-/** Sum channel counters from `row` into `acc` (a totals object). */
+/** Sum channel + delivery counters from `row` into `acc` (a totals object). */
 function _accChannelSplit(acc, row) {
   acc.sentEmail       += row.sentEmail       || 0;
   acc.sentLinkedin    += row.sentLinkedin    || 0;
   acc.repliedEmail    += row.repliedEmail    || 0;
   acc.repliedLinkedin += row.repliedLinkedin || 0;
+  acc.bouncedHard     += row.bouncedHard     || 0;
+  acc.bouncedBlock    += row.bouncedBlock    || 0;
+  acc.bouncedSoft     += row.bouncedSoft     || 0;
+  acc.bounced         += row.bounced         || 0;
   return acc;
 }
 
-/** Finalise per-channel rates on a totals object after reduction. */
+/**
+ * Finalise delivery + per-channel rates on a totals object after reduction.
+ * Rates are recomputed from the summed numerator and denominator — never
+ * averaged across rows. Same discipline MetricFrameService applies (D1).
+ */
 function _finaliseChannelRates(t) {
-  t.emailRepliedRate    = _repliedRate(t.repliedEmail, t.sentEmail);
+  t.deliveredEmail      = _delivered(t.sentEmail, t.bounced);
+  t.deliveredRate       = _deliveredRate(t.sentEmail, t.bounced);
+  t.emailRepliedRate    = _repliedRate(t.repliedEmail, t.deliveredEmail);
   t.linkedinRepliedRate = _repliedRate(t.repliedLinkedin, t.sentLinkedin);
   return t;
 }
@@ -414,6 +447,19 @@ router.get('/sequences/team-overview', async (req, res) => {
           WHERE campaign_id IS NOT NULL
           GROUP BY campaign_id
        ),
+       ${bounceEventsCte({
+         startParam: `$${startIdx}`,
+         endParam:   `$${endIdx}`,
+       })},
+       bounce_agg AS (
+         -- Campaign-grain delivery failures, one row per bounced SEND.
+         -- Bounded on the send's fired_at, so this is a strict subset of
+         -- log_agg.sent_email and delivered can never go negative.
+         SELECT campaign_id, ${BOUNCE_COUNTERS}
+           FROM bounce_events
+          WHERE campaign_id IS NOT NULL
+          GROUP BY campaign_id
+       ),
        enroll_agg AS (
          SELECT
            p.campaign_id,
@@ -455,6 +501,10 @@ router.get('/sequences/team-overview', async (req, res) => {
          COALESCE(rp.replied, 0)  AS replied,
          COALESCE(rp.replied_email, 0)    AS replied_email,
          COALESCE(rp.replied_linkedin, 0) AS replied_linkedin,
+         COALESCE(b.bounced_hard, 0)      AS bounced_hard,
+         COALESCE(b.bounced_block, 0)     AS bounced_block,
+         COALESCE(b.bounced_soft, 0)      AS bounced_soft,
+         COALESCE(b.bounced, 0)           AS bounced,
          COALESCE(l.failed, 0)    AS failed,
          COALESCE(s.stalled, 0)   AS stalled,
          l.last_fired_at
@@ -464,6 +514,7 @@ router.get('/sequences/team-overview', async (req, res) => {
        LEFT JOIN enroll_agg e ON e.campaign_id = c.id
        LEFT JOIN stalled_agg s ON s.campaign_id = c.id
        LEFT JOIN reply_agg  rp ON rp.campaign_id = c.id
+       LEFT JOIN bounce_agg b  ON b.campaign_id = c.id
        WHERE ${campaignWhere}
        ORDER BY l.last_fired_at DESC NULLS LAST, c.id ASC`,
       campaignParams
@@ -680,6 +731,16 @@ router.get('/sequences/team-by-rep', async (req, res) => {
            FROM reply_events
           GROUP BY user_id
        ),
+       ${bounceEventsCte({
+         startParam: '$3',
+         endParam:   '$4',
+         campaignParam: campaignReplyParam,
+       })},
+       bounce_agg AS (
+         SELECT user_id, ${BOUNCE_COUNTERS}
+           FROM bounce_events
+          GROUP BY user_id
+       ),
        enroll_agg AS (
          SELECT
            se.enrolled_by AS user_id,
@@ -735,6 +796,10 @@ router.get('/sequences/team-by-rep', async (req, res) => {
          COALESCE(rp.replied, 0)          AS replied,
          COALESCE(rp.replied_email, 0)    AS replied_email,
          COALESCE(rp.replied_linkedin, 0) AS replied_linkedin,
+         COALESCE(b.bounced_hard, 0)      AS bounced_hard,
+         COALESCE(b.bounced_block, 0)     AS bounced_block,
+         COALESCE(b.bounced_soft, 0)      AS bounced_soft,
+         COALESCE(b.bounced, 0)           AS bounced,
          COALESCE(l.failed, 0)            AS failed,
          COALESCE(e.enrolled, 0)          AS enrolled,
          COALESCE(s.stalled, 0)           AS stalled,
@@ -747,6 +812,7 @@ router.get('/sequences/team-by-rep', async (req, res) => {
        LEFT JOIN stalled_agg s ON s.user_id = u.id
        LEFT JOIN active_state a ON a.user_id = u.id
        LEFT JOIN reply_agg   rp ON rp.user_id = u.id
+       LEFT JOIN bounce_agg  b  ON b.user_id  = u.id
        WHERE u.id = ANY($2::int[])
        -- LEFT JOIN on log_agg so reps with zero activity in the window
        -- still appear with zero counters. Matches the "campaigns with
@@ -1163,6 +1229,17 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
            FROM reply_events
           GROUP BY sequence_id
        ),
+       ${bounceEventsCte({
+         startParam: '$3',
+         endParam:   '$4',
+         campaignParam: campaignReplyParam,
+         sequenceParam: sequenceReplyParam,
+       })},
+       bounce_agg AS (
+         SELECT sequence_id, ${BOUNCE_COUNTERS}
+           FROM bounce_events
+          GROUP BY sequence_id
+       ),
        enroll_agg AS (
          SELECT
            se.sequence_id,
@@ -1247,6 +1324,10 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
          COALESCE(rp.replied, 0)            AS replied,
          COALESCE(rp.replied_email, 0)      AS replied_email,
          COALESCE(rp.replied_linkedin, 0)   AS replied_linkedin,
+         COALESCE(b.bounced_hard, 0)        AS bounced_hard,
+         COALESCE(b.bounced_block, 0)       AS bounced_block,
+         COALESCE(b.bounced_soft, 0)        AS bounced_soft,
+         COALESCE(b.bounced, 0)             AS bounced,
          COALESCE(l.failed, 0)              AS failed,
          COALESCE(e.enrolled, 0)            AS enrolled,
          COALESCE(e.distinct_campaigns, 0)  AS distinct_campaigns,
@@ -1262,6 +1343,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
        LEFT JOIN connected_agg cn ON cn.sequence_id = s.id
        LEFT JOIN active_state a  ON a.sequence_id = s.id
        LEFT JOIN reply_agg    rp ON rp.sequence_id = s.id
+       LEFT JOIN bounce_agg   b  ON b.sequence_id  = s.id
        WHERE s.org_id = $1
          AND (
            -- Include any sequence that has any activity in scope (any CTE
@@ -1478,6 +1560,12 @@ function _emptyTotals() {
     sentLinkedin:         0,
     repliedEmail:         0,
     repliedLinkedin:      0,
+    bouncedHard:          0,
+    bouncedBlock:         0,
+    bouncedSoft:          0,
+    bounced:              0,
+    deliveredEmail:       0,
+    deliveredRate:        0,
     emailRepliedRate:     0,
     linkedinRepliedRate:  0,
   };
@@ -1844,7 +1932,7 @@ router.put('/activity-definition', async (req, res) => {
 // Surfacing the number stops that difference from looking like a bug.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const DRILL_METRICS = ['replied', 'sent', 'drafts', 'failed', 'enrolled', 'stalled'];
+const DRILL_METRICS = ['replied', 'sent', 'bounced', 'drafts', 'failed', 'enrolled', 'stalled'];
 const DRILL_STATUS = {
   sent:   `ssl.status IN ('sent','completed')`,
   drafts: `ssl.status = 'draft'`,
@@ -1909,6 +1997,14 @@ router.get('/metric-drill', async (req, res) => {
     if (channel && (metric === 'enrolled' || metric === 'stalled')) {
       return res.status(400).json({
         error: { message: `channel is not meaningful for metric='${metric}'` },
+      });
+    }
+    // LinkedIn has no delivery-failure concept. Accept ?channel=email as a
+    // no-op (the cell that launches the drill sends it) and reject linkedin
+    // rather than silently returning an empty list.
+    if (metric === 'bounced' && channel === 'linkedin') {
+      return res.status(400).json({
+        error: { message: 'bounced applies to email only' },
       });
     }
 
@@ -2004,6 +2100,46 @@ router.get('/metric-drill', async (req, res) => {
         LEFT JOIN prospecting_campaigns c  ON c.id = f.campaign_id
         LEFT JOIN users u                  ON u.id = f.user_id
         ORDER BY f.replied_at DESC, f.prospect_id DESC
+        LIMIT ${P(limit)} OFFSET ${P(offset)}`;
+
+    } else if (metric === 'bounced') {
+      // Same CTE the aggregates use, in detail mode. One row per bounced SEND,
+      // classified by its worst verdict. Soft bounces are included in the list
+      // (they are real delivery events worth seeing) but the cell that launched
+      // this drill counted only hard + block, so `total` filters to match.
+      const startParam    = P(window.startISO);
+      const endParam      = P(window.endISO);
+      const campaignParam = campaignIds ? P(campaignIds) : null;
+      const sequenceParam = sequenceIds ? P(sequenceIds) : null;
+
+      sql = `
+        WITH ${bounceEventsCte({
+          startParam, endParam, campaignParam, sequenceParam, detail: true,
+        })},
+        filtered AS (
+          SELECT * FROM bounce_events be
+           WHERE be.event_type IN ('hard_bounce','block')
+        )
+        SELECT
+          COUNT(*) OVER ()::int AS total_count,
+          f.prospect_id, f.enrollment_id, f.step_log_id,
+          f.event_type, f.failed_recipient, f.smtp_code, f.diagnostic_excerpt,
+          f.enrollment_stopped,
+          f.detected_at AS occurred_at,
+          f.sent_at,
+          f.sequence_id, f.campaign_id,
+          f.user_id AS rep_id,
+          p.first_name, p.last_name, p.email AS prospect_email,
+          p.title, p.company_name, p.linkedin_url,
+          s.name AS sequence_name,
+          c.name AS campaign_name,
+          u.first_name AS rep_first_name, u.last_name AS rep_last_name, u.email AS rep_email
+        FROM filtered f
+        JOIN prospects p ON p.id = f.prospect_id
+        LEFT JOIN sequences s              ON s.id = f.sequence_id
+        LEFT JOIN prospecting_campaigns c  ON c.id = f.campaign_id
+        LEFT JOIN users u                  ON u.id = f.user_id
+        ORDER BY f.detected_at DESC, f.step_log_id DESC
         LIMIT ${P(limit)} OFFSET ${P(offset)}`;
 
     } else if (metric === 'sent' || metric === 'drafts' || metric === 'failed') {
@@ -2155,6 +2291,24 @@ router.get('/metric-drill', async (req, res) => {
           channel: r.channel,
           subject: r.subject || null,
           snippet: _snippet(r.body_raw),
+        });
+      }
+      if (metric === 'bounced') {
+        const rejected = (r.failed_recipient || '').toLowerCase();
+        const onRecord = (r.prospect_email  || '').toLowerCase();
+        return _drillRow(r, {
+          channel:            'email',
+          eventType:          r.event_type,
+          failedRecipient:    r.failed_recipient || null,
+          smtpCode:           r.smtp_code || null,
+          diagnostic:         r.diagnostic_excerpt || null,
+          enrollmentStopped:  r.enrollment_stopped === true,
+          sentAt:             r.sent_at || null,
+          // The NDR body names the address the mail server actually rejected.
+          // The pre-Gate-0 ingest attached bounces to whichever prospect shared
+          // the sending domain, so a mismatch here means a stale address on the
+          // record or a misattributed bounce. Either is worth a rep's minute.
+          addressMismatch:    !!(rejected && onRecord && rejected !== onRecord),
         });
       }
       if (metric === 'sent' || metric === 'drafts' || metric === 'failed') {

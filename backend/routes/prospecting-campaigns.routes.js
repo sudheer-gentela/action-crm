@@ -53,6 +53,12 @@ const ReportingScopeService = require('../services/ReportingScopeService');
 // REPLIED column read 0 while the campaign row above it showed the real
 // number. See services/ReplyEventsQuery.js.
 const { replyEventsCte, repliedRate: _healthRepliedRate } = require('../services/ReplyEventsQuery');
+// Delivery failures. Same builder reporting.routes.js uses, so the drill-down's
+// Delivered % is the same arithmetic as the campaign row that opened it.
+const {
+  bounceEventsCte, BOUNCE_COUNTERS,
+  delivered: _healthDelivered, deliveredRate: _healthDeliveredRate,
+} = require('../services/BounceEventsQuery');
 
 // Slice 1 of sending-schedule feature: resolves daily cap + send window
 // (org default, optionally overridden per-campaign) and computes per-
@@ -2668,6 +2674,36 @@ router.get('/:id/sequence-health', async (req, res) => {
     );
     const repliesBySeq = new Map(replyRes.rows.map(r => [r.sequence_id, r]));
 
+    // ── Per-sequence delivery failures ───────────────────────────────
+    // Bounded on the SEND's fired_at (same window as sent_win above), so
+    // bounce_events is a strict subset of the sends we just counted and
+    // delivered = sent - bounced is never negative. See BounceEventsQuery.
+    const bounceParams = [req.orgId];
+    let bounceUserParam = null;
+    if (stateRepParam) {
+      bounceParams.push(stateRepParam);
+      bounceUserParam = `$${bounceParams.length}`;
+    }
+    bounceParams.push([campaignId]);  const bounceCampaignParam = `$${bounceParams.length}`;
+    bounceParams.push(w.startISO);    const bounceStartParam    = `$${bounceParams.length}`;
+    bounceParams.push(w.endISO);      const bounceEndParam      = `$${bounceParams.length}`;
+
+    const bounceRes = await pool.query(
+      `WITH ${bounceEventsCte({
+         orgParam:      '$1',
+         userParam:     bounceUserParam,
+         startParam:    bounceStartParam,
+         endParam:      bounceEndParam,
+         campaignParam: bounceCampaignParam,
+       })}
+       SELECT sequence_id, ${BOUNCE_COUNTERS}
+       FROM bounce_events
+       WHERE sequence_id IS NOT NULL
+       GROUP BY sequence_id`,
+      bounceParams
+    );
+    const bouncesBySeq = new Map(bounceRes.rows.map(r => [r.sequence_id, r]));
+
     // Top errors per sequence within this campaign.
     const errRes = await pool.query(
       `SELECT se.sequence_id,
@@ -2722,8 +2758,11 @@ router.get('/:id/sequence-health', async (req, res) => {
 
     const health = aggRes.rows.map(r => {
       const rep = repliesBySeq.get(r.sequence_id) || {};
+      const bnc = bouncesBySeq.get(r.sequence_id) || {};
       const repliedWinEmail = rep.replied_win_email || 0;
       const repliedWinLi    = rep.replied_win_linkedin || 0;
+      const bounced         = bnc.bounced || 0;
+      const deliveredEmail  = _healthDelivered(r.sent_win_email, bounced);
       return {
         sequenceId:   r.sequence_id,
         sequenceName: r.sequence_name,
@@ -2752,8 +2791,15 @@ router.get('/:id/sequence-health', async (req, res) => {
           repliedEmail:        repliedWinEmail,
           repliedLinkedin:     repliedWinLi,
           failed:              r.failed_win,
+          bouncedHard:         bnc.bounced_hard  || 0,
+          bouncedBlock:        bnc.bounced_block || 0,
+          bouncedSoft:         bnc.bounced_soft  || 0,
+          bounced,
+          deliveredEmail,
+          deliveredRate:       _healthDeliveredRate(r.sent_win_email, bounced),
           repliedRate:         _healthRepliedRate(rep.replied_win || 0, r.sent_win),
-          emailRepliedRate:    _healthRepliedRate(repliedWinEmail, r.sent_win_email),
+          // Email replies over DELIVERED email, matching reporting.routes.js.
+          emailRepliedRate:    _healthRepliedRate(repliedWinEmail, deliveredEmail),
           linkedinRepliedRate: _healthRepliedRate(repliedWinLi, r.sent_win_linkedin),
         },
         lastFiredAt:        r.last_fired_at,
@@ -2823,6 +2869,20 @@ router.get('/:id/sequence-health', async (req, res) => {
            endParam:      '$8',
            campaignParam: '$6',
          })},
+         ${bounceEventsCte({
+           orgParam:      '$1',
+           userParam:     '$3',
+           startParam:    '$4',
+           endParam:      '$5',
+           campaignParam: '$6',
+         })},
+         bounce_agg AS (
+           -- Rep-grain delivery failures. Window is on the SEND's fired_at, the
+           -- same bound log_agg uses, so bounced <= sent_email per rep.
+           SELECT user_id, ${BOUNCE_COUNTERS}
+           FROM bounce_events
+           GROUP BY user_id
+         ),
          reply_agg AS (
            -- Rep-grain replies. Exactly one row per inbound event (DISTINCT ON
            -- upstream), so these are counts, not a cross-join.
@@ -2876,6 +2936,10 @@ router.get('/:id/sequence-health', async (req, res) => {
            COALESCE(rp.replied, 0)          AS replied,
            COALESCE(rp.replied_email, 0)    AS replied_email,
            COALESCE(rp.replied_linkedin, 0) AS replied_linkedin,
+           COALESCE(bo.bounced_hard, 0)     AS bounced_hard,
+           COALESCE(bo.bounced_block, 0)    AS bounced_block,
+           COALESCE(bo.bounced_soft, 0)     AS bounced_soft,
+           COALESCE(bo.bounced, 0)          AS bounced,
            COALESCE(l.failed, 0)    AS failed,
            COALESCE(l.drafts_24h,  0) AS drafts_24h,
            COALESCE(l.sent_24h,    0) AS sent_24h,
@@ -2892,6 +2956,7 @@ router.get('/:id/sequence-health', async (req, res) => {
          FROM users u
          LEFT JOIN log_agg     l  ON l.user_id  = u.id
          LEFT JOIN reply_agg   rp ON rp.user_id = u.id
+         LEFT JOIN bounce_agg  bo ON bo.user_id = u.id
          LEFT JOIN enroll_agg  e  ON e.user_id  = u.id
          LEFT JOIN stalled_agg st ON st.user_id = u.id
          WHERE u.id = ANY($3::int[])
@@ -2904,6 +2969,7 @@ router.get('/:id/sequence-health', async (req, res) => {
         const name = [r.first_name, r.last_name].filter(Boolean).join(' ').trim() || r.email;
         const meta = reportByUserId.get(r.user_id);
         const isViewer = r.user_id === req.user.userId;
+        const deliveredEmail = _healthDelivered(r.sent_email, r.bounced);
         return {
           userId:           r.user_id,
           name,
@@ -2920,8 +2986,14 @@ router.get('/:id/sequence-health', async (req, res) => {
           sentLinkedin:         r.sent_linkedin,
           repliedEmail:         r.replied_email,
           repliedLinkedin:      r.replied_linkedin,
+          bouncedHard:          r.bounced_hard,
+          bouncedBlock:         r.bounced_block,
+          bouncedSoft:          r.bounced_soft,
+          bounced:              r.bounced,
+          deliveredEmail,
+          deliveredRate:        _healthDeliveredRate(r.sent_email, r.bounced),
           repliedRate:          _healthRepliedRate(r.replied, r.sent),
-          emailRepliedRate:     _healthRepliedRate(r.replied_email, r.sent_email),
+          emailRepliedRate:     _healthRepliedRate(r.replied_email, deliveredEmail),
           linkedinRepliedRate:  _healthRepliedRate(r.replied_linkedin, r.sent_linkedin),
           drafts_24h:       r.drafts_24h,
           sent_24h:         r.sent_24h,

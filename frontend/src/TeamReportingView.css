@@ -1087,3 +1087,18 @@
   max-height: 220px;
   overflow-y: auto;
 }
+
+/* ── Delivery ────────────────────────────────────────────────────────────
+   `trv-danger` is the red sibling of `trv-warning`, used on Bounced counts
+   and on a Delivered % below 90. Between 90 and 95 the amber `trv-warning`
+   applies. Above 95, no tint — a healthy list should look unremarkable. */
+.trv-danger {
+  color: #b91c1c;
+  font-weight: 600;
+}
+.trv-danger .trv-metric-cell:hover,
+.trv-danger .trv-metric-cell:focus-visible {
+  color: #7f1d1d;
+  border-bottom-color: #7f1d1d;
+}
+.trv-status-danger { background: #fee2e2; color: #991b1b; }
