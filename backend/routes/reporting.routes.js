@@ -1789,4 +1789,400 @@ router.put('/activity-definition', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/reporting/metric-drill
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// "What are the five replies behind that 5?"
+//
+// Returns the individual rows that constitute one aggregate cell on any of the
+// reporting tables. Every numeric cell in the UI can launch this with the
+// filter tuple it was rendered from.
+//
+//   ?metric=replied|sent|drafts|failed|enrolled|stalled   (required)
+//   ?channel=email|linkedin      narrows sent/drafts/failed/replied
+//   ?campaignId=N  ?sequenceId=N  ?userId=N               grain selectors
+//   ?depth= ?windowDays= | ?startDate= &endDate=          same as the tabs
+//   ?limit=100 (max 500)  ?offset=0
+//
+// Returns { metric, channel, period, total, rows: [...], unattributedReplies }
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// THE INVARIANT
+//
+// A drill list that re-derives its own WHERE clause is exactly how the campaign
+// row came to show 5 replies while its own drill-down showed 0. So each branch
+// below reuses the predicates of the aggregate that produced the number,
+// verbatim:
+//
+//   replied            → replyEventsCte, the same builder the tabs use
+//   sent/drafts/failed → sequence_step_logs, same status + fired_at bounds
+//                        as log_agg
+//   enrolled           → sequence_enrollments, same enrolled_at bounds as
+//                        enroll_agg
+//   stalled            → sequence_enrollments + the LATERAL MAX(fired_at) and
+//                        the endDate − 7 days anchor of stalled_agg
+//
+// `total` is computed by COUNT(*) OVER () on the very same row set the page
+// slices, so it can never drift from the list. The frontend compares it to the
+// cell value that launched the drill and warns on mismatch in dev. If a cell
+// ever stops reconciling with its own evidence, you find out that afternoon.
+//
+// GRAIN NOTES (these mirror the aggregates, deliberately)
+//
+//   * `replied` with no campaignId does NOT filter campaign_id, matching the
+//     rep- and sequence-grain reply_agg. The campaign-grain reply_agg drops
+//     campaign_id IS NULL, and passing ?campaignId=N reproduces that.
+//   * `sent` with no campaignId does not join a campaign predicate either.
+//   * `stalled` ignores the window START — stalled_agg is anchored only on the
+//     window's end. Passing 24h vs 30d changes nothing but the anchor date.
+//
+// `unattributedReplies` is a footnote, not a row source: replies from prospects
+// with no preceding enrollment cannot be attributed to a rep or a sequence, so
+// reply_events drops them and so does every count on this page. The campaign
+// detail panel's own funnel keys off campaign_id alone and DOES count them.
+// Surfacing the number stops that difference from looking like a bug.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DRILL_METRICS = ['replied', 'sent', 'drafts', 'failed', 'enrolled', 'stalled'];
+const DRILL_STATUS = {
+  sent:   `ssl.status IN ('sent','completed')`,
+  drafts: `ssl.status = 'draft'`,
+  failed: `ssl.status = 'failed'`,
+};
+
+/**
+ * Markup → plain text → ~200 chars. Email bodies are raw HTML more often than
+ * not; LinkedIn notes are plain. Cheap and lossy on purpose — the full thread
+ * lives one click further in, on the enrollment timeline.
+ */
+function _snippet(raw, max = 200) {
+  if (!raw) return null;
+  const text = String(raw)
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/(p|div|tr|li|h[1-6])>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return null;
+  return text.length > max ? text.slice(0, max - 1).trimEnd() + '…' : text;
+}
+
+/** Shape a prospect-identity row the same way for every metric. */
+function _drillRow(r, extra = {}) {
+  return {
+    prospectId:   r.prospect_id,
+    enrollmentId: r.enrollment_id ?? null,
+    name:         [r.first_name, r.last_name].filter(Boolean).join(' ').trim() || r.prospect_email || '(no name)',
+    email:        r.prospect_email || null,
+    title:        r.title || null,
+    company:      r.company_name || null,
+    linkedinUrl:  r.linkedin_url || null,
+    campaignId:   r.campaign_id ?? null,
+    campaignName: r.campaign_name || null,
+    sequenceId:   r.sequence_id ?? null,
+    sequenceName: r.sequence_name || null,
+    repId:        r.rep_id ?? null,
+    repName:      [r.rep_first_name, r.rep_last_name].filter(Boolean).join(' ').trim() || r.rep_email || null,
+    occurredAt:   r.occurred_at ?? null,
+    ...extra,
+  };
+}
+
+router.get('/metric-drill', async (req, res) => {
+  try {
+    const metric = String(req.query.metric || '');
+    if (!DRILL_METRICS.includes(metric)) {
+      return res.status(400).json({
+        error: { message: `metric must be one of: ${DRILL_METRICS.join(', ')}` },
+      });
+    }
+
+    const channel = ['email', 'linkedin'].includes(req.query.channel) ? req.query.channel : null;
+    if (channel && (metric === 'enrolled' || metric === 'stalled')) {
+      return res.status(400).json({
+        error: { message: `channel is not meaningful for metric='${metric}'` },
+      });
+    }
+
+    const window = parseTimeWindow(req.query);
+
+    const limit  = Math.max(1, Math.min(500, parseInt(req.query.limit, 10)  || 100));
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+
+    // ── Auth. Same gatekeeper as every other endpoint in this file. ──
+    const scope = await ReportingScopeService.resolveReportingScope(
+      req.user.userId, req.orgId, { depth: req.query.depth }
+    );
+
+    // ?userId= narrows to one rep — intersected with the scope, never trusted.
+    // An out-of-scope id yields an empty result rather than an error, so we
+    // never confirm whether that user exists.
+    let scopeUserIds = scope.userIds;
+    if (req.query.userId !== undefined) {
+      const wanted = parseInt(req.query.userId, 10);
+      scopeUserIds = scope.userIds.filter(id => id === wanted);
+      if (scopeUserIds.length === 0) {
+        return res.json({
+          metric, channel, period: {
+            startDate: window.startISO, endDate: window.endISO,
+            description: window.isoIntervalDescription,
+          },
+          total: 0, rows: [], unattributedReplies: 0,
+        });
+      }
+    }
+
+    // ?campaignId= / ?sequenceId= — single ids, carried as int[] because that
+    // is what replyEventsCte and the ANY() predicates below want.
+    const rawCampaignId = req.query.campaignId !== undefined ? parseInt(req.query.campaignId, 10) : null;
+    const rawSequenceId = req.query.sequenceId !== undefined ? parseInt(req.query.sequenceId, 10) : null;
+    const campaignIds = Number.isInteger(rawCampaignId) ? [rawCampaignId] : null;
+    const sequenceIds = Number.isInteger(rawSequenceId) ? [rawSequenceId] : null;
+
+    if (campaignIds) {
+      const allowed = await resolveCampaignFilter(req.orgId, scope.userIds, campaignIds);
+      if (!allowed || allowed.length === 0) {
+        return res.json({
+          metric, channel, period: {
+            startDate: window.startISO, endDate: window.endISO,
+            description: window.isoIntervalDescription,
+          },
+          total: 0, rows: [], unattributedReplies: 0,
+        });
+      }
+    }
+
+    // Params are pushed in the order each branch needs them; positions are read
+    // back off the array length so a branch can skip one without breaking the
+    // next. Postgres rejects a bind that supplies an unreferenced parameter.
+    const params = [req.orgId, scopeUserIds];
+    const P = (v) => { params.push(v); return `$${params.length}`; };
+
+    let sql;
+    let unattributedReplies = 0;
+
+    if (metric === 'replied') {
+      const startParam    = P(window.startISO);
+      const endParam      = P(window.endISO);
+      const campaignParam = campaignIds ? P(campaignIds) : null;
+      const sequenceParam = sequenceIds ? P(sequenceIds) : null;
+      const channelClause = channel ? `WHERE re.channel = ${P(channel)}` : '';
+
+      sql = `
+        WITH ${replyEventsCte({
+          startParam, endParam, campaignParam, sequenceParam, detail: true,
+        })},
+        filtered AS (SELECT * FROM reply_events re ${channelClause})
+        SELECT
+          COUNT(*) OVER ()::int AS total_count,
+          f.prospect_id, f.enrollment_id, f.channel, f.subject, f.body_raw,
+          f.replied_at AS occurred_at,
+          f.sequence_id, f.campaign_id,
+          f.user_id AS rep_id,
+          p.first_name, p.last_name, p.email AS prospect_email,
+          p.title, p.company_name, p.linkedin_url,
+          s.name AS sequence_name,
+          c.name AS campaign_name,
+          u.first_name AS rep_first_name, u.last_name AS rep_last_name, u.email AS rep_email
+        FROM filtered f
+        JOIN prospects p ON p.id = f.prospect_id
+        LEFT JOIN sequences s              ON s.id = f.sequence_id
+        LEFT JOIN prospecting_campaigns c  ON c.id = f.campaign_id
+        LEFT JOIN users u                  ON u.id = f.user_id
+        ORDER BY f.replied_at DESC, f.prospect_id DESC
+        LIMIT ${P(limit)} OFFSET ${P(offset)}`;
+
+    } else if (metric === 'sent' || metric === 'drafts' || metric === 'failed') {
+      const startParam = P(window.startISO);
+      const endParam   = P(window.endISO);
+      const chanClause = channel     ? `AND ssl.channel = ${P(channel)}`                    : '';
+      const campClause = campaignIds ? `AND p.campaign_id = ANY(${P(campaignIds)}::int[])`  : '';
+      const seqClause  = sequenceIds ? `AND se.sequence_id = ANY(${P(sequenceIds)}::int[])` : '';
+
+      sql = `
+        SELECT
+          COUNT(*) OVER ()::int AS total_count,
+          se.prospect_id, ssl.enrollment_id, ssl.channel, ssl.status,
+          ssl.step_intent, ssl.error_message,
+          ssl.subject, LEFT(ssl.body, 4000) AS body_raw,
+          ssl.fired_at AS occurred_at,
+          se.sequence_id, p.campaign_id,
+          se.enrolled_by AS rep_id,
+          p.first_name, p.last_name, p.email AS prospect_email,
+          p.title, p.company_name, p.linkedin_url,
+          s.name AS sequence_name,
+          c.name AS campaign_name,
+          u.first_name AS rep_first_name, u.last_name AS rep_last_name, u.email AS rep_email
+        FROM sequence_step_logs ssl
+        JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
+        JOIN prospects p             ON p.id = se.prospect_id
+        LEFT JOIN sequences s              ON s.id = se.sequence_id
+        LEFT JOIN prospecting_campaigns c  ON c.id = p.campaign_id
+        LEFT JOIN users u                  ON u.id = se.enrolled_by
+        WHERE ssl.org_id    = $1
+          AND se.enrolled_by = ANY($2::int[])
+          AND ssl.fired_at  >= ${startParam}::timestamptz
+          AND ssl.fired_at  <= ${endParam}::timestamptz
+          AND ${DRILL_STATUS[metric]}
+          ${chanClause}
+          ${campClause}
+          ${seqClause}
+        ORDER BY ssl.fired_at DESC, ssl.id DESC
+        LIMIT ${P(limit)} OFFSET ${P(offset)}`;
+
+    } else if (metric === 'enrolled') {
+      const startParam = P(window.startISO);
+      const endParam   = P(window.endISO);
+      const campClause = campaignIds ? `AND p.campaign_id = ANY(${P(campaignIds)}::int[])`  : '';
+      const seqClause  = sequenceIds ? `AND se.sequence_id = ANY(${P(sequenceIds)}::int[])` : '';
+
+      sql = `
+        SELECT
+          COUNT(*) OVER ()::int AS total_count,
+          se.prospect_id, se.id AS enrollment_id, se.status,
+          se.enrolled_at AS occurred_at,
+          se.sequence_id, p.campaign_id,
+          se.enrolled_by AS rep_id,
+          p.first_name, p.last_name, p.email AS prospect_email,
+          p.title, p.company_name, p.linkedin_url,
+          s.name AS sequence_name,
+          c.name AS campaign_name,
+          u.first_name AS rep_first_name, u.last_name AS rep_last_name, u.email AS rep_email
+        FROM sequence_enrollments se
+        JOIN prospects p ON p.id = se.prospect_id
+        LEFT JOIN sequences s              ON s.id = se.sequence_id
+        LEFT JOIN prospecting_campaigns c  ON c.id = p.campaign_id
+        LEFT JOIN users u                  ON u.id = se.enrolled_by
+        WHERE se.org_id     = $1
+          AND se.enrolled_by = ANY($2::int[])
+          AND se.enrolled_at >= ${startParam}::timestamptz
+          AND se.enrolled_at <= ${endParam}::timestamptz
+          ${campClause}
+          ${seqClause}
+        ORDER BY se.enrolled_at DESC, se.id DESC
+        LIMIT ${P(limit)} OFFSET ${P(offset)}`;
+
+    } else {   // stalled
+      // No window START: stalled_agg anchors only on the window's end.
+      const endParam   = P(window.endISO);
+      const campClause = campaignIds ? `AND p.campaign_id = ANY(${P(campaignIds)}::int[])`  : '';
+      const seqClause  = sequenceIds ? `AND se.sequence_id = ANY(${P(sequenceIds)}::int[])` : '';
+
+      sql = `
+        SELECT
+          COUNT(*) OVER ()::int AS total_count,
+          se.prospect_id, se.id AS enrollment_id, se.status,
+          COALESCE(sx.last_fired, se.enrolled_at) AS occurred_at,
+          se.enrolled_at,
+          se.sequence_id, p.campaign_id,
+          se.enrolled_by AS rep_id,
+          p.first_name, p.last_name, p.email AS prospect_email,
+          p.title, p.company_name, p.linkedin_url,
+          s.name AS sequence_name,
+          c.name AS campaign_name,
+          u.first_name AS rep_first_name, u.last_name AS rep_last_name, u.email AS rep_email
+        FROM sequence_enrollments se
+        JOIN prospects p ON p.id = se.prospect_id
+        LEFT JOIN LATERAL (
+          SELECT MAX(fired_at) AS last_fired FROM sequence_step_logs
+           WHERE enrollment_id = se.id
+        ) sx ON true
+        LEFT JOIN sequences s              ON s.id = se.sequence_id
+        LEFT JOIN prospecting_campaigns c  ON c.id = p.campaign_id
+        LEFT JOIN users u                  ON u.id = se.enrolled_by
+        WHERE se.org_id     = $1
+          AND se.enrolled_by = ANY($2::int[])
+          AND se.status     = 'active'
+          AND COALESCE(sx.last_fired, se.enrolled_at) < ${endParam}::timestamptz - INTERVAL '7 days'
+          ${campClause}
+          ${seqClause}
+        ORDER BY COALESCE(sx.last_fired, se.enrolled_at) ASC, se.id ASC
+        LIMIT ${P(limit)} OFFSET ${P(offset)}`;
+    }
+
+    const { rows } = await pool.query(sql, params);
+    const total = rows.length ? rows[0].total_count : 0;
+
+    // ── The footnote (replies only) ──────────────────────────────────
+    // Inbound email from a prospect in this campaign who was never enrolled.
+    // Not in `total`, by design — there is no rep or sequence to attribute it
+    // to. Counted separately so the gap is visible instead of mysterious.
+    if (metric === 'replied' && campaignIds) {
+      const { rows: ur } = await pool.query(
+        `SELECT COUNT(*)::int AS n
+           FROM emails e
+           JOIN prospects p ON p.id = e.prospect_id AND p.org_id = e.org_id
+          WHERE e.org_id     = $1
+            AND p.campaign_id = ANY($2::int[])
+            AND e.direction   IN ('received','inbound')
+            AND e.deleted_at  IS NULL
+            AND e.sent_at    >= ($3::timestamptz AT TIME ZONE 'UTC')
+            AND e.sent_at    <= ($4::timestamptz AT TIME ZONE 'UTC')
+            AND EXISTS (
+              SELECT 1 FROM emails o
+               WHERE o.org_id = e.org_id AND o.prospect_id = e.prospect_id
+                 AND o.direction = 'sent' AND o.deleted_at IS NULL
+                 AND o.sent_at < e.sent_at
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM sequence_enrollments se
+               WHERE se.prospect_id = p.id
+                 AND se.org_id      = e.org_id
+                 AND se.enrolled_at < (e.sent_at AT TIME ZONE 'UTC')
+            )`,
+        [req.orgId, campaignIds, window.startISO, window.endISO]
+      );
+      unattributedReplies = ur[0]?.n || 0;
+    }
+
+    const out = rows.map(r => {
+      if (metric === 'replied') {
+        return _drillRow(r, {
+          channel: r.channel,
+          subject: r.subject || null,
+          snippet: _snippet(r.body_raw),
+        });
+      }
+      if (metric === 'sent' || metric === 'drafts' || metric === 'failed') {
+        return _drillRow(r, {
+          channel:      r.channel,
+          status:       r.status,
+          stepIntent:   r.step_intent || null,
+          errorMessage: r.error_message || null,
+          subject:      r.subject || null,
+          snippet:      _snippet(r.body_raw),
+        });
+      }
+      if (metric === 'stalled') {
+        return _drillRow(r, { status: r.status, enrolledAt: r.enrolled_at });
+      }
+      return _drillRow(r, { status: r.status });   // enrolled
+    });
+
+    res.json({
+      metric,
+      channel,
+      period: {
+        startDate:   window.startISO,
+        endDate:     window.endISO,
+        description: window.isoIntervalDescription,
+      },
+      total,
+      rows: out,
+      unattributedReplies,
+    });
+  } catch (err) {
+    console.error('GET /reporting/metric-drill failed:', err);
+    res.status(500).json({ error: { message: 'Failed to load drill rows: ' + err.message } });
+  }
+});
+
 module.exports = router;

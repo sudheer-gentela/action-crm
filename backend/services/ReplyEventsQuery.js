@@ -127,6 +127,12 @@
  *   endParam       e.g. '$4' — window end, bound as timestamptz
  *   campaignParam  optional e.g. '$5' — int[] of campaign ids
  *   sequenceParam  optional e.g. '$6' — int[] of sequence ids
+ *   detail         default false. When true the CTE additionally emits
+ *                  prospect_id, enrollment_id, subject and body_raw, for the
+ *                  metric-drill endpoint that lists the individual repliers.
+ *                  The aggregate callers leave it off — pulling email bodies
+ *                  through a COUNT(*) is pure waste. Additive either way:
+ *                  every consumer selects named columns, never `*`.
  * @returns {string} the CTE body, WITHOUT a trailing comma and WITHOUT `WITH`
  */
 function replyEventsCte({
@@ -136,10 +142,26 @@ function replyEventsCte({
   endParam,
   campaignParam = null,
   sequenceParam = null,
+  detail = false,
 }) {
   if (!startParam || !endParam) {
     throw new Error('replyEventsCte: startParam and endParam are required');
   }
+
+  // Body is capped in SQL rather than fetched whole: the caller strips markup
+  // and truncates to a ~200-char snippet, so anything past a few KB is dead
+  // weight on the wire. LinkedIn keeps the full message in metadata->>'note'
+  // (prospects.routes.js caps it at 4000); `description` is the short label.
+  const detailEmail = detail ? `,
+           e.prospect_id        AS prospect_id,
+           se.id                AS enrollment_id,
+           e.subject            AS subject,
+           LEFT(e.body, 4000)   AS body_raw` : '';
+  const detailLi = detail ? `,
+           a.prospect_id        AS prospect_id,
+           se_li.id             AS enrollment_id,
+           NULL::text           AS subject,
+           LEFT(COALESCE(a.metadata ->> 'note', a.description), 4000) AS body_raw` : '';
 
   const repEmail = userParam ? `AND se.enrolled_by    = ANY(${userParam}::int[])` : '';
   const repLi    = userParam ? `AND se_li.enrolled_by = ANY(${userParam}::int[])` : '';
@@ -157,7 +179,7 @@ function replyEventsCte({
            se.enrolled_by       AS user_id,
            se.sequence_id       AS sequence_id,
            p_reply.campaign_id  AS campaign_id,
-           e.sent_at            AS replied_at
+           e.sent_at            AS replied_at${detailEmail}
          FROM emails e
          JOIN prospects p_reply
            ON p_reply.id     = e.prospect_id
@@ -195,7 +217,7 @@ function replyEventsCte({
            se_li.enrolled_by       AS user_id,
            se_li.sequence_id       AS sequence_id,
            p_reply_li.campaign_id  AS campaign_id,
-           a.created_at            AS replied_at
+           a.created_at            AS replied_at${detailLi}
          FROM prospecting_activities a
          JOIN prospects p_reply_li
            ON p_reply_li.id     = a.prospect_id

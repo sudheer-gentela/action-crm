@@ -152,6 +152,16 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
   const [prospectPanel, setProspectPanel]               = useState(null);
   const [prospectPanelEnrollId, setProspectPanelEnrollId] = useState(null);
 
+  // A metric cell was clicked. The cell hands over its own filter tuple —
+  // whatever grain it was rendered at — plus the value it displayed. We add
+  // depth + window from the toolbar (already encoded in `queryString`) and let
+  // the panel fetch. Opening a drill always resets timeline mode, otherwise the
+  // panel would show the previous prospect's steps under a new title.
+  const openDrill = useCallback((drill) => {
+    setProspectPanelEnrollId(null);
+    setProspectPanel({ drill });
+  }, []);
+
   // ── Per-tab data state ─────────────────────────────────────────────────
   const [repData,        setRepData]        = useState(null);
   const [campaignData,   setCampaignData]   = useState(null);
@@ -349,7 +359,8 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
       {tab === 'rep' && (
-        <RepTab data={repData} loading={tabLoading} scope={scope} windowState={windowState} onSetWindow={setWindowState} />
+        <RepTab data={repData} loading={tabLoading} scope={scope} windowState={windowState}
+                onSetWindow={setWindowState} onDrill={openDrill} />
       )}
 
       {tab === 'campaign' && !drilledIn && (
@@ -362,6 +373,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
             setProspectPanel({ campaignId, campaignName })}
           windowState={windowState}
           onSetWindow={setWindowState}
+          onDrill={openDrill}
         />
       )}
 
@@ -378,6 +390,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
           window={windowState}
           onOpenProspects={(sequenceId, sequenceName) =>
             setProspectPanel({ sequenceId, sequenceName })}
+          onDrill={openDrill}
         />
       )}
 
@@ -390,6 +403,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
           onSetWindow={setWindowState}
           onOpenProspects={(sequenceId, sequenceName) =>
             setProspectPanel({ sequenceId, sequenceName })}
+          onDrill={openDrill}
         />
       )}
 
@@ -430,6 +444,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
       {prospectPanel && (
         <ProspectListPanel
           context={prospectPanel}
+          queryString={queryString}
           enrollmentId={prospectPanelEnrollId}
           onPickEnrollment={(id) => setProspectPanelEnrollId(id)}
           onBackToList={() => setProspectPanelEnrollId(null)}
@@ -676,6 +691,66 @@ function channelSub(email, linkedin) {
   return `${fmtNum(email)} email · ${fmtNum(linkedin)} LinkedIn`;
 }
 
+// ── Metric drill-through ──────────────────────────────────────────────────
+// Every numeric cell below is evidence for a claim. Clicking one asks
+// GET /reporting/metric-drill for the rows that produced it, and the answer
+// opens in the same right-side panel that already shows prospects and
+// enrollment timelines.
+//
+// The filter tuple a cell carries IS the grain of the aggregate it renders:
+//   Campaign tab  → { campaignId }
+//   Rep tab       → { userId }
+//   Sequence tab  → { sequenceId }
+//   Drill-down    → { campaignId, sequenceId } or { campaignId, userId }
+// plus `channel` on the per-channel columns. The backend reuses the aggregate's
+// own predicates, so the list length always equals the number that was clicked.
+//
+// Zero renders as inert text — there is nothing to look at, and a clickable 0
+// invites a click that opens an empty panel.
+const DRILLABLE = ['replied', 'sent', 'drafts', 'failed', 'enrolled', 'stalled'];
+
+/** Human label for a panel opened on a given metric/channel. */
+function drillTitle(metric, channel) {
+  const chan = channel === 'email' ? 'Email ' : channel === 'linkedin' ? 'LinkedIn ' : '';
+  const noun = {
+    replied:  'replies',
+    sent:     'sends',
+    drafts:   'drafts',
+    failed:   'failures',
+    enrolled: 'enrollments',
+    stalled:  'stalled enrollments',
+  }[metric] || metric;
+  return `${chan}${noun}`.replace(/^./, c => c.toUpperCase());
+}
+
+/**
+ * A numeric table cell that can open the evidence panel.
+ *
+ * `drill` is the filter tuple; omit it (or pass a zero value) and the cell
+ * degrades to the plain <td> it always was. `expected` rides along so the
+ * panel can assert the row count it gets back matches the number on screen —
+ * a silent divergence between a cell and its own evidence is the exact class
+ * of bug that let the campaign row show 5 replies over a drill-down showing 0.
+ */
+function MetricCell({ value, drill, onDrill, className = '', style, title }) {
+  const n = Number(value) || 0;
+  const canDrill = onDrill && drill && DRILLABLE.includes(drill.metric) && n > 0;
+  return (
+    <td className={`num ${className}`} style={style} title={title}>
+      {canDrill ? (
+        <button
+          type="button"
+          className="trv-metric-cell"
+          onClick={(e) => { e.stopPropagation(); onDrill({ ...drill, expected: n }); }}
+          aria-label={`Show the ${n} ${drillTitle(drill.metric, drill.channel).toLowerCase()} behind this number`}
+        >
+          {fmtNum(n)}
+        </button>
+      ) : fmtNum(n)}
+    </td>
+  );
+}
+
 function MetricTiles({ tiles }) {
   return (
     <div className="trv-tiles">
@@ -694,7 +769,7 @@ function MetricTiles({ tiles }) {
 // RepTab — per-rep table from /team-by-rep. Rows are expandable to reveal
 // top campaigns + last activity, both already in the response shape.
 // ──────────────────────────────────────────────────────────────────────────
-function RepTab({ data, loading, scope, windowState, onSetWindow }) {
+function RepTab({ data, loading, scope, windowState, onSetWindow, onDrill }) {
   const [expandedId, setExpandedId] = useState(null);
   if (loading && !data) return <LoadingState />;
   if (!data) return null;
@@ -751,16 +826,25 @@ function RepTab({ data, loading, scope, windowState, onSetWindow }) {
                         {r.name}
                         {depthBadge(r)}
                       </td>
-                      <td className="num">{fmtNum(r.enrolled)}</td>
-                      <td className="num">{fmtNum(r.drafts)}</td>
-                      <td className="num" style={GROUP_EDGE}>{fmtNum(r.sentEmail)}</td>
-                      <td className="num">{fmtNum(r.repliedEmail)}</td>
+                      <MetricCell value={r.enrolled} onDrill={onDrill}
+                        drill={{ metric: 'enrolled', userId: r.userId, subject: r.name }} />
+                      <MetricCell value={r.drafts} onDrill={onDrill}
+                        drill={{ metric: 'drafts', userId: r.userId, subject: r.name }} />
+                      <MetricCell value={r.sentEmail} onDrill={onDrill} style={GROUP_EDGE}
+                        drill={{ metric: 'sent', channel: 'email', userId: r.userId, subject: r.name }} />
+                      <MetricCell value={r.repliedEmail} onDrill={onDrill}
+                        drill={{ metric: 'replied', channel: 'email', userId: r.userId, subject: r.name }} />
                       <td className="num">{fmtPct(r.emailRepliedRate)}</td>
-                      <td className="num" style={GROUP_EDGE}>{fmtNum(r.sentLinkedin)}</td>
-                      <td className="num">{fmtNum(r.repliedLinkedin)}</td>
+                      <MetricCell value={r.sentLinkedin} onDrill={onDrill} style={GROUP_EDGE}
+                        drill={{ metric: 'sent', channel: 'linkedin', userId: r.userId, subject: r.name }} />
+                      <MetricCell value={r.repliedLinkedin} onDrill={onDrill}
+                        drill={{ metric: 'replied', channel: 'linkedin', userId: r.userId, subject: r.name }} />
                       <td className="num">{fmtPct(r.linkedinRepliedRate)}</td>
-                      <td className="num" style={GROUP_EDGE}>{fmtNum(r.failed)}</td>
-                      <td className={`num ${r.stalled > 0 ? 'trv-warning' : ''}`}>{fmtNum(r.stalled)}</td>
+                      <MetricCell value={r.failed} onDrill={onDrill} style={GROUP_EDGE}
+                        drill={{ metric: 'failed', userId: r.userId, subject: r.name }} />
+                      <MetricCell value={r.stalled} onDrill={onDrill}
+                        className={r.stalled > 0 ? 'trv-warning' : ''}
+                        drill={{ metric: 'stalled', userId: r.userId, subject: r.name }} />
                     </tr>
                     {expanded && (
                       <tr className="trv-expand-row">
@@ -813,7 +897,7 @@ function RepTab({ data, loading, scope, windowState, onSetWindow }) {
 // breakdown →" button that opens the side-panel drill-down). This gives
 // the user a hint of what's there before committing to the full drill.
 // ──────────────────────────────────────────────────────────────────────────
-function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowState, onSetWindow }) {
+function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowState, onSetWindow, onDrill }) {
   const [expandedId, setExpandedId] = useState(null);
   if (loading && !data) return <LoadingState />;
   if (!data) return null;
@@ -870,14 +954,21 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
                         {c.owner ? c.owner.name : <span className="trv-muted">—</span>}
                         {c.owner && depthBadge(c.owner)}
                       </td>
-                      <td className="num">{fmtNum(c.enrolled)}</td>
-                      <td className="num" style={GROUP_EDGE}>{fmtNum(c.sentEmail)}</td>
-                      <td className="num">{fmtNum(c.repliedEmail)}</td>
+                      <MetricCell value={c.enrolled} onDrill={onDrill}
+                        drill={{ metric: 'enrolled', campaignId: c.campaignId, subject: c.name }} />
+                      <MetricCell value={c.sentEmail} onDrill={onDrill} style={GROUP_EDGE}
+                        drill={{ metric: 'sent', channel: 'email', campaignId: c.campaignId, subject: c.name }} />
+                      <MetricCell value={c.repliedEmail} onDrill={onDrill}
+                        drill={{ metric: 'replied', channel: 'email', campaignId: c.campaignId, subject: c.name }} />
                       <td className="num">{fmtPct(c.emailRepliedRate)}</td>
-                      <td className="num" style={GROUP_EDGE}>{fmtNum(c.sentLinkedin)}</td>
-                      <td className="num">{fmtNum(c.repliedLinkedin)}</td>
+                      <MetricCell value={c.sentLinkedin} onDrill={onDrill} style={GROUP_EDGE}
+                        drill={{ metric: 'sent', channel: 'linkedin', campaignId: c.campaignId, subject: c.name }} />
+                      <MetricCell value={c.repliedLinkedin} onDrill={onDrill}
+                        drill={{ metric: 'replied', channel: 'linkedin', campaignId: c.campaignId, subject: c.name }} />
                       <td className="num">{fmtPct(c.linkedinRepliedRate)}</td>
-                      <td className={`num ${c.stalled > 0 ? 'trv-warning' : ''}`} style={GROUP_EDGE}>{fmtNum(c.stalled)}</td>
+                      <MetricCell value={c.stalled} onDrill={onDrill} style={GROUP_EDGE}
+                        className={c.stalled > 0 ? 'trv-warning' : ''}
+                        drill={{ metric: 'stalled', campaignId: c.campaignId, subject: c.name }} />
                     </tr>
                     {expanded && (
                       <tr className="trv-expand-row">
@@ -932,7 +1023,7 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
 // which is invisible to the campaign tab. Expandable rows show all top
 // users with their numbers + last activity.
 // ──────────────────────────────────────────────────────────────────────────
-function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenProspects }) {
+function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenProspects, onDrill }) {
   const [expandedId, setExpandedId] = useState(null);
   if (loading && !data) return <LoadingState />;
   if (!data) return null;
@@ -987,15 +1078,22 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenPro
                         {s.owner ? s.owner.name : <span className="trv-muted">—</span>}
                         {s.owner && depthBadge(s.owner)}
                       </td>
-                      <td className="num">{fmtNum(s.enrolled)}</td>
-                      <td className="num">{fmtNum(s.sent)}</td>
+                      <MetricCell value={s.enrolled} onDrill={onDrill}
+                        drill={{ metric: 'enrolled', sequenceId: s.sequenceId, subject: s.name }} />
+                      <MetricCell value={s.sent} onDrill={onDrill}
+                        drill={{ metric: 'sent', sequenceId: s.sequenceId, subject: s.name }} />
+                      {/* `connected` is a LinkedIn acceptance state, not one of the six
+                          drillable metrics — no row source to list. Left inert. */}
                       <td className="num" title={s.enrolled > 0 ? `${Math.round((s.connected / s.enrolled) * 100)}% of enrolled accepted` : undefined}>
                         {s.connected > 0
                           ? <span style={{ color: '#059669', fontWeight: 600 }}>{fmtNum(s.connected)}</span>
                           : fmtNum(s.connected)}
                       </td>
-                      <td className="num">{fmtNum(s.replied)}</td>
-                      <td className={`num ${s.stalled > 0 ? 'trv-warning' : ''}`}>{fmtNum(s.stalled)}</td>
+                      <MetricCell value={s.replied} onDrill={onDrill}
+                        drill={{ metric: 'replied', sequenceId: s.sequenceId, subject: s.name }} />
+                      <MetricCell value={s.stalled} onDrill={onDrill}
+                        className={s.stalled > 0 ? 'trv-warning' : ''}
+                        drill={{ metric: 'stalled', sequenceId: s.sequenceId, subject: s.name }} />
                       <td className="trv-topusers">
                         {(s.topUsers || []).slice(0, 3).map((u) => (
                           <span key={u.userId} className="trv-topuser-chip">
@@ -1075,7 +1173,7 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenPro
 // ──────────────────────────────────────────────────────────────────────────
 function DrilldownView({
   campaigns, currentCampaignId, onPickCampaign, onExitDrill,
-  drillData, drillLoading, drillError, scope, window: win, onOpenProspects,
+  drillData, drillLoading, drillError, scope, window: win, onOpenProspects, onDrill,
 }) {
   return (
     <div className="trv-tab-body trv-drill-root">
@@ -1107,7 +1205,15 @@ function DrilldownView({
       <div className="trv-drill-panel">
         {drillLoading && !drillData && <LoadingState />}
         {drillError && <ErrorBanner message={drillError} />}
-        {drillData && <DrilldownDetail data={drillData} scope={scope} onOpenProspects={onOpenProspects} />}
+        {drillData && (
+          <DrilldownDetail
+            data={drillData}
+            scope={scope}
+            onOpenProspects={onOpenProspects}
+            onDrill={onDrill}
+            campaignId={currentCampaignId}
+          />
+        )}
       </div>
     </div>
   );
@@ -1135,7 +1241,7 @@ function DrilldownView({
 // Columns mirror CampaignTab / RepTab: sends and replies are split by channel,
 // because a blended rate divides EMAIL replies by EMAIL + LINKEDIN sends.
 // ──────────────────────────────────────────────────────────────────────────
-function DrilldownDetail({ data, scope, onOpenProspects }) {
+function DrilldownDetail({ data, scope, onOpenProspects, onDrill, campaignId }) {
   const health = data.health || [];
   const byUser = data.byUser || [];
 
@@ -1203,15 +1309,19 @@ function DrilldownDetail({ data, scope, onOpenProspects }) {
                 return (
                   <tr key={h.sequenceId}>
                     <td>{h.sequenceName}</td>
-                    <td className="num" style={GROUP_EDGE}>{fmtNum(w.sentEmail)}</td>
-                    <td className="num">{fmtNum(w.repliedEmail)}</td>
+                    <MetricCell value={w.sentEmail} onDrill={onDrill} style={GROUP_EDGE}
+                      drill={{ metric: 'sent', channel: 'email', campaignId, sequenceId: h.sequenceId, subject: h.sequenceName }} />
+                    <MetricCell value={w.repliedEmail} onDrill={onDrill}
+                      drill={{ metric: 'replied', channel: 'email', campaignId, sequenceId: h.sequenceId, subject: h.sequenceName }} />
                     <td className="num">{fmtPct(w.emailRepliedRate)}</td>
-                    <td className="num" style={GROUP_EDGE}>{fmtNum(w.sentLinkedin)}</td>
-                    <td className="num">{fmtNum(w.repliedLinkedin)}</td>
+                    <MetricCell value={w.sentLinkedin} onDrill={onDrill} style={GROUP_EDGE}
+                      drill={{ metric: 'sent', channel: 'linkedin', campaignId, sequenceId: h.sequenceId, subject: h.sequenceName }} />
+                    <MetricCell value={w.repliedLinkedin} onDrill={onDrill}
+                      drill={{ metric: 'replied', channel: 'linkedin', campaignId, sequenceId: h.sequenceId, subject: h.sequenceName }} />
                     <td className="num">{fmtPct(w.linkedinRepliedRate)}</td>
-                    <td className={`num ${h.stalledEnrollments > 0 ? 'trv-warning' : ''}`} style={GROUP_EDGE}>
-                      {fmtNum(h.stalledEnrollments)}
-                    </td>
+                    <MetricCell value={h.stalledEnrollments} onDrill={onDrill} style={GROUP_EDGE}
+                      className={h.stalledEnrollments > 0 ? 'trv-warning' : ''}
+                      drill={{ metric: 'stalled', campaignId, sequenceId: h.sequenceId, subject: h.sequenceName }} />
                     <td className="num">{fmtDate(h.lastFiredAt)}</td>
                     <td>
                       {onOpenProspects && (
@@ -1258,14 +1368,21 @@ function DrilldownDetail({ data, scope, onOpenProspects }) {
                     {u.name}
                     {depthBadge(u)}
                   </td>
-                  <td className="num">{fmtNum(u.enrolled)}</td>
-                  <td className="num" style={GROUP_EDGE}>{fmtNum(u.sentEmail)}</td>
-                  <td className="num">{fmtNum(u.repliedEmail)}</td>
+                  <MetricCell value={u.enrolled} onDrill={onDrill}
+                    drill={{ metric: 'enrolled', campaignId, userId: u.userId, subject: u.name }} />
+                  <MetricCell value={u.sentEmail} onDrill={onDrill} style={GROUP_EDGE}
+                    drill={{ metric: 'sent', channel: 'email', campaignId, userId: u.userId, subject: u.name }} />
+                  <MetricCell value={u.repliedEmail} onDrill={onDrill}
+                    drill={{ metric: 'replied', channel: 'email', campaignId, userId: u.userId, subject: u.name }} />
                   <td className="num">{fmtPct(u.emailRepliedRate)}</td>
-                  <td className="num" style={GROUP_EDGE}>{fmtNum(u.sentLinkedin)}</td>
-                  <td className="num">{fmtNum(u.repliedLinkedin)}</td>
+                  <MetricCell value={u.sentLinkedin} onDrill={onDrill} style={GROUP_EDGE}
+                    drill={{ metric: 'sent', channel: 'linkedin', campaignId, userId: u.userId, subject: u.name }} />
+                  <MetricCell value={u.repliedLinkedin} onDrill={onDrill}
+                    drill={{ metric: 'replied', channel: 'linkedin', campaignId, userId: u.userId, subject: u.name }} />
                   <td className="num">{fmtPct(u.linkedinRepliedRate)}</td>
-                  <td className={`num ${u.stalled > 0 ? 'trv-warning' : ''}`} style={GROUP_EDGE}>{fmtNum(u.stalled)}</td>
+                  <MetricCell value={u.stalled} onDrill={onDrill} style={GROUP_EDGE}
+                    className={u.stalled > 0 ? 'trv-warning' : ''}
+                    drill={{ metric: 'stalled', campaignId, userId: u.userId, subject: u.name }} />
                   <td className="num">{fmtDate(u.lastFiredAt)}</td>
                 </tr>
               ))}
@@ -1298,13 +1415,20 @@ function ErrorBanner({ message, onDismiss }) {
 // ──────────────────────────────────────────────────────────────────────────
 // ProspectListPanel — right-side overlay panel
 //
-// Two modes determined by props:
-//   • enrollmentId === null → "list mode" — shows enrolled prospects in the
+// Three modes, determined by props:
+//   • context.drill set      → "evidence mode" — the rows behind one clicked
+//     metric cell. Rows carry an enrollmentId, so a row click falls straight
+//     through to timeline mode.
+//   • enrollmentId === null  → "list mode" — shows enrolled prospects in the
 //     given sequence/campaign, with current step + status + last activity.
-//   • enrollmentId !== null → "timeline mode" — shows the per-step timeline
+//   • enrollmentId !== null  → "timeline mode" — shows the per-step timeline
 //     (executed + future) for one prospect's enrollment.
 //
+// Evidence mode takes precedence over list mode when both could apply; the
+// drill context always names a metric, list mode never does.
+//
 // Fetches:
+//   Evidence   → GET /reporting/metric-drill?metric=…&<grain>&<window>
 //   List mode  → GET /sequences/enrollments?sequenceId= or ?campaignId=
 //   Timeline   → GET /sequences/enrollments/:enrollmentId
 //
@@ -1313,7 +1437,57 @@ function ErrorBanner({ message, onDismiss }) {
 // view is interactive and the user may want to switch tabs while keeping
 // the prospect list open). Only the explicit ✕ button closes it.
 // ──────────────────────────────────────────────────────────────────────────
-function ProspectListPanel({ context, enrollmentId, onPickEnrollment, onBackToList, onClose }) {
+function ProspectListPanel({ context, queryString, enrollmentId, onPickEnrollment, onBackToList, onClose }) {
+  const drill = context.drill || null;
+
+  // ── Evidence-mode state ──────────────────────────────────────────────
+  const [drillRes,     setDrillRes]     = useState(null);
+  const [drillLoading, setDrillLoading] = useState(false);
+  const [drillErr,     setDrillErr]     = useState(null);
+
+  const drillQuery = useMemo(() => {
+    if (!drill) return null;
+    const p = new URLSearchParams();
+    p.set('metric', drill.metric);
+    if (drill.channel)    p.set('channel',    drill.channel);
+    if (drill.campaignId) p.set('campaignId', String(drill.campaignId));
+    if (drill.sequenceId) p.set('sequenceId', String(drill.sequenceId));
+    if (drill.userId)     p.set('userId',     String(drill.userId));
+    p.set('limit', '200');
+    // queryString already carries depth + windowDays/startDate+endDate. Its
+    // campaignIds= (the toolbar multi-select) is ignored by the endpoint —
+    // the cell's own campaignId is the grain that produced the number.
+    return `${p.toString()}&${queryString}`;
+  }, [drill, queryString]);
+
+  useEffect(() => {
+    if (!drill || enrollmentId) return;   // timeline mode handles its own fetch
+    let cancelled = false;
+    setDrillLoading(true);
+    setDrillErr(null);
+    apiFetch(`/reporting/metric-drill?${drillQuery}`)
+      .then(res => {
+        if (cancelled) return;
+        setDrillRes(res);
+        // The cell said N. The evidence says res.total. If those ever disagree,
+        // an aggregate and its drill have drifted apart — the precise failure
+        // that produced "5 replies" over a drill-down reading 0. Loud in dev,
+        // silent in prod: the user still gets the rows.
+        if (typeof drill.expected === 'number' && res?.total !== drill.expected
+            && process.env.NODE_ENV !== 'production') {
+          console.warn(
+            `[metric-drill] cell showed ${drill.expected} but evidence returned ${res?.total} ` +
+            `for metric=${drill.metric} channel=${drill.channel || '-'} ` +
+            `campaignId=${drill.campaignId || '-'} sequenceId=${drill.sequenceId || '-'} ` +
+            `userId=${drill.userId || '-'}. Aggregate and drill predicates have drifted.`
+          );
+        }
+      })
+      .catch(err => { if (!cancelled) setDrillErr(err.message); })
+      .finally(() => { if (!cancelled) setDrillLoading(false); });
+    return () => { cancelled = true; };
+  }, [drill, drillQuery, enrollmentId]);
+
   // ── List-mode state ──────────────────────────────────────────────────
   const [enrollments, setEnrollments] = useState(null);
   const [listTotal,   setListTotal]   = useState(0);
@@ -1328,6 +1502,7 @@ function ProspectListPanel({ context, enrollmentId, onPickEnrollment, onBackToLi
 
   useEffect(() => {
     if (enrollmentId) return;   // timeline mode handles its own fetch
+    if (drill) return;          // evidence mode owns the body
     let cancelled = false;
     setListLoading(true);
     setListError(null);
@@ -1344,7 +1519,7 @@ function ProspectListPanel({ context, enrollmentId, onPickEnrollment, onBackToLi
       })
       .finally(() => { if (!cancelled) setListLoading(false); });
     return () => { cancelled = true; };
-  }, [enrollmentId, listParams]);
+  }, [enrollmentId, listParams, drill]);
 
   // Append the next page. Offset = how many we already hold, so it walks
   // forward regardless of page size. Stable ordering on the server (enrolled_at
@@ -1388,14 +1563,24 @@ function ProspectListPanel({ context, enrollmentId, onPickEnrollment, onBackToLi
   }, [enrollmentId]);
 
   // ── Render ───────────────────────────────────────────────────────────
-  const title = enrollmentId
-    ? (tlEnrollment
-        ? `${[tlEnrollment.first_name, tlEnrollment.last_name].filter(Boolean).join(' ').trim() || tlEnrollment.email}`
-        : 'Loading…')
-    : (context.sequenceName || context.campaignName || '');
-  const subtitle = enrollmentId
-    ? (tlEnrollment?.email || '')
-    : (context.sequenceId ? 'Enrolled prospects' : 'Prospects in this campaign');
+  let title;
+  let subtitle;
+  if (enrollmentId) {
+    title = tlEnrollment
+      ? ([tlEnrollment.first_name, tlEnrollment.last_name].filter(Boolean).join(' ').trim() || tlEnrollment.email)
+      : 'Loading…';
+    subtitle = tlEnrollment?.email || '';
+  } else if (drill) {
+    title = drillTitle(drill.metric, drill.channel);
+    subtitle = [drill.subject, drillRes?.period?.description].filter(Boolean).join(' · ');
+  } else {
+    title = context.sequenceName || context.campaignName || '';
+    subtitle = context.sequenceId ? 'Enrolled prospects' : 'Prospects in this campaign';
+  }
+
+  // In evidence mode the back button returns to the evidence list, not to a
+  // prospect list that was never open.
+  const contextLabel = drill ? 'Evidence' : (context.sequenceId ? 'Sequence' : 'Campaign');
 
   return (
     <>
@@ -1407,7 +1592,7 @@ function ProspectListPanel({ context, enrollmentId, onPickEnrollment, onBackToLi
               ← Back to list
             </button>
           ) : (
-            <div className="trv-pp-context">{context.sequenceId ? 'Sequence' : 'Campaign'}</div>
+            <div className="trv-pp-context">{contextLabel}</div>
           )}
           <button className="trv-pp-close" onClick={onClose} aria-label="Close panel">✕</button>
         </div>
@@ -1417,7 +1602,16 @@ function ProspectListPanel({ context, enrollmentId, onPickEnrollment, onBackToLi
         </div>
 
         <div className="trv-pp-body">
-          {!enrollmentId && (
+          {!enrollmentId && drill && (
+            <MetricDrillBody
+              loading={drillLoading}
+              error={drillErr}
+              result={drillRes}
+              metric={drill.metric}
+              onPick={onPickEnrollment}
+            />
+          )}
+          {!enrollmentId && !drill && (
             <ProspectListBody
               loading={listLoading}
               error={listError}
@@ -1439,6 +1633,87 @@ function ProspectListPanel({ context, enrollmentId, onPickEnrollment, onBackToLi
         </div>
       </div>
     </>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// MetricDrillBody — the rows behind one clicked number
+//
+// Rendered inside the same panel shell as ProspectListBody, and it reuses the
+// same row chrome so a drill list and a prospect list look like siblings.
+// Every row carries an enrollmentId, so clicking one hands off to timeline
+// mode — number → people → this person's whole sequence.
+// ──────────────────────────────────────────────────────────────────────────
+function MetricDrillBody({ loading, error, result, metric, onPick }) {
+  if (loading && !result) return <LoadingState />;
+  if (error) return <ErrorBanner message={error} />;
+  if (!result || !result.rows || result.rows.length === 0) {
+    return <EmptyState message="Nothing behind this number for the selected window." />;
+  }
+
+  const { rows, total, unattributedReplies } = result;
+  const showChannel = ['replied', 'sent', 'drafts', 'failed'].includes(metric);
+
+  return (
+    <div className="trv-pp-list">
+      <div className="trv-pp-count">
+        {rows.length === total
+          ? `${total} ${total === 1 ? 'row' : 'rows'}`
+          : `Showing ${rows.length} of ${total}`}
+      </div>
+
+      {rows.map((r, i) => (
+        <button
+          key={`${r.prospectId}-${r.occurredAt || i}`}
+          className="trv-pp-row trv-pp-row-drill"
+          onClick={() => r.enrollmentId && onPick(r.enrollmentId)}
+          disabled={!r.enrollmentId}
+        >
+          <div className="trv-pp-row-main">
+            <div className="trv-pp-row-name">{r.name}</div>
+            <div className="trv-pp-row-meta">
+              {r.company && <span>{r.company}</span>}
+              {r.company && r.title && <span className="trv-pp-row-dot">·</span>}
+              {r.title && <span>{r.title}</span>}
+            </div>
+            {r.subject && <div className="trv-pp-subject">{r.subject}</div>}
+            {r.snippet && <div className="trv-pp-snippet">{r.snippet}</div>}
+            {r.errorMessage && <div className="trv-pp-snippet trv-warning">{r.errorMessage}</div>}
+            <div className="trv-pp-row-meta">
+              {r.repName && <span>{r.repName}</span>}
+              {r.repName && r.sequenceName && <span className="trv-pp-row-dot">·</span>}
+              {r.sequenceName && <span>{r.sequenceName}</span>}
+            </div>
+          </div>
+          <div className="trv-pp-row-right">
+            {showChannel && r.channel && (
+              <span className={`trv-pp-status ${r.channel === 'email' ? 'trv-status-neutral' : 'trv-status-success'}`}>
+                {r.channel === 'linkedin' ? 'LinkedIn' : 'email'}
+              </span>
+            )}
+            <div className="trv-pp-row-time">{fmtDate(r.occurredAt)}</div>
+          </div>
+        </button>
+      ))}
+
+      {/* Not a row source — a reconciliation note. Replies from prospects who
+          were never enrolled have no rep or sequence to attribute to, so no
+          count on this page includes them. The campaign detail panel's funnel
+          keys off campaign_id alone and does. Saying so beats being asked. */}
+      {metric === 'replied' && unattributedReplies > 0 && (
+        <div className="trv-pp-footnote">
+          {unattributedReplies} further {unattributedReplies === 1 ? 'reply' : 'replies'} in this
+          campaign came from prospects with no prior enrollment. They can't be attributed to a rep
+          or a sequence, so they're excluded from every count on this page.
+        </div>
+      )}
+
+      {rows.length < total && (
+        <div className="trv-pp-footnote">
+          Showing the {rows.length} most recent. Narrow the window to see the rest.
+        </div>
+      )}
+    </div>
   );
 }
 

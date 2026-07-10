@@ -934,3 +934,73 @@
 .trv-tl-step-toggle:hover {
   text-decoration: underline;
 }
+
+/* ── Metric drill-through ─────────────────────────────────────────────────
+   A numeric cell that has evidence behind it. Styled as a number first and a
+   control second: no underline at rest, so a dense table of figures still
+   reads as figures. The dotted underline on hover is the affordance. Zero
+   values never render this element — see MetricCell. */
+.trv-metric-cell {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-bottom: 1px dotted transparent;
+  transition: color 0.1s, border-color 0.1s;
+}
+.trv-metric-cell:hover,
+.trv-metric-cell:focus-visible {
+  color: #0F9D8E;
+  border-bottom-color: #0F9D8E;
+}
+.trv-metric-cell:focus-visible {
+  outline: 2px solid #99f6e4;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.trv-warning .trv-metric-cell:hover,
+.trv-warning .trv-metric-cell:focus-visible {
+  color: #b45309;
+  border-bottom-color: #b45309;
+}
+
+/* ── Evidence rows inside ProspectListPanel ──────────────────────────────
+   Same chrome as .trv-pp-row, but the content stacks (subject + snippet)
+   rather than sitting on one line, so align to the top. */
+.trv-pp-row-drill {
+  align-items: flex-start;
+}
+.trv-pp-row-drill:disabled {
+  cursor: default;
+}
+.trv-pp-subject {
+  font-size: 12px;
+  color: #374151;
+  font-weight: 500;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+.trv-pp-snippet {
+  font-size: 11px;
+  color: #6b7280;
+  line-height: 1.45;
+  margin: 3px 0 4px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.trv-pp-footnote {
+  padding: 10px 16px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #6b7280;
+  background: #f9fafb;
+  border-top: 1px solid #f3f4f6;
+}
