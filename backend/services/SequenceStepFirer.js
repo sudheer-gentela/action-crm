@@ -286,10 +286,7 @@ async function emailLoadByCampaignSender(dbClient, orgIds) {
        JOIN prospects p ON p.id = l.prospect_id
       WHERE l.org_id = ANY($1::int[])
         AND l.channel = 'email'
-        -- The firer's own send path leaves email rows at 'sent' (it does not
-        -- call sequenceStepAdvance). 'completed' is included defensively for
-        -- approval-path sends that route through /complete.
-        AND l.status IN ('sending','sent','completed')
+        AND l.status IN ('sending','sent')
         AND l.fired_at >= CURRENT_DATE
         AND l.sender_account_id IS NOT NULL
         AND p.campaign_id IS NOT NULL
@@ -312,8 +309,7 @@ async function linkedinLoadByCampaignRep(dbClient, orgIds) {
        JOIN prospects p ON p.id = l.prospect_id
       WHERE l.org_id = ANY($1::int[])
         AND l.channel = 'linkedin'
-        -- 'completed' included for the same reason as the cap counter above.
-        AND l.status IN ('draft','scheduled','sending','sent','completed')
+        AND l.status IN ('draft','scheduled','sending','sent')
         AND COALESCE(l.fired_at, l.scheduled_send_at) >= CURRENT_DATE
         AND p.campaign_id IS NOT NULL
       GROUP BY 1, 2`,
@@ -364,13 +360,7 @@ async function linkedinConnectionRequestsToday(dbClient, orgId, userId) {
         AND se.enrolled_by = $2
         AND l.channel     = 'linkedin'
         AND l.step_intent = 'connection_request'
-        -- 'completed' is REQUIRED. When a rep actions a LinkedIn task, the
-        -- /complete endpoint (sequenceStepAdvance.service.js:83) flips the row
-        -- draft → completed. Omitting it meant a request dropped out of the
-        -- counter the moment the rep sent it, so the cap released another one:
-        -- the ceiling leaked one-for-one with how fast the rep worked.
-        -- 'skipped' stays out — the rep declined, LinkedIn never saw it.
-        AND l.status IN ('draft','scheduled','sending','sent','completed')
+        AND l.status IN ('draft','scheduled','sending','sent')
         -- fired_at is NULL on 'draft' and 'scheduled' rows (set only on send /
         -- extension confirm), so anchor on when the row was RELEASED.
         AND COALESCE(l.fired_at, l.scheduled_send_at) >= CURRENT_DATE`,
@@ -593,11 +583,36 @@ async function materializeRows(client, enrollmentIds = null) {
         AND se.next_step_due IS NOT NULL
         AND ${AUTO_SEND_PREDICATE}
         AND s.ai_enabled = false
+        -- Has this (enrollment, step) EVER produced a log row?
+        --
+        -- This list used to read ('scheduled','sending','sent'). It omitted
+        -- 'completed', and sequenceStepAdvance.service.js transitions
+        -- sent → completed on every successful advance. So the moment a step
+        -- completed, this guard went blind to it: if se.current_step_id ever
+        -- pointed back at that step — which a sequence reorder does — the
+        -- top-up re-inserted a 'scheduled' row and the step fired a SECOND
+        -- time. Prospects received duplicate emails and duplicate LinkedIn
+        -- touches. Confirmed in production: distinct email_id values on both
+        -- step_log rows.
+        --
+        -- 'draft', 'replied' and 'superseded_duplicate' were missing for the
+        -- same reason. We now match on any prior log for the pair EXCEPT the
+        -- two that legitimately warrant another attempt:
+        --   'failed'  — handleSendFailure() pauses the enrollment anyway, and
+        --               this query only considers se.status = 'active', so this
+        --               exclusion is belt-and-braces.
+        --   'skipped' — a step skipped by a rep (or by the accept-gate) may be
+        --               re-attempted after a resume. Excluding it preserves the
+        --               pre-existing behaviour exactly.
+        --
+        -- Predicate is kept in lockstep with the uq_seq_step_logs_fired index
+        -- (migration 2026_48). The guard stops the firer trying; the index
+        -- guarantees it cannot succeed. Change one, change the other.
         AND NOT EXISTS (
           SELECT 1 FROM sequence_step_logs l
            WHERE l.enrollment_id    = se.id
              AND l.sequence_step_id = ss.id
-             AND l.status IN ('scheduled','sending','sent')
+             AND l.status NOT IN ('failed', 'skipped')
         )
         ${scopeSql}`,
     params
@@ -878,17 +893,7 @@ const SequenceStepFirer = {
         // a reorder and can't see frozen (snapshot) enrollments at all. The exact
         // step (live or snapshot) is resolved per-enrollment in the loop body via
         // EnrollmentStepResolver.
-        // PER-CHANNEL LIMIT. A flat `LIMIT 100 ORDER BY next_step_due` couples
-        // the channels: LinkedIn rows deferred by the connection cap do NOT get
-        // a draft row, so the "parked" NOT EXISTS guard below never sees them —
-        // they stay due, stay oldest, and re-occupy the batch every single tick
-        // for the rest of the day. With a large enough LinkedIn backlog they
-        // crowd email out of the window entirely and the mailbox idles while
-        // work is waiting. Partitioning by channel decouples them: each channel
-        // gets its own 100 oldest rows, and a saturated channel cannot starve a
-        // channel with capacity to spare.
-        `WITH due AS (
-         SELECT se.*, s.id AS seq_id, s.name AS seq_name,
+        `SELECT se.*, s.id AS seq_id, s.name AS seq_name,
                 s.require_approval AS seq_require_approval,
                 s.ai_enabled AS seq_ai_enabled,
                 s.stop_on_connection_accept AS seq_stop_on_accept,
@@ -924,17 +929,8 @@ const SequenceStepFirer = {
                  AND ( l.status = 'draft'
                     OR (se.current_step_channel = 'linkedin' AND l.status IN ('scheduled','sending')) )
             )
-        )
-        SELECT * FROM (
-          SELECT due.*,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY due.current_step_channel
-                   ORDER BY due.next_step_due ASC, due.id ASC
-                 ) AS _chan_rn
-            FROM due
-        ) ranked
-        WHERE ranked._chan_rn <= 100
-        ORDER BY next_step_due ASC, id ASC`
+          ORDER BY se.next_step_due ASC, se.id ASC
+          LIMIT 100`
       );
 
       // Resolve send-window settings per (orgId, campaignId) once and cache —

@@ -662,6 +662,20 @@ function windowDescription(window) {
 // ──────────────────────────────────────────────────────────────────────────
 // MetricTiles — shared 4-up tile strip
 // ──────────────────────────────────────────────────────────────────────────
+
+// ── Channel-split presentation ────────────────────────────────────────────
+// `sent` counts every step log regardless of channel, so a blended reply rate
+// divides EMAIL replies by EMAIL + LINKEDIN sends. On a sequence whose step 1
+// is a LinkedIn touch, that halves the apparent email reply rate. The tables
+// below therefore show each channel's sends and replies side by side, and the
+// tiles report both rates rather than one meaningless blend.
+const GROUP_EDGE = { borderLeft: '1px solid var(--trv-border, #e5e7eb)' };
+
+/** "161 email · 166 LinkedIn" — the sub-line under a tile. */
+function channelSub(email, linkedin) {
+  return `${fmtNum(email)} email · ${fmtNum(linkedin)} LinkedIn`;
+}
+
 function MetricTiles({ tiles }) {
   return (
     <div className="trv-tiles">
@@ -693,10 +707,12 @@ function RepTab({ data, loading, scope, windowState, onSetWindow }) {
     <div className="trv-tab-body">
       <MetricTiles
         tiles={[
-          { label: 'Active reps',  value: fmtNum(reps.filter(r => r.sent > 0 || r.enrolled > 0).length) },
-          { label: 'Enrolled',     value: fmtNum(totals.enrolled) },
-          { label: 'Sent',         value: fmtNum(totals.sent) },
-          { label: 'Reply rate',   value: fmtPct(totals.repliedRate) },
+          { label: 'Active reps', value: fmtNum(reps.filter(r => r.sent > 0 || r.enrolled > 0).length) },
+          { label: 'Enrolled',    value: fmtNum(totals.enrolled) },
+          { label: 'Sent',        value: fmtNum(totals.sent),
+            sub: channelSub(totals.sentEmail, totals.sentLinkedin) },
+          { label: 'Email reply rate', value: fmtPct(totals.emailRepliedRate),
+            sub: `LinkedIn ${fmtPct(totals.linkedinRepliedRate)}` },
         ]}
       />
       <SmartEmpty rowsExist={reps.length > 0} allZero={allZero} windowState={windowState}
@@ -710,11 +726,14 @@ function RepTab({ data, loading, scope, windowState, onSetWindow }) {
                 <th>Rep</th>
                 <th className="num">Enrolled</th>
                 <th className="num">Drafts</th>
-                <th className="num">Sent</th>
-                <th className="num">Replied</th>
-                <th className="num">Failed</th>
+                <th className="num" style={GROUP_EDGE}>Email sent</th>
+                <th className="num">Email replied</th>
+                <th className="num">Email reply %</th>
+                <th className="num" style={GROUP_EDGE}>LI sent</th>
+                <th className="num">LI replied</th>
+                <th className="num">LI reply %</th>
+                <th className="num" style={GROUP_EDGE}>Failed</th>
                 <th className="num">Stalled</th>
-                <th className="num">Reply rate</th>
               </tr>
             </thead>
             <tbody>
@@ -734,15 +753,18 @@ function RepTab({ data, loading, scope, windowState, onSetWindow }) {
                       </td>
                       <td className="num">{fmtNum(r.enrolled)}</td>
                       <td className="num">{fmtNum(r.drafts)}</td>
-                      <td className="num">{fmtNum(r.sent)}</td>
-                      <td className="num">{fmtNum(r.replied)}</td>
-                      <td className="num">{fmtNum(r.failed)}</td>
+                      <td className="num" style={GROUP_EDGE}>{fmtNum(r.sentEmail)}</td>
+                      <td className="num">{fmtNum(r.repliedEmail)}</td>
+                      <td className="num">{fmtPct(r.emailRepliedRate)}</td>
+                      <td className="num" style={GROUP_EDGE}>{fmtNum(r.sentLinkedin)}</td>
+                      <td className="num">{fmtNum(r.repliedLinkedin)}</td>
+                      <td className="num">{fmtPct(r.linkedinRepliedRate)}</td>
+                      <td className="num" style={GROUP_EDGE}>{fmtNum(r.failed)}</td>
                       <td className={`num ${r.stalled > 0 ? 'trv-warning' : ''}`}>{fmtNum(r.stalled)}</td>
-                      <td className="num">{fmtPct(r.repliedRate)}</td>
                     </tr>
                     {expanded && (
                       <tr className="trv-expand-row">
-                        <td colSpan={9}>
+                        <td colSpan={12}>
                           <div className="trv-expand-grid">
                             <div className="trv-expand-block">
                               <div className="trv-expand-label">Last activity</div>
@@ -806,8 +828,10 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
         tiles={[
           { label: 'Active campaigns', value: fmtNum(totals.activeCampaigns) },
           { label: 'Enrolled',         value: fmtNum(totals.enrolled) },
-          { label: 'Sent',             value: fmtNum(totals.sent) },
-          { label: 'Reply rate',       value: fmtPct(totals.repliedRate) },
+          { label: 'Sent',             value: fmtNum(totals.sent),
+            sub: channelSub(totals.sentEmail, totals.sentLinkedin) },
+          { label: 'Email reply rate', value: fmtPct(totals.emailRepliedRate),
+            sub: `LinkedIn ${fmtPct(totals.linkedinRepliedRate)}` },
         ]}
       />
       <SmartEmpty rowsExist={campaigns.length > 0} allZero={allZero} windowState={windowState}
@@ -821,10 +845,13 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
                 <th>Campaign</th>
                 <th>Owner</th>
                 <th className="num">Enrolled</th>
-                <th className="num">Sent</th>
-                <th className="num">Replied</th>
-                <th className="num">Stalled</th>
-                <th className="num">Reply rate</th>
+                <th className="num" style={GROUP_EDGE}>Email sent</th>
+                <th className="num">Email replied</th>
+                <th className="num">Email reply %</th>
+                <th className="num" style={GROUP_EDGE}>LI sent</th>
+                <th className="num">LI replied</th>
+                <th className="num">LI reply %</th>
+                <th className="num" style={GROUP_EDGE}>Stalled</th>
               </tr>
             </thead>
             <tbody>
@@ -844,14 +871,17 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
                         {c.owner && depthBadge(c.owner)}
                       </td>
                       <td className="num">{fmtNum(c.enrolled)}</td>
-                      <td className="num">{fmtNum(c.sent)}</td>
-                      <td className="num">{fmtNum(c.replied)}</td>
-                      <td className={`num ${c.stalled > 0 ? 'trv-warning' : ''}`}>{fmtNum(c.stalled)}</td>
-                      <td className="num">{fmtPct(c.repliedRate)}</td>
+                      <td className="num" style={GROUP_EDGE}>{fmtNum(c.sentEmail)}</td>
+                      <td className="num">{fmtNum(c.repliedEmail)}</td>
+                      <td className="num">{fmtPct(c.emailRepliedRate)}</td>
+                      <td className="num" style={GROUP_EDGE}>{fmtNum(c.sentLinkedin)}</td>
+                      <td className="num">{fmtNum(c.repliedLinkedin)}</td>
+                      <td className="num">{fmtPct(c.linkedinRepliedRate)}</td>
+                      <td className={`num ${c.stalled > 0 ? 'trv-warning' : ''}`} style={GROUP_EDGE}>{fmtNum(c.stalled)}</td>
                     </tr>
                     {expanded && (
                       <tr className="trv-expand-row">
-                        <td colSpan={8}>
+                        <td colSpan={11}>
                           <div className="trv-expand-grid">
                             <div className="trv-expand-block">
                               <div className="trv-expand-label">Last activity</div>
@@ -919,7 +949,8 @@ function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenPro
           { label: 'Enrolled',         value: fmtNum(totals.enrolled) },
           { label: 'Sent',             value: fmtNum(totals.sent) },
           { label: 'Connected',        value: fmtNum(totals.connected) },
-          { label: 'Reply rate',       value: fmtPct(totals.repliedRate) },
+          { label: 'Email reply rate', value: fmtPct(totals.emailRepliedRate),
+            sub: `LinkedIn ${fmtPct(totals.linkedinRepliedRate)}` },
         ]}
       />
       <SmartEmpty rowsExist={sequences.length > 0} allZero={allZero} windowState={windowState}

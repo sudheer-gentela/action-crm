@@ -215,67 +215,160 @@ async function resolveCampaignFilter(orgId, scopeUserIds, requestedCampaignIds) 
 //      belongs in prospecting-campaigns.routes.js — flagged, not smuggled in.
 
 /**
- * Build the `reply_events` CTE — one row per attributable inbound email.
+ * Build the `reply_events` CTE — one row per attributable inbound reply,
+ * across BOTH channels, each tagged with the channel it arrived on.
  *
  * Assumes $1 = orgId and $2 = scopeUserIds::int[] in the caller's param list.
- * Window bounds are passed by position because the three endpoints build their
- * param arrays in different orders.
+ * Window bounds and optional filters are passed by position because the three
+ * endpoints build their param arrays in different orders.
+ *
+ * EMAIL branch    — inbound `emails` following a real outbound (see header).
+ * LINKEDIN branch — `prospecting_activities`. LinkedIn replies are stored in a
+ *   single bucket activity_type='linkedin_event' with the specific event in
+ *   metadata->>'event' (LinkedInConnectionSyncService.js, prospects.routes.js).
+ *   Manually-logged responses land as activity_type='response_received' with
+ *   metadata->>'channel'='linkedin'. Both count.
+ *
+ * WHY THE CHANNEL COLUMN EXISTS
+ *
+ * `log_agg.sent` counts every step log regardless of channel. On a sequence
+ * whose step 1 is a LinkedIn touch and steps 2-3 are email, that means a
+ * blended repliedRate divides EMAIL replies by EMAIL + LINKEDIN sends. On a
+ * real campaign (166 LinkedIn sends, 174 email sends) that understates the
+ * email reply rate by roughly half. Splitting the numerator and denominator by
+ * channel is the only way the number means anything.
  *
  * @param {object} o
- *   prospectAlias  alias for the prospects join (must be unique in the query)
  *   startParam     e.g. '$3' — window start, bound as timestamptz
  *   endParam       e.g. '$4' — window end, bound as timestamptz
- *   campaignClause optional, e.g. `AND p_reply.campaign_id = ANY($5::int[])`
- *   sequenceClause optional, e.g. `AND se.sequence_id = ANY($6::int[])`
+ *   campaignParam  optional e.g. '$5' — int[] of campaign ids
+ *   sequenceParam  optional e.g. '$6' — int[] of sequence ids
  * @returns {string} the CTE body, WITHOUT a trailing comma
  */
-function replyEventsCte({
-  prospectAlias = 'p_reply',
-  startParam,
-  endParam,
-  campaignClause = '',
-  sequenceClause = '',
-}) {
+function replyEventsCte({ startParam, endParam, campaignParam = null, sequenceParam = null }) {
+  const ccEmail = campaignParam ? `AND p_reply.campaign_id    = ANY(${campaignParam}::int[])` : '';
+  const ccLi    = campaignParam ? `AND p_reply_li.campaign_id = ANY(${campaignParam}::int[])` : '';
+  const sfEmail = sequenceParam ? `AND se.sequence_id    = ANY(${sequenceParam}::int[])` : '';
+  const sfLi    = sequenceParam ? `AND se_li.sequence_id = ANY(${sequenceParam}::int[])` : '';
+
   return `
      reply_events AS (
-       SELECT DISTINCT ON (e.id)
-         e.id                          AS email_id,
-         e.sent_at                     AS replied_at,
-         se.enrolled_by                AS user_id,
-         se.sequence_id                AS sequence_id,
-         ${prospectAlias}.campaign_id  AS campaign_id
-       FROM emails e
-       JOIN prospects ${prospectAlias}
-         ON ${prospectAlias}.id     = e.prospect_id
-        AND ${prospectAlias}.org_id = e.org_id
-       JOIN sequence_enrollments se
-         ON se.prospect_id = ${prospectAlias}.id
-        AND se.org_id      = e.org_id
-        AND se.enrolled_at < (e.sent_at AT TIME ZONE 'UTC')
-       WHERE e.org_id       = $1
-         AND se.enrolled_by = ANY($2::int[])
-         AND e.direction    IN ('received', 'inbound')
-         AND e.deleted_at   IS NULL
-         AND e.sent_at     >= (${startParam}::timestamptz AT TIME ZONE 'UTC')
-         AND e.sent_at     <= (${endParam}::timestamptz   AT TIME ZONE 'UTC')
-         -- Cold inbound (a prospect writing first) is not a reply.
-         AND EXISTS (
-           SELECT 1 FROM emails o
-            WHERE o.org_id      = e.org_id
-              AND o.prospect_id = e.prospect_id
-              AND o.direction   = 'sent'
-              AND o.deleted_at  IS NULL
-              AND o.sent_at     < e.sent_at
-         )
-         ${campaignClause}
-         ${sequenceClause}
-       ORDER BY e.id, se.enrolled_at DESC, se.id DESC
+       -- ── EMAIL ────────────────────────────────────────────────────────
+       SELECT * FROM (
+         SELECT DISTINCT ON (e.id)
+           'email'::text        AS channel,
+           se.enrolled_by       AS user_id,
+           se.sequence_id       AS sequence_id,
+           p_reply.campaign_id  AS campaign_id
+         FROM emails e
+         JOIN prospects p_reply
+           ON p_reply.id     = e.prospect_id
+          AND p_reply.org_id = e.org_id
+         JOIN sequence_enrollments se
+           ON se.prospect_id = p_reply.id
+          AND se.org_id      = e.org_id
+          AND se.enrolled_at < (e.sent_at AT TIME ZONE 'UTC')
+         WHERE e.org_id       = $1
+           AND se.enrolled_by = ANY($2::int[])
+           AND e.direction    IN ('received', 'inbound')
+           AND e.deleted_at   IS NULL
+           AND e.sent_at     >= (${startParam}::timestamptz AT TIME ZONE 'UTC')
+           AND e.sent_at     <= (${endParam}::timestamptz   AT TIME ZONE 'UTC')
+           -- Cold inbound (a prospect writing first) is not a reply.
+           AND EXISTS (
+             SELECT 1 FROM emails o
+              WHERE o.org_id      = e.org_id
+                AND o.prospect_id = e.prospect_id
+                AND o.direction   = 'sent'
+                AND o.deleted_at  IS NULL
+                AND o.sent_at     < e.sent_at
+           )
+           ${ccEmail}
+           ${sfEmail}
+         ORDER BY e.id, se.enrolled_at DESC, se.id DESC
+       ) q_email
+
+       UNION ALL
+
+       -- ── LINKEDIN ─────────────────────────────────────────────────────
+       SELECT * FROM (
+         SELECT DISTINCT ON (a.id)
+           'linkedin'::text        AS channel,
+           se_li.enrolled_by       AS user_id,
+           se_li.sequence_id       AS sequence_id,
+           p_reply_li.campaign_id  AS campaign_id
+         FROM prospecting_activities a
+         JOIN prospects p_reply_li
+           ON p_reply_li.id     = a.prospect_id
+          AND p_reply_li.org_id = a.org_id
+         JOIN sequence_enrollments se_li
+           ON se_li.prospect_id = p_reply_li.id
+          AND se_li.org_id      = a.org_id
+          AND se_li.enrolled_at < (a.created_at AT TIME ZONE 'UTC')
+         WHERE a.org_id          = $1
+           AND se_li.enrolled_by = ANY($2::int[])
+           AND (
+                (a.activity_type = 'linkedin_event'
+                 AND a.metadata ->> 'event' = 'reply_received')
+             OR (a.activity_type = 'response_received'
+                 AND a.metadata ->> 'channel' = 'linkedin')
+           )
+           AND a.created_at >= (${startParam}::timestamptz AT TIME ZONE 'UTC')
+           AND a.created_at <= (${endParam}::timestamptz   AT TIME ZONE 'UTC')
+           ${ccLi}
+           ${sfLi}
+         ORDER BY a.id, se_li.enrolled_at DESC, se_li.id DESC
+       ) q_linkedin
      )`;
 }
 
 /** replied / sent as a 1-decimal percentage. 0 when there were no sends. */
 function _repliedRate(replied, sent) {
   return sent > 0 ? +((replied / sent) * 100).toFixed(1) : 0;
+}
+
+/**
+ * Attach the channel-split counters + per-channel rates to a row.
+ * Kept in one place so by-rep / by-campaign / by-sequence can never drift.
+ *
+ * `repliedRate` stays the blended figure for backward compatibility, but it is
+ * a lie on any mixed-channel sequence (email replies over email+LinkedIn
+ * sends). Read emailRepliedRate / linkedinRepliedRate instead.
+ */
+function _withChannelSplit(r) {
+  const sentEmail        = r.sent_email        || 0;
+  const sentLinkedin     = r.sent_linkedin     || 0;
+  const repliedEmail     = r.replied_email     || 0;
+  const repliedLinkedin  = r.replied_linkedin  || 0;
+  return {
+    sentEmail,
+    sentLinkedin,
+    repliedEmail,
+    repliedLinkedin,
+    emailRepliedRate:    _repliedRate(repliedEmail, sentEmail),
+    linkedinRepliedRate: _repliedRate(repliedLinkedin, sentLinkedin),
+  };
+}
+
+/** Zeroed channel-split block for totals reducers. */
+function _emptyChannelSplit() {
+  return { sentEmail: 0, sentLinkedin: 0, repliedEmail: 0, repliedLinkedin: 0 };
+}
+
+/** Sum channel counters from `row` into `acc` (a totals object). */
+function _accChannelSplit(acc, row) {
+  acc.sentEmail       += row.sentEmail       || 0;
+  acc.sentLinkedin    += row.sentLinkedin    || 0;
+  acc.repliedEmail    += row.repliedEmail    || 0;
+  acc.repliedLinkedin += row.repliedLinkedin || 0;
+  return acc;
+}
+
+/** Finalise per-channel rates on a totals object after reduction. */
+function _finaliseChannelRates(t) {
+  t.emailRepliedRate    = _repliedRate(t.repliedEmail, t.sentEmail);
+  t.linkedinRepliedRate = _repliedRate(t.repliedLinkedin, t.sentLinkedin);
+  return t;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -381,6 +474,10 @@ router.get('/sequences/team-overview', async (req, res) => {
            p.campaign_id,
            COUNT(*) FILTER (WHERE ssl.status = 'draft')::int                              AS drafts,
            COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed'))::int                AS sent,
+           COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed')
+                                  AND ssl.channel = 'email')::int                       AS sent_email,
+           COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed')
+                                  AND ssl.channel = 'linkedin')::int                    AS sent_linkedin,
            COUNT(*) FILTER (WHERE ssl.status = 'failed')::int                             AS failed,
            MAX(ssl.fired_at) AS last_fired_at
          FROM sequence_step_logs ssl
@@ -393,7 +490,6 @@ router.get('/sequences/team-overview', async (req, res) => {
          GROUP BY p.campaign_id
        ),
        ${replyEventsCte({
-         prospectAlias: 'p_reply',
          startParam: `$${startIdx}`,
          endParam:   `$${endIdx}`,
        })},
@@ -401,7 +497,10 @@ router.get('/sequences/team-overview', async (req, res) => {
          -- Campaign-grain replies. Orphan replies (prospect with no campaign)
          -- have nowhere to roll up to in this lens and are dropped — the
          -- by-sequence tab is where they surface.
-         SELECT campaign_id, COUNT(*)::int AS replied
+         SELECT campaign_id,
+                COUNT(*)::int                                        AS replied,
+                COUNT(*) FILTER (WHERE channel = 'email')::int       AS replied_email,
+                COUNT(*) FILTER (WHERE channel = 'linkedin')::int    AS replied_linkedin
            FROM reply_events
           WHERE campaign_id IS NOT NULL
           GROUP BY campaign_id
@@ -442,7 +541,11 @@ router.get('/sequences/team-overview', async (req, res) => {
          COALESCE(e.enrolled, 0)  AS enrolled,
          COALESCE(l.drafts, 0)    AS drafts,
          COALESCE(l.sent, 0)      AS sent,
+         COALESCE(l.sent_email, 0)        AS sent_email,
+         COALESCE(l.sent_linkedin, 0)     AS sent_linkedin,
          COALESCE(rp.replied, 0)  AS replied,
+         COALESCE(rp.replied_email, 0)    AS replied_email,
+         COALESCE(rp.replied_linkedin, 0) AS replied_linkedin,
          COALESCE(l.failed, 0)    AS failed,
          COALESCE(s.stalled, 0)   AS stalled,
          l.last_fired_at
@@ -488,6 +591,7 @@ router.get('/sequences/team-overview', async (req, res) => {
         // The UI's per-row "Reply rate" column reads this. It was never sent,
         // so the column rendered '—' for every campaign.
         repliedRate:     _repliedRate(r.replied, r.sent),
+        ..._withChannelSplit(r),
         lastActivityAt:  r.last_fired_at,
       };
     });
@@ -499,8 +603,9 @@ router.get('/sequences/team-overview', async (req, res) => {
       acc.replied  += c.replied;
       acc.failed   += c.failed;
       acc.stalled  += c.stalled;
-      return acc;
+      return _accChannelSplit(acc, c);
     }, _emptyTotals());
+    _finaliseChannelRates(totals);
 
     totals.activeCampaigns = campaigns.filter(c => c.enrolled > 0 || c.drafts > 0 || c.sent > 0 || c.replied > 0).length;
     totals.repliedRate = _repliedRate(totals.replied, totals.sent);
@@ -604,12 +709,12 @@ router.get('/sequences/team-by-rep', async (req, res) => {
     const params = [req.orgId, scopeUserIds, window.startISO, window.endISO];
     let campaignClauseLog = '';
     let campaignClauseEnroll = '';
-    let campaignClauseReply = '';
+    let campaignReplyParam = null;
     if (campaignIdFilter && campaignIdFilter.length) {
       params.push(campaignIdFilter);
       campaignClauseLog    = `AND p_log.campaign_id    = ANY($5::int[])`;
       campaignClauseEnroll = `AND p_enroll.campaign_id = ANY($5::int[])`;
-      campaignClauseReply  = `AND p_reply.campaign_id  = ANY($5::int[])`;
+      campaignReplyParam   = '$5';
     }
 
     // ── Per-rep aggregates ──────────────────────────────────────────
@@ -635,6 +740,10 @@ router.get('/sequences/team-by-rep', async (req, res) => {
            se.enrolled_by AS user_id,
            COUNT(*) FILTER (WHERE ssl.status = 'draft')::int                AS drafts,
            COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed'))::int  AS sent,
+           COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed')
+                                  AND ssl.channel = 'email')::int           AS sent_email,
+           COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed')
+                                  AND ssl.channel = 'linkedin')::int        AS sent_linkedin,
            COUNT(*) FILTER (WHERE ssl.status = 'failed')::int               AS failed,
            MAX(ssl.fired_at) AS last_fired_at
          FROM sequence_step_logs ssl
@@ -648,15 +757,17 @@ router.get('/sequences/team-by-rep', async (req, res) => {
          GROUP BY se.enrolled_by
        ),
        ${replyEventsCte({
-         prospectAlias: 'p_reply',
          startParam: '$3',
          endParam:   '$4',
-         campaignClause: campaignClauseReply,
+         campaignParam: campaignReplyParam,
        })},
        reply_agg AS (
          -- Rep-grain replies, attributed via the enrollment that preceded the
-         -- reply. Exactly one row per inbound email (DISTINCT ON upstream).
-         SELECT user_id, COUNT(*)::int AS replied
+         -- reply. Exactly one row per inbound event (DISTINCT ON upstream).
+         SELECT user_id,
+                COUNT(*)::int                                      AS replied,
+                COUNT(*) FILTER (WHERE channel = 'email')::int     AS replied_email,
+                COUNT(*) FILTER (WHERE channel = 'linkedin')::int  AS replied_linkedin
            FROM reply_events
           GROUP BY user_id
        ),
@@ -710,7 +821,11 @@ router.get('/sequences/team-by-rep', async (req, res) => {
          u.first_name, u.last_name, u.email,
          COALESCE(l.drafts, 0)            AS drafts,
          COALESCE(l.sent, 0)              AS sent,
+         COALESCE(l.sent_email, 0)        AS sent_email,
+         COALESCE(l.sent_linkedin, 0)     AS sent_linkedin,
          COALESCE(rp.replied, 0)          AS replied,
+         COALESCE(rp.replied_email, 0)    AS replied_email,
+         COALESCE(rp.replied_linkedin, 0) AS replied_linkedin,
          COALESCE(l.failed, 0)            AS failed,
          COALESCE(e.enrolled, 0)          AS enrolled,
          COALESCE(s.stalled, 0)           AS stalled,
@@ -825,6 +940,7 @@ router.get('/sequences/team-by-rep', async (req, res) => {
         // The UI's per-row "Reply rate" column reads this. It was never sent,
         // so the column rendered '—' even for reps with thousands of sends.
         repliedRate:      _repliedRate(r.replied, r.sent),
+        ..._withChannelSplit(r),
         lastActivityAt:   r.last_fired_at,
         topCampaigns:     topCampaigns.get(r.user_id) || [],
       };
@@ -846,11 +962,12 @@ router.get('/sequences/team-by-rep', async (req, res) => {
       acc.replied  += r.replied;
       acc.failed   += r.failed;
       acc.stalled  += r.stalled;
-      return acc;
+      return _accChannelSplit(acc, r);
     }, _emptyTotals());
 
     totals.enrolledProspects = totals.enrolled;   // alias for the UI tile
     totals.repliedRate       = _repliedRate(totals.replied, totals.sent);
+    _finaliseChannelRates(totals);
 
     // activeCampaigns / activeSequences are intentionally left at 0. Per-rep
     // `campaignsActive` / `sequencesActive` are whole-history state counters —
@@ -1064,7 +1181,10 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
     const ccStall  = campaignClause ? `AND p_stall.campaign_id  = ANY(${campaignClause})` : '';
     const ccAct    = campaignClause ? `AND p_act.campaign_id    = ANY(${campaignClause})` : '';
     const ccConn   = campaignClause ? `AND p_conn.campaign_id   = ANY(${campaignClause})` : '';
-    const ccReply  = campaignClause ? `AND p_reply.campaign_id  = ANY(${campaignClause})` : '';
+    // reply_events builds its own alias-correct predicates; it needs the bare
+    // param placeholder, not the pre-templated clause strings above.
+    // campaignClause is `$N::int[]` — strip the cast, replyEventsCte re-adds it.
+    const campaignReplyParam = campaignClause ? campaignClause.replace('::int[]', '') : null;
 
     // Per-sequence filter predicates for each CTE (applies the
     // user-supplied sequenceIds intersected with scope).
@@ -1073,7 +1193,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
     const sfStall  = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
     const sfAct    = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
     const sfConn   = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
-    const sfReply  = sequenceIdFilter !== null ? `AND se.sequence_id = ANY($${seqIdParamIdx}::int[])` : '';
+    const sequenceReplyParam = sequenceIdFilter !== null ? `$${seqIdParamIdx}` : null;
     const sfOuter  = sequenceIdFilter !== null ? `AND s.id = ANY($${seqIdParamIdx}::int[])` : '';
 
     // ── Per-sequence aggregates ─────────────────────────────────────
@@ -1100,6 +1220,10 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
            se.sequence_id,
            COUNT(*) FILTER (WHERE ssl.status = 'draft')::int                              AS drafts,
            COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed'))::int                AS sent,
+           COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed')
+                                  AND ssl.channel = 'email')::int                       AS sent_email,
+           COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed')
+                                  AND ssl.channel = 'linkedin')::int                    AS sent_linkedin,
            COUNT(*) FILTER (WHERE ssl.status = 'failed')::int                             AS failed,
            MAX(ssl.fired_at)                                                              AS last_fired_at
          FROM sequence_step_logs ssl
@@ -1114,17 +1238,19 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
          GROUP BY se.sequence_id
        ),
        ${replyEventsCte({
-         prospectAlias: 'p_reply',
          startParam: '$3',
          endParam:   '$4',
-         campaignClause: ccReply,
-         sequenceClause: sfReply,
+         campaignParam: campaignReplyParam,
+         sequenceParam: sequenceReplyParam,
        })},
        reply_agg AS (
          -- Sequence-grain replies. Unlike the campaign lens, orphan prospects
          -- (campaign_id IS NULL) are retained — surfacing them is precisely
          -- why this endpoint exists (see header).
-         SELECT sequence_id, COUNT(*)::int AS replied
+         SELECT sequence_id,
+                COUNT(*)::int                                       AS replied,
+                COUNT(*) FILTER (WHERE channel = 'email')::int      AS replied_email,
+                COUNT(*) FILTER (WHERE channel = 'linkedin')::int   AS replied_linkedin
            FROM reply_events
           GROUP BY sequence_id
        ),
@@ -1207,7 +1333,11 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
          u.first_name, u.last_name, u.email,
          COALESCE(l.drafts, 0)              AS drafts,
          COALESCE(l.sent, 0)                AS sent,
+         COALESCE(l.sent_email, 0)          AS sent_email,
+         COALESCE(l.sent_linkedin, 0)       AS sent_linkedin,
          COALESCE(rp.replied, 0)            AS replied,
+         COALESCE(rp.replied_email, 0)      AS replied_email,
+         COALESCE(rp.replied_linkedin, 0)   AS replied_linkedin,
          COALESCE(l.failed, 0)              AS failed,
          COALESCE(e.enrolled, 0)            AS enrolled,
          COALESCE(e.distinct_campaigns, 0)  AS distinct_campaigns,
@@ -1334,6 +1464,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
         failed:         r.failed,
         stalled:        r.stalled,
         repliedRate:    _repliedRate(r.replied, r.sent),
+        ..._withChannelSplit(r),
         lastActivityAt: r.last_fired_at,
         topUsers:       topUsers.get(r.sequence_id) || [],
       };
@@ -1354,7 +1485,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
       acc.replied  += s.replied;
       acc.failed   += s.failed;
       acc.stalled  += s.stalled;
-      return acc;
+      return _accChannelSplit(acc, s);
     }, _emptyTotals());
 
     // activeSequences = number of sequences that have any activity or are
@@ -1403,6 +1534,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
     totals.enrolledProspects = totals.enrolled;   // alias for the UI tile
 
     totals.repliedRate = _repliedRate(totals.replied, totals.sent);
+    _finaliseChannelRates(totals);
 
     res.json({
       scope,
@@ -1433,6 +1565,12 @@ function _emptyTotals() {
     failed:            0,
     stalled:           0,
     repliedRate:       0,
+    sentEmail:            0,
+    sentLinkedin:         0,
+    repliedEmail:         0,
+    repliedLinkedin:      0,
+    emailRepliedRate:     0,
+    linkedinRepliedRate:  0,
   };
 }
 
