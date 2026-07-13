@@ -2028,6 +2028,65 @@ router.post('/drafts/:logId/complete', async (req, res) => {
 
     await client.query('BEGIN');
 
+    // ── 0. Reconcile any sibling rows for this (enrollment, step) ─────────
+    // Moving this draft to 'completed' enters the uq_seq_step_logs_fired
+    // predicate. If a sibling is already in that predicate the UPDATE would
+    // raise "duplicate key ... uq_seq_step_logs_fired". For a MANUAL connection
+    // request only 'completed'/'sent'/'replied' proves the request actually went
+    // out; 'scheduled'/'sending' is queued-but-unconfirmed. Handle the two very
+    // differently so we never double-contact and never drop a contact:
+    const siblings = await client.query(
+      `SELECT id, status FROM sequence_step_logs
+        WHERE enrollment_id=$1 AND sequence_step_id=$2 AND id<>$3
+          AND status IN ('scheduled','sending','sent','completed','replied')`,
+      [draft.enrollment_id, draft.sequence_step_id, draft.id]
+    );
+    const reached = siblings.rows.some(r => ['completed','sent','replied'].includes(r.status));
+
+    if (reached) {
+      // The contact was already reached by an earlier row. This draft is a
+      // redundant duplicate — completing it would be a SECOND touch. Quarantine
+      // it, advance the enrollment, and report it as already done.
+      await client.query(
+        `UPDATE sequence_step_logs SET status='superseded_duplicate', fired_at=NOW() WHERE id=$1`,
+        [draft.id]
+      );
+      const settings = await SendingSchedule.resolveSettings({ orgId: req.orgId, campaignId: null });
+      await EnrollmentStepResolver.applyAdvance(client, {
+        id:                   draft.enrollment_id,
+        sequence_id:          draft.seq_id,
+        current_step:         draft.current_step,
+        current_step_id:      draft.current_step_id,
+        current_step_channel: draft.current_step_channel,
+        steps_snapshot:       draft.steps_snapshot,
+      }, {
+        computeDue: (s) => SendingSchedule.nextStepDue(s, settings),
+      });
+      await client.query(
+        `UPDATE prospecting_actions
+            SET status='completed', completed_at=CURRENT_TIMESTAMP,
+                completed_by=$1, outcome='already_completed', updated_at=CURRENT_TIMESTAMP
+          WHERE org_id=$2 AND source='sequence_draft'
+            AND (metadata->>'draftLogId')::int=$3
+            AND status != 'completed'`,
+        [req.user.userId, req.orgId, draft.id]
+      );
+      await client.query('COMMIT');
+      return res.json({ ok: true, alreadyCompleted: true });
+    }
+
+    // Only queued-but-unconfirmed sibling(s) exist. The rep did the real manual
+    // send just now, so THEIR completion is the record of contact. Retire the
+    // stale queued row(s) (they'd otherwise double-send via the extension), then
+    // let this draft complete normally below — the contact is recorded once.
+    if (siblings.rows.length) {
+      await client.query(
+        `UPDATE sequence_step_logs SET status='superseded_duplicate', fired_at=NOW()
+          WHERE id = ANY($1::int[])`,
+        [siblings.rows.map(r => r.id)]
+      );
+    }
+
     // ── 1. Mark step log as completed ─────────────────────────────────────
     await client.query(
       `UPDATE sequence_step_logs SET status='completed', fired_at=NOW() WHERE id=$1`,
