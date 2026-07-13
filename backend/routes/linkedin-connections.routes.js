@@ -656,4 +656,46 @@ router.post('/reconcile-messages', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Thread-Map Sweep (F17/D13). The ledger doubles as the prospect↔thread map:
+// every reconciled message stored its thread_urn, including uncounted rows —
+// so one thread open per prospect, ever, is the entire bootstrap cost, and
+// new mappings arrive naturally (reps open replies to read them). The
+// extension sweeps this map with per-thread replay of LinkedIn's own
+// last-N-messages fetch — no thread opens in steady state.
+//
+// GET /api/linkedin-connections/thread-map
+//   → { ok, map: [ { prospectId, threadUrn, memberUrn, name, lastSeenAt } ] }
+//   Caller-owned, attributed prospects only; latest thread per prospect.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/thread-map', async (req, res) => {
+  const orgId  = req.orgId;
+  const userId = req.user.userId;
+  try {
+    const map = await db.query(
+      `SELECT DISTINCT ON (lme.prospect_id)
+              lme.prospect_id                       AS "prospectId",
+              lme.thread_urn                        AS "threadUrn",
+              p.member_urn                          AS "memberUrn",
+              trim(p.first_name || ' ' || p.last_name) AS name,
+              lme.occurred_at                       AS "lastSeenAt"
+         FROM linkedin_message_events lme
+         JOIN prospects p
+           ON p.id = lme.prospect_id AND p.org_id = lme.org_id
+        WHERE lme.org_id = $1
+          AND p.owner_id = $2
+          AND p.deleted_at IS NULL
+          AND lme.thread_urn IS NOT NULL
+          AND p.member_urn IS NOT NULL
+          AND p.channel_data->'linkedin'->>'request_sent_at' IS NOT NULL
+        ORDER BY lme.prospect_id, lme.occurred_at DESC`,
+      [orgId, userId]
+    );
+    res.json({ ok: true, map: map.rows });
+  } catch (err) {
+    console.error('linkedin-connections/thread-map error:', err);
+    res.status(500).json({ error: { message: 'Thread map fetch failed: ' + err.message } });
+  }
+});
+
 module.exports = router;
