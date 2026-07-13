@@ -1088,12 +1088,12 @@ const SequenceStepFirer = {
           // For email steps we strictly enforce the window. For manual
           // channels (LinkedIn, task, call) we always pass — the firer
           // just creates a task row, no message leaves the system.
-          const settings = await getSettings(enrollment.org_id, enrollment.prospect_campaign_id, enrollment.enrolled_by);
-          const channel  = enrollment.current_step_channel || 'email';
-          if (!SendingSchedule.isWithinWindow(new Date(), settings, channel)) {
-            // Not an error; we'll try again next tick. No counter bump.
-            continue;
-          }
+          // NOTE (P5a v2): the sending-window check has been MOVED to after the
+          // auto-stop blocks below. Stopping an enrollment is not sending — a
+          // reply or acceptance must stop the enrollment even when the channel's
+          // window never opens (or the channel is wedged). Enrollment 142 sat
+          // overdue for a month with a post-enrollment reply because the window
+          // `continue` ran before the reply check ever did.
 
           // ── Auto-stop: inbound reply received since enrollment ────────────
           // Two sources, either stops the enrollment (P5a / design-doc F4 fix):
@@ -1216,6 +1216,17 @@ const SequenceStepFirer = {
               stopped++;
               continue;
             }
+          }
+
+          // ── Sending window (moved here — P5a v2) ───────────────────────────
+          // Only actual SENDING waits for the window; the stop checks above run
+          // every tick regardless, so a replied/accepted prospect can never be
+          // held hostage by a closed or misconfigured channel window.
+          const settings = await getSettings(enrollment.org_id, enrollment.prospect_campaign_id, enrollment.enrolled_by);
+          const channel  = enrollment.current_step_channel || 'email';
+          if (!SendingSchedule.isWithinWindow(new Date(), settings, channel)) {
+            // Not an error; we'll try again next tick. No counter bump.
+            continue;
           }
 
           // ── Get the current step ──────────────────────────────────────────
