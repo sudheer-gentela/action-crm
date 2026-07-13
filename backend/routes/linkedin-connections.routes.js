@@ -241,4 +241,188 @@ router.post('/reconcile', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// P4 — member_urn backfill (design doc D3, final).
+//
+// Messaging payloads identify people ONLY by urn:li:fsd_profile:… (P1: no
+// publicIdentifier anywhere), and prospects.member_urn coverage started at
+// 0/38 (P0.2) because the URN is only captured on post-v1.20 profile views.
+// These two endpoints power the extension's rep-triggered batch resolver:
+// jittered 8–15s pacing, rep-clicked only, resumable (the backlog shrinks
+// server-side as URNs land). Never called from a background alarm (R3).
+//
+// GET  /api/linkedin-connections/urn-backlog?limit=50
+//   → { ok, backlog: [ { prospectId, slug, name, connected } ],
+//       coverage: { with_urn, total } }   // among the caller's attributed prospects
+//
+// POST /api/linkedin-connections/urn-backfill
+//   Body: { viewer, resolved: [ { slug, memberUrn } ] }  (max 100)
+//   Seat-bound like /reconcile. member_urn is COALESCE-written — never
+//   overwritten; a differing existing URN is reported as urn_mismatch and
+//   left alone (slug reuse / profile change → human review, not clobber).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ATTRIBUTED_GATE = `
+      channel_data->'linkedin'->>'request_sent_at' IS NOT NULL`;
+
+router.get('/urn-backlog', async (req, res) => {
+  const orgId  = req.orgId;
+  const userId = req.user.userId;
+  const limit  = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
+  try {
+    const backlog = await db.query(
+      `SELECT id AS "prospectId",
+              lower(substring(linkedin_url from '/in/([^/?#]+)')) AS slug,
+              trim(first_name || ' ' || last_name) AS name,
+              (channel_data->'linkedin'->>'connected_at') IS NOT NULL AS connected
+         FROM prospects
+        WHERE org_id = $1 AND owner_id = $2 AND deleted_at IS NULL
+          AND member_urn IS NULL
+          AND linkedin_url IS NOT NULL
+          AND lower(substring(linkedin_url from '/in/([^/?#]+)')) IS NOT NULL
+          AND ${ATTRIBUTED_GATE}
+        ORDER BY connected DESC, id ASC
+        LIMIT $3`,
+      [orgId, userId, limit]
+    );
+    const cov = await db.query(
+      `SELECT count(*) FILTER (WHERE member_urn IS NOT NULL) AS with_urn,
+              count(*) AS total
+         FROM prospects
+        WHERE org_id = $1 AND owner_id = $2 AND deleted_at IS NULL
+          AND ${ATTRIBUTED_GATE}`,
+      [orgId, userId]
+    );
+    res.json({
+      ok: true,
+      backlog: backlog.rows,
+      coverage: {
+        with_urn: parseInt(cov.rows[0].with_urn, 10),
+        total:    parseInt(cov.rows[0].total, 10),
+      },
+    });
+  } catch (err) {
+    console.error('linkedin-connections/urn-backlog error:', err);
+    res.status(500).json({ error: { message: 'Backlog fetch failed: ' + err.message } });
+  }
+});
+
+const MAX_RESOLVED = 100;
+// Mirrors the extension's own extraction regex (background.js /me + profile
+// capture): fsd_profile preferred; fs_miniProfile tolerated and stored as-is
+// (matching later normalizes on the trailing id — design doc §5.2).
+const URN_RE = /^urn:li:fs[a-z]*_(?:miniProfile|profile):[A-Za-z0-9_-]+$/;
+
+router.post('/urn-backfill', async (req, res) => {
+  const { viewer, resolved } = req.body || {};
+  if (!Array.isArray(resolved) || resolved.length === 0) {
+    return res.status(400).json({ error: { message: 'resolved must be a non-empty array' } });
+  }
+  if (resolved.length > MAX_RESOLVED) {
+    return res.status(400).json({ error: { message: `resolved exceeds max of ${MAX_RESOLVED}` } });
+  }
+  if (!viewer || !viewer.publicIdentifier || !String(viewer.publicIdentifier).trim()) {
+    return res.status(422).json({
+      error: { message: 'Could not identify the logged-in LinkedIn account (viewer.publicIdentifier missing)', code: 'SEAT_UNKNOWN' },
+    });
+  }
+
+  const orgId  = req.orgId;
+  const userId = req.user.userId;
+
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const seatRes = await Sync.bindSeat(client, { orgId, userId, viewer: {
+      publicIdentifier: String(viewer.publicIdentifier).trim(),
+      name:      viewer.name      ? String(viewer.name).slice(0, 200)      : null,
+      memberUrn: viewer.memberUrn ? String(viewer.memberUrn).slice(0, 200) : null,
+    }});
+    if (!seatRes.ok) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: {
+          code: 'SEAT_CONFLICT',
+          message: `This LinkedIn account (${viewer.publicIdentifier}) is already linked to ${seatRes.boundTo}.`,
+        },
+      });
+    }
+    const viewerSlug = seatRes.seat.public_identifier;
+
+    let updated = 0, alreadyHad = 0, mismatch = 0, unmatched = 0, notOwned = 0, invalid = 0;
+    const details = [];
+
+    for (const r of resolved) {
+      const rawSlug = r && (r.slug || Sync.slugFromUrl(r.url));
+      const urn     = r && String(r.memberUrn || '').trim();
+      const variants = Sync.slugVariants(rawSlug || '');
+      if (!variants.length || !URN_RE.test(urn)) { invalid++; continue; }
+
+      const found = await client.query(
+        `SELECT id, owner_id, member_urn
+           FROM prospects
+          WHERE org_id = $1 AND deleted_at IS NULL AND linkedin_url IS NOT NULL
+            AND lower(substring(linkedin_url from '/in/([^/?#]+)')) = ANY($2::text[])
+          ORDER BY id ASC LIMIT 1
+          FOR UPDATE`,
+        [orgId, variants]
+      );
+      if (found.rows.length === 0) { unmatched++; continue; }
+      const p = found.rows[0];
+      if (p.owner_id !== userId)   { notOwned++;  continue; }
+      if (p.member_urn) {
+        if (p.member_urn === urn) alreadyHad++;
+        else { mismatch++; details.push({ prospectId: p.id, slug: variants[0], reason: 'urn_mismatch' }); }
+        continue;
+      }
+
+      await client.query(
+        `UPDATE prospects
+            SET member_urn = $1, updated_at = CURRENT_TIMESTAMP
+          WHERE id = $2 AND org_id = $3 AND member_urn IS NULL`,
+        [urn, p.id, orgId]
+      );
+      await client.query(
+        `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata, created_at)
+         VALUES ($1, $2, $3, 'linkedin_event', 'LinkedIn identity resolved (URN backfill)', $4, now())`,
+        [orgId, p.id, userId, JSON.stringify({
+          event: 'member_urn_backfilled',
+          channel: 'linkedin',
+          source: 'extension_urn_backfill',
+          member_urn: urn,
+          linkedin_seat: viewerSlug,
+        })]
+      );
+      updated++;
+      details.push({ prospectId: p.id, slug: variants[0], reason: 'updated' });
+    }
+
+    await client.query('COMMIT');
+
+    console.log(
+      `🔗 linkedin-connections/urn-backfill org=${orgId} user=${userId} seat=${viewerSlug} ` +
+      `received=${resolved.length} updated=${updated} already=${alreadyHad} mismatch=${mismatch} ` +
+      `unmatched=${unmatched} not_owned=${notOwned} invalid=${invalid}`
+    );
+
+    res.json({
+      ok: true,
+      seat: { public_identifier: viewerSlug },
+      summary: {
+        received: resolved.length,
+        updated, already_had_urn: alreadyHad, urn_mismatch: mismatch,
+        unmatched, not_owned: notOwned, invalid,
+      },
+      details,
+    });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('linkedin-connections/urn-backfill error:', err);
+    res.status(500).json({ error: { message: 'URN backfill failed: ' + err.message } });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;
