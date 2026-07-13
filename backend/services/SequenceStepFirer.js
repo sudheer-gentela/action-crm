@@ -1096,16 +1096,38 @@ const SequenceStepFirer = {
           }
 
           // ── Auto-stop: inbound reply received since enrollment ────────────
+          // Two sources, either stops the enrollment (P5a / design-doc F4 fix):
+          //   1. emails       — inbound email replies (original behavior)
+          //   2. linkedin_message_events — inbound LinkedIn messages harvested
+          //      by the extension (2026_49 ledger; direction='inbound' rows,
+          //      partial index idx_li_msg_events_inbound). occurred_at is
+          //      LinkedIn's own deliveredAt, so the post-enrollment guard is
+          //      exact. Detection is pull-based (harvest/sweep) — a reply
+          //      harvested after a step fired stops the enrollment at the
+          //      NEXT tick, not retroactively, same as stop_on_connection_accept.
           const replyCheck = await client.query(
-            `SELECT id FROM emails
+            `SELECT 1 FROM emails
               WHERE prospect_id = $1
                 AND direction IN ('inbound', 'received')
                 AND sent_at > $2
               LIMIT 1`,
             [enrollment.prospect_id, enrollment.enrolled_at]
           );
+          let repliedVia = replyCheck.rows.length > 0 ? 'email' : null;
+          if (!repliedVia) {
+            const liReply = await client.query(
+              `SELECT 1 FROM linkedin_message_events
+                WHERE org_id = $1
+                  AND prospect_id = $2
+                  AND direction = 'inbound'
+                  AND occurred_at > $3
+                LIMIT 1`,
+              [enrollment.org_id, enrollment.prospect_id, enrollment.enrolled_at]
+            );
+            if (liReply.rows.length > 0) repliedVia = 'linkedin';
+          }
 
-          if (replyCheck.rows.length > 0) {
+          if (repliedVia) {
             await client.query(
               `UPDATE sequence_enrollments
                   SET status='replied', stopped_at=NOW(), stop_reason='replied'
