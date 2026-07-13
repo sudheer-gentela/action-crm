@@ -20,6 +20,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiFetch } from './prospectingShared';
 import CampaignConfigPanel from './CampaignConfigPanel';
+import CampaignReplyStopToggle from './CampaignReplyStopToggle';
 import { CampaignTrackingToggles } from './TrackingSettings';   // Insights/WBR Phase 7
 import CustomFieldDefsEditor from '../customfields/CustomFieldDefsEditor';
 
@@ -440,10 +441,17 @@ export default function CampaignConfigScreen({ campaignId, onBack }) {
       </div>
 
       {tab === 'outreach' && (
-        /* The existing editor, complete with every field (pitch, value
-           props, personas, products, hooks, case studies, guardrails)
-           and its own save/delete controls. */
-        <CampaignConfigPanel campaignId={campaignId} defaultOpen />
+        <>
+          {/* The existing editor, complete with every field (pitch, value
+              props, personas, products, hooks, case studies, guardrails)
+              and its own save/delete controls. */}
+          <CampaignConfigPanel campaignId={campaignId} defaultOpen />
+          {/* Per-campaign reply auto-stop (2026_50). Self-contained — saves
+              via its own dedicated endpoint, not the config-override jsonb. */}
+          <div style={{ marginTop: 16 }}>
+            <CampaignReplyStopToggle campaignId={campaignId} />
+          </div>
+        </>
       )}
 
       {tab === 'schedule' && (

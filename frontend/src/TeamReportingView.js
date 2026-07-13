@@ -37,6 +37,7 @@ import InsightsPanel from './prospecting/InsightsPanel';      // Insights/WBR Ph
 import LinkedInRiskPanel from './prospecting/LinkedInRiskPanel';
 import ActivityTab from './prospecting/ActivityTab';
 import './TeamReportingView.css';
+import LinkedInFunnelPanel from './prospecting/LinkedInFunnelPanel';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const DEPTH_OPTIONS = [
@@ -352,8 +353,8 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         allCampaigns={allCampaigns}
         showCampaignDropdown={showCampaignDropdown}
         onToggleCampaignDropdown={() => setShowCampaignDropdown(s => !s)}
-        showCampaignFilter={tab !== 'campaign' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'activity'}   // tab 'campaign' IS the campaign list; insights org-level; LinkedIn risk has no campaign filter; activity spans modules beyond campaigns
-        showWindowPicker={tab !== 'wbr' && tab !== 'insights' && tab !== 'linkedin'}           // WBR/insight windows fixed; LinkedIn risk has its own window picker
+        showCampaignFilter={tab !== 'campaign' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'activity' && tab !== 'lifunnel'}   // tab 'campaign' IS the campaign list; insights org-level; LinkedIn risk has no campaign filter; activity spans modules beyond campaigns
+        showWindowPicker={tab !== 'wbr' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'lifunnel'}           // WBR/insight windows fixed; LinkedIn risk has its own window picker
       />
 
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
@@ -437,6 +438,10 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         <LinkedInRiskPanel depth={depth} />
       )}
 
+      {tab === 'lifunnel' && (
+        <LinkedInFunnelPanel />
+      )}
+
       {tab === 'activity' && (
         <ActivityTab depth={depth} windowState={windowState} scope={scope} />
       )}
@@ -489,6 +494,7 @@ function TabBar({ tab, onTabChange }) {
     { key: 'wbr',      label: 'WBR' },        // Insights/WBR Phase 5
     { key: 'insights', label: 'Insights' },   // Insights/WBR Phase 5
     { key: 'linkedin', label: 'LinkedIn risk' },
+    { key: 'lifunnel', label: 'LinkedIn funnel' },
     { key: 'activity', label: 'Activity' },
   ];
   return (
