@@ -153,8 +153,27 @@ async function orderedSteps(client, enrollment) {
   return applyOverlay(rows, overlay);
 }
 
-/** Pick the current step from an already-ordered list. Pure. */
-function pickCurrent(steps, enrollment) {
+/** Pick the current step from an already-ordered list. Pure.
+ *
+ * `contactedStepIds` (optional Set) hardens the FALLBACK paths against a lost
+ * identity cursor. When a step is deleted its enrollments' current_step_id is
+ * SET NULL (FK) and the surviving steps are renumbered — leaving a stale
+ * `current_step` ordinal that can resolve (branch 2) or re-anchor (branch 3)
+ * onto a step this enrollment has ALREADY contacted. Returning that step makes
+ * the firer re-draft it → the duplicate-draft / 23505 bug. When the set is
+ * supplied and identity is lost, we refuse to land on a contacted step and take
+ * the first UN-contacted step at/after the anchor instead.
+ *
+ * The set is deliberately PROOF-OF-CONTACT only ('completed'/'sent'/'replied') —
+ * a merely 'scheduled'/'sending' step is queued-but-unconfirmed and must NOT be
+ * skipped, or a manual send could be silently dropped.
+ *
+ * Branch 1 (identity) is left authoritative and unguarded: a healthy cursor is
+ * trusted, and the rare case where current_step_id itself points at a contacted
+ * step is caught downstream by the firer's own guard. Passing no set reproduces
+ * the exact pre-existing behaviour, so nextStep()/applyAdvance() are unaffected.
+ */
+function pickCurrent(steps, enrollment, contactedStepIds = null) {
   // 1. Identity (authoritative once backfilled).
   if (enrollment.current_step_id != null) {
     const byId = steps.find((s) => s.id === enrollment.current_step_id);
@@ -164,19 +183,55 @@ function pickCurrent(steps, enrollment) {
   const ord = enrollment.current_step;
   if (ord != null) {
     const byOrd = steps.find((s) => s.step_order === ord);
-    if (byOrd) return byOrd;
+    // Guard: identity cursor lost AND the stale ordinal resolves to an
+    // already-contacted step → fall through to re-anchor on the first
+    // un-contacted step rather than returning the contacted one.
+    const staleContacted =
+      contactedStepIds && enrollment.current_step_id == null &&
+      byOrd && contactedStepIds.has(byOrd.id);
+    if (byOrd && !staleContacted) return byOrd;
   }
-  // 3. Re-anchor: current step was deleted. Take the next surviving step at or
-  //    after the last known ordinal; null => the enrollment is past the end.
+  // 3. Re-anchor: current step was deleted (or the ordinal match was already
+  //    contacted). Take the next surviving step at or after the last known
+  //    ordinal; prefer the first UN-contacted one. null => past the end.
   const anchor = ord != null ? ord : 1;
   const atOrAfter = steps
     .filter((s) => s.step_order >= anchor)
     .sort((a, b) => a.step_order - b.step_order);
+  if (contactedStepIds) {
+    const unContacted = atOrAfter.filter((s) => !contactedStepIds.has(s.id));
+    // Only divert when there IS an un-contacted alternative; never regress an
+    // enrollment into spurious completion by filtering the list empty.
+    if (unContacted.length) return unContacted[0];
+  }
   return atOrAfter[0] || null;
 }
 
+/** Proof-of-contact step ids for an enrollment: steps whose log shows the touch
+ *  actually went out. Used to harden currentStep's fallback resolution. */
+async function contactedStepIdSet(client, enrollment) {
+  const { rows } = await client.query(
+    `SELECT DISTINCT sequence_step_id
+       FROM sequence_step_logs
+      WHERE enrollment_id = $1
+        AND status IN ('completed', 'sent', 'replied')`,
+    [enrollment.id]
+  );
+  return new Set(rows.map((r) => r.sequence_step_id));
+}
+
 async function currentStep(client, enrollment) {
-  return pickCurrent(await orderedSteps(client, enrollment), enrollment);
+  const steps = await orderedSteps(client, enrollment);
+  // Fast path: a resolvable identity cursor needs no fallback hardening, so we
+  // skip the extra query entirely for the overwhelming healthy-cursor majority.
+  if (
+    enrollment.current_step_id != null &&
+    steps.some((s) => s.id === enrollment.current_step_id)
+  ) {
+    return pickCurrent(steps, enrollment);
+  }
+  const contacted = await contactedStepIdSet(client, enrollment);
+  return pickCurrent(steps, enrollment, contacted);
 }
 
 /** Next step by ordering (identity-safe). null => sequence complete. */

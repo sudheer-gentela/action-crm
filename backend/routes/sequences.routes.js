@@ -2482,6 +2482,31 @@ router.get('/health', async (req, res) => {
     const stalledBySeq = {};
     for (const row of stalledRes.rows) stalledBySeq[row.sequence_id] = row.stalled;
 
+    // Duplicate drafts per sequence: a 'draft' row for an (enrollment, step) that
+    // ALSO has a sibling already in the uq_seq_step_logs_fired predicate. These
+    // are the stragglers that make "Mark as Done" raise 23505 (see migration
+    // 2026_48 / SequenceStepFirer guard). Surfacing the count here lets a straggler
+    // show up on the dashboard before a rep ever clicks into the error.
+    const dupRes = await pool.query(
+      `SELECT se.sequence_id, COUNT(*)::int AS duplicate_drafts
+         FROM sequence_step_logs d
+         JOIN sequence_enrollments se ON se.id = d.enrollment_id
+        WHERE d.org_id = $1
+          AND d.status = 'draft'
+          AND se.enrolled_by = ANY($2::int[])
+          AND EXISTS (
+            SELECT 1 FROM sequence_step_logs f
+             WHERE f.enrollment_id    = d.enrollment_id
+               AND f.sequence_step_id = d.sequence_step_id
+               AND f.id <> d.id
+               AND f.status IN ('scheduled','sending','sent','completed','replied')
+          )
+     GROUP BY se.sequence_id`,
+      [req.orgId, userIds]
+    );
+    const dupBySeq = {};
+    for (const row of dupRes.rows) dupBySeq[row.sequence_id] = row.duplicate_drafts;
+
     const health = aggRes.rows.map(r => ({
       sequenceId:   r.sequence_id,
       sequenceName: r.sequence_name,
@@ -2500,6 +2525,7 @@ router.get('/health', async (req, res) => {
       lastFiredAt:        r.last_fired_at,
       topErrors:          errorsBySeq[r.sequence_id] || [],
       stalledEnrollments: stalledBySeq[r.sequence_id] || 0,
+      duplicateDrafts:    dupBySeq[r.sequence_id] || 0,
     }));
 
     res.json({ health });
