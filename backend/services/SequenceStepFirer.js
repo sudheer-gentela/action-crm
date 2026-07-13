@@ -1403,16 +1403,67 @@ const SequenceStepFirer = {
               // gate disabled → fall through to the normal draft behaviour below.
             }
 
-            // Idempotency: don't create a second draft for this step
-            const existingDraft = await client.query(
-              `SELECT id FROM sequence_step_logs
-                WHERE enrollment_id=$1 AND sequence_step_id=$2 AND status='draft'
-                LIMIT 1`,
+            // Idempotency: keep exactly one live row for this (enrollment, step)
+            // — never two (double-send), never zero (missed contact).
+            //
+            // The old guard only looked for status='draft', so when the cursor
+            // got re-pointed at an already-fired step (step delete + re-anchor in
+            // pickCurrent, a reorder, or a re-enroll) it inserted ANOTHER 'draft'.
+            // 'draft' is outside uq_seq_step_logs_fired, so the INSERT succeeded
+            // silently — but the rep's later "Mark as Done" (UPDATE draft ->
+            // 'completed') then collided with the pre-existing fired row and
+            // raised 23505 ("duplicate key ... uq_seq_step_logs_fired").
+            //
+            // For a MANUAL connection request a 'draft' or 'scheduled' row is a
+            // TO-DO, not proof the request went out. Only 'completed'/'sent'/
+            // 'replied' proves the contact was actually reached. So we branch on
+            // that, and NEVER skip an un-contacted enrollment:
+            //   • a 'draft' already exists            -> rep will action it; skip.
+            //   • proof-of-contact sibling exists      -> already reached; advance
+            //                                             PAST the step.
+            //   • only 'scheduled'/'sending' exists    -> queued elsewhere (auto-
+            //                                             connect gate) and NOT yet
+            //                                             confirmed -> do not add a
+            //                                             second row and do NOT
+            //                                             advance; leave that one
+            //                                             live row to resolve.
+            //
+            // Kept in lockstep with the top-up guard (~line 623) and migration
+            // 2026_48's index. Change one, change all three.
+            const priorLog = await client.query(
+              `SELECT
+                 BOOL_OR(status='draft')                              AS has_draft,
+                 BOOL_OR(status IN ('completed','sent','replied'))    AS contact_reached,
+                 BOOL_OR(status IN ('scheduled','sending'))           AS has_queued
+                 FROM sequence_step_logs
+                WHERE enrollment_id=$1 AND sequence_step_id=$2
+                  AND status NOT IN ('failed','skipped','superseded_duplicate')`,
               [enrollment.id, step.id]
             );
+            const pl = priorLog.rows[0] || {};
 
-            if (existingDraft.rows.length > 0) {
-              // Draft already exists and is awaiting rep action — skip
+            if (pl.has_draft) {
+              // Draft already exists and is awaiting rep action — skip.
+              continue;
+            }
+            if (pl.contact_reached) {
+              // Step already went out for this enrollment. Do NOT re-draft;
+              // advance past it so the enrollment stops re-evaluating an
+              // already-completed step on every tick.
+              console.warn(
+                `SequenceStepFirer: step ${step.id} already contacted for enrollment ` +
+                `${enrollment.id}; advancing instead of creating a duplicate draft.`
+              );
+              await EnrollmentStepResolver.applyAdvance(client, enrollment, {
+                computeDue: (s) => SendingSchedule.nextStepDue(s, settings),
+              });
+              continue;
+            }
+            if (pl.has_queued) {
+              // A queued (auto-connect gate) row already owns this step and has
+              // NOT confirmed a send. Adding a draft would create a second live
+              // row (double-send risk); advancing would drop the contact. Do
+              // neither — leave the queued row to resolve on its own path.
               continue;
             }
 
