@@ -239,6 +239,95 @@ function deriveDirection({ senderDistance, senderUrn, participantUrn }) {
   return senderId === participantId ? 'inbound' : null;       // non-SELF must BE the participant (1:1 threads)
 }
 
+// ── Retro-count (sync-order sensitivity fix) ─────────────────────────────────
+//
+// A message harvested BEFORE its prospect's acceptance was synced fails the
+// post-acceptance gate and lands counted=false — and until this existed, it
+// stayed uncounted forever, silently under-reporting the funnel whenever the
+// message sync ran ahead of the accepted sync. These two functions close that:
+// whenever connected_at becomes known, uncounted ledger rows are re-evaluated
+// and the newly-qualifying ones are counted through applyConnectionEvent (so
+// counters, status advance, and the activity trail all match a normal harvest).
+//
+//   retroCountUncounted — per-prospect, inside the caller's transaction. Fast
+//     path: the /reconcile route calls it right after applying an acceptance.
+//   retroCountSweep     — org-wide catch-all for every other acceptance writer
+//     (manual linkedin-event, auto-send confirm, future paths). Called at the
+//     top of LinkedInFollowupActionService.runForOrg so counters are honest
+//     before actions generate. Idempotent: counted=true rows never re-enter.
+async function retroCountUncounted(client, { orgId, userId, prospect, viewerSlug }) {
+  const li = ((prospect.channel_data || {}).linkedin) || {};
+  if (!li.request_sent_at || !li.connected_at) return { recounted: 0 };
+
+  const rows = await client.query(
+    `SELECT id, message_urn, thread_urn, direction, occurred_at
+       FROM linkedin_message_events
+      WHERE org_id = $1 AND prospect_id = $2 AND counted = false
+      ORDER BY occurred_at ASC
+        FOR UPDATE`,
+    [orgId, prospect.id]
+  );
+
+  let recounted = 0;
+  for (const r of rows.rows) {
+    const occurredAtIso = new Date(r.occurred_at).toISOString();
+    if (!passesPostAcceptanceGate(li, occurredAtIso)) continue;   // invite notes etc. stay uncounted
+    await client.query(
+      `UPDATE linkedin_message_events SET counted = true WHERE id = $1`,
+      [r.id]
+    );
+    await applyConnectionEvent(client, {
+      orgId, userId, prospect,
+      event: r.direction === 'inbound' ? 'reply_received' : 'message_sent',
+      viewerSlug,
+      message: { urn: r.message_urn, threadUrn: r.thread_urn, direction: r.direction, occurredAtIso },
+    });
+    recounted++;
+  }
+  return { recounted };
+}
+
+async function retroCountSweep(db, orgId) {
+  const candidates = await db.query(
+    `SELECT DISTINCT p.id
+       FROM prospects p
+       JOIN linkedin_message_events lme
+         ON lme.org_id = p.org_id AND lme.prospect_id = p.id AND lme.counted = false
+      WHERE p.org_id = $1 AND p.deleted_at IS NULL
+        AND p.channel_data->'linkedin'->>'request_sent_at' IS NOT NULL
+        AND p.channel_data->'linkedin'->>'connected_at'    IS NOT NULL`,
+    [orgId]
+  );
+
+  let prospectsTouched = 0, recounted = 0;
+  for (const c of candidates.rows) {
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const pr = await client.query(
+        `SELECT id, org_id, owner_id, first_name, last_name, stage,
+                channel_data, outreach_count
+           FROM prospects WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+        [c.id, orgId]
+      );
+      if (pr.rows.length) {
+        const prospect = pr.rows[0];
+        const res = await retroCountUncounted(client, {
+          orgId, userId: prospect.owner_id, prospect, viewerSlug: null,
+        });
+        if (res.recounted > 0) { prospectsTouched++; recounted += res.recounted; }
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+      console.warn(`retroCountSweep: prospect ${c.id} failed:`, e.message);
+    } finally {
+      client.release();
+    }
+  }
+  return { candidates: candidates.rows.length, prospectsTouched, recounted };
+}
+
 // ── Prospect matching ─────────────────────────────────────────────────────────
 //
 // Match ALL org prospects by slug (no owner filter — the route partitions
@@ -441,4 +530,6 @@ module.exports = {
   matchProspectsBySlugs,
   matchProspectsByUrns,
   applyConnectionEvent,
+  retroCountUncounted,
+  retroCountSweep,
 };

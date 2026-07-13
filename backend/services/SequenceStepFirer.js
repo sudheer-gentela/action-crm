@@ -47,6 +47,7 @@ const PersonalizationDispatcher       = require('./PersonalizationDispatcher'); 
 const LinkedInAutomationConfig        = require('./linkedinAutomationConfig');   // org→user→system auto-connect gate
 const SenderTokenHealth               = require('./SenderTokenHealth');          // dead-credential detect / deactivate / notify
 const EnrollmentStepResolver          = require('./EnrollmentStepResolver');     // identity-cursor + snapshot step resolution
+const BounceDetectionService          = require('./BounceDetectionService');     // NDR screen for the reply auto-stop (v3)
 
 // ── Template renderer ─────────────────────────────────────────────────────────
 function renderTemplate(template, prospect, account) {
@@ -921,12 +922,14 @@ const SequenceStepFirer = {
                 s.ai_enabled AS seq_ai_enabled,
                 s.stop_on_connection_accept AS seq_stop_on_accept,
                 p.campaign_id AS prospect_campaign_id,
+                pc.stop_on_reply AS camp_stop_on_reply,
                 p.channel_data->'linkedin'->>'connection_status' AS li_connection_status,
                 p.channel_data->'linkedin'->>'connected_at'      AS li_connected_at,
                 se.current_step_channel AS current_step_channel
            FROM sequence_enrollments se
            JOIN sequences  s ON s.id = se.sequence_id
            JOIN prospects  p ON p.id = se.prospect_id
+      LEFT JOIN prospecting_campaigns pc ON pc.id = p.campaign_id
           WHERE se.status = 'active'
             AND se.next_step_due <= NOW()
             -- Park enrollments whose current step already has a draft awaiting
@@ -1097,34 +1100,45 @@ const SequenceStepFirer = {
 
           // ── Auto-stop: inbound reply received since enrollment ────────────
           // Two sources, either stops the enrollment (P5a / design-doc F4 fix):
-          //   1. emails       — inbound email replies (original behavior)
+          //   1. emails       — inbound email replies. NDR-SAFE (v3): rows the
+          //      NdrCleanupService has soft-deleted are excluded, and fresh
+          //      not-yet-cleaned rows are screened with the same
+          //      BounceDetectionService.isLikelyNdr heuristic — a mailer-daemon
+          //      bounce must never count as "the prospect replied".
           //   2. linkedin_message_events — inbound LinkedIn messages harvested
-          //      by the extension (2026_49 ledger; direction='inbound' rows,
-          //      partial index idx_li_msg_events_inbound). occurred_at is
-          //      LinkedIn's own deliveredAt, so the post-enrollment guard is
-          //      exact. Detection is pull-based (harvest/sweep) — a reply
-          //      harvested after a step fired stops the enrollment at the
-          //      NEXT tick, not retroactively, same as stop_on_connection_accept.
-          const replyCheck = await client.query(
-            `SELECT 1 FROM emails
-              WHERE prospect_id = $1
-                AND direction IN ('inbound', 'received')
-                AND sent_at > $2
-              LIMIT 1`,
-            [enrollment.prospect_id, enrollment.enrolled_at]
-          );
-          let repliedVia = replyCheck.rows.length > 0 ? 'email' : null;
-          if (!repliedVia) {
-            const liReply = await client.query(
-              `SELECT 1 FROM linkedin_message_events
-                WHERE org_id = $1
-                  AND prospect_id = $2
-                  AND direction = 'inbound'
-                  AND occurred_at > $3
-                LIMIT 1`,
-              [enrollment.org_id, enrollment.prospect_id, enrollment.enrolled_at]
+          //      by the extension (2026_49 ledger). occurred_at is LinkedIn's
+          //      own deliveredAt; no NDR concept exists for LinkedIn messages.
+          // Per-campaign opt-out (2026_50): prospecting_campaigns.stop_on_reply
+          // DEFAULT true; NULL / no campaign → stop (safe default). Governs
+          // both sources uniformly.
+          let repliedVia = null;
+          if (enrollment.camp_stop_on_reply !== false) {
+            const replyCheck = await client.query(
+              `SELECT from_address, subject FROM emails
+                WHERE prospect_id = $1
+                  AND direction IN ('inbound', 'received')
+                  AND sent_at > $2
+                  AND deleted_at IS NULL
+                ORDER BY sent_at ASC
+                LIMIT 5`,
+              [enrollment.prospect_id, enrollment.enrolled_at]
             );
-            if (liReply.rows.length > 0) repliedVia = 'linkedin';
+            const genuineEmail = replyCheck.rows.find(
+              r => !BounceDetectionService.isLikelyNdr(r.from_address, r.subject)
+            );
+            if (genuineEmail) repliedVia = 'email';
+            if (!repliedVia) {
+              const liReply = await client.query(
+                `SELECT 1 FROM linkedin_message_events
+                  WHERE org_id = $1
+                    AND prospect_id = $2
+                    AND direction = 'inbound'
+                    AND occurred_at > $3
+                  LIMIT 1`,
+                [enrollment.org_id, enrollment.prospect_id, enrollment.enrolled_at]
+              );
+              if (liReply.rows.length > 0) repliedVia = 'linkedin';
+            }
           }
 
           if (repliedVia) {

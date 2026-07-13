@@ -181,6 +181,11 @@ router.post('/reconcile', async (req, res) => {
           occurredAt: result.occurredAt,
         });
         if (event === 'connection_accepted' && result.requestNotLogged) acceptedNoRequest++;
+        // Sync-order fix: acceptance just landed — messages harvested BEFORE
+        // it were ledgered uncounted; count the newly-qualifying ones now.
+        if (event === 'connection_accepted') {
+          await Sync.retroCountUncounted(client, { orgId, userId, prospect, viewerSlug });
+        }
       } else if (result.action === 'timestamp_backfill') {
         timestampBackfilled++;
         updated.push({
@@ -789,9 +794,14 @@ router.get('/funnel', async (req, res) => {
 
 router.post('/generate-followup-actions', async (req, res) => {
   try {
+    // Catch-all retro-count first (sync-order fix): count messages that were
+    // harvested before their prospect's acceptance was synced, regardless of
+    // which writer set connected_at — so actions generate from honest counters.
+    const retro = await Sync.retroCountSweep(db, req.orgId);
     const result = await FollowupActions.runForOrg(db, req.orgId);
-    console.log('🔗 linkedin-connections/generate-followup-actions', JSON.stringify(result));
-    res.json({ ok: true, result });
+    console.log('🔗 linkedin-connections/generate-followup-actions',
+      JSON.stringify({ retro, ...result }));
+    res.json({ ok: true, retro, result });
   } catch (err) {
     console.error('linkedin-connections/generate-followup-actions error:', err);
     res.status(500).json({ error: { message: 'Action generation failed: ' + err.message } });

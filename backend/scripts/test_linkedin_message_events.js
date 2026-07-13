@@ -173,6 +173,46 @@ function assertEq(label, actual, expected) {
   assertEq('malformed sender URN → conflict (null)',
     Sync.deriveDirection({ senderDistance: 'SELF', senderUrn: 'urn:li:member:48448566', participantUrn: PROSPECT }), null);
 
+
+  console.log('T9: retro-count — reply harvested BEFORE acceptance synced gets counted when acceptance lands');
+  const late = {
+    id: 1300, org_id: 1, owner_id: 15, stage: 'outreach',
+    channel_data: { linkedin: {
+      connection_status: 'connection_request_sent',
+      request_sent_at: '2026-07-01T10:00:00.000Z',
+      // connected_at NOT yet synced
+    } },
+  };
+  // Fake client extension: serve/mutate an in-memory uncounted ledger row set
+  const retroRows = [
+    { id: 900, message_urn: 'urn:li:messagingMessage:LATE1', thread_urn: 'urn:li:messagingThread:T5',
+      direction: 'inbound', occurred_at: '2026-07-05T09:00:00.000Z', counted: false },
+    { id: 901, message_urn: 'urn:li:messagingMessage:NOTE9', thread_urn: 'urn:li:messagingThread:T5',
+      direction: 'outbound', occurred_at: '2026-07-01T10:01:00.000Z', counted: false }, // invite note
+  ];
+  const c4 = new FakeClient(late);
+  const origQuery = c4.query.bind(c4);
+  c4.query = async (sql, params) => {
+    if (/FROM linkedin_message_events/.test(sql) && /counted = false/.test(sql)) {
+      return { rows: retroRows.filter(r => !r.counted) };
+    }
+    if (/UPDATE linkedin_message_events SET counted = true/.test(sql)) {
+      const row = retroRows.find(r => r.id === params[0]); if (row) row.counted = true;
+      return { rows: [] };
+    }
+    return origQuery(sql, params);
+  };
+  // Harvest happened pre-acceptance: gate fails, nothing counted (simulated by rows above).
+  // NOW acceptance syncs:
+  late.channel_data.linkedin.connected_at = '2026-07-06T08:00:00.000Z';
+  late.channel_data.linkedin.connection_status = 'connection_accepted';
+  const rr = await Sync.retroCountUncounted(c4, { orgId: 1, userId: 15, prospect: late, viewerSlug: 'sudheer' });
+  assertEq('recounted (reply only, note stays uncounted)', rr.recounted, 1);
+  assertEq('reply_count after retro', late.channel_data.linkedin.reply_count, 1);
+  assertEq('status advanced by retro', late.channel_data.linkedin.connection_status, 'reply_received');
+  assertEq('invite note still uncounted', retroRows.find(r => r.id === 901).counted, false);
+  assertEq('idempotent: second run recounts 0',
+    (await Sync.retroCountUncounted(c4, { orgId: 1, userId: 15, prospect: late, viewerSlug: 'sudheer' })).recounted, 0);
   console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
 })().catch(e => { console.error(e); process.exit(1); });
