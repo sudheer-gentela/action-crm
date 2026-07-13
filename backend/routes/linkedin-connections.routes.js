@@ -425,4 +425,235 @@ router.post('/urn-backfill', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// P3 — inbox message reconciliation (design doc §5–6).
+//
+// POST /api/linkedin-connections/reconcile-messages
+//
+//   Body:
+//     {
+//       viewer:  { publicIdentifier, name?, memberUrn? },       // REQUIRED
+//       threads: [ {
+//         threadUrn,                 // urn:li:messagingThread:<id> (backendConversationUrn)
+//         participantUrn,            // non-SELF hostIdentityUrn (fsd_profile) — 1:1 threads only
+//         participantDistance?,      // 'DISTANCE_1' etc — D9 verification signal
+//         messages: [ { urn,         // urn:li:messagingMessage:<id> (backendUrn — ledger key)
+//                       senderUrn, senderDistance, deliveredAt /* epoch ms */ } ]
+//       } ]   (≤100 threads, ≤1000 messages total)
+//     }
+//
+//   The extension parses LinkedIn payloads locally and sends ONLY identity/
+//   timing fields — message text never reaches the server (D6 by construction).
+//
+//   Semantics:
+//     • Seat-bound like /reconcile (409 SEAT_CONFLICT).
+//     • Match: URN-only vs prospects.member_urn (D2). Others' prospects counted,
+//       never written. Group threads: extension must not send them; a thread
+//       whose participantUrn is missing is skipped.
+//     • Attribution gate at INGEST (D5): prospects without request_sent_at →
+//       nothing persisted (dropped_unattributed).
+//     • Ledger: INSERT … ON CONFLICT DO NOTHING on (org_id, message_urn).
+//       Counters/status bump ONLY when the row inserted AND
+//       passesPostAcceptanceGate (F14 — invite notes are ledgered, not counted).
+//     • Direction: deriveDirection (SELF/URN cross-check); conflicts skipped
+//       entirely (D8) and reported.
+//     • Verification (D9): participantDistance DISTANCE_1 stamps
+//       channel_data.linkedin.connection_verified_at (forward-only). A
+//       non-DISTANCE_1 on a CRM-connected prospect records a
+//       verification_mismatch activity — NEVER downgrades.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MAX_THREADS = 100;
+const MAX_MESSAGES_TOTAL = 1000;
+const MSG_URN_RE = /^urn:li:messagingMessage:[A-Za-z0-9=_-]+$/;
+
+router.post('/reconcile-messages', async (req, res) => {
+  const { viewer, threads } = req.body || {};
+
+  if (!Array.isArray(threads) || threads.length === 0) {
+    return res.status(400).json({ error: { message: 'threads must be a non-empty array' } });
+  }
+  if (threads.length > MAX_THREADS) {
+    return res.status(400).json({ error: { message: `threads exceeds max of ${MAX_THREADS}` } });
+  }
+  const totalMessages = threads.reduce((n, t) => n + (Array.isArray(t && t.messages) ? t.messages.length : 0), 0);
+  if (totalMessages === 0) {
+    return res.status(400).json({ error: { message: 'no messages in payload' } });
+  }
+  if (totalMessages > MAX_MESSAGES_TOTAL) {
+    return res.status(400).json({ error: { message: `messages exceed max of ${MAX_MESSAGES_TOTAL}` } });
+  }
+  if (!viewer || !viewer.publicIdentifier || !String(viewer.publicIdentifier).trim()) {
+    return res.status(422).json({
+      error: { message: 'Could not identify the logged-in LinkedIn account (viewer.publicIdentifier missing)', code: 'SEAT_UNKNOWN' },
+    });
+  }
+
+  const orgId  = req.orgId;
+  const userId = req.user.userId;
+  const nowIso = new Date().toISOString();
+
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const seatRes = await Sync.bindSeat(client, { orgId, userId, viewer: {
+      publicIdentifier: String(viewer.publicIdentifier).trim(),
+      name:      viewer.name      ? String(viewer.name).slice(0, 200)      : null,
+      memberUrn: viewer.memberUrn ? String(viewer.memberUrn).slice(0, 200) : null,
+    }});
+    if (!seatRes.ok) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: {
+          code: 'SEAT_CONFLICT',
+          message: `This LinkedIn account (${viewer.publicIdentifier}) is already linked to ${seatRes.boundTo}.`,
+        },
+      });
+    }
+    const viewerSlug = seatRes.seat.public_identifier;
+
+    // ── Match participants by URN (D2: URN-only) ───────────────────────────
+    const participantUrns = [...new Set(
+      threads.map(t => t && t.participantUrn).filter(u => Sync.normalizeUrnId(u))
+    )];
+    const matches = participantUrns.length
+      ? await Sync.matchProspectsByUrns(client, { orgId, urns: participantUrns })
+      : [];
+    const byUrn = new Map(matches.map(m => [m.member_urn, m]));
+
+    const s = {
+      received_threads: threads.length, received_messages: totalMessages,
+      matched_mine: 0, matched_other_owner: 0, no_urn_match: 0,
+      dropped_unattributed: 0, inserted: 0, already_recorded: 0,
+      counted: 0, ledgered_uncounted: 0, direction_conflicts_skipped: 0,
+      invalid_messages: 0, verified: 0, verification_mismatches: 0,
+    };
+    const updated = [];
+
+    for (const t of threads) {
+      const pUrn = t && t.participantUrn;
+      if (!Sync.normalizeUrnId(pUrn)) { s.no_urn_match++; continue; }
+      const prospect = byUrn.get(pUrn);
+      if (!prospect) { s.no_urn_match++; continue; }
+      if (prospect.owner_id !== userId) { s.matched_other_owner++; continue; }
+      s.matched_mine++;
+
+      const channelData = prospect.channel_data || {};
+      const li = channelData.linkedin || {};
+
+      // Attribution gate at ingest (D5) — nothing persisted for unattributed.
+      if (!li.request_sent_at) { s.dropped_unattributed++; continue; }
+
+      // ── D9 verification signal ────────────────────────────────────────────
+      let channelDataDirty = false;
+      if (t.participantDistance === 'DISTANCE_1') {
+        if (!li.connection_verified_at || Date.parse(nowIso) > Date.parse(li.connection_verified_at)) {
+          li.connection_verified_at = nowIso;
+          channelData.linkedin = li;
+          prospect.channel_data = channelData;
+          channelDataDirty = true;
+          s.verified++;
+        }
+      } else if (t.participantDistance && li.connected_at) {
+        s.verification_mismatches++;
+        await client.query(
+          `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata, created_at)
+           VALUES ($1, $2, $3, 'linkedin_event', 'LinkedIn verification mismatch: CRM shows connected but messaging distance disagrees', $4, now())`,
+          [orgId, prospect.id, userId, JSON.stringify({
+            event: 'verification_mismatch', channel: 'linkedin',
+            source: 'extension_message_sync',
+            crm_status: li.connection_status || null,
+            observed_distance: String(t.participantDistance).slice(0, 40),
+            thread_urn: String(t.threadUrn || '').slice(0, 200) || null,
+            linkedin_seat: viewerSlug,
+          })]
+        );
+      }
+
+      // ── Messages ──────────────────────────────────────────────────────────
+      let appliedForProspect = 0;
+      const msgs = Array.isArray(t.messages) ? t.messages : [];
+      for (const m of msgs) {
+        const urn = m && String(m.urn || '').trim();
+        const deliveredMs = m && Number(m.deliveredAt);
+        if (!MSG_URN_RE.test(urn) || !Number.isFinite(deliveredMs) || deliveredMs <= 0) {
+          s.invalid_messages++; continue;
+        }
+        const occurredAtIso = new Date(deliveredMs).toISOString();
+
+        const direction = Sync.deriveDirection({
+          senderDistance: m.senderDistance, senderUrn: m.senderUrn, participantUrn: pUrn,
+        });
+        if (!direction) { s.direction_conflicts_skipped++; continue; }  // D8
+
+        const counted = Sync.passesPostAcceptanceGate(li, occurredAtIso);
+
+        const ins = await client.query(
+          `INSERT INTO linkedin_message_events
+                  (org_id, prospect_id, user_id, seat, message_urn, thread_urn, direction, counted, occurred_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT (org_id, message_urn) DO NOTHING
+           RETURNING id`,
+          [orgId, prospect.id, userId, viewerSlug, urn,
+           String(t.threadUrn || '').slice(0, 200) || null, direction, counted, occurredAtIso]
+        );
+        if (ins.rows.length === 0) { s.already_recorded++; continue; }
+        s.inserted++;
+
+        if (!counted) { s.ledgered_uncounted++; continue; }   // F14: ledgered, never counted
+        s.counted++;
+
+        await Sync.applyConnectionEvent(client, {
+          orgId, userId, prospect,
+          event: direction === 'inbound' ? 'reply_received' : 'message_sent',
+          viewerSlug,
+          message: { urn, threadUrn: t.threadUrn || null, direction, occurredAtIso },
+        });
+        appliedForProspect++;
+        channelDataDirty = false;   // apply persisted channel_data (incl. verified stamp)
+      }
+
+      // Verified stamp with no counted messages → persist it explicitly.
+      if (channelDataDirty && appliedForProspect === 0) {
+        await client.query(
+          `UPDATE prospects SET channel_data = $1::jsonb, updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2 AND org_id = $3`,
+          [JSON.stringify(prospect.channel_data), prospect.id, orgId]
+        );
+      }
+
+      if (appliedForProspect > 0) {
+        updated.push({
+          prospectId: prospect.id,
+          name: `${prospect.first_name || ''} ${prospect.last_name || ''}`.trim(),
+          applied: appliedForProspect,
+        });
+      }
+    }
+
+    await client.query('COMMIT');
+
+    console.log(
+      `🔗 linkedin-connections/reconcile-messages org=${orgId} user=${userId} seat=${viewerSlug} ` +
+      `threads=${s.received_threads} msgs=${s.received_messages} mine=${s.matched_mine} ` +
+      `inserted=${s.inserted} counted=${s.counted} already=${s.already_recorded} ` +
+      `unattributed=${s.dropped_unattributed} conflicts=${s.direction_conflicts_skipped} verified=${s.verified}`
+    );
+
+    res.json({
+      ok: true,
+      seat: { public_identifier: viewerSlug, newly_bound: !!seatRes.seat.newly_bound },
+      summary: s,
+      updated,
+    });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('linkedin-connections/reconcile-messages error:', err);
+    res.status(500).json({ error: { message: 'Message sync failed: ' + err.message } });
+  } finally {
+    client.release();
+  }
+});
+
 module.exports = router;

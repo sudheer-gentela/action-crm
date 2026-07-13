@@ -156,6 +156,23 @@ function assertEq(label, actual, expected) {
   assertEq('stage auto-advanced', fresh.stage, 'outreach');
   assertEq('outreach_count', fresh.outreach_count, 1);
 
+  console.log('T8: deriveDirection — SELF/URN cross-check (D8: conflicts return null)');
+  const PROSPECT = 'urn:li:fsd_profile:ACoAAAAC5DQBMDiVnEpDohi1R4MriEjUCOxuKek'; // Wigglesworth
+  const VIEWER   = 'urn:li:fsd_profile:ACoAAALjRDYBD0ch1f9EVZevMSNJhBxC31fcV5M'; // Sudheer
+  assertEq('SELF sender (viewer) → outbound',
+    Sync.deriveDirection({ senderDistance: 'SELF', senderUrn: VIEWER, participantUrn: PROSPECT }), 'outbound');
+  assertEq('DISTANCE_1 sender (prospect) → inbound',
+    Sync.deriveDirection({ senderDistance: 'DISTANCE_1', senderUrn: PROSPECT, participantUrn: PROSPECT }), 'inbound');
+  assertEq('SELF but sender IS the participant → conflict (null)',
+    Sync.deriveDirection({ senderDistance: 'SELF', senderUrn: PROSPECT, participantUrn: PROSPECT }), null);
+  assertEq('non-SELF but sender is NOT the participant (group/unknown) → conflict (null)',
+    Sync.deriveDirection({ senderDistance: 'DISTANCE_1', senderUrn: VIEWER, participantUrn: PROSPECT }), null);
+  assertEq('fs_miniProfile vs fsd_profile same id normalizes equal',
+    Sync.deriveDirection({ senderDistance: 'DISTANCE_1',
+      senderUrn: 'urn:li:fs_miniProfile:ABC123', participantUrn: 'urn:li:fsd_profile:ABC123' }), 'inbound');
+  assertEq('malformed sender URN → conflict (null)',
+    Sync.deriveDirection({ senderDistance: 'SELF', senderUrn: 'urn:li:member:48448566', participantUrn: PROSPECT }), null);
+
   console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
 })().catch(e => { console.error(e); process.exit(1); });

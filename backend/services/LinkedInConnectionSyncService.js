@@ -194,6 +194,51 @@ async function bindSeat(client, { orgId, userId, viewer }) {
   return { ok: true, seat: { id: row.id, user_id: row.user_id, public_identifier: slug, newly_bound: false } };
 }
 
+// ── URN helpers (P3, inbox harvest) ──────────────────────────────────────────
+//
+// LinkedIn identifies the same member under multiple URN namespaces:
+// messaging payloads use urn:li:fsd_profile:<id>, while /voyager/api/me can
+// yield urn:li:fs_miniProfile:<id> (F10). The trailing <id> is the stable
+// part — always compare on that, never the full string (design doc §5.2).
+function normalizeUrnId(urn) {
+  if (!urn) return null;
+  const m = String(urn).match(/^urn:li:fs[a-z]*_(?:miniProfile|profile):([A-Za-z0-9_-]+)$/);
+  return m ? m[1] : null;
+}
+
+// Match prospects by member_urn (all owners; route partitions mine/others,
+// mirroring matchProspectsBySlugs). URN-only per D2 — messaging payloads
+// carry no slug, so there is no fallback.
+async function matchProspectsByUrns(client, { orgId, urns }) {
+  if (!urns.length) return [];
+  const res = await client.query(
+    `SELECT id, org_id, owner_id, first_name, last_name, company_name,
+            stage, channel_data, outreach_count, member_urn
+       FROM prospects
+      WHERE org_id = $1
+        AND deleted_at IS NULL
+        AND member_urn = ANY($2::text[])`,
+    [orgId, urns]
+  );
+  return res.rows;
+}
+
+// Direction of a harvested message (design doc §5.2, P1-confirmed).
+// Primary signal: senderDistance === 'SELF' → outbound. Cross-check: the
+// sender URN must agree (SELF ⇒ sender ≠ participant; non-SELF ⇒ sender ===
+// participant). Any disagreement returns null and the CALLER MUST SKIP the
+// message (D8 fail-closed) — wrong direction silently corrupts reply_count,
+// the one metric this feature exists to produce.
+function deriveDirection({ senderDistance, senderUrn, participantUrn }) {
+  const senderId      = normalizeUrnId(senderUrn);
+  const participantId = normalizeUrnId(participantUrn);
+  if (!senderId || !participantId) return null;
+  if (senderDistance === 'SELF') {
+    return senderId === participantId ? null : 'outbound';   // SELF claiming to be the prospect → conflict
+  }
+  return senderId === participantId ? 'inbound' : null;       // non-SELF must BE the participant (1:1 threads)
+}
+
 // ── Prospect matching ─────────────────────────────────────────────────────────
 //
 // Match ALL org prospects by slug (no owner filter — the route partitions
@@ -387,10 +432,13 @@ module.exports = {
   RECORD_ACCEPT_WITHOUT_LOGGED_REQUEST,
   POST_ACCEPTANCE_TOLERANCE_HOURS,
   passesPostAcceptanceGate,
+  normalizeUrnId,
+  deriveDirection,
   slugFromUrl,
   slugVariants,
   occurredAtFromTimeText,
   bindSeat,
   matchProspectsBySlugs,
+  matchProspectsByUrns,
   applyConnectionEvent,
 };
