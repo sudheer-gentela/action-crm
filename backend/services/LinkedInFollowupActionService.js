@@ -112,7 +112,7 @@ async function runForOrg(db, orgId) {
             'Accepted, no follow-up — message ' || trim(p.first_name || ' ' || p.last_name),
             trim(p.first_name || ' ' || p.last_name) || ' accepted your connection request ' ||
               GREATEST(1, round(EXTRACT(epoch FROM now() - (p.channel_data->'linkedin'->>'connected_at')::timestamptz) / 86400)) ||
-              ' day(s) ago and has not received a message.',
+              ' day(s) ago and no LinkedIn message has been recorded. If you already followed up, open that conversation and click Sync in the extension.',
             'outreach', 'linkedin', 'pending', 'high', now(),
             'linkedin_accepted_no_followup',
             jsonb_build_object('connectedAt', p.channel_data->'linkedin'->>'connected_at')
