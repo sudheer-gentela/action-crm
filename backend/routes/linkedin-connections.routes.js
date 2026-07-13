@@ -808,4 +808,54 @@ router.post('/generate-followup-actions', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-campaign reply-stop setting (2026_50). Lives here rather than in
+// prospecting-campaigns.routes.js deliberately: that route's UPDATE is a
+// fixed-column partial update under active parallel development — a
+// self-contained pair of endpoints is safer than widening it from a snapshot.
+//
+// GET /api/linkedin-connections/reply-stop-settings
+//   → { ok, campaigns: [ { id, name, status, stopOnReply } ] }   (org-scoped)
+// PUT /api/linkedin-connections/reply-stop-settings
+//   Body: { campaignId, stopOnReply }
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/reply-stop-settings', async (req, res) => {
+  try {
+    const rows = await db.query(
+      `SELECT id, name, status, stop_on_reply AS "stopOnReply"
+         FROM prospecting_campaigns
+        WHERE org_id = $1
+        ORDER BY (status = 'active') DESC, name ASC`,
+      [req.orgId]
+    );
+    res.json({ ok: true, campaigns: rows.rows });
+  } catch (err) {
+    console.error('linkedin-connections/reply-stop-settings GET error:', err);
+    res.status(500).json({ error: { message: 'Settings fetch failed: ' + err.message } });
+  }
+});
+
+router.put('/reply-stop-settings', async (req, res) => {
+  const { campaignId, stopOnReply } = req.body || {};
+  const id = parseInt(campaignId, 10);
+  if (!Number.isFinite(id) || typeof stopOnReply !== 'boolean') {
+    return res.status(400).json({ error: { message: 'campaignId (int) and stopOnReply (boolean) required' } });
+  }
+  try {
+    const upd = await db.query(
+      `UPDATE prospecting_campaigns
+          SET stop_on_reply = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2 AND org_id = $3
+        RETURNING id, name, stop_on_reply AS "stopOnReply"`,
+      [stopOnReply, id, req.orgId]
+    );
+    if (!upd.rows.length) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    console.log(`🔗 reply-stop-settings org=${req.orgId} user=${req.user.userId} campaign=${id} stopOnReply=${stopOnReply}`);
+    res.json({ ok: true, campaign: upd.rows[0] });
+  } catch (err) {
+    console.error('linkedin-connections/reply-stop-settings PUT error:', err);
+    res.status(500).json({ error: { message: 'Settings update failed: ' + err.message } });
+  }
+});
+
 module.exports = router;
