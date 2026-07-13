@@ -21,9 +21,20 @@
 //
 // IMPORTANT divergence from the manual /:id/linkedin-event endpoint:
 //   manual logging allows re-logging (e.g. a second message_sent). This
-//   service is machine-fed, so it NEVER re-applies an event the prospect
-//   already has — status only moves forward, connected_at / request_sent_at
-//   are never overwritten. That's what makes the popup button safe to mash.
+//   service is machine-fed, so it NEVER re-applies a CONNECTION event the
+//   prospect already has — status only moves forward, connected_at /
+//   request_sent_at are never overwritten. That's what makes the popup
+//   button safe to mash.
+//
+// MESSAGE events (message_sent / reply_received, added 2026-07 for the inbox
+// harvest) have different idempotency: multiple messages are legitimate, so
+// dedup lives in the linkedin_message_events ledger (2026_49), keyed on
+// LinkedIn's stable backendUrn. The CALLER must insert the ledger row with
+// ON CONFLICT DO NOTHING and invoke applyConnectionEvent EXACTLY ONCE per
+// row that (a) actually inserted and (b) passes passesPostAcceptanceGate.
+// Rows failing (b) are ledgered but never counted (design doc F14: a
+// connection-request note renders as a thread message and must not mark an
+// "accepted, never messaged" prospect as messaged).
 //
 // Every prospecting_activities INSERT includes org_id. Keep it that way.
 
@@ -45,6 +56,22 @@ const OUTREACH_STAGES = ['outreach', 'engaged', 'discovery_call', 'qualified_sal
 // The activity metadata carries request_not_logged: true so it's auditable.
 // Set to false to only record acceptances that follow a logged request.
 const RECORD_ACCEPT_WITHOUT_LOGGED_REQUEST = true;
+
+// Post-acceptance time gate (design doc §5.3 / F11 / F14). connected_at is
+// timeText-derived and coarse — production shows inversions of days — so a
+// strict `occurred_at > connected_at` would wrongly exclude genuine
+// post-acceptance replies. 48h tolerance, evidenced by prospects 1237/1287/
+// 267/1265. A message can only be COUNTED (bump message_count/reply_count/
+// status) when this passes; it is still ledgered when it fails.
+const POST_ACCEPTANCE_TOLERANCE_HOURS = 48;
+
+function passesPostAcceptanceGate(li, occurredAtIso) {
+  if (!li || !li.request_sent_at || !li.connected_at) return false; // attribution gate (D5)
+  const occurred  = Date.parse(occurredAtIso);
+  const connected = Date.parse(li.connected_at);
+  if (!Number.isFinite(occurred) || !Number.isFinite(connected)) return false;
+  return occurred > connected - POST_ACCEPTANCE_TOLERANCE_HOURS * 3600 * 1000;
+}
 
 function statusIdx(s) { return STATUS_ORDER.indexOf(s || ''); }
 
@@ -195,16 +222,24 @@ async function matchProspectsBySlugs(client, { orgId, slugs }) {
 // Returns { applied, action, reason } where action ∈
 //   'updated' | 'timestamp_backfill' | 'already_recorded' | 'skipped_no_request'
 //
-// person = { name, url, timeText } from the scrape (for activity metadata).
+// person  = { name, url, timeText } from the scrape (connection events).
+// message = { urn, threadUrn, direction, occurredAtIso } from the inbox
+//           harvest (message events; person may be omitted). Caller owns the
+//           ledger insert + post-acceptance gate — see header.
 async function applyConnectionEvent(client, {
-  orgId, userId, prospect, event, person, viewerSlug,
+  orgId, userId, prospect, event, person, viewerSlug, message,
 }) {
+  person = person || {};
   const channelData = prospect.channel_data || {};
   const li          = channelData.linkedin || {};
   const currentIdx  = statusIdx(li.connection_status);
   const newIdx      = statusIdx(event);
 
-  const { iso: occurredAt, source: timeSource } = occurredAtFromTimeText(person.timeText);
+  const isMessageEvent = event === 'message_sent' || event === 'reply_received';
+  const { iso: occurredAt, source: timeSource } = isMessageEvent
+    ? { iso: (message && message.occurredAtIso) || new Date().toISOString(),
+        source: (message && message.occurredAtIso) ? 'linkedin_delivered_at' : 'auto' }
+    : occurredAtFromTimeText(person.timeText);
   const loggedAt = new Date().toISOString();
 
   let action = null;
@@ -239,6 +274,22 @@ async function applyConnectionEvent(client, {
     // reply_received keeps the later status, we just fill connected_at.
     if (newIdx > currentIdx) li.connection_status = 'connection_accepted';
     action = 'updated';
+  } else if (event === 'message_sent') {
+    // Ledger (caller) guarantees this is a new, gate-passing message.
+    // Timestamps only move FORWARD — thread pagination delivers old messages.
+    if (!li.last_message_at || Date.parse(occurredAt) > Date.parse(li.last_message_at)) {
+      li.last_message_at = occurredAt;
+    }
+    li.message_count = (li.message_count || 0) + 1;
+    if (newIdx > currentIdx) li.connection_status = 'message_sent';
+    action = 'updated';
+  } else if (event === 'reply_received') {
+    if (!li.last_reply_at || Date.parse(occurredAt) > Date.parse(li.last_reply_at)) {
+      li.last_reply_at = occurredAt;
+    }
+    li.reply_count = (li.reply_count || 0) + 1;
+    if (newIdx > currentIdx) li.connection_status = 'reply_received';
+    action = 'updated';
   } else {
     throw new Error(`Unsupported sync event: ${event}`);
   }
@@ -246,17 +297,23 @@ async function applyConnectionEvent(client, {
   channelData.linkedin = li;
 
   // Counters + stage — mirror the manual endpoint:
-  //   connection_request_sent is outreach (count + last_outreach_at + stage
-  //   auto-advance), connection_accepted is neither outreach nor response.
-  //   Dedup guard: never double-count when sequences already advanced the
-  //   prospect AND the status was already logged — for 'updated' sent events
-  //   the status was NOT yet logged (that's how we got here), so we count
-  //   unless this is a pure timestamp backfill.
-  const isOutreach    = event === 'connection_request_sent' && action === 'updated';
-  const alreadyInSeq  = OUTREACH_STAGES.includes(prospect.stage);
-  const countOutreach = isOutreach; // status wasn't logged → manual endpoint would count too
+  //   connection_request_sent / message_sent are outreach (count +
+  //   last_outreach_at + stage auto-advance); reply_received is a response
+  //   (response_count + last_response_at); connection_accepted is neither.
+  //   Dedup guard (mirror of the manual endpoint's skipCount): when the
+  //   prospect is already in an outreach+ stage AND this status was already
+  //   logged, sequences/actions already counted the touch — update li.*
+  //   fields but skip the aggregate counters.
+  const alreadyInSeq   = OUTREACH_STAGES.includes(prospect.stage);
+  const alreadyLogged  = currentIdx >= newIdx && newIdx >= 0;
+  const skipCount      = alreadyInSeq && alreadyLogged;
+  const isOutreach     = (event === 'connection_request_sent' || event === 'message_sent')
+                         && action === 'updated';
+  const isResponse     = event === 'reply_received' && action === 'updated';
+  const countOutreach  = isOutreach && !skipCount;
+  const countResponse  = isResponse && !skipCount;
 
-  if (isOutreach && !alreadyInSeq && ['target', 'research'].includes(prospect.stage)) {
+  if (isOutreach && !skipCount && ['target', 'research'].includes(prospect.stage)) {
     await client.query(
       `UPDATE prospects SET stage = 'outreach', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
         WHERE id = $1 AND org_id = $2`,
@@ -276,18 +333,26 @@ async function applyConnectionEvent(client, {
                             THEN GREATEST(COALESCE(last_outreach_at, to_timestamp(0)), LEAST($5::timestamptz, CURRENT_TIMESTAMP))
                             ELSE last_outreach_at END,
        outreach_count   = CASE WHEN $2 THEN COALESCE(outreach_count, 0) + 1 ELSE outreach_count END,
+       last_response_at = CASE WHEN $6
+                            THEN GREATEST(COALESCE(last_response_at, to_timestamp(0)), LEAST($5::timestamptz, CURRENT_TIMESTAMP))
+                            ELSE last_response_at END,
+       response_count   = CASE WHEN $6 THEN COALESCE(response_count, 0) + 1 ELSE response_count END,
        updated_at       = CURRENT_TIMESTAMP
      WHERE id = $3 AND org_id = $4`,
-    [JSON.stringify(channelData), countOutreach, prospect.id, orgId, occurredAt]
+    [JSON.stringify(channelData), countOutreach, prospect.id, orgId, occurredAt, countResponse]
   );
 
   const LABELS = {
     connection_request_sent: 'LinkedIn connection request sent',
     connection_accepted:     'LinkedIn connection accepted',
+    message_sent:            'LinkedIn message sent',
+    reply_received:          'LinkedIn reply received',
   };
   const desc = action === 'timestamp_backfill'
     ? `${LABELS[event]} — timestamp backfilled from LinkedIn`
-    : `${LABELS[event]} (synced from LinkedIn)`;
+    : isMessageEvent
+      ? `${LABELS[event]} (inbox harvest)`
+      : `${LABELS[event]} (synced from LinkedIn)`;
 
   await client.query(
     `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata, created_at)
@@ -297,14 +362,17 @@ async function applyConnectionEvent(client, {
       JSON.stringify({
         event,
         channel: 'linkedin',
-        source: 'extension_connection_sync',
+        source: isMessageEvent ? 'extension_message_sync' : 'extension_connection_sync',
         sync_action: action,
         occurred_at: occurredAt,
         logged_at:   loggedAt,
-        time_source: timeSource,                 // 'linkedin_relative' | 'auto'
-        time_text:   person.timeText || null,    // raw card text, audit
+        time_source: timeSource,                 // 'linkedin_relative' | 'linkedin_delivered_at' | 'auto'
+        time_text:   person.timeText || null,    // raw card text, audit (connection events)
         linkedin_seat: viewerSlug || null,       // which LinkedIn account this came from
         person_url:  person.url || null,
+        message_urn: (message && message.urn)       || undefined,
+        thread_urn:  (message && message.threadUrn) || undefined,
+        direction:   (message && message.direction) || undefined,
         request_not_logged: requestNotLogged || undefined,
       }),
       occurredAt,
@@ -317,6 +385,8 @@ async function applyConnectionEvent(client, {
 module.exports = {
   STATUS_ORDER,
   RECORD_ACCEPT_WITHOUT_LOGGED_REQUEST,
+  POST_ACCEPTANCE_TOLERANCE_HOURS,
+  passesPostAcceptanceGate,
   slugFromUrl,
   slugVariants,
   occurredAtFromTimeText,
