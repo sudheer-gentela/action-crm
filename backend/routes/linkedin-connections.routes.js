@@ -698,4 +698,104 @@ router.get('/thread-map', async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// P5b — funnel drill-through + follow-up action generation.
+//
+// GET /api/linkedin-connections/funnel
+//   Per-prospect lifecycle rows for the calling user's attributed prospects
+//   (drill-through, not aggregates — the denominator is small enough to read).
+//   "followed_up" uses the F18 definition (invite notes excluded via the
+//   request_sent_at + 2h clause; F11's 48h acceptance tolerance retained).
+//
+// POST /api/linkedin-connections/generate-followup-actions
+//   Manual/cron trigger for LinkedInFollowupActionService.runForOrg — creates
+//   and auto-resolves 'reply waiting' and 'accepted, no follow-up' actions in
+//   the standard prospecting_actions queue.
+// ─────────────────────────────────────────────────────────────────────────────
+const FollowupActions = require('../services/LinkedInFollowupActionService');
+
+router.get('/funnel', async (req, res) => {
+  const orgId  = req.orgId;
+  const userId = req.user.userId;
+  try {
+    const rows = await db.query(
+      `SELECT p.id AS "prospectId",
+              trim(p.first_name || ' ' || p.last_name)          AS name,
+              p.company_name                                    AS company,
+              p.member_urn IS NOT NULL                          AS "identityResolved",
+              p.channel_data->'linkedin'->>'request_sent_at'    AS "requestSentAt",
+              p.channel_data->'linkedin'->>'connected_at'       AS "connectedAt",
+              p.channel_data->'linkedin'->>'connection_verified_at' AS "verifiedAt",
+              p.channel_data->'linkedin'->>'connection_status'  AS "liStatus",
+              fo.first_followup                                 AS "firstFollowupAt",
+              li.last_inbound                                   AS "lastReplyAt",
+              li.inbound_count                                  AS "replyCount",
+              li.thread_urn                                     AS "threadUrn",
+              CASE WHEN li.thread_urn IS NOT NULL THEN
+                'https://www.linkedin.com/messaging/thread/' ||
+                replace(li.thread_urn, 'urn:li:messagingThread:', '') || '/'
+              END                                               AS "threadUrl"
+         FROM prospects p
+         LEFT JOIN LATERAL (
+           SELECT min(q.occurred_at) AS first_followup
+             FROM linkedin_message_events q
+            WHERE q.org_id = p.org_id AND q.prospect_id = p.id
+              AND q.direction = 'outbound'
+              AND q.occurred_at > GREATEST(
+                    (p.channel_data->'linkedin'->>'request_sent_at')::timestamptz + interval '2 hours',
+                    (p.channel_data->'linkedin'->>'connected_at')::timestamptz   - interval '48 hours')
+         ) fo ON true
+         LEFT JOIN LATERAL (
+           SELECT max(occurred_at) FILTER (WHERE direction = 'inbound' AND counted) AS last_inbound,
+                  count(*)         FILTER (WHERE direction = 'inbound' AND counted) AS inbound_count,
+                  (array_agg(thread_urn ORDER BY occurred_at DESC)
+                     FILTER (WHERE thread_urn IS NOT NULL))[1]                      AS thread_urn
+             FROM linkedin_message_events
+            WHERE org_id = p.org_id AND prospect_id = p.id
+         ) li ON true
+        WHERE p.org_id = $1 AND p.owner_id = $2 AND p.deleted_at IS NULL
+          AND p.channel_data->'linkedin'->>'request_sent_at' IS NOT NULL
+        ORDER BY (p.channel_data->'linkedin'->>'connected_at') DESC NULLS LAST,
+                 (p.channel_data->'linkedin'->>'request_sent_at') DESC`,
+      [orgId, userId]
+    );
+
+    const r = rows.rows;
+    const stage = (x) => x.lastReplyAt ? 'replied'
+                 : x.firstFollowupAt   ? 'followed_up'
+                 : x.connectedAt       ? 'accepted'
+                 :                       'requested';
+    const summary = { requested: r.length, accepted: 0, followed_up: 0, replied: 0 };
+    for (const x of r) {
+      const s = stage(x);
+      if (s !== 'requested') summary.accepted++;
+      if (s === 'followed_up' || s === 'replied') summary.followed_up++;
+      if (s === 'replied') summary.replied++;
+      x.stage = s;
+    }
+    // Boundary honesty (design doc §11/N6): shown with the table in the UI.
+    res.json({
+      ok: true, summary, rows: r,
+      caveats: [
+        'Messages sent via Sales Navigator or the LinkedIn mobile app are not visible until the thread is opened once in Chrome.',
+        'Freshness is bounded by the last message sync.',
+      ],
+    });
+  } catch (err) {
+    console.error('linkedin-connections/funnel error:', err);
+    res.status(500).json({ error: { message: 'Funnel fetch failed: ' + err.message } });
+  }
+});
+
+router.post('/generate-followup-actions', async (req, res) => {
+  try {
+    const result = await FollowupActions.runForOrg(db, req.orgId);
+    console.log('🔗 linkedin-connections/generate-followup-actions', JSON.stringify(result));
+    res.json({ ok: true, result });
+  } catch (err) {
+    console.error('linkedin-connections/generate-followup-actions error:', err);
+    res.status(500).json({ error: { message: 'Action generation failed: ' + err.message } });
+  }
+});
+
 module.exports = router;

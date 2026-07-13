@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict yRO83XJFilt6beB95JpjQmcIuGV4iO7uWVGK9uRVup4exs2DESz1fhEMFGe5XkP
+\restrict JqoCVDymwIG8G9Nw8Gk4SfoKatdfFiAW3ehjsznYdwSAlrNzqipxL1LGpzXEOV6
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -3223,6 +3223,52 @@ CREATE SEQUENCE public.linkedin_connections_id_seq
 --
 
 ALTER SEQUENCE public.linkedin_connections_id_seq OWNED BY public.linkedin_connections.id;
+
+
+--
+-- Name: linkedin_message_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.linkedin_message_events (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    prospect_id integer NOT NULL,
+    user_id integer NOT NULL,
+    seat text NOT NULL,
+    message_urn text NOT NULL,
+    thread_urn text,
+    direction text NOT NULL,
+    counted boolean DEFAULT false NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT linkedin_message_events_direction_check CHECK ((direction = ANY (ARRAY['outbound'::text, 'inbound'::text])))
+);
+
+
+--
+-- Name: TABLE linkedin_message_events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.linkedin_message_events IS 'Dedup ledger for LinkedIn inbox harvest. message_urn is LinkedIn''s stable backendUrn; counters on prospects bump only when a row inserts AND counted=true (post-acceptance gate, design doc ┬º5.3/F14).';
+
+
+--
+-- Name: linkedin_message_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.linkedin_message_events_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: linkedin_message_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.linkedin_message_events_id_seq OWNED BY public.linkedin_message_events.id;
 
 
 --
@@ -7377,6 +7423,13 @@ ALTER TABLE ONLY public.linkedin_connections ALTER COLUMN id SET DEFAULT nextval
 
 
 --
+-- Name: linkedin_message_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.linkedin_message_events ALTER COLUMN id SET DEFAULT nextval('public.linkedin_message_events_id_seq'::regclass);
+
+
+--
 -- Name: linkedin_profiles id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -8510,6 +8563,14 @@ ALTER TABLE ONLY public.entity_signals
 
 ALTER TABLE ONLY public.linkedin_connections
     ADD CONSTRAINT linkedin_connections_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: linkedin_message_events linkedin_message_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.linkedin_message_events
+    ADD CONSTRAINT linkedin_message_events_pkey PRIMARY KEY (id);
 
 
 --
@@ -11065,6 +11126,27 @@ CREATE INDEX idx_handover_stakeholders_contact ON public.sales_handover_stakehol
 --
 
 CREATE INDEX idx_handover_stakeholders_handover ON public.sales_handover_stakeholders USING btree (handover_id);
+
+
+--
+-- Name: idx_li_msg_events_inbound; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_li_msg_events_inbound ON public.linkedin_message_events USING btree (org_id, prospect_id, occurred_at) WHERE (direction = 'inbound'::text);
+
+
+--
+-- Name: idx_li_msg_events_prospect; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_li_msg_events_prospect ON public.linkedin_message_events USING btree (org_id, prospect_id, occurred_at DESC);
+
+
+--
+-- Name: idx_li_msg_events_urn; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_li_msg_events_urn ON public.linkedin_message_events USING btree (org_id, message_urn);
 
 
 --
@@ -16533,5 +16615,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict yRO83XJFilt6beB95JpjQmcIuGV4iO7uWVGK9uRVup4exs2DESz1fhEMFGe5XkP
+\unrestrict JqoCVDymwIG8G9Nw8Gk4SfoKatdfFiAW3ehjsznYdwSAlrNzqipxL1LGpzXEOV6
 
