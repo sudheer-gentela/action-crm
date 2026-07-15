@@ -62,3 +62,55 @@
   background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px;
   padding: 8px 12px; line-height: 1.6;
 }
+
+/* ── v2: clickable cards + rows ── */
+.lifp-stage-clickable { cursor: pointer; transition: transform 0.08s; }
+.lifp-stage-clickable:hover { transform: translateY(-1px); }
+.lifp-stage-active { background: #f0fdfa; }
+.lifp-row-clickable { cursor: pointer; }
+
+/* ── v2: prospect detail drawer ── */
+.lifp-drawer-backdrop {
+  position: fixed; inset: 0; background: rgba(17, 24, 39, 0.35); z-index: 60;
+}
+.lifp-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 420px; max-width: 92vw;
+  background: #fff; box-shadow: -8px 0 24px rgba(0,0,0,0.15);
+  padding: 20px 22px; overflow-y: auto; z-index: 61;
+}
+.lifp-drawer-close {
+  position: absolute; top: 10px; right: 14px; border: none; background: none;
+  font-size: 22px; color: #9ca3af; cursor: pointer;
+}
+.lifp-drawer-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; margin-bottom: 14px; }
+.lifp-drawer-name    { font-size: 17px; font-weight: 700; color: #111827; }
+.lifp-drawer-company { font-size: 13px; color: #6b7280; margin-top: 2px; }
+.lifp-drawer-links   { display: flex; flex-direction: column; gap: 6px; }
+.lifp-drawer-links .lifp-btn { text-decoration: none; text-align: center; white-space: nowrap; }
+
+.lifp-drawer-facts {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px 12px;
+  background: #f9fafb; border: 1px solid #f3f4f6; border-radius: 8px;
+  padding: 10px 12px; font-size: 13px; color: #111827; margin-bottom: 14px;
+}
+.lifp-drawer-facts span { display: block; font-size: 10.5px; text-transform: uppercase; color: #9ca3af; letter-spacing: 0.03em; }
+
+.lifp-drawer-section {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: #6b7280; margin: 14px 0 6px; border-bottom: 1px solid #f3f4f6; padding-bottom: 4px;
+}
+.lifp-drawer-empty { font-size: 12.5px; color: #9ca3af; padding: 4px 0; }
+
+.lifp-msg-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13px; border-bottom: 1px solid #fafafa; }
+.lifp-msg-dir { font-weight: 700; font-size: 12px; min-width: 62px; }
+.lifp-in  { color: #16a34a; }
+.lifp-out { color: #3b82f6; }
+.lifp-msg-when { color: #6b7280; font-size: 12px; }
+.lifp-msg-uncounted {
+  font-size: 10.5px; color: #92400e; background: #fffbeb; border: 1px solid #fde68a;
+  border-radius: 999px; padding: 1px 8px;
+}
+.lifp-drawer-note { font-size: 11.5px; color: #9ca3af; margin-top: 6px; font-style: italic; }
+
+.lifp-act-row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; font-size: 12.5px; border-bottom: 1px solid #fafafa; }
+.lifp-act-desc { color: #374151; }

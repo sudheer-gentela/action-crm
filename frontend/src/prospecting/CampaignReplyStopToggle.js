@@ -52,18 +52,38 @@ export default function CampaignReplyStopToggle({ campaignId = null }) {
     }
   };
 
-  if (error)      return <div style={{ color: '#b91c1c', fontSize: 13, padding: '6px 0' }}>{error}</div>;
-  if (!campaigns) return <div style={{ color: '#6b7280', fontSize: 13, padding: '6px 0' }}>Loading…</div>;
-  if (!campaigns.length) return null;
+  // v2: ALWAYS render as a visible card, including error/empty states — an
+  // invisible failure under a tall config panel is indistinguishable from
+  // "not deployed" (which is exactly what happened in UAT).
+  const card = (body) => (
+    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff',
+                  padding: '12px 14px' }}>
+      <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase',
+                    letterSpacing: '0.03em', color: '#6b7280', marginBottom: 6 }}>
+        Stop sequences on reply
+      </div>
+      {body}
+    </div>
+  );
 
-  return (
-    <div style={{ padding: campaignId != null ? 0 : '4px 0' }}>
-      {campaignId == null && (
-        <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase',
-                      letterSpacing: '0.03em', color: '#6b7280', marginBottom: 6 }}>
-          Stop sequences on reply
-        </div>
-      )}
+  if (error) return card(
+    <div style={{ color: '#b91c1c', fontSize: 13 }}>
+      {error}
+      {/not found|404/i.test(error) &&
+        ' — the reply-stop endpoints are missing; deploy the latest linkedin-connections.routes.js.'}
+    </div>
+  );
+  if (!campaigns) return card(<div style={{ color: '#6b7280', fontSize: 13 }}>Loading…</div>);
+  if (!campaigns.length) return card(
+    <div style={{ color: '#6b7280', fontSize: 13 }}>
+      {campaignId != null
+        ? 'This campaign was not found in reply-stop settings.'
+        : 'No campaigns yet.'}
+    </div>
+  );
+
+  return card(
+    <div>
       {campaigns.map(c => {
         const on = c.stopOnReply !== false;
         return (

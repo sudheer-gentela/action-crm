@@ -727,6 +727,7 @@ router.get('/funnel', async (req, res) => {
       `SELECT p.id AS "prospectId",
               trim(p.first_name || ' ' || p.last_name)          AS name,
               p.company_name                                    AS company,
+              p.linkedin_url                                    AS "linkedinUrl",
               p.member_urn IS NOT NULL                          AS "identityResolved",
               p.channel_data->'linkedin'->>'request_sent_at'    AS "requestSentAt",
               p.channel_data->'linkedin'->>'connected_at'       AS "connectedAt",
@@ -855,6 +856,74 @@ router.put('/reply-stop-settings', async (req, res) => {
   } catch (err) {
     console.error('linkedin-connections/reply-stop-settings PUT error:', err);
     res.status(500).json({ error: { message: 'Settings update failed: ' + err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/linkedin-connections/funnel/:prospectId — drill-down for one row.
+// Returns the prospect's LinkedIn lifecycle fields, the message ledger
+// (direction/counted/timestamps ONLY — message text never reaches the server,
+// D12, so there is none to show), and the LinkedIn-channel activity trail.
+// Owner-scoped like the funnel itself.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/funnel/:prospectId', async (req, res) => {
+  const orgId  = req.orgId;
+  const userId = req.user.userId;
+  const pid    = parseInt(req.params.prospectId, 10);
+  if (!Number.isFinite(pid)) return res.status(400).json({ error: { message: 'Bad prospect id' } });
+  try {
+    const pr = await db.query(
+      `SELECT id, trim(first_name || ' ' || last_name) AS name,
+              company_name AS company, linkedin_url AS "linkedinUrl",
+              member_urn IS NOT NULL AS "identityResolved", stage,
+              channel_data->'linkedin' AS li
+         FROM prospects
+        WHERE id = $1 AND org_id = $2 AND owner_id = $3 AND deleted_at IS NULL`,
+      [pid, orgId, userId]
+    );
+    if (!pr.rows.length) return res.status(404).json({ error: { message: 'Prospect not found' } });
+
+    const events = await db.query(
+      `SELECT direction, counted, occurred_at AS "occurredAt", thread_urn AS "threadUrn"
+         FROM linkedin_message_events
+        WHERE org_id = $1 AND prospect_id = $2
+        ORDER BY occurred_at DESC
+        LIMIT 100`,
+      [orgId, pid]
+    );
+    const activities = await db.query(
+      `SELECT description, activity_type AS "activityType",
+              metadata->>'event' AS event, metadata->>'source' AS source,
+              created_at AS "createdAt"
+         FROM prospecting_activities
+        WHERE org_id = $1 AND prospect_id = $2
+        ORDER BY created_at DESC
+        LIMIT 50`,
+      [orgId, pid]
+    );
+
+    const p = pr.rows[0];
+    const li = p.li || {};
+    res.json({
+      ok: true,
+      prospect: {
+        id: p.id, name: p.name, company: p.company,
+        linkedinUrl: p.linkedinUrl, identityResolved: p.identityResolved, stage: p.stage,
+        requestSentAt: li.request_sent_at || null,
+        connectedAt: li.connected_at || null,
+        verifiedAt: li.connection_verified_at || null,
+        liStatus: li.connection_status || null,
+        messageCount: li.message_count || 0,
+        replyCount: li.reply_count || 0,
+        lastMessageAt: li.last_message_at || null,
+        lastReplyAt: li.last_reply_at || null,
+      },
+      messages: events.rows,
+      activities: activities.rows,
+    });
+  } catch (err) {
+    console.error('linkedin-connections/funnel/:id error:', err);
+    res.status(500).json({ error: { message: 'Detail fetch failed: ' + err.message } });
   }
 });
 

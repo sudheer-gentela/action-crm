@@ -46,6 +46,8 @@ export default function LinkedInFunnelPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
   const [genState, setGen]    = useState(null);   // null | 'running' | result string
+  const [stageFilter, setStageFilter] = useState(null);   // null | stage key (cumulative)
+  const [detail, setDetail]   = useState(null);           // { loading } | { prospect, messages, activities } | { error }
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -79,6 +81,22 @@ export default function LinkedInFunnelPanel() {
     }
   };
 
+  // Cumulative stage membership — matches how the summary counts are built
+  // (an "Accepted" card count includes followed_up and replied), so clicking
+  // a card always shows exactly the number printed on it.
+  const STAGE_RANK = { requested: 0, accepted: 1, followed_up: 2, replied: 3 };
+  const matchesFilter = (r) => !stageFilter || STAGE_RANK[r.stage] >= STAGE_RANK[stageFilter];
+
+  const openDetail = async (prospectId) => {
+    setDetail({ loading: true });
+    try {
+      const res = await apiFetch(`/linkedin-connections/funnel/${prospectId}`);
+      setDetail(res);
+    } catch (err) {
+      setDetail({ error: err.message || 'Failed to load prospect detail' });
+    }
+  };
+
   if (loading && !data) return <div className="lifp-status">Loading LinkedIn funnel…</div>;
   if (error)            return <div className="lifp-status lifp-error">{error}</div>;
   if (!data)            return null;
@@ -93,7 +111,13 @@ export default function LinkedInFunnelPanel() {
         {['requested', 'accepted', 'followed_up', 'replied'].map((k, i) => (
           <React.Fragment key={k}>
             {i > 0 && <span className="lifp-arrow">→</span>}
-            <div className="lifp-stage" style={{ borderColor: STAGE_META[k].color }}>
+            <div
+              className={'lifp-stage lifp-stage-clickable' + (stageFilter === k ? ' lifp-stage-active' : '')}
+              style={{ borderColor: STAGE_META[k].color,
+                       boxShadow: stageFilter === k ? `0 0 0 2px ${STAGE_META[k].color}33` : undefined }}
+              title={stageFilter === k ? 'Click to clear filter' : `Show ${STAGE_META[k].label.toLowerCase()}+`}
+              onClick={() => setStageFilter(stageFilter === k ? null : k)}
+            >
               <div className="lifp-stage-count" style={{ color: STAGE_META[k].color }}>
                 {summary[k]}
               </div>
@@ -129,8 +153,9 @@ export default function LinkedInFunnelPanel() {
           </tr>
         </thead>
         <tbody>
-          {rows.map(r => (
-            <tr key={r.prospectId}>
+          {rows.filter(matchesFilter).map(r => (
+            <tr key={r.prospectId} className="lifp-row-clickable"
+                onClick={() => openDetail(r.prospectId)}>
               <td className="lifp-name">{r.name || '—'}</td>
               <td>{r.company || '—'}</td>
               <td>
@@ -151,11 +176,16 @@ export default function LinkedInFunnelPanel() {
               <td>
                 {r.threadUrl
                   ? <a href={r.threadUrl} target="_blank" rel="noopener noreferrer"
-                       className="lifp-threadlink">open ↗</a>
+                       className="lifp-threadlink" onClick={e => e.stopPropagation()}>open ↗</a>
                   : '—'}
               </td>
             </tr>
           ))}
+          {rows.length > 0 && rows.filter(matchesFilter).length === 0 && (
+            <tr><td colSpan={11} className="lifp-empty">
+              No prospects at this stage — click the highlighted card again to clear the filter.
+            </td></tr>
+          )}
           {rows.length === 0 && (
             <tr><td colSpan={11} className="lifp-empty">
               No attributed prospects yet — send LinkedIn connection requests through
@@ -164,6 +194,75 @@ export default function LinkedInFunnelPanel() {
           )}
         </tbody>
       </table>
+
+      {/* Prospect detail drawer */}
+      {detail && (
+        <div className="lifp-drawer-backdrop" onClick={() => setDetail(null)}>
+          <div className="lifp-drawer" onClick={e => e.stopPropagation()}>
+            <button className="lifp-drawer-close" onClick={() => setDetail(null)}>×</button>
+            {detail.loading && <div className="lifp-status">Loading…</div>}
+            {detail.error && <div className="lifp-status lifp-error">{detail.error}</div>}
+            {detail.prospect && (
+              <>
+                <div className="lifp-drawer-head">
+                  <div>
+                    <div className="lifp-drawer-name">{detail.prospect.name}</div>
+                    <div className="lifp-drawer-company">{detail.prospect.company || ''}</div>
+                  </div>
+                  <div className="lifp-drawer-links">
+                    {detail.prospect.linkedinUrl && (
+                      <a href={detail.prospect.linkedinUrl} target="_blank" rel="noopener noreferrer"
+                         className="lifp-btn">LinkedIn profile ↗</a>
+                    )}
+                    {(() => {
+                      const t = (detail.messages || []).find(m => m.threadUrn);
+                      return t ? (
+                        <a href={'https://www.linkedin.com/messaging/thread/' +
+                                 t.threadUrn.replace('urn:li:messagingThread:', '') + '/'}
+                           target="_blank" rel="noopener noreferrer" className="lifp-btn">Conversation ↗</a>
+                      ) : null;
+                    })()}
+                  </div>
+                </div>
+
+                <div className="lifp-drawer-facts">
+                  <div><span>Requested</span>{fmtDate(detail.prospect.requestSentAt)}</div>
+                  <div><span>Accepted</span>{fmtDate(detail.prospect.connectedAt)}</div>
+                  <div><span>Verified</span>{detail.prospect.verifiedAt ? relTime(detail.prospect.verifiedAt) : '—'}</div>
+                  <div><span>Status</span>{detail.prospect.liStatus || '—'}</div>
+                  <div><span>Messages</span>{detail.prospect.messageCount}</div>
+                  <div><span>Replies</span>{detail.prospect.replyCount}</div>
+                </div>
+
+                <div className="lifp-drawer-section">Message ledger</div>
+                {(detail.messages || []).length === 0 && (
+                  <div className="lifp-drawer-empty">No messages recorded — open the conversation in LinkedIn and click Sync in the extension.</div>
+                )}
+                {(detail.messages || []).map((m, i) => (
+                  <div key={i} className="lifp-msg-row">
+                    <span className={'lifp-msg-dir ' + (m.direction === 'inbound' ? 'lifp-in' : 'lifp-out')}>
+                      {m.direction === 'inbound' ? '← reply' : '→ sent'}
+                    </span>
+                    <span className="lifp-msg-when" title={m.occurredAt}>{relTime(m.occurredAt)} · {fmtDate(m.occurredAt)}</span>
+                    {!m.counted && <span className="lifp-msg-uncounted" title="Pre-acceptance (e.g. connection-request note) — recorded but not counted">not counted</span>}
+                  </div>
+                ))}
+                <div className="lifp-drawer-note">
+                  Message text is never stored — GoWarm records who messaged whom and when. Open the conversation for content.
+                </div>
+
+                <div className="lifp-drawer-section">Activity</div>
+                {(detail.activities || []).map((a, i) => (
+                  <div key={i} className="lifp-act-row">
+                    <span className="lifp-act-desc">{a.description}</span>
+                    <span className="lifp-msg-when">{fmtDate(a.createdAt)}</span>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Honesty strip — straight from the endpoint (design doc §11/N6) */}
       {caveats && caveats.length > 0 && (
