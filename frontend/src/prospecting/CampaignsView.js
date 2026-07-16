@@ -669,9 +669,14 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
   const [drill, setDrill] = useState(null);
   // EMAIL FUNNEL strip — Sent → Delivered → Opened → Clicked → Replied over
   // the same range as the BY CHANNEL cards, so a stage and the card beside
-  // it never describe different windows. null = loading/unavailable; the
-  // strip renders only when funnel.sent > 0 (email-less campaigns don't
-  // carry a dead section, same rule as the LinkedIn connections funnel).
+  // it never describe different windows. States:
+  //   null              — loading (renders nothing)
+  //   { error: true }   — fetch failed (renders nothing, logs to console so
+  //                       a missing backend route is visible in DevTools
+  //                       instead of silently indistinguishable from empty)
+  //   { funnel, ... }   — loaded; sent = 0 renders a one-line zero state so
+  //                       a healthy-but-empty funnel is visibly different
+  //                       from a broken fetch
   const [emailFunnel, setEmailFunnel] = useState(null);
   // Read-only sequence-steps modal ("what does this campaign actually send?")
   const [showSequenceSteps, setShowSequenceSteps] = useState(false);
@@ -732,8 +737,12 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
         const qs = rangeFilter === 'all' ? '?range=all' : '';
         const r = await apiFetch(`/prospecting-campaigns/${campaignId}/email-funnel${qs}`);
         if (!cancelled) setEmailFunnel(r);
-      } catch (_) {
-        if (!cancelled) setEmailFunnel(null);
+      } catch (err) {
+        // Loud in the console, invisible in the UI: a 404 here almost always
+        // means the backend route isn't deployed yet, and that must not look
+        // identical to a campaign with no email sends.
+        console.error('email-funnel fetch failed:', err);
+        if (!cancelled) setEmailFunnel({ error: true });
       }
     })();
     return () => { cancelled = true; };
@@ -1234,8 +1243,25 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                 list behind it via the same modal as the BY CHANNEL cards.
                 Hidden until the campaign has sent at least one sequence
                 email, mirroring the LinkedIn section's hide-when-empty. */}
-            {emailFunnel?.funnel?.sent > 0 && (() => {
+            {emailFunnel && !emailFunnel.error && emailFunnel.funnel && (() => {
               const f = emailFunnel.funnel;
+              if (!(f.sent > 0)) {
+                // Loaded fine, genuinely empty — say so instead of vanishing,
+                // so "no sequence emails" never looks like "feature broken".
+                return (
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{
+                      fontSize: 11, color: '#6b7280', fontWeight: 600,
+                      letterSpacing: 0.3, marginBottom: 6,
+                    }}>
+                      EMAIL FUNNEL — {rangeFilter === 'all' ? 'ALL TIME' : 'THIS WEEK'}
+                    </div>
+                    <div style={{ fontSize: 12, color: '#9ca3af', fontStyle: 'italic' }}>
+                      No sequence emails sent{rangeFilter === 'all' ? '' : ' this week — try "All time"'}.
+                    </div>
+                  </div>
+                );
+              }
               const pctOf = (n, d) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '—');
               const stages = [
                 { key: 'sent',      label: 'sent',      value: f.sent,      sub: null,                        color: '#1A3A5C', bg: '#f8fafc' },
