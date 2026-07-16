@@ -1679,6 +1679,120 @@ router.get('/:id/emails', async (req, res) => {
   }
 });
 
+// ── GET /:id/email-engagement — per-message delivery + open/click history ────
+//
+// One row per SEQUENCE email sent to this prospect (sequence_step_logs,
+// channel=email, status sent/completed), annotated with:
+//
+//   verdict   — 'delivered' | 'hard_bounce' | 'block' | 'soft_bounce'
+//               Same worst-verdict-wins / earliest-breaks-tie rule as
+//               BounceEventsQuery. Only hard_bounce means "not delivered";
+//               block/soft_bounce are reported but stay inside delivered,
+//               matching the reporting tiles (see BounceEventsQuery header).
+//   opens     — HUMAN opens only (is_bot = false). Opens are DIRECTIONAL:
+//               Apple MPP and Gmail image proxies auto-fire pixels that the
+//               bot filter cannot catch. The UI must label them as such.
+//   clicks    — human clicks, with the distinct destination URLs.
+//
+// Powers the "Email engagement" section on the prospect drawer's Activity
+// tab. Access control mirrors GET /:id/emails: org-scoped prospect check.
+router.get('/:id/email-engagement', async (req, res) => {
+  try {
+    const check = await db.query(
+      'SELECT id FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL',
+      [req.params.id, req.orgId]
+    );
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+
+    const result = await db.query(
+      `WITH sends AS (
+         SELECT ssl.id, ssl.subject, ssl.fired_at, s.name AS sequence_name
+           FROM sequence_step_logs ssl
+           JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
+           JOIN sequences s             ON s.id  = se.sequence_id
+          WHERE ssl.org_id      = $2
+            AND ssl.prospect_id = $1
+            AND ssl.channel     = 'email'
+            AND ssl.status      IN ('sent','completed')
+          ORDER BY ssl.fired_at DESC
+          LIMIT 50
+       ),
+       -- Worst verdict per send; earliest detection breaks ties. Same rule as
+       -- bounce_events in BounceEventsQuery so this list can never disagree
+       -- with the campaign/reporting delivered numbers.
+       verdicts AS (
+         SELECT DISTINCT ON (ede.step_log_id)
+                ede.step_log_id, ede.event_type, ede.detected_at
+           FROM email_delivery_events ede
+           JOIN sends ON sends.id = ede.step_log_id
+          WHERE ede.org_id = $2
+          ORDER BY ede.step_log_id,
+                   CASE ede.event_type
+                     WHEN 'hard_bounce' THEN 1
+                     WHEN 'block'       THEN 2
+                     WHEN 'soft_bounce' THEN 3
+                     ELSE 4
+                   END,
+                   ede.detected_at ASC
+       ),
+       engagement AS (
+         SELECT eee.step_log_id,
+                COUNT(*) FILTER (WHERE eee.event_type = 'open')::int   AS opens,
+                MAX(eee.occurred_at) FILTER (WHERE eee.event_type = 'open')  AS last_open_at,
+                COUNT(*) FILTER (WHERE eee.event_type = 'click')::int  AS clicks,
+                MAX(eee.occurred_at) FILTER (WHERE eee.event_type = 'click') AS last_click_at,
+                ARRAY_REMOVE(ARRAY_AGG(DISTINCT eee.url)
+                             FILTER (WHERE eee.event_type = 'click'), NULL)  AS clicked_urls
+           FROM email_engagement_events eee
+           JOIN sends ON sends.id = eee.step_log_id
+          WHERE eee.org_id = $2
+            AND eee.is_bot = false
+          GROUP BY eee.step_log_id
+       )
+       SELECT sends.id            AS step_log_id,
+              sends.subject,
+              sends.fired_at,
+              sends.sequence_name,
+              COALESCE(v.event_type, 'delivered') AS verdict,
+              v.detected_at        AS verdict_at,
+              COALESCE(g.opens, 0)  AS opens,
+              g.last_open_at,
+              COALESCE(g.clicks, 0) AS clicks,
+              g.last_click_at,
+              COALESCE(g.clicked_urls, '{}') AS clicked_urls
+         FROM sends
+         LEFT JOIN verdicts   v ON v.step_log_id = sends.id
+         LEFT JOIN engagement g ON g.step_log_id = sends.id
+        ORDER BY sends.fired_at DESC`,
+      [req.params.id, req.orgId]
+    );
+
+    res.json({
+      // Directional-opens caveat rides in the payload so every consumer can
+      // label it without hardcoding the copy in two repos.
+      opensAreDirectional: true,
+      sends: result.rows.map(r => ({
+        stepLogId:    r.step_log_id,
+        subject:      r.subject || '(no subject)',
+        firedAt:      r.fired_at,
+        sequenceName: r.sequence_name || null,
+        verdict:      r.verdict,
+        verdictAt:    r.verdict_at || null,
+        opens:        r.opens,
+        lastOpenAt:   r.last_open_at || null,
+        clicks:       r.clicks,
+        lastClickAt:  r.last_click_at || null,
+        clickedUrls:  r.clicked_urls || [],
+      })),
+    });
+  } catch (error) {
+    console.error('Get prospect email engagement error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch email engagement' } });
+  }
+});
+
 // ── POST /:id/research — AI-powered prospect research ────────────────────────
 router.post('/:id/research', async (req, res) => {
   try {

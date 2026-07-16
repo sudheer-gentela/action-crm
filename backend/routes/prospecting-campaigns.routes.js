@@ -1530,8 +1530,12 @@ router.get('/:id/outreach-events', async (req, res) => {
     if (channel && !['email', 'linkedin', 'call'].includes(channel)) {
       return res.status(400).json({ error: { message: 'channel must be one of: email, linkedin, call (or omitted for all)' } });
     }
-    if (!['outreach', 'response'].includes(kind)) {
-      return res.status(400).json({ error: { message: 'kind must be one of: outreach, response' } });
+    // Funnel kinds are step-log-grain and email-only (they explain the
+    // /:id/email-funnel stages); outreach/response are the original
+    // touch-grain kinds behind the BY CHANNEL cards.
+    const FUNNEL_KINDS = ['sent', 'delivered', 'opened', 'clicked'];
+    if (![...FUNNEL_KINDS, 'outreach', 'response'].includes(kind)) {
+      return res.status(400).json({ error: { message: 'kind must be one of: outreach, response, sent, delivered, opened, clicked' } });
     }
 
     const range = req.query.range === 'all' ? 'all' : 'week';
@@ -1539,6 +1543,113 @@ router.get('/:id/outreach-events', async (req, res) => {
     weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     weekStart.setHours(0, 0, 0, 0);
     const rangeStart = range === 'all' ? new Date(0) : weekStart;
+
+    if (FUNNEL_KINDS.includes(kind)) {
+      // ── Funnel drill: one row per email SEND (sequence_step_logs), the
+      // exact predicates of /:id/email-funnel so the list total always
+      // equals the stage count that was clicked.
+      //   sent      → all sends in range
+      //   delivered → sends minus hard bounces
+      //   opened    → sends with ≥1 human open  (ts = last open)
+      //   clicked   → sends with ≥1 human click (ts = last click, detail
+      //               carries the clicked URLs)
+      const { rows } = await pool.query(
+        `WITH sends AS (
+           SELECT ssl.id, ssl.subject, ssl.fired_at,
+                  p.id AS prospect_id, p.first_name, p.last_name, p.company_name
+             FROM sequence_step_logs ssl
+             JOIN prospects p ON p.id = ssl.prospect_id
+            WHERE ssl.org_id      = $1
+              AND p.campaign_id   = $2
+              AND ssl.channel     = 'email'
+              AND ssl.status      IN ('sent','completed')
+              AND ssl.fired_at   >= $3
+         ),
+         hard_bounced AS (
+           SELECT DISTINCT ede.step_log_id
+             FROM email_delivery_events ede
+             JOIN sends ON sends.id = ede.step_log_id
+            WHERE ede.org_id = $1 AND ede.event_type = 'hard_bounce'
+         ),
+         engaged AS (
+           SELECT eee.step_log_id,
+                  COUNT(*) FILTER (WHERE eee.event_type = 'open')::int   AS opens,
+                  MAX(eee.occurred_at) FILTER (WHERE eee.event_type = 'open')  AS last_open_at,
+                  COUNT(*) FILTER (WHERE eee.event_type = 'click')::int  AS clicks,
+                  MAX(eee.occurred_at) FILTER (WHERE eee.event_type = 'click') AS last_click_at,
+                  ARRAY_REMOVE(ARRAY_AGG(DISTINCT eee.url)
+                               FILTER (WHERE eee.event_type = 'click'), NULL)  AS clicked_urls
+             FROM email_engagement_events eee
+             JOIN sends ON sends.id = eee.step_log_id
+            WHERE eee.org_id = $1 AND eee.is_bot = false
+            GROUP BY eee.step_log_id
+         )
+         SELECT s.prospect_id, s.first_name, s.last_name, s.company_name,
+                s.subject, s.fired_at,
+                g.opens, g.last_open_at, g.clicks, g.last_click_at, g.clicked_urls,
+                COUNT(*) OVER ()::int AS total
+           FROM sends s
+           LEFT JOIN engaged g ON g.step_log_id = s.id
+          WHERE CASE $4::text
+                  WHEN 'sent'      THEN TRUE
+                  WHEN 'delivered' THEN s.id NOT IN (SELECT step_log_id FROM hard_bounced)
+                  WHEN 'opened'    THEN COALESCE(g.opens, 0)  > 0
+                  WHEN 'clicked'   THEN COALESCE(g.clicks, 0) > 0
+                END
+       ORDER BY CASE $4::text
+                  WHEN 'opened'  THEN g.last_open_at
+                  WHEN 'clicked' THEN g.last_click_at
+                  ELSE s.fired_at
+                END DESC NULLS LAST
+          LIMIT 200`,
+        [req.orgId, req.params.id, rangeStart, kind]
+      );
+
+      // Same profile enrichment as the touch-grain path below.
+      const funnelProspectIds = [...new Set(rows.map(r => r.prospect_id).filter(Boolean))];
+      let funnelProfileById = {};
+      if (funnelProspectIds.length) {
+        const prof = await pool.query(
+          `SELECT id, linkedin_url, title FROM prospects
+            WHERE org_id = $1 AND id = ANY($2::int[])`,
+          [req.orgId, funnelProspectIds]
+        );
+        funnelProfileById = Object.fromEntries(
+          prof.rows.map(p => [p.id, { linkedin_url: p.linkedin_url || null, title: p.title || null }])
+        );
+      }
+
+      const urlHost = (u) => { try { return new URL(u).hostname; } catch (_) { return u; } };
+      return res.json({
+        range, channel: 'email', kind,
+        opensAreDirectional: kind === 'opened',
+        total:  rows[0]?.total || 0,
+        events: rows.map(r => {
+          const subject = r.subject || '(no subject)';
+          let detail = subject;
+          let ts     = r.fired_at;
+          if (kind === 'opened') {
+            detail = `${subject} · opened ${r.opens}×`;
+            ts     = r.last_open_at || r.fired_at;
+          } else if (kind === 'clicked') {
+            const hosts = [...new Set((r.clicked_urls || []).map(urlHost))].slice(0, 3).join(', ');
+            detail = `${subject}${hosts ? ` · clicked ${hosts}` : ''}`;
+            ts     = r.last_click_at || r.fired_at;
+          }
+          return {
+            prospect_id:   r.prospect_id,
+            prospect_name: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
+            company_name:  r.company_name || null,
+            title:         funnelProfileById[r.prospect_id]?.title || null,
+            linkedin_url:  funnelProfileById[r.prospect_id]?.linkedin_url || null,
+            ts,
+            channel: 'email',
+            kind,
+            detail,
+          };
+        }),
+      });
+    }
 
     const { rows } = await pool.query(
       `WITH touches AS (
@@ -1682,6 +1793,119 @@ router.get('/:id/outreach-events', async (req, res) => {
   } catch (err) {
     console.error('campaigns GET /:id/outreach-events', err);
     res.status(500).json({ error: { message: 'Failed to load outreach events' } });
+  }
+});
+
+// ── GET /:id/email-funnel — Sent → Delivered → Opened → Clicked → Replied ────
+//
+//   Query: range = week | all   (default week, same Sunday rule as GET /:id)
+//
+// GRAIN: message-grain over sequence_step_logs for the first four stages —
+// email steps FIRED in range, cohort attribution (an open lands on the send
+// that produced it, whenever the open occurs). This keeps stage counts
+// monotonic: opened ⊆ delivered ⊆ sent, clicked ⊆ opened is NOT guaranteed
+// (a click without a pixel load is possible when images are blocked) so
+// clicked is bounded by delivered only.
+//
+//   sent      — email step logs, status IN ('sent','completed'), fired in range
+//   delivered — sent minus HARD bounces (same rule as BounceEventsQuery:
+//               blocks + soft bounces stay inside delivered, reported by tiles)
+//   opened    — sends with ≥1 HUMAN open (is_bot = false). DIRECTIONAL —
+//               Apple MPP / Gmail proxies inflate this; UI must label it.
+//   clicked   — sends with ≥1 human click
+//
+//   replied   — DIFFERENT GRAIN, deliberately: email responses received in
+//               range, the exact predicate behind byChannel.email.responses
+//               in GET /:id, so this stage always reconciles with the
+//               response card next to it. A reply is a received message, not
+//               a property of one send — pinning it to the send cohort would
+//               make the funnel disagree with every other reply count on
+//               the page.
+//
+// Every stage is drillable via GET /:id/outreach-events with the kind of the
+// same name (sent/delivered/opened/clicked reuse THIS query's predicates;
+// replied drills the existing kind=response&channel=email list).
+router.get('/:id/email-funnel', async (req, res) => {
+  try {
+    const campaign = await loadCampaign(req.orgId, req.params.id);
+    if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanAccess(req, res, campaign))) return;
+
+    const range = req.query.range === 'all' ? 'all' : 'week';
+    const weekStart = new Date();
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    weekStart.setHours(0, 0, 0, 0);
+    const rangeStart = range === 'all' ? new Date(0) : weekStart;
+
+    const { rows } = await pool.query(
+      `WITH sends AS (
+         SELECT ssl.id
+           FROM sequence_step_logs ssl
+           JOIN prospects p ON p.id = ssl.prospect_id
+          WHERE ssl.org_id      = $1
+            AND p.campaign_id   = $2
+            AND ssl.channel     = 'email'
+            AND ssl.status      IN ('sent','completed')
+            AND ssl.fired_at   >= $3
+       ),
+       hard_bounced AS (
+         SELECT DISTINCT ede.step_log_id
+           FROM email_delivery_events ede
+           JOIN sends ON sends.id = ede.step_log_id
+          WHERE ede.org_id = $1 AND ede.event_type = 'hard_bounce'
+       ),
+       engaged AS (
+         SELECT eee.step_log_id,
+                BOOL_OR(eee.event_type = 'open')  AS opened,
+                BOOL_OR(eee.event_type = 'click') AS clicked
+           FROM email_engagement_events eee
+           JOIN sends ON sends.id = eee.step_log_id
+          WHERE eee.org_id = $1 AND eee.is_bot = false
+          GROUP BY eee.step_log_id
+       ),
+       replies AS (
+         -- Verbatim the email-response branch of the byChannel roll-up in
+         -- GET /:id, so funnel.replied === byChannel.email.responses always.
+         SELECT COUNT(*)::int AS n
+           FROM emails e
+           JOIN prospects p ON p.id = e.prospect_id
+          WHERE e.org_id      = $1
+            AND p.campaign_id = $2
+            AND e.sent_at    >= $3
+            AND e.direction   IN ('received','inbound')
+            AND EXISTS (
+              SELECT 1 FROM emails out_e
+              WHERE out_e.org_id      = e.org_id
+                AND out_e.prospect_id = e.prospect_id
+                AND out_e.direction   = 'sent'
+                AND out_e.sent_at     < e.sent_at
+            )
+       )
+       SELECT (SELECT COUNT(*)::int FROM sends)                              AS sent,
+              (SELECT COUNT(*)::int FROM hard_bounced)                       AS bounced,
+              (SELECT COUNT(*)::int FROM engaged WHERE opened)               AS opened,
+              (SELECT COUNT(*)::int FROM engaged WHERE clicked)              AS clicked,
+              (SELECT n FROM replies)                                        AS replied`,
+      [req.orgId, req.params.id, rangeStart]
+    );
+
+    const r = rows[0] || {};
+    const sent      = r.sent    || 0;
+    const delivered = Math.max(0, sent - (r.bounced || 0));
+    res.json({
+      range,
+      opensAreDirectional: true,
+      funnel: {
+        sent,
+        delivered,
+        opened:  r.opened  || 0,
+        clicked: r.clicked || 0,
+        replied: r.replied || 0,
+      },
+    });
+  } catch (err) {
+    console.error('campaigns GET /:id/email-funnel', err);
+    res.status(500).json({ error: { message: 'Failed to load email funnel' } });
   }
 });
 

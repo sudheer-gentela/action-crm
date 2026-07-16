@@ -207,6 +207,22 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
     }
   }, [prospectId]);
 
+  // Email engagement — per sequence-email history for this prospect
+  // (delivered/bounced verdict + human open/click counts). Loaded lazily
+  // with the Activity tab, same trigger as the drafts above. null = not
+  // loaded yet; [] = loaded, no sequence emails sent.
+  const [emailEngagement, setEmailEngagement] = useState(null);
+  const loadEmailEngagement = useCallback(async () => {
+    try {
+      const r = await apiFetch(`/prospects/${prospectId}/email-engagement`);
+      setEmailEngagement(r.sends || []);
+    } catch (err) {
+      // Non-fatal: the section simply doesn't render.
+      console.error('Failed to load email engagement:', err);
+      setEmailEngagement([]);
+    }
+  }, [prospectId]);
+
   const handleConvertAndSendProspectDraft = async (draft) => {
     const edit = prospectDraftEdits[draft.id] || {};
     const subject = edit.subject !== undefined ? edit.subject : draft.subject;
@@ -404,7 +420,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
   const handleTabChange = (t) => {
     setActiveTab(t);
     if (t === 'intel')    fetchContext();
-    if (t === 'activity') loadProspectDrafts();
+    if (t === 'activity') { loadProspectDrafts(); loadEmailEngagement(); }
   };
 
   // ── Owner reassignment ─────────────────────────────────────────────────────
@@ -1534,6 +1550,89 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
                       })}
                     </div>
                   )}
+                  <div style={{ borderTop: '1px solid #f0f0f0', margin: '12px 0 10px' }} />
+                </div>
+              )}
+
+              {/* ── Email engagement — per-message delivery + opens/clicks ─
+                  One row per sequence email sent to THIS prospect, with the
+                  delivery verdict and human open/click history. Opens are
+                  directional (proxy-inflated) — the footnote says so. Hidden
+                  when no sequence emails exist, so manual-only prospects
+                  don't carry a dead section. */}
+              {emailEngagement != null && emailEngagement.length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{
+                    fontSize: 11, fontWeight: 700, color: '#374151',
+                    textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8,
+                  }}>
+                    📬 Email Engagement
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {emailEngagement.map(send => {
+                      const verdictBadge =
+                        send.verdict === 'hard_bounce' ? { label: '✕ Bounced',   color: '#b91c1c', bg: '#fef2f2', border: '#fecaca' }
+                        : send.verdict === 'block'     ? { label: '⚠ Blocked',   color: '#b45309', bg: '#fffbeb', border: '#fde68a' }
+                        : send.verdict === 'soft_bounce' ? { label: '⚠ Soft bounce', color: '#b45309', bg: '#fffbeb', border: '#fde68a' }
+                        : { label: '✓ Delivered', color: '#047857', bg: '#ecfdf5', border: '#a7f3d0' };
+                      const urlHost = (u) => { try { return new URL(u).hostname; } catch (_) { return u; } };
+                      const clickedHosts = [...new Set((send.clickedUrls || []).map(urlHost))].slice(0, 3);
+                      return (
+                        <div key={send.stepLogId} style={{
+                          border: '1px solid #f0f0f0', borderRadius: 8, padding: '8px 12px',
+                          background: '#fff',
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline' }}>
+                            <div style={{
+                              fontSize: 12, fontWeight: 600, color: '#1f2937',
+                              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                            }}>
+                              {send.subject}
+                            </div>
+                            <div style={{ fontSize: 11, color: '#9ca3af', flexShrink: 0 }}>
+                              {formatDate(send.firedAt)}
+                            </div>
+                          </div>
+                          {send.sequenceName && (
+                            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 1 }}>
+                              {send.sequenceName}
+                            </div>
+                          )}
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6, alignItems: 'center' }}>
+                            <span style={{
+                              fontSize: 10, fontWeight: 600, color: verdictBadge.color,
+                              background: verdictBadge.bg, border: `1px solid ${verdictBadge.border}`,
+                              borderRadius: 8, padding: '2px 8px',
+                            }}>
+                              {verdictBadge.label}
+                            </span>
+                            {send.opens > 0 && (
+                              <span style={{
+                                fontSize: 10, fontWeight: 600, color: '#0e7490',
+                                background: '#ecfeff', border: '1px solid #a5f3fc',
+                                borderRadius: 8, padding: '2px 8px',
+                              }}>
+                                👁 Opened {send.opens}× {send.lastOpenAt ? `· last ${formatDate(send.lastOpenAt)}` : ''}
+                              </span>
+                            )}
+                            {send.clicks > 0 && (
+                              <span style={{
+                                fontSize: 10, fontWeight: 600, color: '#6d28d9',
+                                background: '#f5f3ff', border: '1px solid #ddd6fe',
+                                borderRadius: 8, padding: '2px 8px',
+                              }}>
+                                🔗 Clicked {clickedHosts.length ? clickedHosts.join(', ') : `${send.clicks}×`}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 6 }}>
+                    Opens are directional — mail-client image proxies can auto-load
+                    tracking pixels. Sequence emails only.
+                  </div>
                   <div style={{ borderTop: '1px solid #f0f0f0', margin: '12px 0 10px' }} />
                 </div>
               )}

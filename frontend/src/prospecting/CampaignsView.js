@@ -662,9 +662,17 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
   // are computed over the same window.
   const [rangeFilter, setRangeFilter] = useState('week');
   // Drill-down modal state. null = closed. Otherwise one of:
-  //   { type: 'events', channel, kind }  — byChannel number clicked
+  //   { type: 'events', channel, kind }  — byChannel number clicked, OR an
+  //     EMAIL FUNNEL stage (kind = sent | delivered | opened | clicked;
+  //     the funnel's Replied stage reuses kind = 'response')
   //   { type: 'li', bucket }             — LinkedIn connections tile clicked
   const [drill, setDrill] = useState(null);
+  // EMAIL FUNNEL strip — Sent → Delivered → Opened → Clicked → Replied over
+  // the same range as the BY CHANNEL cards, so a stage and the card beside
+  // it never describe different windows. null = loading/unavailable; the
+  // strip renders only when funnel.sent > 0 (email-less campaigns don't
+  // carry a dead section, same rule as the LinkedIn connections funnel).
+  const [emailFunnel, setEmailFunnel] = useState(null);
   // Read-only sequence-steps modal ("what does this campaign actually send?")
   const [showSequenceSteps, setShowSequenceSteps] = useState(false);
   // Default sequence's ai_enabled — loaded alongside campaign data below.
@@ -712,6 +720,24 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
   }, [campaignId, rangeFilter]);
 
   useEffect(() => { load(channelFilter); }, [load, channelFilter]);
+
+  // Funnel fetch is independent of the channel filter (it is email-only by
+  // definition) but tracks the range pills. Non-fatal: a failed fetch hides
+  // the strip rather than erroring the whole drawer.
+  useEffect(() => {
+    let cancelled = false;
+    setEmailFunnel(null);
+    (async () => {
+      try {
+        const qs = rangeFilter === 'all' ? '?range=all' : '';
+        const r = await apiFetch(`/prospecting-campaigns/${campaignId}/email-funnel${qs}`);
+        if (!cancelled) setEmailFunnel(r);
+      } catch (_) {
+        if (!cancelled) setEmailFunnel(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [campaignId, rangeFilter]);
 
   // ── Member activation (single + selected) ─────────────────────────────────
   // Both hit the campaign-scoped bulk-activate endpoint with an explicit
@@ -1200,6 +1226,67 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                   );
               })}
             </div>
+
+            {/* EMAIL FUNNEL — Sent → Delivered → Opened → Clicked → Replied.
+                Message-grain over sequence email sends (see the endpoint
+                header for grain notes; Replied is response-grain and always
+                equals the email responses card). Every stage drills to the
+                list behind it via the same modal as the BY CHANNEL cards.
+                Hidden until the campaign has sent at least one sequence
+                email, mirroring the LinkedIn section's hide-when-empty. */}
+            {emailFunnel?.funnel?.sent > 0 && (() => {
+              const f = emailFunnel.funnel;
+              const pctOf = (n, d) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '—');
+              const stages = [
+                { key: 'sent',      label: 'sent',      value: f.sent,      sub: null,                        color: '#1A3A5C', bg: '#f8fafc' },
+                { key: 'delivered', label: 'delivered', value: f.delivered, sub: `${pctOf(f.delivered, f.sent)} of sent`, color: '#1A3A5C', bg: '#f8fafc' },
+                { key: 'opened',    label: 'opened*',   value: f.opened,    sub: `${pctOf(f.opened, f.delivered)} of delivered`, color: '#0F9D8E', bg: '#f0fdfa' },
+                { key: 'clicked',   label: 'clicked',   value: f.clicked,   sub: `${pctOf(f.clicked, f.delivered)} of delivered`, color: '#0F9D8E', bg: '#f0fdfa' },
+                { key: 'response',  label: 'replied',   value: f.replied,   sub: `${pctOf(f.replied, f.delivered)} of delivered`, color: '#047857', bg: '#ecfdf5' },
+              ];
+              return (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{
+                    fontSize: 11, color: '#6b7280', fontWeight: 600,
+                    letterSpacing: 0.3, marginBottom: 8,
+                  }}>
+                    EMAIL FUNNEL — {rangeFilter === 'all' ? 'ALL TIME' : 'THIS WEEK'}
+                  </div>
+                  <div style={{
+                    display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)',
+                    gap: 8, marginBottom: 6,
+                  }}>
+                    {stages.map(st => {
+                      const clickable = st.value > 0;
+                      return (
+                        <div
+                          key={st.key}
+                          title={clickable ? 'Click to see who' : undefined}
+                          onClick={clickable
+                            ? () => setDrill({ type: 'events', channel: 'email', kind: st.key })
+                            : undefined}
+                          style={{
+                            background: st.bg, borderRadius: 8, padding: '10px 12px',
+                            cursor: clickable ? 'pointer' : 'default',
+                          }}
+                        >
+                          <div style={{ fontSize: 18, fontWeight: 700, color: st.color }}>{st.value}</div>
+                          <div style={{ fontSize: 11, color: '#6b7280' }}>{st.label}</div>
+                          {st.sub && (
+                            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 1 }}>{st.sub}</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#9ca3af' }}>
+                    * Opens are directional — Apple Mail and Gmail image proxies
+                    auto-load tracking pixels, inflating the count. Sequence
+                    emails only; delivered = sent − hard bounces.
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* LinkedIn connections — ALL-TIME state-based funnel for the
                 connect step (requests sent → accepted), distinct from the
@@ -1920,8 +2007,16 @@ function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
                  : drill.channel === 'linkedin' ? 'LinkedIn'
                  : drill.channel === 'call' ? 'Call'
                  : drill.channel === 'all' ? 'All channels' : '';
+  const EVENT_KIND_LABELS = {
+    outreach:  'outreach',
+    response:  'responses',
+    sent:      'sequence sends',
+    delivered: 'delivered',
+    opened:    'opened (directional)',
+    clicked:   'clicked',
+  };
   const title = isEvents
-    ? `${chLabel} ${drill.kind === 'outreach' ? 'outreach' : 'responses'} — ${range === 'all' ? 'all time' : 'this week'}`
+    ? `${chLabel} ${EVENT_KIND_LABELS[drill.kind] || drill.kind} — ${range === 'all' ? 'all time' : 'this week'}`
     : drill.type === 'stage'    ? `${drill.label || drill.stage} — prospects`
     : drill.type === 'members'  ? 'Campaign members'
     : drill.type === 'enrolled' ? 'In sequences — active enrollments'
