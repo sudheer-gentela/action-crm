@@ -50,6 +50,9 @@ const {
   delivered: _delivered, deliveredRate: _deliveredRate,
   deliveryTelemetry: _deliveryTelemetry,
 } = require('../services/BounceEventsQuery');
+const {
+  engagementEventsCte, ENGAGEMENT_COUNTERS, engagementTelemetry,
+} = require('../services/EngagementEventsQuery');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -273,6 +276,12 @@ function _withChannelSplit(r) {
   const bouncedSoft      = r.bounced_soft      || 0;
   const bounced          = r.bounced           || 0;
   const deliveredEmail   = _delivered(sentEmail, bounced);
+  // Message-grain human engagement (see EngagementEventsQuery). Rates divide
+  // by DELIVERED for the same reason emailRepliedRate does — a hard-bounced
+  // address had no opportunity to open. openedRate inherits the directional
+  // caveat of its numerator.
+  const opened           = r.opened            || 0;
+  const clicked          = r.clicked           || 0;
   return {
     sentEmail,
     sentLinkedin,
@@ -283,6 +292,10 @@ function _withChannelSplit(r) {
     bouncedSoft,
     bounced,
     deliveredEmail,
+    opened,
+    clicked,
+    openedRate:          _repliedRate(opened, deliveredEmail),
+    clickedRate:         _repliedRate(clicked, deliveredEmail),
     deliveredRate:       _deliveredRate(sentEmail, bounced),
     emailRepliedRate:    _repliedRate(repliedEmail, deliveredEmail),
     linkedinRepliedRate: _repliedRate(repliedLinkedin, sentLinkedin),
@@ -299,6 +312,8 @@ function _accChannelSplit(acc, row) {
   acc.bouncedBlock    += row.bouncedBlock    || 0;
   acc.bouncedSoft     += row.bouncedSoft     || 0;
   acc.bounced         += row.bounced         || 0;
+  acc.opened          += row.opened          || 0;
+  acc.clicked         += row.clicked         || 0;
   return acc;
 }
 
@@ -312,6 +327,8 @@ function _finaliseChannelRates(t) {
   t.deliveredRate       = _deliveredRate(t.sentEmail, t.bounced);
   t.emailRepliedRate    = _repliedRate(t.repliedEmail, t.deliveredEmail);
   t.linkedinRepliedRate = _repliedRate(t.repliedLinkedin, t.sentLinkedin);
+  t.openedRate          = _repliedRate(t.opened, t.deliveredEmail);
+  t.clickedRate         = _repliedRate(t.clicked, t.deliveredEmail);
   return t;
 }
 
@@ -399,6 +416,10 @@ router.get('/sequences/team-overview', async (req, res) => {
           },
           totals:    _emptyTotals(),
           deliveryTelemetry: await _deliveryTelemetry(pool, req.orgId),
+      // Same honesty gate for opens/clicks: with tracking never armed, a 0
+      // reads exactly like nobody-cares. The UI renders em-dashes until
+      // human engagement events exist for this org.
+      engagementTelemetry: await engagementTelemetry(pool, req.orgId),
           campaigns: [],
         });
       }
@@ -463,6 +484,18 @@ router.get('/sequences/team-overview', async (req, res) => {
           WHERE campaign_id IS NOT NULL
           GROUP BY campaign_id
        ),
+       ${engagementEventsCte({
+         startParam: `$${startIdx}`,
+         endParam:   `$${endIdx}`,
+       })},
+       engagement_agg AS (
+         -- Campaign-grain human opens/clicks, one row per engaged SEND.
+         -- Same fired_at cohort bounds as log_agg, so opened <= sent_email.
+         SELECT campaign_id, ${ENGAGEMENT_COUNTERS}
+           FROM engagement_events
+          WHERE campaign_id IS NOT NULL
+          GROUP BY campaign_id
+       ),
        enroll_agg AS (
          SELECT
            p.campaign_id,
@@ -508,6 +541,8 @@ router.get('/sequences/team-overview', async (req, res) => {
          COALESCE(b.bounced_block, 0)     AS bounced_block,
          COALESCE(b.bounced_soft, 0)      AS bounced_soft,
          COALESCE(b.bounced, 0)           AS bounced,
+         COALESCE(g.opened, 0)            AS opened,
+         COALESCE(g.clicked, 0)           AS clicked,
          COALESCE(l.failed, 0)    AS failed,
          COALESCE(s.stalled, 0)   AS stalled,
          l.last_fired_at
@@ -518,6 +553,7 @@ router.get('/sequences/team-overview', async (req, res) => {
        LEFT JOIN stalled_agg s ON s.campaign_id = c.id
        LEFT JOIN reply_agg  rp ON rp.campaign_id = c.id
        LEFT JOIN bounce_agg b  ON b.campaign_id = c.id
+       LEFT JOIN engagement_agg g ON g.campaign_id = c.id
        WHERE ${campaignWhere}
        ORDER BY l.last_fired_at DESC NULLS LAST, c.id ASC`,
       campaignParams
@@ -604,6 +640,10 @@ router.get('/sequences/team-overview', async (req, res) => {
       // all. With no delivery telemetry every campaign scores a perfect 100%,
       // which is indistinguishable from a healthy list. The UI renders "—".
       deliveryTelemetry: await _deliveryTelemetry(pool, req.orgId),
+      // Same honesty gate for opens/clicks: with tracking never armed, a 0
+      // reads exactly like nobody-cares. The UI renders em-dashes until
+      // human engagement events exist for this org.
+      engagementTelemetry: await engagementTelemetry(pool, req.orgId),
       campaigns,
     });
   } catch (err) {
@@ -748,6 +788,16 @@ router.get('/sequences/team-by-rep', async (req, res) => {
            FROM bounce_events
           GROUP BY user_id
        ),
+       ${engagementEventsCte({
+         startParam: '$3',
+         endParam:   '$4',
+         campaignParam: campaignReplyParam,
+       })},
+       engagement_agg AS (
+         SELECT user_id, ${ENGAGEMENT_COUNTERS}
+           FROM engagement_events
+          GROUP BY user_id
+       ),
        enroll_agg AS (
          SELECT
            se.enrolled_by AS user_id,
@@ -807,6 +857,8 @@ router.get('/sequences/team-by-rep', async (req, res) => {
          COALESCE(b.bounced_block, 0)     AS bounced_block,
          COALESCE(b.bounced_soft, 0)      AS bounced_soft,
          COALESCE(b.bounced, 0)           AS bounced,
+         COALESCE(g.opened, 0)            AS opened,
+         COALESCE(g.clicked, 0)           AS clicked,
          COALESCE(l.failed, 0)            AS failed,
          COALESCE(e.enrolled, 0)          AS enrolled,
          COALESCE(s.stalled, 0)           AS stalled,
@@ -820,6 +872,7 @@ router.get('/sequences/team-by-rep', async (req, res) => {
        LEFT JOIN active_state a ON a.user_id = u.id
        LEFT JOIN reply_agg   rp ON rp.user_id = u.id
        LEFT JOIN bounce_agg  b  ON b.user_id  = u.id
+       LEFT JOIN engagement_agg g ON g.user_id = u.id
        WHERE u.id = ANY($2::int[])
        -- LEFT JOIN on log_agg so reps with zero activity in the window
        -- still appear with zero counters. Matches the "campaigns with
@@ -969,6 +1022,10 @@ router.get('/sequences/team-by-rep', async (req, res) => {
       // all. With no delivery telemetry every campaign scores a perfect 100%,
       // which is indistinguishable from a healthy list. The UI renders "—".
       deliveryTelemetry: await _deliveryTelemetry(pool, req.orgId),
+      // Same honesty gate for opens/clicks: with tracking never armed, a 0
+      // reads exactly like nobody-cares. The UI renders em-dashes until
+      // human engagement events exist for this org.
+      engagementTelemetry: await engagementTelemetry(pool, req.orgId),
       reps,
     });
   } catch (err) {
@@ -1251,6 +1308,17 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
            FROM bounce_events
           GROUP BY sequence_id
        ),
+       ${engagementEventsCte({
+         startParam: '$3',
+         endParam:   '$4',
+         campaignParam: campaignReplyParam,
+         sequenceParam: sequenceReplyParam,
+       })},
+       engagement_agg AS (
+         SELECT sequence_id, ${ENGAGEMENT_COUNTERS}
+           FROM engagement_events
+          GROUP BY sequence_id
+       ),
        enroll_agg AS (
          SELECT
            se.sequence_id,
@@ -1339,6 +1407,8 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
          COALESCE(b.bounced_block, 0)       AS bounced_block,
          COALESCE(b.bounced_soft, 0)        AS bounced_soft,
          COALESCE(b.bounced, 0)             AS bounced,
+         COALESCE(g.opened, 0)              AS opened,
+         COALESCE(g.clicked, 0)             AS clicked,
          COALESCE(l.failed, 0)              AS failed,
          COALESCE(e.enrolled, 0)            AS enrolled,
          COALESCE(e.distinct_campaigns, 0)  AS distinct_campaigns,
@@ -1355,6 +1425,7 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
        LEFT JOIN active_state a  ON a.sequence_id = s.id
        LEFT JOIN reply_agg    rp ON rp.sequence_id = s.id
        LEFT JOIN bounce_agg   b  ON b.sequence_id  = s.id
+       LEFT JOIN engagement_agg g ON g.sequence_id = s.id
        WHERE s.org_id = $1
          AND (
            -- Include any sequence that has any activity in scope (any CTE
@@ -1550,6 +1621,10 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
       // all. With no delivery telemetry every campaign scores a perfect 100%,
       // which is indistinguishable from a healthy list. The UI renders "—".
       deliveryTelemetry: await _deliveryTelemetry(pool, req.orgId),
+      // Same honesty gate for opens/clicks: with tracking never armed, a 0
+      // reads exactly like nobody-cares. The UI renders em-dashes until
+      // human engagement events exist for this org.
+      engagementTelemetry: await engagementTelemetry(pool, req.orgId),
       sequences,
     });
   } catch (err) {
@@ -1580,6 +1655,10 @@ function _emptyTotals() {
     bouncedSoft:          0,
     bounced:              0,
     deliveredEmail:       0,
+    opened:               0,
+    clicked:              0,
+    openedRate:           0,
+    clickedRate:          0,
     deliveredRate:        0,
     emailRepliedRate:     0,
     linkedinRepliedRate:  0,
@@ -1902,7 +1981,8 @@ router.put('/activity-definition', async (req, res) => {
 // reporting tables. Every numeric cell in the UI can launch this with the
 // filter tuple it was rendered from.
 //
-//   ?metric=replied|sent|drafts|failed|enrolled|stalled   (required)
+//   ?metric=replied|sent|drafts|failed|enrolled|stalled
+//          |delivered|opened|clicked                        (required)
 //   ?channel=email|linkedin      narrows sent/drafts/failed/replied
 //   ?campaignId=N  ?sequenceId=N  ?userId=N               grain selectors
 //   ?depth= ?windowDays= | ?startDate= &endDate=          same as the tabs
@@ -1947,7 +2027,7 @@ router.put('/activity-definition', async (req, res) => {
 // Surfacing the number stops that difference from looking like a bug.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const DRILL_METRICS = ['replied', 'sent', 'bounced', 'drafts', 'failed', 'enrolled', 'stalled'];
+const DRILL_METRICS = ['replied', 'sent', 'bounced', 'drafts', 'failed', 'enrolled', 'stalled', 'delivered', 'opened', 'clicked'];
 const DRILL_STATUS = {
   sent:   `ssl.status IN ('sent','completed')`,
   drafts: `ssl.status = 'draft'`,
@@ -2017,9 +2097,9 @@ router.get('/metric-drill', async (req, res) => {
     // LinkedIn has no delivery-failure concept. Accept ?channel=email as a
     // no-op (the cell that launches the drill sends it) and reject linkedin
     // rather than silently returning an empty list.
-    if (metric === 'bounced' && channel === 'linkedin') {
+    if (['bounced', 'delivered', 'opened', 'clicked'].includes(metric) && channel === 'linkedin') {
       return res.status(400).json({
-        error: { message: 'bounced applies to email only' },
+        error: { message: `${metric} applies to email only` },
       });
     }
 
@@ -2200,6 +2280,81 @@ router.get('/metric-drill', async (req, res) => {
         ORDER BY ssl.fired_at DESC, ssl.id DESC
         LIMIT ${P(limit)} OFFSET ${P(offset)}`;
 
+    } else if (metric === 'delivered' || metric === 'opened' || metric === 'clicked') {
+      // One row per email SEND, reusing the exact predicates of the 'sent'
+      // branch (which are the exact predicates of log_agg) narrowed by:
+      //   delivered — no hard_bounce delivery event on the send
+      //   opened    — >=1 human open  (ordered by last open)
+      //   clicked   — >=1 human click (ordered by last click, URLs returned)
+      // The engagement sub-join mirrors engagementEventsCte's semantics
+      // (human-only, cohort-bounded via the send's fired_at) so these lists
+      // always reconcile with the engagement_agg cells that launch them.
+      const startParam = P(window.startISO);
+      const endParam   = P(window.endISO);
+      const campClause = campaignIds ? `AND p.campaign_id = ANY(${P(campaignIds)}::int[])`  : '';
+      const seqClause  = sequenceIds ? `AND se.sequence_id = ANY(${P(sequenceIds)}::int[])` : '';
+
+      const metricClause =
+        metric === 'delivered'
+          ? `AND NOT EXISTS (
+               SELECT 1 FROM email_delivery_events ede
+                WHERE ede.step_log_id = ssl.id
+                  AND ede.org_id      = ssl.org_id
+                  AND ede.event_type  = 'hard_bounce'
+             )`
+          : metric === 'opened'
+            ? `AND COALESCE(g.opens, 0)  > 0`
+            : `AND COALESCE(g.clicks, 0) > 0`;
+
+      const orderClause =
+        metric === 'opened'  ? 'g.last_open_at DESC NULLS LAST, ssl.id DESC'
+        : metric === 'clicked' ? 'g.last_click_at DESC NULLS LAST, ssl.id DESC'
+        : 'ssl.fired_at DESC, ssl.id DESC';
+
+      sql = `
+        SELECT
+          COUNT(*) OVER ()::int AS total_count,
+          se.prospect_id, ssl.enrollment_id, ssl.channel, ssl.status,
+          ssl.subject, LEFT(ssl.body, 4000) AS body_raw,
+          ssl.fired_at AS occurred_at,
+          g.opens, g.last_open_at, g.clicks, g.last_click_at, g.clicked_urls,
+          se.sequence_id, p.campaign_id,
+          se.enrolled_by AS rep_id,
+          p.first_name, p.last_name, p.email AS prospect_email,
+          p.title, p.company_name, p.linkedin_url,
+          s.name AS sequence_name,
+          c.name AS campaign_name,
+          u.first_name AS rep_first_name, u.last_name AS rep_last_name, u.email AS rep_email
+        FROM sequence_step_logs ssl
+        JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
+        JOIN prospects p             ON p.id = se.prospect_id
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*) FILTER (WHERE eee.event_type = 'open')::int   AS opens,
+                 MAX(eee.occurred_at) FILTER (WHERE eee.event_type = 'open')  AS last_open_at,
+                 COUNT(*) FILTER (WHERE eee.event_type = 'click')::int  AS clicks,
+                 MAX(eee.occurred_at) FILTER (WHERE eee.event_type = 'click') AS last_click_at,
+                 ARRAY_REMOVE(ARRAY_AGG(DISTINCT eee.url)
+                              FILTER (WHERE eee.event_type = 'click'), NULL)  AS clicked_urls
+            FROM email_engagement_events eee
+           WHERE eee.step_log_id = ssl.id
+             AND eee.org_id      = ssl.org_id
+             AND eee.is_bot      = false
+        ) g ON true
+        LEFT JOIN sequences s              ON s.id = se.sequence_id
+        LEFT JOIN prospecting_campaigns c  ON c.id = p.campaign_id
+        LEFT JOIN users u                  ON u.id = se.enrolled_by
+        WHERE ssl.org_id    = $1
+          AND se.enrolled_by = ANY($2::int[])
+          AND ssl.fired_at  >= ${startParam}::timestamptz
+          AND ssl.fired_at  <= ${endParam}::timestamptz
+          AND ssl.channel   = 'email'
+          AND ${DRILL_STATUS.sent}
+          ${metricClause}
+          ${campClause}
+          ${seqClause}
+        ORDER BY ${orderClause}
+        LIMIT ${P(limit)} OFFSET ${P(offset)}`;
+
     } else if (metric === 'enrolled') {
       const startParam = P(window.startISO);
       const endParam   = P(window.endISO);
@@ -2342,6 +2497,20 @@ router.get('/metric-drill', async (req, res) => {
           errorMessage: r.error_message || null,
           subject:      r.subject || null,
           snippet:      _snippet(r.body_raw),
+        });
+      }
+      if (metric === 'delivered' || metric === 'opened' || metric === 'clicked') {
+        // Engagement extras ride along so the panel can render "opened 3× ·
+        // last <date>" and the clicked destinations without another fetch.
+        return _drillRow(r, {
+          channel:     'email',
+          subject:     r.subject || null,
+          snippet:     metric === 'delivered' ? _snippet(r.body_raw) : null,
+          opens:       r.opens  || 0,
+          lastOpenAt:  r.last_open_at || null,
+          clicks:      r.clicks || 0,
+          lastClickAt: r.last_click_at || null,
+          clickedUrls: r.clicked_urls || [],
         });
       }
       if (metric === 'stalled') {

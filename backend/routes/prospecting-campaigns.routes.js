@@ -1968,6 +1968,88 @@ router.get('/:id/schedule-config', async (req, res) => {
   }
 });
 
+// ── GET /:id/prospect-activity/:prospectId — the activity drawer, campaign-scoped ─
+//
+// Same payload shape as GET /linkedin-connections/funnel/:prospectId (which
+// feeds the reporting view's drawer), but authorized like every other drill
+// in this file: CampaignAccess.requireCanAccess (owner / manager / admin)
+// plus a membership check that the prospect belongs to THIS campaign. The
+// funnel endpoint stays owner-scoped — it is a rep's own book; this one is
+// "anyone who may see the campaign may see its prospects' stories".
+//
+// Consumed by ProspectActivityDrawer via CampaignsView. Message ledger rows
+// are direction/counted/timestamps ONLY — message text never reaches the
+// server (D12), so there is none to show.
+router.get('/:id/prospect-activity/:prospectId', async (req, res) => {
+  try {
+    const campaign = await loadCampaign(req.orgId, req.params.id);
+    if (!campaign) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanAccess(req, res, campaign))) return;
+
+    const pid = parseInt(req.params.prospectId, 10);
+    if (!Number.isFinite(pid)) {
+      return res.status(400).json({ error: { message: 'Bad prospect id' } });
+    }
+
+    const pr = await pool.query(
+      `SELECT id, trim(first_name || ' ' || last_name) AS name,
+              company_name AS company, linkedin_url AS "linkedinUrl",
+              member_urn IS NOT NULL AS "identityResolved", stage,
+              channel_data->'linkedin' AS li
+         FROM prospects
+        WHERE id = $1 AND org_id = $2 AND campaign_id = $3 AND deleted_at IS NULL`,
+      [pid, req.orgId, req.params.id]
+    );
+    if (!pr.rows.length) {
+      return res.status(404).json({ error: { message: 'Prospect not found in this campaign' } });
+    }
+
+    const [events, activities] = await Promise.all([
+      pool.query(
+        `SELECT direction, counted, occurred_at AS "occurredAt", thread_urn AS "threadUrn"
+           FROM linkedin_message_events
+          WHERE org_id = $1 AND prospect_id = $2
+          ORDER BY occurred_at DESC
+          LIMIT 100`,
+        [req.orgId, pid]
+      ),
+      pool.query(
+        `SELECT description, activity_type AS "activityType",
+                metadata->>'event' AS event, metadata->>'source' AS source,
+                created_at AS "createdAt"
+           FROM prospecting_activities
+          WHERE org_id = $1 AND prospect_id = $2
+          ORDER BY created_at DESC
+          LIMIT 50`,
+        [req.orgId, pid]
+      ),
+    ]);
+
+    const p = pr.rows[0];
+    const li = p.li || {};
+    res.json({
+      ok: true,
+      prospect: {
+        id: p.id, name: p.name, company: p.company,
+        linkedinUrl: p.linkedinUrl, identityResolved: p.identityResolved, stage: p.stage,
+        requestSentAt: li.request_sent_at || null,
+        connectedAt: li.connected_at || null,
+        verifiedAt: li.connection_verified_at || null,
+        liStatus: li.connection_status || null,
+        messageCount: li.message_count || 0,
+        replyCount: li.reply_count || 0,
+        lastMessageAt: li.last_message_at || null,
+        lastReplyAt: li.last_reply_at || null,
+      },
+      messages: events.rows,
+      activities: activities.rows,
+    });
+  } catch (err) {
+    console.error('campaigns GET /:id/prospect-activity/:prospectId', err);
+    res.status(500).json({ error: { message: 'Failed to load prospect activity' } });
+  }
+});
+
 // ── GET /:id/enrolled-prospects — drill-down for the "In sequences" card ─────
 //
 // Returns the prospects behind metrics.activeEnrollments: campaign members

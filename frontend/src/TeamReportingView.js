@@ -789,12 +789,42 @@ function DeliveryRateCell({ row, telemetry }) {
   );
 }
 
-/** Delivered count cell. Not drillable — it is a subtraction, not a row source. */
-function DeliveredCell({ row, telemetry }) {
+/** Delivered count cell. Drillable since the metric-drill endpoint gained a
+ *  'delivered' branch (sends with no hard-bounce event) — the subtraction now
+ *  has a row source of its own. */
+function DeliveredCell({ row, telemetry, drill, onDrill }) {
   if (!hasTelemetry(telemetry)) {
     return <td className="num trv-muted-cell" title="No delivery telemetry recorded">{NO_DATA}</td>;
   }
-  return <td className="num">{fmtNum(row.deliveredEmail)}</td>;
+  return (
+    <MetricCell
+      value={row.deliveredEmail}
+      onDrill={onDrill}
+      drill={drill}
+    />
+  );
+}
+
+// ── Engagement ────────────────────────────────────────────────────────────
+// Opened/Clicked are message-grain human events from the tracking pixels.
+// Same honesty rule as delivery: with tracking never armed, every row scores
+// a 0 that reads exactly like nobody-cares. No engagement telemetry → em-dash,
+// never 0. Opens carry the directional caveat (Apple MPP / Gmail proxies) in
+// the column header; clicks are trustworthy.
+function hasEngTelemetry(t) {
+  return !!(t && t.hasEvents);
+}
+
+/** Opened / Clicked cell: drillable when measured, inert em-dash when not. */
+function EngagedCell({ value, telemetry, drill, onDrill, style }) {
+  if (!hasEngTelemetry(telemetry)) {
+    return (
+      <td className="num trv-muted-cell" style={style} title="No engagement tracking events recorded">
+        {NO_DATA}
+      </td>
+    );
+  }
+  return <MetricCell value={value} onDrill={onDrill} style={style} drill={drill} />;
 }
 
 /**
@@ -870,7 +900,7 @@ function DeliveryTelemetryNote({ telemetry, period }) {
 //
 // Zero renders as inert text — there is nothing to look at, and a clickable 0
 // invites a click that opens an empty panel.
-const DRILLABLE = ['replied', 'sent', 'bounced', 'drafts', 'failed', 'enrolled', 'stalled'];
+const DRILLABLE = ['replied', 'sent', 'bounced', 'drafts', 'failed', 'enrolled', 'stalled', 'delivered', 'opened', 'clicked'];
 
 /** Human label for a panel opened on a given metric/channel. */
 function drillTitle(metric, channel) {
@@ -883,6 +913,9 @@ function drillTitle(metric, channel) {
     failed:   'failures',
     enrolled: 'enrollments',
     stalled:  'stalled enrollments',
+    delivered: 'delivered',
+    opened:    'opened (directional)',
+    clicked:   'clicked',
   }[metric] || metric;
   return `${chan}${noun}`.replace(/^./, c => c.toUpperCase());
 }
@@ -940,6 +973,7 @@ function RepTab({ data, loading, scope, windowState, onSetWindow, onDrill }) {
   const totals = data.totals || {};
   const reps = data.reps || [];
   const telemetry = data.deliveryTelemetry;
+  const engTelemetry = data.engagementTelemetry;
   const allZero = reps.length > 0 && reps.every(r =>
     (r.sent || 0) === 0 && (r.enrolled || 0) === 0 && (r.drafts || 0) === 0 && (r.replied || 0) === 0
   );
@@ -970,6 +1004,8 @@ function RepTab({ data, loading, scope, windowState, onSetWindow, onDrill }) {
                 <th className="num" style={GROUP_EDGE}>Email sent</th>
                 <th className="num" title="Hard bounces. Subtracted from Delivered. Blocks and soft bounces are counted but not subtracted.">Bounced</th>
                 <th className="num" title="(Email sent − hard bounces) ÷ Email sent. There is no positive delivery confirmation; this is mail we sent that did not hard-bounce.">Deliv %</th>
+                                <th className="num" title="Messages with at least one human open, over sends fired in the window. DIRECTIONAL: Apple Mail and Gmail image proxies auto-load pixels the bot filter cannot catch.">Opened*</th>
+                <th className="num" title="Messages with at least one human link click, over sends fired in the window.">Clicked</th>
                 <th className="num">Email replied</th>
                 <th className="num">Email reply %</th>
                 <th className="num" style={GROUP_EDGE}>LI sent</th>
@@ -1003,6 +1039,10 @@ function RepTab({ data, loading, scope, windowState, onSetWindow, onDrill }) {
                       <BouncedCell row={r} telemetry={telemetry} onDrill={onDrill}
                         drill={{ metric: 'bounced', channel: 'email', userId: r.userId, subject: r.name }} />
                       <DeliveryRateCell row={r} telemetry={telemetry} />
+                      <EngagedCell value={r.opened} telemetry={engTelemetry} onDrill={onDrill}
+                        drill={{ metric: 'opened', channel: 'email', userId: r.userId, subject: r.name }} />
+                      <EngagedCell value={r.clicked} telemetry={engTelemetry} onDrill={onDrill}
+                        drill={{ metric: 'clicked', channel: 'email', userId: r.userId, subject: r.name }} />
                       <MetricCell value={r.repliedEmail} onDrill={onDrill}
                         drill={{ metric: 'replied', channel: 'email', userId: r.userId, subject: r.name }} />
                       <td className="num">{fmtPct(r.emailRepliedRate)}</td>
@@ -1019,7 +1059,7 @@ function RepTab({ data, loading, scope, windowState, onSetWindow, onDrill }) {
                     </tr>
                     {expanded && (
                       <tr className="trv-expand-row">
-                        <td colSpan={14}>
+                        <td colSpan={16}>
                           <div className="trv-expand-grid">
                             <div className="trv-expand-block">
                               <div className="trv-expand-label">Last activity</div>
@@ -1075,6 +1115,7 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
   const totals = data.totals || {};
   const campaigns = data.campaigns || [];
   const telemetry = data.deliveryTelemetry;
+  const engTelemetry = data.engagementTelemetry;
   const allZero = campaigns.length > 0 && campaigns.every(c =>
     (c.sent || 0) === 0 && (c.enrolled || 0) === 0 && (c.drafts || 0) === 0 && (c.replied || 0) === 0
   );
@@ -1107,6 +1148,8 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
                 <th className="num">Delivered</th>
                 <th className="num" title="Hard bounces. Subtracted from Delivered. Blocks and soft bounces are counted but not subtracted.">Bounced</th>
                 <th className="num" title="(Email sent − hard bounces) ÷ Email sent. There is no positive delivery confirmation; this is mail we sent that did not hard-bounce.">Deliv %</th>
+                <th className="num" title="Messages with at least one human open, over sends fired in the window. DIRECTIONAL: Apple Mail and Gmail image proxies auto-load pixels the bot filter cannot catch.">Opened*</th>
+                <th className="num" title="Messages with at least one human link click, over sends fired in the window.">Clicked</th>
                 <th className="num">Email replied</th>
                 <th className="num">Email reply %</th>
                 <th className="num" style={GROUP_EDGE}>LI sent</th>
@@ -1135,10 +1178,15 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
                         drill={{ metric: 'enrolled', campaignId: c.campaignId, subject: c.name }} />
                       <MetricCell value={c.sentEmail} onDrill={onDrill} style={GROUP_EDGE}
                         drill={{ metric: 'sent', channel: 'email', campaignId: c.campaignId, subject: c.name }} />
-                      <DeliveredCell row={c} telemetry={telemetry} />
+                      <DeliveredCell row={c} telemetry={telemetry} onDrill={onDrill}
+                        drill={{ metric: 'delivered', channel: 'email', campaignId: c.campaignId, subject: c.name }} />
                       <BouncedCell row={c} telemetry={telemetry} onDrill={onDrill}
                         drill={{ metric: 'bounced', channel: 'email', campaignId: c.campaignId, subject: c.name }} />
                       <DeliveryRateCell row={c} telemetry={telemetry} />
+                      <EngagedCell value={c.opened} telemetry={engTelemetry} onDrill={onDrill}
+                        drill={{ metric: 'opened', channel: 'email', campaignId: c.campaignId, subject: c.name }} />
+                      <EngagedCell value={c.clicked} telemetry={engTelemetry} onDrill={onDrill}
+                        drill={{ metric: 'clicked', channel: 'email', campaignId: c.campaignId, subject: c.name }} />
                       <MetricCell value={c.repliedEmail} onDrill={onDrill}
                         drill={{ metric: 'replied', channel: 'email', campaignId: c.campaignId, subject: c.name }} />
                       <td className="num">{fmtPct(c.emailRepliedRate)}</td>
@@ -1153,7 +1201,7 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
                     </tr>
                     {expanded && (
                       <tr className="trv-expand-row">
-                        <td colSpan={14}>
+                        <td colSpan={16}>
                           <div className="trv-expand-grid">
                             <div className="trv-expand-block">
                               <div className="trv-expand-label">Last activity</div>
@@ -1895,6 +1943,13 @@ function MetricDrillBody({ loading, error, result, metric, onPick }) {
               {r.title && <span>{r.title}</span>}
             </div>
             {r.subject && <div className="trv-pp-subject">{r.subject}</div>}
+            {(metric === 'opened' || metric === 'clicked') && (
+              <div className="trv-pp-snippet">
+                {r.opens > 0 && `opened ${r.opens}×${r.lastOpenAt ? ` · last ${fmtDate(r.lastOpenAt)}` : ''}`}
+                {r.opens > 0 && r.clicks > 0 && ' · '}
+                {r.clicks > 0 && `clicked ${r.clicks}×${(r.clickedUrls || []).length ? ` · ${[...new Set(r.clickedUrls.map(u => { try { return new URL(u).hostname; } catch (_) { return u; } }))].slice(0, 3).join(', ')}` : ''}`}
+              </div>
+            )}
             {r.snippet && <div className="trv-pp-snippet">{r.snippet}</div>}
             {r.errorMessage && <div className="trv-pp-snippet trv-warning">{r.errorMessage}</div>}
             {isBounce && (
@@ -1953,6 +2008,21 @@ function MetricDrillBody({ loading, error, result, metric, onPick }) {
         <div className="trv-pp-footnote">
           Hard bounces only — the sends removed from Delivered. Blocks (5.7.x) and soft bounces
           are shown in the column tooltip and are <strong>not</strong> subtracted.
+        </div>
+      )}
+
+      {metric === 'opened' && (
+        <div className="trv-pp-footnote">
+          Opens are directional — Apple Mail and Gmail image proxies auto-load tracking
+          pixels that the bot filter cannot catch. Treat this as an upper bound; clicks
+          and replies are the trustworthy signals.
+        </div>
+      )}
+
+      {metric === 'delivered' && (
+        <div className="trv-pp-footnote">
+          Delivered = sent with no hard bounce returned. There is no positive delivery
+          confirmation; blocks and soft bounces remain in this list.
         </div>
       )}
 

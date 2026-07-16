@@ -17,6 +17,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiFetch, DEFAULT_PROSPECT_STAGES } from './prospectingShared';
+import ProspectActivityDrawer from './ProspectActivityDrawer';
 import CSVImportModal from '../CSVImportModal';
 import CampaignConfigScreen from './CampaignConfigScreen';
 import CampaignBriefWizard from './CampaignBriefWizard';
@@ -678,6 +679,12 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
   //                       a healthy-but-empty funnel is visibly different
   //                       from a broken fetch
   const [emailFunnel, setEmailFunnel] = useState(null);
+  // Prospect activity drawer — "click a person, see their story", the same
+  // shared drawer as the reporting view's LinkedIn funnel tab, opened from
+  // ANY prospect row in this panel (member list + every drill-down list).
+  // Fed by the campaign-scoped /:id/prospect-activity/:prospectId endpoint,
+  // so managers/admins can open prospects they don't own. null = closed.
+  const [activityProspectId, setActivityProspectId] = useState(null);
   // Read-only sequence-steps modal ("what does this campaign actually send?")
   const [showSequenceSteps, setShowSequenceSteps] = useState(false);
   // Default sequence's ai_enabled — loaded alongside campaign data below.
@@ -1701,6 +1708,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                       selected={selectedMemberIds.has(m.id)}
                       onToggleSelect={toggleMemberSelect}
                       onActivate={handleActivateMember}
+                      onOpen={(pid) => setActivityProspectId(pid)}
                     />
                   ))}
                   {totalProspects > members.length && (
@@ -1796,7 +1804,21 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
             drill={drill}
             range={rangeFilter}
             onClose={() => setDrill(null)}
+            onOpenProspect={(pid) => setActivityProspectId(pid)}
           />
+        )}
+        {/* Layered ABOVE the drill modal (pv-modal-overlay is z-index 1000,
+            the drawer's own backdrop only 60) so a row click in a drill list
+            opens the story on top of the list, and closing it returns you
+            to the list you came from. */}
+        {activityProspectId != null && (
+          <div style={{ position: 'fixed', inset: 0, zIndex: 1100 }}>
+            <ProspectActivityDrawer
+              fetchPath={`/prospecting-campaigns/${campaignId}/prospect-activity/${activityProspectId}`}
+              emailEngagementPath={`/prospects/${activityProspectId}/email-engagement`}
+              onClose={() => setActivityProspectId(null)}
+            />
+          </div>
         )}
         {showSequenceSteps && data?.campaign?.default_sequence_id && (
           <SequenceStepsModal
@@ -1996,7 +2018,7 @@ function SequenceStepsModal({ sequenceId, sequenceName, onClose }) {
 //
 // Both endpoints use predicates identical to the counts they explain, so the
 // list total always reconciles with the number that was clicked.
-function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
+function CampaignDrilldownModal({ campaignId, drill, range, onClose, onOpenProspect = null }) {
   const [rows,    setRows]    = useState(null);   // null = loading
   const [total,   setTotal]   = useState(0);
   const [error,   setError]   = useState('');
@@ -2154,11 +2176,21 @@ function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
             </div>
           )}
 
-          {(sortedRows || []).map((r, i) => (
-            <div key={isEvents ? i : r.id} style={{
+          {(sortedRows || []).map((r, i) => {
+            // Every drill row is a person; clicking one opens their activity
+            // drawer on top of this list. Events rows carry prospect_id, all
+            // other modes carry id.
+            const rowProspectId = isEvents ? r.prospect_id : r.id;
+            const clickable = !!(onOpenProspect && rowProspectId);
+            return (
+            <div key={isEvents ? i : r.id}
+              title={clickable ? 'Click to see activity' : undefined}
+              onClick={clickable ? () => onOpenProspect(rowProspectId) : undefined}
+              style={{
               display: 'flex', alignItems: 'center', gap: 10,
               padding: '9px 16px',
               borderBottom: '1px solid #f8fafc',
+              cursor: clickable ? 'pointer' : 'default',
             }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: '#1f2937', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -2204,7 +2236,8 @@ function CampaignDrilldownModal({ campaignId, drill, range, onClose }) {
                 )}
               </div>
             </div>
-          ))}
+            );
+          })}
 
           {rows != null && total > rows.length && (
             <div style={{ padding: '10px 16px', fontSize: 11, color: '#9ca3af' }}>
@@ -2496,7 +2529,7 @@ function Funnel({ funnel, terminal }) {
 }
 
 // ── MemberRow ────────────────────────────────────────────────────────────────
-function MemberRow({ member: m, isLast, selected = false, onToggleSelect, onActivate }) {
+function MemberRow({ member: m, isLast, selected = false, onToggleSelect, onActivate, onOpen }) {
   const initials = `${(m.first_name || '?')[0] || ''}${(m.last_name || '')[0] || ''}`.toUpperCase();
   const meta = STAGE_META[m.stage];
   const canActivate = !!onActivate && m.stage === 'research';
@@ -2520,7 +2553,9 @@ function MemberRow({ member: m, isLast, selected = false, onToggleSelect, onActi
         color: '#4338ca', display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontSize: 11, fontWeight: 700, marginRight: 10,
       }}>{initials}</div>
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ flex: 1, minWidth: 0, cursor: onOpen ? 'pointer' : 'default' }}
+           title={onOpen ? 'Click to see activity' : undefined}
+           onClick={onOpen ? () => onOpen(m.id) : undefined}>
         <div style={{ fontSize: 13, fontWeight: 600, color: '#1f2937' }}>
           {m.first_name} {m.last_name}
         </div>
